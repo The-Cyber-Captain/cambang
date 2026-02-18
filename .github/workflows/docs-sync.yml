@@ -3,7 +3,6 @@ name: DOCS sync check
 on:
   pull_request:
   push:
-    branches: [ main ]
 
 jobs:
   check:
