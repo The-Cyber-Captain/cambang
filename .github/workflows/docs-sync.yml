@@ -1,0 +1,42 @@
+name: DOCS sync check
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync DOCS
+        shell: bash
+        run: |
+          echo "::group::sync_docs.sh output"
+          bash ./scripts/sync_docs.sh
+          echo "::endgroup::"
+
+      - name: Fail if changes required
+        shell: bash
+        run: |
+          if ! git diff --quiet; then
+            echo "::error title=DOCS copies are out of date::Run ./scripts/sync_docs.sh and commit the result."
+
+            echo "## ❌ DOCS copies are out of date" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Run \`./scripts/sync_docs.sh\` and commit the result." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::group::DOCS diff"
+            git diff
+            echo "::endgroup::"
+
+            echo "### Diff" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`diff" >> "$GITHUB_STEP_SUMMARY"
+            git diff >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+            exit 1
+          fi
