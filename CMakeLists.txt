@@ -48,6 +48,13 @@ add_library(cambang_ide STATIC
     src/provider/provider_contract_datatypes.h
     src/provider/provider_error_string.h
     src/provider/provider_error_string.cpp
+        src/provider/stub/stub_camera_provider.h
+        src/provider/stub/stub_camera_provider.cpp
+        src/core/core_thread.h
+        src/core/core_thread.cpp
+        src/core/core_mailbox.h
+        src/core/provider_callback_ingress.h
+        src/core/provider_callback_ingress.cpp
 )
 
 target_link_libraries(cambang_ide PRIVATE cambang_headers)
