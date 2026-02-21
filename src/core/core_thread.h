@@ -70,6 +70,9 @@ public:
 
   bool is_running() const { return running_.load(std::memory_order_acquire); }
 
+  // Debug helper: returns true if called from the core thread.
+  bool is_core_thread() const noexcept { return std::this_thread::get_id() == core_tid_; }
+
   // Post a unit of work to be executed on the core thread.
   // - thread-safe
   // - task executes serially on the core thread
@@ -100,6 +103,7 @@ private:
   std::condition_variable cv_;
 
   std::thread thread_;
+  std::thread::id core_tid_{};
   IHooks* hooks_ = nullptr; // non-owning; must outlive stop()
 
   // Work queue (protected by mu_).

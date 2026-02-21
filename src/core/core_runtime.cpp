@@ -2,6 +2,8 @@
 
 #include "core/core_runtime.h"
 
+#include <cassert>
+
 namespace cambang {
 
 CoreRuntime::CoreRuntime()
@@ -9,6 +11,7 @@ CoreRuntime::CoreRuntime()
       dispatcher_(),
       ingress_(&core_thread_, [this](CoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
+        assert(core_thread_.is_core_thread());
         dispatcher_.dispatch(std::move(cmd));
       }) {}
 

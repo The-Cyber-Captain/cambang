@@ -1,6 +1,12 @@
 ﻿#include "provider/stub/stub_camera_provider.h"
 
+#include <cstdint>
+
 namespace cambang {
+
+namespace {
+static const std::uint8_t kTestBuffer[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+} // namespace
 
 const char* StubCameraProvider::provider_name() const {
   return "StubCameraProvider";
@@ -8,6 +14,14 @@ const char* StubCameraProvider::provider_name() const {
 
 bool StubCameraProvider::is_known_hardware_id(const std::string& hardware_id) const {
   return hardware_id == kStubHardwareId;
+}
+
+void StubCameraProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
+  auto* self = static_cast<StubCameraProvider*>(user);
+  if (!self) {
+    return;
+  }
+  self->frames_released_.fetch_add(1, std::memory_order_relaxed);
 }
 
 ProviderResult StubCameraProvider::initialize(IProviderCallbacks* callbacks) {
@@ -159,6 +173,29 @@ ProviderResult StubCameraProvider::start_stream(uint64_t stream_id) {
 
   st_it->second.started = true;
   callbacks_->on_stream_started(stream_id);
+
+// Emit exactly one test frame to prove ownership + release-on-drop.
+frames_emitted_.fetch_add(1, std::memory_order_relaxed);
+
+FrameView fv{};
+fv.device_instance_id = st_it->second.req.device_instance_id;
+fv.stream_id = stream_id;
+fv.capture_id = 0;
+
+fv.width = st_it->second.req.width;
+fv.height = st_it->second.req.height;
+fv.format_fourcc = st_it->second.req.format_fourcc;
+
+fv.timestamp_ns = 0;
+
+fv.data = kTestBuffer;
+fv.size_bytes = sizeof(kTestBuffer);
+fv.stride_bytes = 0;
+
+fv.release = &StubCameraProvider::release_test_frame;
+fv.release_user = this;
+
+callbacks_->on_frame(fv);
   return ProviderResult::success();
 }
 

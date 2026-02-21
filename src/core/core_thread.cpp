@@ -56,6 +56,8 @@ void CoreThread::stop() {
     thread_.join();
   }
 
+  core_tid_ = std::thread::id{};
+
   running_.store(false, std::memory_order_release);
 }
 
@@ -117,6 +119,7 @@ void CoreThread::drain_tasks_locked(std::deque<Task>& local) {
 }
 
 void CoreThread::thread_main() {
+  core_tid_ = std::this_thread::get_id();
   // From this point onward, execution is exclusively on the core thread.
   // No other thread may mutate core state.
 

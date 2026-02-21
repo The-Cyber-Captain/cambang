@@ -27,6 +27,9 @@ public:
 
   bool is_running() const { return core_thread_.is_running(); }
 
+  // Post work onto the core thread.
+  void post(CoreThread::Task task) { core_thread_.post(std::move(task)); }
+
   // Dispatcher accounting (core-thread-only source of truth).
   //
   // NOTE: This returns a snapshot copy. Call only when you can guarantee

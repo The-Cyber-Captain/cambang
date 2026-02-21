@@ -62,3 +62,10 @@ add_library(cambang_ide STATIC
 )
 
 target_link_libraries(cambang_ide PRIVATE cambang_headers)
+
+# Smoke test executable (IDE-only). Proves frame lifecycle end-to-end.
+add_executable(cambang_core_spine_smoke
+    ide/core_spine_smoke.cpp
+)
+
+target_link_libraries(cambang_core_spine_smoke PRIVATE cambang_ide cambang_headers)
