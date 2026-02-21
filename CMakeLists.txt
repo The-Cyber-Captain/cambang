@@ -53,6 +53,10 @@ add_library(cambang_ide STATIC
         src/core/core_thread.h
         src/core/core_thread.cpp
         src/core/core_mailbox.h
+        src/core/core_dispatcher.h
+        src/core/core_dispatcher.cpp
+        src/core/core_runtime.h
+        src/core/core_runtime.cpp
         src/core/provider_callback_ingress.h
         src/core/provider_callback_ingress.cpp
 )

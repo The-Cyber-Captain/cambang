@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <cstdint>
+#include <functional>
 
 #include "core/core_mailbox.h"
 #include "core/core_thread.h"
@@ -17,7 +18,9 @@ namespace cambang {
     // - No business logic exists here; this is a transport adapter only.
     class ProviderCallbackIngress final : public IProviderCallbacks {
     public:
-        ProviderCallbackIngress(CoreThread* core_thread);
+        // sink is invoked ONLY on the core thread.
+        // It is responsible for consuming the CoreCommand (e.g., dispatching).
+        ProviderCallbackIngress(CoreThread* core_thread, std::function<void(CoreCommand&&)> sink);
         ~ProviderCallbackIngress() override = default;
 
         ProviderCallbackIngress(const ProviderCallbackIngress&) = delete;
@@ -48,6 +51,7 @@ namespace cambang {
         void post_command(CoreCommand cmd);
 
         CoreThread* core_thread_ = nullptr; // non-owning
+        std::function<void(CoreCommand&&)> sink_;
     };
 
 } // namespace cambang

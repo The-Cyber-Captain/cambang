@@ -4,8 +4,9 @@
 
 namespace cambang {
 
-ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread)
-    : core_thread_(core_thread) {}
+ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
+                                                 std::function<void(CoreCommand&&)> sink)
+    : core_thread_(core_thread), sink_(std::move(sink)) {}
 
 void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   // Transport only: package command into a posted task.
@@ -15,10 +16,22 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
     return;
   }
 
-  core_thread_->post([c = std::move(cmd)]() mutable {
-    // No dispatch here yet. The next layer will pop/visit commands on core thread.
-    // For now, this preserves the deterministic ingress path.
-    (void)c;
+  // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
+  // and avoids coupling to any specific dispatcher type.
+  core_thread_->post([c = std::move(cmd), sink = sink_]() mutable {
+    if (sink) {
+      sink(std::move(c));
+      return;
+    }
+
+    // Defensive fallback (should not be used in normal wiring):
+    // Ensure release-on-drop semantics are upheld even if no sink is bound.
+    if (c.type == CoreCommandType::PROVIDER_FRAME) {
+      auto& p = std::get<CmdProviderFrame>(c.payload);
+      p.frame.release_now();
+      p.frame.release = nullptr;
+      p.frame.release_user = nullptr;
+    }
   });
 }
 
