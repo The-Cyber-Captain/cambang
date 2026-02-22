@@ -2,9 +2,11 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 
 #include "core/core_dispatcher.h"
 #include "core/core_publisher_buffer.h"
+#include "core/core_runtime_state.h"
 #include "core/core_snapshot.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
@@ -39,9 +41,17 @@ public:
 
   bool is_running() const { return core_thread_.is_running(); }
 
+  CoreRuntimeState state_copy() const noexcept {
+    return state_.load(std::memory_order_acquire);
+  }
+
   // Post work onto the core thread.
   // Best-effort; drops on overflow (accounted in CoreThread::stats_copy()).
-  void post(CoreThread::Task task) { core_thread_.post(std::move(task)); }
+  void post(CoreThread::Task task);
+
+  // Best-effort post with explicit result.
+  // Only LIVE accepts work; otherwise returns Closed (accounted).
+  CoreThread::PostResult try_post(CoreThread::Task task);
 
   // Request snapshot publication.
   //
@@ -72,18 +82,33 @@ public:
 
 private:
   // CoreThread::IHooks
-  void on_core_start() override {}
-  void on_core_timer_tick() override {}
-  void on_core_stop() override {}
+  void on_core_start() override;
+  void on_core_timer_tick() override;
+  void on_core_stop() override;
+
+  // Core-thread-only enqueue helpers.
+  void enqueue_provider_fact(CoreCommand&& cmd);
+  void enqueue_request(CoreThread::Task task);
+  void request_publish_from_core_unchecked();
 
 private:
   CoreThread core_thread_;
   CoreStreamRegistry streams_;
   std::uint64_t snapshot_seq_ = 0;
 
+  std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
+
   CorePublisherBuffer publisher_;
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;
+
+  // Core pump queues (core-thread-only).
+  std::deque<CoreCommand> provider_facts_;
+  std::deque<CoreThread::Task> requests_;
+
+  // Shutdown orchestration (core-thread-only).
+  bool shutdown_requested_ = false;
+  bool shutdown_final_publish_requested_ = false;
 
   // Publish coalescing flag (any-thread).
   std::atomic<bool> publish_pending_{false};

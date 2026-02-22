@@ -43,9 +43,28 @@ static CoreSnapshot get_last_snapshot(CoreRuntime& rt) {
 
 
 int main() {
+  // 1) Lifecycle gating before start(): publish requests must be rejected (Closed).
+  {
+    CoreRuntime pre;
+    pre.request_publish();
+    const auto st = pre.stats_copy();
+    if (st.publish_requests_dropped_closed != 1) {
+      std::cerr << "Expected publish drop before start (closed). got="
+                << st.publish_requests_dropped_closed << "\n";
+      return 1;
+    }
+  }
+
   CoreRuntime rt;
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start\n";
+    return 1;
+  }
+
+  // Idempotent start(): must succeed and keep running.
+  if (!rt.start() || rt.state_copy() == CoreRuntimeState::STOPPED) {
+    std::cerr << "Idempotent start failed\n";
+    rt.stop();
     return 1;
   }
 
@@ -189,6 +208,141 @@ int main() {
   }
 
   rt.stop();
-  std::cout << "OK: core spine smoke passed\n";
+
+  // Idempotent stop(): must not crash/hang.
+  rt.stop();
+
+  // 2) After stop(): provider callbacks must be rejected and frames released on drop.
+  // Re-start a new runtime for the provider to use.
+  CoreRuntime rt2;
+  if (!rt2.start()) {
+    std::cerr << "CoreRuntime rt2 failed to start\n";
+    return 1;
+  }
+
+  StubCameraProvider prov2;
+  if (!prov2.initialize(rt2.provider_callbacks()).ok()) {
+    std::cerr << "Stub provider2 initialize failed\n";
+    rt2.stop();
+    return 1;
+  }
+
+  std::vector<CameraEndpoint> eps2;
+  if (!prov2.enumerate_endpoints(eps2).ok() || eps2.empty()) {
+    std::cerr << "enumerate_endpoints (prov2) failed\n";
+    rt2.stop();
+    return 1;
+  }
+
+  if (!prov2.open_device(eps2[0].hardware_id, device_instance_id, root_id).ok()) {
+    std::cerr << "open_device (prov2) failed\n";
+    rt2.stop();
+    return 1;
+  }
+
+  if (!prov2.create_stream(req).ok()) {
+    std::cerr << "create_stream (prov2) failed\n";
+    rt2.stop();
+    return 1;
+  }
+
+  // Stop runtime before starting the stream. The provider will emit one frame on start_stream().
+  rt2.stop();
+
+  // Start stream after runtime is STOPPED. Ingress must treat as Closed and release the frame.
+  (void)prov2.start_stream(stream_id);
+
+  bool released = false;
+  for (int i = 0; i < 200; ++i) {
+    if (prov2.frames_released() >= 1) {
+      released = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!released) {
+    std::cerr << "Timeout waiting for frame release after runtime stop\n";
+    return 1;
+  }
+
+  
+  // 3) Provider facts during TEARING_DOWN: best-effort drain until core thread closes.
+  {
+    CoreRuntime rt3;
+    if (!rt3.start()) {
+      std::cerr << "CoreRuntime rt3 failed to start\n";
+      return 1;
+    }
+
+    StubCameraProvider prov3;
+    if (!prov3.initialize(rt3.provider_callbacks()).ok()) {
+      std::cerr << "Stub provider3 initialize failed\n";
+      rt3.stop();
+      return 1;
+    }
+
+    std::vector<CameraEndpoint> eps3;
+    if (!prov3.enumerate_endpoints(eps3).ok() || eps3.empty()) {
+      std::cerr << "enumerate_endpoints (prov3) failed\n";
+      rt3.stop();
+      return 1;
+    }
+
+    if (!prov3.open_device(eps3[0].hardware_id, device_instance_id, root_id).ok()) {
+      std::cerr << "open_device (prov3) failed\n";
+      rt3.stop();
+      return 1;
+    }
+
+    if (!prov3.create_stream(req).ok()) {
+      std::cerr << "create_stream (prov3) failed\n";
+      rt3.stop();
+      return 1;
+    }
+
+    // Queue some bounded work so TEARING_DOWN has a deterministic window where the core loop is alive.
+    for (int i = 0; i < 64; ++i) {
+      rt3.post([]() {
+        const auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::microseconds(500)) {
+        }
+      });
+    }
+
+    std::thread stopper([&rt3]() { rt3.stop(); });
+
+    // Emit a provider frame while teardown is in flight (best-effort).
+    // We attempt after stop() begins; admission is ultimately decided by CoreThread::try_post().
+    (void)prov3.start_stream(stream_id);
+
+    stopper.join();
+
+    // The emitted frame must have been released exactly once (either by dispatcher or by ingress on failure).
+    if (prov3.frames_emitted() < 1 || prov3.frames_released() < 1) {
+      std::cerr << "Expected provider frame release during teardown. emitted="
+                << prov3.frames_emitted() << " released=" << prov3.frames_released() << "\n";
+      return 1;
+    }
+
+    // Best-effort drain: if the frame was accepted before closure it will be dispatched and released on-core.
+    // If the core loop closed before the callback could be enqueued, ingress must still release-on-drop.
+    const auto ds = rt3.dispatcher_stats();
+    if (ds.frames_received == 1) {
+      if (ds.frames_released != 1) {
+        std::cerr << "Dispatcher received frame but did not release it. released=" << ds.frames_released << "\n";
+        return 1;
+      }
+    } else {
+      // Drain did not occur (likely Closed during teardown). The provider must still observe the release.
+      // This validates resource correctness under late callbacks.
+      if (prov3.frames_released() != 1) {
+        std::cerr << "Expected ingress release-on-drop during teardown\n";
+        return 1;
+      }
+    }
+
+  }
+
+std::cout << "OK: core spine smoke passed\n";
   return 0;
 }

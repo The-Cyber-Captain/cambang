@@ -27,6 +27,7 @@ bool CoreThread::start(IHooks* hooks) {
     std::lock_guard<std::mutex> lock(mu_);
     hooks_ = hooks;
     stop_requested_ = false;
+    stop_when_idle_ = false;
     timer_tick_requested_ = false;
     has_deadline_ = false;
     deadline_ns_ = 0;
@@ -48,25 +49,50 @@ void CoreThread::stop() {
   // Guarantees:
   // - on_core_stop() runs on the core thread before join completes.
   // - No tasks execute after stop() returns.
+  request_stop();
+  join();
+}
+
+void CoreThread::request_stop() noexcept {
   if (!running_.load(std::memory_order_acquire)) {
     return;
   }
-
   {
     std::lock_guard<std::mutex> lock(mu_);
     stop_requested_ = true;
   }
-
   cv_.notify_one();
+}
 
+void CoreThread::request_stop_from_core() noexcept {
+  // Called on the core thread: still take the mutex to keep stop_requested_ coherent
+  // with try_post()'s admission check.
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_requested_ = true;
+  }
+  cv_.notify_one();
+}
+
+void CoreThread::request_stop_when_idle_from_core() noexcept {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_when_idle_ = true;
+  }
+  cv_.notify_one();
+}
+
+void CoreThread::join() {
+  if (!running_.load(std::memory_order_acquire)) {
+    return;
+  }
   if (thread_.joinable()) {
     thread_.join();
   }
-
   core_tid_ = std::thread::id{};
-
   running_.store(false, std::memory_order_release);
 }
+
 
 void CoreThread::post(Task task) {
   (void)try_post(std::move(task));
@@ -184,7 +210,7 @@ void CoreThread::thread_main() {
       const uint64_t deadline_ns = deadline_ns_;
 
       auto predicate = [&]() {
-        return stop_requested_ || !tasks_.empty() || timer_tick_requested_;
+        return stop_requested_ || stop_when_idle_ || !tasks_.empty() || timer_tick_requested_;
       };
 
       if (!has_deadline) {
@@ -203,6 +229,12 @@ void CoreThread::thread_main() {
         if (std::chrono::steady_clock::now() >= wake_time) {
           do_timer_tick = true;
         }
+      }
+
+      // If a stop-when-idle request is pending and there is no work to drain,
+      // convert it into a definitive stop. This closes task admission deterministically.
+      if (stop_when_idle_ && tasks_.empty() && !timer_tick_requested_) {
+        stop_requested_ = true;
       }
 
       stopping = stop_requested_;

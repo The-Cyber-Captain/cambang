@@ -88,6 +88,23 @@ public:
   // - guarantees the core thread has exited before returning
   void stop();
 
+  // Request the core loop to stop (asynchronously) without joining.
+  // Closes task admission once requested.
+  void request_stop() noexcept;
+
+  // Request the core loop to stop. Must be called ONLY from the core thread.
+  // This is used by CoreRuntime to keep task admission open during TEARING_DOWN
+  // until the core thread reaches a deterministic stop point.
+  void request_stop_from_core() noexcept;
+
+  // Request the core loop to stop once it becomes idle (no pending tasks).
+  // Must be called ONLY from the core thread.
+  // This keeps task admission open while draining provider facts best-effort.
+  void request_stop_when_idle_from_core() noexcept;
+
+  // Join the core thread after a stop has been requested.
+  void join();
+
   bool is_running() const { return running_.load(std::memory_order_acquire); }
 
   // Debug helper: returns true if called from the core thread.
@@ -105,6 +122,14 @@ public:
   // - thread-safe
   // - does not block
   PostResult try_post(Task task);
+
+  // Accounting-only helper for external lifecycle gating layers.
+  // Increments the Closed drop counter and returns PostResult::Closed.
+  // - thread-safe
+  PostResult reject_closed() noexcept {
+    tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+    return PostResult::Closed;
+  }
 
   Stats stats_copy() const noexcept;
 
@@ -148,6 +173,7 @@ private:
   // Stop / running flags
   std::atomic<bool> running_{false};
   bool stop_requested_ = false;
+  bool stop_when_idle_ = false;
 
   // Timer tick control (protected by mu_).
   bool timer_tick_requested_ = false;

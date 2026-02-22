@@ -40,7 +40,8 @@ public:
 
   // sink is invoked ONLY on the core thread.
   // It is responsible for consuming the CoreCommand (e.g., dispatching).
-  ProviderCallbackIngress(CoreThread* core_thread, std::function<void(CoreCommand&&)> sink);
+  ProviderCallbackIngress(CoreThread* core_thread,
+                          std::function<void(CoreCommand&&)> sink);
   ~ProviderCallbackIngress() override = default;
 
   ProviderCallbackIngress(const ProviderCallbackIngress&) = delete;
