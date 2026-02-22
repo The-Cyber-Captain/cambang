@@ -18,6 +18,30 @@ static CoreDispatchStats get_dispatch_stats(CoreRuntime& rt) {
   return fut.get();
 }
 
+static bool get_stream_record(CoreRuntime& rt, uint64_t stream_id, CoreStreamRegistry::StreamRecord& out) {
+  std::promise<bool> p;
+  auto fut = p.get_future();
+  rt.post([&rt, stream_id, &out, &p]() mutable {
+    const auto* rec = rt.stream_record(stream_id);
+    if (!rec) {
+      p.set_value(false);
+      return;
+    }
+    out = *rec;
+    p.set_value(true);
+  });
+  return fut.get();
+}
+
+static CorePublisherBuffer::Stats get_publish_stats(CoreRuntime& rt) {
+  return rt.publisher().stats_copy();
+}
+
+static CoreSnapshot get_last_snapshot(CoreRuntime& rt) {
+  return rt.publisher().snapshot_copy();
+}
+
+
 int main() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -98,6 +122,68 @@ int main() {
   if (stats.frames_received != 1 || stats.frames_released != 1) {
     std::cerr << "Dispatcher counters mismatch. received=" << stats.frames_received
               << " released=" << stats.frames_released << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, stream_id, rec)) {
+    std::cerr << "Stream registry missing stream_id=" << stream_id << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (!rec.created || !rec.started || rec.frames_received != 1 || rec.frames_released != 1) {
+    std::cerr << "Stream registry mismatch. created=" << rec.created
+              << " started=" << rec.started
+              << " frames_received=" << rec.frames_received
+              << " frames_released=" << rec.frames_released << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Publish a snapshot and verify it contains the stream record.
+  rt.request_publish();
+
+  bool published = false;
+  for (int i = 0; i < 200; ++i) {
+    const auto ps = get_publish_stats(rt);
+    if (ps.publishes >= 1) {
+      published = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  if (!published) {
+    std::cerr << "Timeout waiting for snapshot publication\n";
+    rt.stop();
+    return 1;
+  }
+
+  const CoreSnapshot snap = get_last_snapshot(rt);
+  if (snap.seq == 0 || snap.streams.empty()) {
+    std::cerr << "Snapshot empty or missing seq\n";
+    rt.stop();
+    return 1;
+  }
+
+  bool found = false;
+  for (const auto& s : snap.streams) {
+    if (s.stream_id == stream_id) {
+      found = true;
+      if (!s.created || !s.started || s.frames_received != 1 || s.frames_released != 1) {
+        std::cerr << "Snapshot stream mismatch. created=" << s.created
+                  << " started=" << s.started
+                  << " frames_received=" << s.frames_received
+                  << " frames_released=" << s.frames_released << "\n";
+        rt.stop();
+        return 1;
+      }
+      break;
+    }
+  }
+  if (!found) {
+    std::cerr << "Snapshot missing stream_id=" << stream_id << "\n";
     rt.stop();
     return 1;
   }

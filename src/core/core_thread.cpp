@@ -1,4 +1,4 @@
-﻿#include "core/core_thread.h"
+#include "core/core_thread.h"
 
 #include <chrono>
 #include <utility>
@@ -30,7 +30,14 @@ bool CoreThread::start(IHooks* hooks) {
     timer_tick_requested_ = false;
     has_deadline_ = false;
     deadline_ns_ = 0;
+    tasks_.clear();
   }
+
+  // Reset accounting
+  tasks_enqueued_.store(0, std::memory_order_relaxed);
+  tasks_dropped_full_.store(0, std::memory_order_relaxed);
+  tasks_dropped_closed_.store(0, std::memory_order_relaxed);
+  tasks_dropped_allocfail_.store(0, std::memory_order_relaxed);
 
   thread_ = std::thread(&CoreThread::thread_main, this);
   return true;
@@ -62,18 +69,55 @@ void CoreThread::stop() {
 }
 
 void CoreThread::post(Task task) {
+  (void)try_post(std::move(task));
+}
+
+CoreThread::PostResult CoreThread::try_post(Task task) {
   // External ingress point.
   // All non-core threads must schedule work through this method.
   if (!task) {
-    return;
+    return PostResult::Enqueued; // nothing to do; treat as success
+  }
+
+  // Refuse new work if the core thread is not accepting tasks (teardown-in-flight).
+  if (!running_.load(std::memory_order_acquire)) {
+    tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+    return PostResult::Closed;
   }
 
   {
     std::lock_guard<std::mutex> lock(mu_);
-    tasks_.push_back(std::move(task));
+    if (stop_requested_) {
+      tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::Closed;
+    }
+
+    if (tasks_.size() >= kMaxPendingTasks) {
+      tasks_dropped_full_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::QueueFull;
+    }
+
+    try {
+      tasks_.push_back(std::move(task));
+    } catch (...) {
+      // Allocation failure or unexpected exception while enqueueing.
+      tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::AllocFail;
+    }
   }
 
+  tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
   cv_.notify_one();
+  return PostResult::Enqueued;
+}
+
+CoreThread::Stats CoreThread::stats_copy() const noexcept {
+  Stats s;
+  s.tasks_enqueued = tasks_enqueued_.load(std::memory_order_relaxed);
+  s.tasks_dropped_full = tasks_dropped_full_.load(std::memory_order_relaxed);
+  s.tasks_dropped_closed = tasks_dropped_closed_.load(std::memory_order_relaxed);
+  s.tasks_dropped_allocfail = tasks_dropped_allocfail_.load(std::memory_order_relaxed);
+  return s;
 }
 
 void CoreThread::request_timer_tick() {

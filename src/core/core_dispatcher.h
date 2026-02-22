@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "core/core_mailbox.h"
+#include "core/core_stream_registry.h"
 
 namespace cambang {
 
@@ -18,6 +19,8 @@ struct CoreDispatchStats final {
 
   uint64_t frames_received = 0;
   uint64_t frames_released = 0;
+
+  uint64_t frames_unknown_stream = 0;
 };
 
 // CoreDispatcher is the core-thread-only consumer of CoreCommand.
@@ -27,7 +30,8 @@ struct CoreDispatchStats final {
 // provider frames immediately (release-on-drop at the dispatch boundary).
 class CoreDispatcher final {
 public:
-  CoreDispatcher() = default;
+  explicit CoreDispatcher(CoreStreamRegistry* streams) : streams_(streams) {}
+
   ~CoreDispatcher() = default;
 
   CoreDispatcher(const CoreDispatcher&) = delete;
@@ -43,6 +47,7 @@ public:
   void reset_stats() noexcept { stats_ = {}; }
 
 private:
+  CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
   CoreDispatchStats stats_{};
 };
 

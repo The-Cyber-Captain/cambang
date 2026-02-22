@@ -1,4 +1,4 @@
-﻿#include "core/provider_callback_ingress.h"
+#include "core/provider_callback_ingress.h"
 
 #include <utility>
 
@@ -8,6 +8,22 @@ ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
                                                  std::function<void(CoreCommand&&)> sink)
     : core_thread_(core_thread), sink_(std::move(sink)) {}
 
+ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexcept {
+  Stats s;
+  s.commands_dropped_full = commands_dropped_full_.load(std::memory_order_relaxed);
+  s.commands_dropped_closed = commands_dropped_closed_.load(std::memory_order_relaxed);
+  s.commands_dropped_allocfail = commands_dropped_allocfail_.load(std::memory_order_relaxed);
+
+  s.frames_dropped_full = frames_dropped_full_.load(std::memory_order_relaxed);
+  s.frames_dropped_closed = frames_dropped_closed_.load(std::memory_order_relaxed);
+  s.frames_dropped_allocfail = frames_dropped_allocfail_.load(std::memory_order_relaxed);
+
+  s.frames_released_on_drop_full = frames_released_on_drop_full_.load(std::memory_order_relaxed);
+  s.frames_released_on_drop_closed = frames_released_on_drop_closed_.load(std::memory_order_relaxed);
+  s.frames_released_on_drop_allocfail = frames_released_on_drop_allocfail_.load(std::memory_order_relaxed);
+  return s;
+}
+
 void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
@@ -16,9 +32,20 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
     return;
   }
 
+  const CoreCommandType type = cmd.type;
+
+  // Preserve a copy of the frame for the failure-to-enqueue path. We must not rely on
+  // moved-from CoreCommand contents after constructing the posted lambda.
+  FrameView fail_frame;
+  bool has_fail_frame = false;
+  if (type == CoreCommandType::PROVIDER_FRAME) {
+    fail_frame = std::get<CmdProviderFrame>(cmd.payload).frame;
+    has_fail_frame = true;
+  }
+
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
-  core_thread_->post([c = std::move(cmd), sink = sink_]() mutable {
+  const CoreThread::PostResult r = core_thread_->try_post([c = std::move(cmd), sink = sink_]() mutable {
     if (sink) {
       sink(std::move(c));
       return;
@@ -33,6 +60,62 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
       p.frame.release_user = nullptr;
     }
   });
+
+  if (r == CoreThread::PostResult::Enqueued) {
+    return;
+  }
+
+  auto account_command_drop = [this](CoreThread::PostResult rr) {
+    switch (rr) {
+      case CoreThread::PostResult::QueueFull:
+        commands_dropped_full_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Closed:
+        commands_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::AllocFail:
+        commands_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Enqueued:
+        break;
+    }
+  };
+
+  auto account_frame_drop_and_release = [this](CoreThread::PostResult rr, FrameView& frame) {
+    switch (rr) {
+      case CoreThread::PostResult::QueueFull:
+        frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
+        frame.release_now();
+        frame.release = nullptr;
+        frame.release_user = nullptr;
+        frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Closed:
+        frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+        frame.release_now();
+        frame.release = nullptr;
+        frame.release_user = nullptr;
+        frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::AllocFail:
+        frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        frame.release_now();
+        frame.release = nullptr;
+        frame.release_user = nullptr;
+        frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      case CoreThread::PostResult::Enqueued:
+        break;
+    }
+  };
+
+  // Failure path: command never entered the core thread.
+  // Best-effort enqueue; otherwise drop-with-accounting.
+  account_command_drop(r);
+
+  if (has_fail_frame) {
+    account_frame_drop_and_release(r, fail_frame);
+  }
 }
 
 void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {

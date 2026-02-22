@@ -1,9 +1,10 @@
-﻿// src/core/core_thread.h
+// src/core/core_thread.h
 #pragma once
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstddef>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -17,7 +18,7 @@ namespace cambang {
 // - Exactly one dedicated CamBANG core thread owns all mutable core state.
 // - Core logic MUST execute only on the core thread.
 // - All external threads (providers, Godot, etc.) must marshal work into the core
-//   via post() (and never touch core state directly).
+//   via post()/try_post() (and never touch core state directly).
 // - All tasks are executed serially (no concurrent core execution).
 //
 // Determinism invariants:
@@ -29,16 +30,35 @@ namespace cambang {
 // - The core loop blocks on a condition_variable.
 // - A timed wake mechanism exists to support warm/retention scheduling and periodic sweeps.
 // - Scheduling semantics are owned by core; this class only provides wake primitives.
+//
+// Mailbox hardening (Build slice C):
+// - The posted-task queue is bounded.
+// - try_post() is best-effort; it returns false if the queue is full.
+// - post() is best-effort and drops on overflow (accounted).
 class CoreThread final {
 public:
   // NOTE: std::function may allocate; acceptable for scaffolding.
   // If/when this becomes a hot path, replace with a fixed-capacity mailbox payload.
   using Task = std::function<void()>;
 
+  enum class PostResult : uint8_t {
+    Enqueued,
+    QueueFull,
+    Closed,
+    AllocFail,
+  };
+
+  struct Stats {
+    uint64_t tasks_enqueued = 0;
+    uint64_t tasks_dropped_full = 0;
+    uint64_t tasks_dropped_closed = 0;
+    uint64_t tasks_dropped_allocfail = 0;
+  };
+
   // Optional core-thread hooks for periodic work (timer tick) and lifecycle.
   // All hook methods are invoked ONLY on the core thread.
   class IHooks {
-public:
+  public:
     virtual ~IHooks() = default;
 
     // Called once on the core thread after the thread starts, before first loop iteration.
@@ -73,10 +93,20 @@ public:
   // Debug helper: returns true if called from the core thread.
   bool is_core_thread() const noexcept { return std::this_thread::get_id() == core_tid_; }
 
+  // Bounded mailbox capacity (number of pending tasks).
+  static constexpr size_t kMaxPendingTasks = 1024;
+
   // Post a unit of work to be executed on the core thread.
   // - thread-safe
-  // - task executes serially on the core thread
+  // - best-effort: drops on overflow (accounted)
   void post(Task task);
+
+  // Best-effort post; returns a reason on failure.
+  // - thread-safe
+  // - does not block
+  PostResult try_post(Task task);
+
+  Stats stats_copy() const noexcept;
 
   // Request an immediate timer tick (wakes the core thread promptly).
   // - thread-safe
@@ -108,6 +138,12 @@ private:
 
   // Work queue (protected by mu_).
   std::deque<Task> tasks_;
+
+  // Post accounting
+  std::atomic<uint64_t> tasks_enqueued_{0};
+  std::atomic<uint64_t> tasks_dropped_full_{0};
+  std::atomic<uint64_t> tasks_dropped_closed_{0};
+  std::atomic<uint64_t> tasks_dropped_allocfail_{0};
 
   // Stop / running flags
   std::atomic<bool> running_{false};
