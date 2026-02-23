@@ -18,6 +18,24 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
   stats_.commands_total++;
 
   switch (cmd.type) {
+  case CoreCommandType::PROVIDER_DEVICE_OPENED: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
+    if (devices_) {
+      devices_->on_device_opened(p.device_instance_id);
+    }
+    break;
+  }
+
+  case CoreCommandType::PROVIDER_DEVICE_CLOSED: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderDeviceClosed>(cmd.payload);
+    if (devices_) {
+      devices_->on_device_closed(p.device_instance_id);
+    }
+    break;
+  }
+
   case CoreCommandType::PROVIDER_STREAM_CREATED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
@@ -59,6 +77,15 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     const auto& p = std::get<CmdProviderStreamError>(cmd.payload);
     if (streams_) {
       streams_->on_stream_error(p.stream_id, p.error_code);
+    }
+    break;
+  }
+
+  case CoreCommandType::PROVIDER_DEVICE_ERROR: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderDeviceError>(cmd.payload);
+    if (devices_) {
+      devices_->on_device_error(p.device_instance_id, p.error_code);
     }
     break;
   }

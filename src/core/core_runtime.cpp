@@ -10,10 +10,11 @@ namespace cambang {
 
 CoreRuntime::CoreRuntime()
     : core_thread_(),
+      devices_(),
       streams_(),
       snapshot_seq_(0),
       publisher_(),
-      dispatcher_(&streams_),
+      dispatcher_(&streams_, &devices_),
       ingress_(&core_thread_, [this](CoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
         // Provider callbacks are "facts"; we enqueue them and process them before requests
@@ -61,7 +62,11 @@ bool CoreRuntime::start() {
   provider_facts_.clear();
   requests_.clear();
   shutdown_requested_ = false;
+  shutdown_phase_ = ShutdownPhase::NONE;
+  shutdown_phase_code_.store(0, std::memory_order_relaxed);
+  shutdown_phase_changes_.store(0, std::memory_order_relaxed);
   shutdown_final_publish_requested_ = false;
+  shutdown_wait_ticks_ = 0;
 
   const bool ok = core_thread_.start(this);
   if (!ok) {
@@ -154,21 +159,173 @@ void CoreRuntime::on_core_timer_tick() {
     publisher_.publish(std::move(snap));
   }
 
-  // 5) Shutdown branch: request a final publish, then stop only once fully drained.
+  // 5) Shutdown choreography (§10).
   if (shutdown_requested_) {
-    if (!shutdown_final_publish_requested_) {
-      // Final snapshot publication before exit.
-      request_publish_from_core_unchecked();
-      shutdown_final_publish_requested_ = true;
-      // Ensure another tick runs to perform the publish if it couldn't run in this tick.
-      core_thread_.request_timer_tick();
-      return;
+    auto set_phase = [this](ShutdownPhase p) {
+      if (shutdown_phase_ != p) {
+        shutdown_phase_ = p;
+        shutdown_phase_code_.store(static_cast<uint8_t>(p), std::memory_order_relaxed);
+        shutdown_phase_changes_.fetch_add(1, std::memory_order_relaxed);
+      }
+    };
+
+    if (shutdown_phase_ == ShutdownPhase::NONE) {
+      set_phase(ShutdownPhase::STOP_STREAMS);
+      shutdown_wait_ticks_ = 0;
     }
 
-    const bool publish_still_pending = publish_pending_.load(std::memory_order_acquire);
-    if (provider_facts_.empty() && requests_.empty() && !publish_still_pending) {
-      // Deterministic stop point reached: no pending facts, no pending requests, final publish done.
-      core_thread_.request_stop_from_core();
+    constexpr uint32_t kMaxShutdownWaitTicks = 200; // deterministic bound; avoids teardown hangs.
+
+    ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+
+    auto any_stream_started = [this]() -> bool {
+      for (const auto& kv : streams_.all()) {
+        if (kv.second.started) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    auto any_streams_exist = [this]() -> bool {
+      return !streams_.all().empty();
+    };
+
+    auto any_device_open = [this]() -> bool {
+      for (const auto& kv : devices_.all()) {
+        if (kv.second.open) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    switch (shutdown_phase_) {
+      case ShutdownPhase::STOP_STREAMS: {
+        // Step 3: stop streams (deterministic order).
+        if (prov) {
+          for (const auto& kv : streams_.all()) {
+            const auto& rec = kv.second;
+            if (rec.started) {
+              (void)prov->stop_stream(rec.stream_id);
+            }
+          }
+        }
+        set_phase(ShutdownPhase::AWAIT_STREAMS_STOPPED);
+        shutdown_wait_ticks_ = 0;
+        core_thread_.request_timer_tick();
+        return;
+      }
+
+      case ShutdownPhase::AWAIT_STREAMS_STOPPED: {
+        // Best-effort drain: wait for provider facts to reflect stopped streams.
+        if (any_stream_started() && shutdown_wait_ticks_++ < kMaxShutdownWaitTicks) {
+          core_thread_.request_timer_tick();
+          return;
+        }
+        set_phase(ShutdownPhase::DESTROY_STREAMS);
+        shutdown_wait_ticks_ = 0;
+        // fallthrough
+      }
+
+      case ShutdownPhase::DESTROY_STREAMS: {
+        // Step 4 (part): tear down stream instances (destroy) before closing devices.
+        if (prov) {
+          for (const auto& kv : streams_.all()) {
+            const auto& rec = kv.second;
+            if (rec.created) {
+              (void)prov->destroy_stream(rec.stream_id);
+            }
+          }
+        }
+        set_phase(ShutdownPhase::AWAIT_STREAMS_DESTROYED);
+        shutdown_wait_ticks_ = 0;
+        core_thread_.request_timer_tick();
+        return;
+      }
+
+      case ShutdownPhase::AWAIT_STREAMS_DESTROYED: {
+        // Best-effort: wait until provider confirms destruction.
+        if (any_streams_exist() && shutdown_wait_ticks_++ < kMaxShutdownWaitTicks) {
+          core_thread_.request_timer_tick();
+          return;
+        }
+        set_phase(ShutdownPhase::CLOSE_DEVICES);
+        shutdown_wait_ticks_ = 0;
+        // fallthrough
+      }
+
+      case ShutdownPhase::CLOSE_DEVICES: {
+        if (prov) {
+          for (const auto& kv : devices_.all()) {
+            const auto& rec = kv.second;
+            if (rec.open) {
+              (void)prov->close_device(rec.device_instance_id);
+            }
+          }
+        }
+        set_phase(ShutdownPhase::AWAIT_DEVICES_CLOSED);
+        shutdown_wait_ticks_ = 0;
+        core_thread_.request_timer_tick();
+        return;
+      }
+
+      case ShutdownPhase::AWAIT_DEVICES_CLOSED: {
+        if (any_device_open() && shutdown_wait_ticks_++ < kMaxShutdownWaitTicks) {
+          core_thread_.request_timer_tick();
+          return;
+        }
+        set_phase(ShutdownPhase::PROVIDER_SHUTDOWN);
+        shutdown_wait_ticks_ = 0;
+        // fallthrough
+      }
+
+      case ShutdownPhase::PROVIDER_SHUTDOWN: {
+        // Step 5: request provider shutdown (idempotent).
+        if (prov) {
+          (void)prov->shutdown();
+        }
+        set_phase(ShutdownPhase::FINAL_RETENTION_SWEEP);
+        shutdown_wait_ticks_ = 0;
+        core_thread_.request_timer_tick();
+        return;
+      }
+
+      case ShutdownPhase::FINAL_RETENTION_SWEEP: {
+        // Step 6: final retention sweep (not yet implemented in this slice).
+        set_phase(ShutdownPhase::FINAL_PUBLISH);
+        shutdown_wait_ticks_ = 0;
+        // fallthrough
+      }
+
+      case ShutdownPhase::FINAL_PUBLISH: {
+        // Step 7: final snapshot publication.
+        if (!shutdown_final_publish_requested_) {
+          request_publish_from_core_unchecked();
+          shutdown_final_publish_requested_ = true;
+          core_thread_.request_timer_tick();
+          return;
+        }
+
+        set_phase(ShutdownPhase::EXIT);
+        shutdown_wait_ticks_ = 0;
+        // fallthrough
+      }
+
+      case ShutdownPhase::EXIT: {
+        // Step 8: exit when fully drained and publish completed.
+        const bool publish_still_pending = publish_pending_.load(std::memory_order_acquire);
+        if ((provider_facts_.empty() && requests_.empty() && !publish_still_pending) ||
+            (shutdown_wait_ticks_++ >= kMaxShutdownWaitTicks)) {
+          core_thread_.request_stop_from_core();
+        } else {
+          core_thread_.request_timer_tick();
+        }
+        return;
+      }
+
+      default:
+        break;
     }
   }
 }
@@ -202,6 +359,13 @@ CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {
   s.publish_requests_dropped_closed = publish_requests_dropped_closed_.load(std::memory_order_relaxed);
   s.publish_requests_dropped_allocfail = publish_requests_dropped_allocfail_.load(std::memory_order_relaxed);
   return s;
+}
+
+CoreRuntime::ShutdownDiag CoreRuntime::shutdown_diag_copy() const noexcept {
+  ShutdownDiag d;
+  d.phase_code = shutdown_phase_code_.load(std::memory_order_relaxed);
+  d.phase_changes = shutdown_phase_changes_.load(std::memory_order_relaxed);
+  return d;
 }
 
 void CoreRuntime::request_publish() {

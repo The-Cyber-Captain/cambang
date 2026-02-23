@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "core/core_mailbox.h"
+#include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
 
 namespace cambang {
@@ -30,7 +31,8 @@ struct CoreDispatchStats final {
 // provider frames immediately (release-on-drop at the dispatch boundary).
 class CoreDispatcher final {
 public:
-  explicit CoreDispatcher(CoreStreamRegistry* streams) : streams_(streams) {}
+  explicit CoreDispatcher(CoreStreamRegistry* streams, CoreDeviceRegistry* devices)
+      : streams_(streams), devices_(devices) {}
 
   ~CoreDispatcher() = default;
 
@@ -48,6 +50,7 @@ public:
 
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
+  CoreDeviceRegistry* devices_ = nullptr; // non-owning; core-thread-only
   CoreDispatchStats stats_{};
 };
 

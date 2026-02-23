@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <string>
 
@@ -18,6 +19,13 @@ public:
 // Test instrumentation (thread-safe).
 uint64_t frames_emitted() const noexcept { return frames_emitted_.load(std::memory_order_relaxed); }
 uint64_t frames_released() const noexcept { return frames_released_.load(std::memory_order_relaxed); }
+
+  // Test-only helpers (not part of provider contract).
+  void emit_test_frames(uint64_t stream_id, uint32_t count);
+  void emit_fact_stream_stopped(uint64_t stream_id, ProviderError error_or_ok);
+
+  // Introspection for smoke / scaffolding.
+  bool shutting_down() const noexcept { return shutting_down_; }
 
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;

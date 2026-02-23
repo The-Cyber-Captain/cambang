@@ -5,12 +5,15 @@
 #include <deque>
 
 #include "core/core_dispatcher.h"
+#include "core/core_device_registry.h"
 #include "core/core_publisher_buffer.h"
 #include "core/core_runtime_state.h"
 #include "core/core_snapshot.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
 #include "core/provider_callback_ingress.h"
+
+#include "provider/icamera_provider.h"
 
 namespace cambang {
 
@@ -53,6 +56,13 @@ public:
   // Only LIVE accepts work; otherwise returns Closed (accounted).
   CoreThread::PostResult try_post(CoreThread::Task task);
 
+  // TEMP (IDE smoke only): post directly onto the CoreThread queue, bypassing
+  // CoreRuntime request gating and the requests_ pump.
+  // Used to deterministically stall the core thread to force QueueFull in ingress tests.
+  CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
+    return core_thread_.try_post(std::move(task));
+  }
+
   // Request snapshot publication.
   //
   // Safe to call from any thread; publication work is executed on the core thread.
@@ -60,6 +70,16 @@ public:
   void request_publish();
 
   Stats stats_copy() const noexcept;
+
+  // Provider ingress accounting (copy-out; safe from any thread).
+  ProviderCallbackIngress::Stats ingress_stats_copy() const noexcept { return ingress_.stats_copy(); }
+
+  struct ShutdownDiag {
+    uint8_t phase_code = 0;
+    uint64_t phase_changes = 0;
+  };
+
+  ShutdownDiag shutdown_diag_copy() const noexcept;
 
   // Publisher access (primarily for scaffolding tests).
   // Publication itself always occurs on the core thread.
@@ -80,6 +100,13 @@ public:
   // Provider callback ingress (transport boundary).
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 
+  // Optional: attach a provider instance so CoreRuntime can perform deterministic
+  // shutdown choreography (stop streams, tear down devices, provider shutdown).
+  // Non-owning; caller must ensure the provider outlives CoreRuntime::stop().
+  void attach_provider(ICameraProvider* provider) noexcept {
+    provider_.store(provider, std::memory_order_release);
+  }
+
 private:
   // CoreThread::IHooks
   void on_core_start() override;
@@ -93,6 +120,7 @@ private:
 
 private:
   CoreThread core_thread_;
+  CoreDeviceRegistry devices_;
   CoreStreamRegistry streams_;
   std::uint64_t snapshot_seq_ = 0;
 
@@ -107,8 +135,30 @@ private:
   std::deque<CoreThread::Task> requests_;
 
   // Shutdown orchestration (core-thread-only).
+  enum class ShutdownPhase : uint8_t {
+    NONE = 0,
+    STOP_STREAMS,
+    AWAIT_STREAMS_STOPPED,
+    DESTROY_STREAMS,
+    AWAIT_STREAMS_DESTROYED,
+    CLOSE_DEVICES,
+    AWAIT_DEVICES_CLOSED,
+    PROVIDER_SHUTDOWN,
+    FINAL_RETENTION_SWEEP,
+    FINAL_PUBLISH,
+    EXIT
+  };
+
   bool shutdown_requested_ = false;
+  ShutdownPhase shutdown_phase_ = ShutdownPhase::NONE;
+  // Copy-out diagnostics for tests (no mutable references exposed).
+  std::atomic<uint8_t> shutdown_phase_code_{0};
+  std::atomic<uint64_t> shutdown_phase_changes_{0};
   bool shutdown_final_publish_requested_ = false;
+  uint32_t shutdown_wait_ticks_ = 0;
+
+  // Optional provider for deterministic shutdown.
+  std::atomic<ICameraProvider*> provider_{nullptr};
 
   // Publish coalescing flag (any-thread).
   std::atomic<bool> publish_pending_{false};

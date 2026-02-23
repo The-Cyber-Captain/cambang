@@ -199,6 +199,47 @@ callbacks_->on_frame(fv);
   return ProviderResult::success();
 }
 
+void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
+  if (!callbacks_) {
+    return;
+  }
+  auto st_it = streams_.find(stream_id);
+  if (st_it == streams_.end() || !st_it->second.created) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < count; ++i) {
+    frames_emitted_.fetch_add(1, std::memory_order_relaxed);
+
+    FrameView fv{};
+    fv.device_instance_id = st_it->second.req.device_instance_id;
+    fv.stream_id = stream_id;
+    fv.capture_id = 0;
+
+    fv.width = st_it->second.req.width;
+    fv.height = st_it->second.req.height;
+    fv.format_fourcc = st_it->second.req.format_fourcc;
+
+    fv.timestamp_ns = 0;
+
+    fv.data = kTestBuffer;
+    fv.size_bytes = sizeof(kTestBuffer);
+    fv.stride_bytes = 0;
+
+    fv.release = &StubCameraProvider::release_test_frame;
+    fv.release_user = this;
+
+    callbacks_->on_frame(fv);
+  }
+}
+
+void StubCameraProvider::emit_fact_stream_stopped(uint64_t stream_id, ProviderError error_or_ok) {
+  if (!callbacks_) {
+    return;
+  }
+  callbacks_->on_stream_stopped(stream_id, error_or_ok);
+}
+
 ProviderResult StubCameraProvider::stop_stream(uint64_t stream_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);

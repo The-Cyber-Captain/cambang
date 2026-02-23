@@ -1,4 +1,5 @@
 #include <chrono>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -9,28 +10,76 @@
 
 using namespace cambang;
 
+namespace {
+
+constexpr uint64_t kDeviceInstanceId = 1;
+constexpr uint64_t kRootId = 1;
+constexpr uint64_t kStreamId = 1;
+
+// Mirrors CoreRuntime::ShutdownPhase numeric ordering (private to CoreRuntime).
+// Temporary IDE smoke assertions only.
+constexpr uint8_t kShutdownPhase_EXIT = 10;
+
 static CoreDispatchStats get_dispatch_stats(CoreRuntime& rt) {
-  std::promise<CoreDispatchStats> p;
-  auto fut = p.get_future();
-  rt.post([&rt, &p]() mutable {
-    p.set_value(rt.dispatcher_stats());
-  });
-  return fut.get();
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    std::promise<CoreDispatchStats> p;
+    auto fut = p.get_future();
+    const auto r = rt.try_post([&rt, &p]() mutable { p.set_value(rt.dispatcher_stats()); });
+    if (r == CoreThread::PostResult::Enqueued) {
+      if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+        return fut.get();
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  std::cerr << "Failed to retrieve dispatcher stats (core queue saturated or stopped).\n";
+  std::exit(1);
+}
+
+static ProviderCallbackIngress::Stats get_ingress_stats(CoreRuntime& rt) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    std::promise<ProviderCallbackIngress::Stats> p;
+    auto fut = p.get_future();
+    const auto r = rt.try_post([&rt, &p]() mutable { p.set_value(rt.ingress_stats_copy()); });
+    if (r == CoreThread::PostResult::Enqueued) {
+      if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+        return fut.get();
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  std::cerr << "Failed to retrieve ingress stats (core queue saturated or stopped).\n";
+  std::exit(1);
 }
 
 static bool get_stream_record(CoreRuntime& rt, uint64_t stream_id, CoreStreamRegistry::StreamRecord& out) {
-  std::promise<bool> p;
-  auto fut = p.get_future();
-  rt.post([&rt, stream_id, &out, &p]() mutable {
-    const auto* rec = rt.stream_record(stream_id);
-    if (!rec) {
-      p.set_value(false);
-      return;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    std::promise<bool> p;
+    auto fut = p.get_future();
+    const auto r = rt.try_post([&rt, stream_id, &out, &p]() mutable {
+      const auto* rec = rt.stream_record(stream_id);
+      if (!rec) {
+        p.set_value(false);
+        return;
+      }
+      out = *rec;
+      p.set_value(true);
+    });
+    if (r == CoreThread::PostResult::Enqueued) {
+      if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+        return fut.get();
+      }
+      break;
     }
-    out = *rec;
-    p.set_value(true);
-  });
-  return fut.get();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  std::cerr << "Failed to retrieve stream record (core queue saturated or stopped).\n";
+  std::exit(1);
 }
 
 static CorePublisherBuffer::Stats get_publish_stats(CoreRuntime& rt) {
@@ -41,6 +90,51 @@ static CoreSnapshot get_last_snapshot(CoreRuntime& rt) {
   return rt.publisher().snapshot_copy();
 }
 
+static bool wait_until(std::function<bool()> pred, int max_iters = 200, int sleep_ms = 5) {
+  for (int i = 0; i < max_iters; ++i) {
+    if (pred()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+  }
+  return false;
+}
+
+static StreamRequest make_req() {
+  StreamRequest req{};
+  req.stream_id = kStreamId;
+  req.device_instance_id = kDeviceInstanceId;
+  req.intent = StreamIntent::PREVIEW;
+  req.width = 2;
+  req.height = 2;
+  req.format_fourcc = 0;
+  req.profile_version = 1;
+  return req;
+}
+
+static bool setup_one_stream(CoreRuntime& rt, StubCameraProvider& prov) {
+  if (!prov.initialize(rt.provider_callbacks()).ok()) {
+    return false;
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    return false;
+  }
+
+  if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
+    return false;
+  }
+
+  const StreamRequest req = make_req();
+  if (!prov.create_stream(req).ok()) {
+    return false;
+  }
+
+  return true;
+}
+
+} // namespace
 
 int main() {
   // 1) Lifecycle gating before start(): publish requests must be rejected (Closed).
@@ -55,6 +149,7 @@ int main() {
     }
   }
 
+  // ---- Baseline LIVE path: one frame end-to-end + snapshot ----
   CoreRuntime rt;
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start\n";
@@ -69,85 +164,45 @@ int main() {
   }
 
   StubCameraProvider prov;
-  if (!prov.initialize(rt.provider_callbacks()).ok()) {
-    std::cerr << "Stub provider initialize failed\n";
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed\n";
     rt.stop();
     return 1;
   }
 
-  std::vector<CameraEndpoint> eps;
-  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
-    std::cerr << "enumerate_endpoints failed\n";
-    rt.stop();
-    return 1;
-  }
+  // Attach provider so CoreRuntime::stop() can perform deterministic shutdown choreography.
+  rt.attach_provider(&prov);
 
-  const uint64_t device_instance_id = 1;
-  const uint64_t root_id = 1;
-  const uint64_t stream_id = 1;
-
-  if (!prov.open_device(eps[0].hardware_id, device_instance_id, root_id).ok()) {
-    std::cerr << "open_device failed\n";
-    rt.stop();
-    return 1;
-  }
-
-  StreamRequest req{};
-  req.stream_id = stream_id;
-  req.device_instance_id = device_instance_id;
-  req.intent = StreamIntent::PREVIEW;
-  req.width = 2;
-  req.height = 2;
-  req.format_fourcc = 0; // irrelevant for this smoke
-  req.profile_version = 1;
-
-  if (!prov.create_stream(req).ok()) {
-    std::cerr << "create_stream failed\n";
-    rt.stop();
-    return 1;
-  }
-
-  if (!prov.start_stream(stream_id).ok()) {
+  if (!prov.start_stream(kStreamId).ok()) {
     std::cerr << "start_stream failed\n";
     rt.stop();
     return 1;
   }
 
   // Wait (bounded) for the core thread to dispatch and release the frame.
-  bool ok = false;
-  CoreDispatchStats stats{};
-  for (int i = 0; i < 200; ++i) {
-    if (prov.frames_released() >= 1) {
-      stats = get_dispatch_stats(rt);
-      ok = true;
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-
-  if (!ok) {
+  if (!wait_until([&]() { return prov.frames_released() >= 1; })) {
     std::cerr << "Timeout waiting for frame release\n";
     rt.stop();
     return 1;
   }
 
+  const CoreDispatchStats ds0 = get_dispatch_stats(rt);
   if (prov.frames_emitted() != 1 || prov.frames_released() != 1) {
     std::cerr << "Provider counters mismatch. emitted=" << prov.frames_emitted()
               << " released=" << prov.frames_released() << "\n";
     rt.stop();
     return 1;
   }
-
-  if (stats.frames_received != 1 || stats.frames_released != 1) {
-    std::cerr << "Dispatcher counters mismatch. received=" << stats.frames_received
-              << " released=" << stats.frames_released << "\n";
+  if (ds0.frames_received != 1 || ds0.frames_released != 1) {
+    std::cerr << "Dispatcher counters mismatch. received=" << ds0.frames_received
+              << " released=" << ds0.frames_released << "\n";
     rt.stop();
     return 1;
   }
 
   CoreStreamRegistry::StreamRecord rec{};
-  if (!get_stream_record(rt, stream_id, rec)) {
-    std::cerr << "Stream registry missing stream_id=" << stream_id << "\n";
+  if (!get_stream_record(rt, kStreamId, rec)) {
+    std::cerr << "Stream registry missing stream_id=" << kStreamId << "\n";
     rt.stop();
     return 1;
   }
@@ -162,33 +217,22 @@ int main() {
 
   // Publish a snapshot and verify it contains the stream record.
   rt.request_publish();
-
-  bool published = false;
-  for (int i = 0; i < 200; ++i) {
-    const auto ps = get_publish_stats(rt);
-    if (ps.publishes >= 1) {
-      published = true;
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-
-  if (!published) {
+  if (!wait_until([&]() { return get_publish_stats(rt).publishes >= 1; })) {
     std::cerr << "Timeout waiting for snapshot publication\n";
     rt.stop();
     return 1;
   }
 
-  const CoreSnapshot snap = get_last_snapshot(rt);
-  if (snap.seq == 0 || snap.streams.empty()) {
+  const CoreSnapshot snap0 = get_last_snapshot(rt);
+  if (snap0.seq == 0 || snap0.streams.empty()) {
     std::cerr << "Snapshot empty or missing seq\n";
     rt.stop();
     return 1;
   }
 
   bool found = false;
-  for (const auto& s : snap.streams) {
-    if (s.stream_id == stream_id) {
+  for (const auto& s : snap0.streams) {
+    if (s.stream_id == kStreamId) {
       found = true;
       if (!s.created || !s.started || s.frames_received != 1 || s.frames_released != 1) {
         std::cerr << "Snapshot stream mismatch. created=" << s.created
@@ -202,71 +246,200 @@ int main() {
     }
   }
   if (!found) {
-    std::cerr << "Snapshot missing stream_id=" << stream_id << "\n";
+    std::cerr << "Snapshot missing stream_id=" << kStreamId << "\n";
     rt.stop();
     return 1;
   }
 
+  // ---- 2) Overload facts during LIVE: QueueFull drops must be accounted + released ----
+  {
+    // Stall the core briefly so the ingress posting queue fills deterministically.
+    (void)rt.try_post_core_thread_unchecked([]() {
+      const auto t0 = std::chrono::steady_clock::now();
+      while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(25)) {
+      }
+    });
+
+    const uint32_t kBurst = 1100;
+    prov.emit_test_frames(kStreamId, kBurst);
+
+    const uint64_t emitted = prov.frames_emitted();
+
+    if (!wait_until([&]() { return prov.frames_released() >= emitted; }, 800, 2)) {
+      std::cerr << "Timeout waiting for overload releases. emitted=" << emitted
+                << " released=" << prov.frames_released() << "\n";
+      rt.stop();
+      return 1;
+    }
+
+    const auto ingress = get_ingress_stats(rt);
+    const auto disp = get_dispatch_stats(rt);
+
+    if (prov.frames_released() != emitted) {
+      std::cerr << "Release mismatch under overload. emitted=" << emitted
+                << " released=" << prov.frames_released() << "\n";
+      rt.stop();
+      return 1;
+    }
+
+    const uint64_t dropped = ingress.frames_dropped_full + ingress.frames_dropped_closed + ingress.frames_dropped_allocfail;
+    if (dropped == 0) {
+      std::cerr << "Expected at least one dropped frame under overload (QueueFull).\n";
+      rt.stop();
+      return 1;
+    }
+
+    if (disp.frames_received + dropped != emitted) {
+      std::cerr << "Accounting mismatch under overload. received=" << disp.frames_received
+                << " dropped=" << dropped << " emitted=" << emitted << "\n";
+      rt.stop();
+      return 1;
+    }
+
+    if (disp.frames_released != disp.frames_received) {
+      std::cerr << "Dispatcher release mismatch under overload. received=" << disp.frames_received
+                << " released=" << disp.frames_released << "\n";
+      rt.stop();
+      return 1;
+    }
+
+    const uint64_t released_on_drop = ingress.frames_released_on_drop_full +
+                                     ingress.frames_released_on_drop_closed +
+                                     ingress.frames_released_on_drop_allocfail;
+    if (released_on_drop != dropped) {
+      std::cerr << "Ingress release-on-drop mismatch. dropped=" << dropped
+                << " released_on_drop=" << released_on_drop << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // ---- Shutdown choreography (provider attached) + phase markers ----
   rt.stop();
+
+  if (!prov.shutting_down()) {
+    std::cerr << "Expected provider to be in shutting_down state after rt.stop()\n";
+    return 1;
+  }
+
+  // Shutdown phase markers must have advanced and reached EXIT.
+  {
+    const auto diag = rt.shutdown_diag_copy();
+    if (diag.phase_changes == 0 || diag.phase_code != kShutdownPhase_EXIT) {
+      std::cerr << "Shutdown phase diagnostics unexpected. phase_code="
+                << static_cast<int>(diag.phase_code)
+                << " changes=" << diag.phase_changes << "\n";
+      return 1;
+    }
+  }
 
   // Idempotent stop(): must not crash/hang.
   rt.stop();
 
-  // 2) After stop(): provider callbacks must be rejected and frames released on drop.
-  // Re-start a new runtime for the provider to use.
-  CoreRuntime rt2;
-  if (!rt2.start()) {
-    std::cerr << "CoreRuntime rt2 failed to start\n";
-    return 1;
-  }
-
-  StubCameraProvider prov2;
-  if (!prov2.initialize(rt2.provider_callbacks()).ok()) {
-    std::cerr << "Stub provider2 initialize failed\n";
-    rt2.stop();
-    return 1;
-  }
-
-  std::vector<CameraEndpoint> eps2;
-  if (!prov2.enumerate_endpoints(eps2).ok() || eps2.empty()) {
-    std::cerr << "enumerate_endpoints (prov2) failed\n";
-    rt2.stop();
-    return 1;
-  }
-
-  if (!prov2.open_device(eps2[0].hardware_id, device_instance_id, root_id).ok()) {
-    std::cerr << "open_device (prov2) failed\n";
-    rt2.stop();
-    return 1;
-  }
-
-  if (!prov2.create_stream(req).ok()) {
-    std::cerr << "create_stream (prov2) failed\n";
-    rt2.stop();
-    return 1;
-  }
-
-  // Stop runtime before starting the stream. The provider will emit one frame on start_stream().
-  rt2.stop();
-
-  // Start stream after runtime is STOPPED. Ingress must treat as Closed and release the frame.
-  (void)prov2.start_stream(stream_id);
-
-  bool released = false;
-  for (int i = 0; i < 200; ++i) {
-    if (prov2.frames_released() >= 1) {
-      released = true;
-      break;
+  // ---- 3) Admission invariants + late provider facts during TEARING_DOWN (no provider attached) ----
+  {
+    CoreRuntime rt4;
+    if (!rt4.start()) {
+      std::cerr << "CoreRuntime rt4 failed to start\n";
+      return 1;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-  if (!released) {
-    std::cerr << "Timeout waiting for frame release after runtime stop\n";
-    return 1;
+
+    StubCameraProvider prov4;
+    if (!setup_one_stream(rt4, prov4)) {
+      std::cerr << "Stub provider4 setup failed\n";
+      rt4.stop();
+      return 1;
+    }
+
+    if (!prov4.start_stream(kStreamId).ok()) {
+      std::cerr << "start_stream (prov4) failed\n";
+      rt4.stop();
+      return 1;
+    }
+
+    // Ensure stream is started in core canonical state.
+    CoreStreamRegistry::StreamRecord r0{};
+    if (!get_stream_record(rt4, kStreamId, r0) || !r0.started) {
+      std::cerr << "Expected started stream in core before teardown\n";
+      rt4.stop();
+      return 1;
+    }
+
+    std::thread stopper([&rt4]() { rt4.stop(); });
+
+    // Emit the late stop fact immediately after stop begins (best-effort until core thread closes).
+    prov4.emit_fact_stream_stopped(kStreamId, ProviderError::OK);
+
+    // Wait until stop has begun (state leaves LIVE).
+    if (!wait_until([&]() { return rt4.state_copy() != CoreRuntimeState::LIVE; }, 200, 1)) {
+      std::cerr << "rt4 stop did not begin (state still LIVE)\n";
+      stopper.join();
+      return 1;
+    }
+
+    // Commands + publish must be rejected deterministically once TEARING_DOWN/STOPPED.
+    const auto r_post = rt4.try_post([]() {});
+    if (r_post != CoreThread::PostResult::Closed) {
+      std::cerr << "Expected try_post Closed during TEARING_DOWN\n";
+      stopper.join();
+      return 1;
+    }
+
+    const auto st_before = rt4.stats_copy();
+    rt4.request_publish();
+    const auto st_after = rt4.stats_copy();
+    if (st_after.publish_requests_dropped_closed != st_before.publish_requests_dropped_closed + 1) {
+      std::cerr << "Expected publish request to be dropped Closed during TEARING_DOWN\n";
+      stopper.join();
+      return 1;
+    }
+
+    stopper.join();
+
+    // Final snapshot should reflect the stop fact if it was integrated before final publish.
+    const CoreSnapshot snap = get_last_snapshot(rt4);
+    bool found_stream = false;
+    for (const auto& s : snap.streams) {
+      if (s.stream_id == kStreamId) {
+        found_stream = true;
+        if (s.started) {
+          std::cerr << "Expected final snapshot to show stream stopped (started=false)\n";
+          return 1;
+        }
+      }
+    }
+    if (!found_stream) {
+      std::cerr << "Expected final snapshot to contain the stream record\n";
+      return 1;
+    }
   }
 
-  
-  // 3) Provider facts during TEARING_DOWN: best-effort drain until core thread closes.
+  // ---- 4) Frames after STOPPED: ingress must drop Closed + release-on-drop ----
+  {
+    CoreRuntime rt2;
+    if (!rt2.start()) {
+      std::cerr << "CoreRuntime rt2 failed to start\n";
+      return 1;
+    }
+
+    StubCameraProvider prov2;
+    if (!setup_one_stream(rt2, prov2)) {
+      std::cerr << "Stub provider2 setup failed\n";
+      rt2.stop();
+      return 1;
+    }
+
+    rt2.stop();
+
+    (void)prov2.start_stream(kStreamId);
+
+    if (!wait_until([&]() { return prov2.frames_released() >= 1; })) {
+      std::cerr << "Timeout waiting for frame release after runtime stop\n";
+      return 1;
+    }
+  }
+
+  // ---- 5) Frames during TEARING_DOWN: best-effort drain until Closed, no leaks ----
   {
     CoreRuntime rt3;
     if (!rt3.start()) {
@@ -275,74 +448,42 @@ int main() {
     }
 
     StubCameraProvider prov3;
-    if (!prov3.initialize(rt3.provider_callbacks()).ok()) {
-      std::cerr << "Stub provider3 initialize failed\n";
+    if (!setup_one_stream(rt3, prov3)) {
+      std::cerr << "Stub provider3 setup failed\n";
       rt3.stop();
       return 1;
     }
 
-    std::vector<CameraEndpoint> eps3;
-    if (!prov3.enumerate_endpoints(eps3).ok() || eps3.empty()) {
-      std::cerr << "enumerate_endpoints (prov3) failed\n";
+    rt3.attach_provider(&prov3);
+
+    if (!prov3.start_stream(kStreamId).ok()) {
+      std::cerr << "start_stream (prov3) failed\n";
       rt3.stop();
       return 1;
     }
 
-    if (!prov3.open_device(eps3[0].hardware_id, device_instance_id, root_id).ok()) {
-      std::cerr << "open_device (prov3) failed\n";
-      rt3.stop();
-      return 1;
-    }
-
-    if (!prov3.create_stream(req).ok()) {
-      std::cerr << "create_stream (prov3) failed\n";
-      rt3.stop();
-      return 1;
-    }
-
-    // Queue some bounded work so TEARING_DOWN has a deterministic window where the core loop is alive.
-    for (int i = 0; i < 64; ++i) {
-      rt3.post([]() {
-        const auto t0 = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - t0 < std::chrono::microseconds(500)) {
-        }
-      });
-    }
-
+    // Begin stop() in another thread.
     std::thread stopper([&rt3]() { rt3.stop(); });
 
-    // Emit a provider frame while teardown is in flight (best-effort).
-    // We attempt after stop() begins; admission is ultimately decided by CoreThread::try_post().
-    (void)prov3.start_stream(stream_id);
+    // Emit frames during teardown. Some may enqueue and be released by dispatcher;
+    // late ones may be dropped Closed and released on drop.
+    prov3.emit_test_frames(kStreamId, 200);
 
     stopper.join();
 
-    // The emitted frame must have been released exactly once (either by dispatcher or by ingress on failure).
-    if (prov3.frames_emitted() < 1 || prov3.frames_released() < 1) {
-      std::cerr << "Expected provider frame release during teardown. emitted="
-                << prov3.frames_emitted() << " released=" << prov3.frames_released() << "\n";
+    const uint64_t emitted = prov3.frames_emitted();
+    if (prov3.frames_released() != emitted) {
+      std::cerr << "Leak risk: frames not fully released during teardown. emitted="
+                << emitted << " released=" << prov3.frames_released() << "\n";
       return 1;
     }
 
-    // Best-effort drain: if the frame was accepted before closure it will be dispatched and released on-core.
-    // If the core loop closed before the callback could be enqueued, ingress must still release-on-drop.
-    const auto ds = rt3.dispatcher_stats();
-    if (ds.frames_received == 1) {
-      if (ds.frames_released != 1) {
-        std::cerr << "Dispatcher received frame but did not release it. released=" << ds.frames_released << "\n";
-        return 1;
-      }
-    } else {
-      // Drain did not occur (likely Closed during teardown). The provider must still observe the release.
-      // This validates resource correctness under late callbacks.
-      if (prov3.frames_released() != 1) {
-        std::cerr << "Expected ingress release-on-drop during teardown\n";
-        return 1;
-      }
+    if (!prov3.shutting_down()) {
+      std::cerr << "Expected provider to be shutting_down after teardown\n";
+      return 1;
     }
-
   }
 
-std::cout << "OK: core spine smoke passed\n";
+  std::cout << "OK: core spine smoke passed\n";
   return 0;
 }
