@@ -116,11 +116,20 @@ public:
   // Post a unit of work to be executed on the core thread.
   // - thread-safe
   // - best-effort: drops on overflow (accounted)
+  //
+  // IMPORTANT:
+  // Posting is not guaranteed to succeed. Callers MUST NOT block waiting for a
+  // posted task to run unless they have confirmed enqueue success (via try_post)
+  // and have a bounded fallback path.
   void post(Task task);
 
   // Best-effort post; returns a reason on failure.
   // - thread-safe
   // - does not block
+  //
+  // IMPORTANT:
+  // Use this for any pattern that would otherwise block waiting on completion.
+  // If enqueue fails (QueueFull/Closed/AllocFail), the task will never run.
   PostResult try_post(Task task);
 
   // Accounting-only helper for external lifecycle gating layers.

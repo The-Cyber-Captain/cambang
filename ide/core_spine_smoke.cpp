@@ -5,6 +5,10 @@
 #include <thread>
 #include <vector>
 
+#ifndef CAMBANG_INTERNAL_IDE_SMOKE
+#error "IDE smoke harness: build with -DCAMBANG_INTERNAL_IDE_SMOKE=1 (or via SCons)."
+#endif
+
 #include "core/core_runtime.h"
 #include "provider/stub/stub_camera_provider.h"
 

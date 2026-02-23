@@ -50,18 +50,33 @@ public:
 
   // Post work onto the core thread.
   // Best-effort; drops on overflow (accounted in CoreThread::stats_copy()).
+  //
+  // IMPORTANT:
+  // Do not block waiting for posted work to run unless you have confirmed
+  // enqueue success (prefer try_post) and have a bounded fallback path.
   void post(CoreThread::Task task);
 
   // Best-effort post with explicit result.
   // Only LIVE accepts work; otherwise returns Closed (accounted).
   CoreThread::PostResult try_post(CoreThread::Task task);
 
-  // TEMP (IDE smoke only): post directly onto the CoreThread queue, bypassing
-  // CoreRuntime request gating and the requests_ pump.
-  // Used to deterministically stall the core thread to force QueueFull in ingress tests.
+  // ---------------------------------------------------------------------------
+  // IDE smoke-only hooks
+  //
+  // These exist solely to create deterministic queue pressure in the temporary
+  // `ide/core_spine_smoke.cpp` harness.
+  //
+  // IMPORTANT:
+  // - Posting is best-effort; callers MUST check PostResult.
+  // - Do not rely on these hooks in production/runtime code.
+  // ---------------------------------------------------------------------------
+#if defined(CAMBANG_INTERNAL_IDE_SMOKE)
+  // TEMP: post directly onto the CoreThread queue, bypassing CoreRuntime request
+  // gating and the requests_ pump.
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
     return core_thread_.try_post(std::move(task));
   }
+#endif
 
   // Request snapshot publication.
   //
