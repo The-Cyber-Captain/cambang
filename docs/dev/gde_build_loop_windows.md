@@ -17,6 +17,23 @@ temporary GDExtension scaffolding (CamBANGDevNode) on Windows.
 
 ---
 
+## Note on IDE indexing (CLion / clangd)
+
+This repo uses **SCons-only**. IDEs should invoke SCons for builds.
+
+The `gde` build also generates a compilation database for indexing:
+
+- `compile_commands.json` at repo root
+
+The file is produced by the repo tool:
+
+- `site_scons/site_tools/compdb.py`
+
+Because the database is recorded from real compile actions, it is written at the
+end of a build that performs compilation.
+
+---
+
 ## 1. Build the extension
 
 From an **MSYS2 MinGW x64** shell at repo root:
@@ -32,6 +49,23 @@ Expected outputs:
 
 - `tests/cambang_gde/bin/cambang.windows.template_debug.x86_64.dll`
 - `tests/cambang_gde/bin/libcambang.windows.template_debug.x86_64.a`
+
+Also generated (IDE support):
+
+- `compile_commands.json` at repo root
+
+### Refreshing the compilation database
+
+Re-run the same `scons ... gde ...` command after changing build flags, include paths,
+or adding/removing source files. The database is written at the end of the build.
+
+### Optional: write compile_commands.json elsewhere
+
+To place the file somewhere other than repo root:
+
+```sh
+scons -j 8 gde platform=windows target=template_debug arch=x86_64 use_mingw=yes COMPDB_PATH=out/compile_commands.json
+```
 
 ---
 
