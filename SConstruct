@@ -130,6 +130,11 @@ if tmp_env["platform"] == "windows":
 env = Environment(variables=vars, tools=tools)
 env.Append(CPPPATH=["src"])
 
+# ---------------------------------------------------------------------------
+# IDE support: generate compile_commands.json for CLion/clangd
+# ---------------------------------------------------------------------------
+env.Tool("compdb", toolpath=["site_scons/site_tools"])
+
 # Identify toolchain kind.
 cxx = str(env.get("CXX", "")).lower()
 is_msvc = ("cl" in cxx) or env.get("MSVC_VERSION")
@@ -283,5 +288,9 @@ gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_sources)
 for n in gde_lib:
     gde_env.Depends(n, godot_cpp_build)
 
-Alias("gde", gde_lib)
-AlwaysBuild("gde")
+gde_alias = Alias("gde", gde_lib)
+AlwaysBuild(gde_alias)
+
+# Write compile_commands.json after building the 'gde' alias
+from SCons.Script import AddPostAction
+AddPostAction(gde_alias, env["COMPDB_WRITE_ACTION"])

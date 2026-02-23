@@ -28,6 +28,7 @@ CMakeCache.txt
 cmake_install.cmake
 Makefile
 compile_commands.json
+compile_commands/
 
 # ------------------------------------------------------------------------------
 # Ninja // phase out
@@ -35,9 +36,18 @@ compile_commands.json
 .ninja_deps
 .ninja_log
 
+
+# ------------------------------
+# Python / SCons
+# ------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
 # ------------------------------------------------------------------------------
 # SCons
 # ------------------------------------------------------------------------------
+.sconsign.*
 .sconsign.dblite
 .scons_cache/
 .scons-cache/
@@ -92,6 +102,7 @@ Desktop.ini
 *.swp
 *.swo
 *.bak
+
 
 # ------------------------------------------------------------------------------
 # Notes
