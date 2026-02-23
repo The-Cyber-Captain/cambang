@@ -48,6 +48,29 @@ add_library(cambang_ide STATIC
     src/provider/provider_contract_datatypes.h
     src/provider/provider_error_string.h
     src/provider/provider_error_string.cpp
+        src/provider/stub/stub_camera_provider.h
+        src/provider/stub/stub_camera_provider.cpp
+        src/core/core_thread.h
+        src/core/core_thread.cpp
+        src/core/core_mailbox.h
+        src/core/core_dispatcher.h
+        src/core/core_dispatcher.cpp
+        src/core/core_snapshot.h
+        src/core/core_publisher.h
+        src/core/core_publisher_buffer.h
+        src/core/core_stream_registry.h
+        src/core/core_stream_registry.cpp
+        src/core/core_runtime.h
+        src/core/core_runtime.cpp
+        src/core/provider_callback_ingress.h
+        src/core/provider_callback_ingress.cpp
 )
 
 target_link_libraries(cambang_ide PRIVATE cambang_headers)
+
+# Smoke test executable (IDE-only). Proves frame lifecycle end-to-end.
+add_executable(cambang_core_spine_smoke
+    ide/core_spine_smoke.cpp
+)
+
+target_link_libraries(cambang_core_spine_smoke PRIVATE cambang_ide cambang_headers)
