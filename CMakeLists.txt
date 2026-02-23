@@ -64,6 +64,9 @@ add_library(cambang_ide STATIC
         src/core/core_runtime.cpp
         src/core/provider_callback_ingress.h
         src/core/provider_callback_ingress.cpp
+        src/godot/module_init.cpp
+        src/godot/dev/cambang_dev_node.cpp
+        src/godot/dev/cambang_dev_node.h
 )
 
 target_link_libraries(cambang_ide PRIVATE cambang_headers)
