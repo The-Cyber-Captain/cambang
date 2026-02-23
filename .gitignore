@@ -1,10 +1,23 @@
-﻿# ------------------------------------------------------------------------------
-# CLion / JetBrains IDE
+﻿# ==============================================================================
+# CamBANG — repo root .gitignore
+#
+# Philosophy:
+# - Root ignores cover: IDE noise, host OS cruft, build system output, and
+#   third-party build products.
+# - Each Godot project (tests/, demos/, samples/) should have its own .gitignore
+#   for .godot/, .import/, export presets, and per-project bin/ outputs.
+#   (Avoid sprinkling tests/** rules into the root.)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# JetBrains / CLion
 # ------------------------------------------------------------------------------
 .idea/
 *.iml
 cmake-build-*/
-out/
+
+# Optional: CLion / CMake presets can produce these:
+CMakeSettings.json
 
 # ------------------------------------------------------------------------------
 # CMake (IDE-only) // phase out
@@ -23,16 +36,6 @@ compile_commands.json
 .ninja_log
 
 # ------------------------------------------------------------------------------
-# macOS
-# ------------------------------------------------------------------------------
-.DS_Store
-
-# ------------------------------------------------------------------------------
-# Windows
-# ------------------------------------------------------------------------------
-Thumbs.db
-
-# ------------------------------------------------------------------------------
 # SCons
 # ------------------------------------------------------------------------------
 .sconsign.dblite
@@ -40,8 +43,36 @@ Thumbs.db
 .scons-cache/
 
 # ------------------------------------------------------------------------------
+# CamBANG build output
+# ------------------------------------------------------------------------------
+out/
+
+# If you later add additional standard output roots, list them explicitly here:
+# dist/
+# artifacts/
+
+# ------------------------------------------------------------------------------
+# Third-party build products
+# ------------------------------------------------------------------------------
+# godot-cpp is a pinned submodule; we never commit its generated outputs.
+thirdparty/godot-cpp/bin/
+thirdparty/godot-cpp/gen/
+thirdparty/godot-cpp/.sconsign.dblite
+
+# ------------------------------------------------------------------------------
+# OS / Desktop noise
+# ------------------------------------------------------------------------------
+# macOS
+.DS_Store
+# Windows
+Thumbs.db
+Desktop.ini
+
+# ------------------------------------------------------------------------------
 # Compiled binaries / objects (safety net)
 # ------------------------------------------------------------------------------
+# We generally do not commit built artifacts to the repo. If a future demo/harness
+# legitimately needs checked-in binaries, add a narrow "!" exception locally.
 *.exe
 *.dll
 *.so
@@ -53,3 +84,22 @@ Thumbs.db
 *.o
 *.ilk
 *.exp
+
+# ------------------------------------------------------------------------------
+# Editor swap/backup files
+# ------------------------------------------------------------------------------
+*~
+*.swp
+*.swo
+*.bak
+
+# ------------------------------------------------------------------------------
+# Notes
+# ------------------------------------------------------------------------------
+# Godot projects: place per-project ignores in:
+#   tests/<godot_project>/.gitignore
+#   demos/<godot_project>/.gitignore
+#   samples/<godot_project>/.gitignore
+# Typical Godot ignores include:
+#   .godot/ .import/ export_presets.cfg export.cfg bin/*.dll bin/*.a
+# plus *not* ignoring bin/*.gdextension.
