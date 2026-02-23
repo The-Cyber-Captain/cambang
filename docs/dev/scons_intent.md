@@ -123,3 +123,19 @@ It does not govern:
 - Resource ownership rules.
 
 Those remain under frozen architectural documentation.
+
+
+## 6. GDE Scaffolding Plan (Temporary)
+
+- Initial Godot-facing scaffolding uses `CamBANGDevNode` (temporary).
+- `CamBANGDevNode` owns a `CoreRuntime` for the duration of a play session.
+- Lifecycle hooks: `_enter_tree()` starts, `_exit_tree()` stops.
+- Single-instance guard is enabled to emulate final server-like layout.
+
+Godot compatibility target:
+- Godot 4.5+.
+- Release artifacts are expected per minor series (4.5, 4.6, 4.7, …), with matching `godot-cpp`.
+
+Build strategy:
+- Follow godot-cpp-template conventions (`platform/target/arch/precision`).
+- Delegate toolchain logic to `godot-cpp` SCons as soon as the submodule is introduced.

@@ -1,0 +1,24 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Godot editor cache
+.import/
+
+# Export configs (machine-specific)
+export.cfg
+export_presets.cfg
+
+# Build outputs
+bin/*.dll
+bin/*.a
+bin/*.so
+bin/*.dylib
+
+# If copied for MinGW runtime
+bin/libstdc++-6.dll
+bin/libgcc_s_seh-1.dll
+bin/libwinpthread-1.dll
+
+# Ensure extension config remains tracked
+!bin/*.gdextension
