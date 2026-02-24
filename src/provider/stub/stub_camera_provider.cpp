@@ -12,12 +12,7 @@ struct TestFramePayload final {
   std::vector<std::uint8_t> bytes;
 };
 
-static uint32_t fourcc(char a, char b, char c, char d) {
-  return (static_cast<uint32_t>(a)) |
-         (static_cast<uint32_t>(b) << 8) |
-         (static_cast<uint32_t>(c) << 16) |
-         (static_cast<uint32_t>(d) << 24);
-}
+// NOTE: Prefer the canonical helpers/constants in provider_contract_datatypes.h.
 
 } // namespace
 
@@ -213,11 +208,10 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
   const uint32_t w = (st.req.width == 0) ? 320 : st.req.width;
   const uint32_t h = (st.req.height == 0) ? 180 : st.req.height;
 
-  const uint32_t RGBA = fourcc('R', 'G', 'B', 'A');
-  const uint32_t fmt = (st.req.format_fourcc == 0) ? RGBA : st.req.format_fourcc;
+  const uint32_t fmt = (st.req.format_fourcc == 0) ? FOURCC_RGBA : st.req.format_fourcc;
 
   // This stub provider currently only supports RGBA test frames.
-  if (fmt != RGBA) {
+  if (fmt != FOURCC_RGBA) {
     return;
   }
 
@@ -257,7 +251,7 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
 
     fv.width = w;
     fv.height = h;
-    fv.format_fourcc = RGBA;
+    fv.format_fourcc = FOURCC_RGBA;
 
     fv.timestamp_ns = 0;
 

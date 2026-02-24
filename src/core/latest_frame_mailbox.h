@@ -16,6 +16,13 @@ namespace cambang {
 // Optional published_seq_ supports a cheap "unchanged" fast-path.
 class LatestFrameMailbox final {
 public:
+  struct Stats {
+    uint64_t frames_received = 0;
+    uint64_t frames_published = 0;
+    uint64_t frames_dropped_unsupported = 0;
+    uint64_t frames_dropped_invalid = 0;
+  };
+
   struct FrameCopy {
     uint64_t seq = 0;
 
@@ -33,7 +40,7 @@ public:
     // Timing
     uint64_t timestamp_ns = 0;
 
-    // Packed bytes (for this stage we assume either tightly packed or stride==width*bpp)
+    // Packed RGBA8 bytes owned by the mailbox (tightly packed; stride == width * 4).
     std::vector<uint8_t> bytes;
   };
 
@@ -50,9 +57,13 @@ public:
   // Returns true and populates out if changed.
   bool try_copy_if_new(uint64_t last_seq, FrameCopy& out) const;
 
+  // Snapshot dev-only stats (coherent under the same mutex).
+  Stats get_stats() const;
+
 private:
   mutable std::mutex m_;
   FrameCopy latest_;
+  Stats stats_;
   std::atomic<uint64_t> published_seq_{0};
 };
 

@@ -8,6 +8,21 @@
 
 namespace cambang {
 
+// --- FourCC helpers ---------------------------------------------------------
+// Canonical CamBANG pixel formats use a FourCC-style 32-bit tag.
+// Use these helpers instead of ad-hoc literals to keep format handling stable.
+constexpr uint32_t make_fourcc(char a, char b, char c, char d) {
+  return (static_cast<uint32_t>(static_cast<unsigned char>(a))      ) |
+         (static_cast<uint32_t>(static_cast<unsigned char>(b)) <<  8) |
+         (static_cast<uint32_t>(static_cast<unsigned char>(c)) << 16) |
+         (static_cast<uint32_t>(static_cast<unsigned char>(d)) << 24);
+}
+
+// Common formats used by dev scaffolding.
+// NOTE: Do not assume these are the only formats CamBANG will ever support.
+inline constexpr uint32_t FOURCC_RGBA = make_fourcc('R', 'G', 'B', 'A');
+inline constexpr uint32_t FOURCC_BGRA = make_fourcc('B', 'G', 'R', 'A');
+
 // Public semantics for repeating streams.
 enum class StreamIntent : uint8_t {
   PREVIEW = 0,
