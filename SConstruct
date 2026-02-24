@@ -1,13 +1,17 @@
 #!/usr/bin/env python
 # CamBANG - SCons entrypoint (smoke + GDE scaffolding)
 #
-# Goals (current branch: build-phase-gde-1):
-# - Keep smoke harness deterministic and default.
-# - Add minimal GDExtension build:
+# Goals (current branch: build-phase-windows-provider-min-1):
+# - Keep core smoke executable deterministic and fast (opt-in; stub-provider-only).
+# - Build GDExtension:
 #     - delegate godot-cpp build to its SCons
-#     - build a shared lib that links core + stub provider + godot glue
+#     - build a shared lib that links core + selected provider + godot glue
 #     - drop output into tests/cambang_gde/bin/
 # - Avoid SCons object collisions between smoke and gde builds.
+#
+# NOTE on terminology:
+# - "smoke" here means an internal executable built from repo sources, intended to
+#   validate core invariants quickly. It is not part of the GDExtension artifact.
 
 import os
 import sys
@@ -73,6 +77,15 @@ vars.Add(EnumVariable(
     _detect_platform(),
     allowed_values=["windows", "linux", "macos", "android"],
 ))
+
+# Provider selection applies to GDE build only.
+vars.Add(EnumVariable(
+    "provider",
+    "Provider backend to build into the GDE (dev accelerator selection).",
+    "stub",
+    allowed_values=["stub", "windows_mediafoundation"],
+))
+
 vars.Add(EnumVariable(
     "target",
     "Build target. Accepts debug/release and Godot template_debug/template_release.",
@@ -106,6 +119,11 @@ vars.Add(EnumVariable(
 vars.Add(BoolVariable(
     "warnings_as_errors",
     "Treat warnings as errors.",
+    False,
+))
+vars.Add(BoolVariable(
+    "smoke",
+    "Build core smoke executable (stub-provider-only). Not part of the GDExtension artifact.",
     False,
 ))
 
@@ -170,6 +188,7 @@ print(f"  platform={env['platform']} target={env['target']} (core_flags={core_ta
 print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
+print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'}")
 
 # Output dirs
 out_dir = "out"
@@ -184,26 +203,30 @@ smoke_obj_dir = os.path.join(out_dir, "smoke_obj")
 gde_obj_dir = os.path.join(out_dir, "gde_obj")
 
 # ---------------------------------------------------------------------------
-# Smoke harness (default)
+# Core smoke executable (opt-in; stub-provider-only)
 # ---------------------------------------------------------------------------
+if env["smoke"]:
+    smoke_env = env.Clone()
+    smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
 
-smoke_env = env.Clone()
-smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_IDE_SMOKE=1"])
+    # Compile sources via a variant dir so smoke objects don't collide with gde objects.
+    smoke_env.VariantDir(smoke_obj_dir, "src", duplicate=0)
 
-# Compile sources via a variant dir so smoke objects don't collide with gde objects.
-smoke_env.VariantDir(smoke_obj_dir, "src", duplicate=0)
+    smoke_sources = []
+    smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "*.cpp"))
+    smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "stub", "*.cpp"))
+    smoke_sources += ["src/smoke/core_spine_smoke.cpp"]
 
-smoke_sources = []
-smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "*.cpp"))
-smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "stub", "*.cpp"))
-smoke_sources += ["ide/core_spine_smoke.cpp"]
+    smoke_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "core_spine_smoke"),
+        source=smoke_sources,
+    )
 
-smoke_prog = smoke_env.Program(target=os.path.join(out_dir, "core_spine_smoke"), source=smoke_sources)
-
-Alias("smoke", smoke_prog)
-AlwaysBuild("smoke")
-Default("smoke")
+    smoke_alias = Alias("smoke", smoke_prog)
+    AlwaysBuild(smoke_alias)
+else:
+    Alias("smoke", [])
 
 # ---------------------------------------------------------------------------
 # GDExtension scaffolding (alias: gde)
@@ -257,11 +280,24 @@ gde_env.Append(CPPPATH=[
 if not is_msvc:
     gde_env.Append(CXXFLAGS=["-fPIC", "-fvisibility=hidden"])
 
-# Sources: core + providers + stub + Godot glue.
+# Sources: core + providers + Godot glue.
 gde_sources = []
 gde_sources += Glob(os.path.join(gde_obj_dir, "core", "*.cpp"))
 gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "*.cpp"))
-gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "stub", "*.cpp"))
+
+# Provider backend selection (dev accelerator).
+if env["provider"] == "stub":
+    gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "stub", "*.cpp"))
+elif env["provider"] == "windows_mediafoundation":
+    gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "windows_mediafoundation", "*.cpp"))
+    gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_WINDOWS_MF=1"])
+    if env["platform"] == "windows":
+        # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
+        gde_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
+else:
+    print("Unknown provider:", env["provider"])
+    Exit(1)
+
 gde_sources += [
     os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
     os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_node.cpp"),
@@ -295,3 +331,11 @@ AlwaysBuild(gde_alias)
 # Write compile_commands.json after building the 'gde' alias
 from SCons.Script import AddPostAction
 AddPostAction(gde_alias, env["COMPDB_WRITE_ACTION"])
+
+# Default targets:
+# - always build GDE scaffolding
+# - additionally build smoke when smoke=1
+if env["smoke"]:
+    Default(["gde", "smoke"])
+else:
+    Default("gde")

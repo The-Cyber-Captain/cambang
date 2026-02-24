@@ -63,16 +63,16 @@ public:
   CoreThread::PostResult try_post(CoreThread::Task task);
 
   // ---------------------------------------------------------------------------
-  // IDE smoke-only hooks
+  // Core smoke-only hooks
   //
   // These exist solely to create deterministic queue pressure in the temporary
-  // `ide/core_spine_smoke.cpp` harness.
+  // `src/smoke/core_spine_smoke.cpp` harness.
   //
   // IMPORTANT:
   // - Posting is best-effort; callers MUST check PostResult.
   // - Do not rely on these hooks in production/runtime code.
   // ---------------------------------------------------------------------------
-#if defined(CAMBANG_INTERNAL_IDE_SMOKE)
+#if defined(CAMBANG_INTERNAL_SMOKE)
   // TEMP: post directly onto the CoreThread queue, bypassing CoreRuntime request
   // gating and the requests_ pump.
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {

@@ -38,13 +38,30 @@ void CamBANGDevFrameViewNode::_ready() {
   resolve_deps_();
 }
 
-void CamBANGDevFrameViewNode::_process(double /*delta*/) {
+  void CamBANGDevFrameViewNode::_process(double delta) {
   if (!mailbox_) {
     resolve_deps_();
     if (!mailbox_) {
       return;
     }
   }
+
+  // Dev-only visibility for Windows MF: show whether frames are arriving, accepted, or dropped.
+  stats_accum_ += delta;
+  if (stats_accum_ >= 1.0) {
+    stats_accum_ = 0.0;
+    const auto s = mailbox_->get_stats();
+    UtilityFunctions::print(
+        "[CamBANG] mailbox stats:",
+        " received=", (long long)s.frames_received,
+        " accepted_rgba=", (long long)s.accepted_rgba,
+        " accepted_bgra_swizzled=", (long long)s.accepted_bgra_swizzled,
+        " published=", (long long)s.frames_published,
+        " dropped_unsupported=", (long long)s.frames_dropped_unsupported,
+        " dropped_invalid=", (long long)s.frames_dropped_invalid
+    );
+  }
+
   try_update_();
 }
 
