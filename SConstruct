@@ -265,6 +265,7 @@ gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "stub", "*.cpp"))
 gde_sources += [
     os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
     os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_node.cpp"),
+    os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_frameview_node.cpp"),
 ]
 
 # Output base name (SCons appends .dll/.so/.dylib automatically).

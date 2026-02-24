@@ -103,20 +103,30 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
       }
     }
 
-    // Release-on-drop at dispatch boundary.
-    p.frame.release_now();
+    if (frame_sink_) {
+      // Hand off to sink (core thread). Sink is responsible for deterministic
+      // release. For this stage, it copies immediately and releases now.
+      FrameView frame = std::move(p.frame);
+      // Defensive hygiene: ensure the command payload cannot double-release.
+      p.frame.release = nullptr;
+      p.frame.release_user = nullptr;
+      frame_sink_->on_frame(std::move(frame));
+      stats_.frames_released++;
+    } else {
+      // Release-on-drop at dispatch boundary.
+      p.frame.release_now();
+      stats_.frames_released++;
 
-    stats_.frames_released++;
+      // Defensive hygiene: prevent accidental double-release if this payload is
+      // inspected/logged/re-dispatched in future scaffolding.
+      p.frame.release = nullptr;
+      p.frame.release_user = nullptr;
+    }
 
     if (streams_) {
       // Even if unknown stream, try anyway; registry will ignore if missing.
       streams_->on_frame_released(sid);
     }
-
-    // Defensive hygiene: prevent accidental double-release if this payload is
-    // inspected/logged/re-dispatched in future scaffolding.
-    p.frame.release = nullptr;
-    p.frame.release_user = nullptr;
     break;
   }
 

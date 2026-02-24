@@ -21,7 +21,10 @@ CoreRuntime::CoreRuntime()
         // on each core pump tick.
         assert(core_thread_.is_core_thread());
         enqueue_provider_fact(std::move(cmd));
-      }) {}
+      }) {
+  // Install dev-only latest-frame sink (core thread dispatch path).
+  dispatcher_.set_frame_sink(&latest_frame_sink_);
+}
 
 CoreRuntime::~CoreRuntime() {
   stop();

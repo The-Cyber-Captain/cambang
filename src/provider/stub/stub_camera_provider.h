@@ -71,6 +71,7 @@ private:
     StreamRequest req{};
     bool created = false;
     bool started = false;
+    uint64_t frame_index = 0;
   };
 
   IProviderCallbacks* callbacks_ = nullptr;
@@ -83,9 +84,9 @@ private:
 
   // Deterministic storage.
   std::map<uint64_t, DeviceState> devices_;   // key: device_instance_id
-std::map<uint64_t, StreamState> streams_;   // key: stream_id
+  std::map<uint64_t, StreamState> streams_;   // key: stream_id
 
-static void release_test_frame(void* user, const FrameView* frame);
+  static void release_test_frame(void* user, const FrameView* frame);
 
 static constexpr const char* kStubHardwareId = "stub0";
 

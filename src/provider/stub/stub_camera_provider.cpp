@@ -1,11 +1,24 @@
 ﻿#include "provider/stub/stub_camera_provider.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace cambang {
 
 namespace {
-static const std::uint8_t kTestBuffer[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+
+struct TestFramePayload final {
+  StubCameraProvider* self = nullptr;
+  std::vector<std::uint8_t> bytes;
+};
+
+static uint32_t fourcc(char a, char b, char c, char d) {
+  return (static_cast<uint32_t>(a)) |
+         (static_cast<uint32_t>(b) << 8) |
+         (static_cast<uint32_t>(c) << 16) |
+         (static_cast<uint32_t>(d) << 24);
+}
+
 } // namespace
 
 const char* StubCameraProvider::provider_name() const {
@@ -17,11 +30,14 @@ bool StubCameraProvider::is_known_hardware_id(const std::string& hardware_id) co
 }
 
 void StubCameraProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
-  auto* self = static_cast<StubCameraProvider*>(user);
-  if (!self) {
+  auto* payload = static_cast<TestFramePayload*>(user);
+  if (!payload) {
     return;
   }
-  self->frames_released_.fetch_add(1, std::memory_order_relaxed);
+  if (payload->self) {
+    payload->self->frames_released_.fetch_add(1, std::memory_order_relaxed);
+  }
+  delete payload;
 }
 
 ProviderResult StubCameraProvider::initialize(IProviderCallbacks* callbacks) {
@@ -121,6 +137,7 @@ ProviderResult StubCameraProvider::create_stream(const StreamRequest& req) {
   st.req = req;
   st.created = true;
   st.started = false;
+  st.frame_index = 0;
 
   dev_it->second.stream_id = req.stream_id;
 
@@ -174,28 +191,8 @@ ProviderResult StubCameraProvider::start_stream(uint64_t stream_id) {
   st_it->second.started = true;
   callbacks_->on_stream_started(stream_id);
 
-// Emit exactly one test frame to prove ownership + release-on-drop.
-frames_emitted_.fetch_add(1, std::memory_order_relaxed);
-
-FrameView fv{};
-fv.device_instance_id = st_it->second.req.device_instance_id;
-fv.stream_id = stream_id;
-fv.capture_id = 0;
-
-fv.width = st_it->second.req.width;
-fv.height = st_it->second.req.height;
-fv.format_fourcc = st_it->second.req.format_fourcc;
-
-fv.timestamp_ns = 0;
-
-fv.data = kTestBuffer;
-fv.size_bytes = sizeof(kTestBuffer);
-fv.stride_bytes = 0;
-
-fv.release = &StubCameraProvider::release_test_frame;
-fv.release_user = this;
-
-callbacks_->on_frame(fv);
+  // Emit exactly one test frame immediately to prove end-to-end plumbing.
+  emit_test_frames(stream_id, 1);
   return ProviderResult::success();
 }
 
@@ -208,26 +205,68 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     return;
   }
 
+  auto& st = st_it->second;
+  if (!st.started) {
+    return;
+  }
+
+  const uint32_t w = (st.req.width == 0) ? 320 : st.req.width;
+  const uint32_t h = (st.req.height == 0) ? 180 : st.req.height;
+
+  const uint32_t RGBA = fourcc('R', 'G', 'B', 'A');
+  const uint32_t fmt = (st.req.format_fourcc == 0) ? RGBA : st.req.format_fourcc;
+
+  // This stub provider currently only supports RGBA test frames.
+  if (fmt != RGBA) {
+    return;
+  }
+
+  const size_t row_bytes = static_cast<size_t>(w) * 4u;
+  const size_t total = row_bytes * static_cast<size_t>(h);
+
   for (uint32_t i = 0; i < count; ++i) {
     frames_emitted_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t fi = st.frame_index++;
+
+    auto* payload = new TestFramePayload();
+    payload->self = this;
+    payload->bytes.resize(total);
+
+    // Simple moving pattern: horizontal gradient with a moving vertical bar.
+    const uint32_t bar_x = static_cast<uint32_t>((fi * 4) % (w ? w : 1));
+    for (uint32_t y = 0; y < h; ++y) {
+      uint8_t* row = payload->bytes.data() + static_cast<size_t>(y) * row_bytes;
+      for (uint32_t x = 0; x < w; ++x) {
+        const uint8_t r = static_cast<uint8_t>((x + fi) & 0xFF);
+        const uint8_t g = static_cast<uint8_t>((y + (fi >> 1)) & 0xFF);
+        const uint8_t b = static_cast<uint8_t>(((x ^ y) + (fi >> 2)) & 0xFF);
+        const bool bar = (x == bar_x);
+
+        const size_t o = static_cast<size_t>(x) * 4u;
+        row[o + 0] = bar ? 0xFF : r;
+        row[o + 1] = bar ? 0xFF : g;
+        row[o + 2] = bar ? 0xFF : b;
+        row[o + 3] = 0xFF;
+      }
+    }
 
     FrameView fv{};
-    fv.device_instance_id = st_it->second.req.device_instance_id;
+    fv.device_instance_id = st.req.device_instance_id;
     fv.stream_id = stream_id;
     fv.capture_id = 0;
 
-    fv.width = st_it->second.req.width;
-    fv.height = st_it->second.req.height;
-    fv.format_fourcc = st_it->second.req.format_fourcc;
+    fv.width = w;
+    fv.height = h;
+    fv.format_fourcc = RGBA;
 
     fv.timestamp_ns = 0;
 
-    fv.data = kTestBuffer;
-    fv.size_bytes = sizeof(kTestBuffer);
-    fv.stride_bytes = 0;
+    fv.data = payload->bytes.data();
+    fv.size_bytes = payload->bytes.size();
+    fv.stride_bytes = static_cast<uint32_t>(row_bytes);
 
     fv.release = &StubCameraProvider::release_test_frame;
-    fv.release_user = this;
+    fv.release_user = payload;
 
     callbacks_->on_frame(fv);
   }
