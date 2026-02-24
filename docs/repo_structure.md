@@ -21,11 +21,26 @@ cambang/
 ├── SConstruct
 ├── README.md
 ├── docs/
+│   ├── INDEX.md
+│   ├── README.md
+│   ├── CONTRIBUTING.md
+│   ├── HOWTO-build_draft.txt
 │   ├── naming.md
 │   ├── state_snapshot.md
 │   ├── provider_architecture.md
 │   ├── core_runtime_model.md
-│   └── arbitration_policy.md
+│   ├── arbitration_policy.md
+│   ├── repo_structure.md
+│   ├── architecture/
+│   │   └── frame_sinks.md
+│   ├── dev/
+│   │   ├── frameview_stage.md
+│   │   ├── gde_build_loop_windows.md
+│   │   ├── gde_scaffolding_windows_mingw.md
+│   │   ├── scons_intent.md
+│   │   └── upstream_discrepancies.md
+│   └── screenshots/
+│       └── .gdignore
 ├── thirdparty/                # (if needed later)
 ├── src/
 │   ├── core/
@@ -37,6 +52,19 @@ cambang/
 ```
 
 ------------------------------------------------------------------------
+
+
+### Documentation structure and authority
+
+Documentation is structured deliberately to avoid drift:
+
+- Top-level `docs/*.md` files define **canonical architecture and policy**.
+- `docs/architecture/` contains **narrowly scoped supplements** to canonical docs.
+- `docs/dev/` contains **development-stage notes** and scaffolding documentation.
+
+If a contradiction appears, canonical documents take precedence.
+
+See `docs/INDEX.md` for the canonical/supplement/dev classification.
 
 ## 2. src/core/
 

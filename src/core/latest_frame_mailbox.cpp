@@ -25,9 +25,14 @@ inline bool validate_frame_minimal(const FrameView& f, size_t row_bytes, size_t 
 } // namespace
 
 void LatestFrameMailbox::write_from_core(FrameView frame) {
-  // This mailbox is a dev-visible sink. It intentionally only publishes
-  // tightly packed RGBA8 frames (stride == width * 4) for Godot upload.
-  // Everything else is dropped (but always released deterministically).
+  // IMPORTANT: This mailbox is intentionally conservative.
+  //
+  // It exists to provide a stable, low-friction debug/display path.
+  // It only publishes tightly packed RGBA8 frames for Godot.
+  //
+  // Unsupported formats (e.g. NV12/YUY2/RAW) are dropped *without conversion*
+  // to avoid accidentally baking in CPU-side overhead as the default path.
+  // Those formats should be handled by alternative sinks later.
 
   // Always release provider payload on exit.
   struct ReleaseOnExit {
@@ -37,9 +42,10 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
 
   const bool supported = (frame.format_fourcc == FOURCC_RGBA);
   const size_t row_bytes = static_cast<size_t>(frame.width) * 4u;
-  const size_t src_stride = (frame.stride_bytes == 0) ? row_bytes : static_cast<size_t>(frame.stride_bytes);
+  const size_t src_stride = (frame.stride_bytes == 0)
+                                ? row_bytes
+                                : static_cast<size_t>(frame.stride_bytes);
 
-  // Copy under lock for coherent state + coherent stats.
   uint64_t new_seq = 0;
   {
     std::lock_guard<std::mutex> lock(m_);
@@ -58,21 +64,19 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
     latest_.seq += 1;
     new_seq = latest_.seq;
 
+    // Correlation + metadata.
     latest_.device_instance_id = frame.device_instance_id;
     latest_.stream_id = frame.stream_id;
     latest_.capture_id = frame.capture_id;
 
     latest_.width = frame.width;
     latest_.height = frame.height;
-    latest_.format_fourcc = FOURCC_RGBA;
-    latest_.stride_bytes = static_cast<uint32_t>(row_bytes);
-
     latest_.timestamp_ns = frame.timestamp_ns;
 
     // Normalize to tightly packed RGBA8.
-    latest_.bytes.resize(row_bytes * static_cast<size_t>(frame.height));
+    latest_.pixels.resize(row_bytes * static_cast<size_t>(frame.height));
     const uint8_t* src = frame.data;
-    uint8_t* dst = latest_.bytes.data();
+    uint8_t* dst = latest_.pixels.data();
     for (uint32_t y = 0; y < frame.height; ++y) {
       std::memcpy(dst, src, row_bytes);
       src += src_stride;
@@ -83,11 +87,10 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
   }
 
   // Publish after releasing lock so readers can fast-path check.
-  // (Provider payload is released by RAII after this function returns.)
   published_seq_.store(new_seq, std::memory_order_release);
 }
 
-bool LatestFrameMailbox::try_copy_if_new(uint64_t last_seq, FrameCopy& out) const {
+bool LatestFrameMailbox::try_copy_if_new(uint64_t last_seq, RgbaFrame& out) const {
   // Cheap fast-path: skip lock if unchanged.
   const uint64_t pub = published_seq_.load(std::memory_order_acquire);
   if (pub == 0 || pub == last_seq) {
@@ -100,11 +103,12 @@ bool LatestFrameMailbox::try_copy_if_new(uint64_t last_seq, FrameCopy& out) cons
   }
 
   // Never surface an empty/invalid frame to Godot.
-  if (latest_.width == 0 || latest_.height == 0 || latest_.bytes.empty()) {
+  if (latest_.width == 0 || latest_.height == 0 || latest_.pixels.empty()) {
     return false;
   }
-  const size_t expected = static_cast<size_t>(latest_.width) * static_cast<size_t>(latest_.height) * 4u;
-  if (latest_.bytes.size() != expected) {
+  const size_t expected = static_cast<size_t>(latest_.width) *
+                          static_cast<size_t>(latest_.height) * 4u;
+  if (latest_.pixels.size() != expected) {
     return false;
   }
 
