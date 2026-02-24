@@ -11,6 +11,8 @@
 #include "core/core_snapshot.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
+#include "core/latest_frame_mailbox.h"
+#include "core/core_frame_sink.h"
 #include "core/provider_callback_ingress.h"
 
 #include "provider/icamera_provider.h"
@@ -115,6 +117,10 @@ public:
   // Provider callback ingress (transport boundary).
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 
+  // Dev-only: latest-frame mailbox read access.
+  // This remains core-owned state; Godot must treat it as read-only.
+  const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
+
   // Optional: attach a provider instance so CoreRuntime can perform deterministic
   // shutdown choreography (stop streams, tear down devices, provider shutdown).
   // Non-owning; caller must ensure the provider outlives CoreRuntime::stop().
@@ -142,6 +148,23 @@ private:
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
 
   CorePublisherBuffer publisher_;
+
+  LatestFrameMailbox latest_frame_mailbox_;
+  class LatestFrameMailboxSink final : public ICoreFrameSink {
+  public:
+    explicit LatestFrameMailboxSink(LatestFrameMailbox* mb) : mb_(mb) {}
+    void on_frame(FrameView frame) override {
+      if (mb_) {
+        mb_->write_from_core(std::move(frame));
+      } else {
+        frame.release_now();
+      }
+    }
+  private:
+    LatestFrameMailbox* mb_ = nullptr;
+  };
+  LatestFrameMailboxSink latest_frame_sink_{&latest_frame_mailbox_};
+
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;
 

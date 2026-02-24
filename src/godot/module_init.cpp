@@ -4,6 +4,7 @@
 #include <godot_cpp/core/class_db.hpp>
 
 #include "godot/dev/cambang_dev_node.h"
+#include "godot/dev/cambang_dev_frameview_node.h"
 
 static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
@@ -11,6 +12,7 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     }
 
     godot::ClassDB::register_class<cambang::CamBANGDevNode>();
+    godot::ClassDB::register_class<cambang::CamBANGDevFrameViewNode>();
 }
 
 static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {

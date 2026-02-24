@@ -6,6 +6,7 @@
 #include "core/core_mailbox.h"
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
+#include "core/core_frame_sink.h"
 
 namespace cambang {
 
@@ -48,9 +49,15 @@ public:
   // Must be called ONLY on the core thread.
   void reset_stats() noexcept { stats_ = {}; }
 
+  // Install an optional core-thread sink for provider frames.
+  // If unset, frames are released immediately (release-on-drop).
+  // Must be called before the core thread starts, or from the core thread.
+  void set_frame_sink(ICoreFrameSink* sink) noexcept { frame_sink_ = sink; }
+
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
   CoreDeviceRegistry* devices_ = nullptr; // non-owning; core-thread-only
+  ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreDispatchStats stats_{};
 };
 
