@@ -49,6 +49,9 @@ Lifecycle phases describe existence and teardown only:
 -   `DESTROYED` --- destroyed; record may be retained temporarily for
     diagnostics.
 
+`phase` in all record schemas refers to this lifecycle enum:
+CREATED | LIVE | TEARING_DOWN | DESTROYED.
+
 ### 2.2 Operational `mode`
 
 Operational mode describes what an entity is currently doing
@@ -207,13 +210,22 @@ CamBANGStreamState {
   last_frame_ts_ns: uint64               // 0 if none
 }
 ```
+**Field semantics (v1):**
+
+- `frames_received` counts frames reported by the provider and integrated by core.
+- `frames_delivered` counts frames successfully handed to the core frame sink
+  (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.
+- `frames_dropped` counts frames dropped due to queue pressure or shutdown gating.
+- `queue_depth` reflects provider → core ingress buffering depth as observed
+  by core at publish time.
 
 **Invariant (v1):** - At most one stream per `device_instance_id` may be
 `phase=LIVE` and `mode != STOPPED`.
 
 ### 6.4 `NativeObjectRecord`
 
-Native/core objects created by CamBANG are tracked as registry records.
+Native/core objects created by the provider on behalf of CamBANG
+are tracked as registry records.
 
 ``` text
 NativeObjectRecord {
@@ -246,6 +258,10 @@ index for tooling.
 A `root_id` is included if: - its controlling owner has ended, **and** -
 at least one `NativeObjectRecord` with that `root_id` still exists in
 the registry (either not DESTROYED, or DESTROYED but still retained).
+
+“Controlling owner” refers to the rig, device instance, or stream
+that originally owned the native object branch associated with the
+root_id.
 
 ------------------------------------------------------------------------
 

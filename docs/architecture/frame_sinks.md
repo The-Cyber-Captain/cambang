@@ -36,25 +36,45 @@ Implementations must:
 -   Either copy frame data immediately and release
 -   Or take ownership and guarantee deterministic release
 
+The dispatcher transfers ownership of the FrameView to the sink
+only after ensuring the frame is not dropped.
+Once delivered to the sink, the sink becomes responsible for
+deterministic release.
+
 Release-on-drop discipline must always be preserved.
 
 ------------------------------------------------------------------------
-
 ## Dev sink: LatestFrameMailbox
 
-`LatestFrameMailbox` is a **dev-only** sink used to provide visible output in Godot.
+`LatestFrameMailbox` is a **development-only** sink and is not part of
+the intended release architecture. It may be removed or replaced
+once production GPU-native paths are implemented.
 LatestFrameMailbox is a development-stage sink that:
 
--   Accepts only tightly packed RGBA8 frames
+-   Accepts tightly packed 32-bit RGBA-class frames
 -   Normalises stride
 -   Drops unsupported formats
 -   Stores only the latest frame
 
-Unsupported formats are dropped and released without conversion.
-This sink exists for visibility and integration validation.
+### Accepted formats (dev visibility phase)
 
-It is not the intended high-performance production path for YUV or RAW
-camera formats. 
+The mailbox accepts:
+
+-   `FOURCC_RGBA` (tightly packed RGBA8)
+-   `FOURCC_BGRA` (tightly packed BGRA8)
+
+BGRA frames are channel-swizzled to RGBA before storage.
+
+This swizzle is a **byte-order normalization**, not a colourspace conversion.
+
+No YUV→RGB conversion is performed.
+No compressed formats are converted.
+
+Unsupported formats are dropped and released deterministically.
+
+This sink exists solely for visibility and integration validation.
+It is not the intended high-performance production path for YUV, RAW,
+or compressed camera formats.
 
 Future production sinks may:
 
@@ -72,3 +92,7 @@ including GPU-native YUV import and shader conversion.
 
 Frame sinks are extension points, not redefinitions of the core provider
 contract.
+
+Frame sinks do not alter stream counter semantics defined in
+state_snapshot.md; counters are updated by core prior to
+sink invocation.

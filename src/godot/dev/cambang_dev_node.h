@@ -9,7 +9,7 @@ namespace cambang {
 
     class CoreRuntime;
     class LatestFrameMailbox;
-    class StubCameraProvider;
+    class ICameraProvider;
 
     class CamBANGDevNode : public godot::Node {
         GDCLASS(CamBANGDevNode, godot::Node)
@@ -32,7 +32,7 @@ namespace cambang {
         static std::atomic<bool> s_live;
 
         std::unique_ptr<CoreRuntime> runtime_;
-        std::unique_ptr<StubCameraProvider> provider_;
+        std::unique_ptr<ICameraProvider> provider_;
         bool started_ = false;
 
         // Dev-only scaffolding ids.

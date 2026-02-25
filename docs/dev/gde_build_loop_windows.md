@@ -6,6 +6,9 @@ Target: Godot 4.5.x (Windows editor), MinGW-w64 toolchain
 This document describes the repeatable local loop for building and running the
 temporary GDExtension scaffolding (CamBANGDevNode) on Windows.
 
+This document describes temporary scaffolding workflow and does not define
+release build procedures.
+
 ---
 
 ## Prerequisites
@@ -13,7 +16,7 @@ temporary GDExtension scaffolding (CamBANGDevNode) on Windows.
 - Godot 4.5.x Windows editor installed
 - MSYS2 MinGW x64 environment installed
 - `scons` available in the MSYS2 MinGW shell
-- `thirdparty/godot-cpp` submodule initialised and pinned
+- `thirdparty/godot-cpp` submodule initialised and pinned. The submodule must match the intended Godot minor version (4.5.x).
 
 ---
 

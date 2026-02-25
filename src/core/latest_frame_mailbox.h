@@ -36,6 +36,11 @@ class LatestFrameMailbox final {
 public:
   struct Stats {
     uint64_t frames_received = 0;
+
+    // Published as tightly packed RGBA8.
+    uint64_t accepted_rgba = 0;
+    uint64_t accepted_bgra_swizzled = 0;
+
     uint64_t frames_published = 0;
     uint64_t frames_dropped_unsupported = 0;
     uint64_t frames_dropped_invalid = 0;

@@ -47,6 +47,7 @@ cambang/
 │   ├── provider/
 │   ├── godot/
 │   ├── synthetic/
+│   ├── smoke/
 │   └── util/
 └── tests/
 ```
@@ -164,8 +165,49 @@ here)
 Godot layer must never mutate core state directly.
 
 ------------------------------------------------------------------------
+## 6. src/smoke/
 
-## 6. src/util/
+Contains internal **core smoke executable** entrypoints.
+
+This code exists to validate core invariants quickly and deterministically
+without involving Godot or platform camera stacks.
+
+
+**Properties**
+
+- Opt-in build (not a default target).
+- Stub-provider-only by design (must not depend on platform providers).
+- Not part of the GDExtension artifact.
+- Intended to exercise:
+    - CoreRuntime lifecycle determinism
+    - strict ingress ordering
+    - dispatcher release-on-drop semantics
+    - shutdown choreography under load
+
+
+**Location**:
+src/smoke/core_spine_smoke.cpp
+
+
+### Core Smoke Harness
+
+**Purpose**:
+- Deterministic invariant validation of core runtime
+- Stub-provider-only lifecycle verification
+- Optional stress mode for repeated churn testing
+
+The smoke harness must remain independent of `provider=...` selection.
+Platform providers are validated separately.
+
+**Build / gating**
+
+Smoke-only code paths are gated behind `CAMBANG_INTERNAL_SMOKE` to keep
+the production/core surface free of temporary instrumentation hooks.
+Legacy “IDE smoke” nomenclature is intentionally not used.
+
+------------------------------------------------------------------------
+
+## 7. src/util/
 
 Shared utilities.
 
@@ -182,7 +224,7 @@ Utilities must remain platform-neutral.
 
 ------------------------------------------------------------------------
 
-## 7. tests/
+## 8. tests/
 
 Test harness and deterministic integration tests.
 
@@ -201,14 +243,14 @@ CI must run tests with synthetic provider enabled.
 
 ------------------------------------------------------------------------
 
-## 8. SCons Structure
+## 9. SCons Structure
 
-### 8.1 Build Targets
+### 9.1 Build Targets
 
 -   `cambang` (GDExtension shared library)
 -   Optional: `cambang_tests` (unit test binary)
 
-### 8.2 Platform Selection
+### 9.2 Platform Selection
 
 Use SCons flags:
 
@@ -221,7 +263,7 @@ scons synthetic=yes
 Provider selection must compile only one provider implementation into
 the final binary.
 
-### 8.3 Compile-time flags
+### 9.3 Compile-time flags
 
 -   `CAMBANG_ENABLE_SYNTHETIC`
 -   `CAMBANG_DEBUG_LIFECYCLE`
@@ -229,7 +271,7 @@ the final binary.
 
 ------------------------------------------------------------------------
 
-## 9. Dependency Rules
+## 10. Dependency Rules
 
 -   `core/` must not depend on `godot/`
 -   `core/` must not depend on `provider/android/`
@@ -241,7 +283,7 @@ This preserves architectural layering.
 
 ------------------------------------------------------------------------
 
-## 10. Future-Proofing Guarantees
+## 11. Future-Proofing Guarantees
 
 This structure supports:
 
@@ -254,7 +296,7 @@ This structure supports:
 
 ------------------------------------------------------------------------
 
-## 11. Implementation Order (Recommended)
+## 12. Implementation Order (Recommended)
 
 1.  Stub provider + core thread skeleton
 2.  Snapshot builder
@@ -270,7 +312,7 @@ camera2.
 
 ------------------------------------------------------------------------
 
-## 12. Invariants
+## 13. Invariants
 
 -   Core is platform-agnostic.
 -   Providers are isolated by directory.

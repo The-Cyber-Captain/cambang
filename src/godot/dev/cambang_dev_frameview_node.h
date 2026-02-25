@@ -42,6 +42,8 @@ private:
 
   void resolve_deps_();
   void try_update_();
+
+  double stats_accum_ = 0.0;
 };
 
 } // namespace cambang

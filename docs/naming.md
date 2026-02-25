@@ -61,8 +61,8 @@ Primary controls:
 -   `start()` / `stop()` --- begin or cease the repeating flow of
     frames.
 
-Each device supports at most **one active repeating stream at a time**
-(design choice).
+Each device supports at most one active repeating stream at a time
+(i.e., a stream with `phase=LIVE` and `mode != STOPPED`).
 
 Streams are created with a `StreamIntent`:
 
@@ -148,6 +148,9 @@ Spec updates follow a single API pattern:
 devices are not actively engaged with hardware resources and there is no
 in-flight synchronised capture that depends on them.
 
+The precise definition of "safe" is governed by core arbitration and
+warm scheduling policy as defined in core_runtime_model.md.
+
 ------------------------------------------------------------------------
 
 ## 5. Published snapshot and introspection
@@ -168,8 +171,7 @@ Records inside the snapshot that correspond to user-facing objects:
 -   `CamBANGDeviceState`
 -   `CamBANGStreamState`
 
-Native/core objects created by CamBANG are tracked as registry records:
-
+Native/core objects created by the provider on behalf of CamBANG are tracked as registry records:
 -   `NativeObjectRecord`
 
 ### Publication counters

@@ -83,9 +83,10 @@ is fixed.
 
 Core must validate and normalize profiles/specs before calling provider.
 
-Provider may still reject a request **only** when: - The platform cannot
-support the validated request (hard constraint) - The platform reports
-transient failure that prevents execution
+Provider may still reject a request **only** when:
+
+- The platform cannot support the validated request (hard constraint)
+- The platform reports transient failure that prevents execution
 
 Provider must return deterministic, explicit error codes for such
 rejections.
@@ -129,9 +130,9 @@ instance unless explicitly documented.
 
 ## 5. Native object reporting
 
-Every native object created by CamBANG (including platform-native
-handles, reader objects, buffer pools, etc.) must be reported to core
-for snapshot introspection.
+Every native object created by the provider on behalf of CamBANG
+(including platform-native handles, reader objects, buffer pools, etc.)
+must be reported to core for snapshot introspection.
 
 ### 5.1 Registration
 
@@ -238,12 +239,90 @@ transitions.
 ## 11. Provider implementations (v1 targets)
 
 -   `AndroidCamera2Provider`
+-   `WindowsMediaFoundationProvider`
 -   `SyntheticProvider` (test harness / deterministic simulation)
 -   `StubProvider` (not implemented platforms; returns deterministic
     "not supported" responses)
 
 All providers must satisfy this contract, even if they provide only "not
 supported" behaviour.
+
+Note:
+
+- `StubProvider` is a minimal deterministic provider used for
+  lifecycle validation and smoke testing.
+
+- `SyntheticProvider` is intended for richer deterministic simulation
+  (e.g., multi-camera rigs, timestamp modelling) and may supersede
+  StubProvider in later development phases.
+
+### 11.1 WindowsMediaFoundationProvider (Windows / Media Foundation)
+
+The Windows provider is implemented using Media Foundation (MF).
+
+It exists primarily to:
+
+- Validate lifecycle determinism on Windows.
+- Exercise provider ↔ core contract under real camera load.
+- Provide a development accelerator for Godot visibility work.
+
+#### Determinism and shutdown
+
+The MF provider must:
+
+- Avoid indefinite blocking during `ReadSample` loops.
+- Provide a deterministic unblock mechanism during stop/shutdown
+  (e.g. flush or reader teardown).
+- Preserve serialized callback semantics into core.
+
+Validated behaviour during development:
+
+- Continuous frame delivery (including drop-heavy cases) does not break
+  release-on-drop discipline.
+- Rapid start/stop cycles complete without hang.
+- No double-release or native object leakage observed under stress.
+
+#### Native format constraints (visibility phase)
+
+When `MF_READWRITE_DISABLE_CONVERTERS = TRUE` is set:
+
+- Only native camera output types are selectable.
+- Many consumer cameras expose YUV-only formats (e.g. `NV12`, `YUY2`,
+  `MJPG`) natively.
+- If no RGB32-like subtype (`MFVideoFormat_RGB32`,
+  `MFVideoFormat_ARGB32`, etc.) is advertised, visible pixels cannot be
+  produced without enabling conversion.
+
+CamBANG intentionally does **not** introduce CPU YUV→RGB conversion into
+core or the development mailbox path.
+
+Policy during v1 visibility phase:
+
+- Mailbox accepts tightly packed RGBA8 only.
+- A dev-only BGRA→RGBA channel swizzle is permitted.
+- Unsupported formats are dropped and released deterministically.
+
+This separation ensures lifecycle and ownership correctness can be
+validated independently of colour conversion strategy.
+
+#### MinGW toolchain notes
+
+When building under MinGW, the link set must include:
+
+- `mf`
+- `mfplat`
+- `mfreadwrite`
+- `mfuuid`
+- `ole32`
+- `uuid`
+
+`mf` is required for `MFEnumDeviceSources`.
+`uuid` is required for `GUID_NULL` resolution.
+
+Prefer MF helper functions (e.g. `MFGetAttributeSize`,
+`MFGetAttributeUINT32`) over relying on inline convenience methods
+(e.g. `GetINT32`), as MinGW headers may not expose all helpers
+consistently.
 
 ------------------------------------------------------------------------
 
@@ -260,3 +339,18 @@ A provider is considered compliant when:
 -   Errors are reported deterministically and scoped correctly
 -   Synchronised capture support (if implemented) reports timestamps per
     frame
+
+### 12.x Validation layering
+
+Provider compliance is validated in two stages:
+
+1) **Core smoke (stub provider)**  
+   Validates lifecycle determinism, release semantics, and shutdown invariants
+   independently of platform APIs.
+
+2) **Platform provider runtime validation**  
+   Validates real API behaviour (e.g., Windows MF, Android camera2)
+   under hardware-backed asynchronous load.
+
+Core smoke must remain provider-independent.
+Platform validation must not redefine core invariants.

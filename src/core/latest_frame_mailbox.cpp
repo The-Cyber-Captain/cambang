@@ -40,7 +40,9 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
     ~ReleaseOnExit() { f.release_now(); }
   } release_on_exit{frame};
 
-  const bool supported = (frame.format_fourcc == FOURCC_RGBA);
+  const bool is_rgba = (frame.format_fourcc == FOURCC_RGBA);
+  const bool is_bgra = (frame.format_fourcc == FOURCC_BGRA);
+  const bool supported = is_rgba || is_bgra;
   const size_t row_bytes = static_cast<size_t>(frame.width) * 4u;
   const size_t src_stride = (frame.stride_bytes == 0)
                                 ? row_bytes
@@ -74,13 +76,41 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
     latest_.timestamp_ns = frame.timestamp_ns;
 
     // Normalize to tightly packed RGBA8.
+    // Dev-only exception: if provider supplies BGRA8, perform a channel swizzle
+    // (B↔R) only. This is *not* a colorspace conversion and does not imply
+    // future YUV/RAW CPU conversions belong here.
     latest_.pixels.resize(row_bytes * static_cast<size_t>(frame.height));
     const uint8_t* src = frame.data;
     uint8_t* dst = latest_.pixels.data();
-    for (uint32_t y = 0; y < frame.height; ++y) {
-      std::memcpy(dst, src, row_bytes);
-      src += src_stride;
-      dst += row_bytes;
+
+    if (is_rgba) {
+      stats_.accepted_rgba += 1;
+      for (uint32_t y = 0; y < frame.height; ++y) {
+        std::memcpy(dst, src, row_bytes);
+        src += src_stride;
+        dst += row_bytes;
+      }
+    } else { // BGRA
+      stats_.accepted_bgra_swizzled += 1;
+      for (uint32_t y = 0; y < frame.height; ++y) {
+        // Swizzle per pixel: BGRA -> RGBA
+        const uint8_t* s = src;
+        uint8_t* d = dst;
+        for (uint32_t x = 0; x < frame.width; ++x) {
+          const uint8_t b = s[0];
+          const uint8_t g = s[1];
+          const uint8_t r = s[2];
+          const uint8_t a = s[3];
+          d[0] = r;
+          d[1] = g;
+          d[2] = b;
+          d[3] = 255; // MF RGB32/BGRA alpha is often undefined/0; force opaque for dev preview.
+          s += 4;
+          d += 4;
+        }
+        src += src_stride;
+        dst += row_bytes;
+      }
     }
 
     stats_.frames_published += 1;

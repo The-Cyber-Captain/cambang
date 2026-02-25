@@ -9,8 +9,12 @@ It is intentionally **dev-only scaffolding**.
 ## What is temporary
 
 - **CamBANGDevNode** owns `CoreRuntime` for the duration of a play session.
-- The **stub provider** is driven from Godot `_process()` for convenience.
+- The **stub provider** is driven from Godot `_process()` for convenience. This driving mechanism is a convenience for development and does not
+  represent production provider threading models.
 - The **LatestFrameMailbox** is a *debug/display sink* that stores only the latest frame.
+
+In the intended release architecture, CoreRuntime ownership will move
+to a server-owned or Engine-level singleton rather than a scene node.
 
 These choices avoid global state and keep iteration fast while the core contract stabilizes.
 
@@ -24,13 +28,50 @@ These are architectural spine elements expected to remain.
 
 ## Display-normalized boundary
 
-The mailbox stores `cambang::RgbaFrame`, a **tightly packed RGBA8** image. This is deliberate:
+The mailbox stores `cambang::RgbaFrame`, a **tightly packed RGBA8** image.
+This is deliberate:
 
 - Godot can upload RGBA8 to `ImageTexture` with minimal glue.
-- The mailbox is conservative: it only accepts provider `FrameView` with `FOURCC_RGBA`.
-- Unsupported formats (e.g. NV12/YUY2/RAW) are **dropped and released** without conversion.
+- The mailbox is conservative: it accepts only 32-bit RGBA-class formats.
+- Unsupported formats (e.g. NV12, YUY2, RAW) are **dropped and released**
+  without conversion.
 
-This prevents accidentally making CPU YUV/RAW conversion “the default” performance path.
+### Accepted formats (dev visibility phase)
+
+During the Windows Media Foundation visibility phase, it was observed that:
+
+- Many consumer cameras expose only YUV-native formats when MF converters
+  are disabled.
+- Native RGB32-like formats (`MFVideoFormat_RGB32`,
+  `MFVideoFormat_ARGB32`) may or may not be available depending on device.
+
+To improve dev visibility without introducing CPU colour conversion:
+
+- The mailbox accepts:
+    - `FOURCC_RGBA` (tightly packed RGBA8)
+    - `FOURCC_BGRA` (tightly packed BGRA8)
+
+- BGRA frames are **channel-swizzled to RGBA** before storage.
+- No YUV→RGB conversion is performed.
+- No compressed formats are converted.
+
+This swizzle is a *byte-order normalization*, not a colourspace conversion,
+and exists solely to make 32-bit RGB-class outputs visible in Godot during
+development.
+
+### Intentional non-support
+
+The following remain intentionally unsupported in this stage:
+
+- NV12 / YUY2 / other YUV formats
+- RAW sensor formats
+- MJPG / compressed stream formats
+
+These are dropped deterministically and released immediately.
+
+This prevents accidentally baking CPU conversion into the default
+performance path and keeps lifecycle/ownership validation isolated from
+format-conversion concerns.
 
 ## Production expectation
 

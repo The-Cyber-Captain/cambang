@@ -77,7 +77,38 @@ cp /mingw64/bin/libwinpthread-1.dll tests/cambang_gde/bin/
 export PATH=/mingw64/bin:$PATH
 "/c/path/to/Godot_v4.5.1-stable_win64.exe"
 ```
+### Media Foundation provider (MinGW) – link + visibility notes
 
+When building with:
+
+- `provider=windows_mediafoundation`
+
+under MinGW, additional system libraries are required at link time:
+
+- `mf` (required for `MFEnumDeviceSources`)
+- `mfplat`
+- `mfreadwrite`
+- `mfuuid`
+- `ole32`
+- `uuid` (required for `GUID_NULL` resolution on MinGW)
+
+If these are omitted, link-time failures will occur.
+
+#### Visibility-phase constraints
+
+During the initial Windows visibility phase:
+
+- `MF_READWRITE_DISABLE_CONVERTERS` is enabled.
+- Only native camera output types are selectable.
+- Many consumer cameras expose only YUV-native formats (e.g. NV12, YUY2, MJPG).
+
+If no RGB32-like subtype (`MFVideoFormat_RGB32`, `MFVideoFormat_ARGB32`, etc.)
+is advertised natively, visible pixels will not appear. This is expected behaviour
+and does not indicate a failure of the provider or build configuration.
+
+For the development-phase record and acceptance/drop counter interpretation, see:
+
+- `docs/dev/windows_mf_visibility_phase.md`
 ---
 
 ## 4. `.gdextension` Encoding Requirement (No BOM)
