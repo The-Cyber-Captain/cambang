@@ -66,8 +66,7 @@ deadline expires (timed wake) - shutdown is requested (notify)
 
 On each wake, core processes in the following order:
 
-1.  **Drain provider events** (bounded or full drain; v1 default is full
-    drain)
+1.  **Drain provider events** (full drain unless explicitly documented otherwise)
 2.  **Drain commands** (bounded or full drain; v1 default is full drain)
 3.  **Process due timers** (all deadlines ≤ now)
 4.  **Publish snapshot if dirty** (exactly once per loop iteration)
@@ -138,10 +137,13 @@ Core implements arbitration (providers do not arbitrate).
 3.  Repeating streams (`VIEWFINDER` preferred over `PREVIEW` only when
     allowed; both are preemptible)
 
-### 6.2 One repeating stream per device
+### 6.2 One active repeating stream per device
 
-Each device instance supports at most one repeating stream active at a
-time (design choice).
+Each device instance supports at most one repeating stream **active**
+(`mode != STOPPED`) at a time.
+
+Multiple stream records may exist for a device (e.g., PREVIEW configured
+but STOPPED while VIEWFINDER is active), but only one may be active at once.
 
 ### 6.3 v1 viewfinder rule (simple)
 
@@ -201,8 +203,11 @@ Rules: - DESTROYED records remain in registry until retention expires -
 a retirement sweep removes expired records - **if the sweep removes any
 records, core marks snapshot dirty and publishes**
 
-Sweep triggers: - opportunistically before publish - and/or via a
-scheduled timer when the next record is due to expire (recommended)
+Retention sweep runs:
+
+- Immediately before snapshot assembly (always), and
+- Optionally via scheduled timer to ensure timely retirement
+  even when no other activity occurs.
 
 ------------------------------------------------------------------------
 
@@ -247,6 +252,9 @@ When shutdown is requested:
 8.  Core thread exits
 
 Providers must not block indefinitely on shutdown (provider contract).
+Core may internally model shutdown as explicit ordered phases,
+but the architectural guarantee is completion of steps 1–8
+before thread termination.
 
 ------------------------------------------------------------------------
 
@@ -261,6 +269,15 @@ correctness - snapshot generation correctness
 Synthetic mode is a first-class test harness strategy for CI and
 development confidence.
 
+Note:
+
+The current development smoke harness uses a minimal
+`StubProvider` for lifecycle and determinism validation.
+
+`SyntheticProvider` is intended as a richer deterministic
+simulation provider and may supersede StubProvider in
+future development phases.
+
 ------------------------------------------------------------------------
 
 ## 12. Invariants summary
@@ -273,3 +290,37 @@ development confidence.
 -   Snapshot publication is atomic and lock-free for readers.
 -   Shutdown proceeds deterministically and leaves a final published
     snapshot.
+
+## 13. Validation Strategy (Core vs Platform)
+------------------------------------------------------------------------
+
+CamBANG distinguishes between **core invariant validation** and
+**platform provider integration validation**.
+
+### 13.1 Core invariant validation (portable)
+
+Core lifecycle and determinism invariants are validated in development
+builds via the `core_spine_smoke` harness (stub-provider-only).
+
+The smoke harness validates:
+
+- Deterministic shutdown choreography
+- Release-on-drop semantics under overload
+- Command rejection during `TEARING_DOWN`
+- Late provider fact integration
+- EXIT phase reached before thread termination
+- No frame leaks across repeated start/stop cycles
+
+This validation is platform-independent and must remain stub-provider-only.
+
+### 13.2 Platform integration validation
+
+Platform providers (e.g., Windows Media Foundation) are validated
+separately under real hardware conditions to ensure:
+
+- Correct threading integration
+- Correct callback serialization
+- No deadlocks under real API pressure
+- Deterministic teardown under platform constraints
+
+Platform validation supplements but does not replace core invariant validation.

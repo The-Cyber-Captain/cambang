@@ -20,6 +20,13 @@ They are authoritative and must not be contradicted by other documents.
 -   naming.md
 -   repo_structure.md
 
+Note:
+
+Validation layering (core invariant validation vs platform integration
+validation) is defined in `core_runtime_model.md`.
+
+Platform-specific validation documents must not redefine core invariants.
+
 If any supplementary document appears to conflict with these, the
 canonical architecture documents take precedence.
 

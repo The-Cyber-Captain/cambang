@@ -231,3 +231,22 @@ Provider backends (especially platform APIs like Windows Media Foundation) are a
 **Naming**
 - Smoke-only code paths use `CAMBANG_INTERNAL_SMOKE`.
 - Legacy “IDE smoke” nomenclature has been removed.
+
+### Stress Mode (Smoke Harness)
+
+The `core_spine_smoke` executable supports an optional stress mode:
+
+--stress
+--loops=N
+--jitter_ms=K
+--seed=S
+
+Stress mode performs repeated lifecycle churn using the stub provider to validate:
+
+- Deterministic shutdown behaviour
+- Release-on-drop under overload
+- No frame leaks across stop()
+- EXIT phase reached on every teardown
+- Admission gating during teardown
+
+This mode remains stub-provider-only and must not depend on platform providers.

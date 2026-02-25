@@ -191,7 +191,8 @@ updated on completion (success or failure where meaningful).
 ### 8.3 Stream counters
 
 -   `frames_received` increments when provider delivers a frame.
--   `frames_delivered` increments when core delivers frame to consumer.
+-   `frames_delivered` increments when core hands the frame to its frame sink
+  (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.
 -   `frames_dropped` increments when core drops a frame (queue full /
     latest-only).
 -   `queue_depth` reports instantaneous queue size at publish time.

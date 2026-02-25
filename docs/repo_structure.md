@@ -172,6 +172,7 @@ Contains internal **core smoke executable** entrypoints.
 This code exists to validate core invariants quickly and deterministically
 without involving Godot or platform camera stacks.
 
+
 **Properties**
 
 - Opt-in build (not a default target).
@@ -183,9 +184,20 @@ without involving Godot or platform camera stacks.
     - dispatcher release-on-drop semantics
     - shutdown choreography under load
 
-**Location**
 
-- `src/smoke/core_spine_smoke.cpp`
+**Location**:
+src/smoke/core_spine_smoke.cpp
+
+
+### Core Smoke Harness
+
+**Purpose**:
+- Deterministic invariant validation of core runtime
+- Stub-provider-only lifecycle verification
+- Optional stress mode for repeated churn testing
+
+The smoke harness must remain independent of `provider=...` selection.
+Platform providers are validated separately.
 
 **Build / gating**
 

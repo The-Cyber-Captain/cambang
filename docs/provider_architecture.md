@@ -83,9 +83,10 @@ is fixed.
 
 Core must validate and normalize profiles/specs before calling provider.
 
-Provider may still reject a request **only** when: - The platform cannot
-support the validated request (hard constraint) - The platform reports
-transient failure that prevents execution
+Provider may still reject a request **only** when:
+
+- The platform cannot support the validated request (hard constraint)
+- The platform reports transient failure that prevents execution
 
 Provider must return deterministic, explicit error codes for such
 rejections.
@@ -129,9 +130,9 @@ instance unless explicitly documented.
 
 ## 5. Native object reporting
 
-Every native object created by CamBANG (including platform-native
-handles, reader objects, buffer pools, etc.) must be reported to core
-for snapshot introspection.
+Every native object created by the provider on behalf of CamBANG
+(including platform-native handles, reader objects, buffer pools, etc.)
+must be reported to core for snapshot introspection.
 
 ### 5.1 Registration
 
@@ -246,6 +247,15 @@ transitions.
 All providers must satisfy this contract, even if they provide only "not
 supported" behaviour.
 
+Note:
+
+- `StubProvider` is a minimal deterministic provider used for
+  lifecycle validation and smoke testing.
+
+- `SyntheticProvider` is intended for richer deterministic simulation
+  (e.g., multi-camera rigs, timestamp modelling) and may supersede
+  StubProvider in later development phases.
+
 ### 11.1 WindowsMediaFoundationProvider (Windows / Media Foundation)
 
 The Windows provider is implemented using Media Foundation (MF).
@@ -329,3 +339,18 @@ A provider is considered compliant when:
 -   Errors are reported deterministically and scoped correctly
 -   Synchronised capture support (if implemented) reports timestamps per
     frame
+
+### 12.x Validation layering
+
+Provider compliance is validated in two stages:
+
+1) **Core smoke (stub provider)**  
+   Validates lifecycle determinism, release semantics, and shutdown invariants
+   independently of platform APIs.
+
+2) **Platform provider runtime validation**  
+   Validates real API behaviour (e.g., Windows MF, Android camera2)
+   under hardware-backed asynchronous load.
+
+Core smoke must remain provider-independent.
+Platform validation must not redefine core invariants.
