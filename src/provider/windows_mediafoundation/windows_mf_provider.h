@@ -116,6 +116,17 @@ private:
     std::thread worker;
 
     // Worker-thread-owned MF objects. Created/used/destroyed on worker thread.
+
+    // For "log once / on change" type visibility.
+    GUID last_logged_subtype = GUID_NULL;
+    uint32_t last_logged_w = 0;
+    uint32_t last_logged_h = 0;
+    int32_t last_logged_stride = 0;
+    bool logged_native_types = false;
+    bool dumped_first_rgba4 = false;
+    bool dumped_first_buflen = false;
+
+  bool     seen_first_sample = false;
     ComPtr<IMFSourceReader> reader;
   };
 

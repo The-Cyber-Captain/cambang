@@ -6,9 +6,16 @@
 #include "provider/windows_mediafoundation/windows_mf_types.h"
 
 #include <cstring>
+#include <cstdarg>
+#include <cstdio>
+#include <cinttypes>
+
+#include <objbase.h> // StringFromGUID2
 
 #include <mfapi.h>
 #include <mferror.h>
+
+#include <godot_cpp/variant/utility_functions.hpp>
 
 namespace cambang {
 
@@ -28,6 +35,116 @@ struct ComInit {
     }
   }
 };
+
+
+static void mf_logf(const char* fmt, ...) {
+  char buf[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  // Route through Godot so it shows in the editor Output panel.
+  godot::UtilityFunctions::print(buf);
+}
+
+static std::string guid_to_string(const GUID& g) {
+  wchar_t wbuf[64] = {0};
+  int n = ::StringFromGUID2(g, wbuf, (int)(sizeof(wbuf) / sizeof(wbuf[0])));
+  if (n <= 0) return std::string("{guid?}");
+  char buf[128] = {0};
+  std::snprintf(buf, sizeof(buf), "%ls", wbuf);
+  return std::string(buf);
+}
+
+// MinGW-friendly signed attribute fetch (handles VT_I4 / VT_UI4 etc).
+static bool try_get_attr_i32(IMFAttributes* a, REFGUID key, int32_t* out) {
+  if (!a || !out) return false;
+  PROPVARIANT v;
+  ::PropVariantInit(&v);
+  HRESULT hr = a->GetItem(key, &v);
+  if (FAILED(hr)) {
+    ::PropVariantClear(&v);
+    return false;
+  }
+
+  bool ok = false;
+  int32_t val = 0;
+
+  switch (v.vt) {
+    case VT_I4:  val = v.lVal; ok = true; break;
+    case VT_UI4: val = (int32_t)v.ulVal; ok = true; break;
+    case VT_I8:  val = (int32_t)v.hVal.QuadPart; ok = true; break;
+    case VT_UI8: val = (int32_t)v.uhVal.QuadPart; ok = true; break;
+    default: break;
+  }
+
+  ::PropVariantClear(&v);
+  if (!ok) return false;
+  *out = val;
+  return true;
+}
+
+static void log_media_type_once(const char* tag, IMFMediaType* mt) {
+  if (!mt) {
+    mf_logf("[MF] %s: <null media type>", tag);
+    return;
+  }
+
+  GUID subtype = GUID_NULL;
+  mt->GetGUID(MF_MT_SUBTYPE, &subtype);
+
+  UINT32 w = 0, h = 0;
+  MFGetAttributeSize(mt, MF_MT_FRAME_SIZE, &w, &h);
+
+  int32_t stride_i32 = 0;
+  bool have_stride = try_get_attr_i32(mt, MF_MT_DEFAULT_STRIDE, &stride_i32);
+  if (!have_stride) {
+    UINT32 s = MFGetAttributeUINT32(mt, MF_MT_DEFAULT_STRIDE, 0);
+    stride_i32 = (s != 0) ? (int32_t)s : 0;
+  }
+
+  mf_logf("[MF] %s: subtype=%s size=%ux%u stride=%" PRId32,
+          tag, guid_to_string(subtype).c_str(), w, h, stride_i32);
+}
+
+static bool is_rgb32_family(const GUID& st) {
+  return (st == MFVideoFormat_RGB32) || (st == MFVideoFormat_ARGB32);
+}
+
+static ComPtr<IMFMediaType> choose_native_type(IMFSourceReader* reader,
+                                               const StreamRequest& req) {
+  ComPtr<IMFMediaType> best;
+  int best_score = -1;
+
+  for (DWORD i = 0;; ++i) {
+    ComPtr<IMFMediaType> mt;
+    HRESULT hr = reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, mt.put());
+    if (hr == MF_E_NO_MORE_TYPES) break;
+    if (FAILED(hr) || !mt) continue;
+
+    GUID st = GUID_NULL;
+    mt->GetGUID(MF_MT_SUBTYPE, &st);
+
+    UINT32 w = 0, h = 0;
+    MFGetAttributeSize(mt.get(), MF_MT_FRAME_SIZE, &w, &h);
+
+    if (!is_rgb32_family(st)) continue;
+
+    int score = 0;
+    if (req.width != 0 && req.height != 0) {
+      if (w == req.width && h == req.height) score += 100;
+    }
+
+    if (score > best_score) {
+      best_score = score;
+      best = std::move(mt);
+      if (score >= 100) break;
+    }
+  }
+
+  return best;
+}
+
 
 // Provider-owned frame release hook payload.
 struct SampleReleasePayload {
@@ -501,7 +618,7 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
 
   // Build attributes with async callback.
   ComPtr<IMFAttributes> attrs;
-  HRESULT hr = ::MFCreateAttributes(attrs.put(), 2);
+  HRESULT hr = ::MFCreateAttributes(attrs.put(), 4);
   if (FAILED(hr)) {
     callbacks_->on_stream_error(stream_id, provider_error_from_hr(hr));
     return;
@@ -509,6 +626,12 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
 
   auto* cb = new WindowsMfCameraProvider::SourceReaderCallback(&stream_);
   attrs->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, cb);
+
+  // Dev-accelerator: allow Source Reader converters so we can request RGB32 from YUV-only devices.
+  // (CamBANG still has no CPU YUV->RGB paths; any conversion is inside MF.)
+  // Note: we intentionally do NOT set MF_READWRITE_DISABLE_CONVERTERS.
+  attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+
 
   // Create reader on this worker thread (reader will invoke cb on MF threads).
   ComPtr<IMFSourceReader> reader;
@@ -522,11 +645,92 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
     return;
   }
 
-  // Publish reader so stop_stream can Flush to cancel pending requests.
-  stream_.reader = std::move(reader);
+  // Enumerate native types once per stream and choose a candidate.
+// (Do not publish reader yet; negotiation should occur before any ReadSample.)
+if (!stream_.logged_native_types) {
+  mf_logf("[MF] Enumerating native media types (video stream 0)...");
+  for (DWORD i = 0;; ++i) {
+    ComPtr<IMFMediaType> mt;
+    HRESULT ehr = reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, mt.put());
+    if (ehr == MF_E_NO_MORE_TYPES) break;
+    if (FAILED(ehr) || !mt) continue;
 
-  // Kick the first async read.
-  stream_.reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
+    GUID st = GUID_NULL;
+    mt->GetGUID(MF_MT_SUBTYPE, &st);
+    if (is_rgb32_family(st)) {
+      log_media_type_once("native (RGB32-family)", mt.get());
+    }
+  }
+  stream_.logged_native_types = true;
+}
+
+// Choose best native type based on StreamRequest (use whatever is already there).
+
+// Choose best native type based on StreamRequest (use whatever is already there).
+ComPtr<IMFMediaType> chosen = choose_native_type(reader.get(), stream_.req);
+HRESULT set_hr = S_OK;
+
+if (chosen) {
+  log_media_type_once("chosen native", chosen.get());
+  set_hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, chosen.get());
+  mf_logf("[MF] SetCurrentMediaType(native) hr=0x%08lx", (unsigned long)set_hr);
+} else {
+  mf_logf("[MF] No native RGB32/ARGB32 type found (will attempt converter-backed RGB32 in dev visibility mode).");
+
+  // With converters enabled, ask the SourceReader for a converter-backed RGB32/ARGB32 stream.
+  auto try_request = [&](const GUID& subtype, const char* label) -> HRESULT {
+    ComPtr<IMFMediaType> mt;
+    HRESULT hr = ::MFCreateMediaType(mt.put());
+    if (FAILED(hr)) return hr;
+
+    hr = mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    if (FAILED(hr)) return hr;
+
+    hr = mt->SetGUID(MF_MT_SUBTYPE, subtype);
+    if (FAILED(hr)) return hr;
+
+    // Prefer requested size if provided; otherwise leave unset (let MF pick).
+    if (stream_.req.width != 0 && stream_.req.height != 0) {
+      (void)::MFSetAttributeSize(mt.get(), MF_MT_FRAME_SIZE, stream_.req.width, stream_.req.height);
+    }
+
+    // Progressive, if it sticks.
+    (void)mt->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+
+    // Prefer requested FPS range (use max as target).
+    if (stream_.req.target_fps_max != 0) {
+      (void)::MFSetAttributeRatio(mt.get(), MF_MT_FRAME_RATE, stream_.req.target_fps_max, 1);
+    }
+
+    log_media_type_once(label, mt.get());
+    return reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, mt.get());
+  };
+
+  set_hr = try_request(MFVideoFormat_RGB32, "requested RGB32");
+  mf_logf("[MF] SetCurrentMediaType(request RGB32) hr=0x%08lx", (unsigned long)set_hr);
+  if (FAILED(set_hr)) {
+    set_hr = try_request(MFVideoFormat_ARGB32, "requested ARGB32");
+    mf_logf("[MF] SetCurrentMediaType(request ARGB32) hr=0x%08lx", (unsigned long)set_hr);
+  }
+}
+
+// Log what actually stuck.
+{
+  ComPtr<IMFMediaType> cur;
+  if (SUCCEEDED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, cur.put())) && cur) {
+    log_media_type_once("current (post-negotiate)", cur.get());
+  }
+}
+
+// Publish reader so stop_stream can Flush to cancel pending requests.
+stream_.reader = std::move(reader);
+
+// Kick the first async read.
+    mf_logf("[MF] kicking first ReadSample()");
+    HRESULT rhr = stream_.reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
+    if (FAILED(rhr)) {
+      mf_logf("[MF] initial ReadSample failed hr=0x%08lx", (unsigned long)rhr);
+    }
 
   // Worker processing loop: serialize callbacks -> core.
   for (;;) {
@@ -560,6 +764,11 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
       continue;
     }
 
+    if (!stream_.seen_first_sample) {
+      mf_logf("[MF] first sample received (flags=0x%08x ts=%lld)", (unsigned)item.flags, (long long)item.timestamp_100ns);
+      stream_.seen_first_sample = true;
+    }
+
     // Determine current subtype.
     GUID subtype = GUID_NULL;
     uint32_t w = 0, h = 0;
@@ -576,13 +785,31 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
           w = mw;
           h = mh;
         }
-        // MinGW MF headers may not expose IMFAttributes::GetINT32.
-        // Use MFGetAttributeUINT32 helper and fall back to tightly-packed.
-        const UINT32 s = MFGetAttributeUINT32(mt.get(), MF_MT_DEFAULT_STRIDE, 0);
-        stride = (s != 0) ? static_cast<LONG>(s) : static_cast<LONG>(w) * 4;
+        int32_t stride_i32 = 0;
+        bool have_stride = try_get_attr_i32(mt.get(), MF_MT_DEFAULT_STRIDE, &stride_i32);
+        if (!have_stride) {
+          const UINT32 s = MFGetAttributeUINT32(mt.get(), MF_MT_DEFAULT_STRIDE, 0);
+          stride_i32 = (s != 0) ? (int32_t)s : 0;
+        }
+        if (stride_i32 == 0 && w != 0) {
+          stride_i32 = (int32_t)w * 4;
+        }
+        stride = (LONG)stride_i32;
 
       }
     }
+
+const int32_t stride_i32 = (int32_t)stride;
+if (subtype != stream_.last_logged_subtype || w != stream_.last_logged_w ||
+    h != stream_.last_logged_h || stride_i32 != stream_.last_logged_stride) {
+  mf_logf("[MF] type change: subtype=%s size=%ux%u stride=%" PRId32,
+          guid_to_string(subtype).c_str(), w, h, stride_i32);
+
+  stream_.last_logged_subtype = subtype;
+  stream_.last_logged_w = w;
+  stream_.last_logged_h = h;
+  stream_.last_logged_stride = stride_i32;
+}
 
     const uint32_t fourcc = fourcc_from_mf_subtype(subtype);
 
@@ -601,6 +828,37 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
       continue;
     }
 
+
+if (!stream_.dumped_first_buflen) {
+  const uint64_t expected_nv12 = (uint64_t)w * (uint64_t)h * 3u / 2u;
+  const uint64_t expected_rgb32 = (uint64_t)w * (uint64_t)h * 4u;
+  mf_logf("[MF] first buffer lens: cur_len=%lu max_len=%lu expected_nv12=%llu expected_rgb32=%llu",
+          (unsigned long)cur_len, (unsigned long)max_len,
+          (unsigned long long)expected_nv12, (unsigned long long)expected_rgb32);
+  stream_.dumped_first_buflen = true;
+}
+    const int32_t signed_stride = (int32_t)stride;
+    const int32_t abs_stride = (signed_stride < 0) ? -signed_stride : signed_stride;
+
+    const uint8_t* start = reinterpret_cast<const uint8_t*>(data);
+    if (signed_stride < 0 && h != 0) {
+      start = start + (static_cast<size_t>(h) - 1) * static_cast<size_t>(abs_stride);
+    }
+
+    const size_t min_needed =
+        static_cast<size_t>(abs_stride) * static_cast<size_t>(h);
+    if (cur_len < min_needed) {
+      // Buffer too small for claimed stride/height; drop.
+      buf->Unlock();
+      continue;
+    }
+
+    if (!stream_.dumped_first_rgba4 && fourcc == FOURCC_BGRA && cur_len >= 4) {
+      mf_logf("[MF] first4 BGRA bytes: %02x %02x %02x %02x",
+              (unsigned)data[0], (unsigned)data[1], (unsigned)data[2], (unsigned)data[3]);
+      stream_.dumped_first_rgba4 = true;
+    }
+
     FrameView fv{};
     fv.device_instance_id = stream_.req.device_instance_id;
     fv.stream_id = stream_id;
@@ -608,10 +866,10 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
     fv.width = w;
     fv.height = h;
     fv.format_fourcc = fourcc;
-    fv.stride_bytes = static_cast<uint32_t>(stride);
+    fv.stride_bytes = static_cast<uint32_t>(abs_stride);
     fv.timestamp_ns = ticks100ns_to_ns(item.timestamp_100ns);
 
-    fv.data = reinterpret_cast<const uint8_t*>(data);
+    fv.data = start;
     fv.size_bytes = static_cast<size_t>(cur_len);
 
     auto* payload = new SampleReleasePayload();

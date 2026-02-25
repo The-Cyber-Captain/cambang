@@ -13,6 +13,8 @@
 #endif
 
 #include <vector>
+#include <string>
+#include <cctype>
 
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -123,18 +125,39 @@ void CamBANGDevNode::start_runtime_() {
         return;
     }
 
-    std::vector<CameraEndpoint> eps;
-    pr = provider_->enumerate_endpoints(eps);
-    if (!pr.ok() || eps.empty()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Provider enumerate_endpoints failed.");
-        stop_runtime_();
-        s_live.store(false);
-        queue_free();
-        return;
-    }
+    
+std::vector<CameraEndpoint> eps;
+pr = provider_->enumerate_endpoints(eps);
+if (!pr.ok() || eps.empty()) {
+    UtilityFunctions::printerr("[CamBANGDevNode] Provider enumerate_endpoints failed.");
+    stop_runtime_();
+    s_live.store(false);
+    queue_free();
+    return;
+}
 
-    pr = provider_->open_device(eps[0].hardware_id, device_instance_id_, root_id_);
-    if (!pr.ok()) {
+// Dev visibility: list endpoints once at startup.
+for (size_t i = 0; i < eps.size(); ++i) {
+    UtilityFunctions::print("[CamBANGDevNode] Endpoint ", (int)i, ": ", eps[i].name.c_str());
+}
+
+// Dev-only selection policy:
+// Prefer a device whose name contains "emeet" (case-insensitive).
+// Fallback to index 0 if not found.
+size_t selected = 0;
+for (size_t i = 0; i < eps.size(); ++i) {
+    std::string name = eps[i].name;
+    for (char& c : name) c = (char)std::tolower((unsigned char)c);
+    if (name.find("emeet") != std::string::npos) {
+        selected = i;
+        break;
+    }
+}
+
+UtilityFunctions::print("[CamBANGDevNode] Opening endpoint index ", (int)selected, ": ", eps[selected].name.c_str());
+
+pr = provider_->open_device(eps[selected].hardware_id, device_instance_id_, root_id_);
+if (!pr.ok()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider open_device failed.");
         stop_runtime_();
         s_live.store(false);

@@ -104,7 +104,7 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
           d[0] = r;
           d[1] = g;
           d[2] = b;
-          d[3] = a;
+          d[3] = 255; // MF RGB32/BGRA alpha is often undefined/0; force opaque for dev preview.
           s += 4;
           d += 4;
         }

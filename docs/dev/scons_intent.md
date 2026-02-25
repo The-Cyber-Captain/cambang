@@ -96,7 +96,7 @@ This avoids dual-build drift and keeps CamBANG aligned with the Godot / godot-cp
 
 ---
 
-### 2.6 IDE / clangd Support via compile_commands.json
+### 2.6 Clangd support via compile_commands.json
 
 CamBANG provides a SCons-native compilation database generator at:
 
@@ -160,6 +160,10 @@ It does not govern:
 
 Those remain under frozen architectural documentation.
 
+**Provider selection scope**
+The SCons `provider=...` option selects the provider backend **for the GDExtension build only** (dev accelerator selection).
+It must not change what the core smoke executable compiles/links: smoke remains stub-provider-only regardless of provider selection.
+
 ---
 
 ## 6. GDE Scaffolding Plan (Temporary)
@@ -168,6 +172,18 @@ Those remain under frozen architectural documentation.
 - `CamBANGDevNode` owns a `CoreRuntime` for the duration of a play session.
 - Lifecycle hooks: `_enter_tree()` starts, `_exit_tree()` stops.
 - Single-instance guard is enabled to emulate final server-like layout.
+
+### 6.x Current default targets and knobs (build-phase behavior)
+
+Current build entrypoint behavior (during scaffolding phase):
+
+- Default target builds the GDExtension (`gde`).
+- Core smoke is opt-in via `smoke=1`.
+
+When `smoke=1` is provided, the default build may additionally build the `smoke` target alongside `gde` 
+(implementation detail of the current scaffolding SConstruct). If you want smoke only, build the alias explicitly:
+
+- `scons smoke=1 smoke`
 
 Godot compatibility target:
 
@@ -178,3 +194,40 @@ Build strategy:
 
 - Follow godot-cpp-template conventions (`platform/target/arch/precision`).
 - Delegate toolchain logic to `godot-cpp` SCons as soon as the submodule is introduced.
+
+### 6.y Windows Media Foundation + MinGW notes (scaffolding)
+
+When building the Windows Media Foundation provider under MinGW, the link set must include:
+
+- `mf` (required for `MFEnumDeviceSources`)
+- `mfplat`
+- `mfreadwrite`
+- `mfuuid`
+- `ole32`
+- `uuid` (required for `GUID_NULL` on MinGW)
+
+Additionally, MinGW headers may not expose some IMFMediaType convenience accessors consistently; prefer MF helper
+functions (e.g., `MFGetAttributeSize`, `MFGetAttributeUINT32`) over relying on `GetINT32`.
+
+### 2.7 Core Smoke Executable Is Opt-In and Provider-Independent
+
+CamBANG maintains a small **core smoke executable** whose purpose is to validate core invariants quickly, without involving Godot or platform camera stacks.
+
+**Location**
+- `src/smoke/core_spine_smoke.cpp`
+
+**Build**
+- Opt-in via SCons: `scons smoke=1 ...`
+- Output: `out/core_spine_smoke(.exe)`
+
+**Policy**
+- The smoke executable is **stub-provider-only** by design.
+- It must remain **independent of `provider=...` selection**.
+- It is not part of the GDExtension artifact and is **not required for typical developer builds**.
+
+**Rationale**
+Provider backends (especially platform APIs like Windows Media Foundation) are allowed to evolve independently. The smoke executable must remain a fast, deterministic check that cannot be destabilized by platform/provider work.
+
+**Naming**
+- Smoke-only code paths use `CAMBANG_INTERNAL_SMOKE`.
+- Legacy “IDE smoke” nomenclature has been removed.
