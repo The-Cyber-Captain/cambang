@@ -82,6 +82,7 @@ Once GDExtension integration begins:
   (as per official template pattern).
 - CamBANG SConstruct should become a thin orchestration layer,
   not a compiler-policy authority.
+- CamBANG SConstruct is expected to delegate toolchain logic…
 
 ---
 
@@ -209,7 +210,7 @@ When building the Windows Media Foundation provider under MinGW, the link set mu
 Additionally, MinGW headers may not expose some IMFMediaType convenience accessors consistently; prefer MF helper
 functions (e.g., `MFGetAttributeSize`, `MFGetAttributeUINT32`) over relying on `GetINT32`.
 
-### 2.7 Core Smoke Executable Is Opt-In and Provider-Independent
+### 6.z Core Smoke Executable Is Opt-In and Provider-Independent
 
 CamBANG maintains a small **core smoke executable** whose purpose is to validate core invariants quickly, without involving Godot or platform camera stacks.
 

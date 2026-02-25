@@ -54,11 +54,15 @@ On typical consumer cameras (with MF converters disabled):
 - `accepted_rgba == 0`.
 - `accepted_bgra_swizzled == 0`.
 
+(These counters are provider-level diagnostics and do not redefine
+the canonical snapshot schema.)
+
 This indicates:
 
 - Native camera formats were not RGBA-class.
 - All frames were correctly dropped as unsupported.
 - No conversion was silently introduced.
+
 
 ### 2.3 Release Semantics Under Load
 
@@ -81,6 +85,9 @@ Under repeated rapid start/stop cycles:
 
 This validates that provider lifecycle choreography remains correct even
 when every frame is dropped.
+
+This satisfies the provider contract requirement that teardown
+must not block indefinitely.
 
 ---
 

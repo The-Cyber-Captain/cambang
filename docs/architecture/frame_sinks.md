@@ -36,13 +36,19 @@ Implementations must:
 -   Either copy frame data immediately and release
 -   Or take ownership and guarantee deterministic release
 
+The dispatcher transfers ownership of the FrameView to the sink
+only after ensuring the frame is not dropped.
+Once delivered to the sink, the sink becomes responsible for
+deterministic release.
+
 Release-on-drop discipline must always be preserved.
 
 ------------------------------------------------------------------------
 ## Dev sink: LatestFrameMailbox
 
-`LatestFrameMailbox` is a **dev-only** sink used to provide visible output in Godot.
-
+`LatestFrameMailbox` is a **development-only** sink and is not part of
+the intended release architecture. It may be removed or replaced
+once production GPU-native paths are implemented.
 LatestFrameMailbox is a development-stage sink that:
 
 -   Accepts tightly packed 32-bit RGBA-class frames
@@ -86,3 +92,7 @@ including GPU-native YUV import and shader conversion.
 
 Frame sinks are extension points, not redefinitions of the core provider
 contract.
+
+Frame sinks do not alter stream counter semantics defined in
+state_snapshot.md; counters are updated by core prior to
+sink invocation.

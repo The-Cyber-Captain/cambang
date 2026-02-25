@@ -9,8 +9,12 @@ It is intentionally **dev-only scaffolding**.
 ## What is temporary
 
 - **CamBANGDevNode** owns `CoreRuntime` for the duration of a play session.
-- The **stub provider** is driven from Godot `_process()` for convenience.
+- The **stub provider** is driven from Godot `_process()` for convenience. This driving mechanism is a convenience for development and does not
+  represent production provider threading models.
 - The **LatestFrameMailbox** is a *debug/display sink* that stores only the latest frame.
+
+In the intended release architecture, CoreRuntime ownership will move
+to a server-owned or Engine-level singleton rather than a scene node.
 
 These choices avoid global state and keep iteration fast while the core contract stabilizes.
 
@@ -21,8 +25,6 @@ These choices avoid global state and keep iteration fast while the core contract
 - The core offers a **sink hook** (`ICoreFrameSink`) for consuming provider frames.
 
 These are architectural spine elements expected to remain.
-
-## Display-normalized boundary
 
 ## Display-normalized boundary
 
