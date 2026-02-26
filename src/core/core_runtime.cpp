@@ -3,6 +3,7 @@
 #include "core/core_runtime.h"
 
 #include <cassert>
+#include <memory>
 
 #include <utility>
 
@@ -12,8 +13,9 @@ CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
       streams_(),
-      snapshot_seq_(0),
-      publisher_(),
+      gen_(0),
+      topology_gen_(0),
+      last_topology_sig_(0),
       dispatcher_(&streams_, &devices_),
       ingress_(&core_thread_, [this](CoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
@@ -22,8 +24,10 @@ CoreRuntime::CoreRuntime()
         assert(core_thread_.is_core_thread());
         enqueue_provider_fact(std::move(cmd));
       }) {
-  // Install dev-only latest-frame sink (core thread dispatch path).
+#if defined(CAMBANG_ENABLE_DEV_NODES)
+  // Dev-only latest-frame sink (core thread dispatch path).
   dispatcher_.set_frame_sink(&latest_frame_sink_);
+#endif
 }
 
 CoreRuntime::~CoreRuntime() {
@@ -113,6 +117,7 @@ void CoreRuntime::stop() {
 
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
+  epoch_ = std::chrono::steady_clock::now();
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 }
 
@@ -142,24 +147,28 @@ void CoreRuntime::on_core_timer_tick() {
     // Clear pending first so a new request can enqueue even if publish work is heavy.
     publish_pending_.store(false, std::memory_order_release);
 
-    CoreSnapshot snap;
-    snap.seq = ++snapshot_seq_;
+    SnapshotBuilder::Inputs in;
+    in.devices = &devices_;
+    in.streams = &streams_;
+    in.ingress = &ingress_;
 
-    snap.streams.reserve(streams_.all().size());
-    for (const auto& kv : streams_.all()) {
-      const auto& rec = kv.second;
-      CoreSnapshot::Stream s;
-      s.stream_id = rec.stream_id;
-      s.created = rec.created;
-      s.started = rec.started;
-      s.frames_received = rec.frames_received;
-      s.frames_released = rec.frames_released;
-      s.frames_dropped = rec.frames_dropped;
-      s.last_error_code = static_cast<std::int32_t>(rec.last_error_code);
-      snap.streams.push_back(s);
+    const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
+    if (topo_sig != last_topology_sig_) {
+      last_topology_sig_ = topo_sig;
+      ++topology_gen_;
     }
 
-    publisher_.publish(std::move(snap));
+    ++gen_;
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t timestamp_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+
+    CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_, topology_gen_, timestamp_ns);
+    auto shared = std::make_shared<CamBANGStateSnapshot>(std::move(snap));
+
+    if (IStateSnapshotPublisher* pub = snapshot_publisher_.load(std::memory_order_acquire)) {
+      pub->publish(std::move(shared));
+    }
   }
 
   // 5) Shutdown choreography (§10).

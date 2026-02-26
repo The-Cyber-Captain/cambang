@@ -253,7 +253,9 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.height = h;
     fv.format_fourcc = FOURCC_RGBA;
 
-    fv.timestamp_ns = 0;
+    fv.capture_timestamp.value = 0;
+    fv.capture_timestamp.tick_ns = 0;
+    fv.capture_timestamp.domain = CaptureTimestampDomain::OPAQUE;
 
     fv.data = payload->bytes.data();
     fv.size_bytes = payload->bytes.size();

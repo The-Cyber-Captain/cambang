@@ -73,7 +73,14 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
 
     latest_.width = frame.width;
     latest_.height = frame.height;
-    latest_.timestamp_ns = frame.timestamp_ns;
+    // Dev-only: expose a best-effort timestamp only when already mapped to core timebase.
+    if (frame.capture_timestamp.domain == CaptureTimestampDomain::CORE_MONOTONIC &&
+        frame.capture_timestamp.tick_ns != 0) {
+      latest_.timestamp_ns = static_cast<uint64_t>(frame.capture_timestamp.value) *
+                             static_cast<uint64_t>(frame.capture_timestamp.tick_ns);
+    } else {
+      latest_.timestamp_ns = 0;
+    }
 
     // Normalize to tightly packed RGBA8.
     // Dev-only exception: if provider supplies BGRA8, perform a channel swizzle

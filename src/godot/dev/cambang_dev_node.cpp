@@ -1,5 +1,6 @@
 #include "godot/dev/cambang_dev_node.h"
 
+#include "godot/cambang_server.h"
 #include "core/core_runtime.h"
 #include "core/latest_frame_mailbox.h"
 
@@ -93,14 +94,17 @@ const LatestFrameMailbox* CamBANGDevNode::get_latest_frame_mailbox() const {
 void CamBANGDevNode::start_runtime_() {
     if (started_) return;
 
-    UtilityFunctions::print("[CamBANGDevNode] Starting CoreRuntime...");
-    runtime_ = std::make_unique<CoreRuntime>();
+    auto* server = CamBANGServer::get_singleton();
+    if (!server) {
+        UtilityFunctions::printerr("[CamBANGDevNode] No CamBANGServer singleton found. Ensure the CamBANG GDExtension is loaded.");
+        s_live.store(false);
+        queue_free();
+        return;
+    }
 
-    const bool ok = runtime_->start();
-    if (!ok) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CoreRuntime failed to start; freeing node.");
-        runtime_.reset();
-        started_ = false;
+    runtime_ = server->runtime_for_dev();
+    if (!runtime_ || !runtime_->is_running()) {
+        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer is not started. Call CamBANGServer.start() before using CamBANGDevNode.");
         s_live.store(false);
         queue_free();
         return;
@@ -219,8 +223,10 @@ void CamBANGDevNode::stop_runtime_() {
         provider_->shutdown();
     }
 
-    runtime_->stop();
-    runtime_.reset();
+    runtime_->attach_provider(nullptr);
+
+    // Do not stop the runtime; it is owned by CamBANGServer.
+    runtime_ = nullptr;
     provider_.reset();
     started_ = false;
 }

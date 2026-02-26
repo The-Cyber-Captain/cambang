@@ -82,8 +82,8 @@ vars.Add(EnumVariable(
 vars.Add(EnumVariable(
     "provider",
     "Provider backend to build into the GDE (dev accelerator selection).",
-    "stub",
-    allowed_values=["stub", "windows_mediafoundation"],
+    "unset",
+    allowed_values=["unset", "stub", "windows_mediafoundation"],
 ))
 
 vars.Add(EnumVariable(
@@ -123,7 +123,19 @@ vars.Add(BoolVariable(
 ))
 vars.Add(BoolVariable(
     "smoke",
-    "Build core smoke executable (stub-provider-only). Not part of the GDExtension artifact.",
+    "Build core smoke executable (providerless by default). Not part of the GDExtension artifact.",
+    False,
+))
+
+vars.Add(BoolVariable(
+    "gde",
+    "Build the GDExtension artifact (godot glue + selected provider).",
+    True,
+))
+
+vars.Add(BoolVariable(
+    "dev_nodes",
+    "Build dev-only Godot scaffolding nodes (CAMBANG_ENABLE_DEV_NODES).",
     False,
 ))
 
@@ -189,6 +201,7 @@ print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'}")
+print(f"  dev_nodes={'yes' if env['dev_nodes'] else 'no'}")
 
 # Output dirs
 out_dir = "out"
@@ -209,13 +222,23 @@ if env["smoke"]:
     smoke_env = env.Clone()
     smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
 
+    # On MinGW Windows, force console subsystem to avoid WinMain entrypoint.
+    if env["platform"] == "windows" and not is_msvc:
+        smoke_env.Append(LINKFLAGS=["-mconsole"])
+
     # Compile sources via a variant dir so smoke objects don't collide with gde objects.
     smoke_env.VariantDir(smoke_obj_dir, "src", duplicate=0)
 
     smoke_sources = []
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "*.cpp"))
-    smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "stub", "*.cpp"))
+
+    # Optional stub-provider integration for smoke.
+    if env["provider"] == "stub":
+        smoke_env.Append(CPPDEFINES=["CAMBANG_SMOKE_WITH_STUB_PROVIDER=1"])
+        smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "stub", "*.cpp"))
+
     smoke_sources += ["src/smoke/core_spine_smoke.cpp"]
 
     smoke_prog = smoke_env.Program(
@@ -232,110 +255,138 @@ else:
 # GDExtension scaffolding (alias: gde)
 # ---------------------------------------------------------------------------
 
-gde_env = env.Clone()
+if env["gde"]:
+    gde_env = env.Clone()
 
-# Compile sources via a separate variant dir to avoid collisions with smoke.
-gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
+    # Compile sources via a separate variant dir to avoid collisions with smoke.
+    gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
 
-# Output location expected by the Godot test project.
-gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
-if not os.path.isdir(gde_out_dir):
-    try:
-        os.makedirs(gde_out_dir)
-    except OSError:
-        pass
+    # Output location expected by the Godot test project.
+    gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
+    if not os.path.isdir(gde_out_dir):
+        try:
+            os.makedirs(gde_out_dir)
+        except OSError:
+            pass
 
-# Build godot-cpp (delegated to its own SCons).
-godot_cpp_lib = _godot_cpp_lib_path(env["platform"], godot_target, env["arch"], is_msvc)
-godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
-godot_cpp_libname = f"godot-cpp.{env['platform']}.{godot_target}.{env['arch']}"
+    # Build godot-cpp (delegated to its own SCons).
+    godot_cpp_lib = _godot_cpp_lib_path(env["platform"], godot_target, env["arch"], is_msvc)
+    godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
+    godot_cpp_libname = f"godot-cpp.{env['platform']}.{godot_target}.{env['arch']}"
 
-godot_gen_header = os.path.join(
-    "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
-)
-
-godot_cpp_build = env.Command(
-    target=godot_gen_header,
-    source=[],
-    action=(
-        f'cmd /c "set PROCESSOR_ARCHITECTURE=AMD64&& '
-        f'"{python_exe}" -m SCons -C thirdparty/godot-cpp '
-        f'platform={env["platform"]} target={godot_target} arch={env["arch"]} precision={env["precision"]}"'
+    godot_gen_header = os.path.join(
+        "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
     )
-)
 
-Alias("godot_cpp", godot_cpp_build)
-AlwaysBuild("godot_cpp")
+    godot_cpp_build = env.Command(
+        target=godot_gen_header,
+        source=[],
+        action=(
+            f'cmd /c "set PROCESSOR_ARCHITECTURE=AMD64&& '
+            f'"{python_exe}" -m SCons -C thirdparty/godot-cpp '
+            f'platform={env["platform"]} target={godot_target} arch={env["arch"]} precision={env["precision"]}"'
+        )
+    )
 
-# Include dirs required by godot-cpp.
-gde_env.Append(CPPPATH=[
-    os.path.join("thirdparty", "godot-cpp"),
-    os.path.join("thirdparty", "godot-cpp", "include"),
-    os.path.join("thirdparty", "godot-cpp", "gen"),
-    os.path.join("thirdparty", "godot-cpp", "gen", "include"),
-    os.path.join("thirdparty", "godot-cpp", "gdextension"),
-])
+    Alias("godot_cpp", godot_cpp_build)
+    AlwaysBuild("godot_cpp")
 
-# Shared lib build needs PIC on non-MSVC toolchains.
-if not is_msvc:
-    gde_env.Append(CXXFLAGS=["-fPIC", "-fvisibility=hidden"])
+    # Include dirs required by godot-cpp.
+    gde_env.Append(CPPPATH=[
+        os.path.join("thirdparty", "godot-cpp"),
+        os.path.join("thirdparty", "godot-cpp", "include"),
+        os.path.join("thirdparty", "godot-cpp", "gen"),
+        os.path.join("thirdparty", "godot-cpp", "gen", "include"),
+        os.path.join("thirdparty", "godot-cpp", "gdextension"),
+    ])
 
-# Sources: core + providers + Godot glue.
-gde_sources = []
-gde_sources += Glob(os.path.join(gde_obj_dir, "core", "*.cpp"))
-gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "*.cpp"))
+    # Shared lib build needs PIC on non-MSVC toolchains.
+    if not is_msvc:
+        gde_env.Append(CXXFLAGS=["-fPIC", "-fvisibility=hidden"])
 
-# Provider backend selection (dev accelerator).
-if env["provider"] == "stub":
-    gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "stub", "*.cpp"))
-elif env["provider"] == "windows_mediafoundation":
-    gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "windows_mediafoundation", "*.cpp"))
-    gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_WINDOWS_MF=1"])
+    # Sources: core + providers + Godot glue.
+    gde_sources = []
+    gde_sources += Glob(os.path.join(gde_obj_dir, "core", "*.cpp"))
+    gde_sources += Glob(os.path.join(gde_obj_dir, "core", "snapshot", "*.cpp"))
+    gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "*.cpp"))
+
+    # Provider backend selection (dev accelerator).
+    from SCons.Script import GetOption
+    if env["provider"] == "unset":
+        if not GetOption('clean'):
+            print("ERROR: GDE build requires an explicit provider=... (stub or windows_mediafoundation).")
+            Exit(1)
+
+    if env["provider"] == "stub":
+        gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "stub", "*.cpp"))
+    elif env["provider"] == "windows_mediafoundation":
+        gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "windows_mediafoundation", "*.cpp"))
+        gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_WINDOWS_MF=1"])
+        if env["platform"] == "windows":
+            # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
+            gde_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
+    else:
+        print("Unknown provider:", env["provider"])
+        Exit(1)
+
+    gde_sources += [
+        os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_state_snapshot.cpp"),
+    ]
+
+    if env["dev_nodes"]:
+        gde_env.Append(CPPDEFINES=["CAMBANG_ENABLE_DEV_NODES=1"])
+        gde_sources += [
+            os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_node.cpp"),
+            os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_frameview_node.cpp"),
+        ]
+
+    # Output base name (SCons appends .dll/.so/.dylib automatically).
+    # These names are designed to match your cambang_dev.gdextension mapping.
     if env["platform"] == "windows":
-        # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
-        gde_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
+        # On Windows, SCons wants the target to include the .dll suffix explicitly.
+        gde_filename = f"cambang.windows.{godot_target}.{env['arch']}.dll"
+    else:
+        # On POSIX, keep a suffix-less base; SCons will add .so/.dylib appropriately.
+        gde_filename = f"libcambang.{env['platform']}.{godot_target}.{env['arch']}"
+
+    gde_target = os.path.join(gde_out_dir, gde_filename)
+
+    # Link against godot-cpp static library.
+    # (We pass the full path; SCons will treat it as a library file.)
+    gde_env.Append(LIBPATH=[godot_cpp_libdir])
+    gde_env.Append(LIBS=[godot_cpp_libname])
+
+    gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_sources)
+    # Ensure all compilation steps wait for godot-cpp generation, not just the final link.
+    for n in gde_lib:
+        gde_env.Depends(n, godot_cpp_build)
+
+    gde_alias = Alias("gde", gde_lib)
+    AlwaysBuild(gde_alias)
+
+    # Write compile_commands.json after building the 'gde' alias
+    from SCons.Script import AddPostAction
+    AddPostAction(gde_alias, env["COMPDB_WRITE_ACTION"])
 else:
-    print("Unknown provider:", env["provider"])
-    Exit(1)
+    Alias("gde", [])
 
-gde_sources += [
-    os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
-    os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_node.cpp"),
-    os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_frameview_node.cpp"),
-]
 
-# Output base name (SCons appends .dll/.so/.dylib automatically).
-# These names are designed to match your cambang_dev.gdextension mapping.
-if env["platform"] == "windows":
-    # On Windows, SCons wants the target to include the .dll suffix explicitly.
-    gde_filename = f"cambang.windows.{godot_target}.{env['arch']}.dll"
-else:
-    # On POSIX, keep a suffix-less base; SCons will add .so/.dylib appropriately.
-    gde_filename = f"libcambang.{env['platform']}.{godot_target}.{env['arch']}"
-
-gde_target = os.path.join(gde_out_dir, gde_filename)
-
-# Link against godot-cpp static library.
-# (We pass the full path; SCons will treat it as a library file.)
-gde_env.Append(LIBPATH=[godot_cpp_libdir])
-gde_env.Append(LIBS=[godot_cpp_libname])
-
-gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_sources)
-# Ensure all compilation steps wait for godot-cpp generation, not just the final link.
-for n in gde_lib:
-    gde_env.Depends(n, godot_cpp_build)
-
-gde_alias = Alias("gde", gde_lib)
-AlwaysBuild(gde_alias)
-
-# Write compile_commands.json after building the 'gde' alias
-from SCons.Script import AddPostAction
-AddPostAction(gde_alias, env["COMPDB_WRITE_ACTION"])
 
 # Default targets:
-# - always build GDE scaffolding
-# - additionally build smoke when smoke=1
-if env["smoke"]:
+# - build GDE scaffolding when gde=1 (default)
+# - build smoke when smoke=1
+# - allow providerless smoke when gde=0
+if env["gde"] and env["smoke"]:
     Default(["gde", "smoke"])
-else:
+elif env["gde"]:
     Default("gde")
+elif env["smoke"]:
+    Default("smoke")
+else:
+    # Nothing selected. This is allowed for 'scons -c', otherwise it's likely a user mistake.
+    from SCons.Script import GetOption
+    if not GetOption("clean"):
+        print("ERROR: Nothing to build. Set gde=1 and/or smoke=1 (or run with -c to clean).")
+        Exit(1)

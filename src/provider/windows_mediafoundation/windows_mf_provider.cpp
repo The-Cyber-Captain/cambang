@@ -867,7 +867,10 @@ if (!stream_.dumped_first_buflen) {
     fv.height = h;
     fv.format_fourcc = fourcc;
     fv.stride_bytes = static_cast<uint32_t>(abs_stride);
-    fv.timestamp_ns = ticks100ns_to_ns(item.timestamp_100ns);
+    // Media Foundation sample time is in 100ns units and is provider-monotonic.
+    fv.capture_timestamp.value = static_cast<uint64_t>(item.timestamp_100ns);
+    fv.capture_timestamp.tick_ns = 100;
+    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
 
     fv.data = start;
     fv.size_bytes = static_cast<size_t>(cur_len);
