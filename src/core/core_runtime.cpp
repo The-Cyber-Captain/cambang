@@ -119,6 +119,10 @@ void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
+
+  // Ensure at least one snapshot is published immediately after start().
+  request_publish_from_core_unchecked();
+  core_thread_.request_timer_tick();
 }
 
 void CoreRuntime::on_core_timer_tick() {

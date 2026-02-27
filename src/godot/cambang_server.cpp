@@ -50,13 +50,14 @@ void CamBANGServer::_on_godot_tick() {
   last_emitted_gen_ = snap->gen;
   emit_signal("state_published", (uint64_t)snap->gen, (uint64_t)snap->topology_gen);
 }
-
-godot::Ref<CamBANGStateSnapshotGD> CamBANGServer::get_state_snapshot() const {
+#if 0
+godot::Ref<cambang::CamBANGStateSnapshotGD> CamBANGServer::get_state_snapshot() const {
   godot::Ref<CamBANGStateSnapshotGD> out;
   out.instantiate();
   out->_init_from_core(latest_);
   return out;
 }
+#endif
 
 void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGServer::start);

@@ -4,14 +4,16 @@
 #include <memory>
 
 #include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
 #include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
+#include "godot/cambang_state_snapshot.h"
 
 namespace cambang {
 
-class CamBANGStateSnapshotGD;
 class CamBANGServerTickNode;
 
 // CamBANGServer is the release-facing lifecycle owner.
@@ -39,7 +41,13 @@ public:
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
-  godot::Ref<CamBANGStateSnapshotGD> get_state_snapshot() const;
+  // Return a Godot wrapper snapshot object. Safe to call on the Godot main thread.
+  godot::Ref<cambang::CamBANGStateSnapshotGD> get_state_snapshot() const {
+    godot::Ref<cambang::CamBANGStateSnapshotGD> out;
+    out.instantiate();
+    out->_init_from_core(latest_);
+    return out;
+  }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
