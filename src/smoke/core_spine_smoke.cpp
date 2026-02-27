@@ -205,6 +205,16 @@ static bool wait_for_snapshot_gen(StateSnapshotBuffer& buf, uint64_t min_gen) {
   });
 }
 
+
+static bool wait_for_snapshot_pred(
+    StateSnapshotBuffer& buf,
+    const std::function<bool(const CamBANGStateSnapshot&)>& pred) {
+  return wait_until([&]() {
+    auto s = buf.snapshot_copy();
+    return s && pred(*s);
+  });
+}
+
 static StreamRequest make_req() {
   StreamRequest req{};
   req.stream_id = kStreamId;
@@ -253,6 +263,14 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
                                                      StubCameraProvider& prov) {
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start\n";
+    return 1;
+  }
+
+  // CoreRuntime now starts "dirty" and publishes an initial snapshot automatically.
+  // The first snapshot is zero-indexed (gen=0).
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "Timeout waiting for initial snapshot publication\n";
+    rt.stop();
     return 1;
   }
 
@@ -311,9 +329,19 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
     return 1;
   }
 
+  // We need a snapshot that reflects the flowing stream and frame counters.
+  // This may be published naturally (dirty-driven) when the frame fact is integrated,
+  // or it may require an explicit smoke-only request_publish() to force a publish.
   rt.request_publish();
-  if (!wait_for_snapshot_gen(buf, 1)) {
-    std::cerr << "Timeout waiting for snapshot publication\n";
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        for (const auto& st : s.streams) {
+          if (st.stream_id == kStreamId) {
+            return (st.mode == CBStreamMode::FLOWING && st.frames_received >= 1 && st.frames_delivered >= 1);
+          }
+        }
+        return false;
+      })) {
+    std::cerr << "Timeout waiting for snapshot containing flowing stream counters\n";
     rt.stop();
     return 1;
   }
@@ -356,15 +384,25 @@ static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshot
     return 1;
   }
 
-  rt.request_publish();
-  if (!wait_for_snapshot_gen(buf, 1)) {
-    std::cerr << "Timeout waiting for snapshot publication\n";
+  // CoreRuntime starts "dirty" and publishes an initial snapshot automatically.
+  // The first snapshot is zero-indexed (gen=0).
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "Timeout waiting for initial snapshot publication\n";
     rt.stop();
     return 1;
   }
   auto snap = get_last_snapshot(buf);
   if (!snap || snap->schema_version != CamBANGStateSnapshot::kSchemaVersion) {
     std::cerr << "Snapshot missing or wrong schema_version\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Still validate request_publish() works once the core is live.
+  // (Smoke-only; production should rely on dirty-driven publication.)
+  rt.request_publish();
+  if (!wait_for_snapshot_gen(buf, 1)) {
+    std::cerr << "Timeout waiting for request_publish() snapshot\n";
     rt.stop();
     return 1;
   }
