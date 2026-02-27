@@ -103,8 +103,23 @@ void CamBANGDevNode::start_runtime_() {
     }
 
     runtime_ = server->runtime_for_dev();
-    if (!runtime_ || !runtime_->is_running()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer is not started. Call CamBANGServer.start() before using CamBANGDevNode.");
+    if (!runtime_) {
+        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer runtime is unavailable.");
+        s_live.store(false);
+        queue_free();
+        return;
+    }
+
+    // Dev convenience: if the server/runtime isn't running yet, start it.
+    // This preserves the release contract (explicit start/stop) while keeping
+    // the dev visibility scenes self-contained.
+    if (!runtime_->is_running()) {
+        server->start();
+        started_server_ = true;
+    }
+
+    if (!runtime_->is_running()) {
+        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer failed to start runtime.");
         s_live.store(false);
         queue_free();
         return;
@@ -224,6 +239,14 @@ void CamBANGDevNode::stop_runtime_() {
     }
 
     runtime_->attach_provider(nullptr);
+
+    // If this dev node started the server, stop it on teardown.
+    if (started_server_) {
+        if (auto* server = CamBANGServer::get_singleton()) {
+            server->stop();
+        }
+        started_server_ = false;
+    }
 
     // Do not stop the runtime; it is owned by CamBANGServer.
     runtime_ = nullptr;

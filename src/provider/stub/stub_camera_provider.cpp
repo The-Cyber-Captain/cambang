@@ -255,7 +255,7 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
 
     fv.capture_timestamp.value = 0;
     fv.capture_timestamp.tick_ns = 0;
-    fv.capture_timestamp.domain = CaptureTimestampDomain::OPAQUE;
+    fv.capture_timestamp.domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
 
     fv.data = payload->bytes.data();
     fv.size_bytes = payload->bytes.size();

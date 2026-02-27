@@ -32,6 +32,7 @@ namespace cambang {
         static std::atomic<bool> s_live;
 
         CoreRuntime* runtime_ = nullptr; // owned by CamBANGServer
+        bool started_server_ = false;    // dev-only: whether this node started the server
         std::unique_ptr<ICameraProvider> provider_;
         bool started_ = false;
 

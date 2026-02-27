@@ -122,13 +122,16 @@ struct NativeObjectDestroyInfo {
 enum class CaptureTimestampDomain : uint8_t {
   PROVIDER_MONOTONIC = 0,
   CORE_MONOTONIC = 1,
-  OPAQUE = 2,
+  // NOTE: Avoid the Windows GDI macro `OPAQUE` (commonly defined as 2 via wingdi.h)
+  // which can break compilation when <windows.h> is included before this header.
+  // Semantics remain "opaque / ordering-only" as described in provider_architecture.md.
+  DOMAIN_OPAQUE = 2,
 };
 
 struct CaptureTimestamp {
   uint64_t value = 0;     // integer tick value
   uint32_t tick_ns = 0;   // tick period in nanoseconds (1 = ns, 100 = 100ns, etc.)
-  CaptureTimestampDomain domain = CaptureTimestampDomain::OPAQUE;
+  CaptureTimestampDomain domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
 };
 
 // Frame view delivered from provider.
