@@ -215,6 +215,14 @@ static bool wait_for_snapshot_pred(
   });
 }
 
+static const char* compiled_provider_name() {
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+  return "stub";
+#else
+  return "unset";
+#endif
+}
+
 static StreamRequest make_req() {
   StreamRequest req{};
   req.stream_id = kStreamId;
@@ -576,12 +584,13 @@ static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_inde
 #endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
 } // namespace
-
 int main(int argc, char** argv) {
   Options opt;
   if (!parse_opts(argc, argv, opt)) {
     return 2;
   }
+
+  std::cout << "[smoke] compiled provider: " << compiled_provider_name() << "\n";
 
   // Default behaviour: run once, same structure/output as original.
   if (!opt.stress) {
