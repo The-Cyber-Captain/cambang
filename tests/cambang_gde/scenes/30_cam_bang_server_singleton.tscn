@@ -8,11 +8,26 @@ script/source = "extends Node
 	#CamBANGServer.state_published.connect(_on_state_published)
 
 func _ready():
-	CamBANGServer.state_published.connect(_on_state_published)
-	await get_tree().process_frame
-	print(\"Calling CamBANGServer.start()\")
 	CamBANGServer.start()
-	print(\"Returned from CamBANGServer.start()\")
+	var tick = get_tree().root.get_node_or_null(\"__CamBANGServerTick\")
+	print(\"tick node:\", tick)
+
+func _process(_dt):
+	var snap = CamBANGServer.get_state_snapshot()
+	print(\"gen=\", snap.get_gen(), \" topo=\", snap.get_topology_gen(), \" ts=\", snap.get_timestamp_ns())
+
+#func _ready():
+	#CamBANGServer.start()
+	#var root = get_tree().root
+	#var tick = root.get_node_or_null(\"__CamBANGServerTick\")
+	#print(\"tick node:\", tick)
+
+#func _ready():
+	#CamBANGServer.state_published.connect(_on_state_published)
+	##await get_tree().process_frame
+	#print(\"Calling CamBANGServer.start()\")
+	#CamBANGServer.start()
+	#print(\"Returned from CamBANGServer.start()\")
 
 #func _ready():
 	## 1) confirm singleton exists
@@ -31,6 +46,10 @@ func _on_state_published(gen, topology_gen):
 		  \" snap_gen=\", snap.get_gen(),
 		  \" snap_topo=\", snap.get_topology_gen(),
 		  \" ts=\", snap.get_timestamp_ns())
+
+#func _process(_dt):
+	#var snap = CamBANGServer.get_state_snapshot()
+	#print(\"gen=\", snap.get_gen(), \" topo=\", snap.get_topology_gen(), \" ts=\", snap.get_timestamp_ns())
 "
 
 [node name="30_CamBANGServer_singleton" type="Node"]

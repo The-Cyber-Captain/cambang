@@ -12,6 +12,11 @@
 #include "core/snapshot/state_snapshot.h"
 #include "godot/cambang_state_snapshot.h"
 
+#include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/main_loop.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/window.hpp>
+
 namespace cambang {
 
 class CamBANGServerTickNode;
@@ -71,6 +76,9 @@ private:
   // Godot-thread cached snapshot.
   std::shared_ptr<const CamBANGStateSnapshot> latest_;
   uint64_t last_emitted_gen_ = 0;
+
+  void _ensure_tick_installed();
+  bool tick_installed_ = false;
 };
 
 } // namespace cambang

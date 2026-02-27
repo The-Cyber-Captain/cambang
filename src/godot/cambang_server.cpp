@@ -4,6 +4,7 @@
 #include <godot_cpp/core/error_macros.hpp>
 
 #include "godot/cambang_state_snapshot.h"
+#include "godot/cambang_server_tick_node.h"
 
 namespace cambang {
 
@@ -28,12 +29,49 @@ CamBANGServer::~CamBANGServer() {
 }
 
 void CamBANGServer::start() {
+  // Ensure the tick node exists so snapshots can be drained + signals emitted.
+  _ensure_tick_installed();
+
   // Explicit user action: do not auto-start on launch.
   runtime_.start();
 }
 
 void CamBANGServer::stop() {
   runtime_.stop();
+}
+
+  void CamBANGServer::_ensure_tick_installed() {
+  // If already present in scene tree, we're done.
+  godot::MainLoop* ml = godot::Engine::get_singleton()->get_main_loop();
+  godot::SceneTree* tree = godot::Object::cast_to<godot::SceneTree>(ml);
+  if (!tree) {
+    return;
+  }
+  godot::Window* root = tree->get_root();
+  if (!root) {
+    return;
+  }
+
+  if (root->get_node_or_null(godot::NodePath("__CamBANGServerTick")) != nullptr) {
+    tick_installed_ = true;
+    return;
+  }
+
+  // If we've already scheduled installation, don't schedule again.
+  if (tick_installed_) {
+    return;
+  }
+
+  auto* tick = memnew(CamBANGServerTickNode);
+  tick->set_name("__CamBANGServerTick");
+  tick->set_process(true);
+  tick->set_process_mode(godot::Node::PROCESS_MODE_ALWAYS);
+
+  // Defer adding to avoid "Parent node is busy setting up children" during _ready().
+  root->call_deferred("add_child", tick);
+
+  // Mark as scheduled to avoid duplicates. Presence check above will confirm later.
+  tick_installed_ = true;
 }
 
 void CamBANGServer::_on_godot_tick() {

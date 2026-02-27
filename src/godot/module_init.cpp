@@ -21,8 +21,6 @@
 #endif
 
 static cambang::CamBANGServer* g_server = nullptr;
-static cambang::CamBANGServerTickNode* g_tick = nullptr;
-
 static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
@@ -42,33 +40,11 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     // We install an internal tick node under /root to drive main-thread polling/signal emission.
     g_server = memnew(cambang::CamBANGServer);
     godot::Engine::get_singleton()->register_singleton("CamBANGServer", g_server);
-
-    // Install tick node.
-    godot::MainLoop* ml = godot::Engine::get_singleton()->get_main_loop();
-    godot::SceneTree* tree = godot::Object::cast_to<godot::SceneTree>(ml);
-    if (tree) {
-        godot::Window* root = tree->get_root();
-        if (root) {
-            g_tick = memnew(cambang::CamBANGServerTickNode);
-            g_tick->set_name("__CamBANGServerTick");
-            g_tick->set_server(g_server);
-            root->add_child(g_tick);
-        }
-    }
 }
 
 static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
-    }
-
-    if (g_tick) {
-        g_tick->set_server(nullptr);
-        if (auto* parent = g_tick->get_parent()) {
-            parent->remove_child(g_tick);
-        }
-        memdelete(g_tick);
-        g_tick = nullptr;
     }
 
     if (g_server) {

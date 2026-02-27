@@ -4,10 +4,10 @@
 
 namespace cambang {
 
-void CamBANGServerTickNode::_process(double /*delta*/) {
-  if (server_) {
-    server_->_on_godot_tick();
+  void CamBANGServerTickNode::_process(double /*delta*/) {
+    if (CamBANGServer* server = CamBANGServer::get_singleton()) {
+      server->_on_godot_tick();
+    }
   }
-}
 
 } // namespace cambang
