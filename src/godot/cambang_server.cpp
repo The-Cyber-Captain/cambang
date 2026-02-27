@@ -80,12 +80,15 @@ void CamBANGServer::_on_godot_tick() {
   if (!snap) {
     return;
   }
-  if (snap->gen == last_emitted_gen_) {
+
+  // gen is zero-indexed. We must still emit the first published snapshot (gen=0).
+  if (has_emitted_snapshot_ && snap->gen == last_emitted_gen_) {
     return;
   }
 
   latest_ = snap;
   last_emitted_gen_ = snap->gen;
+  has_emitted_snapshot_ = true;
   emit_signal("state_published", (uint64_t)snap->gen, (uint64_t)snap->topology_gen);
 }
 #if 0

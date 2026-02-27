@@ -117,6 +117,7 @@ private:
   std::uint64_t gen_ = 0;
   std::uint64_t topology_gen_ = 0;
   uint64_t last_topology_sig_ = 0;
+  bool has_topology_sig_ = false;
 
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
 

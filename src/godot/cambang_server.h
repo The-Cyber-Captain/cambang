@@ -48,6 +48,11 @@ public:
 
   // Return a Godot wrapper snapshot object. Safe to call on the Godot main thread.
   godot::Ref<cambang::CamBANGStateSnapshotGD> get_state_snapshot() const {
+    // "No snapshot yet" is represented as an invalid Ref.
+    if (!latest_) {
+      return {};
+    }
+
     godot::Ref<cambang::CamBANGStateSnapshotGD> out;
     out.instantiate();
     out->_init_from_core(latest_);
@@ -75,6 +80,7 @@ private:
 
   // Godot-thread cached snapshot.
   std::shared_ptr<const CamBANGStateSnapshot> latest_;
+  bool has_emitted_snapshot_ = false;
   uint64_t last_emitted_gen_ = 0;
 
   void _ensure_tick_installed();

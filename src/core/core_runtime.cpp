@@ -65,6 +65,12 @@ bool CoreRuntime::start() {
   publish_requests_dropped_closed_.store(0, std::memory_order_relaxed);
   publish_requests_dropped_allocfail_.store(0, std::memory_order_relaxed);
 
+  // Reset per-session snapshot bookkeeping (zero-indexed gens).
+  gen_ = 0;
+  topology_gen_ = 0;
+  last_topology_sig_ = 0;
+  has_topology_sig_ = false;
+
   // Reset core-thread-only pump state.
   provider_facts_.clear();
   requests_.clear();
@@ -120,8 +126,9 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
-  // Ensure at least one snapshot is published immediately after start().
-  request_publish_from_core_unchecked();
+  // Start "dirty": publish an initial snapshot (gen=0, topology_gen=0)
+  // via the normal coalesced publish path.
+  publish_pending_.store(true, std::memory_order_release);
   core_thread_.request_timer_tick();
 }
 
@@ -157,18 +164,29 @@ void CoreRuntime::on_core_timer_tick() {
     in.ingress = &ingress_;
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
-    if (topo_sig != last_topology_sig_) {
+
+    // topology_gen is zero-indexed.
+    // The first published snapshot establishes the baseline topology_gen=0.
+    if (!has_topology_sig_) {
+      has_topology_sig_ = true;
+      last_topology_sig_ = topo_sig;
+    } else if (topo_sig != last_topology_sig_) {
       last_topology_sig_ = topo_sig;
       ++topology_gen_;
     }
 
-    ++gen_;
+    // gen is zero-indexed.
+    const uint64_t gen_out = gen_;
+    const uint64_t topo_out = topology_gen_;
     const auto now = std::chrono::steady_clock::now();
     const uint64_t timestamp_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
-    CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_, topology_gen_, timestamp_ns);
+    CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_out, topo_out, timestamp_ns);
     auto shared = std::make_shared<CamBANGStateSnapshot>(std::move(snap));
+
+    // Advance counters only after snapshot assembly succeeds.
+    ++gen_;
 
     if (IStateSnapshotPublisher* pub = snapshot_publisher_.load(std::memory_order_acquire)) {
       pub->publish(std::move(shared));
