@@ -1,86 +1,263 @@
-# FrameView Stage (Dev Visibility)
+# FrameView Stage (Dev Visibility – Server-Owned Runtime)
 
-This stage exists to produce a **visible, end-to-end** validation of the CamBANG pipeline inside Godot:
+This stage exists to produce a **visible, end-to-end validation** of the CamBANG pipeline inside Godot:
 
-Provider → ingress → core thread → dispatcher → frame sink → mailbox → Godot main thread → ImageTexture.
+Provider  
+→ ingress  
+→ core thread  
+→ dispatcher  
+→ frame sink  
+→ mailbox  
+→ Godot main thread  
+→ ImageTexture
 
-It is intentionally **dev-only scaffolding**.
+It is intentionally **development-only scaffolding**.
 
-## What is temporary
+This document reflects the current architecture in which:
 
-- **CamBANGDevNode** owns `CoreRuntime` for the duration of a play session.
-- The **stub provider** is driven from Godot `_process()` for convenience. This driving mechanism is a convenience for development and does not
-  represent production provider threading models.
-- The **LatestFrameMailbox** is a *debug/display sink* that stores only the latest frame.
+- `CoreRuntime` is owned by `CamBANGServer`
+- Dev nodes do not own the runtime
+- Snapshot publication is canonical and dirty-driven
+- Visibility is implemented via a development-only frame sink
 
-In the intended release architecture, CoreRuntime ownership will move
-to a server-owned or Engine-level singleton rather than a scene node.
+This document supplements:
 
-These choices avoid global state and keep iteration fast while the core contract stabilizes.
+- `core_runtime_model.md`
+- `state_snapshot.md`
+- `architecture/frame_sinks.md`
 
-## What is intended to survive
+It does not redefine canonical architecture.
 
-- Provider callbacks enqueue facts strictly; the core thread integrates deterministically.
-- The dispatcher enforces **release-on-drop**.
-- The core offers a **sink hook** (`ICoreFrameSink`) for consuming provider frames.
+---
 
-These are architectural spine elements expected to remain.
+## 1. Architectural Context (Current Model)
 
-## Display-normalized boundary
+### 1.1 Runtime ownership
 
-The mailbox stores `cambang::RgbaFrame`, a **tightly packed RGBA8** image.
-This is deliberate:
+`CoreRuntime` is owned by `CamBANGServer`, registered as an Engine-level singleton.
 
-- Godot can upload RGBA8 to `ImageTexture` with minimal glue.
-- The mailbox is conservative: it accepts only 32-bit RGBA-class formats.
-- Unsupported formats (e.g. NV12, YUY2, RAW) are **dropped and released**
-  without conversion.
+- `CamBANGServer.start()` starts the core thread.
+- `CamBANGServer.stop()` performs deterministic shutdown.
+- `CamBANGServer` owns snapshot publication and exposes:
+   - `get_state_snapshot()`
+   - `state_published(gen, topology_gen)`
 
-### Accepted formats (dev visibility phase)
+Dev nodes do **not** own `CoreRuntime`.
 
-During the Windows Media Foundation visibility phase, it was observed that:
+This aligns with the canonical runtime model.
 
-- Many consumer cameras expose only YUV-native formats when MF converters
-  are disabled.
-- Native RGB32-like formats (`MFVideoFormat_RGB32`,
-  `MFVideoFormat_ARGB32`) may or may not be available depending on device.
+---
 
-To improve dev visibility without introducing CPU colour conversion:
+## 2. What Is Dev-Only
 
-- The mailbox accepts:
-    - `FOURCC_RGBA` (tightly packed RGBA8)
-    - `FOURCC_BGRA` (tightly packed BGRA8)
+The following are development scaffolding and not release-facing API:
 
-- BGRA frames are **channel-swizzled to RGBA** before storage.
-- No YUV→RGB conversion is performed.
-- No compressed formats are converted.
+- `CamBANGDevNode`
+- `CamBANGDevFrameViewNode`
+- `LatestFrameMailbox`
+- Dev autostart convenience logic
+- Stub frame emission from `_process()`
 
-This swizzle is a *byte-order normalization*, not a colourspace conversion,
-and exists solely to make 32-bit RGB-class outputs visible in Godot during
-development.
+All dev-only code is gated behind:
 
-### Intentional non-support
+```
+CAMBANG_ENABLE_DEV_NODES
+```
 
-The following remain intentionally unsupported in this stage:
+These components may evolve or be removed without affecting canonical architecture.
 
-- NV12 / YUY2 / other YUV formats
-- RAW sensor formats
-- MJPG / compressed stream formats
+---
 
-These are dropped deterministically and released immediately.
+## 3. Dev Node Behaviour
 
-This prevents accidentally baking CPU conversion into the default
-performance path and keeps lifecycle/ownership validation isolated from
-format-conversion concerns.
+### 3.1 `CamBANGDevNode`
 
-## Production expectation
+Responsibilities:
 
-Real-world providers will frequently deliver YUV (e.g. NV12 on Windows/Android) or RAW formats.
+- Optionally starts `CamBANGServer` if not already running (dev convenience).
+- Optionally stops it if this node started it.
+- Drives stub-provider frame emission (dev-only).
+- Coordinates visibility stream start/stop (dev-only).
 
-Production display/processing is expected to use *different sinks*, such as:
+Important:
 
-- GPU-native YUV import + shader conversion
-- platform-specific zero-copy texture paths
-- compute-based processing
+- It does not own `CoreRuntime`.
+- It does not publish snapshots.
+- It does not bypass core arbitration.
 
-All of these can be introduced without changing ingress, determinism, or ownership rules.
+Autostart behaviour is convenience scaffolding only.
+
+---
+
+## 4. Baseline Snapshot Behaviour
+
+On successful `CamBANGServer.start()`:
+
+- Core begins logically dirty.
+- First loop iteration publishes a baseline snapshot.
+- First snapshot has:
+   - `gen = 0`
+   - `topology_gen = 0`
+   - valid monotonic `timestamp_ns`
+
+Until that publish occurs:
+
+- `get_state_snapshot()` may return null.
+
+This guarantees each runtime session produces exactly one deterministic baseline snapshot.
+
+---
+
+## 5. Frame Sink Wiring
+
+### 5.1 Core hook
+
+Core exposes:
+
+```
+ICoreFrameSink
+```
+
+Properties:
+
+- Invoked on the core thread.
+- Receives `FrameView` by value (moved).
+- Must preserve deterministic release semantics.
+
+Dispatcher enforces release-on-drop before invoking the sink.
+
+---
+
+### 5.2 LatestFrameMailbox (Dev Sink)
+
+`LatestFrameMailbox` is development-only.
+
+It:
+
+- Accepts tightly packed 32-bit RGBA-class frames.
+- Normalizes stride.
+- Swizzles BGRA → RGBA.
+- Drops unsupported formats deterministically.
+- Stores only the latest frame.
+
+Mailbox wiring occurs inside `CamBANGServer` when dev nodes are enabled.
+
+It is not part of the production design.
+
+---
+
+## 6. Accepted Formats (Visibility Phase Policy)
+
+Accepted:
+
+- `FOURCC_RGBA`
+- `FOURCC_BGRA` (swizzled to RGBA)
+
+Not supported:
+
+- NV12
+- YUY2
+- MJPG
+- RAW formats
+- Any YUV format
+
+Unsupported formats are dropped and released immediately.
+
+No YUV → RGB CPU conversion is performed.
+
+This isolates lifecycle validation from color conversion policy.
+
+---
+
+## 7. Stub Provider Visibility
+
+The stub provider remains useful for:
+
+- Lifecycle determinism validation
+- Dispatcher release semantics
+- Snapshot counter validation
+- Visual feedback (synthetic pixel generation)
+
+Stub frames are generated from `_process()` for convenience only.
+
+This does not represent production threading.
+
+---
+
+## 8. Windows Media Foundation Visibility
+
+When:
+
+```
+MF_READWRITE_DISABLE_CONVERTERS = TRUE
+```
+
+Only native camera formats are selectable.
+
+Many cameras expose YUV-only formats, resulting in:
+
+- Frames received
+- Frames dropped as unsupported
+- No visible pixels
+
+This is expected behaviour.
+
+It validates provider ↔ core contract without introducing conversion.
+
+See:
+
+```
+docs/dev/windows_mf_visibility_phase.md
+```
+
+---
+
+## 9. Determinism Guarantees Preserved
+
+Even in visibility mode:
+
+- All core state mutation occurs on the core thread.
+- Provider callbacks remain serialized.
+- Release-on-drop discipline is preserved.
+- Shutdown remains deterministic.
+- Snapshot publication remains dirty-driven.
+
+Visibility scaffolding does not alter invariants.
+
+---
+
+## 10. Production Expectations
+
+Production display paths are expected to use alternative sinks:
+
+- GPU-native YUV import
+- Shader-based color conversion
+- Platform-native texture paths
+- Compute-based processing
+
+These can be introduced without modifying:
+
+- Ingress ordering
+- Dispatcher discipline
+- Snapshot schema
+- Lifecycle invariants
+
+The mailbox is intentionally temporary.
+
+---
+
+## 11. Exit Criteria for This Stage
+
+This dev visibility stage is considered complete when:
+
+- Pixels appear for providers capable of native RGBA-class output.
+- Drop-heavy providers behave deterministically.
+- Start/stop cycles do not hang.
+- Snapshot publication remains correct (`gen`, `topology_gen`).
+- No release leaks occur under stress.
+
+Once production GPU paths are introduced, this stage may be retired.
+
+---
+
+End of FrameView Stage (Dev Visibility) document.

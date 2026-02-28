@@ -24,11 +24,30 @@ Core publishes a new snapshot whenever relevant state changes.
 
 -   `state_published(gen, topology_gen)`
 
+### 1.2.x Pre-publication state
+
+Before the first publish in a runtime session, no snapshot exists.
+
+Godot-facing `CamBANGServer.get_state_snapshot()` may return an invalid
+reference (null) until the first snapshot is published.
+
+The first published snapshot establishes the baseline state for the
+session (see §1.3).
+
+
 ### 1.3 Generation counters
 
--   `gen` increments on **every** publish.
--   `topology_gen` increments when the **structural hierarchy** changes
-    (see §8).
+- `gen` increments on **every** publish.
+- `topology_gen` increments when the **structural hierarchy** changes (see §8).
+
+Generation counters are **zero-indexed per runtime session**:
+
+- The first published snapshot in a session has `gen = 0`.
+- The first published snapshot has `topology_gen = 0`.
+- Subsequent publishes increment `gen` by 1.
+- `topology_gen` increments only when a structural change occurs.
+
+There is no published snapshot prior to `gen = 0`.
 
 ### 1.4 Schema versioning
 
@@ -118,7 +137,28 @@ CamBANGStateSnapshot {
   detached_root_ids: Array<uint64> // computed by core (see §7)
 }
 ```
+### 5.x Timestamp semantics (normative)
 
+`timestamp_ns` is a **monotonic publish timestamp** produced by core at snapshot assembly time.
+
+- It is **not wall-clock** and must not be interpreted as UNIX epoch time.
+- It is **session-relative** (a monotonic counter since a core-defined epoch, e.g. runtime start).
+- It is intended for: ordering snapshots, computing durations (e.g. warm remaining), and
+  detecting staleness — not for user-facing clock time.
+
+Snapshot publication occurs only after core state has converged for the
+current event loop iteration (see `core_runtime_model.md`).
+
+On successful runtime start, core begins in a logically dirty state and
+will publish a baseline snapshot on the first loop iteration. This first
+published snapshot has:
+
+- `gen = 0`
+- `topology_gen = 0`
+- a valid monotonic `timestamp_ns`
+
+This guarantees that each runtime session produces at least one
+deterministic baseline snapshot after `CamBANGServer.start()` completes.
 ------------------------------------------------------------------------
 
 ## 6. Record schemas (v1)
@@ -281,6 +321,12 @@ including: - rig created/destroyed - device instance created/destroyed
 (`instance_id` lineage changes) - stream created/destroyed - rig
 membership changes - a new `root_id` appears or a `root_id` fully
 disappears (including detached branches expiring)
+
+The initial publish of a runtime session establishes the baseline
+topology and sets `topology_gen = 0`.
+
+The baseline is not considered a "change from -1"; it is the first
+structural state of the session.
 
 ------------------------------------------------------------------------
 

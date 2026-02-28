@@ -56,6 +56,14 @@ LatestFrameMailbox is a development-stage sink that:
 -   Drops unsupported formats
 -   Stores only the latest frame
 
+When `CAMBANG_ENABLE_DEV_NODES` is enabled, the mailbox sink is owned
+and wired by `CamBANGServer` (which owns `CoreRuntime`). Dev nodes
+never own or wire sinks directly.
+
+The mailbox is attached as a development-only frame sink during
+server initialization. It is not part of the canonical provider ↔ core
+contract and does not affect snapshot publication semantics.
+
 ### Accepted formats (dev visibility phase)
 
 The mailbox accepts:
@@ -96,3 +104,20 @@ contract.
 Frame sinks do not alter stream counter semantics defined in
 state_snapshot.md; counters are updated by core prior to
 sink invocation.
+------------------------------------------------------------------------
+
+## Counter Semantics Alignment
+
+Frame sinks do not modify stream counter semantics defined in
+`state_snapshot.md`.
+
+Specifically:
+
+- `frames_received` increments when core integrates a provider frame.
+- `frames_delivered` increments when the dispatcher hands a frame to
+  the sink (including `LatestFrameMailbox` in dev mode).
+- `frames_dropped` increments when the dispatcher drops a frame prior
+  to sink invocation.
+
+Counters are updated by core prior to sink invocation and are part of
+the canonical snapshot model.

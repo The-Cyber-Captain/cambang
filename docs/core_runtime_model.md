@@ -220,6 +220,33 @@ machine changes (phase/mode/engaged) - any counter changes - any error
 field changes - any membership/topology changes - any registry change
 occurs (create/destroy/retire) - spec/profile becomes effective
 
+### 9.1.x Baseline publish on runtime start
+
+On successful transition to `LIVE`, core is considered
+**logically dirty** even if no provider events or commands have yet
+been processed.
+
+This ensures that the first loop iteration after `start()` produces a
+baseline snapshot.
+
+The baseline publish:
+
+- Occurs via the normal dirty-driven publication path.
+- Is not triggered by a special-case `request_publish()` call.
+- Produces the first snapshot of the session with:
+    - `gen = 0`
+    - `topology_gen = 0`
+    - A valid monotonic `timestamp_ns`.
+
+There is no published snapshot prior to this baseline publish.
+
+This rule guarantees that every successful runtime start produces
+exactly one deterministic initial snapshot, even in the absence of
+provider activity.
+
+Subsequent publishes follow the normal dirty-driven semantics defined
+in §9.1 and §9.2.
+
 ### 9.2 Publish point
 
 Core publishes at most once per loop iteration (after draining
@@ -230,7 +257,14 @@ Publish steps: 1. Run retention sweep (may mark dirty) 2. Assemble new
 pointer in `CamBANGServer` 4. Emit `state_published(gen, topology_gen)`
 from `CamBANGServer`
 
-### 9.3 `gen` and `topology_gen` bookkeeping
+### 9.3 Publish time vs capture time
+
+Snapshot `timestamp_ns` is core publish time (monotonic, session-relative).
+Per-frame capture timestamps are separate metadata carried by provider events and must
+use a provider-agnostic time domain representation (see `provider_architecture.md`).
+Core must not assume capture time is wall-clock.
+
+### 9.4 `gen` and `topology_gen` bookkeeping
 
 -   `gen` increments for every published snapshot
 -   `topology_gen` increments only for structural changes as defined in
