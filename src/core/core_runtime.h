@@ -2,18 +2,23 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
-#include "core/core_publisher_buffer.h"
 #include "core/core_runtime_state.h"
-#include "core/core_snapshot.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
-#include "core/latest_frame_mailbox.h"
 #include "core/core_frame_sink.h"
+#include "core/i_state_snapshot_publisher.h"
 #include "core/provider_callback_ingress.h"
+
+#include "core/snapshot/snapshot_builder.h"
+
+#if defined(CAMBANG_ENABLE_DEV_NODES)
+#include "core/latest_frame_mailbox.h"
+#endif
 
 #include "provider/icamera_provider.h"
 
@@ -76,8 +81,9 @@ namespace cambang {
   }
 #endif
 
-  CorePublisherBuffer& publisher() noexcept { return publisher_; }
-  const CorePublisherBuffer& publisher() const noexcept { return publisher_; }
+  void set_snapshot_publisher(IStateSnapshotPublisher* publisher) noexcept {
+    snapshot_publisher_.store(publisher, std::memory_order_release);
+  }
 
   [[nodiscard]] CoreDispatchStats dispatcher_stats() const noexcept { return dispatcher_.stats(); }
 
@@ -87,7 +93,9 @@ namespace cambang {
 
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 
+#if defined(CAMBANG_ENABLE_DEV_NODES)
   const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
+#endif
 
   void attach_provider(ICameraProvider* provider) noexcept {
     provider_.store(provider, std::memory_order_release);
@@ -106,12 +114,20 @@ private:
   CoreThread core_thread_;
   CoreDeviceRegistry devices_;
   CoreStreamRegistry streams_;
-  std::uint64_t snapshot_seq_ = 0;
+  std::uint64_t gen_ = 0;
+  std::uint64_t topology_gen_ = 0;
+  uint64_t last_topology_sig_ = 0;
+  bool has_topology_sig_ = false;
 
   std::atomic<CoreRuntimeState> state_{CoreRuntimeState::CREATED};
 
-  CorePublisherBuffer publisher_;
+  SnapshotBuilder snapshot_builder_;
+  std::atomic<IStateSnapshotPublisher*> snapshot_publisher_{nullptr};
 
+  // Core-defined epoch for snapshot timestamp_ns (session-relative monotonic).
+  std::chrono::steady_clock::time_point epoch_;
+
+#if defined(CAMBANG_ENABLE_DEV_NODES)
   LatestFrameMailbox latest_frame_mailbox_;
   class LatestFrameMailboxSink final : public ICoreFrameSink {
   public:
@@ -127,6 +143,7 @@ private:
     LatestFrameMailbox* mb_ = nullptr;
   };
   LatestFrameMailboxSink latest_frame_sink_{&latest_frame_mailbox_};
+#endif
 
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;

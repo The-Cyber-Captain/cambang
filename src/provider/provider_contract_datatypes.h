@@ -117,6 +117,23 @@ struct NativeObjectDestroyInfo {
   uint64_t destroyed_ns = 0;              // monotonic if available (0 allowed)
 };
 
+// Provider-agnostic capture timestamp.
+// See provider_architecture.md §7.x (canonical).
+enum class CaptureTimestampDomain : uint8_t {
+  PROVIDER_MONOTONIC = 0,
+  CORE_MONOTONIC = 1,
+  // NOTE: Avoid the Windows GDI macro `OPAQUE` (commonly defined as 2 via wingdi.h)
+  // which can break compilation when <windows.h> is included before this header.
+  // Semantics remain "opaque / ordering-only" as described in provider_architecture.md.
+  DOMAIN_OPAQUE = 2,
+};
+
+struct CaptureTimestamp {
+  uint64_t value = 0;     // integer tick value
+  uint32_t tick_ns = 0;   // tick period in nanoseconds (1 = ns, 100 = 100ns, etc.)
+  CaptureTimestampDomain domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -132,7 +149,7 @@ struct FrameView {
   uint32_t format_fourcc = 0;
 
   // Timing
-  uint64_t timestamp_ns = 0; // platform timestamp; 0 if unknown
+  CaptureTimestamp capture_timestamp{};
 
   // Buffer
   const uint8_t* data = nullptr;

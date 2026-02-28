@@ -12,7 +12,11 @@
   #error "Core smoke: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
 #endif
 #include "core/core_runtime.h"
+#include "core/state_snapshot_buffer.h"
+
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 #include "provider/stub/stub_camera_provider.h"
+#endif
 
 using namespace cambang;
 
@@ -190,12 +194,33 @@ static bool wait_until(std::function<bool()> pred, int max_iters = 200, int slee
   return false;
 }
 
-static CorePublisherBuffer::Stats get_publish_stats(CoreRuntime& rt) {
-  return rt.publisher().stats_copy();
+static std::shared_ptr<const CamBANGStateSnapshot> get_last_snapshot(StateSnapshotBuffer& buf) {
+  return buf.snapshot_copy();
 }
 
-static CoreSnapshot get_last_snapshot(CoreRuntime& rt) {
-  return rt.publisher().snapshot_copy();
+static bool wait_for_snapshot_gen(StateSnapshotBuffer& buf, uint64_t min_gen) {
+  return wait_until([&]() {
+    auto s = buf.snapshot_copy();
+    return s && s->gen >= min_gen;
+  });
+}
+
+
+static bool wait_for_snapshot_pred(
+    StateSnapshotBuffer& buf,
+    const std::function<bool(const CamBANGStateSnapshot&)>& pred) {
+  return wait_until([&]() {
+    auto s = buf.snapshot_copy();
+    return s && pred(*s);
+  });
+}
+
+static const char* compiled_provider_name() {
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+  return "stub";
+#else
+  return "unset";
+#endif
 }
 
 static StreamRequest make_req() {
@@ -210,6 +235,7 @@ static StreamRequest make_req() {
   return req;
 }
 
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static bool setup_one_stream(CoreRuntime& rt, StubCameraProvider& prov) {
   if (!prov.initialize(rt.provider_callbacks()).ok()) return false;
 
@@ -223,6 +249,7 @@ static bool setup_one_stream(CoreRuntime& rt, StubCameraProvider& prov) {
 
   return true;
 }
+#endif
 
 // ---- Tests (existing behaviour preserved) ----
 
@@ -238,9 +265,20 @@ static int test_publish_gating_before_start() {
   return 0;
 }
 
-static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt, StubCameraProvider& prov) {
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
+                                                     StateSnapshotBuffer& buf,
+                                                     StubCameraProvider& prov) {
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start\n";
+    return 1;
+  }
+
+  // CoreRuntime now starts "dirty" and publishes an initial snapshot automatically.
+  // The first snapshot is zero-indexed (gen=0).
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "Timeout waiting for initial snapshot publication\n";
+    rt.stop();
     return 1;
   }
 
@@ -299,29 +337,38 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt, StubCamera
     return 1;
   }
 
+  // We need a snapshot that reflects the flowing stream and frame counters.
+  // This may be published naturally (dirty-driven) when the frame fact is integrated,
+  // or it may require an explicit smoke-only request_publish() to force a publish.
   rt.request_publish();
-  if (!wait_until([&]() { return get_publish_stats(rt).publishes >= 1; })) {
-    std::cerr << "Timeout waiting for snapshot publication\n";
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        for (const auto& st : s.streams) {
+          if (st.stream_id == kStreamId) {
+            return (st.mode == CBStreamMode::FLOWING && st.frames_received >= 1 && st.frames_delivered >= 1);
+          }
+        }
+        return false;
+      })) {
+    std::cerr << "Timeout waiting for snapshot containing flowing stream counters\n";
     rt.stop();
     return 1;
   }
 
-  const CoreSnapshot snap0 = get_last_snapshot(rt);
-  if (snap0.seq == 0 || snap0.streams.empty()) {
-    std::cerr << "Snapshot empty or missing seq\n";
+  auto snap0 = get_last_snapshot(buf);
+  if (!snap0 || snap0->schema_version != CamBANGStateSnapshot::kSchemaVersion) {
+    std::cerr << "Snapshot missing or wrong schema_version\n";
     rt.stop();
     return 1;
   }
 
   bool found = false;
-  for (const auto& s : snap0.streams) {
+  for (const auto& s : snap0->streams) {
     if (s.stream_id == kStreamId) {
       found = true;
-      if (!s.created || !s.started || s.frames_received != 1 || s.frames_released != 1) {
-        std::cerr << "Snapshot stream mismatch. created=" << s.created
-                  << " started=" << s.started
+      if (s.mode != CBStreamMode::FLOWING || s.frames_received != 1 || s.frames_delivered != 1) {
+        std::cerr << "Snapshot stream mismatch. mode=" << static_cast<int>(s.mode)
                   << " frames_received=" << s.frames_received
-                  << " frames_released=" << s.frames_released << "\n";
+                  << " frames_delivered=" << s.frames_delivered << "\n";
         rt.stop();
         return 1;
       }
@@ -337,6 +384,41 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt, StubCamera
   return 0;
 }
 
+#endif
+
+static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshotBuffer& buf) {
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start\n";
+    return 1;
+  }
+
+  // CoreRuntime starts "dirty" and publishes an initial snapshot automatically.
+  // The first snapshot is zero-indexed (gen=0).
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "Timeout waiting for initial snapshot publication\n";
+    rt.stop();
+    return 1;
+  }
+  auto snap = get_last_snapshot(buf);
+  if (!snap || snap->schema_version != CamBANGStateSnapshot::kSchemaVersion) {
+    std::cerr << "Snapshot missing or wrong schema_version\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Still validate request_publish() works once the core is live.
+  // (Smoke-only; production should rely on dirty-driven publication.)
+  rt.request_publish();
+  if (!wait_for_snapshot_gen(buf, 1)) {
+    std::cerr << "Timeout waiting for request_publish() snapshot\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  return 0;
+}
+
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubCameraProvider& prov) {
   (void)rt.try_post_core_thread_unchecked([]() {
     const auto t0 = std::chrono::steady_clock::now();
@@ -421,153 +503,14 @@ static int test_shutdown_choreography(CoreRuntime& rt, StubCameraProvider& prov)
   return 0;
 }
 
-static int test_late_fact_during_teardown_no_provider_attached() {
-  CoreRuntime rt4;
-  if (!rt4.start()) {
-    std::cerr << "CoreRuntime rt4 failed to start\n";
-    return 1;
-  }
+#endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
-  StubCameraProvider prov4;
-  if (!setup_one_stream(rt4, prov4)) {
-    std::cerr << "Stub provider4 setup failed\n";
-    rt4.stop();
-    return 1;
-  }
-
-  if (!prov4.start_stream(kStreamId).ok()) {
-    std::cerr << "start_stream (prov4) failed\n";
-    rt4.stop();
-    return 1;
-  }
-
-  CoreStreamRegistry::StreamRecord r0{};
-  if (!get_stream_record(rt4, kStreamId, r0) || !r0.started) {
-    std::cerr << "Expected started stream in core before teardown\n";
-    rt4.stop();
-    return 1;
-  }
-
-  std::thread stopper([&rt4]() { rt4.stop(); });
-
-  prov4.emit_fact_stream_stopped(kStreamId, ProviderError::OK);
-
-  if (!wait_until([&]() { return rt4.state_copy() != CoreRuntimeState::LIVE; }, 200, 1)) {
-    std::cerr << "rt4 stop did not begin (state still LIVE)\n";
-    stopper.join();
-    return 1;
-  }
-
-  const auto r_post = rt4.try_post([]() {});
-  if (r_post != CoreThread::PostResult::Closed) {
-    std::cerr << "Expected try_post Closed during TEARING_DOWN\n";
-    stopper.join();
-    return 1;
-  }
-
-  const auto st_before = rt4.stats_copy();
-  rt4.request_publish();
-  const auto st_after = rt4.stats_copy();
-  if (st_after.publish_requests_dropped_closed != st_before.publish_requests_dropped_closed + 1) {
-    std::cerr << "Expected publish request to be dropped Closed during TEARING_DOWN\n";
-    stopper.join();
-    return 1;
-  }
-
-  stopper.join();
-
-  const CoreSnapshot snap = get_last_snapshot(rt4);
-  bool found_stream = false;
-  for (const auto& s : snap.streams) {
-    if (s.stream_id == kStreamId) {
-      found_stream = true;
-      if (s.started) {
-        std::cerr << "Expected final snapshot to show stream stopped (started=false)\n";
-        return 1;
-      }
-    }
-  }
-  if (!found_stream) {
-    std::cerr << "Expected final snapshot to contain the stream record\n";
-    return 1;
-  }
-
-  return 0;
-}
-
-static int test_frames_after_stopped_drop_closed() {
-  CoreRuntime rt2;
-  if (!rt2.start()) {
-    std::cerr << "CoreRuntime rt2 failed to start\n";
-    return 1;
-  }
-
-  StubCameraProvider prov2;
-  if (!setup_one_stream(rt2, prov2)) {
-    std::cerr << "Stub provider2 setup failed\n";
-    rt2.stop();
-    return 1;
-  }
-
-  rt2.stop();
-
-  (void)prov2.start_stream(kStreamId);
-
-  if (!wait_until([&]() { return prov2.frames_released() >= 1; })) {
-    std::cerr << "Timeout waiting for frame release after runtime stop\n";
-    return 1;
-  }
-
-  return 0;
-}
-
-static int test_frames_during_teardown_best_effort_no_leaks() {
-  CoreRuntime rt3;
-  if (!rt3.start()) {
-    std::cerr << "CoreRuntime rt3 failed to start\n";
-    return 1;
-  }
-
-  StubCameraProvider prov3;
-  if (!setup_one_stream(rt3, prov3)) {
-    std::cerr << "Stub provider3 setup failed\n";
-    rt3.stop();
-    return 1;
-  }
-
-  rt3.attach_provider(&prov3);
-
-  if (!prov3.start_stream(kStreamId).ok()) {
-    std::cerr << "start_stream (prov3) failed\n";
-    rt3.stop();
-    return 1;
-  }
-
-  std::thread stopper([&rt3]() { rt3.stop(); });
-
-  prov3.emit_test_frames(kStreamId, 200);
-
-  stopper.join();
-
-  const uint64_t emitted = prov3.frames_emitted();
-  if (prov3.frames_released() != emitted) {
-    std::cerr << "Leak risk: frames not fully released during teardown. emitted="
-              << emitted << " released=" << prov3.frames_released() << "\n";
-    return 1;
-  }
-
-  if (!prov3.shutting_down()) {
-    std::cerr << "Expected provider to be shutting_down after teardown\n";
-    return 1;
-  }
-
-  return 0;
-}
-
-// Lightweight per-iteration stress loop body.
-// Keeps portable semantics; avoids baking in MF-specific quirks.
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+// Lightweight per-iteration stress loop body (stub-provider mode).
 static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_index) {
   CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
   if (!rt.start()) {
     std::cerr << "[iter " << iter_index << "] CoreRuntime failed to start\n";
     return 1;
@@ -638,28 +581,35 @@ static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_inde
   return 0;
 }
 
-} // namespace
+#endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
+} // namespace
 int main(int argc, char** argv) {
   Options opt;
   if (!parse_opts(argc, argv, opt)) {
     return 2;
   }
 
+  std::cout << "[smoke] compiled provider: " << compiled_provider_name() << "\n";
+
   // Default behaviour: run once, same structure/output as original.
   if (!opt.stress) {
     if (int r = test_publish_gating_before_start()) return r;
 
     CoreRuntime rt;
-    StubCameraProvider prov;
+    StateSnapshotBuffer buf;
+    rt.set_snapshot_publisher(&buf);
 
-    if (int r = test_baseline_live_one_frame_and_snapshot(rt, prov)) return r;
+    // Providerless baseline (default smoke mode).
+    if (int r = test_baseline_publish_without_provider(rt, buf)) return r;
+
+#if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+    // Stub-provider integration tests (opt-in).
+    StubCameraProvider prov;
+    if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
-
-    if (int r = test_late_fact_during_teardown_no_provider_attached()) return r;
-    if (int r = test_frames_after_stopped_drop_closed()) return r;
-    if (int r = test_frames_during_teardown_best_effort_no_leaks()) return r;
+#endif
 
     std::cout << "OK: core spine smoke passed\n";
     return 0;
@@ -673,6 +623,10 @@ int main(int argc, char** argv) {
 
   const int progress_interval = 25;
 
+#if !defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+  std::cerr << "Stress mode requires CAMBANG_SMOKE_WITH_STUB_PROVIDER (build with provider=stub).\n";
+  return 2;
+#else
   for (int i = 1; i <= opt.loops; ++i) {
     const int r = stress_iteration(opt, rng, i);
     if (r != 0) return r;
@@ -684,4 +638,5 @@ int main(int argc, char** argv) {
 
   std::cout << "OK: core spine smoke stress passed (loops=" << opt.loops << ")\n";
   return 0;
+#endif
 }

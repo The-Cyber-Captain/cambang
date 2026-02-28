@@ -109,6 +109,27 @@ and does not indicate a failure of the provider or build configuration.
 For the development-phase record and acceptance/drop counter interpretation, see:
 
 - `docs/dev/windows_mf_visibility_phase.md`
+
+
+#### Windows macro collision: OPAQUE
+
+Windows headers included via `windows.h` (often `wingdi.h`) define a
+macro named `OPAQUE` (commonly value `2`).
+
+If CamBANG headers define enum members named `OPAQUE` and are included
+after `windows.h`, compilation fails with errors like:
+
+    expected identifier before numeric constant
+
+Policy:
+
+- Avoid Windows-macro-prone identifiers (`OPAQUE`, `ERROR`, `DELETE`,
+  `IN`, `OUT`, etc.) as unqualified enum members in shared/provider
+  headers.
+- Prefer prefixed names such as `DOMAIN_OPAQUE`.
+
+CamBANG uses `DOMAIN_OPAQUE` for capture timestamp domains to
+avoid this collision permanently.
 ---
 
 ## 4. `.gdextension` Encoding Requirement (No BOM)

@@ -170,9 +170,13 @@ It must not change what the core smoke executable compiles/links: smoke remains 
 ## 6. GDE Scaffolding Plan (Temporary)
 
 - Initial Godot-facing scaffolding uses `CamBANGDevNode` (temporary).
-- `CamBANGDevNode` owns a `CoreRuntime` for the duration of a play session.
-- Lifecycle hooks: `_enter_tree()` starts, `_exit_tree()` stops.
-- Single-instance guard is enabled to emulate final server-like layout.
+- `CamBANGServer` (Engine singleton) owns `CoreRuntime`.
+- `CamBANGDevNode` may auto-start/auto-stop the server for development
+  convenience but does not own the runtime.
+- Lifecycle hooks: `_enter_tree()` may start the server (if not already running);
+  `_exit_tree()` may stop it only if this node initiated start.
+- Single-instance guard applies to dev scaffolding only and does not
+  represent final API constraints.
 
 ### 6.x Current default targets and knobs (build-phase behavior)
 
@@ -232,6 +236,10 @@ Provider backends (especially platform APIs like Windows Media Foundation) are a
 **Naming**
 - Smoke-only code paths use `CAMBANG_INTERNAL_SMOKE`.
 - Legacy “IDE smoke” nomenclature has been removed.
+
+When built with `smoke=1`, the smoke executable prints a banner
+indicating the compiled provider mode (e.g. stub-only). This is a
+diagnostic convenience and does not alter the stub-only invariant.
 
 ### Stress Mode (Smoke Harness)
 

@@ -1,0 +1,57 @@
+[gd_scene load_steps=2 format=3 uid="uid://bj4g5p1nhgu0d"]
+
+[sub_resource type="GDScript" id="GDScript_pr61q"]
+resource_name = "connect_snapshot_view"
+script/source = "extends Node
+
+@export var cycles: int = 50
+@export var start_seconds: float = 1.5
+@export var stop_seconds: float = 0.6
+@export var cooldown_seconds: float = 0.4
+
+var _i := 0
+var _server :Object = null
+
+func _ready():
+	_server = Engine.get_singleton(\"CamBANGServer\")
+	if _server == null:
+		push_error(\"CamBANGServer singleton not found\")
+		get_tree().quit(2)
+		return
+
+	print(\"[stress] starting MF start/stop cycles=\", cycles)
+	_run_next()
+
+func _run_next():
+	if _i >= cycles:
+		print(\"[stress] DONE cycles=\", cycles)
+		get_tree().quit(0)
+		return
+
+	_i += 1
+	print(\"[stress] cycle \", _i, \"/\", cycles, \" START\")
+	_server.start()
+
+	await get_tree().create_timer(start_seconds).timeout
+
+	print(\"[stress] cycle \", _i, \"/\", cycles, \" STOP\")
+	_server.stop()
+
+	await get_tree().create_timer(stop_seconds).timeout
+	await get_tree().create_timer(cooldown_seconds).timeout
+
+	_run_next()
+"
+
+[node name="Main" type="Node"]
+script = SubResource("GDScript_pr61q")
+
+[node name="DevNode" type="CamBANGDevNode" parent="."]
+
+[node name="FrameView" type="CamBANGDevFrameViewNode" parent="."]
+dev_node_path = NodePath("../DevNode")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2

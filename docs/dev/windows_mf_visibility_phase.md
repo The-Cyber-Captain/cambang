@@ -32,6 +32,17 @@ Constraints:
 - No global state.
 - Keep provider minimal and auditable.
 
+
+## Runtime Ownership Clarification
+
+In the current architecture, `CoreRuntime` is owned by
+`CamBANGServer` (Engine singleton).
+
+Dev nodes do not own the runtime. Visibility scaffolding interacts
+with the server but does not bypass canonical runtime ownership.
+
+This aligns Windows provider validation with the canonical runtime model.
+
 ---
 
 ## 2. Verified Behaviour
@@ -145,6 +156,26 @@ Additional observations:
 - Some headers differ from MSVC SDK behaviour.
 
 These constraints are toolchain-specific and do not affect architecture.
+
+### 5.x Windows Macro Collision: OPAQUE
+
+Windows headers included via `windows.h` (commonly `wingdi.h`)
+define a macro named `OPAQUE` (typically value `2`).
+
+If CamBANG shared/provider headers define an enum member named
+`OPAQUE`, and that header is included after `windows.h`,
+compilation fails with errors such as:
+
+    expected identifier before numeric constant
+
+Policy:
+
+- Avoid Windows-macro-prone identifiers (`OPAQUE`, `ERROR`, `DELETE`,
+  `IN`, `OUT`, etc.) as unqualified enum members in shared headers.
+- Prefer prefixed identifiers such as `DOMAIN_OPAQUE`.
+
+CamBANG v1 uses `DOMAIN_OPAQUE` for capture timestamp domains to
+avoid this collision.
 
 ---
 

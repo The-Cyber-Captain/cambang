@@ -192,6 +192,33 @@ does.
 
 ------------------------------------------------------------------------
 
+## 7.x Capture timestamp domains (provider → core)
+
+Providers must tag delivered frames with a **provider-agnostic capture timestamp** for
+multi-camera alignment and tolerance checks.
+
+Core must not depend on platform-specific timestamp concepts (e.g. Media Foundation sample
+time, Android timestamp source enums). Such concepts must remain provider-internal.
+
+Provider must supply capture time using a generic representation:
+
+- `value`: integer tick value
+- `tick_ns`: tick period in nanoseconds (e.g. 1 for ns, 100 for 100ns)
+- `domain`: declared comparability/meaning of the timestamp
+
+Domains are semantic, not platform names. v1 domains:
+
+- `PROVIDER_MONOTONIC`: monotonic and comparable across streams produced by this provider instance.
+- `CORE_MONOTONIC`: already mapped into core’s monotonic timebase (session-relative).
+- `DOMAIN_OPAQUE`: ordering-only; provider cannot guarantee meaningful cross-stream comparability.
+
+Providers should prefer `PROVIDER_MONOTONIC` or `CORE_MONOTONIC` where feasible.
+
+Core uses capture timestamps only according to the declared domain.
+
+Avoid using enum identifiers that collide with Windows macros (e.g., OPAQUE). Prefer prefixed forms (e.g., DOMAIN_OPAQUE) in provider-contract headers.
+------------------------------------------------------------------------
+
 ## 8. Error reporting
 
 Provider must report errors via deterministic callbacks (exact names are

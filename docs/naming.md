@@ -13,6 +13,9 @@ Singleton service/registry/factory for CamBANG. Responsibilities include
 device enumeration, rig creation, global shutdown, and access to the
 latest published state snapshot.
 
+CamBANGServer is Engine singleton; explicit start()/stop(); get_state_snapshot() may be invalid before first publish;
+state_published(gen, topology_gen) begins at 0/0.
+
 ------------------------------------------------------------------------
 
 ### `CamBANGRig`
@@ -181,6 +184,39 @@ Native/core objects created by the provider on behalf of CamBANG are tracked as 
     (e.g., new instances, membership changes, detached branches
     appearing/disappearing).
 
+### Timestamp fields and time domains
+
+CamBANG uses multiple timestamp *domains* for different purposes. Field names must
+make the domain and units unambiguous.
+
+**Snapshot publish time (schema v1)**
+
+- `CamBANGStateSnapshot.timestamp_ns` is a **monotonic publish timestamp** produced by
+  core at snapshot assembly time.
+- It is **session-relative** (monotonic since a core-defined epoch, e.g. runtime start).
+- It is **not wall-clock** and must not be interpreted as UNIX epoch time.
+
+**Capture time (provider → core frame metadata)**
+
+Providers must tag frames with a provider-agnostic capture timestamp representation:
+
+- `CaptureTimestamp.value` (integer ticks)
+- `CaptureTimestamp.tick_ns` (tick period in nanoseconds; e.g. `1` for ns, `100` for 100ns)
+- `CaptureTimestamp.domain` (declared semantics / comparability)
+
+The `domain` is semantic and provider-agnostic. v1 domains:
+
+- `PROVIDER_MONOTONIC` — monotonic and comparable across streams produced by this provider instance.
+- `CORE_MONOTONIC` — already mapped into core's monotonic timebase (session-relative).
+- `DOMAIN_OPAQUE` — ordering-only; provider cannot guarantee meaningful cross-stream comparability.
+
+**Provider boundary rule**
+
+Platform/provider-specific timestamp concepts (e.g. Media Foundation sample time,
+Android camera timestamp source enums) must remain **provider-internal** and must not
+appear in core/shared types, schema fields, or generic logs. Prefer generic names
+like `capture_timestamp`, `tick_ns`, and `domain`.
+
 ### Signals
 
 -   `state_published(gen, topology_gen)` --- emitted by `CamBANGServer`
@@ -250,6 +286,11 @@ debugging logs.
     lifecycles and retains recently destroyed records for inspection.
 -   `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot`
     and performs retention sweeps.
+
+-   Timestamp conventions:
+    - Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
+    - Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
+    - Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
 
 ------------------------------------------------------------------------
 
