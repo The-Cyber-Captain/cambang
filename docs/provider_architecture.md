@@ -22,6 +22,7 @@ Providers must support:
 -   Multi-camera synchronised capture where platform/hardware supports
     it
 -   Testability via a synthetic provider
+    (synthetic providers may generate pixel content via provider-agnostic rendering modules)
 
 Providers must not:
 
@@ -30,6 +31,17 @@ Providers must not:
 -   Implement arbitration/policy decisions (rig priority, preemption
     rules)
 -   Retain references to core objects beyond their documented lifetime
+
+## 1.x Synthetic pixel generation (Pattern Module)
+
+Providers may produce frames from platform camera APIs or from synthetic sources.
+
+Synthetic providers may generate pixel content using provider-agnostic rendering modules (e.g., the
+Pattern Module) while preserving the provider/core contract:
+
+- Core remains agnostic to pixel origin (hardware vs synthetic).
+- Providers remain responsible for deterministic delivery, timestamps, and correct pixel format mapping.
+- Synthetic rendering does not alter arbitration, policy decisions, or snapshot publication.
 
 ------------------------------------------------------------------------
 
