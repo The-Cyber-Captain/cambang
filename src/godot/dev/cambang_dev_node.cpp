@@ -63,9 +63,26 @@ void CamBANGDevNode::_exit_tree() {
 }
 
 void CamBANGDevNode::_process(double delta) {
+    if (!started_ || !runtime_) {
+        return;
+    }
+
+    // Detect external runtime start/stop cycles (e.g. stress scripts calling CamBANGServer).
+    const bool running = runtime_->is_running();
+    if (running != last_running_) {
+        if (!running) {
+            stop_provider_();
+        } else {
+            if (!start_provider_()) {
+                UtilityFunctions::printerr("[CamBANGDevNode] Provider bring-up failed after restart.");
+            }
+        }
+        last_running_ = running;
+    }
+
 #if !defined(CAMBANG_PROVIDER_WINDOWS_MF) || !CAMBANG_PROVIDER_WINDOWS_MF
     // Dev-only: drive stub provider frames on the main thread (no extra threads).
-    if (!started_ || !provider_) {
+    if (!running || !provider_) {
         return;
     }
 
@@ -126,62 +143,74 @@ void CamBANGDevNode::start_runtime_() {
     }
 
     started_ = true;
+    last_running_ = runtime_->is_running();
 
-    // Dev-only: attach and start a provider to drive the end-to-end path.
+    // Bring up provider for the initial running state.
+    if (last_running_) {
+        if (!start_provider_()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] Provider bring-up failed.");
+            stop_runtime_();
+            s_live.store(false);
+            queue_free();
+            return;
+        }
+    }
+}
+
+bool CamBANGDevNode::start_provider_() {
+    if (!runtime_ || !runtime_->is_running()) {
+        return false;
+    }
+
+    // Recreate provider each time for clean lifecycle on repeated start/stop.
 #if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
     provider_ = std::make_unique<WindowsMfCameraProvider>();
 #else
     provider_ = std::make_unique<StubCameraProvider>();
 #endif
+
     runtime_->attach_provider(provider_.get());
 
     ProviderResult pr = provider_->initialize(runtime_->provider_callbacks());
     if (!pr.ok()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider initialize failed.");
-        stop_runtime_();
-        s_live.store(false);
-        queue_free();
-        return;
+        stop_provider_();
+        return false;
     }
 
-    
-std::vector<CameraEndpoint> eps;
-pr = provider_->enumerate_endpoints(eps);
-if (!pr.ok() || eps.empty()) {
-    UtilityFunctions::printerr("[CamBANGDevNode] Provider enumerate_endpoints failed.");
-    stop_runtime_();
-    s_live.store(false);
-    queue_free();
-    return;
-}
-
-// Dev visibility: list endpoints once at startup.
-for (size_t i = 0; i < eps.size(); ++i) {
-    UtilityFunctions::print("[CamBANGDevNode] Endpoint ", (int)i, ": ", eps[i].name.c_str());
-}
-
-// Dev-only selection policy:
-// Prefer a device whose name contains "emeet" (case-insensitive).
-// Fallback to index 0 if not found.
-size_t selected = 0;
-for (size_t i = 0; i < eps.size(); ++i) {
-    std::string name = eps[i].name;
-    for (char& c : name) c = (char)std::tolower((unsigned char)c);
-    if (name.find("emeet") != std::string::npos) {
-        selected = i;
-        break;
+    std::vector<CameraEndpoint> eps;
+    pr = provider_->enumerate_endpoints(eps);
+    if (!pr.ok() || eps.empty()) {
+        UtilityFunctions::printerr("[CamBANGDevNode] Provider enumerate_endpoints failed.");
+        stop_provider_();
+        return false;
     }
-}
 
-UtilityFunctions::print("[CamBANGDevNode] Opening endpoint index ", (int)selected, ": ", eps[selected].name.c_str());
+    // Dev visibility: list endpoints once at provider bring-up.
+    for (size_t i = 0; i < eps.size(); ++i) {
+        UtilityFunctions::print("[CamBANGDevNode] Endpoint ", (int)i, ": ", eps[i].name.c_str());
+    }
 
-pr = provider_->open_device(eps[selected].hardware_id, device_instance_id_, root_id_);
-if (!pr.ok()) {
+    // Dev-only selection policy:
+    // Prefer a device whose name contains "emeet" (case-insensitive).
+    // Fallback to index 0 if not found.
+    size_t selected = 0;
+    for (size_t i = 0; i < eps.size(); ++i) {
+        std::string name = eps[i].name;
+        for (char& c : name) c = (char)std::tolower((unsigned char)c);
+        if (name.find("emeet") != std::string::npos) {
+            selected = i;
+            break;
+        }
+    }
+
+    UtilityFunctions::print("[CamBANGDevNode] Opening endpoint index ", (int)selected, ": ", eps[selected].name.c_str());
+
+    pr = provider_->open_device(eps[selected].hardware_id, device_instance_id_, root_id_);
+    if (!pr.ok()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider open_device failed.");
-        stop_runtime_();
-        s_live.store(false);
-        queue_free();
-        return;
+        stop_provider_();
+        return false;
     }
 
     StreamRequest req{};
@@ -207,26 +236,23 @@ if (!pr.ok()) {
     pr = provider_->create_stream(req);
     if (!pr.ok()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider create_stream failed.");
-        stop_runtime_();
-        s_live.store(false);
-        queue_free();
-        return;
+        stop_provider_();
+        return false;
     }
 
     pr = provider_->start_stream(stream_id_);
     if (!pr.ok()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider start_stream failed.");
-        stop_runtime_();
-        s_live.store(false);
-        queue_free();
-        return;
+        stop_provider_();
+        return false;
     }
+
+    return true;
 }
 
-void CamBANGDevNode::stop_runtime_() {
+void CamBANGDevNode::stop_provider_() {
     if (!runtime_) {
         provider_.reset();
-        started_ = false;
         return;
     }
 
@@ -239,6 +265,19 @@ void CamBANGDevNode::stop_runtime_() {
     }
 
     runtime_->attach_provider(nullptr);
+    provider_.reset();
+    emit_accum_ = 0.0;
+}
+
+void CamBANGDevNode::stop_runtime_() {
+    if (!runtime_) {
+        provider_.reset();
+        started_ = false;
+        last_running_ = false;
+        return;
+    }
+
+    stop_provider_();
 
     // If this dev node started the server, stop it on teardown.
     if (started_server_) {
@@ -250,8 +289,8 @@ void CamBANGDevNode::stop_runtime_() {
 
     // Do not stop the runtime; it is owned by CamBANGServer.
     runtime_ = nullptr;
-    provider_.reset();
     started_ = false;
+    last_running_ = false;
 }
 
 } // namespace cambang
