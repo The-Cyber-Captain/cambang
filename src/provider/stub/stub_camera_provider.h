@@ -5,6 +5,8 @@
 #include <map>
 #include <string>
 
+#include "pixels/pattern/cpu_packed_pattern_renderer.h"
+
 #include "provider/icamera_provider.h"
 
 namespace cambang {
@@ -85,6 +87,9 @@ private:
   // Deterministic storage.
   std::map<uint64_t, DeviceState> devices_;   // key: device_instance_id
   std::map<uint64_t, StreamState> streams_;   // key: stream_id
+
+  // Pattern renderer (provider-agnostic). Not part of the provider contract.
+  CpuPackedPatternRenderer pattern_renderer_;
 
   static void release_test_frame(void* user, const FrameView* frame);
 

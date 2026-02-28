@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "pixels/pattern/pattern_render_target.h"
+
 namespace cambang {
 
 namespace {
@@ -226,23 +228,29 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     payload->self = this;
     payload->bytes.resize(total);
 
-    // Simple moving pattern: horizontal gradient with a moving vertical bar.
-    const uint32_t bar_x = static_cast<uint32_t>((fi * 4) % (w ? w : 1));
-    for (uint32_t y = 0; y < h; ++y) {
-      uint8_t* row = payload->bytes.data() + static_cast<size_t>(y) * row_bytes;
-      for (uint32_t x = 0; x < w; ++x) {
-        const uint8_t r = static_cast<uint8_t>((x + fi) & 0xFF);
-        const uint8_t g = static_cast<uint8_t>((y + (fi >> 1)) & 0xFF);
-        const uint8_t b = static_cast<uint8_t>(((x ^ y) + (fi >> 2)) & 0xFF);
-        const bool bar = (x == bar_x);
+    // Provider-agnostic CPU pattern renderer (v1 packed RGBA).
+    PatternSpec spec;
+    spec.width = w;
+    spec.height = h;
+    spec.format = PatternSpec::PackedFormat::RGBA8;
+    spec.base = PatternSpec::BasePattern::XY_XOR;
+    spec.overlay_frame_index_offsets = true;
+    spec.overlay_moving_bar = true;
 
-        const size_t o = static_cast<size_t>(x) * 4u;
-        row[o + 0] = bar ? 0xFF : r;
-        row[o + 1] = bar ? 0xFF : g;
-        row[o + 2] = bar ? 0xFF : b;
-        row[o + 3] = 0xFF;
-      }
-    }
+    PatternRenderTarget dst;
+    dst.data = payload->bytes.data();
+    dst.size_bytes = payload->bytes.size();
+    dst.width = w;
+    dst.height = h;
+    dst.stride_bytes = static_cast<uint32_t>(row_bytes);
+    dst.format = PatternSpec::PackedFormat::RGBA8;
+
+    PatternOverlayData ov;
+    ov.frame_index = fi;
+    ov.timestamp_ns = 0;
+    ov.stream_id = stream_id;
+
+    pattern_renderer_.render_into(spec, dst, ov);
 
     FrameView fv{};
     fv.device_instance_id = st.req.device_instance_id;
