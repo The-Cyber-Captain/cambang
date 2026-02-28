@@ -52,6 +52,7 @@ They must:
 
 Example: - architecture/frame_sinks.md
 
+         - architecture/pattern_module.md
 ------------------------------------------------------------------------
 
 ## 3. Development / Scaffolding Notes
