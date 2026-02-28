@@ -141,6 +141,10 @@ Synthetic provider must satisfy `ICameraProvider` contract fully.
 
 Build flag: - `CAMBANG_ENABLE_SYNTHETIC`
 
+SyntheticProvider is not instantiated alongside a hardware provider.
+When compiled in, it is selected as the active backend mode of the
+platform provider. Core does not arbitrate between multiple providers.
+
 ------------------------------------------------------------------------
 
 ## 4.x src/pixels/
@@ -271,8 +275,12 @@ scons platform=linux provider=stub
 scons synthetic=yes
 ```
 
-Provider selection must compile only one provider implementation into
-the final binary.
+Provider selection must compile exactly one **platform provider implementation**
+into the final binary.
+
+A platform provider may internally delegate to multiple backend modules
+(e.g., hardware backend and optional synthetic backend), but Core binds
+to a single `ICameraProvider` instance at runtime.
 
 ### 9.3 Compile-time flags
 
@@ -330,3 +338,6 @@ camera2.
 -   Synthetic provider is first-class.
 -   Godot layer is thin and non-authoritative.
 -   SCons build selects exactly one provider at compile time.
+- SCons build selects exactly one platform provider implementation at compile time.
+- That platform provider may include optional internal backends (e.g., Synthetic).
+- Core always interacts with exactly one provider instance.
