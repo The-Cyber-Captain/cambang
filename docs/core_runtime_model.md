@@ -24,6 +24,10 @@ Provider callbacks never mutate core state directly; they enqueue
 provider events to core (serialized callback context per provider
 contract).
 
+Providers may deliver frames originating from platform camera APIs or from synthetic sources.
+Core is agnostic to pixel origin; it integrates frames solely via the provider/core contract and
+published metadata.
+
 ------------------------------------------------------------------------
 
 ## 2. Thread topology

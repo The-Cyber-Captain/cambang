@@ -143,6 +143,17 @@ Build flag: - `CAMBANG_ENABLE_SYNTHETIC`
 
 ------------------------------------------------------------------------
 
+## 4.x src/pixels/
+
+Contains provider-agnostic pixel processing and synthetic rendering modules.
+
+Current contents:
+
+- pattern/ — CPU packed RGBA/BGRA synthetic renderer (see docs/architecture/pattern_module.md)
+
+Pixel modules must remain independent of core threading, provider lifecycle, and snapshot schema.
+
+
 ## 5. src/godot/
 
 Godot-facing objects (GDExtension layer).

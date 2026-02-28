@@ -57,6 +57,7 @@ The following are development scaffolding and not release-facing API:
 - `LatestFrameMailbox`
 - Dev autostart convenience logic
 - Stub frame emission from `_process()`
+  (stub pixel content is generated via the Pattern Module; the `_process()` driving model remains dev-only convenience)
 
 All dev-only code is gated behind:
 
@@ -181,6 +182,9 @@ The stub provider remains useful for:
 Stub frames are generated from `_process()` for convenience only.
 
 This does not represent production threading.
+
+Pixel content for stub frames is generated via the provider-agnostic Pattern Module into packed RGBA/BGRA buffers.
+Frames enter the pipeline identically to hardware-origin frames; visibility policy remains format-gated and dev-only.
 
 ---
 

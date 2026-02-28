@@ -233,20 +233,28 @@ if env["smoke"]:
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "*.cpp"))
+    smoke_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
 
     # Optional stub-provider integration for smoke.
     if env["provider"] == "stub":
         smoke_env.Append(CPPDEFINES=["CAMBANG_SMOKE_WITH_STUB_PROVIDER=1"])
         smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "stub", "*.cpp"))
 
-    smoke_sources += ["src/smoke/core_spine_smoke.cpp"]
-
-    smoke_prog = smoke_env.Program(
+    core_smoke_prog = smoke_env.Program(
         target=os.path.join(out_dir, "core_spine_smoke"),
-        source=smoke_sources,
+        source=smoke_sources + ["src/smoke/core_spine_smoke.cpp"],
     )
 
-    smoke_alias = Alias("smoke", smoke_prog)
+    # Pattern renderer microbenchmark (isolated smoke tool).
+    pattern_bench_sources = []
+    pattern_bench_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    pattern_bench_sources += ["src/smoke/pattern_render_bench.cpp"]
+    pattern_bench_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "pattern_render_bench"),
+        source=pattern_bench_sources,
+    )
+
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog])
     AlwaysBuild(smoke_alias)
 else:
     Alias("smoke", [])
@@ -309,6 +317,7 @@ if env["gde"]:
     gde_sources += Glob(os.path.join(gde_obj_dir, "core", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "core", "snapshot", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "*.cpp"))
+    gde_sources += Glob(os.path.join(gde_obj_dir, "pixels", "pattern", "*.cpp"))
 
     # Provider backend selection (dev accelerator).
     from SCons.Script import GetOption
