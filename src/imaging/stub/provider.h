@@ -26,6 +26,10 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   void emit_test_frames(uint64_t stream_id, uint32_t count);
   void emit_fact_stream_stopped(uint64_t stream_id, ProviderError error_or_ok);
 
+  // Virtual-time driver (not part of provider contract).
+  // In GDE, CamBANGServer pumps this via Godot's _process() loop.
+  void advance(uint64_t dt_ns);
+
   // Introspection for smoke / scaffolding.
   bool shutting_down() const noexcept { return shutting_down_; }
 
@@ -74,6 +78,10 @@ private:
     bool created = false;
     bool started = false;
     uint64_t frame_index = 0;
+
+    // virtual_time scheduling (ns)
+    uint64_t period_ns = 0;
+    uint64_t next_frame_ns = 0;
   };
 
   IProviderCallbacks* callbacks_ = nullptr;
@@ -90,6 +98,9 @@ private:
 
   // Pattern renderer (provider-agnostic). Not part of the provider contract.
   CpuPackedPatternRenderer pattern_renderer_;
+
+  // virtual_time clock (ns since provider init). Only advanced via advance().
+  uint64_t now_ns_ = 0;
 
   static void release_test_frame(void* user, const FrameView* frame);
 

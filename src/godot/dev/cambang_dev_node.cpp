@@ -4,14 +4,8 @@
 #include "core/core_runtime.h"
 #include "core/latest_frame_mailbox.h"
 
-#include "imaging/api/icamera_provider.h"
+#include "imaging/broker/provider_broker.h"
 #include "imaging/api/provider_contract_datatypes.h"
-
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-  #include "imaging/platform/windows/provider.h"
-#else
-  #include "imaging/stub/provider.h"
-#endif
 
 #include <vector>
 #include <string>
@@ -80,25 +74,17 @@ void CamBANGDevNode::_process(double delta) {
         last_running_ = running;
     }
 
-#if !defined(CAMBANG_PROVIDER_WINDOWS_MF) || !CAMBANG_PROVIDER_WINDOWS_MF
-    // Dev-only: drive stub provider frames on the main thread (no extra threads).
+    // Dev-only: drive synthetic virtual_time if active.
+    // (Platform-backed providers manage their own cadence.)
     if (!running || !provider_) {
         return;
     }
 
-    emit_accum_ += delta;
-    constexpr double kFramePeriod = 1.0 / 30.0;
-    if (emit_accum_ < kFramePeriod) {
-        return;
-    }
-    emit_accum_ -= kFramePeriod;
-
-    // Safe: this code is only compiled when the stub provider is selected.
-    auto* stub = static_cast<StubProvider*>(provider_.get());
-    stub->emit_test_frames(stream_id_, 1);
-#else
-    (void)delta;
-#endif
+    // Advance using the Godot frame delta as a convenience. This is not intended
+    // to be the determinism source for CI; tests should drive fixed dt via an
+    // explicit harness.
+    const uint64_t dt_ns = static_cast<uint64_t>(delta * 1'000'000'000.0);
+    (void)provider_->try_tick_virtual_time(dt_ns);
 }
 
 const LatestFrameMailbox* CamBANGDevNode::get_latest_frame_mailbox() const {
@@ -162,12 +148,8 @@ bool CamBANGDevNode::start_provider_() {
         return false;
     }
 
-    // Recreate provider each time for clean lifecycle on repeated start/stop.
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-    provider_ = std::make_unique<WindowsProvider>();
-#else
-    provider_ = std::make_unique<StubProvider>();
-#endif
+    // Recreate broker each time for clean lifecycle on repeated start/stop.
+    provider_ = std::make_unique<ProviderBroker>();
 
     runtime_->attach_provider(provider_.get());
 

@@ -6,6 +6,8 @@
 #include "godot/cambang_state_snapshot.h"
 #include "godot/cambang_server_tick_node.h"
 
+#include "imaging/broker/provider_broker.h"
+
 namespace cambang {
 
 CamBANGServer* CamBANGServer::singleton_ = nullptr;
@@ -74,7 +76,18 @@ void CamBANGServer::stop() {
   tick_installed_ = true;
 }
 
-void CamBANGServer::_on_godot_tick() {
+void CamBANGServer::_on_godot_tick(double delta) {
+  // If a virtual_time provider is active (stub heartbeat, synthetic virtual_time),
+  // advance it using the Godot frame delta.
+  if (runtime_.is_running()) {
+    if (ICameraProvider* prov = runtime_.attached_provider()) {
+      if (auto* broker = dynamic_cast<ProviderBroker*>(prov)) {
+        const uint64_t dt_ns = static_cast<uint64_t>(delta * 1'000'000'000.0);
+        (void)broker->try_tick_virtual_time(dt_ns);
+      }
+    }
+  }
+
   // Poll the core-published snapshot buffer.
   auto snap = snapshot_buffer_.snapshot_copy();
   if (!snap) {

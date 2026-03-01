@@ -71,7 +71,7 @@ private:
   friend class CamBANGServerTickNode;
 
   // Called on the Godot main thread by the internal tick node.
-  void _on_godot_tick();
+  void _on_godot_tick(double delta);
 
   static CamBANGServer* singleton_;
 
