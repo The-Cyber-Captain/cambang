@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-#include "provider/provider_contract_datatypes.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 #include <windows.h>
 #include <mfapi.h>

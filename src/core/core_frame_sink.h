@@ -5,7 +5,7 @@
 // contract datatypes. Keep this include boundary tight and avoid spreading FrameView
 // into unrelated core headers.
 
-#include "provider/provider_contract_datatypes.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
 

@@ -256,6 +256,22 @@ from operational mode.
 `NativeObjectRecord` always has a `phase`. A `mode` may be included when
 useful but is not required.
 
+### Provider runtime mode (capture origin)
+
+Provider runtime mode names are restricted to:
+
+- `platform_backed` (default)
+- `synthetic`
+
+These refer to the capture origin mode of the single provider instance bound to Core.
+The term `hardware` must not be used as a runtime mode alias in code, docs, or configuration.
+(Use `hardware_*` only for identity/spec concepts such as `hardware_id` and hardware-reported specs.)
+
+Façade naming:
+
+- `ProviderBroker` is the Core-bound façade term (it implements `ICameraProvider`).
+  In the current codebase this may be alias-only; the term is still canonical.
+
 ------------------------------------------------------------------------
 
 ## 7. Identity and lineage

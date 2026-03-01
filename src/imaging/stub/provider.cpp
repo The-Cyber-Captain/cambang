@@ -1,4 +1,4 @@
-﻿#include "provider/stub/stub_camera_provider.h"
+﻿#include "imaging/stub/provider.h"
 
 #include <cstdint>
 #include <vector>
@@ -10,7 +10,7 @@ namespace cambang {
 namespace {
 
 struct TestFramePayload final {
-  StubCameraProvider* self = nullptr;
+  StubProvider* self = nullptr;
   std::vector<std::uint8_t> bytes;
 };
 
@@ -18,15 +18,15 @@ struct TestFramePayload final {
 
 } // namespace
 
-const char* StubCameraProvider::provider_name() const {
-  return "StubCameraProvider";
+const char* StubProvider::provider_name() const {
+  return "StubProvider";
 }
 
-bool StubCameraProvider::is_known_hardware_id(const std::string& hardware_id) const {
+bool StubProvider::is_known_hardware_id(const std::string& hardware_id) const {
   return hardware_id == kStubHardwareId;
 }
 
-void StubCameraProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
+void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
   auto* payload = static_cast<TestFramePayload*>(user);
   if (!payload) {
     return;
@@ -37,7 +37,7 @@ void StubCameraProvider::release_test_frame(void* user, const FrameView* /*frame
   delete payload;
 }
 
-ProviderResult StubCameraProvider::initialize(IProviderCallbacks* callbacks) {
+ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   if (initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -51,7 +51,7 @@ ProviderResult StubCameraProvider::initialize(IProviderCallbacks* callbacks) {
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
+ProviderResult StubProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -64,7 +64,7 @@ ProviderResult StubCameraProvider::enumerate_endpoints(std::vector<CameraEndpoin
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::open_device(
+ProviderResult StubProvider::open_device(
     const std::string& hardware_id,
     uint64_t device_instance_id,
     uint64_t root_id) {
@@ -89,7 +89,7 @@ ProviderResult StubCameraProvider::open_device(
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::close_device(uint64_t device_instance_id) {
+ProviderResult StubProvider::close_device(uint64_t device_instance_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -109,7 +109,7 @@ ProviderResult StubCameraProvider::close_device(uint64_t device_instance_id) {
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::create_stream(const StreamRequest& req) {
+ProviderResult StubProvider::create_stream(const StreamRequest& req) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -142,7 +142,7 @@ ProviderResult StubCameraProvider::create_stream(const StreamRequest& req) {
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::destroy_stream(uint64_t stream_id) {
+ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -172,7 +172,7 @@ ProviderResult StubCameraProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::start_stream(uint64_t stream_id) {
+ProviderResult StubProvider::start_stream(uint64_t stream_id) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -193,7 +193,7 @@ ProviderResult StubCameraProvider::start_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
+void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
   if (!callbacks_) {
     return;
   }
@@ -269,21 +269,21 @@ void StubCameraProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.size_bytes = payload->bytes.size();
     fv.stride_bytes = static_cast<uint32_t>(row_bytes);
 
-    fv.release = &StubCameraProvider::release_test_frame;
+    fv.release = &StubProvider::release_test_frame;
     fv.release_user = payload;
 
     callbacks_->on_frame(fv);
   }
 }
 
-void StubCameraProvider::emit_fact_stream_stopped(uint64_t stream_id, ProviderError error_or_ok) {
+void StubProvider::emit_fact_stream_stopped(uint64_t stream_id, ProviderError error_or_ok) {
   if (!callbacks_) {
     return;
   }
   callbacks_->on_stream_stopped(stream_id, error_or_ok);
 }
 
-ProviderResult StubCameraProvider::stop_stream(uint64_t stream_id) {
+ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -301,7 +301,7 @@ ProviderResult StubCameraProvider::stop_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::trigger_capture(const CaptureRequest& req) {
+ProviderResult StubProvider::trigger_capture(const CaptureRequest& req) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -320,14 +320,14 @@ ProviderResult StubCameraProvider::trigger_capture(const CaptureRequest& req) {
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::abort_capture(uint64_t /*capture_id*/) {
+ProviderResult StubProvider::abort_capture(uint64_t /*capture_id*/) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult StubCameraProvider::apply_camera_spec_patch(
+ProviderResult StubProvider::apply_camera_spec_patch(
     const std::string& hardware_id,
     uint64_t /*new_camera_spec_version*/,
     SpecPatchView /*patch*/) {
@@ -340,7 +340,7 @@ ProviderResult StubCameraProvider::apply_camera_spec_patch(
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::apply_imaging_spec_patch(
+ProviderResult StubProvider::apply_imaging_spec_patch(
     uint64_t /*new_imaging_spec_version*/,
     SpecPatchView /*patch*/) {
   if (!initialized_ || shutting_down_) {
@@ -349,7 +349,7 @@ ProviderResult StubCameraProvider::apply_imaging_spec_patch(
   return ProviderResult::success();
 }
 
-ProviderResult StubCameraProvider::shutdown() {
+ProviderResult StubProvider::shutdown() {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }

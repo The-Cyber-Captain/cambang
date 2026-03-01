@@ -6,7 +6,7 @@
 #include <mutex>
 
 #include "core/rgba_frame.h"
-#include "provider/provider_contract_datatypes.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
 

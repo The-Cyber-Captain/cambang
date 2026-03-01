@@ -162,9 +162,23 @@ It does not govern:
 Those remain under frozen architectural documentation.
 
 **Provider selection scope**
-The SCons `provider=...` option selects the provider backend **for the GDExtension build only** (dev accelerator selection).
-It must not change what the core smoke executable compiles/links: smoke remains stub-provider-only regardless of provider selection.
+The SCons `provider=...` option selects the **platform-backed backend**
+to compile into the platform provider for the GDExtension build.
 
+Exactly one platform-backed backend is selected per build.
+
+Synthetic support is controlled independently via:
+
+- `synthetic=yes|no`
+
+When `synthetic=yes`, the synthetic backend is compiled as an optional
+runtime mode within the platform provider.
+
+Core still binds to a single provider instance at runtime.
+
+The `provider=...` and `synthetic=...` options must not change what the
+core smoke executable compiles/links: smoke remains stub-provider-only
+regardless of provider selection.
 ---
 
 ## 6. GDE Scaffolding Plan (Temporary)
@@ -199,6 +213,21 @@ Build strategy:
 
 - Follow godot-cpp-template conventions (`platform/target/arch/precision`).
 - Delegate toolchain logic to `godot-cpp` SCons as soon as the submodule is introduced.
+
+
+### 6.w Runtime Provider Mode (Synthetic)
+
+When built with `synthetic=yes`, the single provider instance bound to Core supports
+a runtime mode switch between:
+
+- `platform_backed` (default)
+- `synthetic`
+
+Mode selection is performed via CLI argument, environment variable,
+or Godot-facing configuration (wiring is an implementation detail; not specified here).
+
+Switching mode requires provider teardown/restart and does not
+introduce multiple provider instances to Core.
 
 ### 6.y Windows Media Foundation + MinGW notes (scaffolding)
 
