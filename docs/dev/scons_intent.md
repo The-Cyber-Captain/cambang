@@ -162,11 +162,10 @@ It does not govern:
 Those remain under frozen architectural documentation.
 
 **Provider selection scope**
-
-The SCons `provider=...` option selects the **platform hardware backend**
+The SCons `provider=...` option selects the **platform-backed backend**
 to compile into the platform provider for the GDExtension build.
 
-Exactly one platform hardware backend is selected per build.
+Exactly one platform-backed backend is selected per build.
 
 Synthetic support is controlled independently via:
 
@@ -215,16 +214,17 @@ Build strategy:
 - Follow godot-cpp-template conventions (`platform/target/arch/precision`).
 - Delegate toolchain logic to `godot-cpp` SCons as soon as the submodule is introduced.
 
+
 ### 6.w Runtime Provider Mode (Synthetic)
 
-When built with `synthetic=yes`, the platform provider supports
+When built with `synthetic=yes`, the single provider instance bound to Core supports
 a runtime mode switch between:
 
-- `hardware` (default)
+- `platform_backed` (default)
 - `synthetic`
 
 Mode selection is performed via CLI argument, environment variable,
-or Godot-facing configuration.
+or Godot-facing configuration (wiring is an implementation detail; not specified here).
 
 Switching mode requires provider teardown/restart and does not
 introduce multiple provider instances to Core.

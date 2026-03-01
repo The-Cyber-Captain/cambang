@@ -97,53 +97,57 @@ src/core/
 Core must not include platform headers.
 
 ------------------------------------------------------------------------
+## 3. src/imaging/
 
-## 3. src/provider/
+Imaging provider domain root: the `ICameraProvider` API surface, the Core-bound façade naming surface, and concrete providers.
 
-Provider interface and implementations.
+    src/imaging/
+    ├── api/
+    │   ├── icamera_provider.h
+    │   ├── provider_contract_datatypes.h
+    │   └── provider_error_string.h/.cpp
+    ├── broker/
+    │   ├── provider_broker.h/.cpp        # façade term used by Core (may be alias-only)
+    │   └── mode.h/.cpp                   # RuntimeMode { platform_backed | synthetic } (placeholder unless wired)
+    ├── platform/
+    │   └── <platform>/
+    │       ├── provider.h/.cpp           # e.g. WindowsProvider
+    │       └── <platform-specific>/      # e.g. mf/, camera2/, webrtc/
+    ├── synthetic/
+    │   └── provider.h/.cpp               # SyntheticProvider (may be placeholder; not wired here)
+    └── stub/
+        └── provider.h/.cpp               # StubProvider (smoke harness only)
 
-``` text
-src/provider/
-├── icamera_provider.h
-├── provider_types.h
-├── android/
-│   ├── android_camera2_provider.h/.cpp
-│   ├── android_device.h/.cpp
-│   └── android_stream.h/.cpp
-├── stub/
-│   └── stub_provider.h/.cpp
-```
+Rules:
 
-Rules: - `icamera_provider.h` defines the semantic interface. -
-Platform-specific code is isolated under subdirectories. - Android code
-must not leak into core headers.
-
-Future platforms: - linux_v4l2/ - windows_mediafoundation/ - etc.
-
+- `api/` defines the semantic contract (`ICameraProvider`) and provider-agnostic datatypes.
+- `platform/` contains platform-backed providers; platform headers must not leak into Core.
+- `stub/` is smoke-only; the smoke harness must remain stub-provider-only and provider-independent.
+- `broker/` is the naming surface for the Core-bound façade term (`ProviderBroker`); it does not imply multi-provider plumbing.
 ------------------------------------------------------------------------
 
-## 4. src/synthetic/
+## 4. src/imaging/synthetic/
 
 SyntheticProvider for deterministic simulation and testing.
 
-``` text
-src/synthetic/
-├── synthetic_provider.h/.cpp
-├── synthetic_device.h/.cpp
-└── synthetic_stream.h/.cpp
-```
+    src/imaging/synthetic/
 
-Capabilities: - deterministic timestamps - deterministic error
-injection - profile mismatch simulation - configurable latency
-simulation
+Capabilities:
 
-Synthetic provider must satisfy `ICameraProvider` contract fully.
+- deterministic timestamps
+- deterministic error injection
+- profile mismatch simulation
+- configurable latency simulation
 
-Build flag: - `CAMBANG_ENABLE_SYNTHETIC`
+SyntheticProvider must satisfy the `ICameraProvider` contract fully.
 
-SyntheticProvider is not instantiated alongside a hardware provider.
-When compiled in, it is selected as the active backend mode of the
-platform provider. Core does not arbitrate between multiple providers.
+Build flag:
+
+- `CAMBANG_ENABLE_SYNTHETIC`
+
+SyntheticProvider is not instantiated alongside a platform-backed provider.
+When compiled in, it is selected as the active runtime mode of the single provider instance bound to Core.
+Core does not arbitrate between multiple providers.
 
 ------------------------------------------------------------------------
 

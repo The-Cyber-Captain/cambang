@@ -353,9 +353,7 @@ This validation is platform-independent and must remain stub-provider-only.
 
 ### 13.2 Platform integration validation
 
-Platform providers (e.g., Windows Media Foundation) are validated
-separately under real hardware conditions to ensure:
-
+Platform providers (e.g., Windows Media Foundation) are validated separately under real platform-backed conditions to ensure:
 - Correct threading integration
 - Correct callback serialization
 - No deadlocks under real API pressure

@@ -19,8 +19,7 @@ Providers must support:
 -   Correct object lifecycles and resource management
 -   Canonical mapping of platform formats into CamBANG pixel formats
     (FourCC-style `uint32`)
--   Multi-camera synchronised capture where platform/hardware supports
-    it
+-   Multi-camera synchronised capture where the platform supports
 -   Testability via a synthetic provider
     (synthetic providers may generate pixel content via provider-agnostic rendering modules)
 
@@ -39,7 +38,7 @@ Providers may produce frames from platform camera APIs or from synthetic sources
 Synthetic providers may generate pixel content using provider-agnostic rendering modules (e.g., the
 Pattern Module) while preserving the provider/core contract:
 
-- Core remains agnostic to pixel origin (hardware vs synthetic).
+- Core remains agnostic to pixel origin (platform-backed vs synthetic).
 - Providers remain responsible for deterministic delivery, timestamps, and correct pixel format mapping.
 - Synthetic rendering does not alter arbitration, policy decisions, or snapshot publication.
 
@@ -191,9 +190,8 @@ Provider must not silently substitute compressed formats for streams.
 ## 7. Capture synchronisation (multi-camera)
 
 On platforms that support it (Android camera2 being the primary target),
-providers must support synchronised multi-camera capture where hardware
+providers must support synchronised multi-camera capture where the platform
 permits.
-
 Provider must: - Use platform mechanisms for synchronized capture where
 available - Extract and report per-frame timestamps as delivered by the
 platform - Deliver frames back to core tagged with `capture_id`,
@@ -389,7 +387,6 @@ Provider compliance is validated in two stages:
 
 2) **Platform provider runtime validation**  
    Validates real API behaviour (e.g., Windows MF, Android camera2)
-   under hardware-backed asynchronous load.
-
+   under platform-backed asynchronous load.
 Core smoke must remain provider-independent.
 Platform validation must not redefine core invariants.
