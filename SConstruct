@@ -232,13 +232,13 @@ if env["smoke"]:
     smoke_sources = []
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "*.cpp"))
+    smoke_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
     smoke_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
 
     # Optional stub-provider integration for smoke.
     if env["provider"] == "stub":
         smoke_env.Append(CPPDEFINES=["CAMBANG_SMOKE_WITH_STUB_PROVIDER=1"])
-        smoke_sources += Glob(os.path.join(smoke_obj_dir, "provider", "stub", "*.cpp"))
+        smoke_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
 
     core_smoke_prog = smoke_env.Program(
         target=os.path.join(out_dir, "core_spine_smoke"),
@@ -316,7 +316,7 @@ if env["gde"]:
     gde_sources = []
     gde_sources += Glob(os.path.join(gde_obj_dir, "core", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "core", "snapshot", "*.cpp"))
-    gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "*.cpp"))
+    gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "api", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "pixels", "pattern", "*.cpp"))
 
     # Provider backend selection (dev accelerator).
@@ -327,9 +327,9 @@ if env["gde"]:
             Exit(1)
 
     if env["provider"] == "stub":
-        gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "stub", "*.cpp"))
+        gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "stub", "*.cpp"))
     elif env["provider"] == "windows_mediafoundation":
-        gde_sources += Glob(os.path.join(gde_obj_dir, "provider", "windows_mediafoundation", "*.cpp"))
+        gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "platform", "windows", "*.cpp"))
         gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_WINDOWS_MF=1"])
         if env["platform"] == "windows":
             # MinGW link set typically needs mf + uuid in addition to the usual MF libs.

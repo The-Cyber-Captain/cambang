@@ -2,8 +2,8 @@
 
 #ifdef _WIN32
 
-#include "provider/windows_mediafoundation/windows_mf_provider.h"
-#include "provider/windows_mediafoundation/windows_mf_types.h"
+#include "imaging/platform/windows/provider.h"
+#include "imaging/platform/windows/mf/types.h"
 
 #include <cstring>
 #include <cstdarg>
@@ -172,12 +172,12 @@ inline uint64_t ticks100ns_to_ns(LONGLONG t) {
 } // namespace
 
 // -----------------------------------------------------------------------------
-// WindowsMfCameraProvider::SourceReaderCallback (nested)
+// WindowsProvider::SourceReaderCallback (nested)
 // Only enqueues samples; worker thread drains queue and calls callbacks_->on_frame.
 // -----------------------------------------------------------------------------
-class WindowsMfCameraProvider::SourceReaderCallback final : public IMFSourceReaderCallback {
+class WindowsProvider::SourceReaderCallback final : public IMFSourceReaderCallback {
 public:
-  explicit SourceReaderCallback(WindowsMfCameraProvider::StreamState* s) : stream_(s) {}
+  explicit SourceReaderCallback(WindowsProvider::StreamState* s) : stream_(s) {}
 
   // IUnknown
   STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -214,7 +214,7 @@ public:
     if (!stream_) return S_OK;
 
     // Queue entry (even for failure/flags) so the worker can decide.
-    WindowsMfCameraProvider::SampleItem item{};
+    WindowsProvider::SampleItem item{};
     item.flags = dwStreamFlags;
     item.timestamp_100ns = llTimestamp;
 
@@ -253,14 +253,14 @@ public:
 
 private:
   std::atomic<uint32_t> ref_{1};
-  WindowsMfCameraProvider::StreamState* stream_ = nullptr;
+  WindowsProvider::StreamState* stream_ = nullptr;
 };
 
 // -----------------------------------------------------------------------------
-// WindowsMfCameraProvider
+// WindowsProvider
 // -----------------------------------------------------------------------------
 
-ProviderResult WindowsMfCameraProvider::ensure_com_initialized_() {
+ProviderResult WindowsProvider::ensure_com_initialized_() {
   if (com_initialized_on_control_thread_) {
     return ProviderResult::success();
   }
@@ -272,7 +272,7 @@ ProviderResult WindowsMfCameraProvider::ensure_com_initialized_() {
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::ensure_mf_started_() {
+ProviderResult WindowsProvider::ensure_mf_started_() {
   if (mf_started_) {
     return ProviderResult::success();
   }
@@ -284,7 +284,7 @@ ProviderResult WindowsMfCameraProvider::ensure_mf_started_() {
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::initialize(IProviderCallbacks* callbacks) {
+ProviderResult WindowsProvider::initialize(IProviderCallbacks* callbacks) {
   if (!callbacks) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
@@ -308,7 +308,7 @@ ProviderResult WindowsMfCameraProvider::initialize(IProviderCallbacks* callbacks
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
+ProviderResult WindowsProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
   std::lock_guard<std::mutex> lock(m_);
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -374,7 +374,7 @@ ProviderResult WindowsMfCameraProvider::enumerate_endpoints(std::vector<CameraEn
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::build_activation_for_hardware_id_(const std::string& hardware_id,
+ProviderResult WindowsProvider::build_activation_for_hardware_id_(const std::string& hardware_id,
                                                                          ComPtr<IMFActivate>& out_activate) {
   ComPtr<IMFAttributes> attrs;
   HRESULT hr = ::MFCreateAttributes(attrs.put(), 1);
@@ -422,7 +422,7 @@ ProviderResult WindowsMfCameraProvider::build_activation_for_hardware_id_(const 
   return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
 }
 
-ProviderResult WindowsMfCameraProvider::open_device(const std::string& hardware_id,
+ProviderResult WindowsProvider::open_device(const std::string& hardware_id,
                                                    uint64_t device_instance_id,
                                                    uint64_t root_id) {
   std::lock_guard<std::mutex> lock(m_);
@@ -452,7 +452,7 @@ ProviderResult WindowsMfCameraProvider::open_device(const std::string& hardware_
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::close_device(uint64_t device_instance_id) {
+ProviderResult WindowsProvider::close_device(uint64_t device_instance_id) {
   std::lock_guard<std::mutex> lock(m_);
   if (!device_.open || device_.device_instance_id != device_instance_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -472,7 +472,7 @@ ProviderResult WindowsMfCameraProvider::close_device(uint64_t device_instance_id
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::create_stream(const StreamRequest& req) {
+ProviderResult WindowsProvider::create_stream(const StreamRequest& req) {
   std::lock_guard<std::mutex> lock(m_);
   if (!device_.open || req.device_instance_id != device_.device_instance_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -491,7 +491,7 @@ ProviderResult WindowsMfCameraProvider::create_stream(const StreamRequest& req) 
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::destroy_stream(uint64_t stream_id) {
+ProviderResult WindowsProvider::destroy_stream(uint64_t stream_id) {
   std::lock_guard<std::mutex> lock(m_);
   if (!stream_.created || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -504,7 +504,7 @@ ProviderResult WindowsMfCameraProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::start_stream(uint64_t stream_id) {
+ProviderResult WindowsProvider::start_stream(uint64_t stream_id) {
   std::lock_guard<std::mutex> lock(m_);
   if (!stream_.created || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -530,7 +530,7 @@ ProviderResult WindowsMfCameraProvider::start_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::stop_stream(uint64_t stream_id) {
+ProviderResult WindowsProvider::stop_stream(uint64_t stream_id) {
   std::unique_lock<std::mutex> lock(m_);
   if (!stream_.started || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -561,25 +561,25 @@ ProviderResult WindowsMfCameraProvider::stop_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult WindowsMfCameraProvider::trigger_capture(const CaptureRequest&) {
+ProviderResult WindowsProvider::trigger_capture(const CaptureRequest&) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult WindowsMfCameraProvider::abort_capture(uint64_t) {
+ProviderResult WindowsProvider::abort_capture(uint64_t) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult WindowsMfCameraProvider::apply_camera_spec_patch(const std::string&,
+ProviderResult WindowsProvider::apply_camera_spec_patch(const std::string&,
                                                                uint64_t,
                                                                SpecPatchView) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult WindowsMfCameraProvider::apply_imaging_spec_patch(uint64_t, SpecPatchView) {
+ProviderResult WindowsProvider::apply_imaging_spec_patch(uint64_t, SpecPatchView) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult WindowsMfCameraProvider::shutdown() {
+ProviderResult WindowsProvider::shutdown() {
   std::unique_lock<std::mutex> lock(m_);
   if (!initialized_) {
     return ProviderResult::success();
@@ -609,7 +609,7 @@ ProviderResult WindowsMfCameraProvider::shutdown() {
   return ProviderResult::success();
 }
 
-void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
+void WindowsProvider::worker_thread_(uint64_t stream_id) {
   ComInit com(COINIT_MULTITHREADED);
   if (!com.ok) {
     callbacks_->on_stream_error(stream_id, ProviderError::ERR_PLATFORM_CONSTRAINT);
@@ -624,7 +624,7 @@ void WindowsMfCameraProvider::worker_thread_(uint64_t stream_id) {
     return;
   }
 
-  auto* cb = new WindowsMfCameraProvider::SourceReaderCallback(&stream_);
+  auto* cb = new WindowsProvider::SourceReaderCallback(&stream_);
   attrs->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, cb);
 
   // Dev-accelerator: allow Source Reader converters so we can request RGB32 from YUV-only devices.
@@ -734,7 +734,7 @@ stream_.reader = std::move(reader);
 
   // Worker processing loop: serialize callbacks -> core.
   for (;;) {
-    WindowsMfCameraProvider::SampleItem item{};
+    WindowsProvider::SampleItem item{};
     {
       std::unique_lock<std::mutex> lk(stream_.q_m);
       stream_.q_cv.wait(lk, [&]() {

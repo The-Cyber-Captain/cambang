@@ -17,8 +17,8 @@
 #include <mfreadwrite.h>
 #include <mfobjects.h>
 
-#include "provider/icamera_provider.h"
-#include "provider/windows_mediafoundation/windows_mf_com_ptr.h"
+#include "imaging/api/icamera_provider.h"
+#include "imaging/platform/windows/mf/com_ptr.h"
 
 namespace cambang {
 
@@ -44,12 +44,12 @@ namespace cambang {
 //
 // NOTE:
 // To keep StreamState private, the MF callback type is a *nested* class.
-// In the .cpp, define it as `class WindowsMfCameraProvider::SourceReaderCallback ...`
+// In the .cpp, define it as `class WindowsProvider::SourceReaderCallback ...`
 // (not in an anonymous namespace).
-class WindowsMfCameraProvider final : public ICameraProvider {
+class WindowsProvider final : public ICameraProvider {
 public:
-  WindowsMfCameraProvider() = default;
-  ~WindowsMfCameraProvider() override = default;
+  WindowsProvider() = default;
+  ~WindowsProvider() override = default;
 
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }
 

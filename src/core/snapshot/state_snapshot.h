@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "provider/provider_contract_datatypes.h" // cambang::StreamIntent
+#include "imaging/api/provider_contract_datatypes.h" // cambang::StreamIntent
 
 // Public release-facing truth surface payload (schema v1).
 // See: docs/state_snapshot.md (canonical).

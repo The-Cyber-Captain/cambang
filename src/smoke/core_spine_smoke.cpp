@@ -15,7 +15,7 @@
 #include "core/state_snapshot_buffer.h"
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
-#include "provider/stub/stub_camera_provider.h"
+#include "imaging/stub/provider.h"
 #endif
 
 using namespace cambang;
@@ -236,7 +236,7 @@ static StreamRequest make_req() {
 }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
-static bool setup_one_stream(CoreRuntime& rt, StubCameraProvider& prov) {
+static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   if (!prov.initialize(rt.provider_callbacks()).ok()) return false;
 
   std::vector<CameraEndpoint> eps;
@@ -268,7 +268,7 @@ static int test_publish_gating_before_start() {
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
                                                      StateSnapshotBuffer& buf,
-                                                     StubCameraProvider& prov) {
+                                                     StubProvider& prov) {
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start\n";
     return 1;
@@ -419,7 +419,7 @@ static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshot
 }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
-static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubCameraProvider& prov) {
+static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvider& prov) {
   (void)rt.try_post_core_thread_unchecked([]() {
     const auto t0 = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(25)) {
@@ -482,7 +482,7 @@ static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubCamer
   return 0;
 }
 
-static int test_shutdown_choreography(CoreRuntime& rt, StubCameraProvider& prov) {
+static int test_shutdown_choreography(CoreRuntime& rt, StubProvider& prov) {
   rt.stop();
 
   if (!prov.shutting_down()) {
@@ -516,7 +516,7 @@ static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_inde
     return 1;
   }
 
-  StubCameraProvider prov;
+  StubProvider prov;
   if (!setup_one_stream(rt, prov)) {
     std::cerr << "[iter " << iter_index << "] Stub provider setup failed\n";
     rt.stop();
@@ -605,7 +605,7 @@ int main(int argc, char** argv) {
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
     // Stub-provider integration tests (opt-in).
-    StubCameraProvider prov;
+    StubProvider prov;
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;

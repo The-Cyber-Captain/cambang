@@ -6,7 +6,7 @@
 
 #include "core/core_mailbox.h"
 #include "core/core_thread.h"
-#include "provider/icamera_provider.h"
+#include "imaging/api/icamera_provider.h"
 
 namespace cambang {
 

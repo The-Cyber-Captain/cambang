@@ -7,14 +7,14 @@
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
-#include "provider/icamera_provider.h"
+#include "imaging/api/icamera_provider.h"
 
 namespace cambang {
 
-class StubCameraProvider final : public ICameraProvider {
+class StubProvider final : public ICameraProvider {
 public:
-  StubCameraProvider() = default;
-  ~StubCameraProvider() override = default;
+  StubProvider() = default;
+  ~StubProvider() override = default;
 
   const char* provider_name() const override;
 

@@ -4,13 +4,13 @@
 #include "core/core_runtime.h"
 #include "core/latest_frame_mailbox.h"
 
-#include "provider/icamera_provider.h"
-#include "provider/provider_contract_datatypes.h"
+#include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 #if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-  #include "provider/windows_mediafoundation/windows_mf_provider.h"
+  #include "imaging/platform/windows/provider.h"
 #else
-  #include "provider/stub/stub_camera_provider.h"
+  #include "imaging/stub/provider.h"
 #endif
 
 #include <vector>
@@ -94,7 +94,7 @@ void CamBANGDevNode::_process(double delta) {
     emit_accum_ -= kFramePeriod;
 
     // Safe: this code is only compiled when the stub provider is selected.
-    auto* stub = static_cast<StubCameraProvider*>(provider_.get());
+    auto* stub = static_cast<StubProvider*>(provider_.get());
     stub->emit_test_frames(stream_id_, 1);
 #else
     (void)delta;
@@ -164,9 +164,9 @@ bool CamBANGDevNode::start_provider_() {
 
     // Recreate provider each time for clean lifecycle on repeated start/stop.
 #if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-    provider_ = std::make_unique<WindowsMfCameraProvider>();
+    provider_ = std::make_unique<WindowsProvider>();
 #else
-    provider_ = std::make_unique<StubCameraProvider>();
+    provider_ = std::make_unique<StubProvider>();
 #endif
 
     runtime_->attach_provider(provider_.get());
