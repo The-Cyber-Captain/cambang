@@ -210,7 +210,7 @@ void CoreRuntime::on_core_timer_tick() {
 
     constexpr uint32_t kMaxShutdownWaitTicks = 200; // deterministic bound; avoids teardown hangs.
 
-    ProviderBroker* prov = provider_.load(std::memory_order_acquire);
+    ICameraProvider* prov = provider_.load(std::memory_order_acquire);
 
     auto any_stream_started = [this]() -> bool {
       for (const auto& kv : streams_.all()) {

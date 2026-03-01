@@ -20,7 +20,7 @@
 #include "core/latest_frame_mailbox.h"
 #endif
 
-#include "imaging/broker/provider_broker.h"
+#include "imaging/api/icamera_provider.h"
 
 namespace cambang {
 
@@ -97,7 +97,7 @@ namespace cambang {
   const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
 #endif
 
-  void attach_provider(ProviderBroker* provider) noexcept {
+  void attach_provider(ICameraProvider* provider) noexcept {
     provider_.store(provider, std::memory_order_release);
   }
 
@@ -172,7 +172,7 @@ private:
   bool shutdown_final_publish_requested_ = false;
   uint32_t shutdown_wait_ticks_ = 0;
 
-  std::atomic<ProviderBroker*> provider_{nullptr};
+  std::atomic<ICameraProvider*> provider_{nullptr};
 
   std::atomic<bool> publish_pending_{false};
 

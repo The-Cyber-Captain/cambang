@@ -6,6 +6,7 @@
 
 #include "imaging/api/icamera_provider.h"
 #include "imaging/api/provider_contract_datatypes.h"
+#include "imaging/broker/provider_broker.h"
 
 #if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
   #include "imaging/platform/windows/provider.h"
@@ -80,7 +81,7 @@ void CamBANGDevNode::_process(double delta) {
         last_running_ = running;
     }
 
-#if !defined(CAMBANG_PROVIDER_WINDOWS_MF) || !CAMBANG_PROVIDER_WINDOWS_MF
+#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
     // Dev-only: drive stub provider frames on the main thread (no extra threads).
     if (!running || !provider_) {
         return;
@@ -93,9 +94,9 @@ void CamBANGDevNode::_process(double delta) {
     }
     emit_accum_ -= kFramePeriod;
 
-    // Safe: this code is only compiled when the stub provider is selected.
-    auto* stub = static_cast<StubProvider*>(provider_.get());
-    stub->emit_test_frames(stream_id_, 1);
+    // Safe: dev hook is only meaningful when stub is the active provider.
+    auto* broker = static_cast<ProviderBroker*>(provider_.get());
+    (void)broker->dev_emit_test_frames(stream_id_, 1);
 #else
     (void)delta;
 #endif
@@ -163,11 +164,7 @@ bool CamBANGDevNode::start_provider_() {
     }
 
     // Recreate provider each time for clean lifecycle on repeated start/stop.
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-    provider_ = std::make_unique<WindowsProvider>();
-#else
-    provider_ = std::make_unique<StubProvider>();
-#endif
+    provider_ = std::make_unique<ProviderBroker>();
 
     runtime_->attach_provider(provider_.get());
 
