@@ -37,7 +37,7 @@ private:
 
     CoreRuntime* runtime_ = nullptr;          // owned by CamBANGServer
     bool started_server_ = false;             // dev-only: whether this node started the server
-    std::unique_ptr<ProviderBroker> provider_;
+    ProviderBroker* provider_ = nullptr;      // owned by CamBANGServer
     bool started_ = false;
 
     // Track runtime running state so we can handle external start/stop cycles
