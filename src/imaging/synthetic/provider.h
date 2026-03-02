@@ -16,6 +16,8 @@
 
 namespace cambang {
 
+struct ActivePatternConfig;
+
 // Deterministic synthetic provider.
 //
 // First landing:
@@ -61,6 +63,10 @@ public:
       SpecPatchView patch) override;
 
   ProviderResult shutdown() override;
+
+  // Dev/scaffolding helper (not part of ICameraProvider).
+  // Swaps the active pattern selection copy-on-write.
+  void set_active_pattern_config(const ActivePatternConfig& cfg);
 
   // Synthetic-only virtual time driver (not part of ICameraProvider).
   // Emits any due frames.

@@ -32,6 +32,12 @@ void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
     case PatternSpec::BasePattern::Checker:
       render_base_checker(spec);
       break;
+    case PatternSpec::BasePattern::ColorBars:
+      render_base_color_bars(spec);
+      break;
+    case PatternSpec::BasePattern::RadialGradient:
+      render_base_radial_gradient(spec);
+      break;
     default:
       render_base_xy_xor(key);
       break;
@@ -93,6 +99,68 @@ void CpuPackedPatternRenderer::render_base_checker(const PatternSpec& spec) {
       const bool on = ((cx + cy) & 1u) != 0u;
       const uint8_t v = on ? 0xE0 : 0x20;
       write_px(row + static_cast<size_t>(x) * 4u, spec.format, v, v, v, 0xFF);
+    }
+  }
+}
+
+void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec) {
+  // Deterministic 7-bar palette (SMPTE-ish). Intended for visual validation.
+  struct RGBA { uint8_t r, g, b, a; };
+  static constexpr RGBA bars[7] = {
+      {0xEB, 0xEB, 0xEB, 0xFF},
+      {0xEB, 0xEB, 0x00, 0xFF},
+      {0x00, 0xEB, 0xEB, 0xFF},
+      {0x00, 0xEB, 0x00, 0xFF},
+      {0xEB, 0x00, 0xEB, 0xFF},
+      {0xEB, 0x00, 0x00, 0xFF},
+      {0x00, 0x00, 0xEB, 0xFF},
+  };
+
+  const uint32_t w = (spec.width == 0) ? 1u : spec.width;
+  const uint32_t bar_w = std::max<uint32_t>(1u, w / 7u);
+
+  for (uint32_t y = 0; y < spec.height; ++y) {
+    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    for (uint32_t x = 0; x < spec.width; ++x) {
+      uint32_t idx = x / bar_w;
+      if (idx > 6u) idx = 6u;
+      const RGBA c = bars[idx];
+      write_px(row + static_cast<size_t>(x) * 4u, spec.format, c.r, c.g, c.b, c.a);
+    }
+  }
+}
+
+void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& spec) {
+  // Smooth radial gradient: bright center -> darker edges, with blue edge cue.
+  const uint32_t w = spec.width;
+  const uint32_t h = spec.height;
+  if (w == 0 || h == 0) {
+    return;
+  }
+
+  const int32_t cx = static_cast<int32_t>(w / 2u);
+  const int32_t cy = static_cast<int32_t>(h / 2u);
+
+  const int64_t rx = static_cast<int64_t>(cx);
+  const int64_t ry = static_cast<int64_t>(cy);
+  const int64_t max_r2 = std::max<int64_t>(1, rx * rx + ry * ry);
+
+  for (uint32_t y = 0; y < h; ++y) {
+    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    const int32_t dy = static_cast<int32_t>(y) - cy;
+    for (uint32_t x = 0; x < w; ++x) {
+      const int32_t dx = static_cast<int32_t>(x) - cx;
+      const int64_t r2 = static_cast<int64_t>(dx) * dx + static_cast<int64_t>(dy) * dy;
+
+      uint32_t t = static_cast<uint32_t>((r2 * 255) / max_r2);
+      if (t > 255u) t = 255u;
+
+      const uint8_t v = static_cast<uint8_t>(255u - t);
+      const uint8_t b = static_cast<uint8_t>(std::min<uint32_t>(255u, t));
+      const uint8_t g = static_cast<uint8_t>((static_cast<uint32_t>(v) * 3u) / 4u);
+      const uint8_t r = v;
+
+      write_px(row + static_cast<size_t>(x) * 4u, spec.format, r, g, b, 0xFF);
     }
   }
 }

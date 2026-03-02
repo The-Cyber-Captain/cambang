@@ -64,6 +64,13 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   return ProviderResult::success();
 }
 
+
+void StubProvider::set_active_pattern_config(const ActivePatternConfig& cfg_in) {
+  auto cfg_mut = std::make_shared<ActivePatternConfig>(cfg_in);
+  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
+  std::atomic_store(&active_pattern_, std::move(cfg));
+}
+
 ProviderResult StubProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);

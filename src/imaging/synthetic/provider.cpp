@@ -34,6 +34,21 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   }
 }
 
+
+void SyntheticProvider::set_active_pattern_config(const ActivePatternConfig& cfg_in) {
+  auto cfg_mut = std::make_shared<ActivePatternConfig>(cfg_in);
+  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
+  std::atomic_store(&active_pattern_, cfg);
+
+  // Optional render hint (primes base cache).
+  bool preset_valid = true;
+  PatternSpec hint = to_pattern_spec(*cfg, cfg_.nominal.width, cfg_.nominal.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  if (!preset_valid) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+  pattern_renderer_.configure(hint);
+}
+
 ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   if (initialized_) {
     return ProviderResult::success();

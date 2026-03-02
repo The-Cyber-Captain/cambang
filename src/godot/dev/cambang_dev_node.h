@@ -51,6 +51,14 @@ private:
 
     double emit_accum_ = 0.0;
 
+    // Dev-only pattern cycling (visual verification aid).
+    bool pattern_cycle_enabled_ = false;
+    double pattern_cycle_period_s_ = 2.0;
+    double pattern_cycle_accum_s_ = 0.0;
+    uint32_t pattern_cycle_index_ = 0;
+    bool pattern_cycle_logged_unsupported_ = false;
+
+
     void start_runtime_();
     void stop_runtime_();
 

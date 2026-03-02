@@ -37,6 +37,11 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   bool shutting_down() const noexcept { return shutting_down_; }
 
 
+  // Dev/scaffolding helper (not part of ICameraProvider).
+  // Swaps the active pattern selection copy-on-write.
+  void set_active_pattern_config(const ActivePatternConfig& cfg);
+
+
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
 

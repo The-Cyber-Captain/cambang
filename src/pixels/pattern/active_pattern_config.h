@@ -13,6 +13,8 @@ enum class PatternPreset : uint8_t {
   XyXor = 0,
   Solid = 1,
   Checker = 2,
+  ColorBars = 3,
+  RadialGradient = 4,
 };
 
 // Capability flags (used by CLI/UI surfaces to validate parameter combinations).
@@ -35,6 +37,8 @@ inline constexpr PatternPresetInfo kPatternPresets[] = {
   { PatternPreset::XyXor,  "xy_xor",  "XY XOR",       kCapsSeed },
   { PatternPreset::Solid,  "solid",   "Solid",        kCapsSeed | kCapsRgba },
   { PatternPreset::Checker,"checker", "Checkerboard", kCapsSeed | kCapsCheckerSize },
+  { PatternPreset::ColorBars,     "color_bars", "Color Bars",      kCapsNone },
+  { PatternPreset::RadialGradient,"radial",     "Radial Gradient", kCapsNone },
 };
 
 inline constexpr size_t pattern_preset_count() noexcept {
@@ -122,6 +126,12 @@ inline PatternSpec to_pattern_spec(const ActivePatternConfig& cfg,
     case PatternPreset::Checker:
       spec.base = PatternSpec::BasePattern::Checker;
       spec.checker_size_px = cfg.checker_size_px;
+      break;
+    case PatternPreset::ColorBars:
+      spec.base = PatternSpec::BasePattern::ColorBars;
+      break;
+    case PatternPreset::RadialGradient:
+      spec.base = PatternSpec::BasePattern::RadialGradient;
       break;
     default:
       spec.base = PatternSpec::BasePattern::XY_XOR;

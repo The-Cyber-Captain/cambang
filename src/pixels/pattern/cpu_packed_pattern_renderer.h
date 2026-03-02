@@ -30,6 +30,8 @@ private:
   void render_base_xy_xor(const PatternBaseKey& key);
   void render_base_solid(const PatternSpec& spec);
   void render_base_checker(const PatternSpec& spec);
+  void render_base_color_bars(const PatternSpec& spec);
+  void render_base_radial_gradient(const PatternSpec& spec);
 
   void copy_base_to(const PatternRenderTarget& dst) const;
 

@@ -26,6 +26,12 @@ struct PatternSpec final {
     // Simple test patterns (implemented by CpuPackedPatternRenderer v1).
     Solid = 1,
     Checker = 2,
+
+    // Broadcast-style bars (SMPTE-ish; exact palette is deterministic but not a spec promise).
+    ColorBars = 3,
+
+    // Smooth radial gradient from center to edges.
+    RadialGradient = 4,
   };
 
   uint32_t width = 0;
@@ -34,7 +40,7 @@ struct PatternSpec final {
 
   BasePattern base = BasePattern::XY_XOR;
 
-  // Base parameters (affect cache key)
+  // Base parameters (affect cache key).
   uint32_t seed = 0;
 
   // Overlay behaviour toggles (do not affect cache key).
@@ -49,6 +55,9 @@ struct PatternSpec final {
 
   // For checker pattern.
   uint32_t checker_size_px = 16;
+
+  // For color bars (reserved for future variants; affects cache key).
+  uint32_t bars_variant = 0;
 };
 
 struct PatternOverlayData final {
@@ -63,10 +72,22 @@ struct PatternBaseKey final {
   uint32_t height = 0;
   PatternSpec::PackedFormat format = PatternSpec::PackedFormat::RGBA8;
   PatternSpec::BasePattern base = PatternSpec::BasePattern::XY_XOR;
+
+  // Base parameters (must include any fields that can change the base pixels).
   uint32_t seed = 0;
+  uint32_t solid_rgba = 0;      // r | (g<<8) | (b<<16) | (a<<24)
+  uint32_t checker_size_px = 0;
+  uint32_t bars_variant = 0;
 
   bool operator==(const PatternBaseKey& o) const noexcept {
-    return width == o.width && height == o.height && format == o.format && base == o.base && seed == o.seed;
+    return width == o.width &&
+           height == o.height &&
+           format == o.format &&
+           base == o.base &&
+           seed == o.seed &&
+           solid_rgba == o.solid_rgba &&
+           checker_size_px == o.checker_size_px &&
+           bars_variant == o.bars_variant;
   }
   bool operator!=(const PatternBaseKey& o) const noexcept { return !(*this == o); }
 
@@ -76,7 +97,14 @@ struct PatternBaseKey final {
     k.height = spec.height;
     k.format = spec.format;
     k.base = spec.base;
+
     k.seed = spec.seed;
+    k.solid_rgba = static_cast<uint32_t>(spec.solid_r) |
+                   (static_cast<uint32_t>(spec.solid_g) << 8) |
+                   (static_cast<uint32_t>(spec.solid_b) << 16) |
+                   (static_cast<uint32_t>(spec.solid_a) << 24);
+    k.checker_size_px = spec.checker_size_px;
+    k.bars_variant = spec.bars_variant;
     return k;
   }
 };

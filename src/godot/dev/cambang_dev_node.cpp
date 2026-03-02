@@ -7,6 +7,8 @@
 #include "imaging/broker/provider_broker.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
+#include "pixels/pattern/active_pattern_config.h"
+
 #include <vector>
 #include <string>
 #include <cctype>
@@ -75,6 +77,32 @@ void CamBANGDevNode::_process(double delta) {
         last_running_ = running;
     }
 
+
+    // Dev-only pattern cycling: swap ActivePatternConfig at fixed intervals.
+    if (pattern_cycle_enabled_ && provider_) {
+        pattern_cycle_accum_s_ += delta;
+        if (pattern_cycle_accum_s_ >= pattern_cycle_period_s_) {
+            pattern_cycle_accum_s_ = 0.0;
+
+            ActivePatternConfig cfg{};
+            cfg.preset = preset_from_index_or_default(pattern_cycle_index_, PatternPreset::XyXor);
+            cfg.seed = 0;
+            //cfg.overlay_frame_index_offsets = true;
+            //cfg.overlay_moving_bar = true;
+            cfg.overlay_frame_index_offsets = false;
+            cfg.overlay_moving_bar = true;
+
+            const bool accepted = provider_->try_set_active_pattern(cfg);
+            if (!accepted && !pattern_cycle_logged_unsupported_) {
+                UtilityFunctions::printerr("[CamBANGDevNode] Pattern cycling enabled but active provider does not support try_set_active_pattern().");
+                pattern_cycle_logged_unsupported_ = true;
+            }
+
+            const uint32_t n = static_cast<uint32_t>(pattern_preset_count());
+            pattern_cycle_index_ = (n == 0) ? 0u : ((pattern_cycle_index_ + 1u) % n);
+        }
+    }
+
     // Provider virtual_time ticking is now owned by CamBANGServer::_on_godot_tick().
     (void)delta;
 }
@@ -138,6 +166,41 @@ void CamBANGDevNode::start_runtime_() {
 bool CamBANGDevNode::start_provider_() {
     if (!runtime_ || !runtime_->is_running()) {
         return false;
+    }
+
+    // Dev-only pattern cycling configuration (visual verification aid).
+    pattern_cycle_enabled_ = false;
+    pattern_cycle_logged_unsupported_ = false;
+    pattern_cycle_accum_s_ = 0.0;
+    pattern_cycle_index_ = 0;
+
+    if (const char* v = std::getenv("CAMBANG_DEV_PATTERN_CYCLE")) {
+        if (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T') {
+            pattern_cycle_enabled_ = true;
+        }
+    }
+    if (pattern_cycle_enabled_) {
+        if (const char* p = std::getenv("CAMBANG_DEV_PATTERN_CYCLE_PERIOD")) {
+            char* end = nullptr;
+            const double s = std::strtod(p, &end);
+            if (end && end != p && s > 0.05) {
+                pattern_cycle_period_s_ = s;
+            }
+        }
+        if (const char* si = std::getenv("CAMBANG_DEV_PATTERN_CYCLE_START_INDEX")) {
+            char* end = nullptr;
+            const long i = std::strtol(si, &end, 10);
+            if (end && end != si && i >= 0) {
+                pattern_cycle_index_ = static_cast<uint32_t>(i);
+            }
+        }
+        const uint32_t n = static_cast<uint32_t>(pattern_preset_count());
+        if (n != 0) {
+            pattern_cycle_index_ %= n;
+        } else {
+            pattern_cycle_index_ = 0;
+        }
+        UtilityFunctions::print("[CamBANGDevNode] Pattern cycling enabled. period_s=", pattern_cycle_period_s_, " start_index=", (int)pattern_cycle_index_);
     }
 
     // Provider lifecycle (create/attach/initialize + Banner 1) is now owned by CamBANGServer.
@@ -240,6 +303,7 @@ void CamBANGDevNode::stop_provider_() {
     // Provider lifetime is owned by CamBANGServer; do not detach/shutdown here.
     provider_ = nullptr;
     emit_accum_ = 0.0;
+    pattern_cycle_accum_s_ = 0.0;
 }
 
 void CamBANGDevNode::stop_runtime_() {
