@@ -258,43 +258,19 @@ useful but is not required.
 
 ### Provider runtime mode (capture origin)
 
-The runtime capture origin is selected via:
+Provider runtime mode names are restricted to:
 
-`provider_mode`
-
-Allowed values:
-
-- `platform_backed`
+- `platform_backed` (default)
 - `synthetic`
 
-Exactly one provider instance is bound to Core at runtime.
+These refer to the capture origin mode of the single provider instance bound to Core.
+The term `hardware` must not be used as a runtime mode alias in code, docs, or configuration.
+(Use `hardware_*` only for identity/spec concepts such as `hardware_id` and hardware-reported specs.)
 
-The term `hardware` must not be used as a runtime mode alias in code, documentation, or configuration.  
-(Use `hardware_*` only for identity/spec concepts such as `hardware_id` and hardware-reported specifications.)
+Façade naming:
 
-Behavioural semantics and determinism guarantees are defined in `provider_architecture.md`.
-
-### Synthetic configuration axes
-
-When `provider_mode = synthetic`, two additional configuration axes apply:
-
-`synthetic_role`
-
-Allowed values:
-
-- `nominal`
-- `timeline`
-
-`timing_driver`
-
-Allowed values:
-
-- `virtual_time`
-- `real_time`
-
-These axes are orthogonal and define behavioural intent and time-advancement semantics for SyntheticProvider.
-
-Behavioural semantics and determinism guarantees are defined in `provider_architecture.md`.
+- `ProviderBroker` is the Core-bound façade term (it implements `ICameraProvider`).
+  In the current codebase this may be alias-only; the term is still canonical.
 
 ------------------------------------------------------------------------
 

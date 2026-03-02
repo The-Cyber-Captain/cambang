@@ -149,9 +149,6 @@ SyntheticProvider is not instantiated alongside a platform-backed provider.
 When compiled in, it is selected as the active runtime mode of the single provider instance bound to Core.
 Core does not arbitrate between multiple providers.
 
-Behavioural semantics for `provider_mode`, `synthetic_role`, and `timing_driver` (including determinism guarantees and host-driven time advancement) are defined in `docs/provider_architecture.md`.
-
-------------------------------------------------------------------------
 ------------------------------------------------------------------------
 
 ## 4.x src/pixels/

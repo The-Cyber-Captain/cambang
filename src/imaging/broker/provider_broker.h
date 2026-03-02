@@ -1,13 +1,5 @@
 #pragma once
-// ProviderBroker is the Core-bound facade type for camera provisioning.
-//
-// Locked invariants:
-// - Core binds to exactly one provider instance (the broker).
-// - Runtime selection between platform-backed and synthetic occurs via provider_mode.
-// - Switching provider_mode requires teardown/restart (selection is latched at initialize()).
-// - No ABI changes: ICameraProvider remains unchanged; broker implements it.
 
-#include <cstdint>
 #include <memory>
 
 #include "imaging/api/icamera_provider.h"
@@ -15,64 +7,56 @@
 
 namespace cambang {
 
+// ProviderBroker is the single Core-bound facade provider.
+// It selects exactly one concrete provider implementation based on RuntimeMode
+// (platform_backed vs synthetic) and delegates the full ICameraProvider contract.
+//
+// Policy (locked for this phase):
+// - Runtime mode is resolved before initialize() completes.
+// - Mode is frozen once initialize() succeeds (no switching while running).
+// - Switching in future must occur across a Core stop->drain boundary (not implemented here).
 class ProviderBroker final : public ICameraProvider {
 public:
   ProviderBroker();
   ~ProviderBroker() override;
 
+  ProviderBroker(const ProviderBroker&) = delete;
+  ProviderBroker& operator=(const ProviderBroker&) = delete;
+
   const char* provider_name() const override;
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
-
-  ProviderResult open_device(
-      const std::string& hardware_id,
-      uint64_t device_instance_id,
-      uint64_t root_id) override;
-
+  ProviderResult open_device(const std::string& hardware_id, uint64_t device_instance_id, uint64_t root_id) override;
   ProviderResult close_device(uint64_t device_instance_id) override;
-
   ProviderResult create_stream(const StreamRequest& req) override;
   ProviderResult destroy_stream(uint64_t stream_id) override;
-
   ProviderResult start_stream(uint64_t stream_id) override;
   ProviderResult stop_stream(uint64_t stream_id) override;
-
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
-
-  ProviderResult apply_camera_spec_patch(
-      const std::string& hardware_id,
-      uint64_t new_camera_spec_version,
-      SpecPatchView patch) override;
-
-  ProviderResult apply_imaging_spec_patch(
-      uint64_t new_imaging_spec_version,
-      SpecPatchView patch) override;
-
+  ProviderResult apply_camera_spec_patch(const std::string& hardware_id,
+                                        uint64_t new_camera_spec_version,
+                                        SpecPatchView patch) override;
+  ProviderResult apply_imaging_spec_patch(uint64_t new_imaging_spec_version,
+                                         SpecPatchView patch) override;
   ProviderResult shutdown() override;
 
-  // ---- Virtual-time helper (not part of ICameraProvider) ----
-  // Drives virtual time for backends that require an external pump (stub, synthetic
-  // virtual_time). Returns true if the active backend consumed the tick.
-  bool try_tick_virtual_time(uint64_t dt_ns);
-
-  RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
+#if defined(CAMBANG_ENABLE_DEV_NODES)
+  // Dev-only helper used by Godot dev nodes when stub is the selected provider.
+  ProviderResult dev_emit_test_frames(uint64_t stream_id, uint32_t count);
+#endif
 
 private:
-  ProviderBroker(const ProviderBroker&) = delete;
-  ProviderBroker& operator=(const ProviderBroker&) = delete;
-
-  ProviderResult ensure_initialized_or_err_() const;
-  ProviderResult ensure_active_or_err_() const;
-
-  static RuntimeMode read_provider_mode_from_env_();
+  ProviderResult ensure_selected_and_initialized_(IProviderCallbacks* callbacks);
+  ProviderResult select_provider_(RuntimeMode mode);
 
   std::unique_ptr<ICameraProvider> active_;
-  IProviderCallbacks* callbacks_ = nullptr; // non-owning
+  RuntimeMode active_mode_ = RuntimeMode::platform_backed;
   bool initialized_ = false;
 
-  RuntimeMode mode_latched_ = RuntimeMode::platform_backed;
+  // A stable name string for logging.
+  const char* name_ = "ProviderBroker";
 };
 
 } // namespace cambang

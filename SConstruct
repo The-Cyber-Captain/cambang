@@ -127,13 +127,6 @@ vars.Add(BoolVariable(
     False,
 ))
 
-# Optional synthetic provider backend.
-vars.Add(BoolVariable(
-    "synthetic",
-    "Compile synthetic provider backend into the GDE artifact (runtime-selected via provider_mode).",
-    False,
-))
-
 vars.Add(BoolVariable(
     "gde",
     "Build the GDExtension artifact (godot glue + selected provider).",
@@ -215,7 +208,6 @@ print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'}")
-print(f"  synthetic={'yes' if env['synthetic'] else 'no'}")
 print(f"  dev_nodes={'yes' if env['dev_nodes'] else 'no'}")
 
 # Output dirs
@@ -332,6 +324,7 @@ if env["gde"]:
     gde_sources += Glob(os.path.join(gde_obj_dir, "core", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "core", "snapshot", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "api", "*.cpp"))
+    # Provider-broker facade (always built into the GDE artifact).
     gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "broker", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "pixels", "pattern", "*.cpp"))
 
@@ -349,7 +342,6 @@ if env["gde"]:
     if env["provider"] == "stub":
         gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_STUB=1"])
         gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "stub", "*.cpp"))
-        gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_STUB=1"])
     elif env["provider"] == "windows_mediafoundation":
         gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "platform", "windows", "*.cpp"))
         gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_WINDOWS_MF=1"])
@@ -359,11 +351,6 @@ if env["gde"]:
     else:
         print("Unknown provider:", env["provider"])
         Exit(1)
-
-    # Optional synthetic backend (compiled in, runtime-selected via CAMBANG_PROVIDER_MODE).
-    if env["synthetic"]:
-        gde_env.Append(CPPDEFINES=["CAMBANG_ENABLE_SYNTHETIC=1"])
-        gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "synthetic", "*.cpp"))
 
     gde_sources += [
         os.path.join(gde_obj_dir, "godot", "module_init.cpp"),

@@ -9,7 +9,7 @@ namespace cambang {
 
 class CoreRuntime;
 class LatestFrameMailbox;
-class ProviderBroker;
+class ICameraProvider;
 
 // Dev-only scaffolding node.
 // - Does NOT own CoreRuntime (CamBANGServer owns it).
@@ -37,7 +37,7 @@ private:
 
     CoreRuntime* runtime_ = nullptr;          // owned by CamBANGServer
     bool started_server_ = false;             // dev-only: whether this node started the server
-    ProviderBroker* provider_ = nullptr;      // owned by CamBANGServer
+    std::unique_ptr<ICameraProvider> provider_;
     bool started_ = false;
 
     // Track runtime running state so we can handle external start/stop cycles

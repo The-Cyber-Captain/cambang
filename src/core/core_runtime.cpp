@@ -3,19 +3,11 @@
 #include "core/core_runtime.h"
 
 #include <cassert>
-#include <cstdlib>
-#include <cstdio>
 #include <memory>
 
 #include <utility>
 
 namespace cambang {
-
-static bool banners_enabled() noexcept {
-  const char* v = std::getenv("CAMBANG_BANNERS");
-  // Spec: CAMBANG_BANNERS=0 disables banners.
-  return !(v && v[0] == '0' && v[1] == '\0');
-}
 
 CoreRuntime::CoreRuntime()
     : core_thread_(),
@@ -78,7 +70,6 @@ bool CoreRuntime::start() {
   topology_gen_ = 0;
   last_topology_sig_ = 0;
   has_topology_sig_ = false;
-  provider_banner_printed_ = false;
 
   // Reset core-thread-only pump state.
   provider_facts_.clear();
@@ -143,40 +134,6 @@ void CoreRuntime::on_core_start() {
 
 void CoreRuntime::on_core_timer_tick() {
   assert(core_thread_.is_core_thread());
-
-  // Banner 2: Core-loop provider attachment (latched, effective).
-  // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
-  if (!provider_banner_printed_ && banners_enabled()) {
-    if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
-#if defined(CAMBANG_INTERNAL_SMOKE)
-      // Smoke can be stress-loop spammy: print only once per *process*.
-      static std::atomic<bool> smoke_printed_process{false};
-      if (smoke_printed_process.exchange(true)) {
-        provider_banner_printed_ = true;
-      } else {
-      const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
-                                  "[CamBANG][Core] provider attached (latched): %s / %s",
-                                  "platform_backed", prov->provider_name());
-      (void)n;
-      std::fprintf(stdout, "%s\n", core_banner_line_);
-      std::fflush(stdout);
-      core_banner_line_pending_.store(true, std::memory_order_release);
-      provider_banner_printed_ = true;
-      }
-#else
-      const ProviderBannerInfo bi = describe_provider_for_banner(prov);
-      const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
-                                  "[CamBANG][Core] provider attached (latched): %s / %s",
-                                  bi.provider_mode, bi.provider_name);
-      (void)n;
-      std::fprintf(stdout, "%s\n", core_banner_line_);
-      std::fflush(stdout);
-      core_banner_line_pending_.store(true, std::memory_order_release);
-#endif
-      provider_banner_printed_ = true;
-    }
-  }
-
 
   // 1) Drain provider facts ("what happened") first.
   while (!provider_facts_.empty()) {
@@ -509,3 +466,4 @@ void CoreRuntime::request_publish_from_core_unchecked() {
 }
 
 } // namespace cambang
+
