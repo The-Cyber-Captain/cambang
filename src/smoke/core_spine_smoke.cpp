@@ -1,4 +1,5 @@
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -420,11 +421,19 @@ static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshot
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvider& prov) {
-  (void)rt.try_post_core_thread_unchecked([]() {
+    std::atomic<bool> stall_started{false};
+
+  (void)rt.try_post_core_thread_unchecked([&stall_started]() {
+    stall_started.store(true, std::memory_order_release);
     const auto t0 = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(25)) {
     }
   });
+  // Barrier: ensure the core thread has *actually entered* the stall
+  // before we emit the overload burst.
+  while (!stall_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
 
   const uint32_t kBurst = 1100;
   prov.emit_test_frames(kStreamId, kBurst);
