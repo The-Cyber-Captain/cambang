@@ -31,14 +31,10 @@ struct SyntheticNominalDefaults {
 };
 
 struct SyntheticPatternDefaults {
-  // Pattern selection for programmable surfaces (e.g. GDScript).
-  // Uses the canonical preset enum (zero-indexed).
+  // Canonical preset selection (zero-indexed enum).
   PatternPreset preset = PatternPreset::XyXor;
-
   uint64_t seed = 1;
   bool overlay_frame_index = true;
-
-  // Reserved for future renderer overlays (not implemented by CpuPackedPatternRenderer v1).
   bool overlay_timestamp = true;
   bool overlay_stream_id = true;
 };

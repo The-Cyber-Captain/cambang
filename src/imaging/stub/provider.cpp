@@ -1,10 +1,11 @@
 ﻿#include "imaging/stub/provider.h"
 
 #include <atomic>
-#include <memory>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+#include "pixels/pattern/active_pattern_config.h"
 #include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
@@ -49,17 +50,17 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
 
   callbacks_ = callbacks;
   initialized_ = true;
-
-
-// Default active pattern selection for stub frames.
-auto cfg_mut = std::make_shared<ActivePatternConfig>();
-cfg_mut->preset = PatternPreset::XyXor;
-cfg_mut->seed = 0;
-cfg_mut->overlay_frame_index_offsets = true;
-cfg_mut->overlay_moving_bar = true;
-std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
-std::atomic_store(&active_pattern_, std::move(cfg));
   shutting_down_ = false;
+
+  // Default active selection (deterministic).
+  auto cfg_mut = std::make_shared<ActivePatternConfig>();
+  cfg_mut->preset = PatternPreset::XyXor;
+  cfg_mut->seed = 0;
+  cfg_mut->overlay_frame_index_offsets = true;
+  cfg_mut->overlay_moving_bar = true;
+  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
+  std::atomic_store(&active_pattern_, std::move(cfg));
+
   return ProviderResult::success();
 }
 
@@ -292,22 +293,14 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     payload->self = this;
     payload->bytes.resize(total);
 
-    
-// Provider-agnostic CPU pattern renderer (v1 packed RGBA).
-auto pcfg = std::atomic_load(&active_pattern_);
-if (!pcfg) {
-  // Defined behavior: if unset, re-seed to default and continue.
-  auto fallback = std::make_shared<ActivePatternConfig>();
-  fallback->preset = PatternPreset::XyXor;
-  fallback->seed = 0;
-  fallback->overlay_frame_index_offsets = true;
-  fallback->overlay_moving_bar = true;
-  std::shared_ptr<const ActivePatternConfig> f = fallback;
-  std::atomic_store(&active_pattern_, f);
-  pcfg = f;
-}
-
-PatternSpec spec = to_pattern_spec(*pcfg, w, h, PatternSpec::PackedFormat::RGBA8);
+    // Provider-agnostic CPU pattern renderer (v1 packed RGBA).
+    // Selection is copy-on-write and may be swapped by non-smoke surfaces.
+    auto pcfg = std::atomic_load(&active_pattern_);
+    bool preset_valid = true;
+    PatternSpec spec = to_pattern_spec(*pcfg, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+    if (!preset_valid) {
+      invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+    }
 
     PatternRenderTarget dst;
     dst.data = payload->bytes.data();

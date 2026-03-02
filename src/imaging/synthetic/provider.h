@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -12,7 +13,6 @@
 #include "imaging/synthetic/virtual_clock.h"
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
-#include "pixels/pattern/active_pattern_config.h"
 
 namespace cambang {
 
@@ -109,8 +109,11 @@ private:
 
   CpuPackedPatternRenderer pattern_renderer_;
 
-  // Runtime-swappable selection (copy-on-write). Read on the frame generation path.
+  // Active pattern selection (copy-on-write; may be swapped at runtime).
   std::shared_ptr<const ActivePatternConfig> active_pattern_;
+
+  // Count of invalid preset requests observed at runtime (e.g. bad enum value).
+  std::atomic<uint64_t> invalid_preset_requests_{0};
 };
 
 } // namespace cambang

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <atomic>
 #include <cstdint>
@@ -7,7 +7,8 @@
 #include <string>
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
-#include "pixels/pattern/active_pattern_config.h"
+
+namespace cambang { struct ActivePatternConfig; }
 
 #include "imaging/api/icamera_provider.h"
 
@@ -101,8 +102,12 @@ private:
   // Pattern renderer (provider-agnostic). Not part of the provider contract.
   CpuPackedPatternRenderer pattern_renderer_;
 
-  // Active pattern selection (copy-on-write, may be swapped at runtime).
+  // Active pattern selection (copy-on-write; may be swapped at runtime by
+  // non-smoke surfaces).
   std::shared_ptr<const ActivePatternConfig> active_pattern_;
+
+  // Count of invalid preset requests observed at runtime (e.g. bad enum value).
+  std::atomic<uint64_t> invalid_preset_requests_{0};
 
   // virtual_time clock (ns since provider init). Only advanced via advance().
   uint64_t now_ns_ = 0;
