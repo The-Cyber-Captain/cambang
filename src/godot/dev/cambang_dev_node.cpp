@@ -4,19 +4,13 @@
 #include "core/core_runtime.h"
 #include "core/latest_frame_mailbox.h"
 
-#include "imaging/api/icamera_provider.h"
-#include "imaging/api/provider_contract_datatypes.h"
 #include "imaging/broker/provider_broker.h"
-
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-  #include "imaging/platform/windows/provider.h"
-#else
-  #include "imaging/stub/provider.h"
-#endif
+#include "imaging/api/provider_contract_datatypes.h"
 
 #include <vector>
 #include <string>
 #include <cctype>
+#include <cstdlib>
 
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -81,25 +75,8 @@ void CamBANGDevNode::_process(double delta) {
         last_running_ = running;
     }
 
-#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
-    // Dev-only: drive stub provider frames on the main thread (no extra threads).
-    if (!running || !provider_) {
-        return;
-    }
-
-    emit_accum_ += delta;
-    constexpr double kFramePeriod = 1.0 / 30.0;
-    if (emit_accum_ < kFramePeriod) {
-        return;
-    }
-    emit_accum_ -= kFramePeriod;
-
-    // Safe: dev hook is only meaningful when stub is the active provider.
-    auto* broker = static_cast<ProviderBroker*>(provider_.get());
-    (void)broker->dev_emit_test_frames(stream_id_, 1);
-#else
+    // Provider virtual_time ticking is now owned by CamBANGServer::_on_godot_tick().
     (void)delta;
-#endif
 }
 
 const LatestFrameMailbox* CamBANGDevNode::get_latest_frame_mailbox() const {
@@ -163,20 +140,20 @@ bool CamBANGDevNode::start_provider_() {
         return false;
     }
 
-    // Recreate provider each time for clean lifecycle on repeated start/stop.
-    provider_ = std::make_unique<ProviderBroker>();
-
-    runtime_->attach_provider(provider_.get());
-
-    ProviderResult pr = provider_->initialize(runtime_->provider_callbacks());
-    if (!pr.ok()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Provider initialize failed.");
-        stop_provider_();
+    // Provider lifecycle (create/attach/initialize + Banner 1) is now owned by CamBANGServer.
+    auto* server = CamBANGServer::get_singleton();
+    if (!server) {
+        UtilityFunctions::printerr("[CamBANGDevNode] No CamBANGServer singleton.");
+        return false;
+    }
+    provider_ = server->provider_broker_for_dev();
+    if (!provider_) {
+        UtilityFunctions::printerr("[CamBANGDevNode] No provider broker attached. Did CamBANGServer.start() succeed?");
         return false;
     }
 
     std::vector<CameraEndpoint> eps;
-    pr = provider_->enumerate_endpoints(eps);
+    ProviderResult pr = provider_->enumerate_endpoints(eps);
     if (!pr.ok() || eps.empty()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider enumerate_endpoints failed.");
         stop_provider_();
@@ -249,7 +226,7 @@ bool CamBANGDevNode::start_provider_() {
 
 void CamBANGDevNode::stop_provider_() {
     if (!runtime_) {
-        provider_.reset();
+        provider_ = nullptr;
         return;
     }
 
@@ -258,17 +235,16 @@ void CamBANGDevNode::stop_provider_() {
         provider_->stop_stream(stream_id_);
         provider_->destroy_stream(stream_id_);
         provider_->close_device(device_instance_id_);
-        provider_->shutdown();
     }
 
-    runtime_->attach_provider(nullptr);
-    provider_.reset();
+    // Provider lifetime is owned by CamBANGServer; do not detach/shutdown here.
+    provider_ = nullptr;
     emit_accum_ = 0.0;
 }
 
 void CamBANGDevNode::stop_runtime_() {
     if (!runtime_) {
-        provider_.reset();
+        provider_ = nullptr;
         started_ = false;
         last_running_ = false;
         return;

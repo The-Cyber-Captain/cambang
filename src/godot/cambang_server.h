@@ -12,6 +12,10 @@
 #include "core/snapshot/state_snapshot.h"
 #include "godot/cambang_state_snapshot.h"
 
+// Provider lifecycle is owned by the server (Godot thread), but attached to the
+// core runtime (core thread) via CoreRuntime::attach_provider.
+#include "imaging/api/icamera_provider.h"
+
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/main_loop.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
@@ -62,6 +66,10 @@ public:
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
   CoreRuntime* runtime_for_dev() noexcept { return &runtime_; }
+
+  // Dev-only access to the currently latched provider broker (if present).
+  // Not bound to Godot.
+  class ProviderBroker* provider_broker_for_dev() const noexcept;
 #endif
 
 protected:
@@ -71,7 +79,7 @@ private:
   friend class CamBANGServerTickNode;
 
   // Called on the Godot main thread by the internal tick node.
-  void _on_godot_tick();
+  void _on_godot_tick(double delta);
 
   static CamBANGServer* singleton_;
 
@@ -84,7 +92,12 @@ private:
   uint64_t last_emitted_gen_ = 0;
 
   void _ensure_tick_installed();
+  bool _ensure_provider_attached_and_initialized();
   bool tick_installed_ = false;
+
+  // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
+  // temporary dev scaffolding to attach/initialize the provider.
+  std::unique_ptr<ICameraProvider> provider_;
 };
 
 } // namespace cambang
