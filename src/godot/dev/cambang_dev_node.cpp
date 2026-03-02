@@ -11,6 +11,7 @@
 #include <vector>
 #include <string>
 #include <cctype>
+#include <cstdlib>
 
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -18,6 +19,11 @@
 using godot::UtilityFunctions;
 
 namespace cambang {
+
+static bool banners_enabled() noexcept {
+    const char* v = std::getenv("CAMBANG_BANNERS");
+    return !(v && v[0] == '0' && v[1] == '\0');
+}
 
 std::atomic<bool> CamBANGDevNode::s_live{false};
 
@@ -165,7 +171,9 @@ bool CamBANGDevNode::start_provider_() {
     // Printed once per provider start, after successful initialization.
     {
         const ProviderBannerInfo bi = describe_provider_for_banner(provider_.get());
-        UtilityFunctions::print("[CamBANG] provider selected (latched): ", bi.provider_mode, " / ", bi.provider_name);
+        if (banners_enabled()) {
+            UtilityFunctions::print("[CamBANG] provider selected (latched): ", bi.provider_mode, " / ", bi.provider_name);
+        }
     }
 
     std::vector<CameraEndpoint> eps;

@@ -8,7 +8,14 @@
 
 #include "imaging/broker/provider_broker.h"
 
+#include <cstdlib>
+
 namespace cambang {
+
+static bool banners_enabled() noexcept {
+  const char* v = std::getenv("CAMBANG_BANNERS");
+  return !(v && v[0] == '0' && v[1] == '\0');
+}
 
 CamBANGServer* CamBANGServer::singleton_ = nullptr;
 
@@ -89,9 +96,11 @@ void CamBANGServer::_on_godot_tick(double delta) {
 
     // Echo any core-thread banner line through Godot logging so it's visible in
     // the editor output panel (stdout isn't reliably surfaced on Windows).
-    char line[192];
-    if (runtime_.take_core_banner_line(line, sizeof(line))) {
-      godot::UtilityFunctions::print(line);
+    if (banners_enabled()) {
+      char line[192];
+      if (runtime_.take_core_banner_line(line, sizeof(line))) {
+        godot::UtilityFunctions::print(line);
+      }
     }
   }
 
