@@ -5,6 +5,7 @@
 #include "core/latest_frame_mailbox.h"
 
 #include "imaging/broker/provider_broker.h"
+#include "imaging/broker/banner_info.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
 #include <vector>
@@ -158,6 +159,13 @@ bool CamBANGDevNode::start_provider_() {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider initialize failed.");
         stop_provider_();
         return false;
+    }
+
+    // Banner 1: Godot-facing provider selection (latched, effective).
+    // Printed once per provider start, after successful initialization.
+    {
+        const ProviderBannerInfo bi = describe_provider_for_banner(provider_.get());
+        UtilityFunctions::print("[CamBANG] provider selected (latched): ", bi.provider_mode, " / ", bi.provider_name);
     }
 
     std::vector<CameraEndpoint> eps;

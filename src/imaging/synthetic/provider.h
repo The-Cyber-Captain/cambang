@@ -28,7 +28,7 @@ public:
   explicit SyntheticProvider(const SyntheticProviderConfig& cfg);
   ~SyntheticProvider() override = default;
 
-  const char* provider_name() const override { return "synthetic"; }
+  const char* provider_name() const override { return "SyntheticProvider"; }
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;

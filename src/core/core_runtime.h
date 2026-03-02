@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <deque>
 
 #include "core/core_dispatcher.h"
@@ -21,6 +22,9 @@
 #endif
 
 #include "imaging/api/icamera_provider.h"
+#if !defined(CAMBANG_INTERNAL_SMOKE)
+#include "imaging/broker/banner_info.h"
+#endif
 
 namespace cambang {
 
@@ -99,6 +103,13 @@ namespace cambang {
 
   void attach_provider(ICameraProvider* provider) noexcept {
     provider_.store(provider, std::memory_order_release);
+
+    // Ensure the core loop observes the attachment promptly so the
+    // core-loop banner can print even if no other work is scheduled.
+    // Safe to call from any thread.
+    if (provider != nullptr) {
+      core_thread_.request_timer_tick();
+    }
   }
 
   // Non-owning access to the currently attached provider. Intended for
@@ -106,6 +117,22 @@ namespace cambang {
   // provider type knowledge into Core.
   ICameraProvider* attached_provider() const noexcept {
     return provider_.load(std::memory_order_acquire);
+  }
+
+  // Internal dev visibility: allow the Godot main thread to echo a core-thread
+  // banner line via UtilityFunctions::print for environments where stdout isn't
+  // reliably visible (e.g. Godot editor output on Windows).
+  bool take_core_banner_line(char* out, size_t cap) noexcept {
+    if (!out || cap == 0) {
+      return false;
+    }
+    if (!core_banner_line_pending_.exchange(false, std::memory_order_acq_rel)) {
+      return false;
+    }
+    // Core thread writes the buffer before setting the pending flag.
+    std::strncpy(out, core_banner_line_, cap - 1);
+    out[cap - 1] = '\0';
+    return true;
   }
 
 private:
@@ -180,6 +207,11 @@ private:
   uint32_t shutdown_wait_ticks_ = 0;
 
   std::atomic<ICameraProvider*> provider_{nullptr};
+  bool provider_banner_printed_ = false; // core-thread only; reset each start()
+
+  // One-line banner echo mailbox (core thread -> Godot thread).
+  std::atomic<bool> core_banner_line_pending_{false};
+  char core_banner_line_[192] = {0};
 
   std::atomic<bool> publish_pending_{false};
 

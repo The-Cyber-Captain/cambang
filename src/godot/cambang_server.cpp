@@ -86,6 +86,13 @@ void CamBANGServer::_on_godot_tick(double delta) {
         (void)broker->try_tick_virtual_time(dt_ns);
       }
     }
+
+    // Echo any core-thread banner line through Godot logging so it's visible in
+    // the editor output panel (stdout isn't reliably surfaced on Windows).
+    char line[192];
+    if (runtime_.take_core_banner_line(line, sizeof(line))) {
+      godot::UtilityFunctions::print(line);
+    }
   }
 
   // Poll the core-published snapshot buffer.
