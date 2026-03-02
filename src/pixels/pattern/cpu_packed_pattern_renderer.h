@@ -34,6 +34,7 @@ private:
   void render_base_checker(const PatternSpec& spec, const PatternBaseKey& key);
   void render_base_color_bars(const PatternSpec& spec, const PatternBaseKey& key);
   void render_base_radial_gradient(const PatternSpec& spec, const PatternBaseKey& key);
+  void render_base_corners_rgba(const PatternSpec& spec, const PatternBaseKey& key);
 
   void copy_base_to(const PatternRenderTarget& dst) const;
 

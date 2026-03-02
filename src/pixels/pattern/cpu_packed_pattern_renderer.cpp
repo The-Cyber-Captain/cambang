@@ -29,6 +29,7 @@ void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
       &CpuPackedPatternRenderer::render_base_checker,
       &CpuPackedPatternRenderer::render_base_color_bars,
       &CpuPackedPatternRenderer::render_base_radial_gradient,
+      &CpuPackedPatternRenderer::render_base_corners_rgba,
   };
 
   const size_t idx = static_cast<size_t>(key.algo);
@@ -160,6 +161,96 @@ void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& sp
   }
 }
 
+void CpuPackedPatternRenderer::render_base_corners_rgba(const PatternSpec& spec, const PatternBaseKey& key) {
+  const uint32_t w = key.width;
+  const uint32_t h = key.height;
+  if (w == 0 || h == 0) {
+    return;
+  }
+
+  // Corner patch size: 1/8 of frame (minimum 1 px).
+  const uint32_t cw = std::max<uint32_t>(1u, w / 8u);
+  const uint32_t ch = std::max<uint32_t>(1u, h / 8u);
+
+  // Background colour:
+  // - uses spec.solid_* (lets you exercise --rgba without adding new params)
+  // - if you prefer fixed dark gray, replace with constants.
+  const uint8_t bg_r = spec.solid_r;
+  const uint8_t bg_g = spec.solid_g;
+  const uint8_t bg_b = spec.solid_b;
+  const uint8_t bg_a = spec.solid_a;
+
+  // Canonical corner swatches (alpha=255):
+  // TL red, TR green, BL blue, BR white.
+  constexpr uint8_t TL[4] = {0xFF, 0x00, 0x00, 0xFF};
+  constexpr uint8_t TR[4] = {0x00, 0xFF, 0x00, 0xFF};
+  constexpr uint8_t BL[4] = {0x00, 0x00, 0xFF, 0xFF};
+  constexpr uint8_t BR[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+
+  // Optional border/crosshair colours.
+  constexpr uint8_t BORDER[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+  constexpr uint8_t CROSS[4]  = {0xFF, 0xFF, 0x00, 0xFF}; // yellow
+
+  // 1) Fill background.
+  for (uint32_t y = 0; y < h; ++y) {
+    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    for (uint32_t x = 0; x < w; ++x) {
+      write_px(row + static_cast<size_t>(x) * 4u, key.format, bg_r, bg_g, bg_b, bg_a);
+    }
+  }
+
+  // Helper lambda for solid rect fill in base buffer.
+  auto fill_rect = [&](uint32_t x0, uint32_t y0, uint32_t rw, uint32_t rh, const uint8_t c[4]) {
+    const uint32_t x1 = std::min<uint32_t>(w, x0 + rw);
+    const uint32_t y1 = std::min<uint32_t>(h, y0 + rh);
+    for (uint32_t y = y0; y < y1; ++y) {
+      uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+      for (uint32_t x = x0; x < x1; ++x) {
+        write_px(row + static_cast<size_t>(x) * 4u, key.format, c[0], c[1], c[2], c[3]);
+      }
+    }
+  };
+
+  // 2) Corner swatches.
+  fill_rect(0,        0,        cw, ch, TL);
+  fill_rect(w - cw,   0,        cw, ch, TR);
+  fill_rect(0,        h - ch,   cw, ch, BL);
+  fill_rect(w - cw,   h - ch,   cw, ch, BR);
+
+  // 3) Optional 1px border (white).
+  // Top + bottom rows
+  {
+    uint8_t* top = base_pixels_.data();
+    uint8_t* bot = base_pixels_.data() + static_cast<size_t>(h - 1u) * base_stride_bytes_;
+    for (uint32_t x = 0; x < w; ++x) {
+      write_px(top + static_cast<size_t>(x) * 4u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
+      write_px(bot + static_cast<size_t>(x) * 4u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
+    }
+  }
+  // Left + right columns
+  for (uint32_t y = 0; y < h; ++y) {
+    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    write_px(row + 0u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
+    write_px(row + static_cast<size_t>(w - 1u) * 4u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
+  }
+
+  // 4) Optional 1px crosshair (yellow) at center (reveals scaling/cropping).
+  const uint32_t mid_x = w / 2u;
+  const uint32_t mid_y = h / 2u;
+
+  // Vertical line at mid_x
+  for (uint32_t y = 0; y < h; ++y) {
+    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    write_px(row + static_cast<size_t>(mid_x) * 4u, key.format, CROSS[0], CROSS[1], CROSS[2], CROSS[3]);
+  }
+  // Horizontal line at mid_y
+  {
+    uint8_t* row = base_pixels_.data() + static_cast<size_t>(mid_y) * base_stride_bytes_;
+    for (uint32_t x = 0; x < w; ++x) {
+      write_px(row + static_cast<size_t>(x) * 4u, key.format, CROSS[0], CROSS[1], CROSS[2], CROSS[3]);
+    }
+  }
+}
 void CpuPackedPatternRenderer::copy_base_to(const PatternRenderTarget& dst) const {
   // Row copy (dst stride may differ from tight base stride).
   const uint32_t row_bytes = base_stride_bytes_;

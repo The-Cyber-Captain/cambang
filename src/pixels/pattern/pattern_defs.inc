@@ -12,3 +12,4 @@ X(Solid,          "solid",      "Solid",           kCapsSeed | kCapsRgba,       
 X(Checker,        "checker",    "Checkerboard",    kCapsSeed | kCapsCheckerSize,   Checker)
 X(ColorBars,      "color_bars", "Color Bars",      kCapsNone,                     ColorBars)
 X(RadialGradient, "radial",     "Radial Gradient", kCapsNone,                     RadialGradient)
+X(CornersRgba, "corners_rgba", "Corners RGBA", kCapsSeed | kCapsRgba, CornersRgba)
