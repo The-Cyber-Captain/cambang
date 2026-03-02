@@ -131,6 +131,21 @@ User intent for a particular rig (membership, sync policy, capture
 profile). `RigConfig` is not a spec and is not treated as hardware
 truth.
 
+### Pattern Presets (Synthetic Pixel Generation)
+
+CamBANG uses the term **Pattern Preset** to describe a selectable synthetic pixel pattern.
+
+Vocabulary rules:
+
+- Programmable surfaces use a canonical enum: `PatternPreset` (zero-indexed, contiguous).
+- Edge surfaces (CLI/UI) use stable string tokens (`name`) defined by the Pattern Module’s preset registry.
+- The enum and token vocabulary must remain in **1:1 correspondence** via the registry.
+
+Invalid selection behaviour:
+
+- Invalid preset names (CLI/UI) are input errors; tools should fail clearly and UI should refuse selection.
+- Invalid preset enum values at runtime (corruption/mismatch) must fall back deterministically to a default preset.
+
 ------------------------------------------------------------------------
 
 ## 4. Spec updates and `apply_mode`

@@ -89,6 +89,59 @@ It enforces:
 - per-frame overlay patching applied onto the destination buffer
 - zero allocations inside the per-frame render function
 
+### 2.5 PatternPreset (Preset Vocabulary)
+
+`PatternPreset` is the **canonical preset vocabulary** used to select patterns.
+
+Properties:
+
+- **Zero-indexed** contiguous enum (`0..N-1`)
+- Stable within a build
+- Used by programmable surfaces (providers, tests, and future GDScript bindings)
+
+The Pattern Module also defines a **1:1 mapping** between `PatternPreset` and a stable string token
+used by edge surfaces (CLI/UI).
+
+### 2.6 Preset Registry (Single Source of Truth)
+
+The Pattern Module exposes a preset registry table that is the only authority for:
+
+- which presets exist
+- the stable token name (`"xy_xor"`, `"solid"`, etc.)
+- optional display strings (UI-facing)
+- capability flags (which parameters are meaningful)
+
+Consumers must not duplicate preset lists. CLI tools and UI should enumerate the registry.
+
+### 2.7 ActivePatternConfig (Provider-facing Selection)
+
+`ActivePatternConfig` is a provider-facing configuration describing the **active selected preset**
+and its parameters.
+
+Properties:
+
+- POD / trivially copyable fields (no strings, no heap ownership)
+- May be swapped at runtime by providers (copy-on-write selection)
+- Converted into renderer-facing `PatternSpec` via `to_pattern_spec(...)`
+
+This keeps `PatternSpec` as the renderer contract, while allowing providers and tools to work with a
+stable preset vocabulary.
+
+### 2.8 Invalid Selection Behaviour
+
+The Pattern Module defines deterministic behaviour for invalid selection requests:
+
+Provider/runtime (enum/index selection):
+
+- If an invalid `PatternPreset` value is observed (out of range / no registry entry), it is treated as
+  **invalid** and the render request must deterministically **fall back** to the default preset
+  (typically `XyXor`).
+- Providers should increment a small counter (and may log once in dev) when this occurs.
+
+Edge surfaces (string selection):
+
+- If an invalid preset name is requested (not present in the registry), the caller should treat this as
+  an **input error** (CLI tools should exit non-zero; UI should refuse selection).
 ---
 
 ## 3. Rendering Model
@@ -170,6 +223,11 @@ Build:
 - not linked into release artifacts
 - not part of the provider contract
 
+Usage:
+
+- `pattern_render_bench --pattern=<name> [--seed=<u32>] [--rgba=R,G,B[,A]] [--checker_size=<px>]`
+
+Valid pattern names are enumerated from the preset registry; the tool must not hardcode a preset list.
 ---
 
 ## 7. Relationship to Providers
@@ -182,3 +240,47 @@ provider/core contract:
 - core remains agnostic to pixel origin
 - providers remain responsible for deterministic delivery and correct metadata
 - snapshot publication is unchanged
+
+---
+
+## 8. How to Add a New Pattern
+
+This section defines the required steps to add a new pattern in a way that keeps all surfaces
+(CLI tools, providers, future Godot UI) in sync.
+
+### 8.1 Implement the Base Pattern
+
+1. Add a new base selection (if required) to the renderer’s base-pattern enum (e.g. `PatternSpec::BasePattern`).
+2. Implement generation inside `CpuPackedPatternRenderer`.
+3. Ensure **base-frame-affecting fields** are part of the base-cache key (per §3.1).
+
+### 8.2 Expose the Pattern via the Preset Registry
+
+1. Add a new `PatternPreset` enum entry.
+- Must be **zero-indexed** and contiguous.
+2. Add a new registry entry mapping:
+- `PatternPreset` ↔ stable `name` token (CLI/UI)
+- capability flags (which parameters apply)
+
+All consumers must enumerate the registry and must not duplicate preset lists.
+
+### 8.3 Extend ActivePatternConfig (If Needed)
+
+If the new pattern requires parameters:
+
+1. Add POD fields to `ActivePatternConfig` for the parameter(s).
+2. Map those fields into `PatternSpec` inside `to_pattern_spec(...)`.
+3. Ensure parameters that alter the base image are treated as base-frame-affecting (cache key).
+
+### 8.4 Optional: Extend the Microbenchmark Parser
+
+If the microbenchmark should support controlling new parameters:
+
+- Add new CLI flags.
+- Validate combinations using preset capability flags (reject parameters for presets that do not support them).
+
+### 8.5 Test Checklist
+
+- Run `pattern_render_bench --pattern=<name>` for the new preset.
+- Verify determinism by repeating with fixed `--seed`.
+- Build and run provider smoke targets; smoke should remain deterministic because it uses provider defaults.
