@@ -1,5 +1,7 @@
 ﻿#include "imaging/stub/provider.h"
 
+#include <atomic>
+#include <memory>
 #include <cstdint>
 #include <vector>
 
@@ -47,6 +49,16 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
 
   callbacks_ = callbacks;
   initialized_ = true;
+
+
+// Default active pattern selection for stub frames.
+auto cfg_mut = std::make_shared<ActivePatternConfig>();
+cfg_mut->preset = PatternPreset::XyXor;
+cfg_mut->seed = 0;
+cfg_mut->overlay_frame_index_offsets = true;
+cfg_mut->overlay_moving_bar = true;
+std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
+std::atomic_store(&active_pattern_, std::move(cfg));
   shutting_down_ = false;
   return ProviderResult::success();
 }
@@ -280,14 +292,22 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     payload->self = this;
     payload->bytes.resize(total);
 
-    // Provider-agnostic CPU pattern renderer (v1 packed RGBA).
-    PatternSpec spec;
-    spec.width = w;
-    spec.height = h;
-    spec.format = PatternSpec::PackedFormat::RGBA8;
-    spec.base = PatternSpec::BasePattern::XY_XOR;
-    spec.overlay_frame_index_offsets = true;
-    spec.overlay_moving_bar = true;
+    
+// Provider-agnostic CPU pattern renderer (v1 packed RGBA).
+auto pcfg = std::atomic_load(&active_pattern_);
+if (!pcfg) {
+  // Defined behavior: if unset, re-seed to default and continue.
+  auto fallback = std::make_shared<ActivePatternConfig>();
+  fallback->preset = PatternPreset::XyXor;
+  fallback->seed = 0;
+  fallback->overlay_frame_index_offsets = true;
+  fallback->overlay_moving_bar = true;
+  std::shared_ptr<const ActivePatternConfig> f = fallback;
+  std::atomic_store(&active_pattern_, f);
+  pcfg = f;
+}
+
+PatternSpec spec = to_pattern_spec(*pcfg, w, h, PatternSpec::PackedFormat::RGBA8);
 
     PatternRenderTarget dst;
     dst.data = payload->bytes.data();

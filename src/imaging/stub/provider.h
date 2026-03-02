@@ -3,9 +3,11 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
+#include "pixels/pattern/active_pattern_config.h"
 
 #include "imaging/api/icamera_provider.h"
 
@@ -98,6 +100,9 @@ private:
 
   // Pattern renderer (provider-agnostic). Not part of the provider contract.
   CpuPackedPatternRenderer pattern_renderer_;
+
+  // Active pattern selection (copy-on-write, may be swapped at runtime).
+  std::shared_ptr<const ActivePatternConfig> active_pattern_;
 
   // virtual_time clock (ns since provider init). Only advanced via advance().
   uint64_t now_ns_ = 0;

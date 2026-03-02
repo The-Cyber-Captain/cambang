@@ -1,8 +1,12 @@
 #include "imaging/synthetic/provider.h"
 
+#include <atomic>
+#include <memory>
+
 #include <cstring>
 
 #include "pixels/pattern/pattern_spec.h"
+#include "pixels/pattern/active_pattern_config.h"
 
 namespace cambang {
 
@@ -43,14 +47,25 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   shutting_down_ = false;
 
   // Configure renderer (safe to reconfigure per render; this is a hint).
-  PatternSpec spec{};
-  spec.width = cfg_.nominal.width;
-  spec.height = cfg_.nominal.height;
-  spec.format = PatternSpec::PackedFormat::RGBA8;
-  spec.seed = static_cast<uint32_t>(cfg_.pattern.seed);
-  pattern_renderer_.configure(spec);
+  // Active pattern selection (runtime-swappable).
+// Defined behavior: invalid preset values fall back to PatternPreset::XyXor inside to_pattern_spec().
+auto cfg_mut = std::make_shared<ActivePatternConfig>();
+cfg_mut->preset = cfg_.pattern.preset;
+cfg_mut->seed = static_cast<std::uint32_t>(cfg_.pattern.seed);
+cfg_mut->overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
+cfg_mut->overlay_moving_bar = true;
 
-  return ProviderResult::success();
+std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
+std::atomic_store(&active_pattern_, std::move(cfg));
+
+// Optional cache hint using nominal geometry.
+PatternSpec hint = to_pattern_spec(*cfg_mut,
+                                  cfg_.nominal.width,
+                                  cfg_.nominal.height,
+                                  PatternSpec::PackedFormat::RGBA8);
+pattern_renderer_.configure(hint);
+
+return ProviderResult::success();
 }
 
 ProviderResult SyntheticProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
@@ -343,15 +358,20 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
   const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
   auto* buf = new uint8_t[size_bytes];
 
-  PatternSpec spec{};
-  spec.width = w;
-  spec.height = h;
-  spec.seed = static_cast<uint32_t>(cfg_.pattern.seed);
-  spec.format = PatternSpec::PackedFormat::RGBA8;
-  spec.overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
-  spec.overlay_moving_bar = true;
+  
+auto pcfg = std::atomic_load(&active_pattern_);
+if (!pcfg) {
+  // Should not happen (initialized in initialize), but keep defined behavior.
+  auto fallback = std::make_shared<ActivePatternConfig>();
+  fallback->preset = PatternPreset::XyXor;
+  std::shared_ptr<const ActivePatternConfig> f = fallback;
+  std::atomic_store(&active_pattern_, f);
+  pcfg = f;
+}
 
-  PatternRenderTarget dst{};
+PatternSpec spec = to_pattern_spec(*pcfg, w, h, PatternSpec::PackedFormat::RGBA8);
+
+PatternRenderTarget dst{};
   dst.data = buf;
   dst.size_bytes = size_bytes;
   dst.width = w;

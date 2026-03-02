@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "imaging/synthetic/virtual_clock.h"
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
+#include "pixels/pattern/active_pattern_config.h"
 
 namespace cambang {
 
@@ -106,6 +108,9 @@ private:
   uint64_t native_id_seq_ = 1;
 
   CpuPackedPatternRenderer pattern_renderer_;
+
+  // Runtime-swappable selection (copy-on-write). Read on the frame generation path.
+  std::shared_ptr<const ActivePatternConfig> active_pattern_;
 };
 
 } // namespace cambang
