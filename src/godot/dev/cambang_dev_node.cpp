@@ -6,6 +6,7 @@
 
 #include "imaging/broker/provider_broker.h"
 #include "imaging/api/provider_contract_datatypes.h"
+#include "imaging/broker/provider_broker.h"
 
 #include <vector>
 #include <string>

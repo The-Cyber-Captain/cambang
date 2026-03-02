@@ -146,6 +146,13 @@ vars.Add(BoolVariable(
     False,
 ))
 
+# Optional synthetic provider compilation (plumbing seam only in this phase).
+vars.Add(BoolVariable(
+    "synthetic",
+    "Compile synthetic provider support into the GDE (CAMBANG_ENABLE_SYNTHETIC).",
+    False,
+))
+
 tmp_env = Environment(variables=vars)
 Help(vars.GenerateHelpText(tmp_env))
 
@@ -328,6 +335,10 @@ if env["gde"]:
     gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "broker", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "pixels", "pattern", "*.cpp"))
 
+    if env["synthetic"]:
+        gde_env.Append(CPPDEFINES=["CAMBANG_ENABLE_SYNTHETIC=1"])
+        gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "synthetic", "*.cpp"))
+
     # Provider backend selection (dev accelerator).
     from SCons.Script import GetOption
     if env["provider"] == "unset":
@@ -336,6 +347,7 @@ if env["gde"]:
             Exit(1)
 
     if env["provider"] == "stub":
+        gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_STUB=1"])
         gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "stub", "*.cpp"))
         gde_env.Append(CPPDEFINES=["CAMBANG_PROVIDER_STUB=1"])
     elif env["provider"] == "windows_mediafoundation":
