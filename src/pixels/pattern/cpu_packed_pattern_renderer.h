@@ -27,11 +27,13 @@ public:
 private:
   void ensure_base(const PatternSpec& spec);
 
-  void render_base_xy_xor(const PatternBaseKey& key);
-  void render_base_solid(const PatternSpec& spec);
-  void render_base_checker(const PatternSpec& spec);
-  void render_base_color_bars(const PatternSpec& spec);
-  void render_base_radial_gradient(const PatternSpec& spec);
+  using RenderBaseFn = void (CpuPackedPatternRenderer::*)(const PatternSpec& spec, const PatternBaseKey& key);
+
+  void render_base_xy_xor(const PatternSpec& spec, const PatternBaseKey& key);
+  void render_base_solid(const PatternSpec& spec, const PatternBaseKey& key);
+  void render_base_checker(const PatternSpec& spec, const PatternBaseKey& key);
+  void render_base_color_bars(const PatternSpec& spec, const PatternBaseKey& key);
+  void render_base_radial_gradient(const PatternSpec& spec, const PatternBaseKey& key);
 
   void copy_base_to(const PatternRenderTarget& dst) const;
 

@@ -22,26 +22,21 @@ void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
   base_stride_bytes_ = key.width * PatternRenderTarget::bytes_per_pixel();
   base_pixels_.assign(static_cast<size_t>(base_stride_bytes_) * static_cast<size_t>(key.height), 0);
 
-  switch (key.base) {
-    case PatternSpec::BasePattern::XY_XOR:
-      render_base_xy_xor(key);
-      break;
-    case PatternSpec::BasePattern::Solid:
-      render_base_solid(spec);
-      break;
-    case PatternSpec::BasePattern::Checker:
-      render_base_checker(spec);
-      break;
-    case PatternSpec::BasePattern::ColorBars:
-      render_base_color_bars(spec);
-      break;
-    case PatternSpec::BasePattern::RadialGradient:
-      render_base_radial_gradient(spec);
-      break;
-    default:
-      render_base_xy_xor(key);
-      break;
+  // Table-driven algorithm dispatch (keeps preset registry as the only pattern list).
+  static constexpr RenderBaseFn kAlgoFns[] = {
+      &CpuPackedPatternRenderer::render_base_xy_xor,
+      &CpuPackedPatternRenderer::render_base_solid,
+      &CpuPackedPatternRenderer::render_base_checker,
+      &CpuPackedPatternRenderer::render_base_color_bars,
+      &CpuPackedPatternRenderer::render_base_radial_gradient,
+  };
+
+  const size_t idx = static_cast<size_t>(key.algo);
+  RenderBaseFn fn = &CpuPackedPatternRenderer::render_base_xy_xor;
+  if (idx < (sizeof(kAlgoFns) / sizeof(kAlgoFns[0]))) {
+    fn = kAlgoFns[idx];
   }
+  (this->*fn)(spec, key);
 }
 
 void CpuPackedPatternRenderer::render_into(
@@ -67,7 +62,7 @@ void CpuPackedPatternRenderer::render_into(
   }
 }
 
-void CpuPackedPatternRenderer::render_base_xy_xor(const PatternBaseKey& key) {
+void CpuPackedPatternRenderer::render_base_xy_xor(const PatternSpec& /*spec*/, const PatternBaseKey& key) {
   // Base: r=x, g=y, b=x^y, a=255.
   for (uint32_t y = 0; y < key.height; ++y) {
     uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
@@ -80,7 +75,7 @@ void CpuPackedPatternRenderer::render_base_xy_xor(const PatternBaseKey& key) {
   }
 }
 
-void CpuPackedPatternRenderer::render_base_solid(const PatternSpec& spec) {
+void CpuPackedPatternRenderer::render_base_solid(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
   for (uint32_t y = 0; y < spec.height; ++y) {
     uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
     for (uint32_t x = 0; x < spec.width; ++x) {
@@ -89,7 +84,7 @@ void CpuPackedPatternRenderer::render_base_solid(const PatternSpec& spec) {
   }
 }
 
-void CpuPackedPatternRenderer::render_base_checker(const PatternSpec& spec) {
+void CpuPackedPatternRenderer::render_base_checker(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
   const uint32_t step = (spec.checker_size_px == 0) ? 16u : spec.checker_size_px;
   for (uint32_t y = 0; y < spec.height; ++y) {
     uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
@@ -103,7 +98,7 @@ void CpuPackedPatternRenderer::render_base_checker(const PatternSpec& spec) {
   }
 }
 
-void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec) {
+void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
   // Deterministic 7-bar palette (SMPTE-ish). Intended for visual validation.
   struct RGBA { uint8_t r, g, b, a; };
   static constexpr RGBA bars[7] = {
@@ -130,7 +125,7 @@ void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec) {
   }
 }
 
-void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& spec) {
+void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
   // Smooth radial gradient: bright center -> darker edges, with blue edge cue.
   const uint32_t w = spec.width;
   const uint32_t h = spec.height;

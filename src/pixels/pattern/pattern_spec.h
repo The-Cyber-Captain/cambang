@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "pixels/pattern/pattern_algo.h"
+
 namespace cambang {
 
 // Provider-agnostic description of a pattern to render.
@@ -13,32 +15,12 @@ struct PatternSpec final {
     BGRA8 = 1,
   };
 
-  enum class BasePattern : uint8_t {
-    // A base that is deterministic per (x,y):
-    //   r = x
-    //   g = y
-    //   b = x ^ y
-    //   a = 255
-    //
-    // This is the historical stub pattern base (without the per-frame offsets).
-    XY_XOR = 0,
-
-    // Simple test patterns (implemented by CpuPackedPatternRenderer v1).
-    Solid = 1,
-    Checker = 2,
-
-    // Broadcast-style bars (SMPTE-ish; exact palette is deterministic but not a spec promise).
-    ColorBars = 3,
-
-    // Smooth radial gradient from center to edges.
-    RadialGradient = 4,
-  };
-
   uint32_t width = 0;
   uint32_t height = 0;
   PackedFormat format = PackedFormat::RGBA8;
 
-  BasePattern base = BasePattern::XY_XOR;
+  // Internal algorithm id (selected by preset registry).
+  PatternAlgoId algo = PatternAlgoId::XyXor;
 
   // Base parameters (affect cache key).
   uint32_t seed = 0;
@@ -71,7 +53,7 @@ struct PatternBaseKey final {
   uint32_t width = 0;
   uint32_t height = 0;
   PatternSpec::PackedFormat format = PatternSpec::PackedFormat::RGBA8;
-  PatternSpec::BasePattern base = PatternSpec::BasePattern::XY_XOR;
+  PatternAlgoId algo = PatternAlgoId::XyXor;
 
   // Base parameters (must include any fields that can change the base pixels).
   uint32_t seed = 0;
@@ -83,7 +65,7 @@ struct PatternBaseKey final {
     return width == o.width &&
            height == o.height &&
            format == o.format &&
-           base == o.base &&
+           algo == o.algo &&
            seed == o.seed &&
            solid_rgba == o.solid_rgba &&
            checker_size_px == o.checker_size_px &&
@@ -96,7 +78,7 @@ struct PatternBaseKey final {
     k.width = spec.width;
     k.height = spec.height;
     k.format = spec.format;
-    k.base = spec.base;
+    k.algo = spec.algo;
 
     k.seed = spec.seed;
     k.solid_rgba = static_cast<uint32_t>(spec.solid_r) |
