@@ -188,9 +188,61 @@ ProviderResult StubProvider::start_stream(uint64_t stream_id) {
   st_it->second.started = true;
   callbacks_->on_stream_started(stream_id);
 
+  // Establish deterministic cadence for virtual_time pumping.
+  // Stub defaults to 30 fps unless the request specifies target_fps_max.
+  uint32_t fps = st_it->second.req.target_fps_max;
+  if (fps == 0) {
+    fps = 30;
+  }
+  st_it->second.period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps);
+  if (st_it->second.period_ns == 0) {
+    st_it->second.period_ns = 33'333'333ull;
+  }
+  st_it->second.next_frame_ns = now_ns_; // allow immediate emission on next advance
+
   // Emit exactly one test frame immediately to prove end-to-end plumbing.
   emit_test_frames(stream_id, 1);
   return ProviderResult::success();
+}
+
+void StubProvider::advance(uint64_t dt_ns) {
+  if (!initialized_ || shutting_down_) {
+    return;
+  }
+
+  now_ns_ += dt_ns;
+
+  // Deterministic due-frame emission for all started streams.
+  for (auto& [stream_id, st] : streams_) {
+    if (!st.created || !st.started) {
+      continue;
+    }
+
+    // If no period was established (e.g. older stream records), fall back.
+    if (st.period_ns == 0) {
+      uint32_t fps = st.req.target_fps_max;
+      if (fps == 0) fps = 30;
+      st.period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps);
+      if (st.period_ns == 0) st.period_ns = 33'333'333ull;
+    }
+
+    // Emit all frames due up to now. Bound catch-up to avoid pathological bursts
+    // if the host stalls; this is a stub heartbeat, not a backlog replayer.
+    uint32_t emitted = 0;
+    constexpr uint32_t kMaxCatchupFrames = 4;
+    while (st.next_frame_ns <= now_ns_ && emitted < kMaxCatchupFrames) {
+      emit_test_frames(stream_id, 1);
+      st.next_frame_ns += st.period_ns;
+      ++emitted;
+    }
+
+    if (st.next_frame_ns <= now_ns_) {
+      // Skip ahead deterministically if we're far behind.
+      const uint64_t behind = now_ns_ - st.next_frame_ns;
+      const uint64_t skip = (behind / st.period_ns) + 1;
+      st.next_frame_ns += skip * st.period_ns;
+    }
+  }
 }
 
 void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {

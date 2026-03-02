@@ -4,9 +4,9 @@
 
 namespace cambang {
 
-  void CamBANGServerTickNode::_process(double /*delta*/) {
+  void CamBANGServerTickNode::_process(double delta) {
     if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-      server->_on_godot_tick();
+      server->_on_godot_tick(delta);
     }
   }
 
