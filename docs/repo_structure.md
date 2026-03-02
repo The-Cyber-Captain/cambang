@@ -44,10 +44,10 @@ cambang/
 ├── thirdparty/                # (if needed later)
 ├── src/
 │   ├── core/
-│   ├── provider/
-│   ├── godot/
-│   ├── synthetic/
-│   ├── smoke/
+│   ├── imaging/               # ICameraProvider domain root (platform, synthetic, stub, broker)
+│   ├── pixels/                # Provider-agnostic pixel modules (e.g. pattern/)
+│   ├── godot/                 # GDExtension layer
+│   ├── smoke/                 # Core smoke harness
 │   └── util/
 └── tests/
 ```

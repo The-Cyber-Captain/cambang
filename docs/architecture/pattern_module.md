@@ -102,6 +102,23 @@ Properties:
 The Pattern Module also defines a **1:1 mapping** between `PatternPreset` and a stable string token
 used by edge surfaces (CLI/UI).
 
+### 2.5.x Preset Identity vs Algorithm Identity
+
+CamBANG separates external preset vocabulary from internal algorithm identity.
+
+- `PatternPreset`  
+  Stable, zero-indexed enum used by programmable surfaces (providers, tools, bindings).
+
+- `PatternAlgoId`  
+  Internal renderer algorithm selector used by renderers.
+
+Multiple presets may map to the same algorithm, and algorithm dispatch
+is table-driven by `PatternAlgoId`.
+
+This separation prevents preset vocabulary changes from coupling directly
+to renderer switch logic and allows future backend expansion (e.g. NV12,
+GPU) without altering preset identity.
+
 ### 2.6 Preset Registry (Single Source of Truth)
 
 The Pattern Module exposes a preset registry table that is the only authority for:
@@ -112,6 +129,26 @@ The Pattern Module exposes a preset registry table that is the only authority fo
 - capability flags (which parameters are meaningful)
 
 Consumers must not duplicate preset lists. CLI tools and UI should enumerate the registry.
+
+### 2.6.x Canonical Pattern Definition List
+
+The preset registry, preset enum, and algorithm identity are generated from a
+single canonical definition list located in:
+
+    src/pixels/pattern/pattern_defs.inc
+
+This file is an intentionally multi-include X-macro fragment and is the
+**only location where new patterns are defined**.
+
+From this definition list, the build generates:
+
+- `PatternPreset` (external preset vocabulary)
+- `PatternAlgoId` (internal algorithm identity)
+- The preset registry table (token, display name, caps)
+- The preset → algorithm mapping
+
+Contributors must not introduce parallel enums, switches, or preset lists.
+All new patterns begin with a single entry in `pattern_defs.inc`.
 
 ### 2.7 ActivePatternConfig (Provider-facing Selection)
 
@@ -245,42 +282,59 @@ provider/core contract:
 
 ## 8. How to Add a New Pattern
 
-This section defines the required steps to add a new pattern in a way that keeps all surfaces
-(CLI tools, providers, future Godot UI) in sync.
+Adding a new pattern must be a single-source operation.
 
-### 8.1 Implement the Base Pattern
+### Step 1 — Add Canonical Definition
 
-1. Add a new base selection (if required) to the renderer’s base-pattern enum (e.g. `PatternSpec::BasePattern`).
-2. Implement generation inside `CpuPackedPatternRenderer`.
-3. Ensure **base-frame-affecting fields** are part of the base-cache key (per §3.1).
+Add one entry to:
 
-### 8.2 Expose the Pattern via the Preset Registry
+    src/pixels/pattern/pattern_defs.inc
 
-1. Add a new `PatternPreset` enum entry.
-- Must be **zero-indexed** and contiguous.
-2. Add a new registry entry mapping:
-- `PatternPreset` ↔ stable `name` token (CLI/UI)
-- capability flags (which parameters apply)
+This defines:
 
-All consumers must enumerate the registry and must not duplicate preset lists.
+- Preset enum entry
+- Stable string token
+- Display name
+- Capability flags
+- Associated `PatternAlgoId`
 
-### 8.3 Extend ActivePatternConfig (If Needed)
+No other registry updates are required.
 
-If the new pattern requires parameters:
+---
 
-1. Add POD fields to `ActivePatternConfig` for the parameter(s).
-2. Map those fields into `PatternSpec` inside `to_pattern_spec(...)`.
-3. Ensure parameters that alter the base image are treated as base-frame-affecting (cache key).
+### Step 2 — Implement the Algorithm (if new)
 
-### 8.4 Optional: Extend the Microbenchmark Parser
+If the pattern introduces a new algorithm:
 
-If the microbenchmark should support controlling new parameters:
+- Implement the base render function inside the appropriate renderer
+  (e.g., `CpuPackedPatternRenderer`).
+- Register the function in the renderer’s algorithm dispatch table.
 
-- Add new CLI flags.
-- Validate combinations using preset capability flags (reject parameters for presets that do not support them).
+Algorithm dispatch is table-driven via `PatternAlgoId`.
+No switch statements over presets should exist.
 
-### 8.5 Test Checklist
+---
 
-- Run `pattern_render_bench --pattern=<name>` for the new preset.
-- Verify determinism by repeating with fixed `--seed`.
-- Build and run provider smoke targets; smoke should remain deterministic because it uses provider defaults.
+### Step 3 — Extend Parameters (If Required)
+
+If the pattern introduces new parameters:
+
+1. Extend `ActivePatternConfig` (POD only).
+2. Extend `PatternSpec`.
+3. Add any base-affecting fields to the base-cache key.
+
+Capability flags must describe which parameters are valid for the preset.
+
+---
+
+### Step 4 — Validate via Bench Tool
+
+The smoke benchmark tool (`pattern_render_bench`) enumerates presets
+directly from the registry and must not hardcode preset lists.
+
+Verify:
+
+- Determinism
+- Correct cache behaviour
+- No per-frame allocations
+- No switch duplication
