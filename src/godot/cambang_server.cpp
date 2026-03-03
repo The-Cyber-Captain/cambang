@@ -21,6 +21,42 @@ static bool banners_enabled() noexcept {
 
 CamBANGServer* CamBANGServer::singleton_ = nullptr;
 
+
+namespace {
+
+static const char* mode_to_cstr(RuntimeMode m) noexcept {
+  switch (m) {
+    case RuntimeMode::platform_backed: return "platform_backed";
+    case RuntimeMode::synthetic: return "synthetic";
+    default: return "unknown";
+  }
+}
+
+static bool parse_mode_string(const godot::String& s, RuntimeMode& out_mode) noexcept {
+  if (s == "platform_backed") {
+    out_mode = RuntimeMode::platform_backed;
+    return true;
+  }
+  if (s == "synthetic") {
+    out_mode = RuntimeMode::synthetic;
+    return true;
+  }
+  return false;
+}
+
+static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexcept {
+  switch (pr.code) {
+    case ProviderError::OK: return godot::OK;
+    case ProviderError::ERR_BUSY: return godot::ERR_BUSY;
+    case ProviderError::ERR_INVALID_ARGUMENT: return godot::ERR_INVALID_PARAMETER;
+    case ProviderError::ERR_BAD_STATE: return godot::ERR_INVALID_PARAMETER;
+    case ProviderError::ERR_NOT_SUPPORTED: return godot::ERR_UNAVAILABLE;
+    default: return godot::FAILED;
+  }
+}
+
+} // namespace
+
 CamBANGServer::CamBANGServer() {
   if (singleton_ && singleton_ != this) {
     // This should never happen: the engine singleton is registered once.
@@ -40,6 +76,17 @@ CamBANGServer::~CamBANGServer() {
 }
 
 void CamBANGServer::start() {
+  // Defensive re-check: requested mode must be supported in this build.
+  {
+    ProviderResult cap = ProviderBroker::check_mode_supported_in_build(provider_mode_requested_);
+    if (!cap.ok()) {
+      ERR_PRINT(godot::vformat(
+          "CamBANGServer: cannot start; requested provider_mode='%s' is not supported in this build.",
+          mode_to_cstr(provider_mode_requested_)));
+      return;
+    }
+  }
+
   // Ensure the tick node exists so snapshots can be drained + signals emitted.
   _ensure_tick_installed();
 
@@ -59,6 +106,9 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   runtime_.stop();
+
+  // Allow a fresh "busy" log once per live session.
+  provider_mode_busy_logged_ = false;
 }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
@@ -139,6 +189,40 @@ void CamBANGServer::_on_godot_tick(double delta) {
   emit_signal("state_published", (uint64_t)snap->gen, (uint64_t)snap->topology_gen);
 }
 
+godot::Error CamBANGServer::set_provider_mode(const godot::String& mode) {
+  // Provider mode is latched per runtime session; changes require STOPPED.
+  if (runtime_.is_running()) {
+    if (!provider_mode_busy_logged_) {
+      ERR_PRINT("CamBANGServer: set_provider_mode() rejected; server is LIVE. Stop the server before changing provider_mode.");
+      provider_mode_busy_logged_ = true;
+    }
+    return godot::ERR_BUSY;
+  }
+
+  RuntimeMode parsed{};
+  if (!parse_mode_string(mode, parsed)) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: set_provider_mode('%s') rejected; unknown provider_mode. Expected 'platform_backed' or 'synthetic'.",
+        mode));
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  ProviderResult cap = ProviderBroker::check_mode_supported_in_build(parsed);
+  if (!cap.ok()) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: set_provider_mode('%s') rejected; mode is not supported in this build.",
+        mode_to_cstr(parsed)));
+    return map_provider_result_to_godot_error(cap);
+  }
+
+  provider_mode_requested_ = parsed;
+  return godot::OK;
+}
+
+godot::String CamBANGServer::get_provider_mode() const {
+  return godot::String(mode_to_cstr(provider_mode_requested_));
+}
+
 bool CamBANGServer::_ensure_provider_attached_and_initialized() {
   if (!runtime_.is_running()) {
     return false;
@@ -149,8 +233,18 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
     return true;
   }
 
-  // Fresh broker per start cycle.
-  provider_ = std::make_unique<ProviderBroker>();
+  // Fresh broker per start cycle (latched provider_mode).
+  {
+    auto broker = std::make_unique<ProviderBroker>();
+    ProviderResult sr = broker->set_runtime_mode_requested(provider_mode_requested_);
+    if (!sr.ok()) {
+      ERR_PRINT(godot::vformat(
+          "CamBANGServer: provider_mode='%s' is not supported in this build.",
+          mode_to_cstr(provider_mode_requested_)));
+      return false;
+    }
+    provider_ = std::move(broker);
+  }
   runtime_.attach_provider(provider_.get());
 
   ProviderResult pr = provider_->initialize(runtime_.provider_callbacks());
@@ -181,6 +275,8 @@ godot::Ref<cambang::CamBANGStateSnapshotGD> CamBANGServer::get_state_snapshot() 
 void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGServer::start);
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGServer::stop);
+  godot::ClassDB::bind_method(godot::D_METHOD("set_provider_mode", "mode"), &CamBANGServer::set_provider_mode);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_provider_mode"), &CamBANGServer::get_provider_mode);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
 
   ADD_SIGNAL(godot::MethodInfo(

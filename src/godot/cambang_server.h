@@ -12,6 +12,8 @@
 #include "core/snapshot/state_snapshot.h"
 #include "godot/cambang_state_snapshot.h"
 
+#include "imaging/broker/mode.h"
+
 // Provider lifecycle is owned by the server (Godot thread), but attached to the
 // core runtime (core thread) via CoreRuntime::attach_provider.
 #include "imaging/api/icamera_provider.h"
@@ -47,6 +49,30 @@ public:
   // User-facing control of core processing.
   void start();
   void stop();
+
+  /**
+   * set_provider_mode(mode: String) -> Error
+   *
+   * Godot-facing runtime provider mode selection.
+   *
+   * Valid values:
+   *   - "platform_backed" (default; intended to be safe)
+   *   - "synthetic" (only if compiled in)
+   *
+   * Rules:
+   *   - Provider mode is latched per runtime session.
+   *   - This may ONLY be called while the server is STOPPED
+   *     (before start() or after stop()).
+   *   - If called while LIVE, ERR_BUSY is returned (and logged once).
+   *   - If the requested mode is not supported in this build,
+   *     ERR_UNAVAILABLE is returned.
+   *
+   * Changing provider_mode requires a stop() → set_provider_mode() → start() cycle.
+   */
+  godot::Error set_provider_mode(const godot::String& mode);
+
+  /// Returns the currently requested (latched-for-next-start) provider_mode string.
+  godot::String get_provider_mode() const;
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
@@ -94,6 +120,9 @@ private:
   void _ensure_tick_installed();
   bool _ensure_provider_attached_and_initialized();
   bool tick_installed_ = false;
+
+  RuntimeMode provider_mode_requested_ = RuntimeMode::platform_backed;
+  bool provider_mode_busy_logged_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.

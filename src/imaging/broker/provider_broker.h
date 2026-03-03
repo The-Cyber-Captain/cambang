@@ -22,6 +22,15 @@ public:
   ProviderBroker();
   ~ProviderBroker() override;
 
+  // Single authoritative build-capability query for runtime mode selection.
+  // CamBANGServer should call this proactively when users request a mode,
+  // and again defensively on start().
+  static ProviderResult check_mode_supported_in_build(RuntimeMode mode) noexcept;
+
+  // Set the requested runtime mode for the next initialize() call.
+  // Must be called before initialize(); initialize() latches the mode.
+  ProviderResult set_runtime_mode_requested(RuntimeMode mode) noexcept;
+
   const char* provider_name() const override;
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
@@ -71,12 +80,12 @@ private:
   ProviderResult ensure_initialized_or_err_() const;
   ProviderResult ensure_active_or_err_() const;
 
-  static RuntimeMode read_provider_mode_from_env_();
 
   std::unique_ptr<ICameraProvider> active_;
   IProviderCallbacks* callbacks_ = nullptr; // non-owning
   bool initialized_ = false;
 
+  RuntimeMode mode_requested_ = RuntimeMode::platform_backed;
   RuntimeMode mode_latched_ = RuntimeMode::platform_backed;
 };
 
