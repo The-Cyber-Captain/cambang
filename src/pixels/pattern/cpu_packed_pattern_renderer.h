@@ -48,6 +48,7 @@ private:
   void render_base_radial_gradient(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
   void render_base_corners_rgba(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
   void render_base_noise(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_noise_animated(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
 
   void render_base_noise_common(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, uint32_t phase);
 

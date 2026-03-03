@@ -17,3 +17,4 @@ X(ColorBars,      "color_bars",     "Color Bars",      kCapsNone,               
 X(RadialGradient, "radial",         "Radial Gradient", kCapsNone,                     RadialGradient, false)
 X(CornersRgba,    "corners_rgba",   "Corners RGBA",    kCapsSeed | kCapsRgba,         CornersRgba,    false)
 X(Noise,          "noise",          "Noise (Static)",  kCapsSeed,                     Noise,          false)
+X(NoiseAnimated,  "noise_animated", "Noise (Animated)",kCapsSeed,                     NoiseAnimated,  true)

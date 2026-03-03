@@ -27,6 +27,7 @@ void CpuPackedPatternRenderer::render_base_into(
       &CpuPackedPatternRenderer::render_base_radial_gradient,
       &CpuPackedPatternRenderer::render_base_corners_rgba,
       &CpuPackedPatternRenderer::render_base_noise,
+      &CpuPackedPatternRenderer::render_base_noise_animated,
 
   };
 
@@ -355,6 +356,16 @@ void CpuPackedPatternRenderer::render_base_noise(
   render_base_noise_common(dst, dst_stride_bytes, spec, key, /*phase=*/0u);
 }
 
+void CpuPackedPatternRenderer::render_base_noise_animated(
+      uint8_t* dst,
+      uint32_t dst_stride_bytes,
+      const PatternSpec& spec,
+      const PatternBaseKey& key,
+      const PatternOverlayData& overlay) {
+  // Dynamic noise: phase is per-frame -> dynamic_base preset bypasses base cache.
+  const uint32_t phase = static_cast<uint32_t>(overlay.frame_index);
+  render_base_noise_common(dst, dst_stride_bytes, spec, key, phase);
+}
 
 void CpuPackedPatternRenderer::copy_base_to(const PatternRenderTarget& dst) const {
   // Row copy (dst stride may differ from tight base stride).
