@@ -27,9 +27,30 @@ public:
 private:
   void ensure_base(const PatternSpec& spec);
 
-  void render_base_xy_xor(const PatternBaseKey& key);
-  void render_base_solid(const PatternSpec& spec);
-  void render_base_checker(const PatternSpec& spec);
+  using RenderBaseFn = void (CpuPackedPatternRenderer::*)(
+      uint8_t* dst,
+      uint32_t dst_stride_bytes,
+      const PatternSpec& spec,
+      const PatternBaseKey& key,
+      const PatternOverlayData& overlay);
+
+  void render_base_into(
+      uint8_t* dst,
+      uint32_t dst_stride_bytes,
+      const PatternSpec& spec,
+      const PatternBaseKey& key,
+      const PatternOverlayData& overlay);
+
+  void render_base_xy_xor(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_solid(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_checker(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_color_bars(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_radial_gradient(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_corners_rgba(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_noise(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+  void render_base_noise_animated(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, const PatternOverlayData& overlay);
+
+  void render_base_noise_common(uint8_t* dst, uint32_t dst_stride_bytes, const PatternSpec& spec, const PatternBaseKey& key, uint32_t phase);
 
   void copy_base_to(const PatternRenderTarget& dst) const;
 

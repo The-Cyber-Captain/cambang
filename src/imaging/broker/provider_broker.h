@@ -15,6 +15,8 @@
 
 namespace cambang {
 
+struct ActivePatternConfig;
+
 class ProviderBroker final : public ICameraProvider {
 public:
   ProviderBroker();
@@ -56,6 +58,9 @@ public:
   // Drives virtual time for backends that require an external pump (stub, synthetic
   // virtual_time). Returns true if the active backend consumed the tick.
   bool try_tick_virtual_time(uint64_t dt_ns);
+
+  // Dev-only helper (not part of ICameraProvider).
+  bool try_set_active_pattern(const ActivePatternConfig& cfg);
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
 

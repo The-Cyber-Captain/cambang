@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "pixels/pattern/active_pattern_config.h"
+
 namespace cambang {
 
 // Locked synthetic roles.
@@ -29,7 +31,8 @@ struct SyntheticNominalDefaults {
 };
 
 struct SyntheticPatternDefaults {
-  uint32_t pattern_id = 1;
+  // Canonical preset selection (zero-indexed enum).
+  PatternPreset preset = PatternPreset::XyXor;
   uint64_t seed = 1;
   bool overlay_frame_index = true;
   bool overlay_timestamp = true;

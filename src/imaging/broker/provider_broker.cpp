@@ -5,6 +5,8 @@
 
 #include "imaging/api/provider_error_string.h"
 
+#include "pixels/pattern/active_pattern_config.h"
+
 // Platform-backed providers compiled into this artifact.
 #if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
   #include "imaging/platform/windows/provider.h"
@@ -268,6 +270,29 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
 #if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
   if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
     stub->advance(dt_ns);
+    return true;
+  }
+#endif
+
+  return false;
+}
+
+
+bool ProviderBroker::try_set_active_pattern(const ActivePatternConfig& cfg) {
+  if (!initialized_ || !active_) {
+    return false;
+  }
+
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    syn->set_active_pattern_config(cfg);
+    return true;
+  }
+#endif
+
+#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+  if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
+    stub->set_active_pattern_config(cfg);
     return true;
   }
 #endif

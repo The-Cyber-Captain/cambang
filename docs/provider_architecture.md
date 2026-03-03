@@ -42,6 +42,13 @@ Pattern Module) while preserving the provider/core contract:
 - Providers remain responsible for deterministic delivery, timestamps, and correct pixel format mapping.
 - Synthetic rendering does not alter arbitration, policy decisions, or snapshot publication.
 
+Selection model:
+
+- Providers select synthetic pixel content using the Pattern Module’s **preset vocabulary** (`PatternPreset`) and
+  provider-facing `ActivePatternConfig`.
+- CLI/UI surfaces must use the preset registry’s stable string tokens (`name`) and must not hardcode preset lists.
+- Synthetic rendering remains pixel-only; provider threading policy and core publication rules are unchanged.
+
 ------------------------------------------------------------------------
 
 ## 2. Responsibilities

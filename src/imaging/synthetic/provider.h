@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,6 +15,8 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 namespace cambang {
+
+struct ActivePatternConfig;
 
 // Deterministic synthetic provider.
 //
@@ -60,6 +64,10 @@ public:
 
   ProviderResult shutdown() override;
 
+  // Dev/scaffolding helper (not part of ICameraProvider).
+  // Swaps the active pattern selection copy-on-write.
+  void set_active_pattern_config(const ActivePatternConfig& cfg);
+
   // Synthetic-only virtual time driver (not part of ICameraProvider).
   // Emits any due frames.
   void advance(uint64_t dt_ns);
@@ -106,6 +114,12 @@ private:
   uint64_t native_id_seq_ = 1;
 
   CpuPackedPatternRenderer pattern_renderer_;
+
+  // Active pattern selection (copy-on-write; may be swapped at runtime).
+  std::shared_ptr<const ActivePatternConfig> active_pattern_;
+
+  // Count of invalid preset requests observed at runtime (e.g. bad enum value).
+  std::atomic<uint64_t> invalid_preset_requests_{0};
 };
 
 } // namespace cambang
