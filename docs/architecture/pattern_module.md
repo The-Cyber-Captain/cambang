@@ -65,29 +65,66 @@ It is a caller-owned buffer description:
 
 Renderers must support non-tight strides (row-based rendering/copy).
 
-### 2.3 IPatternRenderer
 
-`IPatternRenderer` is the renderer contract.
+## 2.3 IPatternRenderer
+
+`IPatternRenderer` defines the provider-agnostic contract for pixel generation.
 
 Properties:
 
-- provider-agnostic
-- deterministic
-- does not own output buffers
-- does not allocate per frame
+- Deterministic given `PatternSpec` and per-frame overlay inputs.
+- Does not own output buffers.
+- Does not allocate per frame.
+- Must support non-tight row strides.
 
-The render path accepts dynamic per-frame overlay inputs via a small POD
-(e.g., frame index, timestamp, stream ordinal).
+The renderer must not consult global time or external state.  
+All per-frame variation must be supplied explicitly by the caller.
 
-### 2.4 CpuPackedPatternRenderer (v1)
+---
 
-`CpuPackedPatternRenderer` implements `IPatternRenderer` for packed RGBA/BGRA targets.
+## 2.4 CpuPackedPatternRenderer (v1)
+
+`CpuPackedPatternRenderer` implements `IPatternRenderer` for packed
+RGBA8 / BGRA8 targets.
 
 It enforces:
 
-- base-frame caching keyed by base-affecting spec fields
-- per-frame overlay patching applied onto the destination buffer
-- zero allocations inside the per-frame render function
+- Base-frame caching keyed by base-affecting spec fields.
+- Per-frame overlay patching applied after base rendering.
+- Zero allocations inside the per-frame render path.
+- Support for both cacheable and dynamic base algorithms.
+
+### Renderer Function Contract (Unified Base Function Signature)
+
+All base-render functions inside `CpuPackedPatternRenderer` share the
+same signature:
+
+    void render_base_X(
+        uint8_t* dst,
+        uint32_t dst_stride_bytes,
+        const PatternSpec& spec,
+        const PatternBaseKey& key,
+        const PatternOverlayData& overlay);
+
+Where:
+
+- `dst` and `dst_stride_bytes` describe the destination buffer.
+- `PatternSpec` supplies preset parameters.
+- `PatternBaseKey` contains geometry and base-affecting fields.
+- `PatternOverlayData` supplies per-frame inputs (e.g. frame index).
+
+This unified signature allows:
+
+- Rendering into the internal tight base-cache buffer (cacheable patterns).
+- Rendering directly into the caller’s destination buffer (dynamic-base patterns).
+
+Static (cacheable) patterns may ignore `overlay`.  
+Dynamic-base patterns may use per-frame inputs as part of base generation.
+
+All base-render functions must match this signature so they can be
+stored in the algorithm dispatch table.
+
+---
 
 ### 2.5 PatternPreset (Preset Vocabulary)
 
@@ -181,21 +218,48 @@ Edge surfaces (string selection):
   an **input error** (CLI tools should exit non-zero; UI should refuse selection).
 ---
 
+
 ## 3. Rendering Model
 
 ### 3.1 Base + Overlay Strategy
 
-Rendering proceeds in two steps:
+Rendering proceeds in two conceptual stages:
 
 1. **Base frame generation**
-  - computed only when the base-cache key changes
-  - stored in an internal tight-packed cache buffer
-
+- May be cached or dynamic (see below).
 2. **Per-frame render**
-  - copy cached base → destination (stride-aware)
-  - apply overlays (small bounded patches)
+- Copy base → destination (if cacheable).
+- Apply overlays (small bounded patches).
 
-This avoids full-frame recomputation for dynamic metadata overlays.
+This avoids full-frame recomputation when only metadata overlays change.
+
+### 3.1.x Cacheable vs Dynamic Base
+
+Patterns are classified as either:
+
+#### Cacheable Base
+
+Base content depends only on `PatternSpec` base-affecting fields.
+
+- A base-cache key is derived from those fields.
+- Base pixels are recomputed only when the key changes.
+- Per-frame rendering performs a stride-aware copy followed by overlays.
+
+This is the default behaviour for most patterns.
+
+#### Dynamic Base
+
+Base content depends on per-frame inputs (e.g., frame index).
+
+- The base cache is bypassed.
+- The base is rendered directly into the destination buffer each frame.
+- Per-frame inputs are supplied via `PatternOverlayData`.
+
+Dynamic-base patterns must **not** include per-frame values in the base-cache key.
+
+This mechanism allows animated patterns (e.g., animated noise) without
+misusing overlay toggles or introducing hidden time sources.
+
 
 ### 3.2 Determinism
 
@@ -292,49 +356,157 @@ Add one entry to:
 
 This defines:
 
-- Preset enum entry
+- `PatternPreset` enum entry
 - Stable string token
 - Display name
 - Capability flags
 - Associated `PatternAlgoId`
+- Whether the pattern is cacheable or dynamic-base
 
-No other registry updates are required.
+No other preset lists or enums should be modified.
 
 ---
 
-### Step 2 — Implement the Algorithm (if new)
+### Step 2 — Implement the Algorithm
 
-If the pattern introduces a new algorithm:
+Implement a base-render function in `CpuPackedPatternRenderer`
+matching the unified signature:
 
-- Implement the base render function inside the appropriate renderer
-  (e.g., `CpuPackedPatternRenderer`).
-- Register the function in the renderer’s algorithm dispatch table.
+    void render_base_X(
+        uint8_t* dst,
+        uint32_t dst_stride_bytes,
+        const PatternSpec& spec,
+        const PatternBaseKey& key,
+        const PatternOverlayData& overlay);
 
-Algorithm dispatch is table-driven via `PatternAlgoId`.
+Guidelines:
+
+- Write pixels into `dst` using `dst_stride_bytes`.
+- Use `PatternSpec` for preset parameters.
+- Use `overlay` only if the pattern is dynamic-base.
+- Do not allocate memory.
+- Do not access global time.
+
+Notes: If two patterns share logic (e.g. static vs animated variants), prefer a shared helper to avoid duplicated inner loops. See: `render_base_noise_common` 
+---
+
+### Step 3 — Register in the Dispatch Table
+
+Add the function pointer to the renderer’s `PatternAlgoId` dispatch table.
+
+The dispatch table order must match the generated `PatternAlgoId` enum.
+
 No switch statements over presets should exist.
 
 ---
 
-### Step 3 — Extend Parameters (If Required)
+### Step 4 — Update Base-Cache Key (If Required)
 
-If the pattern introduces new parameters:
+If the pattern is cacheable and introduces new base-affecting parameters:
 
-1. Extend `ActivePatternConfig` (POD only).
-2. Extend `PatternSpec`.
-3. Add any base-affecting fields to the base-cache key.
+- Extend `PatternSpec`.
+- Extend `PatternBaseKey`.
+- Ensure all base-affecting fields are included in the key.
 
-Capability flags must describe which parameters are valid for the preset.
+Failure to include a base-affecting parameter in the key will cause
+incorrect cache reuse.
+
+Dynamic-base patterns must not include per-frame values in the key.
 
 ---
 
-### Step 4 — Validate via Bench Tool
+### Step 5 — Validate via Bench Tool
 
-The smoke benchmark tool (`pattern_render_bench`) enumerates presets
-directly from the registry and must not hardcode preset lists.
+Use:
 
-Verify:
+    pattern_render_bench --pattern=<name> [flags...]
+
+The bench enumerates presets from the registry and must not hardcode lists.
+
+Validate:
 
 - Determinism
 - Correct cache behaviour
 - No per-frame allocations
-- No switch duplication
+- No duplicated preset lists
+
+---
+
+## 9. Architectural Invariants (Pattern Module)
+
+The following invariants protect the Pattern Module from structural drift.
+
+### 9.1 Single Source of Truth
+
+All patterns must be defined in exactly one location:
+
+    src/pixels/pattern/pattern_defs.inc
+
+This canonical definition list generates:
+
+- `PatternPreset`
+- `PatternAlgoId`
+- The preset registry table
+- The preset → algorithm mapping
+- Cacheable vs dynamic-base classification
+
+If adding a new pattern requires modifying more than:
+
+1. One entry in `pattern_defs.inc`, and
+2. One base-render function implementation,
+
+then the architecture has regressed.
+
+No parallel preset lists, switch statements over presets, or duplicated
+enum definitions are permitted.
+
+---
+
+### 9.2 Base Cache Integrity
+
+For cacheable patterns:
+
+- All base-affecting fields must be included in `PatternBaseKey`.
+- Per-frame values (e.g. frame index, timestamp) must not be included in the base key.
+
+For dynamic-base patterns:
+
+- The base cache must be bypassed.
+- Per-frame inputs must be supplied explicitly via `PatternOverlayData`.
+- The renderer must not consult hidden time sources.
+
+---
+
+### 9.3 Determinism
+
+Render output must be deterministic given:
+
+- `PatternSpec`
+- `PatternOverlayData`
+
+No global state, hidden PRNG state, or external clocks may influence output.
+
+---
+
+### 9.4 No Per-Frame Allocation
+
+The per-frame render path must not:
+
+- Allocate memory
+- Grow containers
+- Perform string formatting
+
+Base-cache reallocation is permitted only when the base-cache key changes.
+
+---
+
+### 9.5 Backend Independence
+
+Preset identity (`PatternPreset`) and algorithm identity (`PatternAlgoId`)
+must remain decoupled.
+
+Renderer backends (CPU packed, future NV12, GPU, etc.) must dispatch
+based on `PatternAlgoId` and must not duplicate preset vocabulary.
+
+This separation ensures that adding new render backends does not require
+changing preset identity.

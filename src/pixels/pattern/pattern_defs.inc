@@ -10,9 +10,10 @@
 // dynamic_base:
 //   - false: base pixels depend only on PatternSpec (cacheable).
 //   - true:  base pixels also depend on per-frame overlay inputs (dynamic; base cache is bypassed).
-X(XyXor,          "xy_xor",     "XY XOR",          kCapsSeed,                     XyXor,          false)
-X(Solid,          "solid",      "Solid",           kCapsSeed | kCapsRgba,          Solid,          false)
-X(Checker,        "checker",    "Checkerboard",    kCapsSeed | kCapsCheckerSize,   Checker,        false)
-X(ColorBars,      "color_bars", "Color Bars",      kCapsNone,                     ColorBars,      false)
-X(RadialGradient, "radial",     "Radial Gradient", kCapsNone,                     RadialGradient, false)
-X(CornersRgba,    "corners_rgba","Corners RGBA",   kCapsSeed | kCapsRgba,          CornersRgba,    false)
+X(XyXor,          "xy_xor",         "XY XOR",          kCapsSeed,                     XyXor,          false)
+X(Solid,          "solid",          "Solid",           kCapsSeed | kCapsRgba,         Solid,          false)
+X(Checker,        "checker",        "Checkerboard",    kCapsSeed | kCapsCheckerSize,  Checker,        false)
+X(ColorBars,      "color_bars",     "Color Bars",      kCapsNone,                     ColorBars,      false)
+X(RadialGradient, "radial",         "Radial Gradient", kCapsNone,                     RadialGradient, false)
+X(CornersRgba,    "corners_rgba",   "Corners RGBA",    kCapsSeed | kCapsRgba,         CornersRgba,    false)
+X(Noise,          "noise",          "Noise (Static)",  kCapsSeed,                     Noise,          false)

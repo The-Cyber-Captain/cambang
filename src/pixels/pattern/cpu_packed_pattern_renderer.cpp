@@ -26,6 +26,8 @@ void CpuPackedPatternRenderer::render_base_into(
       &CpuPackedPatternRenderer::render_base_color_bars,
       &CpuPackedPatternRenderer::render_base_radial_gradient,
       &CpuPackedPatternRenderer::render_base_corners_rgba,
+      &CpuPackedPatternRenderer::render_base_noise,
+
   };
 
   const size_t idx = static_cast<size_t>(key.algo);
@@ -295,6 +297,64 @@ void CpuPackedPatternRenderer::render_base_corners_rgba(
     }
   }
 }
+
+
+void CpuPackedPatternRenderer::render_base_noise_common(
+      uint8_t* dst,
+      uint32_t dst_stride_bytes,
+      const PatternSpec& spec,
+      const PatternBaseKey& key,
+      uint32_t phase) {
+  const uint32_t w = key.width;
+  const uint32_t h = key.height;
+  if (w == 0 || h == 0) {
+    return;
+  }
+
+  // Deterministic hash; no state. (Splitmix32-ish.)
+  auto hash32 = [](uint32_t v) -> uint32_t {
+    v += 0x9E3779B9u;
+    v ^= v >> 16;
+    v *= 0x85EBCA6Bu;
+    v ^= v >> 13;
+    v *= 0xC2B2AE35u;
+    v ^= v >> 16;
+    return v;
+  };
+
+  const uint32_t seed = spec.seed;
+
+  for (uint32_t y = 0; y < h; ++y) {
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
+    for (uint32_t x = 0; x < w; ++x) {
+      const uint32_t v =
+          seed ^
+          (x * 0x1E35A7BDu) ^
+          (y * 0x94D049BBu) ^
+          (phase * 0xD1B54A35u);
+
+      const uint32_t r = hash32(v);
+
+      const uint8_t R = static_cast<uint8_t>(r >> 0);
+      const uint8_t G = static_cast<uint8_t>(r >> 8);
+      const uint8_t B = static_cast<uint8_t>(r >> 16);
+      const uint8_t A = 0xFF;
+
+      write_px(row + static_cast<size_t>(x) * 4u, key.format, R, G, B, A);
+    }
+  }
+}
+
+void CpuPackedPatternRenderer::render_base_noise(
+      uint8_t* dst,
+      uint32_t dst_stride_bytes,
+      const PatternSpec& spec,
+      const PatternBaseKey& key,
+      const PatternOverlayData& /*overlay*/) {
+  // Static noise is cacheable: phase is constant.
+  render_base_noise_common(dst, dst_stride_bytes, spec, key, /*phase=*/0u);
+}
+
 
 void CpuPackedPatternRenderer::copy_base_to(const PatternRenderTarget& dst) const {
   // Row copy (dst stride may differ from tight base stride).
