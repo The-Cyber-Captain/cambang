@@ -54,6 +54,7 @@ inline PatternSpec to_pattern_spec(const ActivePatternConfig& cfg,
 
   // Table-driven selection.
   spec.algo = info ? info->algo : PatternAlgoId::XyXor;
+  spec.dynamic_base = info ? info->dynamic_base : false;
 
   // Parameter gating driven by caps.
   const uint32_t caps = info ? info->caps : static_cast<uint32_t>(kCapsNone);

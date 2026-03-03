@@ -6,22 +6,18 @@
 namespace cambang {
 
 void CpuPackedPatternRenderer::configure(const PatternSpec& spec) {
-  ensure_base(spec);
+  // Dynamic-base algos render the base per-frame; no base-cache precompute needed.
+  if (!spec.dynamic_base) {
+    ensure_base(spec);
+  }
 }
 
-void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
-  const PatternBaseKey key = PatternBaseKey::from_spec(spec);
-
-  if (base_valid_ && key == base_key_) {
-    return;
-  }
-
-  base_key_ = key;
-  base_valid_ = true;
-
-  base_stride_bytes_ = key.width * PatternRenderTarget::bytes_per_pixel();
-  base_pixels_.assign(static_cast<size_t>(base_stride_bytes_) * static_cast<size_t>(key.height), 0);
-
+void CpuPackedPatternRenderer::render_base_into(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& spec,
+    const PatternBaseKey& key,
+    const PatternOverlayData& overlay) {
   // Table-driven algorithm dispatch (keeps preset registry as the only pattern list).
   static constexpr RenderBaseFn kAlgoFns[] = {
       &CpuPackedPatternRenderer::render_base_xy_xor,
@@ -37,7 +33,25 @@ void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
   if (idx < (sizeof(kAlgoFns) / sizeof(kAlgoFns[0]))) {
     fn = kAlgoFns[idx];
   }
-  (this->*fn)(spec, key);
+  (this->*fn)(dst, dst_stride_bytes, spec, key, overlay);
+}
+
+void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
+  const PatternBaseKey key = PatternBaseKey::from_spec(spec);
+
+  if (base_valid_ && key == base_key_) {
+    return;
+  }
+
+  base_key_ = key;
+  base_valid_ = true;
+
+  base_stride_bytes_ = key.width * PatternRenderTarget::bytes_per_pixel();
+  base_pixels_.assign(static_cast<size_t>(base_stride_bytes_) * static_cast<size_t>(key.height), 0);
+
+  // Cacheable-base path: render into tight internal cache buffer.
+  PatternOverlayData overlay{};
+  render_base_into(base_pixels_.data(), base_stride_bytes_, spec, key, overlay);
 }
 
 void CpuPackedPatternRenderer::render_into(
@@ -52,8 +66,14 @@ void CpuPackedPatternRenderer::render_into(
     return;
   }
 
-  ensure_base(spec);
-  copy_base_to(dst);
+  if (spec.dynamic_base) {
+    // Dynamic-base path: bypass base cache and render the base into the destination each frame.
+    const PatternBaseKey key = PatternBaseKey::from_spec(spec);
+    render_base_into(static_cast<uint8_t*>(dst.data), dst.stride_bytes, spec, key, overlay);
+  } else {
+    ensure_base(spec);
+    copy_base_to(dst);
+  }
 
   if (spec.overlay_frame_index_offsets) {
     apply_frame_index_offsets(spec, dst, overlay.frame_index);
@@ -63,10 +83,15 @@ void CpuPackedPatternRenderer::render_into(
   }
 }
 
-void CpuPackedPatternRenderer::render_base_xy_xor(const PatternSpec& /*spec*/, const PatternBaseKey& key) {
+void CpuPackedPatternRenderer::render_base_xy_xor(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& /*spec*/,
+    const PatternBaseKey& key,
+    const PatternOverlayData& /*overlay*/) {
   // Base: r=x, g=y, b=x^y, a=255.
   for (uint32_t y = 0; y < key.height; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     for (uint32_t x = 0; x < key.width; ++x) {
       const uint8_t r = static_cast<uint8_t>(x & 0xFF);
       const uint8_t g = static_cast<uint8_t>(y & 0xFF);
@@ -76,19 +101,29 @@ void CpuPackedPatternRenderer::render_base_xy_xor(const PatternSpec& /*spec*/, c
   }
 }
 
-void CpuPackedPatternRenderer::render_base_solid(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
+void CpuPackedPatternRenderer::render_base_solid(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& spec,
+    const PatternBaseKey& /*key*/,
+    const PatternOverlayData& /*overlay*/) {
   for (uint32_t y = 0; y < spec.height; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     for (uint32_t x = 0; x < spec.width; ++x) {
       write_px(row + static_cast<size_t>(x) * 4u, spec.format, spec.solid_r, spec.solid_g, spec.solid_b, spec.solid_a);
     }
   }
 }
 
-void CpuPackedPatternRenderer::render_base_checker(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
+void CpuPackedPatternRenderer::render_base_checker(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& spec,
+    const PatternBaseKey& /*key*/,
+    const PatternOverlayData& /*overlay*/) {
   const uint32_t step = (spec.checker_size_px == 0) ? 16u : spec.checker_size_px;
   for (uint32_t y = 0; y < spec.height; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     const uint32_t cy = (y / step);
     for (uint32_t x = 0; x < spec.width; ++x) {
       const uint32_t cx = (x / step);
@@ -99,7 +134,12 @@ void CpuPackedPatternRenderer::render_base_checker(const PatternSpec& spec, cons
   }
 }
 
-void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
+void CpuPackedPatternRenderer::render_base_color_bars(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& spec,
+    const PatternBaseKey& /*key*/,
+    const PatternOverlayData& /*overlay*/) {
   // Deterministic 7-bar palette (SMPTE-ish). Intended for visual validation.
   struct RGBA { uint8_t r, g, b, a; };
   static constexpr RGBA bars[7] = {
@@ -116,7 +156,7 @@ void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec, c
   const uint32_t bar_w = std::max<uint32_t>(1u, w / 7u);
 
   for (uint32_t y = 0; y < spec.height; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     for (uint32_t x = 0; x < spec.width; ++x) {
       uint32_t idx = x / bar_w;
       if (idx > 6u) idx = 6u;
@@ -126,7 +166,12 @@ void CpuPackedPatternRenderer::render_base_color_bars(const PatternSpec& spec, c
   }
 }
 
-void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& spec, const PatternBaseKey& /*key*/) {
+void CpuPackedPatternRenderer::render_base_radial_gradient(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& spec,
+    const PatternBaseKey& /*key*/,
+    const PatternOverlayData& /*overlay*/) {
   // Smooth radial gradient: bright center -> darker edges, with blue edge cue.
   const uint32_t w = spec.width;
   const uint32_t h = spec.height;
@@ -142,7 +187,7 @@ void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& sp
   const int64_t max_r2 = std::max<int64_t>(1, rx * rx + ry * ry);
 
   for (uint32_t y = 0; y < h; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     const int32_t dy = static_cast<int32_t>(y) - cy;
     for (uint32_t x = 0; x < w; ++x) {
       const int32_t dx = static_cast<int32_t>(x) - cx;
@@ -161,7 +206,12 @@ void CpuPackedPatternRenderer::render_base_radial_gradient(const PatternSpec& sp
   }
 }
 
-void CpuPackedPatternRenderer::render_base_corners_rgba(const PatternSpec& spec, const PatternBaseKey& key) {
+void CpuPackedPatternRenderer::render_base_corners_rgba(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const PatternSpec& spec,
+    const PatternBaseKey& key,
+    const PatternOverlayData& /*overlay*/) {
   const uint32_t w = key.width;
   const uint32_t h = key.height;
   if (w == 0 || h == 0) {
@@ -172,9 +222,7 @@ void CpuPackedPatternRenderer::render_base_corners_rgba(const PatternSpec& spec,
   const uint32_t cw = std::max<uint32_t>(1u, w / 8u);
   const uint32_t ch = std::max<uint32_t>(1u, h / 8u);
 
-  // Background colour:
-  // - uses spec.solid_* (lets you exercise --rgba without adding new params)
-  // - if you prefer fixed dark gray, replace with constants.
+  // Background colour uses spec.solid_* so callers can exercise --rgba.
   const uint8_t bg_r = spec.solid_r;
   const uint8_t bg_g = spec.solid_g;
   const uint8_t bg_b = spec.solid_b;
@@ -193,18 +241,18 @@ void CpuPackedPatternRenderer::render_base_corners_rgba(const PatternSpec& spec,
 
   // 1) Fill background.
   for (uint32_t y = 0; y < h; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     for (uint32_t x = 0; x < w; ++x) {
       write_px(row + static_cast<size_t>(x) * 4u, key.format, bg_r, bg_g, bg_b, bg_a);
     }
   }
 
-  // Helper lambda for solid rect fill in base buffer.
+  // Helper lambda for solid rect fill.
   auto fill_rect = [&](uint32_t x0, uint32_t y0, uint32_t rw, uint32_t rh, const uint8_t c[4]) {
     const uint32_t x1 = std::min<uint32_t>(w, x0 + rw);
     const uint32_t y1 = std::min<uint32_t>(h, y0 + rh);
     for (uint32_t y = y0; y < y1; ++y) {
-      uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+      uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
       for (uint32_t x = x0; x < x1; ++x) {
         write_px(row + static_cast<size_t>(x) * 4u, key.format, c[0], c[1], c[2], c[3]);
       }
@@ -212,45 +260,42 @@ void CpuPackedPatternRenderer::render_base_corners_rgba(const PatternSpec& spec,
   };
 
   // 2) Corner swatches.
-  fill_rect(0,        0,        cw, ch, TL);
-  fill_rect(w - cw,   0,        cw, ch, TR);
-  fill_rect(0,        h - ch,   cw, ch, BL);
-  fill_rect(w - cw,   h - ch,   cw, ch, BR);
+  fill_rect(0,      0,      cw, ch, TL);
+  fill_rect(w - cw, 0,      cw, ch, TR);
+  fill_rect(0,      h - ch, cw, ch, BL);
+  fill_rect(w - cw, h - ch, cw, ch, BR);
 
-  // 3) Optional 1px border (white).
-  // Top + bottom rows
+  // 3) 1px border.
   {
-    uint8_t* top = base_pixels_.data();
-    uint8_t* bot = base_pixels_.data() + static_cast<size_t>(h - 1u) * base_stride_bytes_;
+    uint8_t* top = dst;
+    uint8_t* bot = dst + static_cast<size_t>(h - 1u) * static_cast<size_t>(dst_stride_bytes);
     for (uint32_t x = 0; x < w; ++x) {
       write_px(top + static_cast<size_t>(x) * 4u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
       write_px(bot + static_cast<size_t>(x) * 4u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
     }
   }
-  // Left + right columns
   for (uint32_t y = 0; y < h; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     write_px(row + 0u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
     write_px(row + static_cast<size_t>(w - 1u) * 4u, key.format, BORDER[0], BORDER[1], BORDER[2], BORDER[3]);
   }
 
-  // 4) Optional 1px crosshair (yellow) at center (reveals scaling/cropping).
+  // 4) 1px crosshair at center.
   const uint32_t mid_x = w / 2u;
   const uint32_t mid_y = h / 2u;
 
-  // Vertical line at mid_x
   for (uint32_t y = 0; y < h; ++y) {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
     write_px(row + static_cast<size_t>(mid_x) * 4u, key.format, CROSS[0], CROSS[1], CROSS[2], CROSS[3]);
   }
-  // Horizontal line at mid_y
   {
-    uint8_t* row = base_pixels_.data() + static_cast<size_t>(mid_y) * base_stride_bytes_;
+    uint8_t* row = dst + static_cast<size_t>(mid_y) * static_cast<size_t>(dst_stride_bytes);
     for (uint32_t x = 0; x < w; ++x) {
       write_px(row + static_cast<size_t>(x) * 4u, key.format, CROSS[0], CROSS[1], CROSS[2], CROSS[3]);
     }
   }
 }
+
 void CpuPackedPatternRenderer::copy_base_to(const PatternRenderTarget& dst) const {
   // Row copy (dst stride may differ from tight base stride).
   const uint32_t row_bytes = base_stride_bytes_;

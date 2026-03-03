@@ -22,6 +22,10 @@ struct PatternSpec final {
   // Internal algorithm id (selected by preset registry).
   PatternAlgoId algo = PatternAlgoId::XyXor;
 
+  // If true, the base pixels depend on per-frame overlay inputs (e.g. frame index) and the renderer
+  // must bypass the base cache and render the base each frame.
+  bool dynamic_base = false;
+
   // Base parameters (affect cache key).
   uint32_t seed = 0;
 

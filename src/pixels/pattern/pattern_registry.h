@@ -10,7 +10,7 @@ namespace cambang {
 
 // Zero-indexed, stable enum used by code surfaces (synthetic config, GDScript bindings, etc).
 enum class PatternPreset : uint8_t {
-#define X(preset_id, token_name, display_name, caps_bitmask, algo_id) preset_id,
+#define X(preset_id, token_name, display_name, caps_bitmask, algo_id, dynamic_base) preset_id,
 #include "pixels/pattern/pattern_defs.inc"
 #undef X
 };
@@ -29,11 +29,12 @@ struct PatternPresetInfo final {
   const char* display;  // optional nicer label for UI
   uint32_t caps;        // PatternPresetCaps bitmask
   PatternAlgoId algo;   // internal algorithm id (renderer dispatch)
+  bool dynamic_base;    // true if base pixels depend on per-frame inputs (base cache bypassed)
 };
 
 // Canonical registry. Do not create parallel lists elsewhere.
 inline constexpr PatternPresetInfo kPatternPresets[] = {
-#define X(preset_id, token_name, display_name, caps_bitmask, algo_id)   { PatternPreset::preset_id, token_name, display_name, static_cast<uint32_t>(caps_bitmask), PatternAlgoId::algo_id },
+#define X(preset_id, token_name, display_name, caps_bitmask, algo_id, dynamic_base)   { PatternPreset::preset_id, token_name, display_name, static_cast<uint32_t>(caps_bitmask), PatternAlgoId::algo_id, dynamic_base },
 #include "pixels/pattern/pattern_defs.inc"
 #undef X
 };
