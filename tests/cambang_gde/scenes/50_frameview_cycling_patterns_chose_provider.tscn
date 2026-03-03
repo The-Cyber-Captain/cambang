@@ -1,0 +1,59 @@
+[gd_scene load_steps=2 format=3 uid="uid://d2bn8rdhyce7q"]
+
+[sub_resource type="GDScript" id="GDScript_pr61q"]
+resource_name = "connect_snapshot_view"
+script/source = "extends Node
+func _ready():
+	print(\"Snapshot_no_start: %s\" % [CamBANGServer.get_state_snapshot()])
+	CamBANGServer.state_published.connect(_on_state_published)
+	print(\"Calling CamBANGServer.start()\")
+	CamBANGServer.start()
+	print(\"Returned from CamBANGServer.start()\")
+
+#func _ready():
+	## 1) confirm singleton exists
+	#print(\"CamBANGServer:\", CamBANGServer)
+#
+	## 2) connect signal
+	#CamBANGServer.state_published.connect(_on_state_published)
+#
+	## 3) explicit user gating: start core
+	#CamBANGServer.start()
+
+func _on_state_published(gen, topology_gen):
+	var snap = CamBANGServer.get_state_snapshot()
+	print(\"published gen=\", gen, \" topo=\", topology_gen,
+		  \" schema=\", snap.get_schema_version(),
+		  \" snap_gen=\", snap.get_gen(),
+		  \" snap_topo=\", snap.get_topology_gen(),
+		  \" ts=\", snap.get_timestamp_ns())
+
+func _input(event):
+	var selection : String = \"\"
+	if event.is_action_pressed(\"request_synthetic_provider\"):
+		selection = \"synthetic\"
+	if event.is_action_pressed(\"request_hardware_backed_provider\"):
+		selection = \"platform_backed\"
+		
+	if selection:
+		CamBANGServer.set_provider_mode(selection)
+		#print(\"selection made: %s\" % [selection])
+	if event.is_action_pressed(\"request_server_start\"):
+		CamBANGServer.start()
+		
+	if event.is_action_pressed(\"request_server_stop\"):
+		CamBANGServer.stop()
+"
+
+[node name="Main" type="Node"]
+script = SubResource("GDScript_pr61q")
+
+[node name="DevNode" type="CamBANGDevNode" parent="."]
+
+[node name="FrameView" type="CamBANGDevFrameViewNode" parent="."]
+dev_node_path = NodePath("../DevNode")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2

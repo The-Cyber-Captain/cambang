@@ -1,6 +1,5 @@
 #include "imaging/broker/provider_broker.h"
 
-#include <cstdlib>
 #include <cstring>
 
 #include "imaging/api/provider_error_string.h"
@@ -54,22 +53,39 @@ const char* ProviderBroker::provider_name() const {
   return "broker(uninitialized)";
 }
 
-RuntimeMode ProviderBroker::read_provider_mode_from_env_() {
-  // Canonical env var:
-  //   CAMBANG_PROVIDER_MODE = platform_backed | synthetic
-  // Default is platform_backed.
-  const char* v = std::getenv("CAMBANG_PROVIDER_MODE");
-  if (!v || !*v) {
-    return RuntimeMode::platform_backed;
+ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
+  switch (mode) {
+    case RuntimeMode::platform_backed: {
+#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
+      return ProviderResult::success();
+#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+      return ProviderResult::success();
+#else
+      return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+#endif
+    }
+    case RuntimeMode::synthetic: {
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+      return ProviderResult::success();
+#else
+      return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+#endif
+    }
+    default:
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
-  if (std::strcmp(v, "platform_backed") == 0) {
-    return RuntimeMode::platform_backed;
+}
+
+ProviderResult ProviderBroker::set_runtime_mode_requested(RuntimeMode mode) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
-  if (std::strcmp(v, "synthetic") == 0) {
-    return RuntimeMode::synthetic;
+  ProviderResult cap = check_mode_supported_in_build(mode);
+  if (!cap.ok()) {
+    return cap;
   }
-  // Unknown value: be deterministic and fall back to platform_backed.
-  return RuntimeMode::platform_backed;
+  mode_requested_ = mode;
+  return ProviderResult::success();
 }
 
 ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
@@ -81,7 +97,15 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
-  mode_latched_ = read_provider_mode_from_env_();
+  // Mode selection is explicit and latched per runtime session.
+  // (Server provides the requested mode; broker does not consult env/CLI.)
+  mode_latched_ = mode_requested_;
+
+  // Defensive: re-check build support (mirrors server-side validation).
+  ProviderResult cap = check_mode_supported_in_build(mode_latched_);
+  if (!cap.ok()) {
+    return cap;
+  }
 
   // Construct backend.
   if (mode_latched_ == RuntimeMode::synthetic) {
@@ -91,9 +115,6 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     cfg.synthetic_role = SyntheticRole::Nominal;
     cfg.timing_driver = TimingDriver::VirtualTime;
     active_ = std::make_unique<SyntheticProvider>(cfg);
-#else
-    // Synthetic requested but not compiled: deterministic fallback.
-    mode_latched_ = RuntimeMode::platform_backed;
 #endif
   }
 

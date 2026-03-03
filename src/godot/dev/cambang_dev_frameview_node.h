@@ -39,6 +39,8 @@ private:
   uint64_t last_seq_ = 0;
 
   godot::Ref<godot::ImageTexture> texture_;
+  uint32_t texture_w_ = 0;
+  uint32_t texture_h_ = 0;
 
   void resolve_deps_();
   void try_update_();

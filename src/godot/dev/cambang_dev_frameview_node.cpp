@@ -127,15 +127,24 @@ void CamBANGDevFrameViewNode::try_update_() {
     return;
   }
 
-  if (texture_.is_null()) {
+  // ImageTexture::update() requires matching dimensions.
+  // If provider mode changes and resolution differs, recreate texture.
+  const bool need_recreate =
+      texture_.is_null() ||
+      texture_w_ != fc.width ||
+      texture_h_ != fc.height;
+
+  if (need_recreate) {
     texture_ = godot::ImageTexture::create_from_image(img);
     if (texture_.is_null()) {
       return;
     }
     set_texture(texture_);
+    texture_w_ = fc.width;
+    texture_h_ = fc.height;
   } else {
     texture_->update(img);
-  }
+  }  
 
   // Only advance last_seq_ after a successful upload path.
   last_seq_ = fc.seq;
