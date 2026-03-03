@@ -33,22 +33,18 @@ Providers must not:
 
 ## 1.x Synthetic pixel generation (Pattern Module)
 
-Providers may produce frames from platform camera APIs or from synthetic sources.
+Providers may produce frames from platform camera APIs or from synthetic
+sources.
 
-Synthetic providers may generate pixel content using provider-agnostic rendering modules (e.g., the
-Pattern Module) while preserving the provider/core contract:
+Synthetic providers may generate pixel content using provider-agnostic
+rendering modules (e.g., the Pattern Module) while preserving the
+provider/core contract:
 
-- Core remains agnostic to pixel origin (platform-backed vs synthetic).
-- Providers remain responsible for deterministic delivery, timestamps, and correct pixel format mapping.
-- Synthetic rendering does not alter arbitration, policy decisions, or snapshot publication.
-
-Selection model:
-
-- Providers select synthetic pixel content using the Pattern Module’s **preset vocabulary** (`PatternPreset`) and
-  provider-facing `ActivePatternConfig`.
-- CLI/UI surfaces must use the preset registry’s stable string tokens (`name`) and must not hardcode preset lists.
-- Synthetic rendering remains pixel-only; provider threading policy and core publication rules are unchanged.
-
+- Core remains agnostic to pixel origin.
+- Providers remain responsible for deterministic delivery and correct
+  pixel format mapping.
+- Synthetic rendering does not alter arbitration, policy decisions, or
+  snapshot publication.
 ------------------------------------------------------------------------
 
 ## 2. Responsibilities
@@ -109,6 +105,64 @@ Provider may still reject a request **only** when:
 Provider must return deterministic, explicit error codes for such
 rejections.
 
+------------------------------------------------------------------------
+
+## 3.x Stream configuration inputs (CaptureProfile and PictureConfig)
+
+Stream configuration crossing the core ↔ provider boundary is separated
+into two orthogonal inputs supplied per stream:
+
+- `CaptureProfile` — structural capture properties (resolution, pixel
+  format, frame rate range).
+- `PictureConfig` — picture appearance parameters.
+
+Core owns stream state. Core validates and normalizes stream requests
+and supplies effective values to the provider during stream
+create/start.
+
+Providers execute validated requests. Providers must not introduce
+additional implicit picture defaults beyond those supplied by Core.
+
+`PictureConfig` is stream-scoped. Release architecture must not rely on
+provider-wide mutable picture state affecting all streams.
+
+------------------------------------------------------------------------
+
+### 3.x.1 Provider default stream template (`StreamTemplate`)
+
+Each provider implementation supplies a deterministic `StreamTemplate`
+used as the fallback when stream requests omit explicit fields.
+
+A `StreamTemplate` contains:
+
+- `CaptureProfile profile`
+- `PictureConfig picture`
+
+Defaulting is performed by Core:
+
+- If a stream request does not specify a `CaptureProfile`, Core uses
+  `StreamTemplate.profile`.
+- If a stream request does not specify a `PictureConfig`, Core uses
+  `StreamTemplate.picture`.
+
+Defaults apply at stream creation time only. They do not imply a
+provider-global override mechanism.
+
+------------------------------------------------------------------------
+
+### 3.x.2 Synthetic pixel generation (Pattern Module integration)
+
+Synthetic and stub providers may generate pixel content using
+provider-agnostic rendering modules such as the Pattern Module.
+
+For pattern-backed streams:
+
+- `PictureConfig` selects the pattern preset and its parameters.
+- Providers convert the effective per-stream `PictureConfig` into the
+  renderer-facing `PatternSpec` and render into caller-owned buffers.
+
+The Pattern Module preset registry remains the single authority for
+preset vocabulary and stable string tokens.
 ------------------------------------------------------------------------
 
 ## 4. Determinism and threading

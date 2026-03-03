@@ -131,6 +131,23 @@ User intent for a particular rig (membership, sync policy, capture
 profile). `RigConfig` is not a spec and is not treated as hardware
 truth.
 
+### `PictureConfig`
+
+Per-stream picture appearance configuration.
+
+`PictureConfig` represents user intent regarding how frames should
+appear, independent of structural capture properties.
+
+It is distinct from **Capture Profile**:
+
+-   Capture Profile defines structural capture properties such as
+    resolution, pixel format, and frame rate range.
+-   PictureConfig defines picture appearance parameters.
+
+For synthetic and stub providers, `PictureConfig` describes
+pattern-generation parameters. Platform-backed providers may interpret
+`PictureConfig` as picture adjustment parameters subject to capability.
+
 ### Pattern Presets (Synthetic Pixel Generation)
 
 CamBANG uses the term **Pattern Preset** to describe a selectable synthetic pixel pattern.
@@ -353,12 +370,10 @@ debugging logs.
 
 -   **Spec**: hardware-reported truth (with optional user corrections).
 -   **Config**: user intent (choices made by the developer/app).
--   **Capture Profile**: fidelity definition for image production
-    (streams and stills).
+-   **Capture Profile**: fidelity definition for image production (streams and stills).
+-   **PictureConfig**: per-stream picture appearance configuration, distinct from Capture Profile (structural capture properties).
 -   **Snapshot**: immutable published record of current truth.
 -   **Phase**: lifecycle stage of an entity/native object.
 -   **Mode**: operational posture of an entity.
--   **Detached**: a branch no longer attached to the active tree but
-    still present due to teardown/retention.
--   **StreamIntent**: purpose of a repeating stream (`PREVIEW` or
-    `VIEWFINDER`).
+-   **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
+-   **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
