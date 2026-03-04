@@ -60,7 +60,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   shutting_down_ = false;
 
   // Report provider native object (BOUND). Root/owners are 0 at provider scope.
-  provider_native_id_ = next_native_id_();
+  provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
   if (callbacks_) {
     NativeObjectCreateInfo info{};
     info.native_id = provider_native_id_;
@@ -104,8 +104,11 @@ bool SyntheticProvider::is_known_hardware_id_(const std::string& hardware_id) co
   return static_cast<uint32_t>(idx) < cfg_.endpoint_count;
 }
 
-uint64_t SyntheticProvider::next_native_id_() {
-  return native_id_seq_++;
+uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
+  if (!callbacks_) {
+    return 0;
+  }
+  return callbacks_->allocate_native_id(type);
 }
 
 void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
@@ -154,7 +157,7 @@ ProviderResult SyntheticProvider::open_device(
   d.device_instance_id = device_instance_id;
   d.root_id = root_id;
   d.open = true;
-  d.native_id = next_native_id_();
+  d.native_id = alloc_native_id_(NativeObjectType::Device);
 
   emit_native_create_device_(d);
   callbacks_->on_device_opened(device_instance_id);
@@ -225,7 +228,7 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
   s.started = false;
   s.frame_index = 0;
   s.next_due_ns = 0;
-  s.native_id = next_native_id_();
+  s.native_id = alloc_native_id_(NativeObjectType::Stream);
 
   // Report stream native object.
   if (callbacks_) {
@@ -313,7 +316,7 @@ ProviderResult SyntheticProvider::start_stream(
 
   s.started = true;
   s.producing = true;
-  s.frame_producer_native_id = next_native_id_();
+  s.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
   // Report FrameProducer native object (PRODUCING) for introspection.
   if (callbacks_) {
     NativeObjectCreateInfo info{};

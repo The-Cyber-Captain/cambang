@@ -113,7 +113,7 @@ private:
   static void release_frame_(void* user, const FrameView* frame);
   bool is_known_hardware_id_(const std::string& hardware_id) const;
 
-  uint64_t next_native_id_();
+  uint64_t alloc_native_id_(NativeObjectType type);
   void emit_native_create_device_(const DeviceState& d);
   void emit_native_destroy_(uint64_t native_id);
 
@@ -131,7 +131,6 @@ private:
   std::map<uint64_t, DeviceState> devices_; // key: device_instance_id
   std::map<uint64_t, StreamState> streams_; // key: stream_id
 
-  uint64_t native_id_seq_ = 1;
   uint64_t provider_native_id_ = 0;
 
   // Count of invalid preset requests observed at runtime (e.g. bad enum value).

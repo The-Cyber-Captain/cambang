@@ -31,6 +31,11 @@ CoreRuntime::CoreRuntime()
         // on each core pump tick.
         assert(core_thread_.is_core_thread());
         enqueue_provider_fact(std::move(cmd));
+      }, [this]() -> uint64_t {
+        // Core monotonic timebase: ns since core epoch_ (session-relative).
+        const auto now = std::chrono::steady_clock::now();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }) {
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only latest-frame sink (core thread dispatch path).

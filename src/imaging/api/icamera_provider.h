@@ -15,6 +15,20 @@ class IProviderCallbacks {
 public:
   virtual ~IProviderCallbacks() = default;
 
+  // ---- Core-issued services (sync, thread-safe) ----
+  // Native object IDs MUST be issued by core to avoid clashes across provider instances.
+  // Providers must store returned IDs and reuse them for later destroy events.
+  //
+  // This call is synchronous and must be safe to invoke from any provider thread.
+  virtual uint64_t allocate_native_id(NativeObjectType type) = 0;
+
+  // Core monotonic timebase in nanoseconds (session-relative), aligned with core snapshot
+  // timestamps. This is OPTIONAL for providers; synthetic must not depend on wall-clock.
+  //
+  // Domain: CORE_MONOTONIC (see docs/provider_architecture.md §7.x).
+  // This call is synchronous and must be safe to invoke from any provider thread.
+  virtual uint64_t core_monotonic_now_ns() = 0;
+
   // ---- Device lifecycle confirmations ----
   virtual void on_device_opened(uint64_t device_instance_id) = 0;
   virtual void on_device_closed(uint64_t device_instance_id) = 0;
