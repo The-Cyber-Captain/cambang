@@ -229,9 +229,16 @@ static StreamRequest make_req() {
   req.stream_id = kStreamId;
   req.device_instance_id = kDeviceInstanceId;
   req.intent = StreamIntent::PREVIEW;
-  req.width = 2;
-  req.height = 2;
-  req.format_fourcc = 0;
+  req.profile.width = 2;
+  req.profile.height = 2;
+  req.profile.format_fourcc = FOURCC_RGBA;
+  req.profile.target_fps_min = 0;
+  req.profile.target_fps_max = 0;
+
+  req.picture.preset = PatternPreset::XyXor;
+  req.picture.seed = 0;
+  req.picture.overlay_frame_index_offsets = false;
+  req.picture.overlay_moving_bar = false;
   req.profile_version = 1;
   return req;
 }
@@ -297,7 +304,8 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
 
   rt.attach_provider(&prov);
 
-  if (!prov.start_stream(kStreamId).ok()) {
+  const StreamRequest req = make_req();
+  if (!prov.start_stream(kStreamId, req.profile, req.picture).ok()) {
     std::cerr << "start_stream failed\n";
     rt.stop();
     return 1;
@@ -535,7 +543,8 @@ static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_inde
 
   maybe_jitter(opt, rng);
 
-  if (!prov.start_stream(kStreamId).ok()) {
+  const StreamRequest req = make_req();
+  if (!prov.start_stream(kStreamId, req.profile, req.picture).ok()) {
     std::cerr << "[iter " << iter_index << "] start_stream failed\n";
     rt.stop();
     return 1;

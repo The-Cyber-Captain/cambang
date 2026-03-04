@@ -28,6 +28,37 @@
 
 namespace cambang {
 
+enum class TrySetStreamPictureStatus : uint8_t {
+  OK = 0,
+  NotSupported = 1,
+  Busy = 2,
+  InvalidArgument = 3,
+};
+
+enum class TryCreateStreamStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
+enum class TryStartStreamStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
+enum class TryStopStreamStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
+enum class TryDestroyStreamStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
   class CoreRuntime final : private CoreThread::IHooks {
   private:
     enum class ShutdownPhase : uint8_t;  // forward declaration
@@ -58,6 +89,27 @@ namespace cambang {
   void post(CoreThread::Task task);
 
   CoreThread::PostResult try_post(CoreThread::Task task);
+
+  // Dev/internal stream lifecycle surfaces.
+  // Defaulting is performed by core using provider->stream_template().
+  // These are non-blocking and may return Busy if the core mailbox is full.
+  TryCreateStreamStatus try_create_stream(
+      uint64_t stream_id,
+      uint64_t device_instance_id,
+      StreamIntent intent,
+      const CaptureProfile* request_profile,
+      const PictureConfig* request_picture,
+      uint64_t profile_version) noexcept;
+
+  TryStartStreamStatus try_start_stream(uint64_t stream_id) noexcept;
+
+  TryStopStreamStatus try_stop_stream(uint64_t stream_id) noexcept;
+
+  TryDestroyStreamStatus try_destroy_stream(uint64_t stream_id) noexcept;
+
+  // Stream-scoped picture update path.
+  // Non-blocking: enqueues the provider call onto the core thread.
+  TrySetStreamPictureStatus try_set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {

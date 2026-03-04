@@ -2,10 +2,8 @@
 
 #include <atomic>
 #include <cstring>
-#include <memory>
 
-#include "pixels/pattern/active_pattern_config.h"
-#include "pixels/pattern/pattern_spec.h"
+#include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
 
@@ -34,19 +32,20 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   }
 }
 
+StreamTemplate SyntheticProvider::stream_template() const {
+  StreamTemplate t{};
+  t.profile.width = cfg_.nominal.width;
+  t.profile.height = cfg_.nominal.height;
+  t.profile.format_fourcc = cfg_.nominal.format_fourcc;
+  t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
+  t.profile.target_fps_max = t.profile.target_fps_min;
 
-void SyntheticProvider::set_active_pattern_config(const ActivePatternConfig& cfg_in) {
-  auto cfg_mut = std::make_shared<ActivePatternConfig>(cfg_in);
-  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
-  std::atomic_store(&active_pattern_, cfg);
-
-  // Optional render hint (primes base cache).
-  bool preset_valid = true;
-  PatternSpec hint = to_pattern_spec(*cfg, cfg_.nominal.width, cfg_.nominal.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
-  if (!preset_valid) {
-    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
-  }
-  pattern_renderer_.configure(hint);
+  // Canonical default per tranche: noise_animated.
+  t.picture.preset = PatternPreset::NoiseAnimated;
+  t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed);
+  t.picture.overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
+  t.picture.overlay_moving_bar = true;
+  return t;
 }
 
 ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
@@ -59,23 +58,6 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   callbacks_ = callbacks;
   initialized_ = true;
   shutting_down_ = false;
-
-  // Default active selection (deterministic).
-  auto cfg_mut = std::make_shared<ActivePatternConfig>();
-  cfg_mut->preset = cfg_.pattern.preset;
-  cfg_mut->seed = static_cast<uint32_t>(cfg_.pattern.seed);
-  cfg_mut->overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
-  cfg_mut->overlay_moving_bar = true;
-  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
-  std::atomic_store(&active_pattern_, cfg);
-
-  // Configure renderer (safe to reconfigure per render; this is a hint).
-  bool preset_valid = true;
-  PatternSpec hint = to_pattern_spec(*cfg, cfg_.nominal.width, cfg_.nominal.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
-  if (!preset_valid) {
-    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
-  }
-  pattern_renderer_.configure(hint);
 
   return ProviderResult::success();
 }
@@ -216,11 +198,17 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   s.req = req;
-  if (s.req.width == 0) s.req.width = cfg_.nominal.width;
-  if (s.req.height == 0) s.req.height = cfg_.nominal.height;
-  if (s.req.format_fourcc == 0) s.req.format_fourcc = cfg_.nominal.format_fourcc;
-  if (s.req.target_fps_min == 0) s.req.target_fps_min = cfg_.nominal.fps_num;
-  if (s.req.target_fps_max == 0) s.req.target_fps_max = cfg_.nominal.fps_num;
+  s.picture = req.picture;
+  s.pool.clear();
+  s.pool_cursor = 0;
+
+  // Provider must not apply implicit defaults; validate required fields.
+  if (s.req.profile.width == 0 || s.req.profile.height == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (s.req.profile.format_fourcc == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
 
   s.created = true;
   s.started = false;
@@ -261,7 +249,10 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult SyntheticProvider::start_stream(uint64_t stream_id) {
+ProviderResult SyntheticProvider::start_stream(
+    uint64_t stream_id,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -275,9 +266,43 @@ ProviderResult SyntheticProvider::start_stream(uint64_t stream_id) {
   if (it->second.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  it->second.started = true;
-  it->second.frame_index = 0;
-  it->second.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
+
+  auto& s = it->second;
+  s.req.profile = profile;
+  s.picture = picture;
+
+  const uint32_t w = profile.width;
+  const uint32_t h = profile.height;
+  const uint32_t fmt = profile.format_fourcc;
+  if (w == 0 || h == 0 || fmt == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (fmt != FOURCC_RGBA) {
+    // v1 synthetic only.
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  constexpr size_t kPoolSize = 8;
+  const uint32_t stride = w * 4u;
+  const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
+  const size_t existing0 = (s.pool.empty() || !s.pool[0]) ? 0 : s.pool[0]->bytes.size();
+  if (s.pool.size() != kPoolSize || existing0 != size_bytes) {
+    s.pool.clear();
+    s.pool.reserve(kPoolSize);
+    for (size_t i = 0; i < kPoolSize; ++i) {
+      auto slot = std::make_unique<SyntheticProvider::StreamState::BufferSlot>();
+      slot->owner = this;
+      slot->stream_id = stream_id;
+      slot->bytes.resize(size_bytes);
+      slot->in_use.store(false, std::memory_order_relaxed);
+      s.pool.emplace_back(std::move(slot));
+    }
+    s.pool_cursor = 0;
+  }
+
+  s.started = true;
+  s.frame_index = 0;
+  s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
   callbacks_->on_stream_started(stream_id);
   return ProviderResult::success();
 }
@@ -295,6 +320,21 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   }
   it->second.started = false;
   callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end() || !it->second.created) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (!find_preset_info(picture.preset)) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+  it->second.picture = picture;
   return ProviderResult::success();
 }
 
@@ -355,8 +395,9 @@ ProviderResult SyntheticProvider::shutdown() {
 
 void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   (void)frame;
-  auto* p = static_cast<uint8_t*>(user);
-  delete[] p;
+  auto* slot = static_cast<StreamState::BufferSlot*>(user);
+  if (!slot) return;
+  slot->in_use.store(false, std::memory_order_release);
 }
 
 void SyntheticProvider::emit_one_frame_(StreamState& s) {
@@ -364,22 +405,44 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
     return;
   }
 
-  const uint32_t w = s.req.width;
-  const uint32_t h = s.req.height;
-  const uint32_t stride = w * 4;
+  const uint32_t w = s.req.profile.width;
+  const uint32_t h = s.req.profile.height;
+  const uint32_t stride = w * 4u;
   const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
-  auto* buf = new uint8_t[size_bytes];
 
-  auto pcfg = std::atomic_load(&active_pattern_);
+  // Acquire a buffer slot.
+  StreamState::BufferSlot* slot = nullptr;
+  const size_t n = s.pool.size();
+  if (n == 0) {
+    return;
+  }
+  for (size_t probe = 0; probe < n; ++probe) {
+    const size_t idx = (s.pool_cursor + probe) % n;
+    auto& cand = s.pool[idx];
+    if (!cand) {
+      continue;
+    }
+    bool expected = false;
+    if (cand->in_use.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+      slot = cand.get();
+      s.pool_cursor = (idx + 1) % n;
+      break;
+    }
+  }
+  if (!slot) {
+    // Drop if pool exhausted.
+    return;
+  }
+
   bool preset_valid = true;
-  PatternSpec spec = to_pattern_spec(*pcfg, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  PatternSpec spec = to_pattern_spec(s.picture, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
   if (!preset_valid) {
     invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
   }
 
   PatternRenderTarget dst{};
-  dst.data = buf;
-  dst.size_bytes = size_bytes;
+  dst.data = slot->bytes.data();
+  dst.size_bytes = slot->bytes.size();
   dst.width = w;
   dst.height = h;
   dst.stride_bytes = stride;
@@ -390,7 +453,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
   ov.timestamp_ns = clock_.now_ns();
   ov.stream_id = s.req.stream_id;
 
-  pattern_renderer_.render_into(spec, dst, ov);
+  s.renderer.render_into(spec, dst, ov);
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
@@ -402,11 +465,11 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
   fv.capture_timestamp.value = clock_.now_ns();
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = buf;
-  fv.size_bytes = size_bytes;
+  fv.data = slot->bytes.data();
+  fv.size_bytes = slot->bytes.size();
   fv.stride_bytes = stride;
   fv.release = &SyntheticProvider::release_frame_;
-  fv.release_user = buf;
+  fv.release_user = slot;
 
   callbacks_->on_frame(fv);
   s.frame_index++;

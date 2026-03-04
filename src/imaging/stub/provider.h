@@ -5,10 +5,9 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
-
-namespace cambang { struct ActivePatternConfig; }
 
 #include "imaging/api/icamera_provider.h"
 
@@ -20,6 +19,9 @@ public:
   ~StubProvider() override = default;
 
   const char* provider_name() const override;
+
+  StreamTemplate stream_template() const override;
+  bool supports_stream_picture_updates() const noexcept override { return true; }
 
 // Test instrumentation (thread-safe).
 uint64_t frames_emitted() const noexcept { return frames_emitted_.load(std::memory_order_relaxed); }
@@ -37,11 +39,6 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   bool shutting_down() const noexcept { return shutting_down_; }
 
 
-  // Dev/scaffolding helper (not part of ICameraProvider).
-  // Swaps the active pattern selection copy-on-write.
-  void set_active_pattern_config(const ActivePatternConfig& cfg);
-
-
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
 
@@ -55,8 +52,13 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   ProviderResult create_stream(const StreamRequest& req) override;
   ProviderResult destroy_stream(uint64_t stream_id) override;
 
-  ProviderResult start_stream(uint64_t stream_id) override;
+  ProviderResult start_stream(
+      uint64_t stream_id,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) override;
   ProviderResult stop_stream(uint64_t stream_id) override;
+
+  ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -90,6 +92,19 @@ private:
     // virtual_time scheduling (ns)
     uint64_t period_ns = 0;
     uint64_t next_frame_ns = 0;
+
+    // Stream-owned picture config + renderer.
+    PictureConfig picture{};
+    CpuPackedPatternRenderer renderer{};
+
+    struct BufferSlot {
+      StubProvider* owner = nullptr;
+      uint64_t stream_id = 0;
+      std::vector<std::uint8_t> bytes;
+      bool in_use = false;
+    };
+    std::vector<BufferSlot> pool;
+    size_t pool_cursor = 0;
   };
 
   IProviderCallbacks* callbacks_ = nullptr;
@@ -103,13 +118,6 @@ private:
   // Deterministic storage.
   std::map<uint64_t, DeviceState> devices_;   // key: device_instance_id
   std::map<uint64_t, StreamState> streams_;   // key: stream_id
-
-  // Pattern renderer (provider-agnostic). Not part of the provider contract.
-  CpuPackedPatternRenderer pattern_renderer_;
-
-  // Active pattern selection (copy-on-write; may be swapped at runtime by
-  // non-smoke surfaces).
-  std::shared_ptr<const ActivePatternConfig> active_pattern_;
 
   // Count of invalid preset requests observed at runtime (e.g. bad enum value).
   std::atomic<uint64_t> invalid_preset_requests_{0};

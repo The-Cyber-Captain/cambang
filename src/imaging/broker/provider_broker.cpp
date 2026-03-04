@@ -4,7 +4,7 @@
 
 #include "imaging/api/provider_error_string.h"
 
-#include "pixels/pattern/active_pattern_config.h"
+// (No broker-level pattern switching; picture is stream-scoped.)
 
 // Platform-backed providers compiled into this artifact.
 #if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
@@ -51,6 +51,17 @@ const char* ProviderBroker::provider_name() const {
     return active_->provider_name();
   }
   return "broker(uninitialized)";
+}
+
+StreamTemplate ProviderBroker::stream_template() const {
+  if (active_) {
+    return active_->stream_template();
+  }
+  return StreamTemplate{};
+}
+
+bool ProviderBroker::supports_stream_picture_updates() const noexcept {
+  return active_ ? active_->supports_stream_picture_updates() : false;
 }
 
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
@@ -204,12 +215,15 @@ ProviderResult ProviderBroker::destroy_stream(uint64_t stream_id) {
   return active_->destroy_stream(stream_id);
 }
 
-ProviderResult ProviderBroker::start_stream(uint64_t stream_id) {
+ProviderResult ProviderBroker::start_stream(
+    uint64_t stream_id,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
   }
-  return active_->start_stream(stream_id);
+  return active_->start_stream(stream_id, profile, picture);
 }
 
 ProviderResult ProviderBroker::stop_stream(uint64_t stream_id) {
@@ -218,6 +232,14 @@ ProviderResult ProviderBroker::stop_stream(uint64_t stream_id) {
     return pr;
   }
   return active_->stop_stream(stream_id);
+}
+
+ProviderResult ProviderBroker::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+  return active_->set_stream_picture_config(stream_id, picture);
 }
 
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
@@ -298,27 +320,5 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
   return false;
 }
 
-
-bool ProviderBroker::try_set_active_pattern(const ActivePatternConfig& cfg) {
-  if (!initialized_ || !active_) {
-    return false;
-  }
-
-#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
-  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
-    syn->set_active_pattern_config(cfg);
-    return true;
-  }
-#endif
-
-#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
-  if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
-    stub->set_active_pattern_config(cfg);
-    return true;
-  }
-#endif
-
-  return false;
-}
 
 } // namespace cambang

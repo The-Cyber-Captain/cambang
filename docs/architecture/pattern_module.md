@@ -187,19 +187,16 @@ From this definition list, the build generates:
 Contributors must not introduce parallel enums, switches, or preset lists.
 All new patterns begin with a single entry in `pattern_defs.inc`.
 
-### 2.7 ActivePatternConfig (Provider-facing Selection)
+### 2.7 Selection structures (caller-defined)
 
-`ActivePatternConfig` is a provider-facing configuration describing the **active selected preset**
-and its parameters.
+The Pattern Module’s public contract for rendering is `PatternSpec`.
 
-Properties:
+Callers (providers, tools, bindings) may define lightweight selection
+structures that choose presets and parameters and convert them into
+`PatternSpec`.
 
-- POD / trivially copyable fields (no strings, no heap ownership)
-- May be swapped at runtime by providers (copy-on-write selection)
-- Converted into renderer-facing `PatternSpec` via `to_pattern_spec(...)`
-
-This keeps `PatternSpec` as the renderer contract, while allowing providers and tools to work with a
-stable preset vocabulary.
+The Pattern Module does not define core/provider configuration concepts;
+those are defined in canonical architecture documentation.
 
 ### 2.8 Invalid Selection Behaviour
 

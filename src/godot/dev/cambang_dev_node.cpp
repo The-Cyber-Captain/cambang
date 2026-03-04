@@ -7,7 +7,7 @@
 #include "imaging/broker/provider_broker.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
-#include "pixels/pattern/active_pattern_config.h"
+#include "pixels/pattern/pattern_registry.h"
 
 #include <vector>
 #include <string>
@@ -77,14 +77,20 @@ void CamBANGDevNode::_process(double delta) {
         last_running_ = running;
     }
 
+    // Core commands are explicitly non-blocking; provider bring-up progresses
+    // asynchronously across ticks.
+    if (bringup_state_ != BringUpState::Idle && bringup_state_ != BringUpState::Running) {
+        tick_bringup_();
+    }
 
-    // Dev-only pattern cycling: swap ActivePatternConfig at fixed intervals.
-    if (pattern_cycle_enabled_ && provider_) {
+
+    // Dev-only pattern cycling: stream-scoped PictureConfig updates.
+    if (pattern_cycle_enabled_ && runtime_ && bringup_state_ == BringUpState::Running) {
         pattern_cycle_accum_s_ += delta;
         if (pattern_cycle_accum_s_ >= pattern_cycle_period_s_) {
             pattern_cycle_accum_s_ = 0.0;
 
-            ActivePatternConfig cfg{};
+            PictureConfig cfg{};
             cfg.preset = preset_from_index_or_default(pattern_cycle_index_, PatternPreset::XyXor);
             cfg.seed = 0;
             //cfg.overlay_frame_index_offsets = true;
@@ -92,9 +98,9 @@ void CamBANGDevNode::_process(double delta) {
             cfg.overlay_frame_index_offsets = false;
             cfg.overlay_moving_bar = true;
 
-            const bool accepted = provider_->try_set_active_pattern(cfg);
-            if (!accepted && !pattern_cycle_logged_unsupported_) {
-                UtilityFunctions::printerr("[CamBANGDevNode] Pattern cycling enabled but active provider does not support try_set_active_pattern().");
+            const auto st = runtime_->try_set_stream_picture_config(stream_id_, cfg);
+            if (st == TrySetStreamPictureStatus::NotSupported && !pattern_cycle_logged_unsupported_) {
+                UtilityFunctions::printerr("[CamBANGDevNode] Pattern cycling enabled but provider does not support stream picture updates.");
                 pattern_cycle_logged_unsupported_ = true;
             }
 
@@ -250,41 +256,22 @@ bool CamBANGDevNode::start_provider_() {
         return false;
     }
 
-    StreamRequest req{};
-    req.stream_id = stream_id_;
-    req.device_instance_id = device_instance_id_;
-    req.intent = StreamIntent::PREVIEW;
-    req.width = 320;
-    req.height = 180;
+    bringup_state_ = BringUpState::DeviceOpened;
+    bringup_ticks_ = 0;
 
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-    // MF common output is BGRA-ish; dev mailbox will swizzle BGRA -> RGBA.
-    req.format_fourcc = FOURCC_BGRA;
-    req.target_fps_min = 30;
-    req.target_fps_max = 60;
-#else
-    req.format_fourcc = FOURCC_RGBA;
-    req.target_fps_min = 30;
-    req.target_fps_max = 30;
-#endif
+    StreamTemplate tmpl = provider_->stream_template();
 
-    req.profile_version = 1;
+    // Cache the effective config we intend to run (dev scaffolding).
+    // Dev node must not override provider StreamTemplate fields.
+    effective_profile_ = tmpl.profile;
+    effective_picture_ = tmpl.picture;
+    effective_profile_version_ = 1;
 
-    pr = provider_->create_stream(req);
-    if (!pr.ok()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Provider create_stream failed.");
-        stop_provider_();
-        return false;
-    }
-
-    pr = provider_->start_stream(stream_id_);
-    if (!pr.ok()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Provider start_stream failed.");
-        stop_provider_();
-        return false;
-    }
-
-    return true;
+    // Kick off create; start will be attempted on subsequent ticks after
+    // the core thread has declared the stream record.
+    bringup_state_ = BringUpState::CreatePending;
+    tick_bringup_();
+    return (bringup_state_ != BringUpState::Idle);
 }
 
 void CamBANGDevNode::stop_provider_() {
@@ -294,16 +281,63 @@ void CamBANGDevNode::stop_provider_() {
     }
 
     // Best-effort dev teardown; core shutdown remains deterministic.
+    // Streams are core-owned; tear down via CoreRuntime to avoid split-brain state.
+    (void)runtime_->try_stop_stream(stream_id_);
+    (void)runtime_->try_destroy_stream(stream_id_);
+
+    // Device open/close is still provider-direct in this dev node (for now).
     if (provider_) {
-        provider_->stop_stream(stream_id_);
-        provider_->destroy_stream(stream_id_);
-        provider_->close_device(device_instance_id_);
+        (void)provider_->close_device(device_instance_id_);
     }
 
     // Provider lifetime is owned by CamBANGServer; do not detach/shutdown here.
     provider_ = nullptr;
     emit_accum_ = 0.0;
     pattern_cycle_accum_s_ = 0.0;
+
+    bringup_state_ = BringUpState::Idle;
+    bringup_ticks_ = 0;
+}
+
+void CamBANGDevNode::tick_bringup_() {
+    if (!runtime_ || !runtime_->is_running() || !provider_) {
+        bringup_state_ = BringUpState::Idle;
+        return;
+    }
+
+    // Prevent infinite spam if something is fundamentally wrong.
+    // (This is dev-only; keep it deterministic and non-blocking.)
+    ++bringup_ticks_;
+    if (bringup_ticks_ > 600) { // ~10s at 60fps
+        UtilityFunctions::printerr("[CamBANGDevNode] Provider bring-up timed out.");
+        stop_provider_();
+        return;
+    }
+
+    if (bringup_state_ == BringUpState::CreatePending) {
+        // Picture omitted: core defaults from StreamTemplate (canonical behavior).
+        const auto cs = runtime_->try_create_stream(
+            stream_id_, device_instance_id_, StreamIntent::PREVIEW,
+            &effective_profile_,
+            nullptr,
+            effective_profile_version_);
+        if (cs == TryCreateStreamStatus::OK) {
+            bringup_state_ = BringUpState::StartPending;
+        }
+        return; // Busy => retry next tick
+    }
+
+    if (bringup_state_ == BringUpState::StartPending) {
+        const auto ss = runtime_->try_start_stream(stream_id_);
+        if (ss == TryStartStreamStatus::OK) {
+            bringup_state_ = BringUpState::Running;
+            return;
+        }
+        // Busy => retry next tick.
+        // InvalidArgument is expected transiently if create hasn't executed
+        // on the core thread yet; retry.
+        return;
+    }
 }
 
 void CamBANGDevNode::stop_runtime_() {
