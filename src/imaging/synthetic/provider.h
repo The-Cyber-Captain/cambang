@@ -89,6 +89,8 @@ private:
     StreamRequest req{};
     bool created = false;
     bool started = false;
+    bool producing = false;
+    uint64_t frame_producer_native_id = 0;
     uint64_t frame_index = 0;
     uint64_t next_due_ns = 0;
     uint64_t native_id = 0;
@@ -116,7 +118,7 @@ private:
   void emit_native_destroy_(uint64_t native_id);
 
   void emit_due_frames_();
-  void emit_one_frame_(StreamState& s);
+  void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
 
 private:
   SyntheticProviderConfig cfg_{};
@@ -130,6 +132,7 @@ private:
   std::map<uint64_t, StreamState> streams_; // key: stream_id
 
   uint64_t native_id_seq_ = 1;
+  uint64_t provider_native_id_ = 0;
 
   // Count of invalid preset requests observed at runtime (e.g. bad enum value).
   std::atomic<uint64_t> invalid_preset_requests_{0};

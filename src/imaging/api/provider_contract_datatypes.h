@@ -59,6 +59,22 @@ struct ProviderResult {
   static constexpr ProviderResult failure(ProviderError c) { return ProviderResult{c}; }
 };
 
+
+// Native object type vocabulary (core-owned).
+//
+// Canonical nouns: Provider, Device, Stream, FrameProducer.
+// See docs/provider_architecture.md and docs/state_snapshot.md.
+//
+// NOTE: In the current scaffolding slice, providers fill `NativeObjectCreateInfo.type`
+// directly. Core-side registry wiring may later replace or validate these values.
+// Keep values stable once used.
+enum class NativeObjectType : uint32_t {
+  Provider = 1,
+  Device = 2,
+  Stream = 3,
+  FrameProducer = 4,
+};
+
 // -----------------------------------------------------------------------------
 // Stream configuration inputs (core -> provider)
 //

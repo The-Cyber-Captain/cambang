@@ -59,6 +59,17 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
 
+  // Report provider native object (BOUND). Root/owners are 0 at provider scope.
+  provider_native_id_ = next_native_id_();
+  if (callbacks_) {
+    NativeObjectCreateInfo info{};
+    info.native_id = provider_native_id_;
+    info.type = static_cast<uint32_t>(NativeObjectType::Provider);
+    info.root_id = 0;
+    info.created_ns = clock_.now_ns();
+    callbacks_->on_native_object_created(info);
+  }
+
   return ProviderResult::success();
 }
 
@@ -103,7 +114,7 @@ void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   }
   NativeObjectCreateInfo info{};
   info.native_id = d.native_id;
-  info.type = 1; // v1: provider-owned enum placeholder (document later)
+  info.type = static_cast<uint32_t>(NativeObjectType::Device);
   info.root_id = d.root_id;
   info.owner_device_instance_id = d.device_instance_id;
   info.created_ns = clock_.now_ns();
@@ -220,7 +231,7 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
   if (callbacks_) {
     NativeObjectCreateInfo info{};
     info.native_id = s.native_id;
-    info.type = 2; // v1 placeholder
+    info.type = static_cast<uint32_t>(NativeObjectType::Stream);
     info.root_id = dit->second.root_id;
     info.owner_device_instance_id = req.device_instance_id;
     info.owner_stream_id = req.stream_id;
@@ -301,7 +312,24 @@ ProviderResult SyntheticProvider::start_stream(
   }
 
   s.started = true;
+  s.producing = true;
+  s.frame_producer_native_id = next_native_id_();
+  // Report FrameProducer native object (PRODUCING) for introspection.
+  if (callbacks_) {
+    NativeObjectCreateInfo info{};
+    // root_id is device lineage root_id.
+    const auto dit = devices_.find(s.req.device_instance_id);
+    info.root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
+    info.native_id = s.frame_producer_native_id;
+    info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
+    info.owner_device_instance_id = s.req.device_instance_id;
+    info.owner_stream_id = s.req.stream_id;
+    info.created_ns = clock_.now_ns();
+    callbacks_->on_native_object_created(info);
+  }
+
   s.frame_index = 0;
+  // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
   callbacks_->on_stream_started(stream_id);
   return ProviderResult::success();
@@ -318,7 +346,14 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   if (!it->second.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  it->second.started = false;
+  auto& s = it->second;
+  s.started = false;
+  if (s.producing) {
+    // Production has stopped immediately in this provider.
+    emit_native_destroy_(s.frame_producer_native_id);
+    s.producing = false;
+    s.frame_producer_native_id = 0;
+  }
   callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
@@ -387,6 +422,12 @@ ProviderResult SyntheticProvider::shutdown() {
     (void)close_device(devices_.begin()->first);
   }
 
+  // Provider native object (BOUND -> ABSENT).
+  if (provider_native_id_ != 0) {
+    emit_native_destroy_(provider_native_id_);
+    provider_native_id_ = 0;
+  }
+
   initialized_ = false;
   callbacks_ = nullptr;
   shutting_down_ = false;
@@ -400,7 +441,7 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   slot->in_use.store(false, std::memory_order_release);
 }
 
-void SyntheticProvider::emit_one_frame_(StreamState& s) {
+void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
   if (!callbacks_) {
     return;
   }
@@ -450,7 +491,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
 
   PatternOverlayData ov{};
   ov.frame_index = s.frame_index;
-  ov.timestamp_ns = clock_.now_ns();
+  ov.timestamp_ns = scheduled_capture_ns;
   ov.stream_id = s.req.stream_id;
 
   s.renderer.render_into(spec, dst, ov);
@@ -462,7 +503,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
   fv.width = w;
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
-  fv.capture_timestamp.value = clock_.now_ns();
+  fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
   fv.data = slot->bytes.data();
@@ -489,7 +530,8 @@ void SyntheticProvider::emit_due_frames_() {
     }
     // Emit as many frames as are due (catch-up) in virtual time.
     while (s.next_due_ns <= now) {
-      emit_one_frame_(s);
+      const uint64_t scheduled = s.next_due_ns;
+      emit_one_frame_(s, scheduled);
       s.next_due_ns += period;
     }
   }
