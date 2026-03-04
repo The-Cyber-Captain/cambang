@@ -5,6 +5,8 @@
 
 #include <godot_cpp/classes/node.hpp>
 
+#include "imaging/api/provider_contract_datatypes.h"
+
 namespace cambang {
 
 class CoreRuntime;
@@ -58,6 +60,22 @@ private:
     uint32_t pattern_cycle_index_ = 0;
     bool pattern_cycle_logged_unsupported_ = false;
 
+    // Dev-only provider bring-up state machine.
+    enum class BringUpState {
+        Idle,
+        DeviceOpened,
+        CreatePending,
+        StartPending,
+        Running,
+    };
+    BringUpState bringup_state_ = BringUpState::Idle;
+    uint32_t bringup_ticks_ = 0; // counts _process ticks while bring-up is active
+
+    // Cached effective config used for stream create/start.
+    CaptureProfile effective_profile_{};
+    PictureConfig effective_picture_{};
+    uint64_t effective_profile_version_ = 1;
+
 
     void start_runtime_();
     void stop_runtime_();
@@ -65,6 +83,9 @@ private:
     // Dev-only provider lifecycle (re)establishment.
     bool start_provider_();
     void stop_provider_();
+
+    // Bring-up continues asynchronously (core commands are non-blocking).
+    void tick_bringup_();
 };
 
 } // namespace cambang

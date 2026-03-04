@@ -77,9 +77,15 @@ void CamBANGDevNode::_process(double delta) {
         last_running_ = running;
     }
 
+    // Core commands are explicitly non-blocking; provider bring-up progresses
+    // asynchronously across ticks.
+    if (bringup_state_ != BringUpState::Idle && bringup_state_ != BringUpState::Running) {
+        tick_bringup_();
+    }
+
 
     // Dev-only pattern cycling: stream-scoped PictureConfig updates.
-    if (pattern_cycle_enabled_ && runtime_) {
+    if (pattern_cycle_enabled_ && runtime_ && bringup_state_ == BringUpState::Running) {
         pattern_cycle_accum_s_ += delta;
         if (pattern_cycle_accum_s_ >= pattern_cycle_period_s_) {
             pattern_cycle_accum_s_ = 0.0;
@@ -250,6 +256,9 @@ bool CamBANGDevNode::start_provider_() {
         return false;
     }
 
+    bringup_state_ = BringUpState::DeviceOpened;
+    bringup_ticks_ = 0;
+
     StreamTemplate tmpl = provider_->stream_template();
 
     StreamRequest req{};
@@ -275,25 +284,16 @@ bool CamBANGDevNode::start_provider_() {
 
     req.profile_version = 1;
 
-    const auto cs = runtime_->try_create_stream(
-        stream_id_, device_instance_id_, StreamIntent::PREVIEW,
-        &req.profile,
-        nullptr, // picture omitted: core defaults from StreamTemplate
-        req.profile_version);
-    if (cs != TryCreateStreamStatus::OK) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CoreRuntime try_create_stream rejected (busy/invalid).");
-        stop_provider_();
-        return false;
-    }
+    // Cache the effective config we intend to run (dev scaffolding).
+    effective_profile_ = req.profile;
+    effective_picture_ = req.picture;
+    effective_profile_version_ = req.profile_version;
 
-    const auto ss = runtime_->try_start_stream(stream_id_);
-    if (ss != TryStartStreamStatus::OK) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CoreRuntime try_start_stream rejected (busy/invalid).");
-        stop_provider_();
-        return false;
-    }
-
-    return true;
+    // Kick off create; start will be attempted on subsequent ticks after
+    // the core thread has declared the stream record.
+    bringup_state_ = BringUpState::CreatePending;
+    tick_bringup_();
+    return (bringup_state_ != BringUpState::Idle);
 }
 
 void CamBANGDevNode::stop_provider_() {
@@ -313,6 +313,50 @@ void CamBANGDevNode::stop_provider_() {
     provider_ = nullptr;
     emit_accum_ = 0.0;
     pattern_cycle_accum_s_ = 0.0;
+
+    bringup_state_ = BringUpState::Idle;
+    bringup_ticks_ = 0;
+}
+
+void CamBANGDevNode::tick_bringup_() {
+    if (!runtime_ || !runtime_->is_running() || !provider_) {
+        bringup_state_ = BringUpState::Idle;
+        return;
+    }
+
+    // Prevent infinite spam if something is fundamentally wrong.
+    // (This is dev-only; keep it deterministic and non-blocking.)
+    ++bringup_ticks_;
+    if (bringup_ticks_ > 600) { // ~10s at 60fps
+        UtilityFunctions::printerr("[CamBANGDevNode] Provider bring-up timed out.");
+        stop_provider_();
+        return;
+    }
+
+    if (bringup_state_ == BringUpState::CreatePending) {
+        // Picture omitted: core defaults from StreamTemplate (canonical behavior).
+        const auto cs = runtime_->try_create_stream(
+            stream_id_, device_instance_id_, StreamIntent::PREVIEW,
+            &effective_profile_,
+            nullptr,
+            effective_profile_version_);
+        if (cs == TryCreateStreamStatus::OK) {
+            bringup_state_ = BringUpState::StartPending;
+        }
+        return; // Busy => retry next tick
+    }
+
+    if (bringup_state_ == BringUpState::StartPending) {
+        const auto ss = runtime_->try_start_stream(stream_id_);
+        if (ss == TryStartStreamStatus::OK) {
+            bringup_state_ = BringUpState::Running;
+            return;
+        }
+        // Busy => retry next tick.
+        // InvalidArgument is expected transiently if create hasn't executed
+        // on the core thread yet; retry.
+        return;
+    }
 }
 
 void CamBANGDevNode::stop_runtime_() {
