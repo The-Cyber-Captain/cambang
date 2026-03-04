@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 #include "pixels/pattern/pattern_render_target.h"
 
@@ -18,6 +20,20 @@ uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   // period = 1s * den / num
   const uint64_t one_sec = 1'000'000'000ull;
   return (one_sec * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
+}
+
+static bool banners_enabled() noexcept {
+  const char* v = std::getenv("CAMBANG_BANNERS");
+  // Spec: CAMBANG_BANNERS=0 disables banners.
+  return !(v && v[0] == '0' && v[1] == '\0');
+}
+
+static const char* role_to_string(SyntheticRole r) noexcept {
+  switch (r) {
+    case SyntheticRole::Nominal: return "nominal";
+    case SyntheticRole::Timeline: return "timeline";
+  }
+  return "unknown";
 }
 
 } // namespace
@@ -59,6 +75,11 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
 
+  if (banners_enabled()) {
+    std::fprintf(stdout, "[Synthetic] role=%s\n", role_to_string(cfg_.synthetic_role));
+    std::fflush(stdout);
+  }
+
   // Report provider native object (BOUND). Root/owners are 0 at provider scope.
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
   if (callbacks_) {
@@ -71,6 +92,81 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   return ProviderResult::success();
+}
+
+void SyntheticProvider::timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id) {
+  SyntheticScheduledEvent ev{};
+  ev.at_ns = at_ns;
+  ev.seq = ++timeline_seq_;
+  ev.type = type;
+  ev.stream_id = stream_id;
+  timeline_q_.push(ev);
+}
+
+void SyntheticProvider::timeline_pump_() {
+  const uint64_t now = clock_.now_ns();
+  const uint64_t period = fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
+  if (period == 0) {
+    return;
+  }
+
+  while (!timeline_q_.empty()) {
+    const SyntheticScheduledEvent ev = timeline_q_.top();
+    if (ev.at_ns > now) {
+      break;
+    }
+    timeline_q_.pop();
+
+    switch (ev.type) {
+      case SyntheticEventType::EmitFrame: {
+        auto it = streams_.find(ev.stream_id);
+        if (it == streams_.end()) {
+          break;
+        }
+        StreamState& s = it->second;
+        if (!s.created || !s.started) {
+          break;
+        }
+        // Execute the same frame emission path as nominal, but driven by explicit
+        // scheduled event timestamps.
+        emit_one_frame_(s, ev.at_ns);
+        s.next_due_ns = ev.at_ns + period;
+        // Deterministic continuation: schedule the next frame.
+        timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
+        break;
+      }
+
+      case SyntheticEventType::StartStream: {
+        // Scenario-driven start. This is primarily intended for Timeline-role
+        // regression tests and for future scenario execution features.
+        auto it = streams_.find(ev.stream_id);
+        if (it == streams_.end()) {
+          break;
+        }
+        StreamState& s = it->second;
+        if (!s.created || s.started) {
+          break;
+        }
+        // Reuse the normal core-requested start path.
+        (void)start_stream(ev.stream_id, s.req.profile, s.picture);
+        break;
+      }
+
+      case SyntheticEventType::StopStream: {
+        // Scenario-driven stop (e.g. simulating disconnect / unexpected stop).
+        auto it = streams_.find(ev.stream_id);
+        if (it == streams_.end()) {
+          break;
+        }
+        StreamState& s = it->second;
+        if (!s.created || !s.started) {
+          break;
+        }
+        (void)stop_stream(ev.stream_id);
+        break;
+      }
+    }
+  }
 }
 
 ProviderResult SyntheticProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
@@ -334,6 +430,10 @@ ProviderResult SyntheticProvider::start_stream(
   s.frame_index = 0;
   // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
+  if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    // Timeline role: drive emission via explicit scheduled events.
+    timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, stream_id);
+  }
   callbacks_->on_stream_started(stream_id);
   return ProviderResult::success();
 }
@@ -424,6 +524,12 @@ ProviderResult SyntheticProvider::shutdown() {
   while (!devices_.empty()) {
     (void)close_device(devices_.begin()->first);
   }
+
+  // Clear any pending timeline events.
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
 
   // Provider native object (BOUND -> ABSENT).
   if (provider_native_id_ != 0) {
@@ -546,7 +652,11 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   }
   // v1: only VirtualTime is implemented.
   clock_.advance(dt_ns);
-  emit_due_frames_();
+  if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    timeline_pump_();
+  } else {
+    emit_due_frames_();
+  }
 }
 
 } // namespace cambang

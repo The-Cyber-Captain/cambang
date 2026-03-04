@@ -6,6 +6,8 @@
 
 namespace cambang {
 
+
+
 void CoreDispatcher::dispatch(CoreCommand&& cmd) {
   // NOTE: For this build slice we are proving lifecycle only.
   //
@@ -24,6 +26,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (devices_) {
       devices_->on_device_opened(p.device_instance_id);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -33,6 +36,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (devices_) {
       devices_->on_device_closed(p.device_instance_id);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -42,6 +46,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_created(p.stream_id);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -51,6 +56,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_destroyed(p.stream_id);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -60,6 +66,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_started(p.stream_id);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -69,6 +76,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_stopped(p.stream_id, p.error_code);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -78,6 +86,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_error(p.stream_id, p.error_code);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
@@ -87,10 +96,33 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     if (devices_) {
       devices_->on_device_error(p.device_instance_id, p.error_code);
     }
+    relevant_state_changed_ = true;
     break;
   }
 
-  case CoreCommandType::PROVIDER_FRAME: {
+  
+case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
+  stats_.commands_handled++;
+  const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
+  if (native_objects_) {
+    // Use the core monotonic timebase at dispatch time (session-relative).
+    native_objects_->on_native_object_created(p.native_id, p.type, p.root_id, /*created_ns=*/0);
+  }
+  relevant_state_changed_ = true;
+  break;
+}
+
+case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
+  stats_.commands_handled++;
+  const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
+  if (native_objects_) {
+    native_objects_->on_native_object_destroyed(p.native_id, /*destroyed_ns=*/0);
+  }
+  relevant_state_changed_ = true;
+  break;
+}
+
+case CoreCommandType::PROVIDER_FRAME: {
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
 
     stats_.commands_handled++;

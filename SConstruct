@@ -262,7 +262,20 @@ if env["smoke"]:
         source=pattern_bench_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog])
+    # Deterministic SyntheticProvider Timeline verification tool.
+    synthetic_verify_sources = []
+    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    synthetic_verify_sources += ["src/smoke/synthetic_timeline_verify.cpp"]
+    synthetic_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "synthetic_timeline_verify"),
+        source=synthetic_verify_sources,
+    )
+
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     Alias("smoke", [])
