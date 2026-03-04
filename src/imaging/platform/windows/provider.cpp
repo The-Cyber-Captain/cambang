@@ -131,8 +131,8 @@ static ComPtr<IMFMediaType> choose_native_type(IMFSourceReader* reader,
     if (!is_rgb32_family(st)) continue;
 
     int score = 0;
-    if (req.width != 0 && req.height != 0) {
-      if (w == req.width && h == req.height) score += 100;
+    if (req.profile.width != 0 && req.profile.height != 0) {
+      if (w == req.profile.width && h == req.profile.height) score += 100;
     }
 
     if (score > best_score) {
@@ -504,7 +504,10 @@ ProviderResult WindowsProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult WindowsProvider::start_stream(uint64_t stream_id) {
+ProviderResult WindowsProvider::start_stream(
+    uint64_t stream_id,
+    const CaptureProfile& /*profile*/,
+    const PictureConfig& /*picture*/) {
   std::lock_guard<std::mutex> lock(m_);
   if (!stream_.created || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -690,16 +693,16 @@ if (chosen) {
     if (FAILED(hr)) return hr;
 
     // Prefer requested size if provided; otherwise leave unset (let MF pick).
-    if (stream_.req.width != 0 && stream_.req.height != 0) {
-      (void)::MFSetAttributeSize(mt.get(), MF_MT_FRAME_SIZE, stream_.req.width, stream_.req.height);
+    if (stream_.req.profile.width != 0 && stream_.req.profile.height != 0) {
+      (void)::MFSetAttributeSize(mt.get(), MF_MT_FRAME_SIZE, stream_.req.profile.width, stream_.req.profile.height);
     }
 
     // Progressive, if it sticks.
     (void)mt->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
 
     // Prefer requested FPS range (use max as target).
-    if (stream_.req.target_fps_max != 0) {
-      (void)::MFSetAttributeRatio(mt.get(), MF_MT_FRAME_RATE, stream_.req.target_fps_max, 1);
+    if (stream_.req.profile.target_fps_max != 0) {
+      (void)::MFSetAttributeRatio(mt.get(), MF_MT_FRAME_RATE, stream_.req.profile.target_fps_max, 1);
     }
 
     log_media_type_once(label, mt.get());
@@ -893,6 +896,25 @@ if (!stream_.dumped_first_buflen) {
 
   // Release callback object (balances our new).
   cb->Release();
+}
+
+StreamTemplate WindowsProvider::stream_template() const {
+  StreamTemplate t{};
+  t.profile.width = 320;
+  t.profile.height = 180;
+  t.profile.format_fourcc = FOURCC_BGRA;
+  t.profile.target_fps_min = 30;
+  t.profile.target_fps_max = 60;
+  // PictureConfig defaults are synthetic-only; platform-backed providers ignore pattern.
+  t.picture.preset = PatternPreset::XyXor;
+  t.picture.seed = 0;
+  t.picture.overlay_frame_index_offsets = false;
+  t.picture.overlay_moving_bar = false;
+  return t;
+}
+
+ProviderResult WindowsProvider::set_stream_picture_config(uint64_t /*stream_id*/, const PictureConfig& /*picture*/) {
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
 } // namespace cambang

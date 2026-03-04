@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "pixels/pattern/active_pattern_config.h"
+#include "pixels/pattern/pattern_registry.h"
 
 namespace cambang {
 

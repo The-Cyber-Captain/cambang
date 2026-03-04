@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <map>
 
+#include "imaging/api/provider_contract_datatypes.h"
+
 namespace cambang {
 
 // Minimal per-stream core state registry.
@@ -19,6 +21,13 @@ class CoreStreamRegistry final {
 public:
   struct StreamRecord {
     uint64_t stream_id = 0;
+
+    uint64_t device_instance_id = 0;
+    StreamIntent intent = StreamIntent::PREVIEW;
+    uint64_t profile_version = 0;
+
+    CaptureProfile profile{};
+    PictureConfig picture{};
 
     bool created = false;
     bool started = false;
@@ -39,6 +48,9 @@ public:
   CoreStreamRegistry& operator=(const CoreStreamRegistry&) = delete;
 
   // Lifecycle
+  // declare_stream_effective: called by core surfaces that create streams.
+  // Providers must not apply implicit defaults; core stores effective config.
+  bool declare_stream_effective(const StreamRequest& effective);
   bool on_stream_created(uint64_t stream_id);
   bool on_stream_destroyed(uint64_t stream_id);
   bool on_stream_started(uint64_t stream_id);
@@ -47,6 +59,12 @@ public:
   // Frame accounting (stream must exist).
   bool on_frame_received(uint64_t stream_id);
   bool on_frame_released(uint64_t stream_id);
+
+  // Mutable config updates (stream should exist).
+  bool set_picture(uint64_t stream_id, const PictureConfig& picture);
+
+  // Best-effort cleanup for failed creations (core-thread-only).
+  bool forget_stream(uint64_t stream_id);
 
   // Error reporting (stream must exist).
   bool on_stream_error(uint64_t stream_id, uint32_t error_code);

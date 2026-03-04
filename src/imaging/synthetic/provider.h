@@ -16,7 +16,7 @@
 
 namespace cambang {
 
-struct ActivePatternConfig;
+// (No provider-wide pattern switching; picture is stream-scoped.)
 
 // Deterministic synthetic provider.
 //
@@ -34,6 +34,9 @@ public:
 
   const char* provider_name() const override { return "SyntheticProvider"; }
 
+  StreamTemplate stream_template() const override;
+  bool supports_stream_picture_updates() const noexcept override { return true; }
+
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
 
@@ -47,8 +50,13 @@ public:
   ProviderResult create_stream(const StreamRequest& req) override;
   ProviderResult destroy_stream(uint64_t stream_id) override;
 
-  ProviderResult start_stream(uint64_t stream_id) override;
+  ProviderResult start_stream(
+      uint64_t stream_id,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) override;
   ProviderResult stop_stream(uint64_t stream_id) override;
+
+  ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -63,10 +71,6 @@ public:
       SpecPatchView patch) override;
 
   ProviderResult shutdown() override;
-
-  // Dev/scaffolding helper (not part of ICameraProvider).
-  // Swaps the active pattern selection copy-on-write.
-  void set_active_pattern_config(const ActivePatternConfig& cfg);
 
   // Synthetic-only virtual time driver (not part of ICameraProvider).
   // Emits any due frames.
@@ -88,6 +92,20 @@ private:
     uint64_t frame_index = 0;
     uint64_t next_due_ns = 0;
     uint64_t native_id = 0;
+
+    PictureConfig picture{};
+    CpuPackedPatternRenderer renderer{};
+
+    struct BufferSlot {
+      SyntheticProvider* owner = nullptr;
+      uint64_t stream_id = 0;
+      std::vector<std::uint8_t> bytes;
+      std::atomic<bool> in_use{false};
+    };
+    // Note: BufferSlot contains std::atomic, which is non-movable. Store slots
+    // behind unique_ptr so the pool container can resize/move safely.
+    std::vector<std::unique_ptr<BufferSlot>> pool;
+    size_t pool_cursor = 0;
   };
 
   static void release_frame_(void* user, const FrameView* frame);
@@ -112,11 +130,6 @@ private:
   std::map<uint64_t, StreamState> streams_; // key: stream_id
 
   uint64_t native_id_seq_ = 1;
-
-  CpuPackedPatternRenderer pattern_renderer_;
-
-  // Active pattern selection (copy-on-write; may be swapped at runtime).
-  std::shared_ptr<const ActivePatternConfig> active_pattern_;
 
   // Count of invalid preset requests observed at runtime (e.g. bad enum value).
   std::atomic<uint64_t> invalid_preset_requests_{0};

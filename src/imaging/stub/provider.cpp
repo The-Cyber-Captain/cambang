@@ -2,27 +2,30 @@
 
 #include <atomic>
 #include <cstdint>
-#include <memory>
 #include <vector>
-
-#include "pixels/pattern/active_pattern_config.h"
 #include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
 
-namespace {
-
-struct TestFramePayload final {
-  StubProvider* self = nullptr;
-  std::vector<std::uint8_t> bytes;
-};
-
 // NOTE: Prefer the canonical helpers/constants in provider_contract_datatypes.h.
-
-} // namespace
 
 const char* StubProvider::provider_name() const {
   return "StubProvider";
+}
+
+StreamTemplate StubProvider::stream_template() const {
+  StreamTemplate t{};
+  t.profile.width = 320;
+  t.profile.height = 180;
+  t.profile.format_fourcc = FOURCC_RGBA;
+  t.profile.target_fps_min = 30;
+  t.profile.target_fps_max = 30;
+
+  t.picture.preset = PatternPreset::XyXor;
+  t.picture.seed = 0;
+  t.picture.overlay_frame_index_offsets = true;
+  t.picture.overlay_moving_bar = true;
+  return t;
 }
 
 bool StubProvider::is_known_hardware_id(const std::string& hardware_id) const {
@@ -30,14 +33,12 @@ bool StubProvider::is_known_hardware_id(const std::string& hardware_id) const {
 }
 
 void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
-  auto* payload = static_cast<TestFramePayload*>(user);
-  if (!payload) {
-    return;
+  auto* slot = static_cast<StreamState::BufferSlot*>(user);
+  if (!slot) return;
+  if (slot->owner) {
+    slot->owner->frames_released_.fetch_add(1, std::memory_order_relaxed);
   }
-  if (payload->self) {
-    payload->self->frames_released_.fetch_add(1, std::memory_order_relaxed);
-  }
-  delete payload;
+  slot->in_use = false;
 }
 
 ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
@@ -52,23 +53,7 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
 
-  // Default active selection (deterministic).
-  auto cfg_mut = std::make_shared<ActivePatternConfig>();
-  cfg_mut->preset = PatternPreset::XyXor;
-  cfg_mut->seed = 0;
-  cfg_mut->overlay_frame_index_offsets = true;
-  cfg_mut->overlay_moving_bar = true;
-  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
-  std::atomic_store(&active_pattern_, std::move(cfg));
-
   return ProviderResult::success();
-}
-
-
-void StubProvider::set_active_pattern_config(const ActivePatternConfig& cfg_in) {
-  auto cfg_mut = std::make_shared<ActivePatternConfig>(cfg_in);
-  std::shared_ptr<const ActivePatternConfig> cfg = cfg_mut;
-  std::atomic_store(&active_pattern_, std::move(cfg));
 }
 
 ProviderResult StubProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
@@ -152,9 +137,12 @@ ProviderResult StubProvider::create_stream(const StreamRequest& req) {
   }
 
   st.req = req;
+  st.picture = req.picture;
   st.created = true;
   st.started = false;
   st.frame_index = 0;
+  st.pool.clear();
+  st.pool_cursor = 0;
 
   dev_it->second.stream_id = req.stream_id;
 
@@ -192,7 +180,10 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
-ProviderResult StubProvider::start_stream(uint64_t stream_id) {
+ProviderResult StubProvider::start_stream(
+    uint64_t stream_id,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -205,20 +196,44 @@ ProviderResult StubProvider::start_stream(uint64_t stream_id) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  st_it->second.started = true;
+  auto& st = st_it->second;
+
+  // Core supplies effective config at start.
+  st.req.profile = profile;
+  st.picture = picture;
+
+  const uint32_t w = (profile.width == 0) ? 320 : profile.width;
+  const uint32_t h = (profile.height == 0) ? 180 : profile.height;
+  const uint32_t fmt = (profile.format_fourcc == 0) ? FOURCC_RGBA : profile.format_fourcc;
+  if (fmt != FOURCC_RGBA) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  // Large enough to allow the smoke overload test to saturate the core ingress queue
+  // before slots begin to recycle. This remains a one-time allocation (no per-frame).
+  constexpr size_t kPoolSize = 1200;
+  const size_t row_bytes = static_cast<size_t>(w) * 4u;
+  const size_t total = row_bytes * static_cast<size_t>(h);
+  if (st.pool.size() != kPoolSize || (st.pool.empty() ? 0 : st.pool[0].bytes.size()) != total) {
+    st.pool.clear();
+    st.pool.resize(kPoolSize);
+    for (auto& slot : st.pool) {
+      slot.owner = this;
+      slot.stream_id = stream_id;
+      slot.bytes.resize(total);
+      slot.in_use = false;
+    }
+    st.pool_cursor = 0;
+  }
+
+  st.started = true;
   callbacks_->on_stream_started(stream_id);
 
-  // Establish deterministic cadence for virtual_time pumping.
-  // Stub defaults to 30 fps unless the request specifies target_fps_max.
-  uint32_t fps = st_it->second.req.target_fps_max;
-  if (fps == 0) {
-    fps = 30;
-  }
-  st_it->second.period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps);
-  if (st_it->second.period_ns == 0) {
-    st_it->second.period_ns = 33'333'333ull;
-  }
-  st_it->second.next_frame_ns = now_ns_; // allow immediate emission on next advance
+  uint32_t fps = profile.target_fps_max;
+  if (fps == 0) fps = 30;
+  st.period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps);
+  if (st.period_ns == 0) st.period_ns = 33'333'333ull;
+  st.next_frame_ns = now_ns_; // allow immediate emission on next advance
 
   // Emit exactly one test frame immediately to prove end-to-end plumbing.
   emit_test_frames(stream_id, 1);
@@ -240,7 +255,7 @@ void StubProvider::advance(uint64_t dt_ns) {
 
     // If no period was established (e.g. older stream records), fall back.
     if (st.period_ns == 0) {
-      uint32_t fps = st.req.target_fps_max;
+      uint32_t fps = st.req.profile.target_fps_max;
       if (fps == 0) fps = 30;
       st.period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps);
       if (st.period_ns == 0) st.period_ns = 33'333'333ull;
@@ -279,10 +294,10 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     return;
   }
 
-  const uint32_t w = (st.req.width == 0) ? 320 : st.req.width;
-  const uint32_t h = (st.req.height == 0) ? 180 : st.req.height;
+  const uint32_t w = (st.req.profile.width == 0) ? 320 : st.req.profile.width;
+  const uint32_t h = (st.req.profile.height == 0) ? 180 : st.req.profile.height;
 
-  const uint32_t fmt = (st.req.format_fourcc == 0) ? FOURCC_RGBA : st.req.format_fourcc;
+  const uint32_t fmt = (st.req.profile.format_fourcc == 0) ? FOURCC_RGBA : st.req.profile.format_fourcc;
 
   // This stub provider currently only supports RGBA test frames.
   if (fmt != FOURCC_RGBA) {
@@ -293,25 +308,40 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
   const size_t total = row_bytes * static_cast<size_t>(h);
 
   for (uint32_t i = 0; i < count; ++i) {
-    frames_emitted_.fetch_add(1, std::memory_order_relaxed);
     const uint64_t fi = st.frame_index++;
 
-    auto* payload = new TestFramePayload();
-    payload->self = this;
-    payload->bytes.resize(total);
+    // Acquire a buffer slot (no per-frame allocation).
+    StreamState::BufferSlot* slot = nullptr;
+    const size_t n = st.pool.size();
+    if (n == 0) {
+      return;
+    }
+    for (size_t probe = 0; probe < n; ++probe) {
+      const size_t idx = (st.pool_cursor + probe) % n;
+      auto& cand = st.pool[idx];
+      if (!cand.in_use) {
+        cand.in_use = true;
+        slot = &cand;
+        st.pool_cursor = (idx + 1) % n;
+        break;
+      }
+    }
+    if (!slot) {
+      // Pool exhausted: drop silently for stub heartbeat semantics.
+      break;
+    }
 
-    // Provider-agnostic CPU pattern renderer (v1 packed RGBA).
-    // Selection is copy-on-write and may be swapped by non-smoke surfaces.
-    auto pcfg = std::atomic_load(&active_pattern_);
+    frames_emitted_.fetch_add(1, std::memory_order_relaxed);
+
     bool preset_valid = true;
-    PatternSpec spec = to_pattern_spec(*pcfg, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+    PatternSpec spec = to_pattern_spec(st.picture, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
     if (!preset_valid) {
       invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
     }
 
     PatternRenderTarget dst;
-    dst.data = payload->bytes.data();
-    dst.size_bytes = payload->bytes.size();
+    dst.data = slot->bytes.data();
+    dst.size_bytes = slot->bytes.size();
     dst.width = w;
     dst.height = h;
     dst.stride_bytes = static_cast<uint32_t>(row_bytes);
@@ -322,7 +352,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     ov.timestamp_ns = 0;
     ov.stream_id = stream_id;
 
-    pattern_renderer_.render_into(spec, dst, ov);
+    st.renderer.render_into(spec, dst, ov);
 
     FrameView fv{};
     fv.device_instance_id = st.req.device_instance_id;
@@ -337,12 +367,12 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.capture_timestamp.tick_ns = 0;
     fv.capture_timestamp.domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
 
-    fv.data = payload->bytes.data();
-    fv.size_bytes = payload->bytes.size();
+    fv.data = slot->bytes.data();
+    fv.size_bytes = slot->bytes.size();
     fv.stride_bytes = static_cast<uint32_t>(row_bytes);
 
     fv.release = &StubProvider::release_test_frame;
-    fv.release_user = payload;
+    fv.release_user = slot;
 
     callbacks_->on_frame(fv);
   }
@@ -370,6 +400,24 @@ ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
 
   st_it->second.started = false;
   callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+  return ProviderResult::success();
+}
+
+ProviderResult StubProvider::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto st_it = streams_.find(stream_id);
+  if (st_it == streams_.end() || !st_it->second.created) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  // Validate preset deterministically; allow invalid but count and fall back in render.
+  if (!find_preset_info(picture.preset)) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  st_it->second.picture = picture;
   return ProviderResult::success();
 }
 

@@ -54,6 +54,14 @@ public:
   // Provider identity (for logs / diagnostics).
   virtual const char* provider_name() const = 0;
 
+  // Provider default stream template (profile + picture). Core uses this for
+  // stream creation-time defaulting.
+  virtual StreamTemplate stream_template() const = 0;
+
+  // Whether stream-scoped picture updates are supported.
+  // If false, core should return NotSupported deterministically without calling into the provider.
+  virtual bool supports_stream_picture_updates() const noexcept = 0;
+
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
   virtual ProviderResult initialize(IProviderCallbacks* callbacks) = 0;
@@ -75,8 +83,16 @@ public:
   virtual ProviderResult destroy_stream(uint64_t stream_id) = 0;
 
   // Start/stop repeating flow for an existing stream.
-  virtual ProviderResult start_stream(uint64_t stream_id) = 0;
+  // Core supplies the effective profile + picture at start.
+  virtual ProviderResult start_stream(
+      uint64_t stream_id,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) = 0;
   virtual ProviderResult stop_stream(uint64_t stream_id) = 0;
+
+  // Stream-scoped picture update path.
+  // Providers that do not support this must return ERR_NOT_SUPPORTED.
+  virtual ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) = 0;
 
   // Trigger a still capture for a device instance (device capture or rig capture).
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;

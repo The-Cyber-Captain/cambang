@@ -10,7 +10,7 @@
 #endif
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
-#include "pixels/pattern/active_pattern_config.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 using namespace cambang;
 
@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  ActivePatternConfig pcfg{};
+  PictureConfig pcfg{};
   pcfg.preset = info->preset;
   pcfg.seed = opt.seed;
   pcfg.overlay_frame_index_offsets = opt.overlay;

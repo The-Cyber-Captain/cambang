@@ -15,8 +15,6 @@
 
 namespace cambang {
 
-struct ActivePatternConfig;
-
 class ProviderBroker final : public ICameraProvider {
 public:
   ProviderBroker();
@@ -33,6 +31,9 @@ public:
 
   const char* provider_name() const override;
 
+  StreamTemplate stream_template() const override;
+  bool supports_stream_picture_updates() const noexcept override;
+
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
 
@@ -46,8 +47,13 @@ public:
   ProviderResult create_stream(const StreamRequest& req) override;
   ProviderResult destroy_stream(uint64_t stream_id) override;
 
-  ProviderResult start_stream(uint64_t stream_id) override;
+  ProviderResult start_stream(
+      uint64_t stream_id,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) override;
   ProviderResult stop_stream(uint64_t stream_id) override;
+
+  ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -67,9 +73,6 @@ public:
   // Drives virtual time for backends that require an external pump (stub, synthetic
   // virtual_time). Returns true if the active backend consumed the tick.
   bool try_tick_virtual_time(uint64_t dt_ns);
-
-  // Dev-only helper (not part of ICameraProvider).
-  bool try_set_active_pattern(const ActivePatternConfig& cfg);
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
 

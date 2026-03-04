@@ -429,6 +429,106 @@ CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {
   });
 }
 
+TryCreateStreamStatus CoreRuntime::try_create_stream(
+    uint64_t stream_id,
+    uint64_t device_instance_id,
+    StreamIntent intent,
+    const CaptureProfile* request_profile,
+    const PictureConfig* request_picture,
+    uint64_t profile_version) noexcept {
+  if (stream_id == 0 || device_instance_id == 0 || profile_version == 0) {
+    return TryCreateStreamStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryCreateStreamStatus::Busy;
+  }
+
+  // Compute effective config (core owns defaulting).
+  const StreamTemplate tmpl = prov->stream_template();
+
+  StreamRequest effective{};
+  effective.stream_id = stream_id;
+  effective.device_instance_id = device_instance_id;
+  effective.intent = intent;
+  effective.profile_version = profile_version;
+  effective.profile = request_profile ? *request_profile : tmpl.profile;
+  effective.picture = request_picture ? *request_picture : tmpl.picture;
+
+  const CoreThread::PostResult pr = try_post([this, effective]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+
+    // Declare before calling into the provider so any synchronous callbacks
+    // can resolve the record deterministically.
+    (void)streams_.declare_stream_effective(effective);
+
+    const ProviderResult r = p->create_stream(effective);
+    if (!r.ok()) {
+      // Best-effort rollback; create_stream failure must not leave a ghost record.
+      (void)streams_.forget_stream(effective.stream_id);
+    }
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryCreateStreamStatus::OK
+                                                  : TryCreateStreamStatus::Busy;
+}
+
+TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept {
+  if (stream_id == 0) {
+    return TryStartStreamStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryStartStreamStatus::Busy;
+  }
+
+  const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+  if (!rec) {
+    return TryStartStreamStatus::InvalidArgument;
+  }
+
+  const CaptureProfile profile = rec->profile;
+  const PictureConfig picture = rec->picture;
+
+  const CoreThread::PostResult pr = try_post([this, stream_id, profile, picture]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)p->start_stream(stream_id, profile, picture);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryStartStreamStatus::OK
+                                                  : TryStartStreamStatus::Busy;
+}
+
+TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
+    uint64_t stream_id,
+    const PictureConfig& picture) noexcept {
+  if (stream_id == 0) {
+    return TrySetStreamPictureStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TrySetStreamPictureStatus::Busy;
+  }
+  if (!prov->supports_stream_picture_updates()) {
+    return TrySetStreamPictureStatus::NotSupported;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, stream_id, picture]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)p->set_stream_picture_config(stream_id, picture);
+    (void)streams_.set_picture(stream_id, picture);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TrySetStreamPictureStatus::OK
+                                                  : TrySetStreamPictureStatus::Busy;
+}
+
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {
   Stats s;
   s.publish_requests_coalesced = publish_requests_coalesced_.load(std::memory_order_relaxed);
