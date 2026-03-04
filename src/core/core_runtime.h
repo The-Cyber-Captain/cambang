@@ -47,6 +47,18 @@ enum class TryStartStreamStatus : uint8_t {
   InvalidArgument = 2,
 };
 
+enum class TryStopStreamStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
+enum class TryDestroyStreamStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
   class CoreRuntime final : private CoreThread::IHooks {
   private:
     enum class ShutdownPhase : uint8_t;  // forward declaration
@@ -90,6 +102,10 @@ enum class TryStartStreamStatus : uint8_t {
       uint64_t profile_version) noexcept;
 
   TryStartStreamStatus try_start_stream(uint64_t stream_id) noexcept;
+
+  TryStopStreamStatus try_stop_stream(uint64_t stream_id) noexcept;
+
+  TryDestroyStreamStatus try_destroy_stream(uint64_t stream_id) noexcept;
 
   // Stream-scoped picture update path.
   // Non-blocking: enqueues the provider call onto the core thread.

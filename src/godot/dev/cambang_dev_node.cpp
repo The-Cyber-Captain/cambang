@@ -261,33 +261,11 @@ bool CamBANGDevNode::start_provider_() {
 
     StreamTemplate tmpl = provider_->stream_template();
 
-    StreamRequest req{};
-    req.stream_id = stream_id_;
-    req.device_instance_id = device_instance_id_;
-    req.intent = StreamIntent::PREVIEW;
-    req.profile = tmpl.profile;
-    req.picture = tmpl.picture;
-
-    req.profile.width = 320;
-    req.profile.height = 180;
-
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-    // MF common output is BGRA-ish; dev mailbox will swizzle BGRA -> RGBA.
-    req.profile.format_fourcc = FOURCC_BGRA;
-    req.profile.target_fps_min = 30;
-    req.profile.target_fps_max = 60;
-#else
-    req.profile.format_fourcc = FOURCC_RGBA;
-    req.profile.target_fps_min = 30;
-    req.profile.target_fps_max = 30;
-#endif
-
-    req.profile_version = 1;
-
     // Cache the effective config we intend to run (dev scaffolding).
-    effective_profile_ = req.profile;
-    effective_picture_ = req.picture;
-    effective_profile_version_ = req.profile_version;
+    // Dev node must not override provider StreamTemplate fields.
+    effective_profile_ = tmpl.profile;
+    effective_picture_ = tmpl.picture;
+    effective_profile_version_ = 1;
 
     // Kick off create; start will be attempted on subsequent ticks after
     // the core thread has declared the stream record.
@@ -303,10 +281,13 @@ void CamBANGDevNode::stop_provider_() {
     }
 
     // Best-effort dev teardown; core shutdown remains deterministic.
+    // Streams are core-owned; tear down via CoreRuntime to avoid split-brain state.
+    (void)runtime_->try_stop_stream(stream_id_);
+    (void)runtime_->try_destroy_stream(stream_id_);
+
+    // Device open/close is still provider-direct in this dev node (for now).
     if (provider_) {
-        provider_->stop_stream(stream_id_);
-        provider_->destroy_stream(stream_id_);
-        provider_->close_device(device_instance_id_);
+        (void)provider_->close_device(device_instance_id_);
     }
 
     // Provider lifetime is owned by CamBANGServer; do not detach/shutdown here.

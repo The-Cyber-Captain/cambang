@@ -485,22 +485,73 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     return TryStartStreamStatus::Busy;
   }
 
-  const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
-  if (!rec) {
-    return TryStartStreamStatus::InvalidArgument;
-  }
-
-  const CaptureProfile profile = rec->profile;
-  const PictureConfig picture = rec->picture;
-
-  const CoreThread::PostResult pr = try_post([this, stream_id, profile, picture]() {
+  // NOTE: CoreStreamRegistry is core-thread-only. Do not read it on the caller thread.
+  // The start is dispatched onto the core thread where the record is resolved.
+  const CoreThread::PostResult pr = try_post([this, stream_id]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
-    (void)p->start_stream(stream_id, profile, picture);
+
+    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+    if (!rec) {
+      // Stream record not declared (yet) or already destroyed.
+      // Non-blocking API: caller retries as needed.
+      return;
+    }
+
+    (void)p->start_stream(stream_id, rec->profile, rec->picture);
+    (void)streams_.on_stream_started(stream_id);
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryStartStreamStatus::OK
                                                   : TryStartStreamStatus::Busy;
+}
+
+TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
+  if (stream_id == 0) {
+    return TryStopStreamStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryStopStreamStatus::Busy;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, stream_id]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)p->stop_stream(stream_id);
+    (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryStopStreamStatus::OK
+                                                  : TryStopStreamStatus::Busy;
+}
+
+TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexcept {
+  if (stream_id == 0) {
+    return TryDestroyStreamStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryDestroyStreamStatus::Busy;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, stream_id]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+
+    // Best-effort: stop before destroy.
+    (void)p->stop_stream(stream_id);
+    (void)p->destroy_stream(stream_id);
+    (void)streams_.on_stream_destroyed(stream_id);
+
+    // Ensure core does not retain a ghost record.
+    (void)streams_.forget_stream(stream_id);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK
+                                                  : TryDestroyStreamStatus::Busy;
 }
 
 TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
