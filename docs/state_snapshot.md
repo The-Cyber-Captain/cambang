@@ -287,7 +287,32 @@ NativeObjectRecord {
   buffers_in_use: uint32                 // 0 if not applicable
 }
 ```
+## Lifecycle registry truth model
 
+The lifecycle registry records the **actual lifecycle of native
+objects owned by providers**.
+
+Registry entries represent **observed reality**, not intended state.
+
+Core does not automatically cascade destruction of child objects
+when a parent object is destroyed.
+
+This allows the snapshot system to reveal important diagnostics
+including:
+
+- leaked objects
+- delayed teardown
+- unexpected lifetime extension
+- provider lifecycle ordering bugs
+
+If a native object survives the destruction of its logical parent
+it will appear as a **detached root** in the snapshot.
+
+Detached roots are expected during debugging and are valuable
+indicators of lifecycle problems.
+
+Providers must therefore emit destruction events **only when the
+resource has actually been released**.
 ------------------------------------------------------------------------
 
 ## 7. Detached roots (`detached_root_ids`)
