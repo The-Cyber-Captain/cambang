@@ -261,6 +261,32 @@ Publish steps: 1. Run retention sweep (may mark dirty) 2. Assemble new
 pointer in `CamBANGServer` 4. Emit `state_published(gen, version, topology_version)`
 from `CamBANGServer`
 
+### 9.2.x Core publication vs Godot-visible publication
+
+Core publication is an **internal mechanism**: core may build and publish
+snapshots whenever dirty, including multiple times between Godot ticks.
+
+Godot-visible publication is a **boundary contract** enforced by
+`CamBANGServer`:
+
+- `CamBANGServer.state_published(...)` is emitted **≤ 1 per Godot tick**.
+- It is emitted only if observable state has changed since the previous tick.
+- Godot-facing `gen/version/topology_version` are defined by this tick-bounded
+  observable truth, not by core-internal publication frequency.
+
+This separation allows core to integrate provider facts quickly without forcing
+Godot consumers to handle bursty emissions.
+
+#### Boundary marker (implementation hook)
+
+To support the tick-bounded emission policy without per-frame heavy work,
+core exposes O(1) publication markers at the boundary:
+
+- a monotonic publish sequence counter ("changed since last tick")
+- the latest topology signature (for boundary-side topology diffing)
+
+The Godot bridge reads these markers once per tick and decides whether to emit.
+
 ### 9.3 Publish time vs capture time
 
 Snapshot `timestamp_ns` is core publish time (monotonic, generation-relative).
@@ -270,9 +296,15 @@ Core must not assume capture time is wall-clock.
 
 ### 9.4 `gen`, `version`, and `topology_version` bookkeeping
 
-- `gen` increments only when `CamBANGServer.start()` successfully begins a new core loop after a complete stop/teardown.
-- `version` increments for every published snapshot within the current `gen`.
-- `topology_version` increments only for structural changes (within the current `gen`) as defined in `state_snapshot.md`.
+- `gen` advances by +1 on each successful `CamBANGServer.start()` that transitions
+  from stopped → running.
+- `version` increments by +1 on each **Godot-visible** snapshot publish
+  (each `state_published` emission) within the current `gen`.
+- `topology_version` increments by +1 only when the **observed topology differs**
+  from the topology at the previous emission.
+
+Core may maintain additional internal counters/markers to support boundary
+coalescing cheaply; those do not redefine the Godot-visible counters.
 
 ------------------------------------------------------------------------
 

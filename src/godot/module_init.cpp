@@ -13,7 +13,6 @@
 
 #include "godot/cambang_server.h"
 #include "godot/cambang_server_tick_node.h"
-#include "godot/cambang_state_snapshot.h"
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
 #include "godot/dev/cambang_dev_node.h"
@@ -28,7 +27,6 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
 
     godot::ClassDB::register_class<cambang::CamBANGServer>();
     godot::ClassDB::register_class<cambang::CamBANGServerTickNode>();
-    godot::ClassDB::register_class<cambang::CamBANGStateSnapshotGD>();
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
     godot::ClassDB::register_class<cambang::CamBANGDevNode>();

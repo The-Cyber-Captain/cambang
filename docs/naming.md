@@ -13,7 +13,7 @@ Singleton service/registry/factory for CamBANG. Responsibilities include
 device enumeration, rig creation, global shutdown, and access to the
 latest published state snapshot.
 
-CamBANGServer is Engine singleton; explicit start()/stop(); get_state_snapshot() may be invalid before first publish;
+CamBANGServer is Engine singleton; explicit start()/stop(); get_state_snapshot() returns NIL before first publish;
 state_published(gen, version, topology_version) begins at version/topology_version 0/0 for each new gen.
 
 ------------------------------------------------------------------------
@@ -200,9 +200,19 @@ Native/core objects created by the provider on behalf of CamBANG are tracked as 
 
 ### Publication counters
 
-- `gen`: core generation counter; increments when the core loop is (re)started after a complete stop/teardown; monotonic across the app/server lifetime.
-- `version`: increments on every published snapshot within the current `gen`.
-- `topology_version`: increments when the structural hierarchy changes within the current `gen` (e.g., new instances, membership changes, detached branches appearing/disappearing).
+These counter names are **preserved**, but their definitions are from the
+**Godot-facing tick-bounded** perspective (observable truth):
+
+- `gen`: zero-indexed and advances by +1 on each successful
+  `CamBANGServer.start()` that transitions from stopped → running.
+  For each new `gen`, `version` and `topology_version` reset to 0.
+
+- `version`: increments by +1 for each emitted `state_published(...)` within the
+  current `gen`. It is contiguous (no gaps).
+
+- `topology_version`: increments by +1 only on ticks where the observed topology
+  differs from the topology at the previous emission. It never changes without
+  `version` also changing.
 
 ### Timestamp fields and time domains
 

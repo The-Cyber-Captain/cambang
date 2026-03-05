@@ -4,7 +4,6 @@
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
-#include "godot/cambang_state_snapshot.h"
 #include "godot/cambang_server_tick_node.h"
 
 #include "imaging/broker/provider_broker.h"
@@ -172,26 +171,64 @@ void CamBANGServer::_on_godot_tick(double delta) {
     }
   }
 
-  // Poll the core-published snapshot buffer.
-  auto snap = snapshot_buffer_.snapshot_copy();
-  if (!snap) {
+  // Godot-facing snapshot truth is tick-bounded.
+  // Core may publish multiple intermediate snapshots between Godot ticks.
+  // We emit at most once per tick, and only if *anything* has changed since
+  // the previous tick (as indicated by the core publish sequence marker).
+  const uint64_t published_seq = runtime_.published_seq();
+  if (published_seq == last_seen_published_seq_) {
     return;
   }
 
-  // Emit on every published snapshot (schema v1): keyed by (gen, version).
-  if (has_emitted_snapshot_ && snap->gen == last_emitted_gen_ && snap->version == last_emitted_version_) {
+  // Something changed since last tick. Latch the latest core snapshot.
+  auto snap = snapshot_buffer_.snapshot_copy();
+  if (!snap) {
+    // A publish marker advanced but the buffer has no snapshot yet.
+    // This should be extremely rare (publisher ordering), but be defensive.
+    last_seen_published_seq_ = published_seq;
     return;
+  }
+  last_seen_published_seq_ = published_seq;
+
+  // Establish / reset tick-bounded counters on new gen.
+  // gen is defined from the Godot-facing perspective but still aligns with
+  // core generations: it advances on each successful start() STOPPED->LIVE.
+  if (!has_godot_counters_ || snap->gen != godot_gen_) {
+    has_godot_counters_ = true;
+    godot_gen_ = snap->gen;
+    godot_version_ = 0;
+    godot_topology_version_ = 0;
+    last_emitted_topology_sig_ = runtime_.published_topology_sig();
+  } else {
+    // Tick-bounded version increments on every emission within a gen.
+    ++godot_version_;
+
+    // topology_version increments only when the observed topology differs
+    // from the topology at the previous emission.
+    const uint64_t topo_sig = runtime_.published_topology_sig();
+    if (topo_sig != last_emitted_topology_sig_) {
+      last_emitted_topology_sig_ = topo_sig;
+      ++godot_topology_version_;
+    }
   }
 
   latest_ = snap;
-  last_emitted_gen_ = snap->gen;
-  last_emitted_version_ = snap->version;
-  has_emitted_snapshot_ = true;
+
+  // Export as a struct-like Variant graph for Godot inspection.
+  latest_export_ = export_snapshot_to_godot(*snap, godot_gen_, godot_version_, godot_topology_version_);
+  has_latest_export_ = true;
 
   emit_signal("state_published",
-              static_cast<uint64_t>(snap->gen),
-              static_cast<uint64_t>(snap->version),
-              static_cast<uint64_t>(snap->topology_version));
+              static_cast<uint64_t>(godot_gen_),
+              static_cast<uint64_t>(godot_version_),
+              static_cast<uint64_t>(godot_topology_version_));
+}
+
+godot::Variant CamBANGServer::get_state_snapshot() const {
+  if (!has_latest_export_) {
+    return godot::Variant();
+  }
+  return latest_export_;
 }
 godot::Error CamBANGServer::set_provider_mode(const godot::String& mode) {
   // Provider mode is latched per runtime session; changes require STOPPED.
@@ -267,15 +304,6 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
 
   return true;
 }
-#if 0
-godot::Ref<cambang::CamBANGStateSnapshotGD> CamBANGServer::get_state_snapshot() const {
-  godot::Ref<CamBANGStateSnapshotGD> out;
-  out.instantiate();
-  out->_init_from_core(latest_);
-  return out;
-}
-#endif
-
 void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGServer::start);
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGServer::stop);

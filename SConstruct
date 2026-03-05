@@ -370,7 +370,7 @@ if env["gde"]:
         os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_server_tick_node.cpp"),
-        os.path.join(gde_obj_dir, "godot", "cambang_state_snapshot.cpp"),
+        os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
     ]
 
     if env["dev_nodes"]:

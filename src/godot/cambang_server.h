@@ -5,12 +5,14 @@
 
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
 #include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
-#include "godot/cambang_state_snapshot.h"
+
+#include "godot/state_snapshot_export.h"
 
 #include "imaging/broker/mode.h"
 
@@ -76,18 +78,10 @@ public:
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
-  // Return a Godot wrapper snapshot object. Safe to call on the Godot main thread.
-  godot::Ref<cambang::CamBANGStateSnapshotGD> get_state_snapshot() const {
-    // "No snapshot yet" is represented as an invalid Ref.
-    if (!latest_) {
-      return {};
-    }
-
-    godot::Ref<cambang::CamBANGStateSnapshotGD> out;
-    out.instantiate();
-    out->_init_from_core(latest_);
-    return out;
-  }
+  // Return the latest Godot-facing snapshot struct (as a Variant).
+  // - Before the first publish, returns NIL.
+  // - After publish, returns a Dictionary matching docs/state_snapshot.md.
+  godot::Variant get_state_snapshot() const;
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
@@ -114,9 +108,21 @@ private:
 
   // Godot-thread cached snapshot.
   std::shared_ptr<const CamBANGStateSnapshot> latest_;
-  bool has_emitted_snapshot_ = false;
-  uint64_t last_emitted_gen_ = 0;
-  uint64_t last_emitted_version_ = 0;
+
+  // Godot-thread cached exported snapshot (struct-like Variant graph).
+  bool has_latest_export_ = false;
+  godot::Dictionary latest_export_;
+
+  // Godot-facing tick-bounded counters (truth model for state_published).
+  // These are not the core's internal publication counters.
+  bool has_godot_counters_ = false;
+  uint64_t godot_gen_ = 0;
+  uint64_t godot_version_ = 0;
+  uint64_t godot_topology_version_ = 0;
+  uint64_t last_emitted_topology_sig_ = 0;
+
+  // O(1) "changed since last Godot tick" marker: core publish sequence.
+  uint64_t last_seen_published_seq_ = 0;
 
   void _ensure_tick_installed();
   bool _ensure_provider_attached_and_initialized();

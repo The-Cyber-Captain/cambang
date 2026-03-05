@@ -3,7 +3,7 @@
 [sub_resource type="GDScript" id="GDScript_pr61q"]
 resource_name = "connect_snapshot_view"
 script/source = "extends Node
-func _ready():
+func _ready():	
 	CamBANGServer.state_published.connect(_on_state_published)
 	print(\"Calling CamBANGServer.start()\")
 	CamBANGServer.start()
@@ -11,7 +11,7 @@ func _ready():
 
 func _on_state_published(gen, version, topology_ver):
 	var snap = CamBANGServer.get_state_snapshot()
-	print(\"published gen=\", gen, \" version=\", version, \" topo=\", topology_ver,
+	print(\"Frm: \", Engine.get_frames_drawn(), \"	published gen=\", gen, \" version=\", version, \" topo=\", topology_ver,
 		  \" schema=\", snap.get_schema_version(),
 		  \" snap_gen=\", snap.get_gen(),
 		  \" snap_topo=\", snap.get_topology_version(),

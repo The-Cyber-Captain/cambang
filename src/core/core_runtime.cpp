@@ -233,6 +233,10 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 
+    // Publish-side topology signature for boundary diffing (Godot-facing).
+    // This is updated on every successful snapshot build/publish.
+    published_topology_sig_.store(topo_sig, std::memory_order_release);
+
     // topology_version is zero-indexed within each gen.
     // The first published snapshot establishes the baseline topology_version=0.
     if (!has_topology_sig_) {
@@ -255,6 +259,10 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
     // Advance per-generation publish counter only after snapshot assembly succeeds.
     ++version_;
+
+    // Core-side publish marker used by the Godot-facing tick bridge to detect
+    // "changed since last tick" in O(1).
+    published_seq_.fetch_add(1, std::memory_order_acq_rel);
 
     if (IStateSnapshotPublisher* pub = snapshot_publisher_.load(std::memory_order_acquire)) {
       pub->publish(std::move(shared));

@@ -22,6 +22,11 @@ They are authoritative and must not be contradicted by other documents.
 
 Note:
 
+Godot-facing snapshot publication uses a **tick-bounded observable truth**
+model (≤ 1 `state_published` emission per Godot tick when changed). This
+contract is defined in `state_snapshot.md` and the boundary mechanics are
+described in `core_runtime_model.md`.
+
 Validation layering (core invariant validation vs platform integration
 validation) is defined in `core_runtime_model.md`.
 

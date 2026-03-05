@@ -24,12 +24,23 @@ Core publishes a new snapshot whenever relevant state changes.
 
 -   `state_published(gen, version, topology_version)`
 
+**Godot-facing truth model (tick-bounded)**
+
+The snapshot *contract* exposed to Godot is **tick-bounded observable truth**:
+
+- `CamBANGServer.state_published(...)` is emitted **at most once per Godot tick**.
+- It is emitted **only if** there has been any change in the observable snapshot
+  since the previous tick.
+- Core/native may publish intermediate transient states faster than ticks.
+  Those intermediate states are **not** part of the Godot-facing contract.
+  The Godot boundary coalesces them into a single per-tick observable snapshot.
+
 ### 1.2.x Pre-publication state
 
 Before the first publish in a new core generation (`gen`), no snapshot exists.
 
-Godot-facing `CamBANGServer.get_state_snapshot()` may return an invalid
-reference (null) until the first snapshot is published.
+Godot-facing `CamBANGServer.get_state_snapshot()` returns **NIL** until the
+first snapshot is published.
 
 The first published snapshot establishes the baseline state for the
 session (see §1.3).
@@ -37,11 +48,23 @@ session (see §1.3).
 
 ### 1.3 Counters (`gen`, `version`, `topology_version`)
 
-CamBANG exposes three counters in the snapshot header. They represent two orthogonal axes:
+CamBANG exposes three counters in the snapshot header.
 
-- `gen` — **core generation** counter (app/server lifetime). Increments when `CamBANGServer.start()` successfully begins a new core loop after a complete stop/teardown. `gen` is monotonic across the app/server lifetime and does not reset across stop/start cycles.
-- `version` — **publication version** within the current `gen`. Increments on **every** published snapshot and is zero-indexed within each `gen`.
-- `topology_version` — **structural version** within the current `gen`. Increments only when the structural hierarchy changes (see §8) and is zero-indexed within each `gen`.
+These counters are defined from the **Godot-facing tick-bounded perspective** (not
+from core-internal publication mechanics):
+
+- `gen` — zero-indexed generation counter. Advances by **+1** on each successful
+  `CamBANGServer.start()` that transitions from **stopped → running**.
+
+- `version` — zero-indexed **tick-bounded publication** counter within the current
+  `gen`. It increments by **+1** for each emitted `state_published(...)` signal
+  within that `gen`. It is **contiguous** (no gaps).
+
+- `topology_version` — zero-indexed **tick-bounded structural** counter within the
+  current `gen`. It increments by **+1** only on ticks where the **observed topology
+  differs** from the topology at the previous emission.
+
+  It never changes without `version` also changing.
 
 Baseline invariants (per `gen`):
 
@@ -49,6 +72,29 @@ Baseline invariants (per `gen`):
 - The first published snapshot in a new `gen` has `topology_version = 0`.
 
 There is no published snapshot prior to `version = 0` for a given `gen`.
+
+### 1.3.x Baseline publish on start (Godot-facing)
+
+On a successful start that creates a new `gen`, there must be a valid coherent
+snapshot corresponding to:
+
+- `(gen, version=0, topology_version=0)`
+
+and a `state_published(gen, 0, 0)` emission must occur at the **first Godot tick
+where the running state becomes observable**.
+
+This remains true even if core publishes before the Godot tick node is active:
+the Godot boundary must latch the baseline snapshot and emit it on the first
+eligible tick.
+
+### 1.3.y Snapshot access contract (`get_state_snapshot()`)
+
+`CamBANGServer.get_state_snapshot()` remains **parameter-less**.
+
+- Inside the synchronous `state_published` handler, it returns the snapshot
+  corresponding to that emission (self-consistent with the signal arguments).
+- Outside the handler, it returns the most recently latched snapshot (latest
+  observable truth).
 
 ### 1.4 Schema versioning
 
@@ -336,11 +382,17 @@ root_id.
 
 ### 8.0 `gen`
 
-`gen` increments only when `CamBANGServer.start()` successfully begins a new core loop after a complete stop/teardown.
+`gen` increments only when `CamBANGServer.start()` successfully begins a new
+running session after a complete stop/teardown.
+
+`gen` is defined from the Godot-facing perspective (tick-bounded observation),
+but aligns 1:1 with core generations because `start()` is the authoritative
+boundary operation.
 
 ### 8.1 `version`
 
-`version` increments on any snapshot publish, including:
+`version` increments on any **tick-bounded observable** snapshot publish
+(i.e., any `state_published(...)` emission), including:
 
 - `phase` changes
 - `mode` changes
@@ -351,7 +403,8 @@ root_id.
 
 ### 8.2 `topology_version`
 
-`topology_version` increments only when structural hierarchy changes, including:
+`topology_version` increments only on ticks where the **observed topology differs
+from the topology at the previous emission**, including cases such as:
 
 - rig created/destroyed
 - device instance created/destroyed (`instance_id` lineage changes)
