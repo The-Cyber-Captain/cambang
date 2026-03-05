@@ -254,6 +254,53 @@ like `capture_timestamp`, `tick_ns`, and `domain`.
 -   `state_published(gen, topology_gen)` --- emitted by `CamBANGServer`
     when a new snapshot is published.
 
+## Core structural nouns
+
+Within the CamBANG core architecture the following nouns have
+canonical meanings.
+
+| Term | Meaning |
+|-----|--------|
+| **Provider** | Backend implementation controlling a camera API |
+| **Device** | Opened camera hardware instance |
+| **Stream** | Configured capture pipeline producing frames |
+
+These terms are provider-agnostic abstractions.
+
+Platform terminology such as:
+
+- session
+- reader
+- pipeline
+- track
+
+remains provider-internal.
+
+### Godot-facing naming
+
+Godot-facing classes are prefixed with `CamBANG` to avoid collisions
+with generic engine terminology.
+
+Examples:
+
+| Core concept | Godot class |
+|-------------|-------------|
+| Device | `CamBANGDevice` |
+| Stream | `CamBANGStream` |
+| Rig | `CamBANGRig` |
+
+### Native object registry naming
+
+Native object registry types use the same canonical nouns:
+
+- `Provider`
+- `Device`
+- `Stream`
+- `FrameProducer`
+
+These names represent ownership structure rather than specific
+platform objects.
+
 ------------------------------------------------------------------------
 
 ## 6. Lifecycle `phase` vs operational `mode`

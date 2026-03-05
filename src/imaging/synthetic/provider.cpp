@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 #include "pixels/pattern/pattern_render_target.h"
 
@@ -18,6 +20,20 @@ uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   // period = 1s * den / num
   const uint64_t one_sec = 1'000'000'000ull;
   return (one_sec * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
+}
+
+static bool banners_enabled() noexcept {
+  const char* v = std::getenv("CAMBANG_BANNERS");
+  // Spec: CAMBANG_BANNERS=0 disables banners.
+  return !(v && v[0] == '0' && v[1] == '\0');
+}
+
+static const char* role_to_string(SyntheticRole r) noexcept {
+  switch (r) {
+    case SyntheticRole::Nominal: return "nominal";
+    case SyntheticRole::Timeline: return "timeline";
+  }
+  return "unknown";
 }
 
 } // namespace
@@ -59,7 +75,98 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
 
+  if (banners_enabled()) {
+    std::fprintf(stdout, "[Synthetic] role=%s\n", role_to_string(cfg_.synthetic_role));
+    std::fflush(stdout);
+  }
+
+  // Report provider native object (BOUND). Root/owners are 0 at provider scope.
+  provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
+  if (callbacks_) {
+    NativeObjectCreateInfo info{};
+    info.native_id = provider_native_id_;
+    info.type = static_cast<uint32_t>(NativeObjectType::Provider);
+    info.root_id = 0;
+    info.created_ns = clock_.now_ns();
+    callbacks_->on_native_object_created(info);
+  }
+
   return ProviderResult::success();
+}
+
+void SyntheticProvider::timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id) {
+  SyntheticScheduledEvent ev{};
+  ev.at_ns = at_ns;
+  ev.seq = ++timeline_seq_;
+  ev.type = type;
+  ev.stream_id = stream_id;
+  timeline_q_.push(ev);
+}
+
+void SyntheticProvider::timeline_pump_() {
+  const uint64_t now = clock_.now_ns();
+  const uint64_t period = fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
+  if (period == 0) {
+    return;
+  }
+
+  while (!timeline_q_.empty()) {
+    const SyntheticScheduledEvent ev = timeline_q_.top();
+    if (ev.at_ns > now) {
+      break;
+    }
+    timeline_q_.pop();
+
+    switch (ev.type) {
+      case SyntheticEventType::EmitFrame: {
+        auto it = streams_.find(ev.stream_id);
+        if (it == streams_.end()) {
+          break;
+        }
+        StreamState& s = it->second;
+        if (!s.created || !s.started) {
+          break;
+        }
+        // Execute the same frame emission path as nominal, but driven by explicit
+        // scheduled event timestamps.
+        emit_one_frame_(s, ev.at_ns);
+        s.next_due_ns = ev.at_ns + period;
+        // Deterministic continuation: schedule the next frame.
+        timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
+        break;
+      }
+
+      case SyntheticEventType::StartStream: {
+        // Scenario-driven start. This is primarily intended for Timeline-role
+        // regression tests and for future scenario execution features.
+        auto it = streams_.find(ev.stream_id);
+        if (it == streams_.end()) {
+          break;
+        }
+        StreamState& s = it->second;
+        if (!s.created || s.started) {
+          break;
+        }
+        // Reuse the normal core-requested start path.
+        (void)start_stream(ev.stream_id, s.req.profile, s.picture);
+        break;
+      }
+
+      case SyntheticEventType::StopStream: {
+        // Scenario-driven stop (e.g. simulating disconnect / unexpected stop).
+        auto it = streams_.find(ev.stream_id);
+        if (it == streams_.end()) {
+          break;
+        }
+        StreamState& s = it->second;
+        if (!s.created || !s.started) {
+          break;
+        }
+        (void)stop_stream(ev.stream_id);
+        break;
+      }
+    }
+  }
 }
 
 ProviderResult SyntheticProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
@@ -93,8 +200,11 @@ bool SyntheticProvider::is_known_hardware_id_(const std::string& hardware_id) co
   return static_cast<uint32_t>(idx) < cfg_.endpoint_count;
 }
 
-uint64_t SyntheticProvider::next_native_id_() {
-  return native_id_seq_++;
+uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
+  if (!callbacks_) {
+    return 0;
+  }
+  return callbacks_->allocate_native_id(type);
 }
 
 void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
@@ -103,7 +213,7 @@ void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   }
   NativeObjectCreateInfo info{};
   info.native_id = d.native_id;
-  info.type = 1; // v1: provider-owned enum placeholder (document later)
+  info.type = static_cast<uint32_t>(NativeObjectType::Device);
   info.root_id = d.root_id;
   info.owner_device_instance_id = d.device_instance_id;
   info.created_ns = clock_.now_ns();
@@ -143,7 +253,7 @@ ProviderResult SyntheticProvider::open_device(
   d.device_instance_id = device_instance_id;
   d.root_id = root_id;
   d.open = true;
-  d.native_id = next_native_id_();
+  d.native_id = alloc_native_id_(NativeObjectType::Device);
 
   emit_native_create_device_(d);
   callbacks_->on_device_opened(device_instance_id);
@@ -214,13 +324,13 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
   s.started = false;
   s.frame_index = 0;
   s.next_due_ns = 0;
-  s.native_id = next_native_id_();
+  s.native_id = alloc_native_id_(NativeObjectType::Stream);
 
   // Report stream native object.
   if (callbacks_) {
     NativeObjectCreateInfo info{};
     info.native_id = s.native_id;
-    info.type = 2; // v1 placeholder
+    info.type = static_cast<uint32_t>(NativeObjectType::Stream);
     info.root_id = dit->second.root_id;
     info.owner_device_instance_id = req.device_instance_id;
     info.owner_stream_id = req.stream_id;
@@ -301,8 +411,29 @@ ProviderResult SyntheticProvider::start_stream(
   }
 
   s.started = true;
+  s.producing = true;
+  s.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
+  // Report FrameProducer native object (PRODUCING) for introspection.
+  if (callbacks_) {
+    NativeObjectCreateInfo info{};
+    // root_id is device lineage root_id.
+    const auto dit = devices_.find(s.req.device_instance_id);
+    info.root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
+    info.native_id = s.frame_producer_native_id;
+    info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
+    info.owner_device_instance_id = s.req.device_instance_id;
+    info.owner_stream_id = s.req.stream_id;
+    info.created_ns = clock_.now_ns();
+    callbacks_->on_native_object_created(info);
+  }
+
   s.frame_index = 0;
+  // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
+  if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    // Timeline role: drive emission via explicit scheduled events.
+    timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, stream_id);
+  }
   callbacks_->on_stream_started(stream_id);
   return ProviderResult::success();
 }
@@ -318,7 +449,14 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   if (!it->second.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  it->second.started = false;
+  auto& s = it->second;
+  s.started = false;
+  if (s.producing) {
+    // Production has stopped immediately in this provider.
+    emit_native_destroy_(s.frame_producer_native_id);
+    s.producing = false;
+    s.frame_producer_native_id = 0;
+  }
   callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
@@ -387,6 +525,18 @@ ProviderResult SyntheticProvider::shutdown() {
     (void)close_device(devices_.begin()->first);
   }
 
+  // Clear any pending timeline events.
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+
+  // Provider native object (BOUND -> ABSENT).
+  if (provider_native_id_ != 0) {
+    emit_native_destroy_(provider_native_id_);
+    provider_native_id_ = 0;
+  }
+
   initialized_ = false;
   callbacks_ = nullptr;
   shutting_down_ = false;
@@ -400,7 +550,7 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   slot->in_use.store(false, std::memory_order_release);
 }
 
-void SyntheticProvider::emit_one_frame_(StreamState& s) {
+void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
   if (!callbacks_) {
     return;
   }
@@ -450,7 +600,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
 
   PatternOverlayData ov{};
   ov.frame_index = s.frame_index;
-  ov.timestamp_ns = clock_.now_ns();
+  ov.timestamp_ns = scheduled_capture_ns;
   ov.stream_id = s.req.stream_id;
 
   s.renderer.render_into(spec, dst, ov);
@@ -462,7 +612,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s) {
   fv.width = w;
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
-  fv.capture_timestamp.value = clock_.now_ns();
+  fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
   fv.data = slot->bytes.data();
@@ -489,7 +639,8 @@ void SyntheticProvider::emit_due_frames_() {
     }
     // Emit as many frames as are due (catch-up) in virtual time.
     while (s.next_due_ns <= now) {
-      emit_one_frame_(s);
+      const uint64_t scheduled = s.next_due_ns;
+      emit_one_frame_(s, scheduled);
       s.next_due_ns += period;
     }
   }
@@ -501,7 +652,11 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   }
   // v1: only VirtualTime is implemented.
   clock_.advance(dt_ns);
-  emit_due_frames_();
+  if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    timeline_pump_();
+  } else {
+    emit_due_frames_();
+  }
 }
 
 } // namespace cambang

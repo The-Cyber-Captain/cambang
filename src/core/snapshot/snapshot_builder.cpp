@@ -4,6 +4,7 @@
 
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
+#include "core/core_native_object_registry.h"
 
 namespace cambang {
 
@@ -94,8 +95,41 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         }
     }
 
-    // Rigs, native_objects, detached_root_ids are not implemented in this scaffolding slice.
-    return snap;
+
+// Native objects (provider-reported lifecycle truth).
+if (in.native_objects) {
+    snap.native_objects.reserve(in.native_objects->all().size());
+    for (const auto& [nid, rec] : in.native_objects->all()) {
+        (void)nid;
+        NativeObjectRecord n;
+        n.native_id = rec.native_id;
+        n.type = rec.type;
+        n.root_id = rec.root_id;
+
+        if (!rec.created) {
+            n.phase = CBLifecyclePhase::CREATED;
+        } else if (rec.destroyed) {
+            n.phase = CBLifecyclePhase::DESTROYED;
+        } else {
+            n.phase = CBLifecyclePhase::LIVE;
+        }
+
+        n.owner_rig_id = 0;
+        n.owner_device_instance_id = 0;
+        n.owner_stream_id = 0;
+
+        n.created_ns = rec.created_ns;
+        n.destroyed_ns = rec.destroyed_ns;
+
+        n.bytes_allocated = 0;
+        n.buffers_in_use = 0;
+
+        snap.native_objects.push_back(std::move(n));
+    }
+}
+
+// Rigs and detached_root_ids are not implemented in this scaffolding slice.
+return snap;
 }
 
 uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {

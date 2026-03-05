@@ -41,13 +41,18 @@ public:
   // sink is invoked ONLY on the core thread.
   // It is responsible for consuming the CoreCommand (e.g., dispatching).
   ProviderCallbackIngress(CoreThread* core_thread,
-                          std::function<void(CoreCommand&&)> sink);
+                          std::function<void(CoreCommand&&)> sink,
+                          std::function<uint64_t()> core_monotonic_now_ns);
   ~ProviderCallbackIngress() override = default;
 
   ProviderCallbackIngress(const ProviderCallbackIngress&) = delete;
   ProviderCallbackIngress& operator=(const ProviderCallbackIngress&) = delete;
 
   Stats stats_copy() const noexcept;
+
+  // IProviderCallbacks (core-issued services)
+  uint64_t allocate_native_id(NativeObjectType type) override;
+  uint64_t core_monotonic_now_ns() override;
 
   // IProviderCallbacks
   void on_device_opened(uint64_t device_instance_id) override;
@@ -75,6 +80,9 @@ private:
 
   CoreThread* core_thread_ = nullptr; // non-owning
   std::function<void(CoreCommand&&)> sink_;
+  std::function<uint64_t()> core_monotonic_now_ns_;
+
+  std::atomic<uint64_t> native_id_seq_{1};
 
   std::atomic<uint64_t> commands_dropped_full_{0};
   std::atomic<uint64_t> commands_dropped_closed_{0};

@@ -5,8 +5,24 @@
 namespace cambang {
 
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
-                                                 std::function<void(CoreCommand&&)> sink)
-    : core_thread_(core_thread), sink_(std::move(sink)) {}
+                                                 std::function<void(CoreCommand&&)> sink,
+                                                 std::function<uint64_t()> core_monotonic_now_ns)
+    : core_thread_(core_thread),
+      sink_(std::move(sink)),
+      core_monotonic_now_ns_(std::move(core_monotonic_now_ns)) {}
+
+uint64_t ProviderCallbackIngress::allocate_native_id(NativeObjectType /*type*/) {
+  // Core-issued, globally unique for this process/session.
+  // Providers may request IDs from any thread; atomic is sufficient.
+  return native_id_seq_.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64_t ProviderCallbackIngress::core_monotonic_now_ns() {
+  if (core_monotonic_now_ns_) {
+    return core_monotonic_now_ns_();
+  }
+  return 0;
+}
 
 ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexcept {
   Stats s;

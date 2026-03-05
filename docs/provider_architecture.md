@@ -225,6 +225,150 @@ On destruction, provider must report:
 Provider must never "forget" to report destruction; missing destroys are
 treated as leaks in diagnostics.
 
+## Platform camera stacks overview
+
+CamBANG integrates with multiple camera APIs across platforms.
+
+Although these APIs use different terminology and architectural
+structures, they generally expose the same underlying lifecycle
+concepts: a device is opened, a capture pipeline is configured,
+and frames are produced from that pipeline.
+
+Examples of supported or anticipated camera stacks include:
+
+| Platform | Camera stack |
+|--------|--------------|
+| Android | Camera2 |
+| Android | USB Video Class (UVC) via Camera2 external camera support |
+| Android | Userspace UVC via USB host APIs |
+| Windows | Media Foundation |
+| Linux | V4L2 |
+| Apple | AVFoundation |
+| Web | MediaCapture / WebRTC |
+
+These stacks differ in terminology (session, pipeline, reader,
+track, etc.), but all expose the same fundamental ownership
+boundaries.
+
+CamBANG therefore standardizes these concepts into a
+provider-agnostic lifecycle model described below.
+
+Camera2 is used as the **reference design** for lifecycle semantics.
+Other providers should adapt their platform behaviour to fit this
+model where possible.
+
+## Cross-platform ownership model
+
+CamBANG defines a provider-agnostic ownership hierarchy used by all
+providers regardless of platform.
+
+This model reflects common structural patterns across camera APIs.
+
+### Structural ownership layers
+
+Providers report native objects according to the following model.
+
+| CamBANG object | Meaning |
+|----------------|--------|
+| **Provider** | Core is bound to a provider backend instance. |
+| **Device** | Provider owns an opened camera device handle. |
+| **Stream** | Provider owns a configured capture pipeline capable of producing frames. |
+
+Typical platform mappings include:
+
+| Platform | Device | Stream |
+|--------|--------|--------|
+| Camera2 | `ACameraDevice` | `ACameraCaptureSession` |
+| Media Foundation | `IMFMediaSource` | `IMFSourceReader` pipeline |
+| V4L2 | open `/dev/videoX` FD | STREAMON buffer queue |
+| AVFoundation | `AVCaptureDevice` | `AVCaptureSession` |
+| WebRTC | camera track source | `MediaStreamTrack` pipeline |
+
+Platform-specific objects remain provider-internal.
+
+Core and snapshots expose only the abstract CamBANG ownership model.
+
+### Operational objects
+
+Some providers expose additional operational objects.
+
+| Object | Meaning |
+|------|------|
+| **FrameProducer** | A stream is actively producing frames. |
+
+`FrameProducer` is per-stream and optional.
+
+Typical meanings:
+
+| Platform | FrameProducer meaning |
+|---------|----------------------|
+| Camera2 | repeating request active |
+| Media Foundation | ReadSample loop active |
+| V4L2 | STREAMON state |
+| Synthetic | pattern renderer producing frames |
+
+Synthetic and Stub providers implement FrameProducer for
+deterministic testing and diagnostics.
+
+Platform providers may omit FrameProducer if it does not provide
+meaningful visibility.
+
+### Ownership boundaries
+
+Providers must create and destroy native object records at the
+actual resource ownership boundaries.
+
+| Object | Created when | Destroyed when |
+|------|---------------|---------------|
+| Provider | backend attaches to Core | provider shutdown completes |
+| Device | device handle successfully opened | device handle fully released |
+| Stream | capture pipeline created | pipeline fully released |
+| FrameProducer | frame production enabled | frame production disabled |
+
+Providers must not emit destruction events when teardown is merely
+requested.
+
+Destruction must be reported only when the resource has actually
+been released.
+
+### Orphan visibility
+
+Native object records are not automatically cascaded.
+
+If a child resource survives the destruction of its parent
+(e.g. in-flight buffers or a delayed teardown), the registry
+must continue to reflect that object.
+
+Such objects appear as **detached roots** in snapshots.
+
+This behaviour is intentional and assists lifecycle diagnostics.
+
+### External USB cameras (UVC)
+
+USB Video Class (UVC) cameras may appear through different API layers
+depending on platform support.
+
+On Android in particular two integration paths are common.
+
+| Integration path | Description |
+|------------------|-------------|
+| Camera2 external camera | UVC webcams exposed through the Camera2 API |
+| Userspace UVC access | Applications access UVC cameras via USB host APIs |
+
+Both paths map naturally to the CamBANG ownership model.
+
+| CamBANG object | Example mapping |
+|----------------|----------------|
+| Device | `ACameraDevice` or claimed USB device |
+| Stream | `ACameraCaptureSession` or configured UVC streaming interface |
+| FrameProducer | repeating request or active USB transfer loop |
+
+Where Camera2 external camera support is available it is preferred,
+as Camera2 defines the reference lifecycle model used by CamBANG.
+
+If such support is absent, a dedicated UVC provider may be
+implemented while still conforming to the same ownership model.
+
 ------------------------------------------------------------------------
 
 ## 6. Pixel format mapping (FourCC)

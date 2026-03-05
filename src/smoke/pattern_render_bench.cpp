@@ -1,3 +1,25 @@
+/*
+CamBANG Maintainer Utility
+
+Tool: pattern_render_bench
+
+Purpose
+-------
+Benchmarks the CPU pattern renderer used by SyntheticProvider.
+
+Measures frame generation throughput and approximate memory bandwidth for
+different patterns and resolutions.
+
+Category
+--------
+Benchmark (maintainer).
+
+Non-Goals
+---------
+- Not a core invariant smoke test
+- Not a user-facing test harness (Godot)
+*/
+
 #include <chrono>
 #include <cstdint>
 #include <cstring>

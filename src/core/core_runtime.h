@@ -8,6 +8,7 @@
 
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
+#include "core/core_native_object_registry.h"
 #include "core/core_runtime_state.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
@@ -200,6 +201,7 @@ private:
   CoreThread core_thread_;
   CoreDeviceRegistry devices_;
   CoreStreamRegistry streams_;
+  CoreNativeObjectRegistry native_objects_;
   std::uint64_t gen_ = 0;
   std::uint64_t topology_gen_ = 0;
   uint64_t last_topology_sig_ = 0;

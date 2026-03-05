@@ -1,3 +1,27 @@
+/*
+CamBANG Maintainer Utility
+
+Tool: core_spine_smoke
+
+Purpose
+-------
+Validates the minimal Core runtime invariants using the stub provider.
+
+This executable is a fast CI gate: it proves the core thread can start,
+publish snapshots, and attach a provider without involving platform backends
+or SyntheticProvider.
+
+Category
+--------
+Smoke test (maintainer/CI).
+
+Non-Goals
+---------
+- Not a performance benchmark
+- Not a user-facing test harness (Godot)
+- SyntheticProvider must not be introduced here
+*/
+
 #include <chrono>
 #include <atomic>
 #include <cstdint>

@@ -5,6 +5,7 @@
 
 #include "core/core_mailbox.h"
 #include "core/core_device_registry.h"
+#include "core/core_native_object_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_frame_sink.h"
 
@@ -32,8 +33,10 @@ struct CoreDispatchStats final {
 // provider frames immediately (release-on-drop at the dispatch boundary).
 class CoreDispatcher final {
 public:
-  explicit CoreDispatcher(CoreStreamRegistry* streams, CoreDeviceRegistry* devices)
-      : streams_(streams), devices_(devices) {}
+  CoreDispatcher(CoreStreamRegistry* streams,
+               CoreDeviceRegistry* devices,
+               CoreNativeObjectRegistry* native_objects)
+      : streams_(streams), devices_(devices), native_objects_(native_objects) {}
 
   ~CoreDispatcher() = default;
 
@@ -49,6 +52,13 @@ public:
   // Must be called ONLY on the core thread.
   void reset_stats() noexcept { stats_ = {}; }
 
+  // Returns true if any dispatched command mutated relevant state that should trigger snapshot publication.
+  bool consume_relevant_state_changed() noexcept {
+    const bool v = relevant_state_changed_;
+    relevant_state_changed_ = false;
+    return v;
+  }
+
   // Install an optional core-thread sink for provider frames.
   // If unset, frames are released immediately (release-on-drop).
   // Must be called before the core thread starts, or from the core thread.
@@ -57,6 +67,9 @@ public:
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
   CoreDeviceRegistry* devices_ = nullptr; // non-owning; core-thread-only
+  CoreNativeObjectRegistry* native_objects_ = nullptr; // non-owning; core-thread-only
+
+  bool relevant_state_changed_ = false;
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreDispatchStats stats_{};
 };

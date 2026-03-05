@@ -24,13 +24,18 @@ CoreRuntime::CoreRuntime()
       gen_(0),
       topology_gen_(0),
       last_topology_sig_(0),
-      dispatcher_(&streams_, &devices_),
+      dispatcher_(&streams_, &devices_, &native_objects_),
       ingress_(&core_thread_, [this](CoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
         // Provider callbacks are "facts"; we enqueue them and process them before requests
         // on each core pump tick.
         assert(core_thread_.is_core_thread());
         enqueue_provider_fact(std::move(cmd));
+      }, [this]() -> uint64_t {
+        // Core monotonic timebase: ns since core epoch_ (session-relative).
+        const auto now = std::chrono::steady_clock::now();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }) {
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only latest-frame sink (core thread dispatch path).
@@ -185,6 +190,13 @@ void CoreRuntime::on_core_timer_tick() {
     dispatcher_.dispatch(std::move(cmd));
   }
 
+
+
+// If provider facts mutated relevant state, request a coalesced publish.
+if (dispatcher_.consume_relevant_state_changed()) {
+  request_publish_from_core_unchecked();
+}
+
   // 2) Drain queued requests ("what should we do").
   while (!requests_.empty()) {
     auto task = std::move(requests_.front());
@@ -205,6 +217,7 @@ void CoreRuntime::on_core_timer_tick() {
     in.devices = &devices_;
     in.streams = &streams_;
     in.ingress = &ingress_;
+    in.native_objects = &native_objects_;
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 
