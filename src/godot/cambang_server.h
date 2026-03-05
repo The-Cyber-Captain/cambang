@@ -27,8 +27,6 @@
 
 namespace cambang {
 
-class CamBANGServerTickNode;
-
 // CamBANGServer is the release-facing lifecycle owner.
 //
 // Engine singleton lifetime:
@@ -40,7 +38,7 @@ class CamBANGServerTickNode;
 //
 // Threading:
 // - CoreRuntime publishes snapshots on the core thread.
-// - Godot signals are emitted on the Godot main thread via an internal tick node.
+// - Godot signals are emitted on the Godot main thread via a SceneTree tick hook.
 class CamBANGServer final : public godot::Object {
   GDCLASS(CamBANGServer, godot::Object)
 
@@ -96,9 +94,10 @@ protected:
   static void _bind_methods();
 
 private:
-  friend class CamBANGServerTickNode;
+  // Called on the Godot main thread via the SceneTree "process_frame" signal.
+  void _on_godot_process_frame();
 
-  // Called on the Godot main thread by the internal tick node.
+  // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
 
   static CamBANGServer* singleton_;
@@ -124,9 +123,12 @@ private:
   // O(1) "changed since last Godot tick" marker: core publish sequence.
   uint64_t last_seen_published_seq_ = 0;
 
-  void _ensure_tick_installed();
+  void _ensure_tick_connected();
   bool _ensure_provider_attached_and_initialized();
-  bool tick_installed_ = false;
+
+  // SceneTree tick hook state.
+  bool tick_connected_ = false;
+  uint64_t last_tick_time_ns_ = 0;
 
   RuntimeMode provider_mode_requested_ = RuntimeMode::platform_backed;
   bool provider_mode_busy_logged_ = false;

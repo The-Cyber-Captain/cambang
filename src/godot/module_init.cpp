@@ -12,7 +12,6 @@
 #include <godot_cpp/core/object.hpp>
 
 #include "godot/cambang_server.h"
-#include "godot/cambang_server_tick_node.h"
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
 #include "godot/dev/cambang_dev_node.h"
@@ -26,7 +25,6 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     }
 
     godot::ClassDB::register_class<cambang::CamBANGServer>();
-    godot::ClassDB::register_class<cambang::CamBANGServerTickNode>();
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
     godot::ClassDB::register_class<cambang::CamBANGDevNode>();
@@ -35,7 +33,8 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
 
     // Create and register the Engine singleton.
     // Note: Engine singletons are not part of the scene tree; they do not receive _process.
-    // We install an internal tick node under /root to drive main-thread polling/signal emission.
+    // CamBANGServer connects to SceneTree's per-frame signal to perform main-thread
+    // snapshot draining and tick-bounded signal emission.
     g_server = memnew(cambang::CamBANGServer);
     godot::Engine::get_singleton()->register_singleton("CamBANGServer", g_server);
 }

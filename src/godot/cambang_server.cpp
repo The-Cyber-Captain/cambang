@@ -2,9 +2,10 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
+#include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
-#include "godot/cambang_server_tick_node.h"
+#include <chrono>
 
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
@@ -86,8 +87,8 @@ void CamBANGServer::start() {
     }
   }
 
-  // Ensure the tick node exists so snapshots can be drained + signals emitted.
-  _ensure_tick_installed();
+  // Ensure the SceneTree tick hook exists so snapshots can be drained + signals emitted.
+  _ensure_tick_connected();
 
   // Explicit user action: do not auto-start on launch.
   runtime_.start();
@@ -116,38 +117,40 @@ ProviderBroker* CamBANGServer::provider_broker_for_dev() const noexcept {
 }
 #endif
 
-  void CamBANGServer::_ensure_tick_installed() {
-  // If already present in scene tree, we're done.
+void CamBANGServer::_ensure_tick_connected() {
+  if (tick_connected_) {
+    return;
+  }
+
+  // Connect to SceneTree's per-frame tick. This is the cleanest way for an
+  // Engine singleton (not in the scene tree) to receive a main-thread tick.
   godot::MainLoop* ml = godot::Engine::get_singleton()->get_main_loop();
   godot::SceneTree* tree = godot::Object::cast_to<godot::SceneTree>(ml);
   if (!tree) {
     return;
   }
-  godot::Window* root = tree->get_root();
-  if (!root) {
-    return;
+
+  // process_frame is emitted once per rendered frame (Godot main thread).
+  // It has no args; we compute delta locally.
+  godot::Callable cb(this, "_on_godot_process_frame");
+  tree->connect("process_frame", cb);
+
+  tick_connected_ = true;
+  last_tick_time_ns_ = 0;
+}
+
+void CamBANGServer::_on_godot_process_frame() {
+  using clock = std::chrono::steady_clock;
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count());
+
+  double delta_s = 0.0;
+  if (last_tick_time_ns_ != 0 && now_ns >= last_tick_time_ns_) {
+    delta_s = static_cast<double>(now_ns - last_tick_time_ns_) / 1'000'000'000.0;
   }
+  last_tick_time_ns_ = now_ns;
 
-  if (root->get_node_or_null(godot::NodePath("__CamBANGServerTick")) != nullptr) {
-    tick_installed_ = true;
-    return;
-  }
-
-  // If we've already scheduled installation, don't schedule again.
-  if (tick_installed_) {
-    return;
-  }
-
-  auto* tick = memnew(CamBANGServerTickNode);
-  tick->set_name("__CamBANGServerTick");
-  tick->set_process(true);
-  tick->set_process_mode(godot::Node::PROCESS_MODE_ALWAYS);
-
-  // Defer adding to avoid "Parent node is busy setting up children" during _ready().
-  root->call_deferred("add_child", tick);
-
-  // Mark as scheduled to avoid duplicates. Presence check above will confirm later.
-  tick_installed_ = true;
+  _on_godot_tick(delta_s);
 }
 
 void CamBANGServer::_on_godot_tick(double delta) {
@@ -310,6 +313,9 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("set_provider_mode", "mode"), &CamBANGServer::set_provider_mode);
   godot::ClassDB::bind_method(godot::D_METHOD("get_provider_mode"), &CamBANGServer::get_provider_mode);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
+
+  // Internal tick hook (connected to SceneTree.process_frame).
+  godot::ClassDB::bind_method(godot::D_METHOD("_on_godot_process_frame"), &CamBANGServer::_on_godot_process_frame);
 
   ADD_SIGNAL(godot::MethodInfo(
       "state_published",
