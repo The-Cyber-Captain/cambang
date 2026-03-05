@@ -348,6 +348,59 @@ The current development smoke harness uses a minimal
 simulation provider and may supersede StubProvider in
 future development phases.
 
+## 11.x Host pause semantics (SyntheticProvider timing drivers)
+
+When CamBANG runs inside a host environment (e.g. Godot), the host may
+temporarily suspend frame ticks (for example when the application is
+paused).
+
+Pause behaviour depends on the SyntheticProvider timing driver.
+
+### virtual_time
+
+When `timing_driver = virtual_time`:
+
+- Time advances **only** when the host explicitly advances synthetic
+  time (e.g. via a tick or `advance(dt_ns)` call).
+- If the host pauses and no advancement occurs, **synthetic time does not
+  progress**.
+- No scheduled events are executed during the pause.
+- Frame production, lifecycle transitions, and scenario events remain
+  pending until the next advancement.
+
+This preserves deterministic replay behaviour. Timeline scenarios and
+nominal synthetic streams simply **resume where they left off** when the
+host resumes ticking.
+
+### real_time
+
+When `timing_driver = real_time`:
+
+- Time continues to advance according to the provider’s monotonic clock,
+  independent of host ticks.
+- Scheduled events (including frame production and lifecycle events)
+  continue to occur internally while the host is paused.
+
+However, the Godot boundary remains tick-bounded (see §9.2.x):
+
+- No `state_published(...)` emissions occur while the host is not ticking.
+- When ticks resume, the boundary observes the **latest snapshot state**
+  and emits a single publish reflecting the most recent truth.
+
+Intermediate states that occurred during the pause are therefore
+coalesced by the tick-bounded observable model.
+
+### Design intent
+
+This behaviour preserves two important guarantees:
+
+- **Virtual-time determinism** for testing and scenario replay.
+- **Real-time realism** for live cadence simulation, without requiring
+  the host to tick continuously.
+
+The pause semantics do not alter the provider → core contract or the
+ordering guarantees of provider callbacks.
+
 ------------------------------------------------------------------------
 
 ## 12. Invariants summary

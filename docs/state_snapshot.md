@@ -45,6 +45,38 @@ first snapshot is published.
 The first published snapshot establishes the baseline state for the
 session (see §1.3).
 
+### 1.2.y Host pause behaviour (observable effects)
+
+Host environments such as Godot may temporarily suspend frame ticks
+(e.g. when the application is paused).
+
+Because the Godot-facing publication model is tick-bounded:
+
+- `state_published(...)` emissions occur **only when the host tick
+  executes**.
+- No emissions occur while the host is paused.
+
+Core and providers may continue to integrate internal state changes
+during this time (depending on provider timing model), but these changes
+are not observable until the next tick.
+
+When ticks resume:
+
+- `CamBANGServer` observes the latest available snapshot.
+- If observable state has changed since the last emission, a single
+  `state_published(gen, version, topology_version)` event is emitted.
+
+This means:
+
+- Multiple internal state transitions may be **coalesced** into a single
+  observable snapshot when a pause ends.
+- Snapshot counters (`version`, `topology_version`) reflect the
+  Godot-visible publication model, not the number of internal state
+  transitions.
+
+SyntheticProvider pause semantics depend on the selected timing driver
+(see `core_runtime_model.md`).
+
 
 ### 1.3 Counters (`gen`, `version`, `topology_version`)
 
