@@ -107,7 +107,7 @@ static std::shared_ptr<const CamBANGStateSnapshot> snapshot_copy(StateSnapshotBu
 }
 
 static void dump_snapshot(const CamBANGStateSnapshot& s) {
-  std::cout << "[snap] gen=" << s.gen << " topo=" << s.topology_gen << " ts=" << s.timestamp_ns
+  std::cout << "[snap] gen=" << s.gen << " ver=" << s.version << " topo=" << s.topology_version << " ts=" << s.timestamp_ns
             << " devices=" << s.devices.size() << " streams=" << s.streams.size()
             << " native_objects=" << s.native_objects.size() << "\n";
   for (const auto& st : s.streams) {

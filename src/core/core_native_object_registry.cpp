@@ -5,11 +5,13 @@ namespace cambang {
 void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
                                                        uint32_t type,
                                                        uint64_t root_id,
+                                                       uint64_t creation_gen,
                                                        uint64_t created_ns) {
   Record& r = records_[native_id];
   r.native_id = native_id;
   r.type = type;
   r.root_id = root_id;
+  r.creation_gen = creation_gen;
   r.created = true;
   r.created_ns = created_ns;
   // If a provider reports "created" again for the same native_id, keep first created_ns.

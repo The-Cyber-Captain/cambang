@@ -19,6 +19,7 @@ public:
     uint64_t native_id = 0;
     uint32_t type = 0;
     uint64_t root_id = 0;
+    uint64_t creation_gen = 0;
 
     bool created = false;
     bool destroyed = false;
@@ -27,7 +28,9 @@ public:
     uint64_t destroyed_ns = 0;
   };
 
-  void on_native_object_created(uint64_t native_id, uint32_t type, uint64_t root_id, uint64_t created_ns);
+  void on_native_object_created(uint64_t native_id, uint32_t type, uint64_t root_id,
+                              uint64_t creation_gen,
+                              uint64_t created_ns);
   void on_native_object_destroyed(uint64_t native_id, uint64_t destroyed_ns);
 
   const std::map<uint64_t, Record>& all() const noexcept { return records_; }

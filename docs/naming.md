@@ -14,7 +14,7 @@ device enumeration, rig creation, global shutdown, and access to the
 latest published state snapshot.
 
 CamBANGServer is Engine singleton; explicit start()/stop(); get_state_snapshot() may be invalid before first publish;
-state_published(gen, topology_gen) begins at 0/0.
+state_published(gen, version, topology_version) begins at version/topology_version 0/0 for each new gen.
 
 ------------------------------------------------------------------------
 
@@ -25,10 +25,8 @@ capture across multiple devices.
 
 Primary lifecycle controls:
 
--   `arm()` / `disarm()` --- place the rig into a capture-ready state or
-    remove it from that state.
--   `trigger_sync_capture()` --- initiate a synchronised capture across
-    rig members.
+- `arm()` / `disarm()` --- place the rig into a capture-ready state or remove it from that state.
+- `trigger_sync_capture()` --- initiate a synchronised capture across rig members.
 
 Rig-triggered sync capture has priority over standalone activity on
 member devices when conflicts arise.
@@ -42,13 +40,10 @@ on platform).
 
 Primary lifecycle controls:
 
--   `engage()` / `disengage()` --- begin or cease engagement with
-    underlying camera resources (subject to warm policy).
--   `set_warm_policy(...)` --- define resource retention behaviour when
-    not actively capturing.
--   `set_still_capture_profile(profile)` --- define configuration used
-    for device-triggered still capture.
--   `trigger_capture()` --- perform a single-device still capture.
+- `engage()` / `disengage()` --- begin or cease engagement with underlying camera resources (subject to warm policy).
+- `set_warm_policy(...)` --- define resource retention behaviour when not actively capturing.
+- `set_still_capture_profile(profile)` --- define configuration used for device-triggered still capture.
+- `trigger_capture()` --- perform a single-device still capture.
 
 Devices may operate standalone or as members of a rig.
 
@@ -61,18 +56,15 @@ instance.
 
 Primary controls:
 
--   `start()` / `stop()` --- begin or cease the repeating flow of
-    frames.
+- `start()` / `stop()` --- begin or cease the repeating flow of frames.
 
 Each device supports at most one active repeating stream at a time
 (i.e., a stream with `phase=LIVE` and `mode != STOPPED`).
 
 Streams are created with a `StreamIntent`:
 
--   `PREVIEW` --- low-latency, disposable, repeating feed intended for
-    framing and UX.
--   `VIEWFINDER` --- higher-fidelity repeating feed with best-effort
-    throughput, subject to arbitration policy.
+- `PREVIEW` --- low-latency, disposable, repeating feed intended for framing and UX.
+- `VIEWFINDER` --- higher-fidelity repeating feed with best-effort throughput, subject to arbitration policy.
 
 ------------------------------------------------------------------------
 
@@ -89,20 +81,19 @@ Two primary uses exist:
 A profile used for repeating streams (`PREVIEW` or `VIEWFINDER`).
 Typical fields include:
 
--   Resolution
--   Raw pixel format
--   Target FPS or FPS range (best-effort)
--   Optional buffering hints
+- Resolution
+- Raw pixel format
+- Target FPS or FPS range (best-effort)
+- Optional buffering hints
 
 ### Still Capture Profile
 
 A profile used for triggered still capture (device-triggered or
 rig-triggered). Typical fields include:
 
--   Resolution
--   Pixel format (may include formats such as `'JPEG'` and `'RAW '`
-    where supported)
--   Optional processing hints
+- Resolution
+- Pixel format (may include formats such as `'JPEG'` and `'RAW '` where supported)
+- Optional processing hints
 
 Profiles define capture fidelity and intent, not hardware truth.
 
@@ -140,9 +131,8 @@ appear, independent of structural capture properties.
 
 It is distinct from **Capture Profile**:
 
--   Capture Profile defines structural capture properties such as
-    resolution, pixel format, and frame rate range.
--   PictureConfig defines picture appearance parameters.
+- Capture Profile defines structural capture properties such as resolution, pixel format, and frame rate range.
+- PictureConfig defines picture appearance parameters.
 
 For synthetic and stub providers, `PictureConfig` describes
 pattern-generation parameters. Platform-backed providers may interpret
@@ -161,7 +151,7 @@ Vocabulary rules:
 Invalid selection behaviour:
 
 - Invalid preset names (CLI/UI) are input errors; tools should fail clearly and UI should refuse selection.
-- Invalid preset enum values at runtime (corruption/mismatch) must fall back deterministically to a default preset.
+- Invalid preset enum values at core (corruption/mismatch) must fall back deterministically to a default preset.
 
 ------------------------------------------------------------------------
 
@@ -169,15 +159,13 @@ Invalid selection behaviour:
 
 Spec updates follow a single API pattern:
 
--   `update_camera_spec(camera_id, patch, apply_mode=...)`
--   `update_imaging_spec(patch, apply_mode=...)`
+- `update_camera_spec(camera_id, patch, apply_mode=...)`
+- `update_imaging_spec(patch, apply_mode=...)`
 
 ### `ApplyMode`
 
--   `APPLY_WHEN_SAFE` (default for release): accept and apply when it is
-    safe to do so.
--   `APPLY_NOW` (advanced/testing): attempt to apply immediately; may
-    fail if policy forbids or if a safe condition cannot be met.
+- `APPLY_WHEN_SAFE` (default for release): accept and apply when it is safe to do so.
+- `APPLY_NOW` (advanced/testing): attempt to apply immediately; may fail if policy forbids or if a safe condition cannot be met.
 
 "Safe" is defined by CamBANG policy and generally means that affected
 devices are not actively engaged with hardware resources and there is no
@@ -202,19 +190,19 @@ and exposed for polling/inspection.
 
 Records inside the snapshot that correspond to user-facing objects:
 
--   `CamBANGRigState`
--   `CamBANGDeviceState`
--   `CamBANGStreamState`
+- `CamBANGRigState`
+- `CamBANGDeviceState`
+- `CamBANGStreamState`
 
 Native/core objects created by the provider on behalf of CamBANG are tracked as registry records:
--   `NativeObjectRecord`
+
+- `NativeObjectRecord`
 
 ### Publication counters
 
--   `gen`: increments on every published snapshot.
--   `topology_gen`: increments when the structural hierarchy changes
-    (e.g., new instances, membership changes, detached branches
-    appearing/disappearing).
+- `gen`: core generation counter; increments when the core loop is (re)started after a complete stop/teardown; monotonic across the app/server lifetime.
+- `version`: increments on every published snapshot within the current `gen`.
+- `topology_version`: increments when the structural hierarchy changes within the current `gen` (e.g., new instances, membership changes, detached branches appearing/disappearing).
 
 ### Timestamp fields and time domains
 
@@ -223,9 +211,8 @@ make the domain and units unambiguous.
 
 **Snapshot publish time (schema v1)**
 
-- `CamBANGStateSnapshot.timestamp_ns` is a **monotonic publish timestamp** produced by
-  core at snapshot assembly time.
-- It is **session-relative** (monotonic since a core-defined epoch, e.g. runtime start).
+- `CamBANGStateSnapshot.timestamp_ns` is a **monotonic publish timestamp** produced by core at snapshot assembly time.
+- It is **generation-relative** (monotonic since a core-defined epoch, e.g. core loop start for the current `gen`).
 - It is **not wall-clock** and must not be interpreted as UNIX epoch time.
 
 **Capture time (provider → core frame metadata)**
@@ -239,7 +226,7 @@ Providers must tag frames with a provider-agnostic capture timestamp representat
 The `domain` is semantic and provider-agnostic. v1 domains:
 
 - `PROVIDER_MONOTONIC` — monotonic and comparable across streams produced by this provider instance.
-- `CORE_MONOTONIC` — already mapped into core's monotonic timebase (session-relative).
+- `CORE_MONOTONIC` — already mapped into core's monotonic timebase (generation-relative).
 - `DOMAIN_OPAQUE` — ordering-only; provider cannot guarantee meaningful cross-stream comparability.
 
 **Provider boundary rule**
@@ -251,8 +238,7 @@ like `capture_timestamp`, `tick_ns`, and `domain`.
 
 ### Signals
 
--   `state_published(gen, topology_gen)` --- emitted by `CamBANGServer`
-    when a new snapshot is published.
+- `state_published(gen, version, topology_version)` --- emitted by `CamBANGServer` when a new snapshot is published.
 
 ## Core structural nouns
 
@@ -312,32 +298,36 @@ operational posture.
 
 Lifecycle phases refer only to existence and teardown:
 
--   `CREATED`
--   `LIVE`
--   `TEARING_DOWN`
--   `DESTROYED`
+- `CREATED`
+- `LIVE`
+- `TEARING_DOWN`
+- `DESTROYED`
 
 ### `mode` (operational posture)
 
 Operational mode describes what an entity is currently doing.
 
-Rig mode examples: - `OFF`, `ARMED`, `TRIGGERING`, `COLLECTING`, `ERROR`
+Rig mode examples:
 
-Device mode examples: - `IDLE`, `STREAMING`, `CAPTURING`, `ERROR` -
-`engaged: bool` indicates whether underlying camera resources are
-currently held.
+- `OFF`, `ARMED`, `TRIGGERING`, `COLLECTING`, `ERROR`
 
-Stream mode examples: - `STOPPED`, `FLOWING`, `STARVED`, `ERROR`
+Device mode examples:
+
+- `IDLE`, `STREAMING`, `CAPTURING`, `ERROR`
+- `engaged: bool` indicates whether underlying camera resources are currently held.
+
+Stream mode examples:
+
+- `STOPPED`, `FLOWING`, `STARVED`, `ERROR`
 
 `StreamIntent` defines purpose (`PREVIEW` or `VIEWFINDER`) separately
 from operational mode.
 
-`NativeObjectRecord` always has a `phase`. A `mode` may be included when
-useful but is not required.
+`NativeObjectRecord` always has a `phase`. Native objects do not expose an operational `mode` in schema v1.
 
-### Provider runtime mode (capture origin)
+### Provider mode (capture origin)
 
-The runtime capture origin is selected via:
+The core capture origin is selected via:
 
 `provider_mode`
 
@@ -346,9 +336,9 @@ Allowed values:
 - `platform_backed`
 - `synthetic`
 
-Exactly one provider instance is bound to Core at runtime.
+Exactly one provider instance is bound to Core at core.
 
-The term `hardware` must not be used as a runtime mode alias in code, documentation, or configuration.  
+The term `hardware` must not be used as a core mode alias in code, documentation, or configuration.  
 (Use `hardware_*` only for identity/spec concepts such as `hardware_id` and hardware-reported specifications.)
 
 Behavioural semantics and determinism guarantees are defined in `provider_architecture.md`.
@@ -380,14 +370,12 @@ Behavioural semantics and determinism guarantees are defined in `provider_archit
 ## 7. Identity and lineage
 
 To support reliable diagnostics (including "old teardown + new live"
-scenarios), CamBANG separates stable hardware identity from runtime
+scenarios), CamBANG separates stable hardware identity from core
 instance identity.
 
--   `hardware_id`: stable platform camera identifier (as reported by the
-    platform backend).
--   `instance_id`: monotonic runtime identifier for a specific opened
-    lineage of that hardware.
--   `root_id`: lineage root identifier used for grouping branches.
+- `hardware_id`: stable platform camera identifier (as reported by the platform backend).
+- `instance_id`: monotonic core identifier for a specific opened lineage of that hardware.
+- `root_id`: lineage root identifier used for grouping branches.
 
 Detached branches are those no longer attached to the active hierarchy
 but still present due to teardown or retention policies.
@@ -399,28 +387,25 @@ but still present due to teardown or retention policies.
 These names appear in the native/core implementation, build system, and
 debugging logs.
 
--   `ICameraProvider`: platform backend interface (e.g., Android camera2
-    provider, stub provider, synthetic provider).
--   `CBLifecycleRegistry`: tracks CamBANG-owned native/core object
-    lifecycles and retains recently destroyed records for inspection.
--   `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot`
-    and performs retention sweeps.
+- `ICameraProvider`: platform backend interface (e.g., Android camera2 provider, stub provider, synthetic provider).
+- `CBLifecycleRegistry`: tracks CamBANG-owned native/core object lifecycles and retains recently destroyed records for inspection.
+- `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot` and performs retention sweeps.
 
--   Timestamp conventions:
-    - Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
-    - Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
-    - Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
+- Timestamp conventions:
+  - Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
+  - Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
+  - Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
 
 ------------------------------------------------------------------------
 
 ## 9. Glossary (quick reference)
 
--   **Spec**: hardware-reported truth (with optional user corrections).
--   **Config**: user intent (choices made by the developer/app).
--   **Capture Profile**: fidelity definition for image production (streams and stills).
--   **PictureConfig**: per-stream picture appearance configuration, distinct from Capture Profile (structural capture properties).
--   **Snapshot**: immutable published record of current truth.
--   **Phase**: lifecycle stage of an entity/native object.
--   **Mode**: operational posture of an entity.
--   **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
--   **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
+- **Spec**: hardware-reported truth (with optional user corrections).
+- **Config**: user intent (choices made by the developer/app).
+- **Capture Profile**: fidelity definition for image production (streams and stills).
+- **PictureConfig**: per-stream picture appearance configuration, distinct from Capture Profile (structural capture properties).
+- **Snapshot**: immutable published record of current truth.
+- **Phase**: lifecycle stage of an entity/native object.
+- **Mode**: operational posture of an entity.
+- **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
+- **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).

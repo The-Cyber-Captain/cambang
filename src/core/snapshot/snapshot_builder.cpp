@@ -25,12 +25,14 @@ inline void fnv1a_u64(uint64_t& h, uint64_t v) {
 
 CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
                                             uint64_t gen,
-                                            uint64_t topology_gen,
+                                            uint64_t version,
+                                            uint64_t topology_version,
                                             uint64_t timestamp_ns) const {
     CamBANGStateSnapshot snap;
     snap.schema_version = CamBANGStateSnapshot::kSchemaVersion;
     snap.gen = gen;
-    snap.topology_gen = topology_gen;
+    snap.version = version;
+    snap.topology_version = topology_version;
     snap.timestamp_ns = timestamp_ns;
 
     // imaging_spec_version is not implemented in this scaffolding slice.
@@ -114,9 +116,10 @@ if (in.native_objects) {
             n.phase = CBLifecyclePhase::LIVE;
         }
 
-        n.owner_rig_id = 0;
         n.owner_device_instance_id = 0;
         n.owner_stream_id = 0;
+
+        n.creation_gen = rec.creation_gen;
 
         n.created_ns = rec.created_ns;
         n.destroyed_ns = rec.destroyed_ns;

@@ -106,7 +106,9 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
   if (native_objects_) {
     // Use the core monotonic timebase at dispatch time (session-relative).
-    native_objects_->on_native_object_created(p.native_id, p.type, p.root_id, /*created_ns=*/0);
+    const uint64_t created_ns = now_ns_ ? now_ns_() : 0;
+    const uint64_t creation_gen = current_gen_ ? *current_gen_ : 0;
+    native_objects_->on_native_object_created(p.native_id, p.type, p.root_id, creation_gen, created_ns);
   }
   relevant_state_changed_ = true;
   break;
@@ -116,7 +118,8 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
   if (native_objects_) {
-    native_objects_->on_native_object_destroyed(p.native_id, /*destroyed_ns=*/0);
+    const uint64_t destroyed_ns = now_ns_ ? now_ns_() : 0;
+    native_objects_->on_native_object_destroyed(p.native_id, destroyed_ns);
   }
   relevant_state_changed_ = true;
   break;

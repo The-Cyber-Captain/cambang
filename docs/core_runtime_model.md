@@ -1,6 +1,6 @@
-# CamBANG Core Runtime Model
+# CamBANG Core Loop Model
 
-This document defines the **internal runtime model** of CamBANG core:
+This document defines the **internal core model** of CamBANG core:
 threading, event ordering, registries, snapshot publication,
 warm/retention scheduling, and deterministic shutdown.
 
@@ -14,7 +14,7 @@ boundary) - `state_snapshot.md` (public snapshot schema v1)
 CamBANG core runs on a **dedicated core thread**.
 
 All mutation of core-owned state occurs on that thread, including: -
-arbitration state - device/stream/rig runtime state machines -
+arbitration state - device/stream/rig core state machines -
 `CBLifecycleRegistry` - snapshot assembly/publish bookkeeping
 
 Godot-facing objects never mutate core state directly; they enqueue
@@ -116,10 +116,10 @@ context.
 
 Core maintains explicit state machines for:
 
--   **Rig runtime state** (OFF/ARMED/TRIGGERING/COLLECTING/ERROR)
--   **Device runtime state** (IDLE/STREAMING/CAPTURING/ERROR + engaged
+-   **Rig core state** (OFF/ARMED/TRIGGERING/COLLECTING/ERROR)
+-   **Device core state** (IDLE/STREAMING/CAPTURING/ERROR + engaged
     bool)
--   **Stream runtime state** (STOPPED/FLOWING/STARVED/ERROR + intent)
+-   **Stream core state** (STOPPED/FLOWING/STARVED/ERROR + intent)
 
 State transitions occur only on the core thread and must be
 deterministic.
@@ -224,7 +224,7 @@ machine changes (phase/mode/engaged) - any counter changes - any error
 field changes - any membership/topology changes - any registry change
 occurs (create/destroy/retire) - spec/profile becomes effective
 
-### 9.1.x Baseline publish on runtime start
+### 9.1.x Baseline publish on core loop start
 
 On successful transition to `LIVE`, core is considered
 **logically dirty** even if no provider events or commands have yet
@@ -238,13 +238,13 @@ The baseline publish:
 - Occurs via the normal dirty-driven publication path.
 - Is not triggered by a special-case `request_publish()` call.
 - Produces the first snapshot of the session with:
-    - `gen = 0`
-    - `topology_gen = 0`
+    - `version = 0`
+    - `topology_version = 0`
     - A valid monotonic `timestamp_ns`.
 
 There is no published snapshot prior to this baseline publish.
 
-This rule guarantees that every successful runtime start produces
+This rule guarantees that every successful core loop start produces
 exactly one deterministic initial snapshot, even in the absence of
 provider activity.
 
@@ -258,21 +258,21 @@ events/commands and processing timers).
 
 Publish steps: 1. Run retention sweep (may mark dirty) 2. Assemble new
 `CamBANGStateSnapshot` (schema v1) 3. Atomically swap the snapshot
-pointer in `CamBANGServer` 4. Emit `state_published(gen, topology_gen)`
+pointer in `CamBANGServer` 4. Emit `state_published(gen, version, topology_version)`
 from `CamBANGServer`
 
 ### 9.3 Publish time vs capture time
 
-Snapshot `timestamp_ns` is core publish time (monotonic, session-relative).
+Snapshot `timestamp_ns` is core publish time (monotonic, generation-relative).
 Per-frame capture timestamps are separate metadata carried by provider events and must
 use a provider-agnostic time domain representation (see `provider_architecture.md`).
 Core must not assume capture time is wall-clock.
 
-### 9.4 `gen` and `topology_gen` bookkeeping
+### 9.4 `gen`, `version`, and `topology_version` bookkeeping
 
--   `gen` increments for every published snapshot
--   `topology_gen` increments only for structural changes as defined in
-    `state_snapshot.md`
+- `gen` increments only when `CamBANGServer.start()` successfully begins a new core loop after a complete stop/teardown.
+- `version` increments for every published snapshot within the current `gen`.
+- `topology_version` increments only for structural changes (within the current `gen`) as defined in `state_snapshot.md`.
 
 ------------------------------------------------------------------------
 

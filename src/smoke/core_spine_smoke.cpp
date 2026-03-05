@@ -231,6 +231,15 @@ static bool wait_for_snapshot_gen(StateSnapshotBuffer& buf, uint64_t min_gen) {
 }
 
 
+static bool wait_for_snapshot_version(StateSnapshotBuffer& buf, uint64_t gen, uint64_t min_version) {
+  return wait_until([&]() {
+    auto s = buf.snapshot_copy();
+    return s && s->gen == gen && s->version >= min_version;
+  });
+}
+
+
+
 static bool wait_for_snapshot_pred(
     StateSnapshotBuffer& buf,
     const std::function<bool(const CamBANGStateSnapshot&)>& pred) {
@@ -442,7 +451,7 @@ static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshot
   // Still validate request_publish() works once the core is live.
   // (Smoke-only; production should rely on dirty-driven publication.)
   rt.request_publish();
-  if (!wait_for_snapshot_gen(buf, 1)) {
+  if (!wait_for_snapshot_version(buf, /*gen=*/0, /*min_version=*/1)) {
     std::cerr << "Timeout waiting for request_publish() snapshot\n";
     rt.stop();
     return 1;

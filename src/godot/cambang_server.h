@@ -116,6 +116,7 @@ private:
   std::shared_ptr<const CamBANGStateSnapshot> latest_;
   bool has_emitted_snapshot_ = false;
   uint64_t last_emitted_gen_ = 0;
+  uint64_t last_emitted_version_ = 0;
 
   void _ensure_tick_installed();
   bool _ensure_provider_attached_and_initialized();

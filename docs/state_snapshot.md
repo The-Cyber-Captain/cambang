@@ -22,11 +22,11 @@ references to old snapshots safely.
 Core publishes a new snapshot whenever relevant state changes.
 `CamBANGServer` stores the most recently published snapshot and emits:
 
--   `state_published(gen, topology_gen)`
+-   `state_published(gen, version, topology_version)`
 
 ### 1.2.x Pre-publication state
 
-Before the first publish in a runtime session, no snapshot exists.
+Before the first publish in a new core generation (`gen`), no snapshot exists.
 
 Godot-facing `CamBANGServer.get_state_snapshot()` may return an invalid
 reference (null) until the first snapshot is published.
@@ -35,19 +35,20 @@ The first published snapshot establishes the baseline state for the
 session (see §1.3).
 
 
-### 1.3 Generation counters
+### 1.3 Counters (`gen`, `version`, `topology_version`)
 
-- `gen` increments on **every** publish.
-- `topology_gen` increments when the **structural hierarchy** changes (see §8).
+CamBANG exposes three counters in the snapshot header. They represent two orthogonal axes:
 
-Generation counters are **zero-indexed per runtime session**:
+- `gen` — **core generation** counter (app/server lifetime). Increments when `CamBANGServer.start()` successfully begins a new core loop after a complete stop/teardown. `gen` is monotonic across the app/server lifetime and does not reset across stop/start cycles.
+- `version` — **publication version** within the current `gen`. Increments on **every** published snapshot and is zero-indexed within each `gen`.
+- `topology_version` — **structural version** within the current `gen`. Increments only when the structural hierarchy changes (see §8) and is zero-indexed within each `gen`.
 
-- The first published snapshot in a session has `gen = 0`.
-- The first published snapshot has `topology_gen = 0`.
-- Subsequent publishes increment `gen` by 1.
-- `topology_gen` increments only when a structural change occurs.
+Baseline invariants (per `gen`):
 
-There is no published snapshot prior to `gen = 0`.
+- The first published snapshot in a new `gen` has `version = 0`.
+- The first published snapshot in a new `gen` has `topology_version = 0`.
+
+There is no published snapshot prior to `version = 0` for a given `gen`.
 
 ### 1.4 Schema versioning
 
@@ -80,18 +81,17 @@ Examples: - Rig: `OFF`, `ARMED`, `TRIGGERING`, `COLLECTING`, `ERROR` -
 Device: `IDLE`, `STREAMING`, `CAPTURING`, `ERROR` - Stream: `STOPPED`,
 `FLOWING`, `STARVED`, `ERROR`
 
-`NativeObjectRecord` always has a `phase`. A `mode` may be included for
-native objects when useful, but is not required in v1.
+`NativeObjectRecord` always has a `phase`. Native objects do not expose an operational `mode` in schema v1.
 
 ------------------------------------------------------------------------
 
 ## 3. Identity and lineage
 
-CamBANG separates stable hardware identity from runtime instance
+CamBANG separates stable hardware identity from instance
 identity to support "old teardown + new live" scenarios.
 
 -   `hardware_id` --- stable platform identifier for a camera endpoint.
--   `instance_id` --- monotonic runtime identifier for an opened lineage
+-   `instance_id` --- monotonic instance identifier for an opened lineage
     of that hardware.
 -   `root_id` --- lineage root identifier for grouping native object
     branches across time.
@@ -122,8 +122,9 @@ design).
 ``` text
 CamBANGStateSnapshot {
   schema_version: uint32           // = 1
-  gen: uint64                      // increments every publish
-  topology_gen: uint64             // increments on structural change
+  gen: uint64                      // core generation (monotonic across app/server lifetime)
+  version: uint64                  // increments every publish within this gen
+  topology_version: uint64         // increments on structural change within this gen
   timestamp_ns: uint64             // monotonic publish time
 
   imaging_spec_version: uint64     // effective ImagingSpec version
@@ -142,14 +143,14 @@ CamBANGStateSnapshot {
 `timestamp_ns` is a **monotonic publish timestamp** produced by core at snapshot assembly time.
 
 - It is **not wall-clock** and must not be interpreted as UNIX epoch time.
-- It is **session-relative** (a monotonic counter since a core-defined epoch, e.g. runtime start).
+- It is **generation-relative** (a monotonic counter since a core-defined epoch for the current `gen`, e.g. core loop start).
 - It is intended for: ordering snapshots, computing durations (e.g. warm remaining), and
   detecting staleness — not for user-facing clock time.
 
 Snapshot publication occurs only after core state has converged for the
 current event loop iteration (see `core_runtime_model.md`).
 
-On successful runtime start, core begins in a logically dirty state and
+On successful core loop start, core begins in a logically dirty state and
 will publish a baseline snapshot on the first loop iteration. This first
 published snapshot has:
 
@@ -157,7 +158,7 @@ published snapshot has:
 - `topology_gen = 0`
 - a valid monotonic `timestamp_ns`
 
-This guarantees that each runtime session produces at least one
+This guarantees that each core generation (`gen`) produces at least one
 deterministic baseline snapshot after `CamBANGServer.start()` completes.
 ------------------------------------------------------------------------
 
@@ -274,11 +275,12 @@ NativeObjectRecord {
 
   phase: phase
 
-  owner_rig_id: uint64                   // 0 if none
   owner_device_instance_id: uint64       // 0 if none
   owner_stream_id: uint64                // 0 if none
 
   root_id: uint64
+
+  creation_gen: uint64                // snapshot `gen` when this record was created
 
   created_ns: uint64
   destroyed_ns: uint64                   // 0 if not DESTROYED
@@ -324,34 +326,42 @@ A `root_id` is included if: - its controlling owner has ended, **and** -
 at least one `NativeObjectRecord` with that `root_id` still exists in
 the registry (either not DESTROYED, or DESTROYED but still retained).
 
-“Controlling owner” refers to the rig, device instance, or stream
+“Controlling owner” refers to the device instance or stream
 that originally owned the native object branch associated with the
 root_id.
 
 ------------------------------------------------------------------------
 
-## 8. What increments `gen` vs `topology_gen`
+## 8. What increments `gen` vs `version` vs `topology_version`
 
-### 8.1 `gen`
+### 8.0 `gen`
 
-`gen` increments on any snapshot publish, including: - `phase` changes -
-`mode` changes - counter updates - error updates - spec/profile updates
-becoming effective - retention sweep removals (because snapshot contents
-change)
+`gen` increments only when `CamBANGServer.start()` successfully begins a new core loop after a complete stop/teardown.
 
-### 8.2 `topology_gen`
+### 8.1 `version`
 
-`topology_gen` increments only when structural hierarchy changes,
-including: - rig created/destroyed - device instance created/destroyed
-(`instance_id` lineage changes) - stream created/destroyed - rig
-membership changes - a new `root_id` appears or a `root_id` fully
-disappears (including detached branches expiring)
+`version` increments on any snapshot publish, including:
 
-The initial publish of a runtime session establishes the baseline
-topology and sets `topology_gen = 0`.
+- `phase` changes
+- `mode` changes
+- counter updates
+- error updates
+- spec/profile updates becoming effective
+- retirement sweep removals (because snapshot contents change)
 
-The baseline is not considered a "change from -1"; it is the first
-structural state of the session.
+### 8.2 `topology_version`
+
+`topology_version` increments only when structural hierarchy changes, including:
+
+- rig created/destroyed
+- device instance created/destroyed (`instance_id` lineage changes)
+- stream created/destroyed
+- rig membership changes
+- a new `root_id` appears or a `root_id` fully disappears (including detached branches expiring)
+
+The initial publish of a new `gen` establishes the baseline topology and sets `topology_version = 0`.
+
+The baseline is not considered a "change from -1"; it is the first structural state of the generation.
 
 ------------------------------------------------------------------------
 

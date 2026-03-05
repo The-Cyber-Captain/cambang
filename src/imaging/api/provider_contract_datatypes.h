@@ -204,7 +204,6 @@ struct NativeObjectCreateInfo {
   uint32_t type = 0;                      // CamBANG-defined enum (core-owned definition)
   uint64_t root_id = 0;                   // lineage root id (core-issued)
 
-  uint64_t owner_rig_id = 0;
   uint64_t owner_device_instance_id = 0;
   uint64_t owner_stream_id = 0;
 

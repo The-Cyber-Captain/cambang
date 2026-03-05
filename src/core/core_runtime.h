@@ -202,8 +202,15 @@ private:
   CoreDeviceRegistry devices_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
-  std::uint64_t gen_ = 0;
-  std::uint64_t topology_gen_ = 0;
+
+  // Snapshot header counters (schema v1).
+  // gen: core generation counter, monotonic across app/server lifetime.
+  // version: per-publish within gen.
+  // topology_version: structural within gen.
+  std::uint64_t gen_counter_ = 0;
+  std::uint64_t current_gen_ = 0;
+  std::uint64_t version_ = 0;
+  std::uint64_t topology_version_ = 0;
   uint64_t last_topology_sig_ = 0;
   bool has_topology_sig_ = false;
 

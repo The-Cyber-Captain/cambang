@@ -20,7 +20,8 @@ public:
 
   uint32_t get_schema_version() const;
   uint64_t get_gen() const;
-  uint64_t get_topology_gen() const;
+  uint64_t get_version() const;
+  uint64_t get_topology_version() const;
   uint64_t get_timestamp_ns() const;
 
 protected:

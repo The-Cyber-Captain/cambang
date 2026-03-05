@@ -9,7 +9,7 @@
 // Thread-safe "latest snapshot" buffer.
 //
 // Writer: core thread via publish().
-// Readers: any thread via snapshot_copy()/gen()/topology_gen().
+// Readers: any thread via snapshot_copy().
 //
 // This is suitable for smoke and for Godot-side bridging (where Godot thread
 // polls and emits signals).

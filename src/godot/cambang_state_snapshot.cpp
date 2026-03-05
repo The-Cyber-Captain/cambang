@@ -18,8 +18,12 @@ uint64_t CamBANGStateSnapshotGD::get_gen() const {
   return snap_ ? snap_->gen : 0ull;
 }
 
-uint64_t CamBANGStateSnapshotGD::get_topology_gen() const {
-  return snap_ ? snap_->topology_gen : 0ull;
+uint64_t CamBANGStateSnapshotGD::get_version() const {
+  return snap_ ? snap_->version : 0ull;
+}
+
+uint64_t CamBANGStateSnapshotGD::get_topology_version() const {
+  return snap_ ? snap_->topology_version : 0ull;
 }
 
 uint64_t CamBANGStateSnapshotGD::get_timestamp_ns() const {
@@ -29,7 +33,8 @@ uint64_t CamBANGStateSnapshotGD::get_timestamp_ns() const {
 void CamBANGStateSnapshotGD::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_schema_version"), &CamBANGStateSnapshotGD::get_schema_version);
   godot::ClassDB::bind_method(godot::D_METHOD("get_gen"), &CamBANGStateSnapshotGD::get_gen);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_topology_gen"), &CamBANGStateSnapshotGD::get_topology_gen);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_version"), &CamBANGStateSnapshotGD::get_version);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_topology_version"), &CamBANGStateSnapshotGD::get_topology_version);
   godot::ClassDB::bind_method(godot::D_METHOD("get_timestamp_ns"), &CamBANGStateSnapshotGD::get_timestamp_ns);
 }
 

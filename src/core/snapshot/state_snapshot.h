@@ -122,11 +122,13 @@ struct NativeObjectRecord {
 
     CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
 
-    uint64_t owner_rig_id = 0;
-    uint64_t owner_device_instance_id = 0;
-    uint64_t owner_stream_id = 0;
+    uint64_t owner_device_instance_id = 0; // 0 if none
+    uint64_t owner_stream_id = 0;          // 0 if none
 
     uint64_t root_id = 0;
+
+    // Snapshot `gen` when this record was created.
+    uint64_t creation_gen = 0;
 
     uint64_t created_ns = 0;
     uint64_t destroyed_ns = 0;
@@ -140,8 +142,9 @@ struct CamBANGStateSnapshot {
 
     uint32_t schema_version = kSchemaVersion;
     uint64_t gen = 0;
-    uint64_t topology_gen = 0;
-    uint64_t timestamp_ns = 0; // monotonic publish timestamp (session-relative)
+    uint64_t version = 0;
+    uint64_t topology_version = 0;
+    uint64_t timestamp_ns = 0; // monotonic publish timestamp (generation-relative)
 
     uint64_t imaging_spec_version = 0;
 

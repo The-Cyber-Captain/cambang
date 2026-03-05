@@ -178,17 +178,21 @@ void CamBANGServer::_on_godot_tick(double delta) {
     return;
   }
 
-  // gen is zero-indexed. We must still emit the first published snapshot (gen=0).
-  if (has_emitted_snapshot_ && snap->gen == last_emitted_gen_) {
+  // Emit on every published snapshot (schema v1): keyed by (gen, version).
+  if (has_emitted_snapshot_ && snap->gen == last_emitted_gen_ && snap->version == last_emitted_version_) {
     return;
   }
 
   latest_ = snap;
   last_emitted_gen_ = snap->gen;
+  last_emitted_version_ = snap->version;
   has_emitted_snapshot_ = true;
-  emit_signal("state_published", (uint64_t)snap->gen, (uint64_t)snap->topology_gen);
-}
 
+  emit_signal("state_published",
+              static_cast<uint64_t>(snap->gen),
+              static_cast<uint64_t>(snap->version),
+              static_cast<uint64_t>(snap->topology_version));
+}
 godot::Error CamBANGServer::set_provider_mode(const godot::String& mode) {
   // Provider mode is latched per runtime session; changes require STOPPED.
   if (runtime_.is_running()) {
@@ -282,7 +286,8 @@ void CamBANGServer::_bind_methods() {
   ADD_SIGNAL(godot::MethodInfo(
       "state_published",
       godot::PropertyInfo(godot::Variant::INT, "gen"),
-      godot::PropertyInfo(godot::Variant::INT, "topology_gen")));
+      godot::PropertyInfo(godot::Variant::INT, "version"),
+      godot::PropertyInfo(godot::Variant::INT, "topology_version")));
 }
 
 } // namespace cambang
