@@ -15,7 +15,12 @@
 #include <mfapi.h>
 #include <mferror.h>
 
-#include <godot_cpp/variant/utility_functions.hpp>
+#if defined(__has_include)
+  #if __has_include(<godot_cpp/variant/utility_functions.hpp>)
+    #include <godot_cpp/variant/utility_functions.hpp>
+    #define CAMBANG_HAS_GODOT_UTILITY_FUNCTIONS 1
+  #endif
+#endif
 
 namespace cambang {
 
@@ -43,8 +48,13 @@ static void mf_logf(const char* fmt, ...) {
   va_start(ap, fmt);
   std::vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+#if defined(CAMBANG_HAS_GODOT_UTILITY_FUNCTIONS)
   // Route through Godot so it shows in the editor Output panel.
   godot::UtilityFunctions::print(buf);
+#else
+  std::fprintf(stdout, "%s\n", buf);
+  std::fflush(stdout);
+#endif
 }
 
 static std::string guid_to_string(const GUID& g) {
