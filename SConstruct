@@ -275,7 +275,21 @@ if env["smoke"]:
         source=synthetic_verify_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog])
+    # Provider compliance verification tool.
+    # Keep dependencies aligned with synthetic_timeline_verify smoke wiring.
+    provider_verify_sources = []
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
+    provider_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "provider_compliance_verify"),
+        source=provider_verify_sources,
+    )
+
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, provider_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     Alias("smoke", [])
