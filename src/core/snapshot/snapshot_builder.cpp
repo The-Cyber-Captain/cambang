@@ -1,10 +1,7 @@
 #include "core/snapshot/snapshot_builder.h"
 
-#include <algorithm>
 #include <cstring>
 #include <set>
-#include <unordered_map>
-#include <vector>
 
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
@@ -23,6 +20,68 @@ inline void fnv1a_u64(uint64_t& h, uint64_t v) {
         h ^= b;
         h *= kFnvPrime;
     }
+}
+
+std::set<uint64_t> compute_detached_roots(const SnapshotBuilder::Inputs& in) {
+    std::set<uint64_t> detached_roots;
+    if (!in.native_objects) {
+        return detached_roots;
+    }
+
+    std::set<uint64_t> active_device_ids;
+    if (in.devices) {
+        for (const auto& [device_id, rec] : in.devices->all()) {
+            (void)rec;
+            active_device_ids.insert(device_id);
+        }
+    }
+
+    std::set<uint64_t> active_stream_ids;
+    if (in.streams) {
+        for (const auto& [stream_id, rec] : in.streams->all()) {
+            (void)rec;
+            active_stream_ids.insert(stream_id);
+        }
+    }
+
+    struct RootStatus {
+        bool has_records = false;
+        bool has_controlling_owner = false;
+        bool has_attached_controlling_owner = false;
+    };
+    std::map<uint64_t, RootStatus> status_by_root;
+
+    for (const auto& [native_id, rec] : in.native_objects->all()) {
+        (void)native_id;
+        if (rec.root_id == 0) {
+            continue;
+        }
+
+        RootStatus& root = status_by_root[rec.root_id];
+        root.has_records = true;
+
+        if (rec.owner_device_instance_id != 0) {
+            root.has_controlling_owner = true;
+            if (active_device_ids.find(rec.owner_device_instance_id) != active_device_ids.end()) {
+                root.has_attached_controlling_owner = true;
+            }
+        }
+
+        if (rec.owner_stream_id != 0) {
+            root.has_controlling_owner = true;
+            if (active_stream_ids.find(rec.owner_stream_id) != active_stream_ids.end()) {
+                root.has_attached_controlling_owner = true;
+            }
+        }
+    }
+
+    for (const auto& [root_id, status] : status_by_root) {
+        if (status.has_records && status.has_controlling_owner && !status.has_attached_controlling_owner) {
+            detached_roots.insert(root_id);
+        }
+    }
+
+    return detached_roots;
 }
 
 } // namespace
@@ -134,41 +193,7 @@ if (in.native_objects) {
         snap.native_objects.push_back(std::move(n));
     }
 
-    std::set<uint64_t> active_device_ids;
-    if (in.devices) {
-        for (const auto& [device_id, rec] : in.devices->all()) {
-            (void)rec;
-            active_device_ids.insert(device_id);
-        }
-    }
-
-    std::set<uint64_t> active_stream_ids;
-    if (in.streams) {
-        for (const auto& [stream_id, rec] : in.streams->all()) {
-            (void)rec;
-            active_stream_ids.insert(stream_id);
-        }
-    }
-
-    std::set<uint64_t> detached_roots;
-    for (const auto& [native_id, rec] : in.native_objects->all()) {
-        (void)native_id;
-        if (rec.root_id == 0) {
-            continue;
-        }
-
-        bool owner_branch_ended = false;
-        if (rec.owner_stream_id != 0) {
-            owner_branch_ended = (active_stream_ids.find(rec.owner_stream_id) == active_stream_ids.end());
-        } else if (rec.owner_device_instance_id != 0) {
-            owner_branch_ended = (active_device_ids.find(rec.owner_device_instance_id) == active_device_ids.end());
-        }
-
-        if (owner_branch_ended) {
-            detached_roots.insert(rec.root_id);
-        }
-    }
-
+    const std::set<uint64_t> detached_roots = compute_detached_roots(in);
     snap.detached_root_ids.assign(detached_roots.begin(), detached_roots.end());
 }
 
@@ -195,22 +220,6 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
 
     if (in.native_objects) {
         std::set<uint64_t> root_ids;
-        std::set<uint64_t> detached_root_ids;
-        std::set<uint64_t> active_device_ids;
-        std::set<uint64_t> active_stream_ids;
-
-        if (in.devices) {
-            for (const auto& [device_id, rec] : in.devices->all()) {
-                (void)rec;
-                active_device_ids.insert(device_id);
-            }
-        }
-        if (in.streams) {
-            for (const auto& [stream_id, rec] : in.streams->all()) {
-                (void)rec;
-                active_stream_ids.insert(stream_id);
-            }
-        }
 
         for (const auto& [native_id, rec] : in.native_objects->all()) {
             (void)native_id;
@@ -218,18 +227,9 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
                 continue;
             }
             root_ids.insert(rec.root_id);
-
-            bool owner_branch_ended = false;
-            if (rec.owner_stream_id != 0) {
-                owner_branch_ended = (active_stream_ids.find(rec.owner_stream_id) == active_stream_ids.end());
-            } else if (rec.owner_device_instance_id != 0) {
-                owner_branch_ended = (active_device_ids.find(rec.owner_device_instance_id) == active_device_ids.end());
-            }
-
-            if (owner_branch_ended) {
-                detached_root_ids.insert(rec.root_id);
-            }
         }
+
+        const std::set<uint64_t> detached_root_ids = compute_detached_roots(in);
 
         fnv1a_u64(h, static_cast<uint64_t>(root_ids.size()));
         for (uint64_t root_id : root_ids) {

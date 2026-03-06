@@ -207,14 +207,16 @@ struct NativeObjectCreateInfo {
   uint64_t owner_device_instance_id = 0;
   uint64_t owner_stream_id = 0;
 
-  uint64_t created_ns = 0;                // monotonic if available (0 allowed)
+  bool has_created_ns = false;            // true if provider supplied created_ns
+  uint64_t created_ns = 0;                // provider value (0 is valid when has_created_ns=true)
   uint64_t bytes_allocated = 0;           // 0 if n/a
   uint32_t buffers_in_use = 0;            // 0 if n/a
 };
 
 struct NativeObjectDestroyInfo {
   uint64_t native_id = 0;                 // core-issued
-  uint64_t destroyed_ns = 0;              // monotonic if available (0 allowed)
+  bool has_destroyed_ns = false;          // true if provider supplied destroyed_ns
+  uint64_t destroyed_ns = 0;              // provider value (0 is valid when has_destroyed_ns=true)
 };
 
 // Provider-agnostic capture timestamp.

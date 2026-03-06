@@ -54,6 +54,7 @@ void StubProvider::emit_native_created_(
   info.root_id = root_id;
   info.owner_device_instance_id = owner_device_id;
   info.owner_stream_id = owner_stream_id;
+  info.has_created_ns = true;
   info.created_ns = 0;
   strand_.post_native_object_created(info);
 }
@@ -64,6 +65,7 @@ void StubProvider::emit_native_destroyed_(uint64_t native_id) {
   }
   NativeObjectDestroyInfo info{};
   info.native_id = native_id;
+  info.has_destroyed_ns = true;
   info.destroyed_ns = 0;
   strand_.post_native_object_destroyed(info);
 }

@@ -229,6 +229,7 @@ void ProviderCallbackIngress::on_native_object_created(const NativeObjectCreateI
   p.owner_stream_id = info.owner_stream_id;
   p.bytes_allocated = info.bytes_allocated;
   p.buffers_in_use = info.buffers_in_use;
+  p.has_created_ns = info.has_created_ns;
   p.created_ns = info.created_ns;
 
   CoreCommand cmd;
@@ -240,7 +241,7 @@ void ProviderCallbackIngress::on_native_object_created(const NativeObjectCreateI
 void ProviderCallbackIngress::on_native_object_destroyed(const NativeObjectDestroyInfo& info) {
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED;
-  cmd.payload = CmdProviderNativeObjectDestroyed{info.native_id, info.destroyed_ns};
+  cmd.payload = CmdProviderNativeObjectDestroyed{info.native_id, info.has_destroyed_ns, info.destroyed_ns};
   post_command(std::move(cmd));
 }
 

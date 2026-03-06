@@ -27,6 +27,7 @@ public:
 
     uint64_t created_ns = 0;
     uint64_t destroyed_ns = 0;
+    uint64_t destroyed_integration_ns = 0;
 
     uint64_t bytes_allocated = 0;
     uint32_t buffers_in_use = 0;
@@ -39,7 +40,9 @@ public:
                               uint32_t buffers_in_use,
                               uint64_t creation_gen,
                               uint64_t created_ns);
-  void on_native_object_destroyed(uint64_t native_id, uint64_t destroyed_ns);
+  void on_native_object_destroyed(uint64_t native_id,
+                                  uint64_t destroyed_ns,
+                                  uint64_t destroyed_integration_ns);
 
   size_t retire_destroyed_older_than(uint64_t now_ns, uint64_t retention_window_ns);
   std::optional<uint64_t> next_retirement_delay_ns(uint64_t now_ns, uint64_t retention_window_ns) const;

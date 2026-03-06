@@ -26,12 +26,15 @@ void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
   }
   if (!r.destroyed) {
     r.destroyed_ns = 0;
+    r.destroyed_integration_ns = 0;
   }
   // If a provider reports "created" again for the same native_id, keep first created_ns.
   // (Scaffolding slice: no strict error accounting.)
 }
 
-void CoreNativeObjectRegistry::on_native_object_destroyed(uint64_t native_id, uint64_t destroyed_ns) {
+void CoreNativeObjectRegistry::on_native_object_destroyed(uint64_t native_id,
+                                                          uint64_t destroyed_ns,
+                                                          uint64_t destroyed_integration_ns) {
   auto it = records_.find(native_id);
   if (it == records_.end()) {
     // Truth surface should reflect reality, including orphan destroys.
@@ -40,11 +43,13 @@ void CoreNativeObjectRegistry::on_native_object_destroyed(uint64_t native_id, ui
     r.native_id = native_id;
     r.destroyed = true;
     r.destroyed_ns = destroyed_ns;
+    r.destroyed_integration_ns = destroyed_integration_ns;
     records_.emplace(native_id, r);
     return;
   }
   it->second.destroyed = true;
   it->second.destroyed_ns = destroyed_ns;
+  it->second.destroyed_integration_ns = destroyed_integration_ns;
 }
 
 size_t CoreNativeObjectRegistry::retire_destroyed_older_than(uint64_t now_ns,
@@ -56,11 +61,11 @@ size_t CoreNativeObjectRegistry::retire_destroyed_older_than(uint64_t now_ns,
       ++it;
       continue;
     }
-    if (r.destroyed_ns > now_ns) {
+    if (r.destroyed_integration_ns > now_ns) {
       ++it;
       continue;
     }
-    const uint64_t age_ns = now_ns - r.destroyed_ns;
+    const uint64_t age_ns = now_ns - r.destroyed_integration_ns;
     if (age_ns < retention_window_ns) {
       ++it;
       continue;
@@ -80,7 +85,7 @@ std::optional<uint64_t> CoreNativeObjectRegistry::next_retirement_delay_ns(
     if (!r.destroyed) {
       continue;
     }
-    const uint64_t retire_at_ns = r.destroyed_ns + retention_window_ns;
+    const uint64_t retire_at_ns = r.destroyed_integration_ns + retention_window_ns;
     uint64_t delay = 0;
     if (retire_at_ns > now_ns) {
       delay = retire_at_ns - now_ns;

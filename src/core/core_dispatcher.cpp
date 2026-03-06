@@ -106,7 +106,7 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
   if (native_objects_) {
     const uint64_t fallback_created_ns = now_ns_ ? now_ns_() : 0;
-    const uint64_t created_ns = (p.created_ns != 0) ? p.created_ns : fallback_created_ns;
+    const uint64_t created_ns = p.has_created_ns ? p.created_ns : fallback_created_ns;
     const uint64_t creation_gen = current_gen_ ? *current_gen_ : 0;
     native_objects_->on_native_object_created(
         p.native_id,
@@ -127,9 +127,9 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
   if (native_objects_) {
-    const uint64_t fallback_destroyed_ns = now_ns_ ? now_ns_() : 0;
-    const uint64_t destroyed_ns = (p.destroyed_ns != 0) ? p.destroyed_ns : fallback_destroyed_ns;
-    native_objects_->on_native_object_destroyed(p.native_id, destroyed_ns);
+    const uint64_t integration_destroyed_ns = now_ns_ ? now_ns_() : 0;
+    const uint64_t destroyed_ns = p.has_destroyed_ns ? p.destroyed_ns : integration_destroyed_ns;
+    native_objects_->on_native_object_destroyed(p.native_id, destroyed_ns, integration_destroyed_ns);
   }
   relevant_state_changed_ = true;
   break;
