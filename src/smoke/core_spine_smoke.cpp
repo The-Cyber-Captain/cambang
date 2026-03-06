@@ -370,11 +370,25 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
     rt.stop();
     return 1;
   }
-  if (!rec.created || !rec.started || rec.frames_received != 1 || rec.frames_released != 1) {
+  if (!rec.created || !rec.started || rec.frames_received != 1) {
     std::cerr << "Stream registry mismatch. created=" << rec.created
               << " started=" << rec.started
               << " frames_received=" << rec.frames_received
-              << " frames_released=" << rec.frames_released << "\n";
+              << " frames_released=" << rec.frames_released
+              << " frames_dropped=" << rec.frames_dropped << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Frame accounting boundary:
+  // - delivered requires sink handoff (frames_released)
+  // - no-sink release-on-drop increments frames_dropped
+  if ((rec.frames_released + rec.frames_dropped) != 1) {
+    std::cerr << "Stream registry mismatch. created=" << rec.created
+              << " started=" << rec.started
+              << " frames_received=" << rec.frames_received
+              << " frames_released=" << rec.frames_released
+              << " frames_dropped=" << rec.frames_dropped << "\n";
     rt.stop();
     return 1;
   }
@@ -386,7 +400,8 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
   if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
         for (const auto& st : s.streams) {
           if (st.stream_id == kStreamId) {
-            return (st.mode == CBStreamMode::FLOWING && st.frames_received >= 1 && st.frames_delivered >= 1);
+            return (st.mode == CBStreamMode::FLOWING && st.frames_received >= 1 &&
+                    (st.frames_delivered + st.frames_dropped) >= 1);
           }
         }
         return false;
@@ -407,10 +422,12 @@ static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
   for (const auto& s : snap0->streams) {
     if (s.stream_id == kStreamId) {
       found = true;
-      if (s.mode != CBStreamMode::FLOWING || s.frames_received != 1 || s.frames_delivered != 1) {
+      if (s.mode != CBStreamMode::FLOWING || s.frames_received != 1 ||
+          (s.frames_delivered + s.frames_dropped) != 1) {
         std::cerr << "Snapshot stream mismatch. mode=" << static_cast<int>(s.mode)
                   << " frames_received=" << s.frames_received
-                  << " frames_delivered=" << s.frames_delivered << "\n";
+                  << " frames_delivered=" << s.frames_delivered
+                  << " frames_dropped=" << s.frames_dropped << "\n";
         rt.stop();
         return 1;
       }

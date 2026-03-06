@@ -1,6 +1,7 @@
 #include "core/snapshot/snapshot_builder.h"
 
 #include <cstring>
+#include <set>
 
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
@@ -19,6 +20,68 @@ inline void fnv1a_u64(uint64_t& h, uint64_t v) {
         h ^= b;
         h *= kFnvPrime;
     }
+}
+
+std::set<uint64_t> compute_detached_roots(const SnapshotBuilder::Inputs& in) {
+    std::set<uint64_t> detached_roots;
+    if (!in.native_objects) {
+        return detached_roots;
+    }
+
+    std::set<uint64_t> active_device_ids;
+    if (in.devices) {
+        for (const auto& [device_id, rec] : in.devices->all()) {
+            (void)rec;
+            active_device_ids.insert(device_id);
+        }
+    }
+
+    std::set<uint64_t> active_stream_ids;
+    if (in.streams) {
+        for (const auto& [stream_id, rec] : in.streams->all()) {
+            (void)rec;
+            active_stream_ids.insert(stream_id);
+        }
+    }
+
+    struct RootStatus {
+        bool has_records = false;
+        bool has_controlling_owner = false;
+        bool has_attached_controlling_owner = false;
+    };
+    std::map<uint64_t, RootStatus> status_by_root;
+
+    for (const auto& [native_id, rec] : in.native_objects->all()) {
+        (void)native_id;
+        if (rec.root_id == 0) {
+            continue;
+        }
+
+        RootStatus& root = status_by_root[rec.root_id];
+        root.has_records = true;
+
+        if (rec.owner_device_instance_id != 0) {
+            root.has_controlling_owner = true;
+            if (active_device_ids.find(rec.owner_device_instance_id) != active_device_ids.end()) {
+                root.has_attached_controlling_owner = true;
+            }
+        }
+
+        if (rec.owner_stream_id != 0) {
+            root.has_controlling_owner = true;
+            if (active_stream_ids.find(rec.owner_stream_id) != active_stream_ids.end()) {
+                root.has_attached_controlling_owner = true;
+            }
+        }
+    }
+
+    for (const auto& [root_id, status] : status_by_root) {
+        if (status.has_records && status.has_controlling_owner && !status.has_attached_controlling_owner) {
+            detached_roots.insert(root_id);
+        }
+    }
+
+    return detached_roots;
 }
 
 } // namespace
@@ -64,10 +127,10 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         for (const auto& [sid, rec] : in.streams->all()) {
             CamBANGStreamState s;
             s.stream_id = sid;
-            s.device_instance_id = 0; // not tracked in current scaffolding
+            s.device_instance_id = rec.device_instance_id;
             s.phase = rec.created ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
 
-            s.intent = cambang::StreamIntent::PREVIEW;
+            s.intent = rec.intent;
 
             if (!rec.created) {
                 s.mode = CBStreamMode::STOPPED;
@@ -76,13 +139,13 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             }
 
             s.stop_reason = CBStreamStopReason::NONE;
-            s.profile_version = 0;
+            s.profile_version = rec.profile_version;
 
-            s.width = 0;
-            s.height = 0;
-            s.format = 0;
-            s.target_fps_min = 0;
-            s.target_fps_max = 0;
+            s.width = rec.profile.width;
+            s.height = rec.profile.height;
+            s.format = rec.profile.format_fourcc;
+            s.target_fps_min = rec.profile.target_fps_min;
+            s.target_fps_max = rec.profile.target_fps_max;
 
             s.frames_received = rec.frames_received;
             s.frames_delivered = rec.frames_released; // in this slice, release == delivered to sink
@@ -108,30 +171,33 @@ if (in.native_objects) {
         n.type = rec.type;
         n.root_id = rec.root_id;
 
-        if (!rec.created) {
-            n.phase = CBLifecyclePhase::CREATED;
-        } else if (rec.destroyed) {
+        if (rec.destroyed) {
             n.phase = CBLifecyclePhase::DESTROYED;
+        } else if (!rec.created) {
+            n.phase = CBLifecyclePhase::CREATED;
         } else {
             n.phase = CBLifecyclePhase::LIVE;
         }
 
-        n.owner_device_instance_id = 0;
-        n.owner_stream_id = 0;
+        n.owner_device_instance_id = rec.owner_device_instance_id;
+        n.owner_stream_id = rec.owner_stream_id;
 
         n.creation_gen = rec.creation_gen;
 
         n.created_ns = rec.created_ns;
         n.destroyed_ns = rec.destroyed_ns;
 
-        n.bytes_allocated = 0;
-        n.buffers_in_use = 0;
+        n.bytes_allocated = rec.bytes_allocated;
+        n.buffers_in_use = rec.buffers_in_use;
 
         snap.native_objects.push_back(std::move(n));
     }
+
+    const std::set<uint64_t> detached_roots = compute_detached_roots(in);
+    snap.detached_root_ids.assign(detached_roots.begin(), detached_roots.end());
 }
 
-// Rigs and detached_root_ids are not implemented in this scaffolding slice.
+// Rigs are not implemented in this scaffolding slice.
 return snap;
 }
 
@@ -149,6 +215,30 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         for (const auto& [sid, rec] : in.streams->all()) {
             (void)rec;
             fnv1a_u64(h, sid);
+        }
+    }
+
+    if (in.native_objects) {
+        std::set<uint64_t> root_ids;
+
+        for (const auto& [native_id, rec] : in.native_objects->all()) {
+            (void)native_id;
+            if (rec.root_id == 0) {
+                continue;
+            }
+            root_ids.insert(rec.root_id);
+        }
+
+        const std::set<uint64_t> detached_root_ids = compute_detached_roots(in);
+
+        fnv1a_u64(h, static_cast<uint64_t>(root_ids.size()));
+        for (uint64_t root_id : root_ids) {
+            fnv1a_u64(h, root_id);
+        }
+
+        fnv1a_u64(h, static_cast<uint64_t>(detached_root_ids.size()));
+        for (uint64_t root_id : detached_root_ids) {
+            fnv1a_u64(h, root_id);
         }
     }
     return h;

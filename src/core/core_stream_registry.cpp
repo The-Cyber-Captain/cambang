@@ -58,6 +58,13 @@ bool CoreStreamRegistry::on_frame_released(uint64_t stream_id) {
   return true;
 }
 
+bool CoreStreamRegistry::on_frame_dropped(uint64_t stream_id) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  it->second.frames_dropped++;
+  return true;
+}
+
 bool CoreStreamRegistry::set_picture(uint64_t stream_id, const PictureConfig& picture) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;

@@ -303,6 +303,8 @@ private:
   std::atomic<uint64_t> publish_requests_dropped_full_{0};
   std::atomic<uint64_t> publish_requests_dropped_closed_{0};
   std::atomic<uint64_t> publish_requests_dropped_allocfail_{0};
+
+  static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
 };
 
 } // namespace cambang

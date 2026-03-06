@@ -161,6 +161,10 @@ void CoreRuntime::on_core_start() {
 void CoreRuntime::on_core_timer_tick() {
   assert(core_thread_.is_core_thread());
 
+  const auto now = std::chrono::steady_clock::now();
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+
   // Banner 2: Core-loop provider attachment (latched, effective).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
   if (!provider_banner_printed_ && banners_enabled()) {
@@ -218,7 +222,20 @@ if (dispatcher_.consume_relevant_state_changed()) {
     }
   }
 
-  // 3) Retention / timers would run here (not yet implemented).
+  // 3) Retention / timers.
+  const size_t retired_count =
+      native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+  if (retired_count > 0) {
+    request_publish_from_core_unchecked();
+  }
+
+  if (const auto next_retirement_delay_ns =
+          native_objects_.next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+      next_retirement_delay_ns.has_value()) {
+    core_thread_.set_timer_deadline_ns(*next_retirement_delay_ns);
+  } else {
+    core_thread_.clear_timer_deadline();
+  }
 
   // 4) Snapshot publish (coalesced).
   if (publish_pending_.load(std::memory_order_acquire)) {
@@ -250,7 +267,6 @@ if (dispatcher_.consume_relevant_state_changed()) {
     const uint64_t gen_out = current_gen_;
     const uint64_t ver_out = version_;
     const uint64_t topo_out = topology_version_;
-    const auto now = std::chrono::steady_clock::now();
     const uint64_t timestamp_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
@@ -402,7 +418,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       }
 
       case ShutdownPhase::FINAL_RETENTION_SWEEP: {
-        // Step 6: final retention sweep (not yet implemented in this slice).
+        (void)native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         set_phase(ShutdownPhase::FINAL_PUBLISH);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -576,11 +592,12 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
 
     // Best-effort: stop before destroy.
     (void)p->stop_stream(stream_id);
-    (void)p->destroy_stream(stream_id);
-    (void)streams_.on_stream_destroyed(stream_id);
-
-    // Ensure core does not retain a ghost record.
-    (void)streams_.forget_stream(stream_id);
+    const ProviderResult dr = p->destroy_stream(stream_id);
+    if (dr.ok()) {
+      (void)streams_.on_stream_destroyed(stream_id);
+      // Ensure core does not retain a ghost record.
+      (void)streams_.forget_stream(stream_id);
+    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK

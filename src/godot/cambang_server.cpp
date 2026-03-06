@@ -76,6 +76,12 @@ CamBANGServer::~CamBANGServer() {
 }
 
 void CamBANGServer::start() {
+  // New session starts with no Godot-latched snapshot until first publish.
+  latest_.reset();
+  latest_export_.clear();
+  has_latest_export_ = false;
+  has_godot_counters_ = false;
+
   // Defensive re-check: requested mode must be supported in this build.
   {
     ProviderResult cap = ProviderBroker::check_mode_supported_in_build(provider_mode_requested_);
@@ -106,6 +112,14 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   runtime_.stop();
+
+  // Enforce documented NIL pre-baseline behaviour across restart boundaries.
+  latest_.reset();
+  latest_export_.clear();
+  has_latest_export_ = false;
+  has_godot_counters_ = false;
+  snapshot_buffer_.clear();
+  last_seen_published_seq_ = runtime_.published_seq();
 
   // Allow a fresh "busy" log once per live session.
   provider_mode_busy_logged_ = false;

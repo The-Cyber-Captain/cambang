@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/31_restart_nil_before_baseline.gd" id="1_phase3_nil"]
+
+[node name="31_RestartNilBeforeBaseline" type="Node"]
+script = ExtResource("1_phase3_nil")
