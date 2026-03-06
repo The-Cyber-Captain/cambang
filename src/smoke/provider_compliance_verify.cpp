@@ -65,6 +65,15 @@ int find_frameproducer_create(const std::vector<EventRec>& events, uint64_t stre
   return -1;
 }
 
+int find_native_create_id(const std::vector<EventRec>& events, uint32_t type, uint64_t owner_stream_id) {
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (events[i].tag == "native_created" && events[i].type == type && events[i].owner_stream_id == owner_stream_id) {
+      return static_cast<int>(events[i].id);
+    }
+  }
+  return -1;
+}
+
 bool assert_start_boundary(const std::vector<EventRec>& events, uint64_t stream_id, const char* name) {
   const int fp_create = find_frameproducer_create(events, stream_id);
   const int started = find_index(events, "stream_started", stream_id);
@@ -136,6 +145,32 @@ bool run_synthetic_check() {
   if (!p.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
   if (!assert_start_boundary(cb.events, req.stream_id, "synthetic")) return false;
   if (!p.shutdown().ok()) return false;
+
+  const int fp_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::FrameProducer), req.stream_id);
+  const int stream_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
+  const int device_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Device), 0);
+
+  const int stopped_idx = find_index(cb.events, "stream_stopped", req.stream_id);
+  const int destroyed_idx = find_index(cb.events, "stream_destroyed", req.stream_id);
+  const int device_closed_idx = find_index(cb.events, "device_closed", req.device_instance_id);
+
+  const int fp_native_destroy_idx = find_index(cb.events, "native_destroyed", static_cast<uint64_t>(fp_native_id));
+  const int stream_native_destroy_idx = find_index(cb.events, "native_destroyed", static_cast<uint64_t>(stream_native_id));
+  const int device_native_destroy_idx = find_index(cb.events, "native_destroyed", static_cast<uint64_t>(device_native_id));
+
+  if (!(stopped_idx >= 0 && fp_native_destroy_idx >= 0 && stopped_idx < fp_native_destroy_idx)) {
+    std::cerr << "FAIL synthetic stop ordering (lifecycle before frame-producer destroy)\n";
+    return false;
+  }
+  if (!(destroyed_idx >= 0 && stream_native_destroy_idx >= 0 && destroyed_idx < stream_native_destroy_idx)) {
+    std::cerr << "FAIL synthetic destroy ordering (lifecycle before stream destroy)\n";
+    return false;
+  }
+  if (!(device_closed_idx >= 0 && device_native_destroy_idx >= 0 && device_closed_idx < device_native_destroy_idx)) {
+    std::cerr << "FAIL synthetic device close ordering (lifecycle before device destroy)\n";
+    return false;
+  }
+
   return assert_native_balance(cb.events, "synthetic");
 }
 
