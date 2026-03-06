@@ -127,10 +127,10 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         for (const auto& [sid, rec] : in.streams->all()) {
             CamBANGStreamState s;
             s.stream_id = sid;
-            s.device_instance_id = 0; // not tracked in current scaffolding
+            s.device_instance_id = rec.device_instance_id;
             s.phase = rec.created ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
 
-            s.intent = cambang::StreamIntent::PREVIEW;
+            s.intent = rec.intent;
 
             if (!rec.created) {
                 s.mode = CBStreamMode::STOPPED;
@@ -139,13 +139,13 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             }
 
             s.stop_reason = CBStreamStopReason::NONE;
-            s.profile_version = 0;
+            s.profile_version = rec.profile_version;
 
-            s.width = 0;
-            s.height = 0;
-            s.format = 0;
-            s.target_fps_min = 0;
-            s.target_fps_max = 0;
+            s.width = rec.profile.width;
+            s.height = rec.profile.height;
+            s.format = rec.profile.format_fourcc;
+            s.target_fps_min = rec.profile.target_fps_min;
+            s.target_fps_max = rec.profile.target_fps_max;
 
             s.frames_received = rec.frames_received;
             s.frames_delivered = rec.frames_released; // in this slice, release == delivered to sink

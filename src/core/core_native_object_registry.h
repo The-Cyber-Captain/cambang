@@ -24,6 +24,7 @@ public:
 
     bool created = false;
     bool destroyed = false;
+    bool created_ns_set = false;
 
     uint64_t created_ns = 0;
     uint64_t destroyed_ns = 0;

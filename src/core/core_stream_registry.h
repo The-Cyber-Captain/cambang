@@ -59,6 +59,7 @@ public:
   // Frame accounting (stream must exist).
   bool on_frame_received(uint64_t stream_id);
   bool on_frame_released(uint64_t stream_id);
+  bool on_frame_dropped(uint64_t stream_id);
 
   // Mutable config updates (stream should exist).
   bool set_picture(uint64_t stream_id, const PictureConfig& picture);

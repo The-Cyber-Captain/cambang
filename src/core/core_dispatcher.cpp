@@ -135,7 +135,7 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   break;
 }
 
-case CoreCommandType::PROVIDER_FRAME: {
+  case CoreCommandType::PROVIDER_FRAME: {
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
 
     stats_.commands_handled++;
@@ -149,28 +149,24 @@ case CoreCommandType::PROVIDER_FRAME: {
     }
 
     if (frame_sink_) {
-      // Hand off to sink (core thread). Sink is responsible for deterministic
-      // release. For this stage, it copies immediately and releases now.
+      // Delivered means handed off to the configured frame sink.
       FrameView frame = std::move(p.frame);
-      // Defensive hygiene: ensure the command payload cannot double-release.
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
       frame_sink_->on_frame(std::move(frame));
       stats_.frames_released++;
+      if (streams_) {
+        streams_->on_frame_released(sid);
+      }
     } else {
-      // Release-on-drop at dispatch boundary.
+      // No sink configured: release-on-drop and count as dropped (not delivered).
       p.frame.release_now();
       stats_.frames_released++;
-
-      // Defensive hygiene: prevent accidental double-release if this payload is
-      // inspected/logged/re-dispatched in future scaffolding.
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
-    }
-
-    if (streams_) {
-      // Even if unknown stream, try anyway; registry will ignore if missing.
-      streams_->on_frame_released(sid);
+      if (streams_) {
+        streams_->on_frame_dropped(sid);
+      }
     }
     break;
   }

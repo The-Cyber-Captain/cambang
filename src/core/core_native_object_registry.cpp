@@ -21,8 +21,9 @@ void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
   r.buffers_in_use = buffers_in_use;
   r.creation_gen = creation_gen;
   r.created = true;
-  if (r.created_ns == 0) {
+  if (!r.created_ns_set) {
     r.created_ns = created_ns;
+    r.created_ns_set = true;
   }
   if (!r.destroyed) {
     r.destroyed_ns = 0;

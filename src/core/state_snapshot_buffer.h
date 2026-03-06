@@ -26,6 +26,11 @@ public:
         return latest_;
     }
 
+    void clear() {
+        std::lock_guard<std::mutex> lock(mu_);
+        latest_.reset();
+    }
+
 private:
     mutable std::mutex mu_;
     std::shared_ptr<const CamBANGStateSnapshot> latest_;
