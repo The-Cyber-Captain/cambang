@@ -255,9 +255,12 @@ ProviderResult StubProvider::start_stream(
   st.req.profile = profile;
   st.picture = picture;
 
-  const uint32_t w = (profile.width == 0) ? 320 : profile.width;
-  const uint32_t h = (profile.height == 0) ? 180 : profile.height;
-  const uint32_t fmt = (profile.format_fourcc == 0) ? FOURCC_RGBA : profile.format_fourcc;
+  const uint32_t w = profile.width;
+  const uint32_t h = profile.height;
+  const uint32_t fmt = profile.format_fourcc;
+  if (w == 0 || h == 0 || fmt == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
   if (fmt != FOURCC_RGBA) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
@@ -359,10 +362,14 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     return;
   }
 
-  const uint32_t w = (st.req.profile.width == 0) ? 320 : st.req.profile.width;
-  const uint32_t h = (st.req.profile.height == 0) ? 180 : st.req.profile.height;
+  const uint32_t w = st.req.profile.width;
+  const uint32_t h = st.req.profile.height;
+  const uint32_t fmt = st.req.profile.format_fourcc;
 
-  const uint32_t fmt = (st.req.profile.format_fourcc == 0) ? FOURCC_RGBA : st.req.profile.format_fourcc;
+  // start_stream validates effective profile; guard for defensive safety only.
+  if (w == 0 || h == 0 || fmt == 0) {
+    return;
+  }
 
   // This stub provider currently only supports RGBA test frames.
   if (fmt != FOURCC_RGBA) {
@@ -428,7 +435,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
 
     fv.width = w;
     fv.height = h;
-    fv.format_fourcc = FOURCC_RGBA;
+    fv.format_fourcc = fmt;
 
     fv.capture_timestamp.value = capture_ts_ns;
     fv.capture_timestamp.tick_ns = 1;

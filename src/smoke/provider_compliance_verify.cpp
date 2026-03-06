@@ -134,6 +134,12 @@ bool run_stub_check() {
     std::cerr << "FAIL stub close_device unexpectedly succeeded with live stream\n";
     return false;
   }
+  CaptureProfile invalid_profile = req.profile;
+  invalid_profile.width = 0;
+  if (p.start_stream(req.stream_id, invalid_profile, req.picture).ok()) {
+    std::cerr << "FAIL stub start_stream unexpectedly accepted incomplete effective profile\n";
+    return false;
+  }
   if (!p.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
   if (p.destroy_stream(req.stream_id).ok()) {
     std::cerr << "FAIL stub destroy_stream unexpectedly succeeded while started\n";
