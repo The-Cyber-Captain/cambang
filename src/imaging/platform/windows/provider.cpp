@@ -284,6 +284,42 @@ ProviderResult WindowsProvider::ensure_mf_started_() {
   return ProviderResult::success();
 }
 
+uint64_t WindowsProvider::alloc_native_id_(NativeObjectType type) const {
+  if (!callbacks_) {
+    return 0;
+  }
+  return callbacks_->allocate_native_id(type);
+}
+
+void WindowsProvider::emit_native_created_(
+    uint64_t native_id,
+    NativeObjectType type,
+    uint64_t root_id,
+    uint64_t owner_device_id,
+    uint64_t owner_stream_id) {
+  if (!callbacks_ || native_id == 0) {
+    return;
+  }
+  NativeObjectCreateInfo info{};
+  info.native_id = native_id;
+  info.type = static_cast<uint32_t>(type);
+  info.root_id = root_id;
+  info.owner_device_instance_id = owner_device_id;
+  info.owner_stream_id = owner_stream_id;
+  info.created_ns = 0;
+  strand_.post_native_object_created(info);
+}
+
+void WindowsProvider::emit_native_destroyed_(uint64_t native_id) {
+  if (!callbacks_ || native_id == 0) {
+    return;
+  }
+  NativeObjectDestroyInfo info{};
+  info.native_id = native_id;
+  info.destroyed_ns = 0;
+  strand_.post_native_object_destroyed(info);
+}
+
 ProviderResult WindowsProvider::initialize(IProviderCallbacks* callbacks) {
   if (!callbacks) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -304,6 +340,9 @@ ProviderResult WindowsProvider::initialize(IProviderCallbacks* callbacks) {
 
   pr = ensure_mf_started_();
   if (!pr.ok()) return pr;
+
+  provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
+  emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0);
 
   initialized_ = true;
   return ProviderResult::success();
@@ -448,7 +487,9 @@ ProviderResult WindowsProvider::open_device(const std::string& hardware_id,
   device_.activation = std::move(act);
   device_.source = std::move(source);
   device_.open = true;
+  device_.native_id = alloc_native_id_(NativeObjectType::Device);
 
+  emit_native_created_(device_.native_id, NativeObjectType::Device, root_id, device_instance_id, 0);
   strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
@@ -470,6 +511,8 @@ ProviderResult WindowsProvider::close_device(uint64_t device_instance_id) {
   device_.open = false;
 
   strand_.post_device_closed(device_instance_id);
+  emit_native_destroyed_(device_.native_id);
+  device_.native_id = 0;
   return ProviderResult::success();
 }
 
@@ -485,9 +528,13 @@ ProviderResult WindowsProvider::create_stream(const StreamRequest& req) {
   stream_.req = req;
   stream_.created = true;
   stream_.started = false;
+  stream_.producing = false;
+  stream_.native_id = alloc_native_id_(NativeObjectType::Stream);
+  stream_.frame_producer_native_id = 0;
   stream_.stop_requested.store(false);
   stream_.flushed.store(false);
 
+  emit_native_created_(stream_.native_id, NativeObjectType::Stream, device_.root_id, req.device_instance_id, req.stream_id);
   strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
@@ -500,8 +547,13 @@ ProviderResult WindowsProvider::destroy_stream(uint64_t stream_id) {
   if (stream_.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  if (stream_.frame_producer_native_id != 0) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
   stream_.created = false;
   strand_.post_stream_destroyed(stream_id);
+  emit_native_destroyed_(stream_.native_id);
+  stream_.native_id = 0;
   return ProviderResult::success();
 }
 
@@ -530,7 +582,15 @@ ProviderResult WindowsProvider::start_stream(
   stream_.worker = std::thread([this, stream_id]() { worker_thread_(stream_id); });
 
   stream_.started = true;
+  stream_.producing = true;
   strand_.post_stream_started(stream_id);
+  stream_.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
+  emit_native_created_(
+      stream_.frame_producer_native_id,
+      NativeObjectType::FrameProducer,
+      device_.root_id,
+      device_.device_instance_id,
+      stream_id);
   return ProviderResult::success();
 }
 
@@ -560,8 +620,11 @@ ProviderResult WindowsProvider::stop_stream(uint64_t stream_id) {
 
   stream_.reader.reset();
   stream_.started = false;
+  stream_.producing = false;
 
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
+  emit_native_destroyed_(stream_.frame_producer_native_id);
+  stream_.frame_producer_native_id = 0;
   return ProviderResult::success();
 }
 
@@ -602,6 +665,9 @@ ProviderResult WindowsProvider::shutdown() {
     close_device(did);
     lock.lock();
   }
+
+  emit_native_destroyed_(provider_native_id_);
+  provider_native_id_ = 0;
 
   if (mf_started_) {
     ::MFShutdown();

@@ -63,15 +63,48 @@ void CBProviderStrand::post(Event ev) {
   }
 
   std::unique_lock<std::mutex> lk(mu_);
+  const EventClass cls = classify_(ev);
   if (capacity_ > 0 && q_.size() >= capacity_) {
-    // Deterministic backpressure: drop newest event.
-    lk.unlock();
-    drop_(ev);
-    return;
+    if (cls == EventClass::Frame) {
+      // Deterministic backpressure: frames are droppable.
+      lk.unlock();
+      drop_(ev);
+      return;
+    }
+
+    // Non-lossy classes must not be silently dropped once admitted.
+    // Prefer reclaiming space from an already-queued frame.
+    for (auto it = q_.begin(); it != q_.end(); ++it) {
+      if (classify_(*it) == EventClass::Frame) {
+        Event dropped = std::move(*it);
+        q_.erase(it);
+        lk.unlock();
+        drop_(dropped);
+        lk.lock();
+        break;
+      }
+    }
   }
   q_.push_back(std::move(ev));
   lk.unlock();
   cv_.notify_one();
+}
+
+CBProviderStrand::EventClass CBProviderStrand::classify_(const Event& ev) {
+  return std::visit(
+      [](const auto& e) -> EventClass {
+        using T = std::decay_t<decltype(e)>;
+        if constexpr (std::is_same_v<T, EvFrame>) {
+          return EventClass::Frame;
+        } else if constexpr (std::is_same_v<T, EvNativeCreated> || std::is_same_v<T, EvNativeDestroyed>) {
+          return EventClass::NativeObject;
+        } else if constexpr (std::is_same_v<T, EvDeviceError> || std::is_same_v<T, EvStreamError>) {
+          return EventClass::Error;
+        } else {
+          return EventClass::Lifecycle;
+        }
+      },
+      ev);
 }
 
 void CBProviderStrand::thread_main_() {
