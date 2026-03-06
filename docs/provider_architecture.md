@@ -105,6 +105,81 @@ Provider may still reject a request **only** when:
 Provider must return deterministic, explicit error codes for such
 rejections.
 
+
+------------------------------------------------------------------------
+
+## Provider Event Classes and Delivery Guarantees
+
+Providers communicate facts to Core via the **provider strand** (see
+`provider_strand_unification.md`). The strand represents the single
+serialized callback context through which provider → core events are
+delivered.
+
+Provider facts are classified into **four event classes**:
+
+| Event Class | Examples | Delivery Policy |
+|-------------|----------|----------------|
+| Lifecycle | device opened/closed, stream created/destroyed, stream started/stopped | Non-lossy |
+| Native-object | native object created/destroyed | Non-lossy |
+| Error | device error, stream error, provider error | Non-lossy |
+| Frame | repeating frame delivery, capture frame delivery | Lossy |
+
+### Non-lossy classes
+
+Lifecycle, native-object, and error events represent **authoritative
+facts about provider state**.
+
+These events must:
+
+- always be delivered to Core once admitted to the provider strand
+- never be silently discarded due to queue pressure
+- preserve their observed ordering relative to other non-frame events
+
+These guarantees ensure that Core's lifecycle registry and snapshot
+system can maintain **truthful state reporting**.
+
+### Lossy class (frames)
+
+Frame events represent transient image data.
+
+Frames may be dropped under the following conditions:
+
+- queue pressure within the provider strand
+- frame sink admission policy (e.g. latest-frame mailbox)
+- shutdown gating
+- provider-level frame scheduling policy
+
+Frame dropping must **not imply dropping lifecycle or native-object
+events** associated with the resource producing the frame.
+
+### Ordering guarantees
+
+The provider strand must preserve **observed ordering of events**.
+
+For a given owned resource (device, stream, or frame producer) the
+typical ordering is:
+
+1. native object created
+2. lifecycle creation/start event
+3. zero or more frame or error events
+4. lifecycle stop/destroy event
+5. native object destroyed (when resource release completes)
+
+Providers may emit lifecycle events and native-object events adjacent to
+the same boundary, but ordering must remain **consistent across
+providers**.
+
+### Strand-only ingress rule
+
+All provider facts must enter Core via the provider strand.
+
+Platform callbacks, worker threads, schedulers, and host tick functions
+must **not call Core callbacks directly**.
+
+Thread-safe helper services provided by Core (such as identifier
+allocation) may be called from provider threads where explicitly
+permitted by the provider interface.
+
 ------------------------------------------------------------------------
 
 ## 3.x Stream configuration inputs (CaptureProfile and PictureConfig)

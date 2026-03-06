@@ -325,7 +325,91 @@ Providers must not block indefinitely on shutdown (provider contract).
 Core may internally model shutdown as explicit ordered phases,
 but the architectural guarantee is completion of steps 1–8
 before thread termination.
+------------------------------------------------------------------------
 
+## Provider Shutdown Barrier Semantics
+
+Providers must perform shutdown in a manner that preserves truthful
+lifecycle reporting while ensuring deterministic termination.
+
+Provider shutdown proceeds through the following conceptual phases.
+
+### Phase A — Admission close
+
+The provider transitions to a state where:
+
+- new public operations are rejected deterministically
+- frame production is gated off
+- no new long-lived provider activity may begin
+
+Existing work already admitted to the provider strand may still
+complete.
+
+### Phase B — Stop production
+
+Frame production is halted:
+
+- repeating frame producers stop
+- platform capture loops are disabled
+- synthetic schedulers or timers are cancelled
+
+This phase may generate lifecycle stop events or provider error events.
+
+### Phase C — Resource release
+
+Providers release owned resources in dependency order:
+
+1. FrameProducer
+2. Stream
+3. Device
+4. Provider
+
+At each boundary the provider emits the appropriate lifecycle and
+native-object events reflecting the actual state transition.
+
+Native-object destruction events must be emitted **only when the
+resource has actually been released**.
+
+### Phase D — Strand drain barrier
+
+After teardown events have been posted, the provider performs a **strand
+drain barrier**.
+
+A successful barrier guarantees that:
+
+- all events admitted to the provider strand prior to the barrier
+- have been processed by the strand
+- and forwarded to Core's provider event ingress queue
+
+The barrier does not require Core to have integrated those events into
+snapshot state before returning.
+
+### Phase E — Strand stop
+
+Once the drain barrier succeeds:
+
+- the provider strand stops accepting new events
+- any strand worker thread exits
+- provider shutdown may return
+
+### Timeout behaviour
+
+Providers must not block indefinitely during shutdown.
+
+If platform APIs fail to terminate within a bounded timeout:
+
+- an error event may be emitted
+- shutdown may return with failure
+- resources that could not be released must **not emit false destruction
+  events**
+
+Unreleased resources may therefore remain visible in the lifecycle
+registry and snapshot system as surviving native objects.
+
+This behaviour preserves the **truthfulness rule** of the lifecycle
+registry.
+
+------------------------------------------------------------------------
 ------------------------------------------------------------------------
 
 ## 11. Synthetic mode hook

@@ -196,6 +196,60 @@ API**.
 
 ------------------------------------------------------------------------
 
+## Strand Backpressure and Event-Class Policy
+
+The provider strand enforces serialized delivery of provider facts to
+Core.
+
+To support high frame throughput without compromising lifecycle
+truthfulness, the strand distinguishes between **event classes**.
+
+### Non-droppable events
+
+The following classes must not be silently discarded once admitted to
+the strand:
+
+- lifecycle events
+- native-object events
+- error events
+
+These events represent authoritative state transitions and are required
+for accurate snapshot reporting and diagnostics.
+
+Implementations must therefore ensure these events are reliably
+delivered to Core even under queue pressure.
+
+### Droppable events
+
+Frame events may be dropped when necessary to maintain bounded
+resources.
+
+Dropping frames is acceptable because frame data is transient and does
+not affect lifecycle truthfulness.
+
+Typical strategies include:
+
+- bounded queues with frame dropping
+- latest-frame mailbox semantics
+- producer throttling
+
+### Implementation freedom
+
+The exact queueing implementation is not mandated by this document.
+
+Providers may use:
+
+- multiple queues
+- reserved capacity
+- blocking admission
+- worker batching
+
+However the behavioural guarantees defined in
+`provider_architecture.md` must always be preserved.
+
+
+------------------------------------------------------------------------
+
 ## Performance Considerations
 
 The strand architecture must remain efficient across platforms.
