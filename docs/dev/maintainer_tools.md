@@ -31,6 +31,7 @@ Maintainer tools fall into three broad categories.
 |---|---|---|
 | `core_spine_smoke` | Minimal Core runtime invariant validation using the stub provider | Smoke test |
 | `synthetic_timeline_verify` | Deterministic verification of SyntheticProvider timeline behaviour and Core registry truth | Verification |
+| `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication Phase 3 semantics | Verification |
 | `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
 | `windows_mf_runtime_validate` | Opt-in Windows Media Foundation runtime validation against real hardware | Verification |
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
@@ -295,6 +296,14 @@ provider-contract invariants.
 Minimal runtime sanity check validating the Core runtime spine using the
 Stub provider.
 
+`core_spine_smoke` has two distinct modes:
+
+- **Default run (no flags):** validates core start/publish/teardown baseline,
+  then runs bounded stub-provider integration checks.
+- **`--stress`:** runs repeated churn iterations with optional jitter and
+  periodic overload checks. This is **not** just the default path repeated;
+  it exercises queue pressure and lifecycle churn behavior over many cycles.
+
 This tool verifies that the runtime can:
 
 - start
@@ -311,11 +320,46 @@ It should remain completely deterministic.
 Validates deterministic behaviour of the SyntheticProvider timeline and
 its interaction with the core lifecycle registry.
 
+Supported scenarios:
+
+- `basic_lifecycle`
+  - create/start/stop/destroy stream lifecycle under virtual time
+  - frame production progression and snapshot visibility
+  - FrameProducer lifecycle reporting and native-id uniqueness
+- `invalid_sequence`
+  - invalid ordering paths (for example stop-before-start)
+  - verifies no unexpected live FrameProducer or lifecycle corruption
+- `catchup_stress`
+  - advances virtual time in a large jump and verifies deterministic
+    catch-up frame accounting
+  - expected frame count is based on current timeline assumptions
+    (first frame scheduling and configured cadence/warmup behavior)
+    and should be interpreted in that context
+
 It is used primarily to validate:
 
 - deterministic frame scheduling
 - correct lifecycle event emission
 - registry truthfulness under timeline-driven events
+
+### `phase3_snapshot_verify`
+
+Focused verifier for Phase 3 snapshot/publication correctness.
+
+It covers:
+
+- detached-root visibility semantics
+- retirement/removal observability for retained destroyed native objects
+- topology-version structural transitions
+- timestamp preservation/fallback semantics (including provider-supplied `0`)
+- no-sink delivered-vs-dropped accounting
+
+It intentionally **does not** cover the Godot-facing restart
+NIL-before-baseline contract.
+
+That contract is validated separately by the Godot scene test:
+
+- `tests/cambang_gde/scenes/31_restart_nil_before_baseline.tscn`
 
 ---
 
