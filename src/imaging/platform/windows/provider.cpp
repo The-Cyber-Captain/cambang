@@ -175,7 +175,7 @@ inline uint64_t ticks100ns_to_ns(LONGLONG t) {
 // -----------------------------------------------------------------------------
 class WindowsProvider::SourceReaderCallback final : public IMFSourceReaderCallback {
 public:
-  explicit SourceReaderCallback(WindowsProvider::StreamState* s) : stream_(s) {}
+  explicit SourceReaderCallback(WindowsProvider* owner, WindowsProvider::StreamState* s) : owner_(owner), stream_(s) {}
 
   // IUnknown
   STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -242,6 +242,9 @@ public:
         stream_->stop_requested.store(true, std::memory_order_release);
         stream_->q_cv.notify_one();
       }
+      if (owner_ && stream_) {
+        owner_->strand_.post_stream_error(stream_->req.stream_id, ProviderError::ERR_PROVIDER_FAILED);
+      }
     }
 
     return S_OK;
@@ -258,6 +261,7 @@ public:
 
 private:
   std::atomic<uint32_t> ref_{1};
+  WindowsProvider* owner_ = nullptr;
   WindowsProvider::StreamState* stream_ = nullptr;
 };
 
@@ -333,7 +337,19 @@ WindowsProvider::~WindowsProvider() {
   if (stream_.worker.joinable()) {
     stream_.stop_requested.store(true, std::memory_order_release);
     stream_.q_cv.notify_one();
-    stream_.worker.join();
+
+    std::unique_lock<std::mutex> lock(m_);
+    const bool exited = stream_.worker_cv.wait_for(lock, std::chrono::milliseconds(1500), [this]() {
+      return stream_.worker_exited;
+    });
+    lock.unlock();
+
+    if (exited) {
+      stream_.worker.join();
+    } else {
+      // Never block unboundedly in destructor teardown.
+      stream_.worker.detach();
+    }
   }
 }
 
@@ -793,7 +809,7 @@ void WindowsProvider::worker_thread_(uint64_t stream_id) {
     return;
   }
 
-  auto* cb = new WindowsProvider::SourceReaderCallback(&stream_);
+  auto* cb = new WindowsProvider::SourceReaderCallback(this, &stream_);
   attrs->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, cb);
 
   // Dev-accelerator: allow Source Reader converters so we can request RGB32 from YUV-only devices.
