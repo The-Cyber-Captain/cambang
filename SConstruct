@@ -281,6 +281,18 @@ if env["smoke"]:
         source=synthetic_verify_sources,
     )
 
+    # Phase 3 snapshot/native-object/publication verifier.
+    phase3_verify_sources = []
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    phase3_verify_sources += ["src/smoke/phase3_snapshot_verify.cpp"]
+    phase3_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "phase3_snapshot_verify"),
+        source=phase3_verify_sources,
+    )
+
     # Provider compliance verification tool.
     # Keep dependencies aligned with synthetic_timeline_verify smoke wiring.
     provider_verify_sources = []
@@ -296,7 +308,7 @@ if env["smoke"]:
         source=provider_verify_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, provider_verify_prog])
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, provider_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     Alias("smoke", [])
