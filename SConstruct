@@ -281,7 +281,11 @@ if env["smoke"]:
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    if env["platform"] == "windows":
+        provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "platform", "windows", "*.cpp"))
+        smoke_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
     provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
     provider_verify_prog = smoke_env.Program(
