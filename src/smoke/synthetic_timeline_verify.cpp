@@ -161,6 +161,15 @@ static uint64_t frames_received_for_stream(const CamBANGStateSnapshot& s, uint64
   return 0;
 }
 
+static bool stream_is_flowing(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+  for (const auto& st : s.streams) {
+    if (st.stream_id == stream_id) {
+      return st.mode == CBStreamMode::FLOWING;
+    }
+  }
+  return false;
+}
+
 static bool wait_for_frames(StateSnapshotBuffer& buf, uint64_t stream_id, uint64_t min_frames, bool dump) {
   return wait_until([&]() {
     auto s = snapshot_copy(buf);
@@ -308,6 +317,16 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
       std::cerr << "FAIL: try_start_stream not enqueued\n";
       return 1;
     }
+  }
+
+  // Ensure stream-start provider/core integration is visible before advancing
+  // virtual time for catch-up. Advancing too early can schedule against a stream
+  // that has not transitioned to FLOWING yet.
+  if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return stream_is_flowing(s, kStreamId);
+      }, opt.dump_snapshots)) {
+    std::cerr << "FAIL: stream did not reach FLOWING before catch-up tick\n";
+    return 1;
   }
 
   // One big tick: catch-up pump.

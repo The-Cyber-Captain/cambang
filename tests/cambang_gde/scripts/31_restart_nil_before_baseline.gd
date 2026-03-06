@@ -13,6 +13,7 @@ func _process(_dt: float) -> void:
 		# After restart and before first new publish, snapshot must be NIL.
 		var pre = CamBANGServer.get_state_snapshot()
 		if pre != null:
+			print("FAIL: expected NIL snapshot before first post-restart publish")
 			push_error("FAIL: expected NIL snapshot before first post-restart publish")
 			get_tree().quit(1)
 			return
@@ -31,6 +32,7 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 		# Once restarted publish arrives, snapshot must be non-NIL.
 		var s = CamBANGServer.get_state_snapshot()
 		if s == null:
+			print("FAIL: expected non-NIL snapshot after restart baseline publish")
 			push_error("FAIL: expected non-NIL snapshot after restart baseline publish")
 			get_tree().quit(1)
 			return

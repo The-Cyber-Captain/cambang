@@ -333,7 +333,8 @@ Supported scenarios:
   - advances virtual time in a large jump and verifies deterministic
     catch-up frame accounting
   - expected frame count is based on current timeline assumptions
-    (first frame scheduling and configured cadence/warmup behavior)
+    (first frame scheduling and configured cadence/warmup behavior),
+    and the scenario waits for FLOWING state before applying the catch-up tick
     and should be interpreted in that context
 
 It is used primarily to validate:
@@ -354,12 +355,23 @@ It covers:
 - timestamp preservation/fallback semantics (including provider-supplied `0`)
 - no-sink delivered-vs-dropped accounting
 
+Notes:
+
+- Delivered-vs-dropped checks are contract-boundary aware:
+  - delivered requires sink handoff
+  - no-sink release-on-drop is counted as dropped
+
 It intentionally **does not** cover the Godot-facing restart
 NIL-before-baseline contract.
 
 That contract is validated separately by the Godot scene test:
 
 - `tests/cambang_gde/scenes/31_restart_nil_before_baseline.tscn`
+
+Operational outcome for the Godot restart scene:
+
+- On pass it prints: `OK: restart NIL-before-baseline verified`
+- On failure it prints a `FAIL: ...` line and exits with non-zero code
 
 ---
 
