@@ -77,6 +77,15 @@ They are intentionally non-canonical and may evolve or be removed.
 
 Example: - dev/frameview_stage.md
 
+Additional examples:
+
+- `dev/maintainer_tools.md`
+    - describes maintainer CLI validation tools
+    - includes `provider_compliance_verify`
+      (deterministic provider-contract verification using Stub and Synthetic)
+    - includes `windows_mf_runtime_validate`
+      (opt-in Windows Media Foundation runtime validation against real hardware)
+
 These documents must clearly state when code is: - Development-only -
 Intended for replacement - Not representative of release architecture
 

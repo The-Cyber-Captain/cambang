@@ -20,6 +20,13 @@ namespace cambang {
 // Core-issued sync services (allocate_native_id, core_monotonic_now_ns) remain direct calls.
 class CBProviderStrand final {
 public:
+  enum class EventClass : uint8_t {
+    Lifecycle,
+    NativeObject,
+    Error,
+    Frame,
+  };
+
   CBProviderStrand() = default;
   ~CBProviderStrand();
 
@@ -98,6 +105,7 @@ private:
       EvBarrier>;
 
   void post(Event ev);
+  static EventClass classify_(const Event& ev);
   void thread_main_();
   void deliver_(Event& ev);
   void drop_(Event& ev);
