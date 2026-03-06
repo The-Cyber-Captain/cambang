@@ -91,6 +91,7 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0);
   initialized_ = true;
   shutting_down_ = false;
+  now_ns_ = 1;
 
   return ProviderResult::success();
 }
@@ -411,8 +412,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     dst.stride_bytes = static_cast<uint32_t>(row_bytes);
     dst.format = PatternSpec::PackedFormat::RGBA8;
 
-    const uint64_t capture_ts_ns_raw = (st.next_frame_ns != 0) ? st.next_frame_ns : now_ns_;
-    const uint64_t capture_ts_ns = (capture_ts_ns_raw == 0) ? 1 : capture_ts_ns_raw;
+    const uint64_t capture_ts_ns = (st.next_frame_ns != 0) ? st.next_frame_ns : now_ns_;
 
     PatternOverlayData ov;
     ov.frame_index = fi;
