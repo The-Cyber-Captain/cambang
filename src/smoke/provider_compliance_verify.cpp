@@ -142,15 +142,22 @@ bool run_stub_check() {
   if (!assert_start_boundary(cb.events, req.stream_id, "stub")) return false;
 
   bool saw_valid_timestamp = false;
-  for (const auto& e : cb.events) {
-    if (e.tag != "frame") {
-      continue;
+  // Frame callbacks are asynchronous via provider strand; allow a short bounded
+  // wait for at least one frame with contract-valid timestamp fields.
+  for (int i = 0; i < 100 && !saw_valid_timestamp; ++i) {
+    for (const auto& e : cb.events) {
+      if (e.tag != "frame") {
+        continue;
+      }
+      if (e.ts.domain == CaptureTimestampDomain::PROVIDER_MONOTONIC &&
+          e.ts.tick_ns != 0 &&
+          e.ts.value != 0) {
+        saw_valid_timestamp = true;
+        break;
+      }
     }
-    if (e.ts.domain == CaptureTimestampDomain::PROVIDER_MONOTONIC &&
-        e.ts.tick_ns != 0 &&
-        e.ts.value != 0) {
-      saw_valid_timestamp = true;
-      break;
+    if (!saw_valid_timestamp) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
   if (!saw_valid_timestamp) {
