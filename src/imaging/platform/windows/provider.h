@@ -51,7 +51,7 @@ namespace cambang {
 class WindowsProvider final : public ICameraProvider {
 public:
   WindowsProvider() = default;
-  ~WindowsProvider() override = default;
+  ~WindowsProvider() override;
 
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }
 

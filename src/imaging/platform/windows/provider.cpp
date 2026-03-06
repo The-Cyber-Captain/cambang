@@ -207,34 +207,41 @@ public:
                             DWORD dwStreamFlags,
                             LONGLONG llTimestamp,
                             IMFSample* pSample) override {
-    (void)dwStreamIndex;
+    try {
+      (void)dwStreamIndex;
 
-    if (!stream_) return S_OK;
+      if (!stream_) return S_OK;
 
-    // Queue entry (even for failure/flags) so the worker can decide.
-    WindowsProvider::SampleItem item{};
-    item.flags = dwStreamFlags;
-    item.timestamp_100ns = llTimestamp;
+      // Queue entry (even for failure/flags) so the worker can decide.
+      WindowsProvider::SampleItem item{};
+      item.flags = dwStreamFlags;
+      item.timestamp_100ns = llTimestamp;
 
-    if (SUCCEEDED(hrStatus) && pSample) {
-      item.sample.reset(pSample);
-      pSample->AddRef();
-    }
+      if (SUCCEEDED(hrStatus) && pSample) {
+        item.sample.reset(pSample);
+        pSample->AddRef();
+      }
 
-    {
-      std::lock_guard<std::mutex> lk(stream_->q_m);
-      stream_->q.push_back(std::move(item));
-    }
-    stream_->q_cv.notify_one();
+      {
+        std::lock_guard<std::mutex> lk(stream_->q_m);
+        stream_->q.push_back(std::move(item));
+      }
+      stream_->q_cv.notify_one();
 
-    // Continue requesting samples unless stop requested.
-    if (!stream_->stop_requested.load(std::memory_order_relaxed) && stream_->reader) {
-      stream_->reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-                                  0,
-                                  nullptr,
-                                  nullptr,
-                                  nullptr,
-                                  nullptr);
+      // Continue requesting samples unless stop requested.
+      if (!stream_->stop_requested.load(std::memory_order_relaxed) && stream_->reader) {
+        stream_->reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                    0,
+                                    nullptr,
+                                    nullptr,
+                                    nullptr,
+                                    nullptr);
+      }
+    } catch (...) {
+      if (stream_) {
+        stream_->stop_requested.store(true, std::memory_order_release);
+        stream_->q_cv.notify_one();
+      }
     }
 
     return S_OK;
@@ -316,6 +323,18 @@ void WindowsProvider::emit_native_destroyed_(uint64_t native_id) {
   info.native_id = native_id;
   info.destroyed_ns = 0;
   strand_.post_native_object_destroyed(info);
+}
+
+WindowsProvider::~WindowsProvider() {
+  // Best-effort safety net to avoid destruction with a joinable worker.
+  if (initialized_) {
+    (void)shutdown();
+  }
+  if (stream_.worker.joinable()) {
+    stream_.stop_requested.store(true, std::memory_order_release);
+    stream_.q_cv.notify_one();
+    stream_.worker.join();
+  }
 }
 
 ProviderResult WindowsProvider::initialize(IProviderCallbacks* callbacks) {
@@ -730,6 +749,19 @@ ProviderResult WindowsProvider::shutdown() {
     mf_started_ = false;
   }
 
+  if (stream_.worker.joinable()) {
+    const bool exited = stream_.worker_cv.wait_for(lock, std::chrono::milliseconds(1500), [this]() {
+      return stream_.worker_exited;
+    });
+    if (!exited) {
+      strand_.post_stream_error(stream_.req.stream_id, ProviderError::ERR_PROVIDER_FAILED);
+      return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    }
+    lock.unlock();
+    stream_.worker.join();
+    lock.lock();
+  }
+
   strand_.flush();
   strand_.stop();
 
@@ -744,12 +776,13 @@ void WindowsProvider::worker_thread_(uint64_t stream_id) {
     stream_.worker_exited = true;
     stream_.worker_cv.notify_all();
   };
-  ComInit com(COINIT_MULTITHREADED);
-  if (!com.ok) {
-    strand_.post_stream_error(stream_id, ProviderError::ERR_PLATFORM_CONSTRAINT);
-    mark_worker_exit();
-    return;
-  }
+  try {
+    ComInit com(COINIT_MULTITHREADED);
+    if (!com.ok) {
+      strand_.post_stream_error(stream_id, ProviderError::ERR_PLATFORM_CONSTRAINT);
+      mark_worker_exit();
+      return;
+    }
 
   // Build attributes with async callback.
   ComPtr<IMFAttributes> attrs;
@@ -1028,9 +1061,13 @@ if (!stream_.dumped_first_buflen) {
     stream_.reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
   }
 
-  // Release callback object (balances our new).
-  cb->Release();
-  mark_worker_exit();
+    // Release callback object (balances our new).
+    cb->Release();
+    mark_worker_exit();
+  } catch (...) {
+    strand_.post_stream_error(stream_id, ProviderError::ERR_PROVIDER_FAILED);
+    mark_worker_exit();
+  }
 }
 
 StreamTemplate WindowsProvider::stream_template() const {
