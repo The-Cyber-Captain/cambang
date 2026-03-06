@@ -1,6 +1,10 @@
 #include "core/snapshot/snapshot_builder.h"
 
+#include <algorithm>
 #include <cstring>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
@@ -108,30 +112,67 @@ if (in.native_objects) {
         n.type = rec.type;
         n.root_id = rec.root_id;
 
-        if (!rec.created) {
-            n.phase = CBLifecyclePhase::CREATED;
-        } else if (rec.destroyed) {
+        if (rec.destroyed) {
             n.phase = CBLifecyclePhase::DESTROYED;
+        } else if (!rec.created) {
+            n.phase = CBLifecyclePhase::CREATED;
         } else {
             n.phase = CBLifecyclePhase::LIVE;
         }
 
-        n.owner_device_instance_id = 0;
-        n.owner_stream_id = 0;
+        n.owner_device_instance_id = rec.owner_device_instance_id;
+        n.owner_stream_id = rec.owner_stream_id;
 
         n.creation_gen = rec.creation_gen;
 
         n.created_ns = rec.created_ns;
         n.destroyed_ns = rec.destroyed_ns;
 
-        n.bytes_allocated = 0;
-        n.buffers_in_use = 0;
+        n.bytes_allocated = rec.bytes_allocated;
+        n.buffers_in_use = rec.buffers_in_use;
 
         snap.native_objects.push_back(std::move(n));
     }
+
+    std::set<uint64_t> active_device_ids;
+    if (in.devices) {
+        for (const auto& [device_id, rec] : in.devices->all()) {
+            (void)rec;
+            active_device_ids.insert(device_id);
+        }
+    }
+
+    std::set<uint64_t> active_stream_ids;
+    if (in.streams) {
+        for (const auto& [stream_id, rec] : in.streams->all()) {
+            (void)rec;
+            active_stream_ids.insert(stream_id);
+        }
+    }
+
+    std::set<uint64_t> detached_roots;
+    for (const auto& [native_id, rec] : in.native_objects->all()) {
+        (void)native_id;
+        if (rec.root_id == 0) {
+            continue;
+        }
+
+        bool owner_branch_ended = false;
+        if (rec.owner_stream_id != 0) {
+            owner_branch_ended = (active_stream_ids.find(rec.owner_stream_id) == active_stream_ids.end());
+        } else if (rec.owner_device_instance_id != 0) {
+            owner_branch_ended = (active_device_ids.find(rec.owner_device_instance_id) == active_device_ids.end());
+        }
+
+        if (owner_branch_ended) {
+            detached_roots.insert(rec.root_id);
+        }
+    }
+
+    snap.detached_root_ids.assign(detached_roots.begin(), detached_roots.end());
 }
 
-// Rigs and detached_root_ids are not implemented in this scaffolding slice.
+// Rigs are not implemented in this scaffolding slice.
 return snap;
 }
 
@@ -149,6 +190,55 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         for (const auto& [sid, rec] : in.streams->all()) {
             (void)rec;
             fnv1a_u64(h, sid);
+        }
+    }
+
+    if (in.native_objects) {
+        std::set<uint64_t> root_ids;
+        std::set<uint64_t> detached_root_ids;
+        std::set<uint64_t> active_device_ids;
+        std::set<uint64_t> active_stream_ids;
+
+        if (in.devices) {
+            for (const auto& [device_id, rec] : in.devices->all()) {
+                (void)rec;
+                active_device_ids.insert(device_id);
+            }
+        }
+        if (in.streams) {
+            for (const auto& [stream_id, rec] : in.streams->all()) {
+                (void)rec;
+                active_stream_ids.insert(stream_id);
+            }
+        }
+
+        for (const auto& [native_id, rec] : in.native_objects->all()) {
+            (void)native_id;
+            if (rec.root_id == 0) {
+                continue;
+            }
+            root_ids.insert(rec.root_id);
+
+            bool owner_branch_ended = false;
+            if (rec.owner_stream_id != 0) {
+                owner_branch_ended = (active_stream_ids.find(rec.owner_stream_id) == active_stream_ids.end());
+            } else if (rec.owner_device_instance_id != 0) {
+                owner_branch_ended = (active_device_ids.find(rec.owner_device_instance_id) == active_device_ids.end());
+            }
+
+            if (owner_branch_ended) {
+                detached_root_ids.insert(rec.root_id);
+            }
+        }
+
+        fnv1a_u64(h, static_cast<uint64_t>(root_ids.size()));
+        for (uint64_t root_id : root_ids) {
+            fnv1a_u64(h, root_id);
+        }
+
+        fnv1a_u64(h, static_cast<uint64_t>(detached_root_ids.size()));
+        for (uint64_t root_id : detached_root_ids) {
+            fnv1a_u64(h, root_id);
         }
     }
     return h;
