@@ -229,13 +229,6 @@ gde_obj_dir = os.path.join(out_dir, "gde_obj")
 if env["smoke"]:
     smoke_env = env.Clone()
     smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
-    smoke_env.Append(CPPPATH=[
-        os.path.join("thirdparty", "godot-cpp"),
-        os.path.join("thirdparty", "godot-cpp", "include"),
-        os.path.join("thirdparty", "godot-cpp", "gen"),
-        os.path.join("thirdparty", "godot-cpp", "gen", "include"),
-        os.path.join("thirdparty", "godot-cpp", "gdextension"),
-    ])
 
     # On MinGW Windows, force console subsystem to avoid WinMain entrypoint.
     if env["platform"] == "windows" and not is_msvc:
@@ -282,19 +275,7 @@ if env["smoke"]:
         source=synthetic_verify_sources,
     )
 
-    provider_verify_sources = []
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "platform", "windows", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
-    provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
-    provider_verify_prog = smoke_env.Program(
-        target=os.path.join(out_dir, "provider_compliance_verify"),
-        source=provider_verify_sources,
-    )
-
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, provider_verify_prog])
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     Alias("smoke", [])

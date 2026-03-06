@@ -32,42 +32,6 @@ bool StubProvider::is_known_hardware_id(const std::string& hardware_id) const {
   return hardware_id == kStubHardwareId;
 }
 
-uint64_t StubProvider::alloc_native_id_(NativeObjectType type) const {
-  if (!callbacks_) {
-    return 0;
-  }
-  return callbacks_->allocate_native_id(type);
-}
-
-void StubProvider::emit_native_created_(
-    uint64_t native_id,
-    NativeObjectType type,
-    uint64_t root_id,
-    uint64_t owner_device_id,
-    uint64_t owner_stream_id) {
-  if (!callbacks_ || native_id == 0) {
-    return;
-  }
-  NativeObjectCreateInfo info{};
-  info.native_id = native_id;
-  info.type = static_cast<uint32_t>(type);
-  info.root_id = root_id;
-  info.owner_device_instance_id = owner_device_id;
-  info.owner_stream_id = owner_stream_id;
-  info.created_ns = 0;
-  strand_.post_native_object_created(info);
-}
-
-void StubProvider::emit_native_destroyed_(uint64_t native_id) {
-  if (!callbacks_ || native_id == 0) {
-    return;
-  }
-  NativeObjectDestroyInfo info{};
-  info.native_id = native_id;
-  info.destroyed_ns = 0;
-  strand_.post_native_object_destroyed(info);
-}
-
 void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
   auto* slot = static_cast<StreamState::BufferSlot*>(user);
   if (!slot) return;
@@ -87,8 +51,6 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
 
   callbacks_ = callbacks;
   strand_.start(callbacks_, "stub_provider");
-  provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
-  emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0);
   initialized_ = true;
   shutting_down_ = false;
 
@@ -128,9 +90,7 @@ ProviderResult StubProvider::open_device(
   dev.root_id = root_id;
   dev.open = true;
   dev.stream_id = 0;
-  dev.native_id = alloc_native_id_(NativeObjectType::Device);
 
-  emit_native_created_(dev.native_id, NativeObjectType::Device, root_id, device_instance_id, 0);
   strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
@@ -151,10 +111,7 @@ ProviderResult StubProvider::close_device(uint64_t device_instance_id) {
   }
 
   it->second.open = false;
-  const uint64_t native_id = it->second.native_id;
   strand_.post_device_closed(device_instance_id);
-  emit_native_destroyed_(native_id);
-  it->second.native_id = 0;
   return ProviderResult::success();
 }
 
@@ -185,14 +142,11 @@ ProviderResult StubProvider::create_stream(const StreamRequest& req) {
   st.created = true;
   st.started = false;
   st.frame_index = 0;
-  st.native_id = alloc_native_id_(NativeObjectType::Stream);
-  st.frame_producer_native_id = 0;
   st.pool.clear();
   st.pool_cursor = 0;
 
   dev_it->second.stream_id = req.stream_id;
 
-  emit_native_created_(st.native_id, NativeObjectType::Stream, dev_it->second.root_id, req.device_instance_id, req.stream_id);
   strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
@@ -215,10 +169,6 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  if (st_it->second.frame_producer_native_id != 0) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-  }
-
   // Clear device link.
   const uint64_t dev_id = st_it->second.req.device_instance_id;
   auto dev_it = devices_.find(dev_id);
@@ -226,10 +176,8 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
     dev_it->second.stream_id = 0;
   }
 
-  const uint64_t native_id = st_it->second.native_id;
   streams_.erase(st_it);
   strand_.post_stream_destroyed(stream_id);
-  emit_native_destroyed_(native_id);
   return ProviderResult::success();
 }
 
@@ -279,19 +227,7 @@ ProviderResult StubProvider::start_stream(
     st.pool_cursor = 0;
   }
 
-  uint64_t root_id = 0;
-  auto dev_it = devices_.find(st.req.device_instance_id);
-  if (dev_it != devices_.end()) {
-    root_id = dev_it->second.root_id;
-  }
   st.started = true;
-  st.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
-  emit_native_created_(
-      st.frame_producer_native_id,
-      NativeObjectType::FrameProducer,
-      root_id,
-      st.req.device_instance_id,
-      stream_id);
   strand_.post_stream_started(stream_id);
 
   uint32_t fps = profile.target_fps_max;
@@ -465,8 +401,6 @@ ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
 
   st_it->second.started = false;
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
-  emit_native_destroyed_(st_it->second.frame_producer_native_id);
-  st_it->second.frame_producer_native_id = 0;
   return ProviderResult::success();
 }
 
@@ -537,6 +471,8 @@ ProviderResult StubProvider::apply_imaging_spec_patch(
 }
 
 ProviderResult StubProvider::shutdown() {
+  strand_.flush();
+  strand_.stop();
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -551,8 +487,6 @@ ProviderResult StubProvider::shutdown() {
     if (st.started) {
       st.started = false;
       strand_.post_stream_stopped(stream_id, ProviderError::OK);
-      emit_native_destroyed_(st.frame_producer_native_id);
-      st.frame_producer_native_id = 0;
     }
   }
 
@@ -566,10 +500,8 @@ ProviderResult StubProvider::shutdown() {
       dev_it->second.stream_id = 0;
     }
 
-    const uint64_t native_id = it->second.native_id;
     it = streams_.erase(it);
     strand_.post_stream_destroyed(stream_id);
-    emit_native_destroyed_(native_id);
   }
 
   // Close all devices.
@@ -577,18 +509,8 @@ ProviderResult StubProvider::shutdown() {
     if (dev.open) {
       dev.open = false;
       strand_.post_device_closed(dev_id);
-      emit_native_destroyed_(dev.native_id);
-      dev.native_id = 0;
     }
   }
-
-  emit_native_destroyed_(provider_native_id_);
-  provider_native_id_ = 0;
-
-  strand_.flush();
-  strand_.stop();
-  callbacks_ = nullptr;
-  initialized_ = false;
 
   return ProviderResult::success();
 }

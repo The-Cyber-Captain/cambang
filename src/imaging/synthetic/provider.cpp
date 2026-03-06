@@ -283,9 +283,9 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
     ++sit;
   }
 
+  emit_native_destroy_(it->second.native_id);
   it->second.open = false;
   strand_.post_device_closed(device_instance_id);
-  emit_native_destroy_(it->second.native_id);
   devices_.erase(it);
   return ProviderResult::success();
 }
@@ -354,8 +354,8 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
   if (it->second.started) {
     (void)stop_stream(stream_id);
   }
-  strand_.post_stream_destroyed(stream_id);
   emit_native_destroy_(it->second.native_id);
+  strand_.post_stream_destroyed(stream_id);
   streams_.erase(it);
   return ProviderResult::success();
 }
@@ -452,13 +452,13 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   }
   auto& s = it->second;
   s.started = false;
-  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   if (s.producing) {
     // Production has stopped immediately in this provider.
     emit_native_destroy_(s.frame_producer_native_id);
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
 
@@ -507,6 +507,8 @@ ProviderResult SyntheticProvider::apply_imaging_spec_patch(
 }
 
 ProviderResult SyntheticProvider::shutdown() {
+  strand_.flush();
+  strand_.stop();
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -537,9 +539,6 @@ ProviderResult SyntheticProvider::shutdown() {
     emit_native_destroy_(provider_native_id_);
     provider_native_id_ = 0;
   }
-
-  strand_.flush();
-  strand_.stop();
 
   initialized_ = false;
   callbacks_ = nullptr;
