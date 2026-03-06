@@ -50,6 +50,7 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   callbacks_ = callbacks;
+  strand_.start(callbacks_, "stub_provider");
   initialized_ = true;
   shutting_down_ = false;
 
@@ -90,7 +91,7 @@ ProviderResult StubProvider::open_device(
   dev.open = true;
   dev.stream_id = 0;
 
-  callbacks_->on_device_opened(device_instance_id);
+  strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -110,7 +111,7 @@ ProviderResult StubProvider::close_device(uint64_t device_instance_id) {
   }
 
   it->second.open = false;
-  callbacks_->on_device_closed(device_instance_id);
+  strand_.post_device_closed(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -146,7 +147,7 @@ ProviderResult StubProvider::create_stream(const StreamRequest& req) {
 
   dev_it->second.stream_id = req.stream_id;
 
-  callbacks_->on_stream_created(req.stream_id);
+  strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
 
@@ -176,7 +177,7 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   }
 
   streams_.erase(st_it);
-  callbacks_->on_stream_destroyed(stream_id);
+  strand_.post_stream_destroyed(stream_id);
   return ProviderResult::success();
 }
 
@@ -227,7 +228,7 @@ ProviderResult StubProvider::start_stream(
   }
 
   st.started = true;
-  callbacks_->on_stream_started(stream_id);
+  strand_.post_stream_started(stream_id);
 
   uint32_t fps = profile.target_fps_max;
   if (fps == 0) fps = 30;
@@ -374,7 +375,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.release = &StubProvider::release_test_frame;
     fv.release_user = slot;
 
-    callbacks_->on_frame(fv);
+    strand_.post_frame(fv);
   }
 }
 
@@ -382,7 +383,7 @@ void StubProvider::emit_fact_stream_stopped(uint64_t stream_id, ProviderError er
   if (!callbacks_) {
     return;
   }
-  callbacks_->on_stream_stopped(stream_id, error_or_ok);
+  strand_.post_stream_stopped(stream_id, error_or_ok);
 }
 
 ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
@@ -399,7 +400,7 @@ ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
   }
 
   st_it->second.started = false;
-  callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
 
@@ -435,8 +436,8 @@ ProviderResult StubProvider::trigger_capture(const CaptureRequest& req) {
   }
 
   // No frames emitted; just lifecycle notifications.
-  callbacks_->on_capture_started(req.capture_id);
-  callbacks_->on_capture_completed(req.capture_id);
+  strand_.post_capture_started(req.capture_id);
+  strand_.post_capture_completed(req.capture_id);
   return ProviderResult::success();
 }
 
@@ -470,6 +471,8 @@ ProviderResult StubProvider::apply_imaging_spec_patch(
 }
 
 ProviderResult StubProvider::shutdown() {
+  strand_.flush();
+  strand_.stop();
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -483,7 +486,7 @@ ProviderResult StubProvider::shutdown() {
   for (auto& [stream_id, st] : streams_) {
     if (st.started) {
       st.started = false;
-      callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+      strand_.post_stream_stopped(stream_id, ProviderError::OK);
     }
   }
 
@@ -498,14 +501,14 @@ ProviderResult StubProvider::shutdown() {
     }
 
     it = streams_.erase(it);
-    callbacks_->on_stream_destroyed(stream_id);
+    strand_.post_stream_destroyed(stream_id);
   }
 
   // Close all devices.
   for (auto& [dev_id, dev] : devices_) {
     if (dev.open) {
       dev.open = false;
-      callbacks_->on_device_closed(dev_id);
+      strand_.post_device_closed(dev_id);
     }
   }
 

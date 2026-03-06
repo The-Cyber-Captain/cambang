@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_strand.h"
 
 #include "imaging/synthetic/config.h"
 #include "imaging/synthetic/scenario.h"
@@ -79,6 +80,7 @@ public:
   void advance(uint64_t dt_ns);
 
 private:
+  CBProviderStrand strand_;
   // Timeline event queue (Phase 2 foundation).
   struct TimelineEventCompare {
     bool operator()(const SyntheticScheduledEvent& a, const SyntheticScheduledEvent& b) const noexcept {

@@ -10,6 +10,7 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_strand.h"
 
 namespace cambang {
 
@@ -75,6 +76,7 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   ProviderResult shutdown() override;
 
 private:
+  CBProviderStrand strand_;
   struct DeviceState {
     std::string hardware_id;
     uint64_t root_id = 0;

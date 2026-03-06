@@ -294,6 +294,7 @@ ProviderResult WindowsProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   callbacks_ = callbacks;
+  strand_.start(callbacks_, "windows_mf_provider");
 
   // Explicit, auditable initialization discipline:
   // - CoInitializeEx is per-thread; initialize on the control thread here.
@@ -448,7 +449,7 @@ ProviderResult WindowsProvider::open_device(const std::string& hardware_id,
   device_.source = std::move(source);
   device_.open = true;
 
-  callbacks_->on_device_opened(device_instance_id);
+  strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -468,7 +469,7 @@ ProviderResult WindowsProvider::close_device(uint64_t device_instance_id) {
   device_.activation.reset();
   device_.open = false;
 
-  callbacks_->on_device_closed(device_instance_id);
+  strand_.post_device_closed(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -487,7 +488,7 @@ ProviderResult WindowsProvider::create_stream(const StreamRequest& req) {
   stream_.stop_requested.store(false);
   stream_.flushed.store(false);
 
-  callbacks_->on_stream_created(req.stream_id);
+  strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
 
@@ -500,7 +501,7 @@ ProviderResult WindowsProvider::destroy_stream(uint64_t stream_id) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   stream_.created = false;
-  callbacks_->on_stream_destroyed(stream_id);
+  strand_.post_stream_destroyed(stream_id);
   return ProviderResult::success();
 }
 
@@ -529,7 +530,7 @@ ProviderResult WindowsProvider::start_stream(
   stream_.worker = std::thread([this, stream_id]() { worker_thread_(stream_id); });
 
   stream_.started = true;
-  callbacks_->on_stream_started(stream_id);
+  strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
 
@@ -560,7 +561,7 @@ ProviderResult WindowsProvider::stop_stream(uint64_t stream_id) {
   stream_.reader.reset();
   stream_.started = false;
 
-  callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
 
@@ -607,6 +608,9 @@ ProviderResult WindowsProvider::shutdown() {
     mf_started_ = false;
   }
 
+  strand_.flush();
+  strand_.stop();
+
   initialized_ = false;
   callbacks_ = nullptr;
   return ProviderResult::success();
@@ -615,7 +619,7 @@ ProviderResult WindowsProvider::shutdown() {
 void WindowsProvider::worker_thread_(uint64_t stream_id) {
   ComInit com(COINIT_MULTITHREADED);
   if (!com.ok) {
-    callbacks_->on_stream_error(stream_id, ProviderError::ERR_PLATFORM_CONSTRAINT);
+    strand_.post_stream_error(stream_id, ProviderError::ERR_PLATFORM_CONSTRAINT);
     return;
   }
 
@@ -623,7 +627,7 @@ void WindowsProvider::worker_thread_(uint64_t stream_id) {
   ComPtr<IMFAttributes> attrs;
   HRESULT hr = ::MFCreateAttributes(attrs.put(), 4);
   if (FAILED(hr)) {
-    callbacks_->on_stream_error(stream_id, provider_error_from_hr(hr));
+    strand_.post_stream_error(stream_id, provider_error_from_hr(hr));
     return;
   }
 
@@ -644,7 +648,7 @@ void WindowsProvider::worker_thread_(uint64_t stream_id) {
   }
   if (FAILED(hr)) {
     cb->Release();
-    callbacks_->on_stream_error(stream_id, provider_error_from_hr(hr));
+    strand_.post_stream_error(stream_id, provider_error_from_hr(hr));
     return;
   }
 
@@ -886,7 +890,7 @@ if (!stream_.dumped_first_buflen) {
     fv.release = &frame_release_hook;
     fv.release_user = payload;
 
-    callbacks_->on_frame(fv);
+    strand_.post_frame(fv);
   }
 
   // Ensure any pending reads are canceled and OnFlush is delivered.

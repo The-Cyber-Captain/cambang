@@ -72,6 +72,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   callbacks_ = callbacks;
+  strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
 
@@ -88,7 +89,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     info.type = static_cast<uint32_t>(NativeObjectType::Provider);
     info.root_id = 0;
     info.created_ns = clock_.now_ns();
-    callbacks_->on_native_object_created(info);
+    strand_.post_native_object_created(info);
   }
 
   return ProviderResult::success();
@@ -217,7 +218,7 @@ void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   info.root_id = d.root_id;
   info.owner_device_instance_id = d.device_instance_id;
   info.created_ns = clock_.now_ns();
-  callbacks_->on_native_object_created(info);
+  strand_.post_native_object_created(info);
 }
 
 void SyntheticProvider::emit_native_destroy_(uint64_t native_id) {
@@ -227,7 +228,7 @@ void SyntheticProvider::emit_native_destroy_(uint64_t native_id) {
   NativeObjectDestroyInfo info{};
   info.native_id = native_id;
   info.destroyed_ns = clock_.now_ns();
-  callbacks_->on_native_object_destroyed(info);
+  strand_.post_native_object_destroyed(info);
 }
 
 ProviderResult SyntheticProvider::open_device(
@@ -256,7 +257,7 @@ ProviderResult SyntheticProvider::open_device(
   d.native_id = alloc_native_id_(NativeObjectType::Device);
 
   emit_native_create_device_(d);
-  callbacks_->on_device_opened(device_instance_id);
+  strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -284,7 +285,7 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
 
   emit_native_destroy_(it->second.native_id);
   it->second.open = false;
-  callbacks_->on_device_closed(device_instance_id);
+  strand_.post_device_closed(device_instance_id);
   devices_.erase(it);
   return ProviderResult::success();
 }
@@ -335,10 +336,10 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
     info.owner_device_instance_id = req.device_instance_id;
     info.owner_stream_id = req.stream_id;
     info.created_ns = clock_.now_ns();
-    callbacks_->on_native_object_created(info);
+    strand_.post_native_object_created(info);
   }
 
-  callbacks_->on_stream_created(req.stream_id);
+  strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
 
@@ -354,7 +355,7 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
     (void)stop_stream(stream_id);
   }
   emit_native_destroy_(it->second.native_id);
-  callbacks_->on_stream_destroyed(stream_id);
+  strand_.post_stream_destroyed(stream_id);
   streams_.erase(it);
   return ProviderResult::success();
 }
@@ -424,7 +425,7 @@ ProviderResult SyntheticProvider::start_stream(
     info.owner_device_instance_id = s.req.device_instance_id;
     info.owner_stream_id = s.req.stream_id;
     info.created_ns = clock_.now_ns();
-    callbacks_->on_native_object_created(info);
+    strand_.post_native_object_created(info);
   }
 
   s.frame_index = 0;
@@ -434,7 +435,7 @@ ProviderResult SyntheticProvider::start_stream(
     // Timeline role: drive emission via explicit scheduled events.
     timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, stream_id);
   }
-  callbacks_->on_stream_started(stream_id);
+  strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
 
@@ -457,7 +458,7 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
-  callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
 
@@ -506,6 +507,8 @@ ProviderResult SyntheticProvider::apply_imaging_spec_patch(
 }
 
 ProviderResult SyntheticProvider::shutdown() {
+  strand_.flush();
+  strand_.stop();
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
@@ -621,7 +624,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = slot;
 
-  callbacks_->on_frame(fv);
+  strand_.post_frame(fv);
   s.frame_index++;
 }
 

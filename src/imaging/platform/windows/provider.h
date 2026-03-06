@@ -18,6 +18,7 @@
 #include <mfobjects.h>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_strand.h"
 #include "imaging/platform/windows/mf/com_ptr.h"
 
 namespace cambang {
@@ -149,6 +150,8 @@ private:
       ComPtr<IMFActivate>& out_activate);
 
   void worker_thread_(uint64_t stream_id);
+
+  CBProviderStrand strand_;
 
   IProviderCallbacks* callbacks_ = nullptr;
   bool initialized_ = false;
