@@ -1,3 +1,5 @@
+// Deterministic provider compliance verifier: Stub + Synthetic only.
+// No platform-backed hardware access in this tool.
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -8,9 +10,6 @@
 
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
-#ifdef _WIN32
-#include "imaging/platform/windows/provider.h"
-#endif
 
 using namespace cambang;
 
@@ -186,50 +185,12 @@ bool run_synthetic_check() {
   return assert_native_balance(cb.events, "synthetic");
 }
 
-#ifdef _WIN32
-bool run_windows_check() {
-  RecorderCallbacks cb;
-  WindowsProvider p;
-  if (!p.initialize(&cb).ok()) return false;
-
-  std::vector<CameraEndpoint> eps;
-  if (!p.enumerate_endpoints(eps).ok() || eps.empty()) {
-    (void)p.shutdown();
-    std::cerr << "WARN windows check skipped (no endpoints)\n";
-    return true;
-  }
-
-  if (!p.open_device(eps[0].hardware_id, 1, 3001).ok()) return false;
-  StreamRequest req{};
-  req.stream_id = 13;
-  req.device_instance_id = 1;
-  req.intent = StreamIntent::PREVIEW;
-  req.profile.width = 640;
-  req.profile.height = 480;
-  req.profile.format_fourcc = FOURCC_RGBA;
-  req.profile.target_fps_min = 30;
-  req.profile.target_fps_max = 30;
-  if (!p.create_stream(req).ok()) return false;
-  if (!p.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
-  if (!assert_start_boundary(cb.events, req.stream_id, "windows")) return false;
-  if (!p.shutdown().ok()) return false;
-
-  if (find_index(cb.events, "stream_destroyed", req.stream_id) < 0) {
-    std::cerr << "FAIL windows shutdown omitted stream destroy\n";
-    return false;
-  }
-  return assert_native_balance(cb.events, "windows");
-}
-#endif
 
 } // namespace
 
 int main() {
   if (!run_stub_check()) return 1;
   if (!run_synthetic_check()) return 1;
-#ifdef _WIN32
-  if (!run_windows_check()) return 1;
-#endif
   std::cout << "PASS provider_compliance_verify\n";
   return 0;
 }
