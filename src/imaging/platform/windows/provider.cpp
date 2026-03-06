@@ -653,15 +653,29 @@ ProviderResult WindowsProvider::stop_stream_with_timeout_(uint64_t stream_id, st
   }
 
   stream_.stop_requested.store(true, std::memory_order_release);
+
+  ProviderError stop_error = ProviderError::OK;
   if (stream_.reader) {
-    stream_.reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+    const HRESULT flush_hr = stream_.reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+    if (FAILED(flush_hr)) {
+      stop_error = provider_error_from_hr(flush_hr);
+      strand_.post_stream_error(stream_id, stop_error);
+    }
   }
-  stream_.q_cv.notify_one();
+
+  // Do not rely solely on MF OnFlush callback to make progress.
+  // Immediate stop after first ReadSample() can race such that no sample arrives,
+  // so set flushed locally as the shutdown barrier signal for the worker loop.
+  stream_.flushed.store(true, std::memory_order_release);
+  stream_.q_cv.notify_all();
 
   const bool exited = stream_.worker_cv.wait_for(lock, timeout, [this]() { return stream_.worker_exited; });
   if (!exited) {
-    strand_.post_stream_error(stream_id, ProviderError::ERR_PROVIDER_FAILED);
-    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+    const ProviderError timeout_error = (stop_error == ProviderError::OK)
+                                            ? ProviderError::ERR_TRANSIENT_FAILURE
+                                            : stop_error;
+    strand_.post_stream_error(stream_id, timeout_error);
+    return ProviderResult::failure(timeout_error);
   }
 
   lock.unlock();
@@ -673,6 +687,12 @@ ProviderResult WindowsProvider::stop_stream_with_timeout_(uint64_t stream_id, st
   stream_.reader.reset();
   stream_.started = false;
   stream_.producing = false;
+
+  if (stop_error != ProviderError::OK) {
+    strand_.post_stream_stopped(stream_id, stop_error);
+    return ProviderResult::failure(stop_error);
+  }
+
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
   emit_native_destroyed_(stream_.frame_producer_native_id);
   stream_.frame_producer_native_id = 0;
@@ -1081,6 +1101,9 @@ if (!stream_.dumped_first_buflen) {
     cb->Release();
     mark_worker_exit();
   } catch (...) {
+    stream_.stop_requested.store(true, std::memory_order_release);
+    stream_.flushed.store(true, std::memory_order_release);
+    stream_.q_cv.notify_all();
     strand_.post_stream_error(stream_id, ProviderError::ERR_PROVIDER_FAILED);
     mark_worker_exit();
   }

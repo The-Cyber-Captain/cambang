@@ -94,8 +94,10 @@ int run_real_hardware_validation() {
     return 1;
   }
 
-  if (!provider.shutdown().ok()) {
-    std::cerr << "FAIL windows_mf_runtime_validate: shutdown failed\n";
+  const ProviderResult shutdown_r = provider.shutdown();
+  if (!shutdown_r.ok()) {
+    std::cerr << "FAIL windows_mf_runtime_validate: shutdown failed (error="
+              << static_cast<unsigned>(shutdown_r.code) << ")\n";
     return 1;
   }
 
