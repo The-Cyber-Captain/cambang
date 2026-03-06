@@ -353,6 +353,15 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
   if (it->second.started || it->second.producing) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+
+  // Do not retire pool storage while any frame buffer slot is still in use by
+  // core/dispatcher ownership. release_frame_ clears in_use when ownership ends.
+  for (const auto& slot : it->second.pool) {
+    if (slot && slot->in_use.load(std::memory_order_acquire)) {
+      return ProviderResult::failure(ProviderError::ERR_BUSY);
+    }
+  }
+
   strand_.post_stream_destroyed(stream_id);
   emit_native_destroy_(it->second.native_id);
   streams_.erase(it);
