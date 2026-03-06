@@ -229,6 +229,13 @@ gde_obj_dir = os.path.join(out_dir, "gde_obj")
 if env["smoke"]:
     smoke_env = env.Clone()
     smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
+    smoke_env.Append(CPPPATH=[
+        os.path.join("thirdparty", "godot-cpp"),
+        os.path.join("thirdparty", "godot-cpp", "include"),
+        os.path.join("thirdparty", "godot-cpp", "gen"),
+        os.path.join("thirdparty", "godot-cpp", "gen", "include"),
+        os.path.join("thirdparty", "godot-cpp", "gdextension"),
+    ])
 
     # On MinGW Windows, force console subsystem to avoid WinMain entrypoint.
     if env["platform"] == "windows" and not is_msvc:
