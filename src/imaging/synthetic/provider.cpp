@@ -270,17 +270,12 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  // Stop/destroy any streams owned by this device instance.
-  for (auto sit = streams_.begin(); sit != streams_.end();) {
-    if (sit->second.req.device_instance_id == device_instance_id) {
-      if (sit->second.started) {
-        (void)stop_stream(sit->first);
-      }
-      (void)destroy_stream(sit->first);
-      sit = streams_.begin();
-      continue;
+  // Normal operation is strict: stream lifecycle must be resolved explicitly
+  // by the caller before device close.
+  for (const auto& kv : streams_) {
+    if (kv.second.created && kv.second.req.device_instance_id == device_instance_id) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
-    ++sit;
   }
 
   it->second.open = false;
@@ -351,8 +346,8 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
   if (it == streams_.end() || !it->second.created) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  if (it->second.started) {
-    (void)stop_stream(stream_id);
+  if (it->second.started || it->second.producing) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   strand_.post_stream_destroyed(stream_id);
   emit_native_destroy_(it->second.native_id);

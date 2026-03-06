@@ -411,9 +411,12 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     dst.stride_bytes = static_cast<uint32_t>(row_bytes);
     dst.format = PatternSpec::PackedFormat::RGBA8;
 
+    const uint64_t capture_ts_ns_raw = (st.next_frame_ns != 0) ? st.next_frame_ns : now_ns_;
+    const uint64_t capture_ts_ns = (capture_ts_ns_raw == 0) ? 1 : capture_ts_ns_raw;
+
     PatternOverlayData ov;
     ov.frame_index = fi;
-    ov.timestamp_ns = 0;
+    ov.timestamp_ns = capture_ts_ns;
     ov.stream_id = stream_id;
 
     st.renderer.render_into(spec, dst, ov);
@@ -427,9 +430,9 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.height = h;
     fv.format_fourcc = FOURCC_RGBA;
 
-    fv.capture_timestamp.value = 0;
-    fv.capture_timestamp.tick_ns = 0;
-    fv.capture_timestamp.domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
+    fv.capture_timestamp.value = capture_ts_ns;
+    fv.capture_timestamp.tick_ns = 1;
+    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
 
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
