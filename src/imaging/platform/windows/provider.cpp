@@ -535,17 +535,10 @@ ProviderResult WindowsProvider::close_device(uint64_t device_instance_id) {
     }
   }
 
-  if (stream_.started) {
-    const ProviderResult stop_r = stop_stream_with_timeout_(stream_.req.stream_id, std::chrono::milliseconds(1500));
-    if (!stop_r.ok()) {
-      return stop_r;
-    }
-  }
-
-  if (stream_.created) {
-    const ProviderResult destroy_r = destroy_stream_forced_(stream_.req.stream_id);
-    if (!destroy_r.ok()) {
-      return destroy_r;
+  {
+    std::lock_guard<std::mutex> lock(m_);
+    if (stream_.created) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
   }
 
@@ -577,6 +570,8 @@ ProviderResult WindowsProvider::create_stream(const StreamRequest& req) {
   }
 
   stream_.req = req;
+  stream_.active_profile = req.profile;
+  stream_.active_picture = req.picture;
   stream_.created = true;
   stream_.started = false;
   stream_.producing = false;
@@ -610,8 +605,8 @@ ProviderResult WindowsProvider::destroy_stream(uint64_t stream_id) {
 
 ProviderResult WindowsProvider::start_stream(
     uint64_t stream_id,
-    const CaptureProfile& /*profile*/,
-    const PictureConfig& /*picture*/) {
+    const CaptureProfile& profile,
+    const PictureConfig& picture) {
   std::lock_guard<std::mutex> lock(m_);
   if (!stream_.created || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -622,6 +617,15 @@ ProviderResult WindowsProvider::start_stream(
   if (!device_.source) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  if (profile.width == 0 || profile.height == 0 || profile.format_fourcc == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  // Start-time effective configuration must be used for activation/negotiation.
+  stream_.active_profile = profile;
+  stream_.active_picture = picture;
+  stream_.req.profile = profile;
+  stream_.req.picture = picture;
 
   stream_.stop_requested.store(false);
   stream_.flushed.store(false);
@@ -870,10 +874,11 @@ if (!stream_.logged_native_types) {
   stream_.logged_native_types = true;
 }
 
-// Choose best native type based on StreamRequest (use whatever is already there).
-
-// Choose best native type based on StreamRequest (use whatever is already there).
-ComPtr<IMFMediaType> chosen = choose_native_type(reader.get(), stream_.req);
+// Choose best native type based on effective start-time profile.
+StreamRequest effective_req = stream_.req;
+effective_req.profile = stream_.active_profile;
+effective_req.picture = stream_.active_picture;
+ComPtr<IMFMediaType> chosen = choose_native_type(reader.get(), effective_req);
 HRESULT set_hr = S_OK;
 
 if (chosen) {
@@ -896,16 +901,17 @@ if (chosen) {
     if (FAILED(hr)) return hr;
 
     // Prefer requested size if provided; otherwise leave unset (let MF pick).
-    if (stream_.req.profile.width != 0 && stream_.req.profile.height != 0) {
-      (void)::MFSetAttributeSize(mt.get(), MF_MT_FRAME_SIZE, stream_.req.profile.width, stream_.req.profile.height);
+    if (stream_.active_profile.width != 0 && stream_.active_profile.height != 0) {
+      (void)::MFSetAttributeSize(
+          mt.get(), MF_MT_FRAME_SIZE, stream_.active_profile.width, stream_.active_profile.height);
     }
 
     // Progressive, if it sticks.
     (void)mt->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
 
     // Prefer requested FPS range (use max as target).
-    if (stream_.req.profile.target_fps_max != 0) {
-      (void)::MFSetAttributeRatio(mt.get(), MF_MT_FRAME_RATE, stream_.req.profile.target_fps_max, 1);
+    if (stream_.active_profile.target_fps_max != 0) {
+      (void)::MFSetAttributeRatio(mt.get(), MF_MT_FRAME_RATE, stream_.active_profile.target_fps_max, 1);
     }
 
     log_media_type_once(label, mt.get());

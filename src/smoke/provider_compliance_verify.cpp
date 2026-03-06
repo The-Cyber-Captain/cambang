@@ -20,6 +20,7 @@ struct EventRec {
   uint64_t id = 0;
   uint32_t type = 0;
   uint64_t owner_stream_id = 0;
+  CaptureTimestamp ts{};
 };
 
 struct RecorderCallbacks final : IProviderCallbacks {
@@ -38,7 +39,11 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_capture_started(uint64_t id) override { events.push_back({"capture_started", id}); }
   void on_capture_completed(uint64_t id) override { events.push_back({"capture_completed", id}); }
   void on_capture_failed(uint64_t id, ProviderError) override { events.push_back({"capture_failed", id}); }
-  void on_frame(const FrameView&) override { events.push_back({"frame", 0}); }
+  void on_frame(const FrameView& frame) override {
+    EventRec ev{"frame", 0};
+    ev.ts = frame.capture_timestamp;
+    events.push_back(ev);
+  }
   void on_device_error(uint64_t id, ProviderError) override { events.push_back({"device_error", id}); }
   void on_stream_error(uint64_t id, ProviderError) override { events.push_back({"stream_error", id}); }
   void on_native_object_created(const NativeObjectCreateInfo& info) override {
@@ -125,8 +130,47 @@ bool run_stub_check() {
   if (!p.initialize(&cb).ok()) return false;
   if (!p.open_device("stub0", 1, 1001).ok()) return false;
   if (!p.create_stream(req).ok()) return false;
+  if (p.close_device(req.device_instance_id).ok()) {
+    std::cerr << "FAIL stub close_device unexpectedly succeeded with live stream\n";
+    return false;
+  }
+  CaptureProfile invalid_profile = req.profile;
+  invalid_profile.width = 0;
+  if (p.start_stream(req.stream_id, invalid_profile, req.picture).ok()) {
+    std::cerr << "FAIL stub start_stream unexpectedly accepted incomplete effective profile\n";
+    return false;
+  }
   if (!p.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
+  if (p.destroy_stream(req.stream_id).ok()) {
+    std::cerr << "FAIL stub destroy_stream unexpectedly succeeded while started\n";
+    return false;
+  }
   if (!assert_start_boundary(cb.events, req.stream_id, "stub")) return false;
+
+  bool saw_valid_timestamp = false;
+  // Frame callbacks are asynchronous via provider strand; allow a short bounded
+  // wait for at least one frame with contract-valid timestamp fields.
+  for (int i = 0; i < 100 && !saw_valid_timestamp; ++i) {
+    for (const auto& e : cb.events) {
+      if (e.tag != "frame") {
+        continue;
+      }
+      if (e.ts.domain == CaptureTimestampDomain::PROVIDER_MONOTONIC &&
+          e.ts.tick_ns != 0 &&
+          e.ts.value != 0) {
+        saw_valid_timestamp = true;
+        break;
+      }
+    }
+    if (!saw_valid_timestamp) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  if (!saw_valid_timestamp) {
+    std::cerr << "FAIL stub frame timestamp not contract-valid\n";
+    return false;
+  }
+
   if (!p.shutdown().ok()) return false;
   return assert_native_balance(cb.events, "stub");
 }
@@ -153,7 +197,15 @@ bool run_synthetic_check() {
   if (!p.initialize(&cb).ok()) return false;
   if (!p.open_device("synthetic:0", 1, 2001).ok()) return false;
   if (!p.create_stream(req).ok()) return false;
+  if (p.close_device(req.device_instance_id).ok()) {
+    std::cerr << "FAIL synthetic close_device unexpectedly succeeded with live stream\n";
+    return false;
+  }
   if (!p.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
+  if (p.destroy_stream(req.stream_id).ok()) {
+    std::cerr << "FAIL synthetic destroy_stream unexpectedly succeeded while started\n";
+    return false;
+  }
   if (!assert_start_boundary(cb.events, req.stream_id, "synthetic")) return false;
   if (!p.shutdown().ok()) return false;
 

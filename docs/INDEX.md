@@ -89,6 +89,20 @@ Additional examples:
 These documents must clearly state when code is: - Development-only -
 Intended for replacement - Not representative of release architecture
 
+### Additional provider-discipline note
+
+Provider semantics are defined by the canonical architecture, the
+reference providers, and the compliance verifier / harness.
+
+Platform-backed providers are adapters to that contract. They must not
+redefine lifecycle, defaulting, registry, snapshot, or timestamp
+semantics to match a backend API.
+
+This is especially important as additional platform-backed providers are
+introduced (for example future `android_camera2` alongside
+`windows_mediafoundation`).
+
+
 ------------------------------------------------------------------------
 
 ## Documentation Discipline Rules

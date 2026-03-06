@@ -114,6 +114,8 @@ private:
 
   struct StreamState {
     StreamRequest req{};
+    CaptureProfile active_profile{};
+    PictureConfig active_picture{};
     bool created = false;
     bool started = false;
     bool producing = false;
