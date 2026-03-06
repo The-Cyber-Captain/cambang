@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <vector>
 
 #include <windows.h>
@@ -127,6 +128,8 @@ private:
     std::deque<SampleItem> q;
 
     std::thread worker;
+    bool worker_exited = true;
+    std::condition_variable worker_cv;
 
     // Worker-thread-owned MF objects. Created/used/destroyed on worker thread.
 
@@ -157,6 +160,8 @@ private:
   uint64_t alloc_native_id_(NativeObjectType type) const;
   void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_stream_id);
   void emit_native_destroyed_(uint64_t native_id);
+  ProviderResult stop_stream_with_timeout_(uint64_t stream_id, std::chrono::milliseconds timeout);
+  ProviderResult destroy_stream_forced_(uint64_t stream_id);
 
   CBProviderStrand strand_;
 

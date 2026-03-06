@@ -495,11 +495,29 @@ ProviderResult WindowsProvider::open_device(const std::string& hardware_id,
 }
 
 ProviderResult WindowsProvider::close_device(uint64_t device_instance_id) {
+  {
+    std::lock_guard<std::mutex> lock(m_);
+    if (!device_.open || device_.device_instance_id != device_instance_id) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+  }
+
+  if (stream_.started) {
+    const ProviderResult stop_r = stop_stream_with_timeout_(stream_.req.stream_id, std::chrono::milliseconds(1500));
+    if (!stop_r.ok()) {
+      return stop_r;
+    }
+  }
+
+  if (stream_.created) {
+    const ProviderResult destroy_r = destroy_stream_forced_(stream_.req.stream_id);
+    if (!destroy_r.ok()) {
+      return destroy_r;
+    }
+  }
+
   std::lock_guard<std::mutex> lock(m_);
   if (!device_.open || device_.device_instance_id != device_instance_id) {
-    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
-  }
-  if (stream_.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
@@ -579,11 +597,11 @@ ProviderResult WindowsProvider::start_stream(
     stream_.q.clear();
   }
 
+  stream_.worker_exited = false;
   stream_.worker = std::thread([this, stream_id]() { worker_thread_(stream_id); });
 
   stream_.started = true;
   stream_.producing = true;
-  strand_.post_stream_started(stream_id);
   stream_.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
   emit_native_created_(
       stream_.frame_producer_native_id,
@@ -591,26 +609,27 @@ ProviderResult WindowsProvider::start_stream(
       device_.root_id,
       device_.device_instance_id,
       stream_id);
+  strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
 
-ProviderResult WindowsProvider::stop_stream(uint64_t stream_id) {
+ProviderResult WindowsProvider::stop_stream_with_timeout_(uint64_t stream_id, std::chrono::milliseconds timeout) {
   std::unique_lock<std::mutex> lock(m_);
   if (!stream_.started || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
-  // Deterministic unblock strategy:
-  // - Request stop
-  // - Flush reader to cancel pending sample requests and discard queued samples.
   stream_.stop_requested.store(true, std::memory_order_release);
-
   if (stream_.reader) {
     stream_.reader->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
   }
-
-  // Wake worker in case it's waiting with an empty queue.
   stream_.q_cv.notify_one();
+
+  const bool exited = stream_.worker_cv.wait_for(lock, timeout, [this]() { return stream_.worker_exited; });
+  if (!exited) {
+    strand_.post_stream_error(stream_id, ProviderError::ERR_PROVIDER_FAILED);
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
 
   lock.unlock();
   if (stream_.worker.joinable()) {
@@ -621,11 +640,29 @@ ProviderResult WindowsProvider::stop_stream(uint64_t stream_id) {
   stream_.reader.reset();
   stream_.started = false;
   stream_.producing = false;
-
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
   emit_native_destroyed_(stream_.frame_producer_native_id);
   stream_.frame_producer_native_id = 0;
   return ProviderResult::success();
+}
+
+ProviderResult WindowsProvider::destroy_stream_forced_(uint64_t stream_id) {
+  std::lock_guard<std::mutex> lock(m_);
+  if (!stream_.created || stream_.req.stream_id != stream_id) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (stream_.started || stream_.frame_producer_native_id != 0) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  stream_.created = false;
+  strand_.post_stream_destroyed(stream_id);
+  emit_native_destroyed_(stream_.native_id);
+  stream_.native_id = 0;
+  return ProviderResult::success();
+}
+
+ProviderResult WindowsProvider::stop_stream(uint64_t stream_id) {
+  return stop_stream_with_timeout_(stream_id, std::chrono::milliseconds(1500));
 }
 
 ProviderResult WindowsProvider::trigger_capture(const CaptureRequest&) {
@@ -656,8 +693,29 @@ ProviderResult WindowsProvider::shutdown() {
   if (stream_.started) {
     uint64_t sid = stream_.req.stream_id;
     lock.unlock();
-    stop_stream(sid);
+    const ProviderResult stop_r = stop_stream_with_timeout_(sid, std::chrono::milliseconds(1500));
     lock.lock();
+    if (!stop_r.ok()) {
+      strand_.flush();
+      strand_.stop();
+      callbacks_ = nullptr;
+      initialized_ = false;
+      return stop_r;
+    }
+  }
+  if (stream_.created) {
+    uint64_t sid = stream_.req.stream_id;
+    lock.unlock();
+    const ProviderResult destroy_r = destroy_stream_forced_(sid);
+    lock.lock();
+    if (!destroy_r.ok()) {
+      strand_.post_stream_error(sid, ProviderError::ERR_PROVIDER_FAILED);
+      strand_.flush();
+      strand_.stop();
+      callbacks_ = nullptr;
+      initialized_ = false;
+      return destroy_r;
+    }
   }
   if (device_.open) {
     uint64_t did = device_.device_instance_id;
@@ -683,9 +741,15 @@ ProviderResult WindowsProvider::shutdown() {
 }
 
 void WindowsProvider::worker_thread_(uint64_t stream_id) {
+  auto mark_worker_exit = [this]() {
+    std::lock_guard<std::mutex> lock(m_);
+    stream_.worker_exited = true;
+    stream_.worker_cv.notify_all();
+  };
   ComInit com(COINIT_MULTITHREADED);
   if (!com.ok) {
     strand_.post_stream_error(stream_id, ProviderError::ERR_PLATFORM_CONSTRAINT);
+    mark_worker_exit();
     return;
   }
 
@@ -694,6 +758,7 @@ void WindowsProvider::worker_thread_(uint64_t stream_id) {
   HRESULT hr = ::MFCreateAttributes(attrs.put(), 4);
   if (FAILED(hr)) {
     strand_.post_stream_error(stream_id, provider_error_from_hr(hr));
+    mark_worker_exit();
     return;
   }
 
@@ -715,6 +780,7 @@ void WindowsProvider::worker_thread_(uint64_t stream_id) {
   if (FAILED(hr)) {
     cb->Release();
     strand_.post_stream_error(stream_id, provider_error_from_hr(hr));
+    mark_worker_exit();
     return;
   }
 
@@ -966,6 +1032,7 @@ if (!stream_.dumped_first_buflen) {
 
   // Release callback object (balances our new).
   cb->Release();
+  mark_worker_exit();
 }
 
 StreamTemplate WindowsProvider::stream_template() const {

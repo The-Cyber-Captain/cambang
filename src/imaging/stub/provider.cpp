@@ -279,14 +279,12 @@ ProviderResult StubProvider::start_stream(
     st.pool_cursor = 0;
   }
 
-  st.started = true;
-  strand_.post_stream_started(stream_id);
-
   uint64_t root_id = 0;
   auto dev_it = devices_.find(st.req.device_instance_id);
   if (dev_it != devices_.end()) {
     root_id = dev_it->second.root_id;
   }
+  st.started = true;
   st.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
   emit_native_created_(
       st.frame_producer_native_id,
@@ -294,6 +292,7 @@ ProviderResult StubProvider::start_stream(
       root_id,
       st.req.device_instance_id,
       stream_id);
+  strand_.post_stream_started(stream_id);
 
   uint32_t fps = profile.target_fps_max;
   if (fps == 0) fps = 30;
