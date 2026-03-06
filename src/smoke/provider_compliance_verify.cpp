@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "imaging/stub/provider.h"
@@ -75,8 +77,18 @@ int find_native_create_id(const std::vector<EventRec>& events, uint32_t type, ui
 }
 
 bool assert_start_boundary(const std::vector<EventRec>& events, uint64_t stream_id, const char* name) {
-  const int fp_create = find_frameproducer_create(events, stream_id);
-  const int started = find_index(events, "stream_started", stream_id);
+  int fp_create = -1;
+  int started = -1;
+  // Provider callbacks are delivered on the strand worker; allow a short bounded wait
+  // for posted start-boundary events to arrive before asserting relative ordering.
+  for (int i = 0; i < 100; ++i) {
+    fp_create = find_frameproducer_create(events, stream_id);
+    started = find_index(events, "stream_started", stream_id);
+    if (fp_create >= 0 && started >= 0) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
   if (fp_create < 0 || started < 0 || fp_create > started) {
     std::cerr << "FAIL " << name << " start boundary ordering\n";
     return false;
