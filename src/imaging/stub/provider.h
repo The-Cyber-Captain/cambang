@@ -10,6 +10,7 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_strand.h"
 
 namespace cambang {
 
@@ -75,12 +76,14 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   ProviderResult shutdown() override;
 
 private:
+  CBProviderStrand strand_;
   struct DeviceState {
     std::string hardware_id;
     uint64_t root_id = 0;
     bool open = false;
     // Core enforces 1 repeating stream per device instance; we track the current one (0 if none).
     uint64_t stream_id = 0;
+    uint64_t native_id = 0;
   };
 
   struct StreamState {
@@ -88,6 +91,8 @@ private:
     bool created = false;
     bool started = false;
     uint64_t frame_index = 0;
+    uint64_t native_id = 0;
+    uint64_t frame_producer_native_id = 0;
 
     // virtual_time scheduling (ns)
     uint64_t period_ns = 0;
@@ -130,6 +135,12 @@ private:
 static constexpr const char* kStubHardwareId = "stub0";
 
   bool is_known_hardware_id(const std::string& hardware_id) const;
+
+  uint64_t alloc_native_id_(NativeObjectType type) const;
+  void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_stream_id);
+  void emit_native_destroyed_(uint64_t native_id);
+
+  uint64_t provider_native_id_ = 0;
 };
 
 } // namespace cambang

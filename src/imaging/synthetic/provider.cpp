@@ -72,6 +72,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   callbacks_ = callbacks;
+  strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
 
@@ -87,8 +88,9 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     info.native_id = provider_native_id_;
     info.type = static_cast<uint32_t>(NativeObjectType::Provider);
     info.root_id = 0;
+    info.has_created_ns = true;
     info.created_ns = clock_.now_ns();
-    callbacks_->on_native_object_created(info);
+    strand_.post_native_object_created(info);
   }
 
   return ProviderResult::success();
@@ -216,8 +218,9 @@ void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   info.type = static_cast<uint32_t>(NativeObjectType::Device);
   info.root_id = d.root_id;
   info.owner_device_instance_id = d.device_instance_id;
+  info.has_created_ns = true;
   info.created_ns = clock_.now_ns();
-  callbacks_->on_native_object_created(info);
+  strand_.post_native_object_created(info);
 }
 
 void SyntheticProvider::emit_native_destroy_(uint64_t native_id) {
@@ -226,8 +229,9 @@ void SyntheticProvider::emit_native_destroy_(uint64_t native_id) {
   }
   NativeObjectDestroyInfo info{};
   info.native_id = native_id;
+  info.has_destroyed_ns = true;
   info.destroyed_ns = clock_.now_ns();
-  callbacks_->on_native_object_destroyed(info);
+  strand_.post_native_object_destroyed(info);
 }
 
 ProviderResult SyntheticProvider::open_device(
@@ -256,7 +260,7 @@ ProviderResult SyntheticProvider::open_device(
   d.native_id = alloc_native_id_(NativeObjectType::Device);
 
   emit_native_create_device_(d);
-  callbacks_->on_device_opened(device_instance_id);
+  strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -269,22 +273,17 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  // Stop/destroy any streams owned by this device instance.
-  for (auto sit = streams_.begin(); sit != streams_.end();) {
-    if (sit->second.req.device_instance_id == device_instance_id) {
-      if (sit->second.started) {
-        (void)stop_stream(sit->first);
-      }
-      (void)destroy_stream(sit->first);
-      sit = streams_.begin();
-      continue;
+  // Normal operation is strict: stream lifecycle must be resolved explicitly
+  // by the caller before device close.
+  for (const auto& kv : streams_) {
+    if (kv.second.created && kv.second.req.device_instance_id == device_instance_id) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
-    ++sit;
   }
 
-  emit_native_destroy_(it->second.native_id);
   it->second.open = false;
-  callbacks_->on_device_closed(device_instance_id);
+  strand_.post_device_closed(device_instance_id);
+  emit_native_destroy_(it->second.native_id);
   devices_.erase(it);
   return ProviderResult::success();
 }
@@ -334,11 +333,12 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
     info.root_id = dit->second.root_id;
     info.owner_device_instance_id = req.device_instance_id;
     info.owner_stream_id = req.stream_id;
+    info.has_created_ns = true;
     info.created_ns = clock_.now_ns();
-    callbacks_->on_native_object_created(info);
+    strand_.post_native_object_created(info);
   }
 
-  callbacks_->on_stream_created(req.stream_id);
+  strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
 
@@ -350,11 +350,20 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
   if (it == streams_.end() || !it->second.created) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  if (it->second.started) {
-    (void)stop_stream(stream_id);
+  if (it->second.started || it->second.producing) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+
+  // Do not retire pool storage while any frame buffer slot is still in use by
+  // core/dispatcher ownership. release_frame_ clears in_use when ownership ends.
+  for (const auto& slot : it->second.pool) {
+    if (slot && slot->in_use.load(std::memory_order_acquire)) {
+      return ProviderResult::failure(ProviderError::ERR_BUSY);
+    }
+  }
+
+  strand_.post_stream_destroyed(stream_id);
   emit_native_destroy_(it->second.native_id);
-  callbacks_->on_stream_destroyed(stream_id);
   streams_.erase(it);
   return ProviderResult::success();
 }
@@ -423,8 +432,9 @@ ProviderResult SyntheticProvider::start_stream(
     info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
     info.owner_device_instance_id = s.req.device_instance_id;
     info.owner_stream_id = s.req.stream_id;
+    info.has_created_ns = true;
     info.created_ns = clock_.now_ns();
-    callbacks_->on_native_object_created(info);
+    strand_.post_native_object_created(info);
   }
 
   s.frame_index = 0;
@@ -434,7 +444,7 @@ ProviderResult SyntheticProvider::start_stream(
     // Timeline role: drive emission via explicit scheduled events.
     timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, stream_id);
   }
-  callbacks_->on_stream_started(stream_id);
+  strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
 
@@ -451,13 +461,13 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   }
   auto& s = it->second;
   s.started = false;
+  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   if (s.producing) {
     // Production has stopped immediately in this provider.
     emit_native_destroy_(s.frame_producer_native_id);
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
-  callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
   return ProviderResult::success();
 }
 
@@ -536,6 +546,9 @@ ProviderResult SyntheticProvider::shutdown() {
     emit_native_destroy_(provider_native_id_);
     provider_native_id_ = 0;
   }
+
+  strand_.flush();
+  strand_.stop();
 
   initialized_ = false;
   callbacks_ = nullptr;
@@ -621,7 +634,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = slot;
 
-  callbacks_->on_frame(fv);
+  strand_.post_frame(fv);
   s.frame_index++;
 }
 

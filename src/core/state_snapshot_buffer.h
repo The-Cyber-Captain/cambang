@@ -9,7 +9,7 @@
 // Thread-safe "latest snapshot" buffer.
 //
 // Writer: core thread via publish().
-// Readers: any thread via snapshot_copy()/gen()/topology_gen().
+// Readers: any thread via snapshot_copy().
 //
 // This is suitable for smoke and for Godot-side bridging (where Godot thread
 // polls and emits signals).
@@ -24,6 +24,11 @@ public:
     std::shared_ptr<const CamBANGStateSnapshot> snapshot_copy() const {
         std::lock_guard<std::mutex> lock(mu_);
         return latest_;
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mu_);
+        latest_.reset();
     }
 
 private:

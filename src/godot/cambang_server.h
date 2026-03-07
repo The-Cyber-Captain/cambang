@@ -5,12 +5,14 @@
 
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
 #include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
-#include "godot/cambang_state_snapshot.h"
+
+#include "godot/state_snapshot_export.h"
 
 #include "imaging/broker/mode.h"
 
@@ -25,8 +27,6 @@
 
 namespace cambang {
 
-class CamBANGServerTickNode;
-
 // CamBANGServer is the release-facing lifecycle owner.
 //
 // Engine singleton lifetime:
@@ -38,7 +38,7 @@ class CamBANGServerTickNode;
 //
 // Threading:
 // - CoreRuntime publishes snapshots on the core thread.
-// - Godot signals are emitted on the Godot main thread via an internal tick node.
+// - Godot signals are emitted on the Godot main thread via a SceneTree tick hook.
 class CamBANGServer final : public godot::Object {
   GDCLASS(CamBANGServer, godot::Object)
 
@@ -76,18 +76,10 @@ public:
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
-  // Return a Godot wrapper snapshot object. Safe to call on the Godot main thread.
-  godot::Ref<cambang::CamBANGStateSnapshotGD> get_state_snapshot() const {
-    // "No snapshot yet" is represented as an invalid Ref.
-    if (!latest_) {
-      return {};
-    }
-
-    godot::Ref<cambang::CamBANGStateSnapshotGD> out;
-    out.instantiate();
-    out->_init_from_core(latest_);
-    return out;
-  }
+  // Return the latest Godot-facing snapshot struct (as a Variant).
+  // - Before the first publish, returns NIL.
+  // - After publish, returns a Dictionary matching docs/state_snapshot.md.
+  godot::Variant get_state_snapshot() const;
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
@@ -102,9 +94,10 @@ protected:
   static void _bind_methods();
 
 private:
-  friend class CamBANGServerTickNode;
+  // Called on the Godot main thread via the SceneTree "process_frame" signal.
+  void _on_godot_process_frame();
 
-  // Called on the Godot main thread by the internal tick node.
+  // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
 
   static CamBANGServer* singleton_;
@@ -114,12 +107,28 @@ private:
 
   // Godot-thread cached snapshot.
   std::shared_ptr<const CamBANGStateSnapshot> latest_;
-  bool has_emitted_snapshot_ = false;
-  uint64_t last_emitted_gen_ = 0;
 
-  void _ensure_tick_installed();
+  // Godot-thread cached exported snapshot (struct-like Variant graph).
+  bool has_latest_export_ = false;
+  godot::Dictionary latest_export_;
+
+  // Godot-facing tick-bounded counters (truth model for state_published).
+  // These are not the core's internal publication counters.
+  bool has_godot_counters_ = false;
+  uint64_t godot_gen_ = 0;
+  uint64_t godot_version_ = 0;
+  uint64_t godot_topology_version_ = 0;
+  uint64_t last_emitted_topology_sig_ = 0;
+
+  // O(1) "changed since last Godot tick" marker: core publish sequence.
+  uint64_t last_seen_published_seq_ = 0;
+
+  void _ensure_tick_connected();
   bool _ensure_provider_attached_and_initialized();
-  bool tick_installed_ = false;
+
+  // SceneTree tick hook state.
+  bool tick_connected_ = false;
+  uint64_t last_tick_time_ns_ = 0;
 
   RuntimeMode provider_mode_requested_ = RuntimeMode::platform_backed;
   bool provider_mode_busy_logged_ = false;

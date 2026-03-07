@@ -22,15 +22,9 @@ bool CoreDeviceRegistry::on_device_closed(uint64_t device_instance_id) {
 
   auto it = devices_.find(device_instance_id);
   if (it == devices_.end()) {
-    // Best-effort: create a record so snapshots/diagnostics can reflect closure.
-    DeviceRecord rec;
-    rec.device_instance_id = device_instance_id;
-    rec.open = false;
-    devices_.emplace(device_instance_id, rec);
-    return true;
+    return false;
   }
-
-  it->second.open = false;
+  devices_.erase(it);
   return true;
 }
 

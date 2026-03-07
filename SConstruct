@@ -123,7 +123,13 @@ vars.Add(BoolVariable(
 ))
 vars.Add(BoolVariable(
     "smoke",
-    "Build core smoke executable (providerless by default). Not part of the GDExtension artifact.",
+    "Build deterministic smoke/verification tools only (no real hardware access).",
+    False,
+))
+
+vars.Add(BoolVariable(
+    "platform_validate",
+    "Build platform-backed runtime validation tools (explicit opt-in; may access real hardware).",
     False,
 ))
 
@@ -207,7 +213,7 @@ print(f"  platform={env['platform']} target={env['target']} (core_flags={core_ta
 print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
-print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'}")
+print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'} platform_validate={'yes' if env['platform_validate'] else 'no'}")
 print(f"  synthetic={'yes' if env['synthetic'] else 'no'}")
 print(f"  dev_nodes={'yes' if env['dev_nodes'] else 'no'}")
 
@@ -275,10 +281,70 @@ if env["smoke"]:
         source=synthetic_verify_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog])
+    # Phase 3 snapshot/native-object/publication verifier.
+    phase3_verify_sources = []
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    phase3_verify_sources += ["src/smoke/phase3_snapshot_verify.cpp"]
+    phase3_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "phase3_snapshot_verify"),
+        source=phase3_verify_sources,
+    )
+
+    # Provider compliance verification tool.
+    # Keep dependencies aligned with synthetic_timeline_verify smoke wiring.
+    provider_verify_sources = []
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
+    provider_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "provider_compliance_verify"),
+        source=provider_verify_sources,
+    )
+
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, provider_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     Alias("smoke", [])
+
+# ---------------------------------------------------------------------------
+# Platform-backed runtime validation (alias: platform_validate)
+# ---------------------------------------------------------------------------
+
+if env["platform_validate"]:
+    validate_env = env.Clone()
+    validate_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
+
+    if env["platform"] == "windows" and not is_msvc:
+        validate_env.Append(LINKFLAGS=["-mconsole"])
+
+    validate_env.VariantDir(smoke_obj_dir, "src", duplicate=0)
+
+    runtime_validate_progs = []
+    if env["platform"] == "windows":
+        windows_validate_sources = []
+        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "platform", "windows", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+        windows_validate_sources += ["src/smoke/windows_mf_runtime_validate.cpp"]
+        validate_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
+        runtime_validate_progs.append(validate_env.Program(
+            target=os.path.join(out_dir, "windows_mf_runtime_validate"),
+            source=windows_validate_sources,
+        ))
+
+    platform_validate_alias = Alias("platform_validate", runtime_validate_progs)
+    AlwaysBuild(platform_validate_alias)
+else:
+    Alias("platform_validate", [])
 
 # ---------------------------------------------------------------------------
 # GDExtension scaffolding (alias: gde)
@@ -369,8 +435,7 @@ if env["gde"]:
     gde_sources += [
         os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
-        os.path.join(gde_obj_dir, "godot", "cambang_server_tick_node.cpp"),
-        os.path.join(gde_obj_dir, "godot", "cambang_state_snapshot.cpp"),
+        os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
     ]
 
     if env["dev_nodes"]:
@@ -414,17 +479,21 @@ else:
 
 # Default targets:
 # - build GDE scaffolding when gde=1 (default)
-# - build smoke when smoke=1
-# - allow providerless smoke when gde=0
-if env["gde"] and env["smoke"]:
-    Default(["gde", "smoke"])
-elif env["gde"]:
-    Default("gde")
-elif env["smoke"]:
-    Default("smoke")
+# - build deterministic smoke tools when smoke=1
+# - build platform runtime validators when platform_validate=1
+selected_defaults = []
+if env["gde"]:
+    selected_defaults.append("gde")
+if env["smoke"]:
+    selected_defaults.append("smoke")
+if env["platform_validate"]:
+    selected_defaults.append("platform_validate")
+
+if selected_defaults:
+    Default(selected_defaults)
 else:
     # Nothing selected. This is allowed for 'scons -c', otherwise it's likely a user mistake.
     from SCons.Script import GetOption
     if not GetOption("clean"):
-        print("ERROR: Nothing to build. Set gde=1 and/or smoke=1 (or run with -c to clean).")
+        print("ERROR: Nothing to build. Set gde=1 and/or smoke=1 and/or platform_validate=1 (or run with -c to clean).")
         Exit(1)

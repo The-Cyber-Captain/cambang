@@ -1,0 +1,135 @@
+[gd_scene load_steps=2 format=3 uid="uid://da2tgxy4jmgxa"]
+
+[sub_resource type="GDScript" id="GDScript_pr61q"]
+resource_name = "connect_snapshot_view"
+script/source = "extends Node
+
+@export var MAX_PRINT_LINES := 120
+
+var _last_flat := {}
+
+func _ready() -> void:
+	print(\"KERR: %s\" % CamBANGServer.get_state_snapshot())
+	var server = _get_server()
+	server.state_published.connect(_on_state_published)
+	print(\"Connected to CamBANGServer.state_published\")
+
+func _get_server():
+	if Engine.has_singleton(\"CamBANGServer\"):
+		return Engine.get_singleton(\"CamBANGServer\")
+	return get_node(\"/root/CamBANGServer\")
+
+func _on_state_published(gen: int, version: int, topo: int) -> void:
+	var frm := Engine.get_frames_drawn()
+	var phys := Engine.get_physics_frames()
+
+	var snap = _get_server().get_state_snapshot()
+	print(\"\")
+	print(\"=== state_published @ Frm=%d Phys=%d gen=%d ver=%d topo=%d ===\" % [frm, phys, gen, version, topo])
+
+	if snap == null:
+		print(\"snapshot: <NIL>\")
+		return
+	if typeof(snap) != TYPE_DICTIONARY:
+		print(\"snapshot: unexpected type=%d value=%s\" % [typeof(snap), str(snap)])
+		return
+
+	var d: Dictionary = snap
+	print(\"snapshot(header): schema=%s gen=%s ver=%s topo=%s ts_ns=%s\"
+		% [str(d.get(\"schema_version\")), str(d.get(\"gen\")), str(d.get(\"version\")),
+		   str(d.get(\"topology_version\")), str(d.get(\"timestamp_ns\"))])
+
+	var flat := {}
+	_flatten(d, \"$\", flat)
+
+	_print_diff(_last_flat, flat)
+	_last_flat = flat
+
+func _flatten(v, path: String, out: Dictionary) -> void:
+	match typeof(v):
+		TYPE_DICTIONARY:
+			var d: Dictionary = v
+			var keys := d.keys()
+			keys.sort()
+			for k in keys:
+				_flatten(d[k], \"%s.%s\" % [path, str(k)], out)
+		TYPE_ARRAY:
+			var a: Array = v
+			var n = min(a.size(), 50) # cap for safety
+			for i in range(n):
+				_flatten(a[i], \"%s[%d]\" % [path, i], out)
+		_:
+			out[path] = str(v)
+
+func _print_diff(prev: Dictionary, curr: Dictionary) -> void:
+	var added := []
+	var removed := []
+	var changed := []
+
+	for k in curr.keys():
+		if not prev.has(k):
+			added.append(k)
+		elif prev[k] != curr[k]:
+			changed.append(k)
+
+	for k in prev.keys():
+		if not curr.has(k):
+			removed.append(k)
+
+	added.sort()
+	removed.sort()
+	changed.sort()
+
+	print(\"--- Diff vs previous emission --- added=%d removed=%d changed=%d\" % [added.size(), removed.size(), changed.size()])
+
+	_print_list(\"ADDED\", added, curr, 20)
+	_print_list(\"REMOVED\", removed, prev, 20)
+	_print_changed(\"CHANGED\", changed, prev, curr, 80)
+
+func _print_list(label: String, keys: Array, dict_for_values: Dictionary, limit: int) -> void:
+	if keys.is_empty(): return
+	print(\"  %s:\" % label)
+	for i in range(min(keys.size(), limit)):
+		var k = keys[i]
+		print(\"    %s = %s\" % [k, dict_for_values[k]])
+	if keys.size() > limit:
+		print(\"    ... (%d more)\" % (keys.size() - limit))
+
+func _print_changed(label: String, keys: Array, prev: Dictionary, curr: Dictionary, limit: int) -> void:
+	if keys.is_empty(): return
+	print(\"  %s:\" % label)
+	for i in range(min(keys.size(), limit)):
+		var k = keys[i]
+		print(\"    %s: %s  -->  %s\" % [k, prev[k], curr[k]])
+	if keys.size() > limit:
+		print(\"    ... (%d more)\" % (keys.size() - limit))
+
+func _input(event):
+	var selection : String = \"\"
+	if event.is_action_pressed(\"request_synthetic_provider\"):
+		selection = \"synthetic\"
+	if event.is_action_pressed(\"request_hardware_backed_provider\"):
+		selection = \"platform_backed\"
+		
+	if selection:
+		CamBANGServer.set_provider_mode(selection)
+		#print(\"selection made: %s\" % [selection])
+	if event.is_action_pressed(\"request_server_start\"):
+		CamBANGServer.start()
+		
+	if event.is_action_pressed(\"request_server_stop\"):
+		CamBANGServer.stop()
+"
+
+[node name="Main" type="Node"]
+script = SubResource("GDScript_pr61q")
+
+[node name="DevNode" type="CamBANGDevNode" parent="."]
+
+[node name="FrameView" type="CamBANGDevFrameViewNode" parent="."]
+dev_node_path = NodePath("../DevNode")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2

@@ -39,13 +39,32 @@ func _ready():
 	## 3) explicit user gating: start core
 	#CamBANGServer.start()
 
-func _on_state_published(gen, topology_gen):
+func _on_state_published(gen, version, topology_ver):
 	var snap = CamBANGServer.get_state_snapshot()
-	print(\"published gen=\", gen, \" topo=\", topology_gen,
-		  \" schema=\", snap.get_schema_version(),
-		  \" snap_gen=\", snap.get_gen(),
-		  \" snap_topo=\", snap.get_topology_gen(),
-		  \" ts=\", snap.get_timestamp_ns())
+	#print(\"published gen=\", gen, \" topo=\", topology_gen,
+		  #\" schema=\", snap.get_schema_version(),
+		  #\" snap_gen=\", snap.get_gen(),
+		  #\" snap_topo=\", snap.get_topology_gen(),
+		  #\" ts=\", snap.get_timestamp_ns())
+
+	var frm := Engine.get_frames_drawn()
+	var phys := Engine.get_physics_frames()
+	
+	print(\"\")
+	print(\"=== state_published @ Frm=%d Phys=%d gen=%d ver=%d topo=%d ===\" % [frm, phys, gen, version, topology_ver])
+
+	if snap == null:
+		print(\"snapshot: <NIL>\")
+		return
+	if typeof(snap) != TYPE_DICTIONARY:
+		print(\"snapshot: unexpected type=%d value=%s\" % [typeof(snap), str(snap)])
+		return
+
+	var d: Dictionary = snap
+	print(\"snapshot(header): schema=%s gen=%s ver=%s topo=%s ts_ns=%s\"
+		% [str(d.get(\"schema_version\")), str(d.get(\"gen\")), str(d.get(\"version\")),
+		   str(d.get(\"topology_version\")), str(d.get(\"timestamp_ns\"))])
+
 
 #func _process(_dt):
 	#var snap = CamBANGServer.get_state_snapshot()

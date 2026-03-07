@@ -83,6 +83,23 @@ enum class TryDestroyStreamStatus : uint8_t {
 
   bool is_running() const { return core_thread_.is_running(); }
 
+  // Tick-bounded publication bridge support.
+  //
+  // Core may publish multiple snapshots between Godot ticks. Godot-facing code
+  // needs an O(1) marker to detect "something changed" since the previous tick,
+  // without polling/coalescing in user code.
+  //
+  // - published_seq() increments once per successful core snapshot publish.
+  // - published_topology_sig() is the core-computed topology signature of the
+  //   latest published snapshot, suitable for boundary-side topology diffing.
+  uint64_t published_seq() const noexcept {
+    return published_seq_.load(std::memory_order_acquire);
+  }
+
+  uint64_t published_topology_sig() const noexcept {
+    return published_topology_sig_.load(std::memory_order_acquire);
+  }
+
   CoreRuntimeState state_copy() const noexcept {
     return state_.load(std::memory_order_acquire);
   }
@@ -202,8 +219,15 @@ private:
   CoreDeviceRegistry devices_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
-  std::uint64_t gen_ = 0;
-  std::uint64_t topology_gen_ = 0;
+
+  // Snapshot header counters (schema v1).
+  // gen: core generation counter, monotonic across app/server lifetime.
+  // version: per-publish within gen.
+  // topology_version: structural within gen.
+  std::uint64_t gen_counter_ = 0;
+  std::uint64_t current_gen_ = 0;
+  std::uint64_t version_ = 0;
+  std::uint64_t topology_version_ = 0;
   uint64_t last_topology_sig_ = 0;
   bool has_topology_sig_ = false;
 
@@ -269,10 +293,18 @@ private:
 
   std::atomic<bool> publish_pending_{false};
 
+  // Publish markers (core thread writes; any thread reads).
+  // These do not redefine the snapshot schema; they exist to support the
+  // Godot-facing tick-bounded truth model cheaply.
+  std::atomic<uint64_t> published_seq_{0};
+  std::atomic<uint64_t> published_topology_sig_{0};
+
   std::atomic<uint64_t> publish_requests_coalesced_{0};
   std::atomic<uint64_t> publish_requests_dropped_full_{0};
   std::atomic<uint64_t> publish_requests_dropped_closed_{0};
   std::atomic<uint64_t> publish_requests_dropped_allocfail_{0};
+
+  static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
 };
 
 } // namespace cambang

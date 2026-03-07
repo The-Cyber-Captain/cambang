@@ -105,8 +105,19 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
   if (native_objects_) {
-    // Use the core monotonic timebase at dispatch time (session-relative).
-    native_objects_->on_native_object_created(p.native_id, p.type, p.root_id, /*created_ns=*/0);
+    const uint64_t fallback_created_ns = now_ns_ ? now_ns_() : 0;
+    const uint64_t created_ns = p.has_created_ns ? p.created_ns : fallback_created_ns;
+    const uint64_t creation_gen = current_gen_ ? *current_gen_ : 0;
+    native_objects_->on_native_object_created(
+        p.native_id,
+        p.type,
+        p.root_id,
+        p.owner_device_instance_id,
+        p.owner_stream_id,
+        p.bytes_allocated,
+        p.buffers_in_use,
+        creation_gen,
+        created_ns);
   }
   relevant_state_changed_ = true;
   break;
@@ -116,13 +127,15 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
   if (native_objects_) {
-    native_objects_->on_native_object_destroyed(p.native_id, /*destroyed_ns=*/0);
+    const uint64_t integration_destroyed_ns = now_ns_ ? now_ns_() : 0;
+    const uint64_t destroyed_ns = p.has_destroyed_ns ? p.destroyed_ns : integration_destroyed_ns;
+    native_objects_->on_native_object_destroyed(p.native_id, destroyed_ns, integration_destroyed_ns);
   }
   relevant_state_changed_ = true;
   break;
 }
 
-case CoreCommandType::PROVIDER_FRAME: {
+  case CoreCommandType::PROVIDER_FRAME: {
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
 
     stats_.commands_handled++;
@@ -136,28 +149,24 @@ case CoreCommandType::PROVIDER_FRAME: {
     }
 
     if (frame_sink_) {
-      // Hand off to sink (core thread). Sink is responsible for deterministic
-      // release. For this stage, it copies immediately and releases now.
+      // Delivered means handed off to the configured frame sink.
       FrameView frame = std::move(p.frame);
-      // Defensive hygiene: ensure the command payload cannot double-release.
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
       frame_sink_->on_frame(std::move(frame));
       stats_.frames_released++;
+      if (streams_) {
+        streams_->on_frame_released(sid);
+      }
     } else {
-      // Release-on-drop at dispatch boundary.
+      // No sink configured: release-on-drop and count as dropped (not delivered).
       p.frame.release_now();
       stats_.frames_released++;
-
-      // Defensive hygiene: prevent accidental double-release if this payload is
-      // inspected/logged/re-dispatched in future scaffolding.
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
-    }
-
-    if (streams_) {
-      // Even if unknown stream, try anyway; registry will ignore if missing.
-      streams_->on_frame_released(sid);
+      if (streams_) {
+        streams_->on_frame_dropped(sid);
+      }
     }
     break;
   }

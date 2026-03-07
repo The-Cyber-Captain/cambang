@@ -22,32 +22,111 @@ references to old snapshots safely.
 Core publishes a new snapshot whenever relevant state changes.
 `CamBANGServer` stores the most recently published snapshot and emits:
 
--   `state_published(gen, topology_gen)`
+-   `state_published(gen, version, topology_version)`
+
+**Godot-facing truth model (tick-bounded)**
+
+The snapshot *contract* exposed to Godot is **tick-bounded observable truth**:
+
+- `CamBANGServer.state_published(...)` is emitted **at most once per Godot tick**.
+- It is emitted **only if** there has been any change in the observable snapshot
+  since the previous tick.
+- Core/native may publish intermediate transient states faster than ticks.
+  Those intermediate states are **not** part of the Godot-facing contract.
+  The Godot boundary coalesces them into a single per-tick observable snapshot.
 
 ### 1.2.x Pre-publication state
 
-Before the first publish in a runtime session, no snapshot exists.
+Before the first publish in a new core generation (`gen`), no snapshot exists.
 
-Godot-facing `CamBANGServer.get_state_snapshot()` may return an invalid
-reference (null) until the first snapshot is published.
+Godot-facing `CamBANGServer.get_state_snapshot()` returns **NIL** until the
+first snapshot is published.
 
 The first published snapshot establishes the baseline state for the
 session (see §1.3).
 
+### 1.2.y Host pause behaviour (observable effects)
 
-### 1.3 Generation counters
+Host environments such as Godot may temporarily suspend frame ticks
+(e.g. when the application is paused).
 
-- `gen` increments on **every** publish.
-- `topology_gen` increments when the **structural hierarchy** changes (see §8).
+Because the Godot-facing publication model is tick-bounded:
 
-Generation counters are **zero-indexed per runtime session**:
+- `state_published(...)` emissions occur **only when the host tick
+  executes**.
+- No emissions occur while the host is paused.
 
-- The first published snapshot in a session has `gen = 0`.
-- The first published snapshot has `topology_gen = 0`.
-- Subsequent publishes increment `gen` by 1.
-- `topology_gen` increments only when a structural change occurs.
+Core and providers may continue to integrate internal state changes
+during this time (depending on provider timing model), but these changes
+are not observable until the next tick.
 
-There is no published snapshot prior to `gen = 0`.
+When ticks resume:
+
+- `CamBANGServer` observes the latest available snapshot.
+- If observable state has changed since the last emission, a single
+  `state_published(gen, version, topology_version)` event is emitted.
+
+This means:
+
+- Multiple internal state transitions may be **coalesced** into a single
+  observable snapshot when a pause ends.
+- Snapshot counters (`version`, `topology_version`) reflect the
+  Godot-visible publication model, not the number of internal state
+  transitions.
+
+SyntheticProvider pause semantics depend on the selected timing driver
+(see `core_runtime_model.md`).
+
+
+### 1.3 Counters (`gen`, `version`, `topology_version`)
+
+CamBANG exposes three counters in the snapshot header.
+
+These counters are defined from the **Godot-facing tick-bounded perspective** (not
+from core-internal publication mechanics):
+
+- `gen` — zero-indexed generation counter. Advances by **+1** on each successful
+  `CamBANGServer.start()` that transitions from **stopped → running**.
+
+- `version` — zero-indexed **tick-bounded publication** counter within the current
+  `gen`. It increments by **+1** for each emitted `state_published(...)` signal
+  within that `gen`. It is **contiguous** (no gaps).
+
+- `topology_version` — zero-indexed **tick-bounded structural** counter within the
+  current `gen`. It increments by **+1** only on ticks where the **observed topology
+  differs** from the topology at the previous emission.
+
+  It never changes without `version` also changing.
+
+Baseline invariants (per `gen`):
+
+- The first published snapshot in a new `gen` has `version = 0`.
+- The first published snapshot in a new `gen` has `topology_version = 0`.
+
+There is no published snapshot prior to `version = 0` for a given `gen`.
+
+### 1.3.x Baseline publish on start (Godot-facing)
+
+On a successful start that creates a new `gen`, there must be a valid coherent
+snapshot corresponding to:
+
+- `(gen, version=0, topology_version=0)`
+
+and a `state_published(gen, 0, 0)` emission must occur at the **first Godot tick
+where the running state becomes observable**.
+
+This remains true even if core publishes before the Godot tick node is active:
+the Godot boundary must latch the baseline snapshot and emit it on the first
+eligible tick.
+
+### 1.3.y Snapshot access contract (`get_state_snapshot()`)
+
+`CamBANGServer.get_state_snapshot()` remains **parameter-less**.
+
+- Inside the synchronous `state_published` handler, it returns the snapshot
+  corresponding to that emission (self-consistent with the signal arguments).
+- Outside the handler, it returns the most recently latched snapshot (latest
+  observable truth).
 
 ### 1.4 Schema versioning
 
@@ -80,18 +159,17 @@ Examples: - Rig: `OFF`, `ARMED`, `TRIGGERING`, `COLLECTING`, `ERROR` -
 Device: `IDLE`, `STREAMING`, `CAPTURING`, `ERROR` - Stream: `STOPPED`,
 `FLOWING`, `STARVED`, `ERROR`
 
-`NativeObjectRecord` always has a `phase`. A `mode` may be included for
-native objects when useful, but is not required in v1.
+`NativeObjectRecord` always has a `phase`. Native objects do not expose an operational `mode` in schema v1.
 
 ------------------------------------------------------------------------
 
 ## 3. Identity and lineage
 
-CamBANG separates stable hardware identity from runtime instance
+CamBANG separates stable hardware identity from instance
 identity to support "old teardown + new live" scenarios.
 
 -   `hardware_id` --- stable platform identifier for a camera endpoint.
--   `instance_id` --- monotonic runtime identifier for an opened lineage
+-   `instance_id` --- monotonic instance identifier for an opened lineage
     of that hardware.
 -   `root_id` --- lineage root identifier for grouping native object
     branches across time.
@@ -122,8 +200,9 @@ design).
 ``` text
 CamBANGStateSnapshot {
   schema_version: uint32           // = 1
-  gen: uint64                      // increments every publish
-  topology_gen: uint64             // increments on structural change
+  gen: uint64                      // core generation (monotonic across app/server lifetime)
+  version: uint64                  // increments every publish within this gen
+  topology_version: uint64         // increments on structural change within this gen
   timestamp_ns: uint64             // monotonic publish time
 
   imaging_spec_version: uint64     // effective ImagingSpec version
@@ -142,14 +221,14 @@ CamBANGStateSnapshot {
 `timestamp_ns` is a **monotonic publish timestamp** produced by core at snapshot assembly time.
 
 - It is **not wall-clock** and must not be interpreted as UNIX epoch time.
-- It is **session-relative** (a monotonic counter since a core-defined epoch, e.g. runtime start).
+- It is **generation-relative** (a monotonic counter since a core-defined epoch for the current `gen`, e.g. core loop start).
 - It is intended for: ordering snapshots, computing durations (e.g. warm remaining), and
   detecting staleness — not for user-facing clock time.
 
 Snapshot publication occurs only after core state has converged for the
 current event loop iteration (see `core_runtime_model.md`).
 
-On successful runtime start, core begins in a logically dirty state and
+On successful core loop start, core begins in a logically dirty state and
 will publish a baseline snapshot on the first loop iteration. This first
 published snapshot has:
 
@@ -157,7 +236,7 @@ published snapshot has:
 - `topology_gen = 0`
 - a valid monotonic `timestamp_ns`
 
-This guarantees that each runtime session produces at least one
+This guarantees that each core generation (`gen`) produces at least one
 deterministic baseline snapshot after `CamBANGServer.start()` completes.
 ------------------------------------------------------------------------
 
@@ -274,11 +353,12 @@ NativeObjectRecord {
 
   phase: phase
 
-  owner_rig_id: uint64                   // 0 if none
   owner_device_instance_id: uint64       // 0 if none
   owner_stream_id: uint64                // 0 if none
 
   root_id: uint64
+
+  creation_gen: uint64                // snapshot `gen` when this record was created
 
   created_ns: uint64
   destroyed_ns: uint64                   // 0 if not DESTROYED
@@ -324,34 +404,49 @@ A `root_id` is included if: - its controlling owner has ended, **and** -
 at least one `NativeObjectRecord` with that `root_id` still exists in
 the registry (either not DESTROYED, or DESTROYED but still retained).
 
-“Controlling owner” refers to the rig, device instance, or stream
+“Controlling owner” refers to the device instance or stream
 that originally owned the native object branch associated with the
 root_id.
 
 ------------------------------------------------------------------------
 
-## 8. What increments `gen` vs `topology_gen`
+## 8. What increments `gen` vs `version` vs `topology_version`
 
-### 8.1 `gen`
+### 8.0 `gen`
 
-`gen` increments on any snapshot publish, including: - `phase` changes -
-`mode` changes - counter updates - error updates - spec/profile updates
-becoming effective - retention sweep removals (because snapshot contents
-change)
+`gen` increments only when `CamBANGServer.start()` successfully begins a new
+running session after a complete stop/teardown.
 
-### 8.2 `topology_gen`
+`gen` is defined from the Godot-facing perspective (tick-bounded observation),
+but aligns 1:1 with core generations because `start()` is the authoritative
+boundary operation.
 
-`topology_gen` increments only when structural hierarchy changes,
-including: - rig created/destroyed - device instance created/destroyed
-(`instance_id` lineage changes) - stream created/destroyed - rig
-membership changes - a new `root_id` appears or a `root_id` fully
-disappears (including detached branches expiring)
+### 8.1 `version`
 
-The initial publish of a runtime session establishes the baseline
-topology and sets `topology_gen = 0`.
+`version` increments on any **tick-bounded observable** snapshot publish
+(i.e., any `state_published(...)` emission), including:
 
-The baseline is not considered a "change from -1"; it is the first
-structural state of the session.
+- `phase` changes
+- `mode` changes
+- counter updates
+- error updates
+- spec/profile updates becoming effective
+- retirement sweep removals (because snapshot contents change)
+
+### 8.2 `topology_version`
+
+`topology_version` increments only on ticks where the **observed topology differs
+from the topology at the previous emission**, including cases such as:
+
+- rig created/destroyed
+- device instance created/destroyed (`instance_id` lineage changes)
+- stream created/destroyed
+- rig membership changes
+- a new `root_id` appears or a `root_id` fully disappears (including detached branches expiring)
+
+The initial publish of a new `gen` establishes the baseline topology and sets `topology_version = 0`.
+
+The baseline is not considered a "change from -1"; it is the first structural state of the generation.
 
 ------------------------------------------------------------------------
 

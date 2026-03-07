@@ -1,6 +1,6 @@
-# CamBANG Core Runtime Model
+# CamBANG Core Loop Model
 
-This document defines the **internal runtime model** of CamBANG core:
+This document defines the **internal core model** of CamBANG core:
 threading, event ordering, registries, snapshot publication,
 warm/retention scheduling, and deterministic shutdown.
 
@@ -14,7 +14,7 @@ boundary) - `state_snapshot.md` (public snapshot schema v1)
 CamBANG core runs on a **dedicated core thread**.
 
 All mutation of core-owned state occurs on that thread, including: -
-arbitration state - device/stream/rig runtime state machines -
+arbitration state - device/stream/rig core state machines -
 `CBLifecycleRegistry` - snapshot assembly/publish bookkeeping
 
 Godot-facing objects never mutate core state directly; they enqueue
@@ -116,10 +116,10 @@ context.
 
 Core maintains explicit state machines for:
 
--   **Rig runtime state** (OFF/ARMED/TRIGGERING/COLLECTING/ERROR)
--   **Device runtime state** (IDLE/STREAMING/CAPTURING/ERROR + engaged
+-   **Rig core state** (OFF/ARMED/TRIGGERING/COLLECTING/ERROR)
+-   **Device core state** (IDLE/STREAMING/CAPTURING/ERROR + engaged
     bool)
--   **Stream runtime state** (STOPPED/FLOWING/STARVED/ERROR + intent)
+-   **Stream core state** (STOPPED/FLOWING/STARVED/ERROR + intent)
 
 State transitions occur only on the core thread and must be
 deterministic.
@@ -224,7 +224,7 @@ machine changes (phase/mode/engaged) - any counter changes - any error
 field changes - any membership/topology changes - any registry change
 occurs (create/destroy/retire) - spec/profile becomes effective
 
-### 9.1.x Baseline publish on runtime start
+### 9.1.x Baseline publish on core loop start
 
 On successful transition to `LIVE`, core is considered
 **logically dirty** even if no provider events or commands have yet
@@ -238,13 +238,13 @@ The baseline publish:
 - Occurs via the normal dirty-driven publication path.
 - Is not triggered by a special-case `request_publish()` call.
 - Produces the first snapshot of the session with:
-    - `gen = 0`
-    - `topology_gen = 0`
+    - `version = 0`
+    - `topology_version = 0`
     - A valid monotonic `timestamp_ns`.
 
 There is no published snapshot prior to this baseline publish.
 
-This rule guarantees that every successful runtime start produces
+This rule guarantees that every successful core loop start produces
 exactly one deterministic initial snapshot, even in the absence of
 provider activity.
 
@@ -258,21 +258,53 @@ events/commands and processing timers).
 
 Publish steps: 1. Run retention sweep (may mark dirty) 2. Assemble new
 `CamBANGStateSnapshot` (schema v1) 3. Atomically swap the snapshot
-pointer in `CamBANGServer` 4. Emit `state_published(gen, topology_gen)`
+pointer in `CamBANGServer` 4. Emit `state_published(gen, version, topology_version)`
 from `CamBANGServer`
+
+### 9.2.x Core publication vs Godot-visible publication
+
+Core publication is an **internal mechanism**: core may build and publish
+snapshots whenever dirty, including multiple times between Godot ticks.
+
+Godot-visible publication is a **boundary contract** enforced by
+`CamBANGServer`:
+
+- `CamBANGServer.state_published(...)` is emitted **≤ 1 per Godot tick**.
+- It is emitted only if observable state has changed since the previous tick.
+- Godot-facing `gen/version/topology_version` are defined by this tick-bounded
+  observable truth, not by core-internal publication frequency.
+
+This separation allows core to integrate provider facts quickly without forcing
+Godot consumers to handle bursty emissions.
+
+#### Boundary marker (implementation hook)
+
+To support the tick-bounded emission policy without per-frame heavy work,
+core exposes O(1) publication markers at the boundary:
+
+- a monotonic publish sequence counter ("changed since last tick")
+- the latest topology signature (for boundary-side topology diffing)
+
+The Godot bridge reads these markers once per tick and decides whether to emit.
 
 ### 9.3 Publish time vs capture time
 
-Snapshot `timestamp_ns` is core publish time (monotonic, session-relative).
+Snapshot `timestamp_ns` is core publish time (monotonic, generation-relative).
 Per-frame capture timestamps are separate metadata carried by provider events and must
 use a provider-agnostic time domain representation (see `provider_architecture.md`).
 Core must not assume capture time is wall-clock.
 
-### 9.4 `gen` and `topology_gen` bookkeeping
+### 9.4 `gen`, `version`, and `topology_version` bookkeeping
 
--   `gen` increments for every published snapshot
--   `topology_gen` increments only for structural changes as defined in
-    `state_snapshot.md`
+- `gen` advances by +1 on each successful `CamBANGServer.start()` that transitions
+  from stopped → running.
+- `version` increments by +1 on each **Godot-visible** snapshot publish
+  (each `state_published` emission) within the current `gen`.
+- `topology_version` increments by +1 only when the **observed topology differs**
+  from the topology at the previous emission.
+
+Core may maintain additional internal counters/markers to support boundary
+coalescing cheaply; those do not redefine the Godot-visible counters.
 
 ------------------------------------------------------------------------
 
@@ -293,7 +325,91 @@ Providers must not block indefinitely on shutdown (provider contract).
 Core may internally model shutdown as explicit ordered phases,
 but the architectural guarantee is completion of steps 1–8
 before thread termination.
+------------------------------------------------------------------------
 
+## Provider Shutdown Barrier Semantics
+
+Providers must perform shutdown in a manner that preserves truthful
+lifecycle reporting while ensuring deterministic termination.
+
+Provider shutdown proceeds through the following conceptual phases.
+
+### Phase A — Admission close
+
+The provider transitions to a state where:
+
+- new public operations are rejected deterministically
+- frame production is gated off
+- no new long-lived provider activity may begin
+
+Existing work already admitted to the provider strand may still
+complete.
+
+### Phase B — Stop production
+
+Frame production is halted:
+
+- repeating frame producers stop
+- platform capture loops are disabled
+- synthetic schedulers or timers are cancelled
+
+This phase may generate lifecycle stop events or provider error events.
+
+### Phase C — Resource release
+
+Providers release owned resources in dependency order:
+
+1. FrameProducer
+2. Stream
+3. Device
+4. Provider
+
+At each boundary the provider emits the appropriate lifecycle and
+native-object events reflecting the actual state transition.
+
+Native-object destruction events must be emitted **only when the
+resource has actually been released**.
+
+### Phase D — Strand drain barrier
+
+After teardown events have been posted, the provider performs a **strand
+drain barrier**.
+
+A successful barrier guarantees that:
+
+- all events admitted to the provider strand prior to the barrier
+- have been processed by the strand
+- and forwarded to Core's provider event ingress queue
+
+The barrier does not require Core to have integrated those events into
+snapshot state before returning.
+
+### Phase E — Strand stop
+
+Once the drain barrier succeeds:
+
+- the provider strand stops accepting new events
+- any strand worker thread exits
+- provider shutdown may return
+
+### Timeout behaviour
+
+Providers must not block indefinitely during shutdown.
+
+If platform APIs fail to terminate within a bounded timeout:
+
+- an error event may be emitted
+- shutdown may return with failure
+- resources that could not be released must **not emit false destruction
+  events**
+
+Unreleased resources may therefore remain visible in the lifecycle
+registry and snapshot system as surviving native objects.
+
+This behaviour preserves the **truthfulness rule** of the lifecycle
+registry.
+
+------------------------------------------------------------------------
 ------------------------------------------------------------------------
 
 ## 11. Synthetic mode hook
@@ -315,6 +431,59 @@ The current development smoke harness uses a minimal
 `SyntheticProvider` is intended as a richer deterministic
 simulation provider and may supersede StubProvider in
 future development phases.
+
+## 11.x Host pause semantics (SyntheticProvider timing drivers)
+
+When CamBANG runs inside a host environment (e.g. Godot), the host may
+temporarily suspend frame ticks (for example when the application is
+paused).
+
+Pause behaviour depends on the SyntheticProvider timing driver.
+
+### virtual_time
+
+When `timing_driver = virtual_time`:
+
+- Time advances **only** when the host explicitly advances synthetic
+  time (e.g. via a tick or `advance(dt_ns)` call).
+- If the host pauses and no advancement occurs, **synthetic time does not
+  progress**.
+- No scheduled events are executed during the pause.
+- Frame production, lifecycle transitions, and scenario events remain
+  pending until the next advancement.
+
+This preserves deterministic replay behaviour. Timeline scenarios and
+nominal synthetic streams simply **resume where they left off** when the
+host resumes ticking.
+
+### real_time
+
+When `timing_driver = real_time`:
+
+- Time continues to advance according to the provider’s monotonic clock,
+  independent of host ticks.
+- Scheduled events (including frame production and lifecycle events)
+  continue to occur internally while the host is paused.
+
+However, the Godot boundary remains tick-bounded (see §9.2.x):
+
+- No `state_published(...)` emissions occur while the host is not ticking.
+- When ticks resume, the boundary observes the **latest snapshot state**
+  and emits a single publish reflecting the most recent truth.
+
+Intermediate states that occurred during the pause are therefore
+coalesced by the tick-bounded observable model.
+
+### Design intent
+
+This behaviour preserves two important guarantees:
+
+- **Virtual-time determinism** for testing and scenario replay.
+- **Real-time realism** for live cadence simulation, without requiring
+  the host to tick continuously.
+
+The pause semantics do not alter the provider → core contract or the
+ordering guarantees of provider callbacks.
 
 ------------------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 #include "core/core_mailbox.h"
 #include "core/core_device_registry.h"
@@ -35,8 +36,14 @@ class CoreDispatcher final {
 public:
   CoreDispatcher(CoreStreamRegistry* streams,
                CoreDeviceRegistry* devices,
-               CoreNativeObjectRegistry* native_objects)
-      : streams_(streams), devices_(devices), native_objects_(native_objects) {}
+               CoreNativeObjectRegistry* native_objects,
+               const uint64_t* current_gen,
+               std::function<uint64_t()> now_ns)
+      : streams_(streams),
+        devices_(devices),
+        native_objects_(native_objects),
+        current_gen_(current_gen),
+        now_ns_(std::move(now_ns)) {}
 
   ~CoreDispatcher() = default;
 
@@ -68,6 +75,8 @@ private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
   CoreDeviceRegistry* devices_ = nullptr; // non-owning; core-thread-only
   CoreNativeObjectRegistry* native_objects_ = nullptr; // non-owning; core-thread-only
+  const uint64_t* current_gen_ = nullptr; // non-owning; core-thread-only
+  std::function<uint64_t()> now_ns_{};    // core-thread-only
 
   bool relevant_state_changed_ = false;
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only

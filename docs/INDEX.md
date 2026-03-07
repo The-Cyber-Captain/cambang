@@ -22,6 +22,11 @@ They are authoritative and must not be contradicted by other documents.
 
 Note:
 
+Godot-facing snapshot publication uses a **tick-bounded observable truth**
+model (≤ 1 `state_published` emission per Godot tick when changed). This
+contract is defined in `state_snapshot.md` and the boundary mechanics are
+described in `core_runtime_model.md`.
+
 Validation layering (core invariant validation vs platform integration
 validation) is defined in `core_runtime_model.md`.
 
@@ -72,8 +77,31 @@ They are intentionally non-canonical and may evolve or be removed.
 
 Example: - dev/frameview_stage.md
 
+Additional examples:
+
+- `dev/maintainer_tools.md`
+    - describes maintainer CLI validation tools
+    - includes `provider_compliance_verify`
+      (deterministic provider-contract verification using Stub and Synthetic)
+    - includes `windows_mf_runtime_validate`
+      (opt-in Windows Media Foundation runtime validation against real hardware)
+
 These documents must clearly state when code is: - Development-only -
 Intended for replacement - Not representative of release architecture
+
+### Additional provider-discipline note
+
+Provider semantics are defined by the canonical architecture, the
+reference providers, and the compliance verifier / harness.
+
+Platform-backed providers are adapters to that contract. They must not
+redefine lifecycle, defaulting, registry, snapshot, or timestamp
+semantics to match a backend API.
+
+This is especially important as additional platform-backed providers are
+introduced (for example future `android_camera2` alongside
+`windows_mediafoundation`).
+
 
 ------------------------------------------------------------------------
 

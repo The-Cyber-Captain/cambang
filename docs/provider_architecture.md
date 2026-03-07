@@ -1,725 +1,377 @@
 # CamBANG Provider Architecture
 
 This document defines the **core ↔ provider boundary** for CamBANG and
-the obligations of platform providers.
+the obligations of provider implementations.
 
-A **provider** is the platform-specific backend responsible for
-enumerating camera endpoints, controlling native camera APIs, producing
-frames, and reporting owned native object lifecycles back to core.
+A **provider** is the backend responsible for enumerating endpoints,
+controlling a camera API or synthetic source, producing frames, and
+reporting owned native object lifecycles back to Core.
 
-Providers are execution engines. **Core is the authority**.
+Providers are **execution engines**. **Core is the authority**.
 
-------------------------------------------------------------------------
+---
 
 ## 1. Goals
 
 Providers must support:
 
--   Deterministic behaviour (ordering, threading, teardown)
--   Correct object lifecycles and resource management
--   Canonical mapping of platform formats into CamBANG pixel formats
-    (FourCC-style `uint32`)
--   Multi-camera synchronised capture where the platform supports
--   Testability via a synthetic provider
-    (synthetic providers may generate pixel content via provider-agnostic rendering modules)
+- deterministic behaviour (ordering, threading, teardown)
+- correct object lifecycles and resource management
+- canonical mapping of backend formats into CamBANG pixel formats
+  (`FourCC`-style `uint32`)
+- provider-agnostic delivery into Core's registry / snapshot / publish
+  model
+- testability through synthetic and stub implementations
 
 Providers must not:
 
--   Expose platform semantics directly to Godot-facing objects
--   Own or publish `CamBANGStateSnapshot`
--   Implement arbitration/policy decisions (rig priority, preemption
-    rules)
--   Retain references to core objects beyond their documented lifetime
+- expose backend-native semantics directly to Godot-facing objects
+- own or publish `CamBANGStateSnapshot`
+- implement arbitration / policy decisions
+- invent alternative lifecycle models
+- retain references to Core objects beyond their documented lifetime
 
-## 1.x Synthetic pixel generation (Pattern Module)
+---
 
-Providers may produce frames from platform camera APIs or from synthetic
-sources.
+## 2. Provider categories
 
-Synthetic providers may generate pixel content using provider-agnostic
-rendering modules (e.g., the Pattern Module) while preserving the
-provider/core contract:
+CamBANG supports more than one kind of provider implementation.
 
-- Core remains agnostic to pixel origin.
-- Providers remain responsible for deterministic delivery and correct
-  pixel format mapping.
-- Synthetic rendering does not alter arbitration, policy decisions, or
-  snapshot publication.
-------------------------------------------------------------------------
+### 2.1 Reference providers
 
-## 2. Responsibilities
+Reference providers define and exercise the **contract semantics**.
 
-### 2.1 Core responsibilities
+Today this role is filled by:
+
+- `SyntheticProvider`
+- `StubProvider`
+
+These providers are intentionally platform-agnostic and are expected to
+remain the clearest executable expression of provider behaviour.
+
+### 2.2 Platform-backed providers
+
+Platform-backed providers adapt a concrete backend API into the CamBANG
+provider contract.
+
+Examples include:
+
+- `windows_mediafoundation`
+- future `android_camera2`
+- future additional platform providers
+
+A platform-backed provider is an **adapter to the contract**, not a
+source of truth for what the contract means.
+
+### 2.3 Capability maturity
+
+Provider implementations may differ in capability maturity.
+
+A provider may be:
+
+- **minimal / transitional** — enough to validate architecture and basic
+  runtime integration
+- **release-quality** — robust negotiation, lifecycle handling,
+  timestamping, and functional feature coverage
+
+Capability maturity does **not** change the contract. A minimal provider
+may support fewer features, but it must still obey the same lifecycle,
+threading, native-object, and timestamp rules.
+
+---
+
+## 3. Architectural rule: canonical semantics come from Core + reference providers + verifier
+
+CamBANG must not allow each platform provider to redefine provider
+behaviour in its own image.
+
+The canonical semantics come from:
+
+1. Core architecture documents
+2. the platform-agnostic reference providers
+3. the provider compliance verifier / harness
+
+Platform-backed providers must conform to that model.
+
+This means, for example:
+
+- provider lifecycle rules are not allowed to vary by platform
+- snapshot truthfulness is not allowed to vary by platform
+- native-object ownership semantics are not allowed to vary by platform
+- backend quirks must be contained inside the provider adapter layer,
+  not pushed upward into Core semantics
+
+---
+
+## 4. Responsibilities
+
+### 4.1 Core responsibilities
 
 Core owns and decides:
 
--   Arbitration and preemption (rig \> device \> stream intent)
--   Warm timing (`warm_hold_ms`) and teardown scheduling
--   Validation and normalization of Capture Profiles
--   Spec stores (CameraSpec, ImagingSpec) and application of patches
--   `CBLifecycleRegistry` and retention of destroyed records
--   `CBStatePublisher` and snapshot publication
+- arbitration and preemption
+- warm timing (`warm_hold_ms`) and teardown scheduling
+- validation and normalization of capture / picture configuration
+- provider-type defaulting via `StreamTemplate`
+- `CBLifecycleRegistry` and destroyed-record retention
+- `CBStatePublisher` and snapshot publication
+- Godot-facing observable publication semantics
 
-### 2.2 Provider responsibilities
+### 4.2 Provider responsibilities
 
-Provider owns and implements:
+A provider owns and implements:
 
--   Platform API calls and native handles (camera devices, sessions,
-    readers)
--   Platform threads/loopers required to operate those APIs
--   Frame acquisition, timestamp extraction, and delivery
--   Mapping platform pixel formats into CamBANG FourCC formats
--   Reporting creation/destruction of CamBANG-owned native objects to
-    core
--   Platform-specific error detection and reporting to core
+- backend API calls and native handles
+- backend worker threads / loopers required to operate those APIs
+- frame acquisition, timestamp extraction or synthesis, and delivery
+- mapping backend pixel formats into CamBANG pixel formats
+- truthful reporting of owned native object lifecycle to Core
+- backend-specific error detection and reporting
 
-------------------------------------------------------------------------
+Providers execute validated Core intent; they do not reinterpret the
+model.
 
-## 3. Interface contract
+---
 
-The provider interface is internal to core (not public API). The exact
-C++ signatures are an implementation detail, but the semantic contract
-is fixed.
+## 5. Interface contract
 
-### 3.1 Required capabilities (semantic)
+The provider interface is internal to Core. The exact C++ signatures are
+an implementation detail; the semantic contract is fixed.
 
--   Enumerate camera endpoints
--   Open/close a camera endpoint into a runtime instance
--   Create/destroy a repeating stream for a device instance
-    (`StreamIntent`)
--   Start/stop a repeating stream
--   Trigger a still capture for a device instance (or for
-    rig-coordinated capture)
--   Apply spec changes (via core-validated patch application)
--   Shutdown provider cleanly
+### 5.1 Required semantic capabilities
 
-### 3.2 "Core validates, provider executes"
+A provider must support, where applicable:
 
-Core must validate and normalize profiles/specs before calling provider.
+- endpoint enumeration
+- open / close device instance
+- create / destroy repeating stream
+- start / stop repeating stream
+- still-capture trigger where the provider advertises that capability
+- patch / spec application through Core-validated flows
+- clean provider shutdown
 
-Provider may still reject a request **only** when:
+### 5.2 Core validates, provider executes
 
-- The platform cannot support the validated request (hard constraint)
-- The platform reports transient failure that prevents execution
+Core validates and materializes effective request state before calling a
+provider.
 
-Provider must return deterministic, explicit error codes for such
+A provider may reject a request only when:
+
+- the backend cannot support the validated request
+- the backend reports a transient or permanent execution failure
+- the request is still incomplete / invalid when observed at the
+  provider boundary
+
+Providers must return deterministic, explicit error codes for such
 rejections.
 
-------------------------------------------------------------------------
+---
 
-## 3.x Stream configuration inputs (CaptureProfile and PictureConfig)
+## 6. StreamTemplate and provider-type defaults
 
-Stream configuration crossing the core ↔ provider boundary is separated
-into two orthogonal inputs supplied per stream:
-
-- `CaptureProfile` — structural capture properties (resolution, pixel
-  format, frame rate range).
-- `PictureConfig` — picture appearance parameters.
-
-Core owns stream state. Core validates and normalizes stream requests
-and supplies effective values to the provider during stream
-create/start.
-
-Providers execute validated requests. Providers must not introduce
-additional implicit picture defaults beyond those supplied by Core.
-
-`PictureConfig` is stream-scoped. Release architecture must not rely on
-provider-wide mutable picture state affecting all streams.
-
-------------------------------------------------------------------------
-
-### 3.x.1 Provider default stream template (`StreamTemplate`)
-
-Each provider implementation supplies a deterministic `StreamTemplate`
-used as the fallback when stream requests omit explicit fields.
-
-A `StreamTemplate` contains:
+Each provider type exposes a deterministic `StreamTemplate` containing:
 
 - `CaptureProfile profile`
 - `PictureConfig picture`
 
-Defaulting is performed by Core:
+The `StreamTemplate` defines that provider type's **default stream
+configuration**.
 
-- If a stream request does not specify a `CaptureProfile`, Core uses
-  `StreamTemplate.profile`.
-- If a stream request does not specify a `PictureConfig`, Core uses
-  `StreamTemplate.picture`.
+### 6.1 Defaulting boundary
 
-Defaults apply at stream creation time only. They do not imply a
-provider-global override mechanism.
+Provider-type defaults are applied by **Core**, not by execution-time
+provider repair.
 
-------------------------------------------------------------------------
+Core merges:
 
-### 3.x.2 Synthetic pixel generation (Pattern Module integration)
+- caller-supplied request
+- provider `StreamTemplate`
 
-Synthetic and stub providers may generate pixel content using
-provider-agnostic rendering modules such as the Pattern Module.
+into the **effective per-stream configuration** supplied to the provider.
 
-For pattern-backed streams:
+Providers must execute that effective configuration.
 
-- `PictureConfig` selects the pattern preset and its parameters.
-- Providers convert the effective per-stream `PictureConfig` into the
-  renderer-facing `PatternSpec` and render into caller-owned buffers.
+### 6.2 Provider prohibition
 
-The Pattern Module preset registry remains the single authority for
-preset vocabulary and stable string tokens.
-------------------------------------------------------------------------
+Providers must not silently invent fallback values during
+`create_stream()` or `start_stream()` for fields such as:
 
-## 4. Determinism and threading
+- width
+- height
+- pixel format
+- picture defaults
 
-Determinism is a non-negotiable requirement.
+If the effective configuration reaching the provider is still invalid or
+incomplete, the provider must fail deterministically rather than repair
+it silently.
 
-### 4.1 Provider-to-core callback thread rule
+### 6.3 Scope of current defaulting model
 
-Provider must invoke callbacks into core using a **single serialized
-callback context**:
+The current model treats the provider template as the source of omitted
+configuration at the **request/template materialization** boundary.
 
--   One dedicated callback thread, **or**
--   One event queue consumed by core, **or**
--   One "provider event pump" thread feeding core
-
-Provider must not call core concurrently from multiple threads.
-
-### 4.2 Ordering
-
-Provider must preserve ordering of events as they occur within
-provider: - stream start → frames → stream stop - capture trigger →
-capture frames → capture completion/error - native object create → later
-destroy
-
-### 4.3 No indefinite blocking
-
-Provider must not block indefinitely in any call path required for
-teardown or shutdown.
-
-### 4.4 Core call serialization
-
-Core will call provider methods in a deterministic order and will not
-concurrently invoke mutually exclusive lifecycle operations for the same
-instance unless explicitly documented.
-
-------------------------------------------------------------------------
-
-## 5. Native object reporting
-
-Every native object created by the provider on behalf of CamBANG
-(including platform-native handles, reader objects, buffer pools, etc.)
-must be reported to core for snapshot introspection.
-
-### 5.1 Registration
-
-On creation, provider must report:
-
--   `type` (CamBANG-defined numeric enum)
--   ownership references (rig/device/stream ids where applicable)
--   `root_id` lineage identifier
--   timestamps (monotonic) where possible
-
-### 5.2 Destruction
-
-On destruction, provider must report:
-
--   `native_id`
--   destruction timestamp (monotonic)
-
-Provider must never "forget" to report destruction; missing destroys are
-treated as leaks in diagnostics.
-
-## Platform camera stacks overview
-
-CamBANG integrates with multiple camera APIs across platforms.
-
-Although these APIs use different terminology and architectural
-structures, they generally expose the same underlying lifecycle
-concepts: a device is opened, a capture pipeline is configured,
-and frames are produced from that pipeline.
-
-Examples of supported or anticipated camera stacks include:
-
-| Platform | Camera stack |
-|--------|--------------|
-| Android | Camera2 |
-| Android | USB Video Class (UVC) via Camera2 external camera support |
-| Android | Userspace UVC via USB host APIs |
-| Windows | Media Foundation |
-| Linux | V4L2 |
-| Apple | AVFoundation |
-| Web | MediaCapture / WebRTC |
-
-These stacks differ in terminology (session, pipeline, reader,
-track, etc.), but all expose the same fundamental ownership
-boundaries.
-
-CamBANG therefore standardizes these concepts into a
-provider-agnostic lifecycle model described below.
-
-Camera2 is used as the **reference design** for lifecycle semantics.
-Other providers should adapt their platform behaviour to fit this
-model where possible.
-
-## Cross-platform ownership model
-
-CamBANG defines a provider-agnostic ownership hierarchy used by all
-providers regardless of platform.
-
-This model reflects common structural patterns across camera APIs.
-
-### Structural ownership layers
-
-Providers report native objects according to the following model.
-
-| CamBANG object | Meaning |
-|----------------|--------|
-| **Provider** | Core is bound to a provider backend instance. |
-| **Device** | Provider owns an opened camera device handle. |
-| **Stream** | Provider owns a configured capture pipeline capable of producing frames. |
-
-Typical platform mappings include:
-
-| Platform | Device | Stream |
-|--------|--------|--------|
-| Camera2 | `ACameraDevice` | `ACameraCaptureSession` |
-| Media Foundation | `IMFMediaSource` | `IMFSourceReader` pipeline |
-| V4L2 | open `/dev/videoX` FD | STREAMON buffer queue |
-| AVFoundation | `AVCaptureDevice` | `AVCaptureSession` |
-| WebRTC | camera track source | `MediaStreamTrack` pipeline |
-
-Platform-specific objects remain provider-internal.
-
-Core and snapshots expose only the abstract CamBANG ownership model.
-
-### Operational objects
-
-Some providers expose additional operational objects.
-
-| Object | Meaning |
-|------|------|
-| **FrameProducer** | A stream is actively producing frames. |
-
-`FrameProducer` is per-stream and optional.
-
-Typical meanings:
-
-| Platform | FrameProducer meaning |
-|---------|----------------------|
-| Camera2 | repeating request active |
-| Media Foundation | ReadSample loop active |
-| V4L2 | STREAMON state |
-| Synthetic | pattern renderer producing frames |
-
-Synthetic and Stub providers implement FrameProducer for
-deterministic testing and diagnostics.
-
-Platform providers may omit FrameProducer if it does not provide
-meaningful visibility.
-
-### Ownership boundaries
-
-Providers must create and destroy native object records at the
-actual resource ownership boundaries.
-
-| Object | Created when | Destroyed when |
-|------|---------------|---------------|
-| Provider | backend attaches to Core | provider shutdown completes |
-| Device | device handle successfully opened | device handle fully released |
-| Stream | capture pipeline created | pipeline fully released |
-| FrameProducer | frame production enabled | frame production disabled |
-
-Providers must not emit destruction events when teardown is merely
-requested.
-
-Destruction must be reported only when the resource has actually
-been released.
-
-### Orphan visibility
-
-Native object records are not automatically cascaded.
-
-If a child resource survives the destruction of its parent
-(e.g. in-flight buffers or a delayed teardown), the registry
-must continue to reflect that object.
-
-Such objects appear as **detached roots** in snapshots.
-
-This behaviour is intentional and assists lifecycle diagnostics.
-
-### External USB cameras (UVC)
-
-USB Video Class (UVC) cameras may appear through different API layers
-depending on platform support.
-
-On Android in particular two integration paths are common.
-
-| Integration path | Description |
-|------------------|-------------|
-| Camera2 external camera | UVC webcams exposed through the Camera2 API |
-| Userspace UVC access | Applications access UVC cameras via USB host APIs |
-
-Both paths map naturally to the CamBANG ownership model.
-
-| CamBANG object | Example mapping |
-|----------------|----------------|
-| Device | `ACameraDevice` or claimed USB device |
-| Stream | `ACameraCaptureSession` or configured UVC streaming interface |
-| FrameProducer | repeating request or active USB transfer loop |
-
-Where Camera2 external camera support is available it is preferred,
-as Camera2 defines the reference lifecycle model used by CamBANG.
-
-If such support is absent, a dedicated UVC provider may be
-implemented while still conforming to the same ownership model.
-
-------------------------------------------------------------------------
-
-## 6. Pixel format mapping (FourCC)
-
-CamBANG uses a **canonical FourCC-style** `uint32` pixel format code
-set.
-
-Provider must map platform-native formats into this set.
-
-Requirements: - Deterministic mapping - Stable across runtime -
-Rejection of unsupported formats at creation time
-
-### 6.1 v1 policy
-
--   Repeating streams (`PREVIEW`, `VIEWFINDER`) are **raw-only**
-    formats.
--   Still capture profiles may include `'JPEG'` and `'RAW '` where
-    platform support exists.
-
-Provider must not silently substitute compressed formats for streams.
-
-------------------------------------------------------------------------
-
-## 7. Capture synchronisation (multi-camera)
-
-On platforms that support it (Android camera2 being the primary target),
-providers must support synchronised multi-camera capture where the platform
-permits.
-Provider must: - Use platform mechanisms for synchronized capture where
-available - Extract and report per-frame timestamps as delivered by the
-platform - Deliver frames back to core tagged with `capture_id`,
-`device_instance_id`, and timestamps
-
-Provider does not decide whether synchronization is requested; core
-does.
-
-------------------------------------------------------------------------
-
-## 7.x Capture timestamp domains (provider → core)
-
-Providers must tag delivered frames with a **provider-agnostic capture timestamp** for
-multi-camera alignment and tolerance checks.
-
-Core must not depend on platform-specific timestamp concepts (e.g. Media Foundation sample
-time, Android timestamp source enums). Such concepts must remain provider-internal.
-
-Provider must supply capture time using a generic representation:
-
-- `value`: integer tick value
-- `tick_ns`: tick period in nanoseconds (e.g. 1 for ns, 100 for 100ns)
-- `domain`: declared comparability/meaning of the timestamp
-
-Domains are semantic, not platform names. v1 domains:
-
-- `PROVIDER_MONOTONIC`: monotonic and comparable across streams produced by this provider instance.
-- `CORE_MONOTONIC`: already mapped into core’s monotonic timebase (session-relative).
-- `DOMAIN_OPAQUE`: ordering-only; provider cannot guarantee meaningful cross-stream comparability.
-
-Providers should prefer `PROVIDER_MONOTONIC` or `CORE_MONOTONIC` where feasible.
-
-Core uses capture timestamps only according to the declared domain.
-
-Avoid using enum identifiers that collide with Windows macros (e.g., OPAQUE). Prefer prefixed forms (e.g., DOMAIN_OPAQUE) in provider-contract headers.
-------------------------------------------------------------------------
-
-## 8. Error reporting
-
-Provider must report errors via deterministic callbacks (exact names are
-implementation detail), scoped to:
-
--   Device instance (`instance_id`)
--   Stream (`stream_id`)
--   Capture (`capture_id`)
-
-Error reporting requirements: - Deterministic ordering - Non-spammy
-(avoid repeated identical error floods) - Idempotent where feasible
-(core may de-duplicate, but provider should not explode noise)
-
-Core increments counters and publishes snapshots.
-
-------------------------------------------------------------------------
-
-## 9. Warm policy interaction
-
-Provider does not decide warm timing.
-
-Core tracks `warm_hold_ms` and schedules teardown.
-
-Provider must support: - Clean stop of a stream - Clean teardown while
-frames may still be in flight - Reopen after close (new `instance_id`
-lineage)
-
-Provider must not retain resources past a core-directed teardown.
-
-------------------------------------------------------------------------
-
-## 10. Preemption
-
-Provider does not arbitrate.
-
-Core may instruct provider to: - Stop a repeating stream (e.g., preempt
-`VIEWFINDER` for capture) - Abort a capture if supported (optional;
-platform-dependent) - Reconfigure pipelines when policy allows
-
-Provider must obey in deterministic order and report resulting lifecycle
-transitions.
-
-------------------------------------------------------------------------
-
-## 11. Provider implementations (v1 targets)
-
--   `AndroidCamera2Provider`
--   `WindowsMediaFoundationProvider`
--   `SyntheticProvider` (test harness / deterministic simulation)
--   `StubProvider` (not implemented platforms; returns deterministic
-    "not supported" responses)
-
-All providers must satisfy this contract, even if they provide only "not
-supported" behaviour.
-
-Note:
-
-- `StubProvider` is a minimal deterministic provider used for
-  lifecycle validation and smoke testing.
-
-- `SyntheticProvider` is intended for richer deterministic simulation
-  (e.g., multi-camera rigs, timestamp modelling) and may supersede
-  StubProvider in later development phases.
-
-### 11.1 WindowsMediaFoundationProvider (Windows / Media Foundation)
-
-The Windows provider is implemented using Media Foundation (MF).
-
-It exists primarily to:
-
-- Validate lifecycle determinism on Windows.
-- Exercise provider ↔ core contract under real camera load.
-- Provide a development accelerator for Godot visibility work.
-
-#### Determinism and shutdown
-
-The MF provider must:
-
-- Avoid indefinite blocking during `ReadSample` loops.
-- Provide a deterministic unblock mechanism during stop/shutdown
-  (e.g. flush or reader teardown).
-- Preserve serialized callback semantics into core.
-
-Validated behaviour during development:
-
-- Continuous frame delivery (including drop-heavy cases) does not break
-  release-on-drop discipline.
-- Rapid start/stop cycles complete without hang.
-- No double-release or native object leakage observed under stress.
-
-#### Native format constraints (visibility phase)
-
-When `MF_READWRITE_DISABLE_CONVERTERS = TRUE` is set:
-
-- Only native camera output types are selectable.
-- Many consumer cameras expose YUV-only formats (e.g. `NV12`, `YUY2`,
-  `MJPG`) natively.
-- If no RGB32-like subtype (`MFVideoFormat_RGB32`,
-  `MFVideoFormat_ARGB32`, etc.) is advertised, visible pixels cannot be
-  produced without enabling conversion.
-
-CamBANG intentionally does **not** introduce CPU YUV→RGB conversion into
-core or the development mailbox path.
-
-Policy during v1 visibility phase:
-
-- Mailbox accepts tightly packed RGBA8 only.
-- A dev-only BGRA→RGBA channel swizzle is permitted.
-- Unsupported formats are dropped and released deterministically.
-
-This separation ensures lifecycle and ownership correctness can be
-validated independently of colour conversion strategy.
-
-#### MinGW toolchain notes
-
-When building under MinGW, the link set must include:
-
-- `mf`
-- `mfplat`
-- `mfreadwrite`
-- `mfuuid`
-- `ole32`
-- `uuid`
-
-`mf` is required for `MFEnumDeviceSources`.
-`uuid` is required for `GUID_NULL` resolution.
-
-Prefer MF helper functions (e.g. `MFGetAttributeSize`,
-`MFGetAttributeUINT32`) over relying on inline convenience methods
-(e.g. `GetINT32`), as MinGW headers may not expose all helpers
-consistently.
-
-## 11.x Synthetic provider timing model
-
-SyntheticProvider is a first-class implementation of `ICameraProvider` that simulates platform camera behaviour while preserving the provider ↔ core contract defined in this document.
-
-SyntheticProvider introduces three orthogonal configuration axes:
-
-- `provider_mode`
-- `synthetic_role`
-- `timing_driver`
-
-These axes are naming- and behaviour-stable parts of the architecture. They define capture origin and timing semantics without altering the provider/core boundary.
+Providers must not add a second hidden layer of defaulting beneath that.
 
 ---
 
-### 11.x.1 Provider mode (capture origin)
+## 7. Provider event classes and delivery guarantees
 
-`provider_mode` selects the active backend bound to Core:
+Providers communicate facts to Core through the **provider strand** (see
+`provider_strand_unification.md`).
 
-- `platform_backed` — frames originate from a real platform camera API.
-- `synthetic` — frames originate from SyntheticProvider.
+The strand is the single serialized callback context through which
+provider → Core facts are delivered.
 
-Exactly one provider instance is bound to Core at runtime. Core does not arbitrate between multiple providers.
+Provider facts fall into four event classes:
 
-When `provider_mode = synthetic`, the following two axes apply.
+| Event class | Examples | Delivery policy |
+|---|---|---|
+| Lifecycle | device opened/closed, stream created/destroyed, stream started/stopped | Non-lossy |
+| Native-object | native object created/destroyed | Non-lossy |
+| Error | device error, stream error, provider error | Non-lossy |
+| Frame | repeating frame delivery, capture frame delivery | Lossy |
 
----
+### 7.1 Non-lossy classes
 
-### 11.x.2 Synthetic role (semantic behaviour)
+Lifecycle, native-object, and error events are authoritative facts.
+These must:
 
-`synthetic_role` defines *what kind of behaviour* the synthetic provider emits:
+- always be delivered once admitted to the strand
+- never be silently discarded due to queue pressure
+- preserve observed ordering relative to other non-frame facts
 
-- `nominal` — steady, happy-path provider semantics (no implicit jitter, drops, or errors).
-- `timeline` — replay of an explicit external scenario (e.g., a `.cambang_scenario.json`), including jitter, drops, errors, and lifecycle events exactly as encoded.
+### 7.2 Frame class
 
-Role affects *behavioural semantics*, not timing mechanics. Role does not alter the provider/core contract.
+Frame events may be dropped under pressure, but frame dropping must not:
 
----
-
-### 11.x.3 Timing driver (time advancement semantics)
-
-`timing_driver` defines *how time advances* for SyntheticProvider:
-
-- `virtual_time` — time advances only via explicit host calls (e.g., `advance(dt_ns)` or equivalent tick mechanism). No sleeping. No reliance on wall-clock.
-- `real_time` — time advances using a monotonic clock. Provider schedules events relative to wall-clock progression.
-
-Timing driver affects scheduling and cadence, but not ordering guarantees or callback serialization rules.
-
----
-
-### 11.x.4 Determinism guarantees (normative)
-
-The following guarantees apply to SyntheticProvider.
-
-#### Contract compliance
-
-- SyntheticProvider must fully satisfy the `ICameraProvider` contract.
-- It must not reach into Core internals.
-- It must not bypass arbitration.
-- It must report native object creation/destruction exactly as a platform provider would.
-- It must use provider-agnostic capture timestamp representation (see §7.x).
-
-#### Callback serialization
-
-In all modes and roles:
-
-- All provider → core callbacks occur on a single serialized callback context.
-- SyntheticProvider must not call Core concurrently from multiple threads.
-
-#### Virtual-time determinism
-
-When `timing_driver = virtual_time`:
-
-- Event ordering and timing are strictly deterministic given:
-    - identical configuration
-    - identical role inputs (e.g., identical scenario file for `timeline`)
-    - identical sequence of host-driven time advancement
-- No internal sleeping or wall-clock access may influence scheduling.
-- Frame timestamps and lifecycle events are derived solely from synthetic scheduling state.
-
-This mode is suitable for CI, replay, and invariant validation.
-
-#### Real-time determinism
-
-When `timing_driver = real_time`:
-
-- Event ordering and content must remain deterministic for a given configuration and input.
-- Precise inter-arrival timing is best-effort and subject to host scheduling and clock resolution.
-- Real-time mode must not introduce non-deterministic reordering of events.
-
-Real-time mode is intended to approximate live cadence while preserving contract correctness.
+- suppress lifecycle events
+- suppress native-object events
+- distort registry truthfulness
 
 ---
 
-### 11.x.5 Host-driven time advancement
+## 8. Threading discipline
 
-Core does not drive provider time.
+All provider → Core facts must be delivered through the provider strand.
 
-When `timing_driver = virtual_time`, time advancement must be performed by the host environment.
+Platform callbacks and worker threads must not call Core lifecycle or
+registry services directly.
 
-In GDE builds, `CamBANGServer` is responsible for advancing synthetic time (e.g., from Godot frame ticks).
+The provider may use backend-specific worker threads internally, but all
+observable facts cross into Core through the single serialized strand
+context.
 
-The ProviderBroker:
-
-- selects the backend,
-- forwards calls,
-- does not own scheduling policy,
-- does not arbitrate cadence.
-
-SyntheticProvider must remain clock-driven (scheduler-based), not “Godot-driven.” The host provides time advancement; the provider executes scheduled work accordingly.
+This rule is backend-independent and applies equally to synthetic,
+stub, and platform-backed providers.
 
 ---
 
-### 11.x.6 Implementation status (non-normative)
+## 9. Lifecycle truthfulness
 
-The architectural model above defines the intended behaviour space of SyntheticProvider.
+Providers must report native-object and lifecycle state truthfully.
 
-As of the current repository state:
+### 9.1 No normal-operation auto-cascade
 
-- Implemented:
-    - `synthetic_role = nominal`
-    - `timing_driver = virtual_time`
-- Declared but not yet implemented:
-    - `synthetic_role = timeline`
-    - `timing_driver = real_time`
+During normal API operation, providers must not hide bad lifecycle
+ordering by automatically stopping or destroying owned children behind
+the caller's back.
 
-Enum definitions and configuration surfaces may exist for these declared modes, but only the implemented combination is currently active in provider logic.
+Examples:
 
-This section defines the target specification for future implementation work and must not be interpreted as a claim that all combinations are presently available.
-------------------------------------------------------------------------
+- `close_device()` must fail if a child stream still exists
+- `destroy_stream()` must fail if the stream is still started / producing
 
-## 12. Compliance checklist
+The purpose is to preserve truthful ownership boundaries in the registry
+and published snapshot.
 
-A provider is considered compliant when:
+### 9.2 Shutdown is different
 
--   All core callbacks occur on a single serialized callback context
--   All created native objects are reported and destroyed objects are
-    reported
--   Stream formats are mapped into canonical FourCC and streams are
-    raw-only
--   Teardown/shutdown completes without indefinite blocking
--   Errors are reported deterministically and scoped correctly
--   Synchronised capture support (if implemented) reports timestamps per
-    frame
+During provider shutdown, ordered internal teardown is allowed so the
+provider can release resources cleanly.
 
-### 12.x Validation layering
+Shutdown teardown must still be truthful:
 
-Provider compliance is validated in two stages:
+- destruction events must correspond to actual release
+- providers must not fabricate destruction for resources that were never
+  successfully acquired or released
 
-1) **Core smoke (stub provider)**  
-   Validates lifecycle determinism, release semantics, and shutdown invariants
-   independently of platform APIs.
+---
 
-2) **Platform provider runtime validation**  
-   Validates real API behaviour (e.g., Windows MF, Android camera2)
-   under platform-backed asynchronous load.
-Core smoke must remain provider-independent.
-Platform validation must not redefine core invariants.
+## 10. Native-object reporting
+
+Providers report creation and destruction of CamBANG-owned native
+objects to Core.
+
+At minimum, implemented providers normally report:
+
+- `Provider`
+- `Device`
+- `Stream`
+- `FrameProducer`
+
+Creation must be reported when the resource is actually acquired.
+
+Destruction must be reported only when the resource is actually
+released.
+
+Providers must not collapse ownership boundaries merely to make the
+registry look tidy.
+
+The registry / snapshot model depends on truthful object history,
+including diagnostically useful ordering failures.
+
+---
+
+## 11. Timestamp contract
+
+Every frame delivered to Core must carry a contract-valid
+`CaptureTimestamp` containing:
+
+- `value`
+- `tick_ns`
+- `domain`
+
+Providers should use a meaningful monotonic or provider-monotonic domain
+where feasible.
+
+Placeholder-shaped timestamps are not contract-valid merely because the
+fields are present.
+
+Timestamp validity is backend-independent: synthetic, stub, and
+platform-backed providers all owe the same contract.
+
+---
+
+## 12. Compliance strategy for future providers
+
+When adding a new provider, including future platform-backed providers:
+
+1. implement the provider as an adapter to the existing contract
+2. define provider-type defaults in `StreamTemplate`
+3. route all provider → Core facts through the provider strand
+4. report native-object lifecycles truthfully
+5. pass the provider compliance verifier / harness
+6. contain backend quirks inside the provider adapter layer
+
+Do **not**:
+
+- copy incidental behaviour from a provisional backend adapter and treat
+  it as canonical
+- add provider-side execution-time defaulting
+- normalize invalid lifecycle ordering by silent cleanup
+- special-case Core semantics to fit one backend API
+
+---
+
+## 13. Immediate design consequence for upcoming platform providers
+
+A future platform-backed provider such as `android_camera2` should be
+implemented against the same contract already exercised by the reference
+providers and compliance tools.
+
+That provider may become release-quality before other platform-backed
+providers do, but its higher capability level still does not redefine
+Core/provider semantics.
+
+Release-quality providers extend functional coverage; they do not change
+what the provider contract means.

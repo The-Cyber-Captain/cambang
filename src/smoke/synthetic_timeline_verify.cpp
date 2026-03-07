@@ -107,7 +107,7 @@ static std::shared_ptr<const CamBANGStateSnapshot> snapshot_copy(StateSnapshotBu
 }
 
 static void dump_snapshot(const CamBANGStateSnapshot& s) {
-  std::cout << "[snap] gen=" << s.gen << " topo=" << s.topology_gen << " ts=" << s.timestamp_ns
+  std::cout << "[snap] gen=" << s.gen << " ver=" << s.version << " topo=" << s.topology_version << " ts=" << s.timestamp_ns
             << " devices=" << s.devices.size() << " streams=" << s.streams.size()
             << " native_objects=" << s.native_objects.size() << "\n";
   for (const auto& st : s.streams) {
@@ -159,6 +159,24 @@ static uint64_t frames_received_for_stream(const CamBANGStateSnapshot& s, uint64
     if (st.stream_id == stream_id) return st.frames_received;
   }
   return 0;
+}
+
+static bool stream_is_flowing(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+  for (const auto& st : s.streams) {
+    if (st.stream_id == stream_id) {
+      return st.mode == CBStreamMode::FLOWING;
+    }
+  }
+  return false;
+}
+
+static bool stream_exists(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+  for (const auto& st : s.streams) {
+    if (st.stream_id == stream_id) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static bool wait_for_frames(StateSnapshotBuffer& buf, uint64_t stream_id, uint64_t min_frames, bool dump) {
@@ -310,13 +328,33 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
     }
   }
 
+  // Ensure stream-start provider/core integration is visible before advancing
+  // virtual time for catch-up. Advancing too early can schedule against a stream
+  // that has not transitioned to FLOWING yet.
+  if (!wait_until([&]() {
+        rt.request_publish();
+        auto s = snapshot_copy(buf);
+        if (!s) return false;
+        if (opt.dump_snapshots) dump_snapshot(*s);
+        return stream_is_flowing(*s, kStreamId);
+      })) {
+    std::cerr << "FAIL: stream did not reach FLOWING before catch-up tick\n";
+    return 1;
+  }
+
   // One big tick: catch-up pump.
   tick_synthetic(rt, kOneSecNs);
   rt.request_publish();
 
   // Expected frames in 1s with first frame at t=0: floor(1s/period)+1.
   const uint64_t expected = (period == 0) ? 0 : (kOneSecNs / period) + 1;
-  if (!wait_for_frames(buf, kStreamId, expected, opt.dump_snapshots)) {
+  if (!wait_until([&]() {
+        rt.request_publish();
+        auto s = snapshot_copy(buf);
+        if (!s) return false;
+        if (opt.dump_snapshots) dump_snapshot(*s);
+        return frames_received_for_stream(*s, kStreamId) >= expected;
+      }, 800, 2)) {
     std::cerr << "FAIL: expected frames_received >= " << expected << " after catch-up tick\n";
     return 1;
   }
@@ -332,10 +370,18 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
     return 1;
   }
 
-  // Cleanup.
-  (void)rt.try_stop_stream(kStreamId);
-  (void)rt.try_destroy_stream(kStreamId);
-  rt.request_publish();
+  // Cleanup: drive stop/destroy deterministically until stream disappears.
+  if (!wait_until([&]() {
+        (void)rt.try_stop_stream(kStreamId);
+        (void)rt.try_destroy_stream(kStreamId);
+        rt.request_publish();
+        auto s2 = snapshot_copy(buf);
+        if (!s2) return false;
+        return !stream_exists(*s2, kStreamId);
+      }, 800, 2)) {
+    std::cerr << "FAIL: catchup cleanup did not fully destroy stream\n";
+    return 1;
+  }
 
   return 0;
 }

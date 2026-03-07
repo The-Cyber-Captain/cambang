@@ -1,4 +1,4 @@
-# FrameView Stage (Dev Visibility – Server-Owned Runtime)
+# FrameView Stage (Dev Visibility – Server-Owned Core Loop)
 
 This stage exists to produce a **visible, end-to-end validation** of the CamBANG pipeline inside Godot:
 
@@ -16,13 +16,13 @@ It is intentionally **development-only scaffolding**.
 This document reflects the current architecture in which:
 
 - `CoreRuntime` is owned by `CamBANGServer`
-- Dev nodes do not own the runtime
-- Snapshot publication is canonical and dirty-driven
+- Dev nodes do not own the core
+- Core snapshot publication is dirty-driven; Godot-visible publication is tick-bounded
 - Visibility is implemented via a development-only frame sink
 
 This document supplements:
 
-- `core_runtime_model.md`
+- `core_core_model.md`
 - `state_snapshot.md`
 - `architecture/frame_sinks.md`
 
@@ -32,19 +32,19 @@ It does not redefine canonical architecture.
 
 ## 1. Architectural Context (Current Model)
 
-### 1.1 Runtime ownership
+### 1.1 `CoreRuntime` ownership
 
 `CoreRuntime` is owned by `CamBANGServer`, registered as an Engine-level singleton.
 
 - `CamBANGServer.start()` starts the core thread.
 - `CamBANGServer.stop()` performs deterministic shutdown.
 - `CamBANGServer` owns snapshot publication and exposes:
-   - `get_state_snapshot()`
-   - `state_published(gen, topology_gen)`
+  - `get_state_snapshot()`
+  - `state_published(gen, version, topology_version)`
 
 Dev nodes do **not** own `CoreRuntime`.
 
-This aligns with the canonical runtime model.
+This aligns with the canonical core model.
 
 ---
 
@@ -95,17 +95,21 @@ Autostart behaviour is convenience scaffolding only.
 On successful `CamBANGServer.start()`:
 
 - Core begins logically dirty.
-- First loop iteration publishes a baseline snapshot.
+- Core publishes a baseline snapshot as soon as the core loop becomes LIVE.
 - First snapshot has:
-   - `gen = 0`
-   - `topology_gen = 0`
-   - valid monotonic `timestamp_ns`
+  - `version = 0`
+  - `topology_version = 0`
+  - valid monotonic `timestamp_ns`
 
-Until that publish occurs:
+Godot-facing publication is tick-bounded:
 
-- `get_state_snapshot()` may return null.
+- `state_published(gen,0,0)` is emitted on the first Godot tick where the running
+  state becomes observable.
+- Until that first emission occurs, `get_state_snapshot()` may return null.
 
-This guarantees each runtime session produces exactly one deterministic baseline snapshot.
+`gen` is monotonic across the app/server lifetime and may therefore be non-zero when the server restarts after a previous stop.
+
+This guarantees each core generation produces exactly one deterministic baseline snapshot.
 
 ---
 
@@ -185,6 +189,7 @@ This does not represent production threading.
 
 Pixel content for stub frames is generated via the provider-agnostic Pattern Module into packed RGBA/BGRA buffers.
 Frames enter the pipeline identically to platform-backed-origin frames; visibility policy remains format-gated and dev-only.
+
 ---
 
 ## 8. Windows Media Foundation Visibility
@@ -256,7 +261,7 @@ This dev visibility stage is considered complete when:
 - Pixels appear for providers capable of native RGBA-class output.
 - Drop-heavy providers behave deterministically.
 - Start/stop cycles do not hang.
-- Snapshot publication remains correct (`gen`, `topology_gen`).
+- Snapshot publication remains correct (`gen`, `version`, `topology_version`).
 - No release leaks occur under stress.
 
 Once production GPU paths are introduced, this stage may be retired.

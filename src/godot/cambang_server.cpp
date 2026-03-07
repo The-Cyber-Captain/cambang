@@ -2,10 +2,10 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
+#include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
-#include "godot/cambang_state_snapshot.h"
-#include "godot/cambang_server_tick_node.h"
+#include <chrono>
 
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
@@ -76,6 +76,12 @@ CamBANGServer::~CamBANGServer() {
 }
 
 void CamBANGServer::start() {
+  // New session starts with no Godot-latched snapshot until first publish.
+  latest_.reset();
+  latest_export_.clear();
+  has_latest_export_ = false;
+  has_godot_counters_ = false;
+
   // Defensive re-check: requested mode must be supported in this build.
   {
     ProviderResult cap = ProviderBroker::check_mode_supported_in_build(provider_mode_requested_);
@@ -87,8 +93,8 @@ void CamBANGServer::start() {
     }
   }
 
-  // Ensure the tick node exists so snapshots can be drained + signals emitted.
-  _ensure_tick_installed();
+  // Ensure the SceneTree tick hook exists so snapshots can be drained + signals emitted.
+  _ensure_tick_connected();
 
   // Explicit user action: do not auto-start on launch.
   runtime_.start();
@@ -107,6 +113,14 @@ void CamBANGServer::stop() {
   }
   runtime_.stop();
 
+  // Enforce documented NIL pre-baseline behaviour across restart boundaries.
+  latest_.reset();
+  latest_export_.clear();
+  has_latest_export_ = false;
+  has_godot_counters_ = false;
+  snapshot_buffer_.clear();
+  last_seen_published_seq_ = runtime_.published_seq();
+
   // Allow a fresh "busy" log once per live session.
   provider_mode_busy_logged_ = false;
 }
@@ -117,38 +131,40 @@ ProviderBroker* CamBANGServer::provider_broker_for_dev() const noexcept {
 }
 #endif
 
-  void CamBANGServer::_ensure_tick_installed() {
-  // If already present in scene tree, we're done.
+void CamBANGServer::_ensure_tick_connected() {
+  if (tick_connected_) {
+    return;
+  }
+
+  // Connect to SceneTree's per-frame tick. This is the cleanest way for an
+  // Engine singleton (not in the scene tree) to receive a main-thread tick.
   godot::MainLoop* ml = godot::Engine::get_singleton()->get_main_loop();
   godot::SceneTree* tree = godot::Object::cast_to<godot::SceneTree>(ml);
   if (!tree) {
     return;
   }
-  godot::Window* root = tree->get_root();
-  if (!root) {
-    return;
+
+  // process_frame is emitted once per rendered frame (Godot main thread).
+  // It has no args; we compute delta locally.
+  godot::Callable cb(this, "_on_godot_process_frame");
+  tree->connect("process_frame", cb);
+
+  tick_connected_ = true;
+  last_tick_time_ns_ = 0;
+}
+
+void CamBANGServer::_on_godot_process_frame() {
+  using clock = std::chrono::steady_clock;
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count());
+
+  double delta_s = 0.0;
+  if (last_tick_time_ns_ != 0 && now_ns >= last_tick_time_ns_) {
+    delta_s = static_cast<double>(now_ns - last_tick_time_ns_) / 1'000'000'000.0;
   }
+  last_tick_time_ns_ = now_ns;
 
-  if (root->get_node_or_null(godot::NodePath("__CamBANGServerTick")) != nullptr) {
-    tick_installed_ = true;
-    return;
-  }
-
-  // If we've already scheduled installation, don't schedule again.
-  if (tick_installed_) {
-    return;
-  }
-
-  auto* tick = memnew(CamBANGServerTickNode);
-  tick->set_name("__CamBANGServerTick");
-  tick->set_process(true);
-  tick->set_process_mode(godot::Node::PROCESS_MODE_ALWAYS);
-
-  // Defer adding to avoid "Parent node is busy setting up children" during _ready().
-  root->call_deferred("add_child", tick);
-
-  // Mark as scheduled to avoid duplicates. Presence check above will confirm later.
-  tick_installed_ = true;
+  _on_godot_tick(delta_s);
 }
 
 void CamBANGServer::_on_godot_tick(double delta) {
@@ -172,23 +188,65 @@ void CamBANGServer::_on_godot_tick(double delta) {
     }
   }
 
-  // Poll the core-published snapshot buffer.
-  auto snap = snapshot_buffer_.snapshot_copy();
-  if (!snap) {
+  // Godot-facing snapshot truth is tick-bounded.
+  // Core may publish multiple intermediate snapshots between Godot ticks.
+  // We emit at most once per tick, and only if *anything* has changed since
+  // the previous tick (as indicated by the core publish sequence marker).
+  const uint64_t published_seq = runtime_.published_seq();
+  if (published_seq == last_seen_published_seq_) {
     return;
   }
 
-  // gen is zero-indexed. We must still emit the first published snapshot (gen=0).
-  if (has_emitted_snapshot_ && snap->gen == last_emitted_gen_) {
+  // Something changed since last tick. Latch the latest core snapshot.
+  auto snap = snapshot_buffer_.snapshot_copy();
+  if (!snap) {
+    // A publish marker advanced but the buffer has no snapshot yet.
+    // This should be extremely rare (publisher ordering), but be defensive.
+    last_seen_published_seq_ = published_seq;
     return;
+  }
+  last_seen_published_seq_ = published_seq;
+
+  // Establish / reset tick-bounded counters on new gen.
+  // gen is defined from the Godot-facing perspective but still aligns with
+  // core generations: it advances on each successful start() STOPPED->LIVE.
+  if (!has_godot_counters_ || snap->gen != godot_gen_) {
+    has_godot_counters_ = true;
+    godot_gen_ = snap->gen;
+    godot_version_ = 0;
+    godot_topology_version_ = 0;
+    last_emitted_topology_sig_ = runtime_.published_topology_sig();
+  } else {
+    // Tick-bounded version increments on every emission within a gen.
+    ++godot_version_;
+
+    // topology_version increments only when the observed topology differs
+    // from the topology at the previous emission.
+    const uint64_t topo_sig = runtime_.published_topology_sig();
+    if (topo_sig != last_emitted_topology_sig_) {
+      last_emitted_topology_sig_ = topo_sig;
+      ++godot_topology_version_;
+    }
   }
 
   latest_ = snap;
-  last_emitted_gen_ = snap->gen;
-  has_emitted_snapshot_ = true;
-  emit_signal("state_published", (uint64_t)snap->gen, (uint64_t)snap->topology_gen);
+
+  // Export as a struct-like Variant graph for Godot inspection.
+  latest_export_ = export_snapshot_to_godot(*snap, godot_gen_, godot_version_, godot_topology_version_);
+  has_latest_export_ = true;
+
+  emit_signal("state_published",
+              static_cast<uint64_t>(godot_gen_),
+              static_cast<uint64_t>(godot_version_),
+              static_cast<uint64_t>(godot_topology_version_));
 }
 
+godot::Variant CamBANGServer::get_state_snapshot() const {
+  if (!has_latest_export_) {
+    return godot::Variant();
+  }
+  return latest_export_;
+}
 godot::Error CamBANGServer::set_provider_mode(const godot::String& mode) {
   // Provider mode is latched per runtime session; changes require STOPPED.
   if (runtime_.is_running()) {
@@ -263,15 +321,6 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
 
   return true;
 }
-#if 0
-godot::Ref<cambang::CamBANGStateSnapshotGD> CamBANGServer::get_state_snapshot() const {
-  godot::Ref<CamBANGStateSnapshotGD> out;
-  out.instantiate();
-  out->_init_from_core(latest_);
-  return out;
-}
-#endif
-
 void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGServer::start);
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGServer::stop);
@@ -279,10 +328,14 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_provider_mode"), &CamBANGServer::get_provider_mode);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
 
+  // Internal tick hook (connected to SceneTree.process_frame).
+  godot::ClassDB::bind_method(godot::D_METHOD("_on_godot_process_frame"), &CamBANGServer::_on_godot_process_frame);
+
   ADD_SIGNAL(godot::MethodInfo(
       "state_published",
       godot::PropertyInfo(godot::Variant::INT, "gen"),
-      godot::PropertyInfo(godot::Variant::INT, "topology_gen")));
+      godot::PropertyInfo(godot::Variant::INT, "version"),
+      godot::PropertyInfo(godot::Variant::INT, "topology_version")));
 }
 
 } // namespace cambang

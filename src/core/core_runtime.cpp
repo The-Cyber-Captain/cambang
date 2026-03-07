@@ -21,10 +21,16 @@ CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
       streams_(),
-      gen_(0),
-      topology_gen_(0),
+      gen_counter_(0),
+      current_gen_(0),
+      version_(0),
+      topology_version_(0),
       last_topology_sig_(0),
-      dispatcher_(&streams_, &devices_, &native_objects_),
+      dispatcher_(&streams_, &devices_, &native_objects_, &current_gen_, [this]() -> uint64_t {
+        const auto now = std::chrono::steady_clock::now();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+      }),
       ingress_(&core_thread_, [this](CoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
         // Provider callbacks are "facts"; we enqueue them and process them before requests
@@ -78,9 +84,13 @@ bool CoreRuntime::start() {
   publish_requests_dropped_closed_.store(0, std::memory_order_relaxed);
   publish_requests_dropped_allocfail_.store(0, std::memory_order_relaxed);
 
-  // Reset per-session snapshot bookkeeping (zero-indexed gens).
-  gen_ = 0;
-  topology_gen_ = 0;
+  // Reset per-generation snapshot bookkeeping (schema v1).
+  // gen is monotonic across the app/server lifetime and increments only when a new core loop
+  // is successfully started.
+  const uint64_t pending_gen = gen_counter_;
+  current_gen_ = pending_gen;
+  version_ = 0;
+  topology_version_ = 0;
   last_topology_sig_ = 0;
   has_topology_sig_ = false;
   provider_banner_printed_ = false;
@@ -96,7 +106,9 @@ bool CoreRuntime::start() {
   shutdown_wait_ticks_ = 0;
 
   const bool ok = core_thread_.start(this);
-  if (!ok) {
+  if (ok) {
+    ++gen_counter_;
+  } else {
     // Failed to start core thread; revert to a sensible stable state.
     state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
   }
@@ -140,7 +152,7 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
-  // Start "dirty": publish an initial snapshot (gen=0, topology_gen=0)
+  // Start "dirty": publish an initial baseline snapshot (version=0, topology_version=0)
   // via the normal coalesced publish path.
   publish_pending_.store(true, std::memory_order_release);
   core_thread_.request_timer_tick();
@@ -148,6 +160,10 @@ void CoreRuntime::on_core_start() {
 
 void CoreRuntime::on_core_timer_tick() {
   assert(core_thread_.is_core_thread());
+
+  const auto now = std::chrono::steady_clock::now();
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
   // Banner 2: Core-loop provider attachment (latched, effective).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
@@ -206,7 +222,20 @@ if (dispatcher_.consume_relevant_state_changed()) {
     }
   }
 
-  // 3) Retention / timers would run here (not yet implemented).
+  // 3) Retention / timers.
+  const size_t retired_count =
+      native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+  if (retired_count > 0) {
+    request_publish_from_core_unchecked();
+  }
+
+  if (const auto next_retirement_delay_ns =
+          native_objects_.next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+      next_retirement_delay_ns.has_value()) {
+    core_thread_.set_timer_deadline_ns(*next_retirement_delay_ns);
+  } else {
+    core_thread_.clear_timer_deadline();
+  }
 
   // 4) Snapshot publish (coalesced).
   if (publish_pending_.load(std::memory_order_acquire)) {
@@ -221,28 +250,35 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 
-    // topology_gen is zero-indexed.
-    // The first published snapshot establishes the baseline topology_gen=0.
+    // Publish-side topology signature for boundary diffing (Godot-facing).
+    // This is updated on every successful snapshot build/publish.
+    published_topology_sig_.store(topo_sig, std::memory_order_release);
+
+    // topology_version is zero-indexed within each gen.
+    // The first published snapshot establishes the baseline topology_version=0.
     if (!has_topology_sig_) {
       has_topology_sig_ = true;
       last_topology_sig_ = topo_sig;
     } else if (topo_sig != last_topology_sig_) {
       last_topology_sig_ = topo_sig;
-      ++topology_gen_;
+      ++topology_version_;
     }
 
-    // gen is zero-indexed.
-    const uint64_t gen_out = gen_;
-    const uint64_t topo_out = topology_gen_;
-    const auto now = std::chrono::steady_clock::now();
+    const uint64_t gen_out = current_gen_;
+    const uint64_t ver_out = version_;
+    const uint64_t topo_out = topology_version_;
     const uint64_t timestamp_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
-    CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_out, topo_out, timestamp_ns);
+    CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_out, ver_out, topo_out, timestamp_ns);
     auto shared = std::make_shared<CamBANGStateSnapshot>(std::move(snap));
 
-    // Advance counters only after snapshot assembly succeeds.
-    ++gen_;
+    // Advance per-generation publish counter only after snapshot assembly succeeds.
+    ++version_;
+
+    // Core-side publish marker used by the Godot-facing tick bridge to detect
+    // "changed since last tick" in O(1).
+    published_seq_.fetch_add(1, std::memory_order_acq_rel);
 
     if (IStateSnapshotPublisher* pub = snapshot_publisher_.load(std::memory_order_acquire)) {
       pub->publish(std::move(shared));
@@ -382,7 +418,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       }
 
       case ShutdownPhase::FINAL_RETENTION_SWEEP: {
-        // Step 6: final retention sweep (not yet implemented in this slice).
+        (void)native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         set_phase(ShutdownPhase::FINAL_PUBLISH);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -556,11 +592,12 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
 
     // Best-effort: stop before destroy.
     (void)p->stop_stream(stream_id);
-    (void)p->destroy_stream(stream_id);
-    (void)streams_.on_stream_destroyed(stream_id);
-
-    // Ensure core does not retain a ghost record.
-    (void)streams_.forget_stream(stream_id);
+    const ProviderResult dr = p->destroy_stream(stream_id);
+    if (dr.ok()) {
+      (void)streams_.on_stream_destroyed(stream_id);
+      // Ensure core does not retain a ghost record.
+      (void)streams_.forget_stream(stream_id);
+    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK

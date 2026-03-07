@@ -26,10 +26,11 @@ public:
 
     CamBANGStateSnapshot build(const Inputs& in,
                               uint64_t gen,
-                              uint64_t topology_gen,
+                              uint64_t version,
+                              uint64_t topology_version,
                               uint64_t timestamp_ns) const;
 
-    // Topology signature used to decide when topology_gen increments.
+    // Topology signature used to decide when topology_version increments.
     // This is deliberately simple in v1 scaffolding: it tracks existence of
     // device instances and streams by ID.
     uint64_t compute_topology_signature(const Inputs& in) const;

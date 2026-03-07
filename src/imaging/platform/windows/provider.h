@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <vector>
 
 #include <windows.h>
@@ -18,6 +19,7 @@
 #include <mfobjects.h>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_strand.h"
 #include "imaging/platform/windows/mf/com_ptr.h"
 
 namespace cambang {
@@ -49,7 +51,7 @@ namespace cambang {
 class WindowsProvider final : public ICameraProvider {
 public:
   WindowsProvider() = default;
-  ~WindowsProvider() override = default;
+  ~WindowsProvider() override;
 
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }
 
@@ -97,6 +99,7 @@ private:
     uint64_t device_instance_id = 0;
     uint64_t root_id = 0;
     bool open = false;
+    uint64_t native_id = 0;
 
     ComPtr<IMFMediaSource> source;
     ComPtr<IMFActivate> activation;
@@ -111,8 +114,13 @@ private:
 
   struct StreamState {
     StreamRequest req{};
+    CaptureProfile active_profile{};
+    PictureConfig active_picture{};
     bool created = false;
     bool started = false;
+    bool producing = false;
+    uint64_t native_id = 0;
+    uint64_t frame_producer_native_id = 0;
 
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> flushed{false};
@@ -122,6 +130,8 @@ private:
     std::deque<SampleItem> q;
 
     std::thread worker;
+    bool worker_exited = true;
+    std::condition_variable worker_cv;
 
     // Worker-thread-owned MF objects. Created/used/destroyed on worker thread.
 
@@ -149,6 +159,13 @@ private:
       ComPtr<IMFActivate>& out_activate);
 
   void worker_thread_(uint64_t stream_id);
+  uint64_t alloc_native_id_(NativeObjectType type) const;
+  void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_stream_id);
+  void emit_native_destroyed_(uint64_t native_id);
+  ProviderResult stop_stream_with_timeout_(uint64_t stream_id, std::chrono::milliseconds timeout);
+  ProviderResult destroy_stream_forced_(uint64_t stream_id);
+
+  CBProviderStrand strand_;
 
   IProviderCallbacks* callbacks_ = nullptr;
   bool initialized_ = false;
@@ -160,6 +177,7 @@ private:
 
   DeviceState device_;
   StreamState stream_;
+  uint64_t provider_native_id_ = 0;
 };
 
 } // namespace cambang

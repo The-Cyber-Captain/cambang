@@ -130,6 +130,21 @@ on_device_closed
 
 Native object lifecycle events accompany these transitions.
 
+### 3.x Godot-visible publication (tick-bounded)
+
+Core integrates provider facts as they arrive and may update internal state
+multiple times between Godot ticks.
+
+At the Godot boundary, `CamBANGServer` exposes snapshots using a tick-bounded
+observable truth model:
+
+- `state_published(...)` is emitted **at most once per Godot tick**.
+- It is emitted only if observable snapshot state has changed since the
+  previous tick.
+
+This prevents burst emission storms during teardown/spin-up and keeps consumer
+logic simple and deterministic.
+
 ---
 
 ## 4. Truthfulness rule
