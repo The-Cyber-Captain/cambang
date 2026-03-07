@@ -12,8 +12,8 @@
 #endif
 
 #include "core/core_runtime.h"
-#include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
+#include "core/state_snapshot_buffer.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
 #include "smoke/scenario/scenario_catalog.h"
@@ -30,17 +30,41 @@ constexpr std::uint64_t kFramePeriodNs = 33'333'333ull;
 struct Options {
   std::string scenario_name = "stream_lifecycle";
   std::string provider_name = "synthetic";
+  bool trace_snapshot = false;
+};
+
+struct VerifyResult {
+  bool ok = false;
+  std::uint32_t actual_device_count = 0;
+  std::uint32_t actual_stream_count = 0;
+  std::uint64_t actual_version = 0;
+  std::uint64_t actual_topology_version = 0;
+  std::uint64_t actual_gen = 0;
+  bool topology_changed = false;
+  std::shared_ptr<const CamBANGStateSnapshot> snapshot;
 };
 
 void usage(const char* argv0) {
   std::cerr
-      << "Usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub]\n"
+      << "Usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub] [--trace-snapshot]\n"
       << "Scenarios:\n"
-      << "  stream_lifecycle\n";
+      << "  stream_lifecycle   (synthetic, stub)\n"
+      << "  topology_lifecycle (synthetic, stub)\n"
+      << "  stop_fact_error    (stub only)\n";
 }
 
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
+}
+
+ScenarioProviderMask provider_mask_for_name(const std::string& provider_name) {
+  if (provider_name == "synthetic") {
+    return ScenarioProviderMask::Synthetic;
+  }
+  if (provider_name == "stub") {
+    return ScenarioProviderMask::Stub;
+  }
+  return ScenarioProviderMask::None;
 }
 
 bool parse_opts(int argc, char** argv, Options& out) {
@@ -50,6 +74,10 @@ bool parse_opts(int argc, char** argv, Options& out) {
     if (a == "--help" || a == "-h") {
       usage(argv[0]);
       return false;
+    }
+    if (a == "--trace-snapshot") {
+      out.trace_snapshot = true;
+      continue;
     }
     if (starts_with(a, "--provider=")) {
       out.provider_name = a.substr(std::string("--provider=").size());
@@ -95,6 +123,13 @@ std::uint32_t flowing_stream_count(const CamBANGStateSnapshot& s) {
   return count;
 }
 
+void print_snapshot_trace(ScenarioTime time, const CamBANGStateSnapshot& s) {
+  std::cout << "[snap] tick=" << time << " gen=" << s.gen << " ver=" << s.version
+            << " topo=" << s.topology_version << " devices=" << s.devices.size()
+            << " streams=" << s.streams.size() << " flowing=" << flowing_stream_count(s)
+            << " ts=" << s.timestamp_ns << "\n";
+}
+
 class ScenarioRuntime final {
 public:
   explicit ScenarioRuntime(const std::string& provider_name) : provider_name_(provider_name) {}
@@ -106,8 +141,6 @@ public:
       return false;
     }
 
-    // Observe the runtime baseline before provider initialization can advance
-    // the latest-only snapshot beyond the baseline version.
     if (!wait_until([this]() {
           auto s = snapshot_copy(snapshot_buffer_);
           return static_cast<bool>(s);
@@ -141,8 +174,6 @@ public:
   }
 
   void stop() {
-    // Let CoreRuntime own deterministic shutdown while the attached provider
-    // object is still valid.
     runtime_.stop();
     runtime_.attach_provider(nullptr);
     provider_.reset();
@@ -179,17 +210,62 @@ public:
       }
       return false;
     }
+    if (ev.type == ScenarioEventType::InjectStopError) {
+      if (auto* stub = dynamic_cast<StubProvider*>(provider_.get())) {
+        stub->emit_fact_stream_stopped(kStreamId, ProviderError::ERR_PROVIDER_FAILED);
+        return true;
+      }
+      return false;
+    }
     return false;
   }
 
-  bool verify(const ScenarioExpectation& exp) {
+  VerifyResult verify(const ScenarioExpectation& exp) {
+    VerifyResult out{};
+
+    const auto before = snapshot_copy(snapshot_buffer_);
+    const std::uint64_t before_topology = before ? before->topology_version : 0;
+
     runtime_.request_publish();
-    return wait_until([this, &exp]() {
+    out.ok = wait_until([this, &exp, before_topology, &out]() {
       auto s = snapshot_copy(snapshot_buffer_);
-      return s &&
-             s->devices.size() == exp.device_count &&
-             flowing_stream_count(*s) == exp.stream_count;
+      if (!s) {
+        return false;
+      }
+
+      out.actual_device_count = static_cast<std::uint32_t>(s->devices.size());
+      out.actual_stream_count = flowing_stream_count(*s);
+      out.actual_version = s->version;
+      out.actual_topology_version = s->topology_version;
+      out.actual_gen = s->gen;
+      out.topology_changed = s->topology_version > before_topology;
+      out.snapshot = s;
+
+      if (out.actual_device_count != exp.device_count) {
+        return false;
+      }
+      if (out.actual_stream_count != exp.stream_count) {
+        return false;
+      }
+      if (exp.require_topology_change && !out.topology_changed) {
+        return false;
+      }
+      return true;
     });
+
+    if (!out.snapshot) {
+      out.snapshot = snapshot_copy(snapshot_buffer_);
+      if (out.snapshot) {
+        out.actual_device_count = static_cast<std::uint32_t>(out.snapshot->devices.size());
+        out.actual_stream_count = flowing_stream_count(*out.snapshot);
+        out.actual_version = out.snapshot->version;
+        out.actual_topology_version = out.snapshot->topology_version;
+        out.actual_gen = out.snapshot->gen;
+        out.topology_changed = out.snapshot->topology_version > before_topology;
+      }
+    }
+
+    return out;
   }
 
 private:
@@ -201,6 +277,12 @@ private:
 };
 
 int run_scenario(const Scenario& scenario, const Options& opt) {
+  const auto provider_mask = provider_mask_for_name(opt.provider_name);
+  if (!provider_mask_contains(scenario.provider_mask, provider_mask)) {
+    std::cerr << "Scenario '" << scenario.name << "' does not support provider='" << opt.provider_name << "'\n";
+    return 1;
+  }
+
   ScenarioRuntime runtime(opt.provider_name);
   if (!runtime.start()) {
     runtime.stop();
@@ -215,7 +297,9 @@ int run_scenario(const Scenario& scenario, const Options& opt) {
 
   for (ScenarioTime time = 0; time <= max_time; ++time) {
     for (const auto& ev : scenario.events) {
-      if (ev.at != time) continue;
+      if (ev.at != time) {
+        continue;
+      }
       if (!runtime.apply(ev)) {
         std::cerr << "tick " << time << " FAILED: event apply failed\n";
         shutdown();
@@ -224,13 +308,29 @@ int run_scenario(const Scenario& scenario, const Options& opt) {
     }
 
     for (const auto& exp : scenario.expectations) {
-      if (exp.at != time) continue;
-      if (!runtime.verify(exp)) {
-        std::cerr << "tick " << time << " FAILED: expected devices=" << exp.device_count
-                  << " streams=" << exp.stream_count << "\n";
+      if (exp.at != time) {
+        continue;
+      }
+
+      const VerifyResult vr = runtime.verify(exp);
+      if (opt.trace_snapshot && vr.snapshot) {
+        print_snapshot_trace(time, *vr.snapshot);
+      }
+      if (!vr.ok) {
+        std::cerr << "tick " << time << " FAILED\n"
+                  << "expected: device_count=" << exp.device_count
+                  << " stream_count=" << exp.stream_count
+                  << " topology_changed=" << (exp.require_topology_change ? 1 : 0) << "\n"
+                  << "actual:   device_count=" << vr.actual_device_count
+                  << " stream_count=" << vr.actual_stream_count
+                  << " topology_changed=" << (vr.topology_changed ? 1 : 0)
+                  << " gen=" << vr.actual_gen
+                  << " version=" << vr.actual_version
+                  << " topology_version=" << vr.actual_topology_version << "\n";
         shutdown();
         return 1;
       }
+
       std::cout << "tick " << time << " OK\n";
     }
   }

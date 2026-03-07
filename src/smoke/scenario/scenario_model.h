@@ -16,7 +16,23 @@ enum class ScenarioEventType : std::uint8_t {
   StopStream,
   DestroyStream,
   EmitFrame,
+  InjectStopError,
 };
+
+enum class ScenarioProviderMask : std::uint8_t {
+  None = 0,
+  Synthetic = 1 << 0,
+  Stub = 1 << 1,
+  Any = Synthetic | Stub,
+};
+
+constexpr inline ScenarioProviderMask operator|(ScenarioProviderMask a, ScenarioProviderMask b) {
+  return static_cast<ScenarioProviderMask>(static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
+}
+
+constexpr inline bool provider_mask_contains(ScenarioProviderMask mask, ScenarioProviderMask value) {
+  return (static_cast<std::uint8_t>(mask) & static_cast<std::uint8_t>(value)) != 0;
+}
 
 struct ScenarioEvent {
   ScenarioTime at = 0;
@@ -28,6 +44,7 @@ struct ScenarioExpectation {
   ScenarioTime at = 0;
   std::uint32_t device_count = 0;
   std::uint32_t stream_count = 0; // Flowing stream count in this tranche.
+  bool require_topology_change = false;
 };
 
 struct Scenario {
@@ -63,17 +80,25 @@ struct Scenario {
       scenario->events.push_back({at, ScenarioEventType::EmitFrame, id});
       return *this;
     }
-    AtBuilder& expect(std::uint32_t device_count, std::uint32_t stream_count) {
-      scenario->expectations.push_back({at, device_count, stream_count});
+    AtBuilder& inject_stop_error(const std::string& id) {
+      scenario->events.push_back({at, ScenarioEventType::InjectStopError, id});
+      return *this;
+    }
+    AtBuilder& expect(std::uint32_t device_count,
+                      std::uint32_t stream_count,
+                      bool require_topology_change = false) {
+      scenario->expectations.push_back({at, device_count, stream_count, require_topology_change});
       return *this;
     }
   };
 
   std::string name;
+  ScenarioProviderMask provider_mask = ScenarioProviderMask::Any;
   std::vector<ScenarioEvent> events;
   std::vector<ScenarioExpectation> expectations;
 
-  explicit Scenario(std::string name_in) : name(std::move(name_in)) {}
+  explicit Scenario(std::string name_in, ScenarioProviderMask providers = ScenarioProviderMask::Any)
+      : name(std::move(name_in)), provider_mask(providers) {}
 
   AtBuilder at(ScenarioTime time) { return AtBuilder{this, time}; }
 };
