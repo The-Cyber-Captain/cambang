@@ -293,21 +293,7 @@ if env["smoke"]:
         source=phase3_verify_sources,
     )
 
-    # Provider compliance verification tool.
-    # Keep dependencies aligned with synthetic_timeline_verify smoke wiring.
-    provider_verify_sources = []
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
-    provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
-    provider_verify_prog = smoke_env.Program(
-        target=os.path.join(out_dir, "provider_compliance_verify"),
-        source=provider_verify_sources,
-    )
-
+    # Deterministic scenario playback harness.
     scenario_runner_sources = []
     scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
     scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
@@ -324,10 +310,25 @@ if env["smoke"]:
         source=scenario_runner_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, provider_verify_prog, scenario_runner_prog])
+    # Provider compliance verification tool.
+    # Keep dependencies aligned with synthetic_timeline_verify smoke wiring.
+    provider_verify_sources = []
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
+    provider_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "provider_compliance_verify"),
+        source=provider_verify_sources,
+    )
+
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, scenario_runner_prog, provider_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
-    Alias("smoke", [])
+    smoke_alias = Alias("smoke", [])
 
 # ---------------------------------------------------------------------------
 # Platform-backed runtime validation (alias: platform_validate)
@@ -360,7 +361,7 @@ if env["platform_validate"]:
     platform_validate_alias = Alias("platform_validate", runtime_validate_progs)
     AlwaysBuild(platform_validate_alias)
 else:
-    Alias("platform_validate", [])
+    platform_validate_alias = Alias("platform_validate", [])
 
 # ---------------------------------------------------------------------------
 # GDExtension scaffolding (alias: gde)
@@ -485,11 +486,8 @@ if env["gde"]:
     gde_alias = Alias("gde", gde_lib)
     AlwaysBuild(gde_alias)
 
-    # Write compile_commands.json after building the 'gde' alias
-    from SCons.Script import AddPostAction
-    AddPostAction(gde_alias, env["COMPDB_WRITE_ACTION"])
 else:
-    Alias("gde", [])
+    gde_alias = Alias("gde", [])
 
 
 
@@ -497,16 +495,22 @@ else:
 # - build GDE scaffolding when gde=1 (default)
 # - build deterministic smoke tools when smoke=1
 # - build platform runtime validators when platform_validate=1
-selected_defaults = []
+selected_default_nodes = []
 if env["gde"]:
-    selected_defaults.append("gde")
+    selected_default_nodes.append(gde_alias)
 if env["smoke"]:
-    selected_defaults.append("smoke")
+    selected_default_nodes.append(smoke_alias)
 if env["platform_validate"]:
-    selected_defaults.append("platform_validate")
+    selected_default_nodes.append(platform_validate_alias)
 
-if selected_defaults:
-    Default(selected_defaults)
+if selected_default_nodes:
+    build_all_alias = Alias("build_all", selected_default_nodes)
+    AlwaysBuild(build_all_alias)
+
+    from SCons.Script import AddPostAction
+    AddPostAction(build_all_alias, env["COMPDB_WRITE_ACTION"])
+
+    Default(build_all_alias)
 else:
     # Nothing selected. This is allowed for 'scons -c', otherwise it's likely a user mistake.
     from SCons.Script import GetOption
