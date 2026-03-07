@@ -1,90 +1,75 @@
 import json
 import os
+import shlex
 from SCons.Action import Action
+
+_CPP_EXTS = (".c", ".cc", ".cpp", ".cxx", ".c++", ".mm", ".m")
+_OBJ_EXTS = (".o", ".obj")
+_COMPILE_VARS = ("SHCXXCOM", "CXXCOM", "SHCCCOM", "CCCOM")
+
+
+def _norm_path(path):
+    return os.path.abspath(str(path)).replace("\\", "/")
+
+
+def _quote_arg(value):
+    value = str(value)
+    if not value:
+        return '""'
+    if any(ch in value for ch in ' \t"'):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
 
 
 def _is_cpp_source(path):
-    p = str(path).lower()
-    return p.endswith((".c", ".cc", ".cpp", ".cxx", ".c++", ".m", ".mm"))
+    return str(path).lower().endswith(_CPP_EXTS)
 
 
 def _is_object_file(path):
-    p = str(path).lower()
-    return p.endswith((".o", ".obj"))
-
-
-def _flatten_actions(action):
-    if action is None:
-        return []
-    if isinstance(action, (list, tuple)):
-        out = []
-        for item in action:
-            out.extend(_flatten_actions(item))
-        return out
-    return [action]
+    return str(path).lower().endswith(_OBJ_EXTS)
 
 
 def _render_action(env, action, target, source):
-    """Return the first real command-line action as a string.
+    """Render the first real compile command from an SCons action/list."""
+    if not action:
+        return ""
 
-    We must ignore Python/function actions such as our own record hook.
-    """
-    for item in _flatten_actions(action):
-        text = ""
-
-        if hasattr(item, "genstring"):
-            try:
-                text = item.genstring(target, source, env)
-            except TypeError:
-                try:
-                    text = item.genstring(target, source, env, False)
-                except Exception:
-                    text = ""
-            except Exception:
-                text = ""
-        else:
-            text = str(item)
-
+    actions = action if isinstance(action, (list, tuple)) else [action]
+    for item in actions:
+        text = env.subst(str(item), target=target, source=source).strip()
         if not text:
             continue
-
-        lowered = text.lower()
-        if "record_command" in lowered or "functionaction" in lowered:
+        # Skip Python-function style actions or placeholders.
+        if "function_action" in text.lower():
             continue
-        if text.startswith("<") and text.endswith(">"):
+        if text == "None":
             continue
-
-        rendered = env.subst(text, target=target, source=source).strip()
-        if rendered:
-            return rendered
-
+        return text
     return ""
 
 
-def _load_existing_entries(path):
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if isinstance(data, list):
-            return data
-    except FileNotFoundError:
-        return []
-    except Exception as exc:
-        print(f"[compdb] warning: could not read existing database {path}: {exc}")
-    return []
+def _ensure_source_in_command(cmd, src, src_abs):
+    if src in cmd or src_abs in cmd:
+        return cmd
+    return f"{cmd} {_quote_arg(src_abs)}"
+
+
+def _ensure_build_dir_include(cmd, directory):
+    include_unquoted = f"-I{directory}"
+    include_quoted = f'-I"{directory}"'
+    if include_unquoted in cmd or include_quoted in cmd:
+        return cmd
+    include_flag = include_quoted if any(ch in directory for ch in ' \t"') else include_unquoted
+    return f"{cmd} {include_flag}"
 
 
 def generate(env):
     entries = []
-    out_path = os.path.abspath(env.get("COMPDB_PATH", "compile_commands.json"))
-    root_dir = os.path.abspath(str(env.Dir("#")))
+    out_path = _norm_path(env.get("COMPDB_PATH", "compile_commands.json"))
+    directory = _norm_path(env.Dir("#"))
 
-    # Snapshot original compile actions *before* wrapping them, otherwise our
-    # own record hook can leak into the rendered command line.
-    original_actions = {
-        name: env.get(name)
-        for name in ("SHCXXCOM", "CXXCOM", "SHCCCOM", "CCCOM")
-    }
+    # Snapshot original compile actions before wrapping them.
+    original_actions = {var: env.get(var) for var in _COMPILE_VARS}
 
     def record_command(target, source, env):
         if not target or not source:
@@ -92,62 +77,52 @@ def generate(env):
 
         tgt = str(target[0])
         src = str(source[0])
-
-        if not _is_object_file(tgt):
-            return None
-        if not _is_cpp_source(src):
+        if not _is_object_file(tgt) or not _is_cpp_source(src):
             return None
 
-        cmd = (
-            _render_action(env, original_actions["SHCXXCOM"], target, source)
-            or _render_action(env, original_actions["CXXCOM"], target, source)
-            or _render_action(env, original_actions["SHCCCOM"], target, source)
-            or _render_action(env, original_actions["CCCOM"], target, source)
-        )
+        cmd = ""
+        for var in _COMPILE_VARS:
+            cmd = _render_action(env, original_actions.get(var), target, source)
+            if cmd:
+                break
         if not cmd:
             return None
 
-        try:
-            file_path = source[0].srcnode().abspath
-        except Exception:
-            file_path = os.path.abspath(src)
+        src_abs = _norm_path(src)
+        cmd = _ensure_source_in_command(cmd, src, src_abs)
+        cmd = _ensure_build_dir_include(cmd, directory)
 
-        entries.append(
-            {
-                "directory": root_dir,
-                "file": os.path.abspath(file_path),
-                "command": cmd,
-            }
-        )
+        entries.append({
+            "directory": directory,
+            "file": src_abs,
+            "command": cmd,
+        })
         return None
 
     def write_compdb(target=None, source=None, env=None):
         seen = set()
         unique = []
         for entry in entries:
-            key = (entry.get("file"), entry.get("command"))
+            key = (entry["file"], entry["command"])
             if key in seen:
                 continue
             seen.add(key)
             unique.append(entry)
 
+        unique.sort(key=lambda e: (e["file"], e["command"]))
+
         if not unique:
-            existing = _load_existing_entries(out_path)
-            if existing:
-                print(
-                    f"[compdb] no entries captured in this run; preserving existing {out_path} "
-                    f"({len(existing)} entries)"
-                )
+            if os.path.exists(out_path):
+                print(f"[compdb] no entries captured in this run; preserving existing {out_path}")
             else:
-                print(
-                    f"[compdb] no entries captured in this run; not writing empty database to {out_path}"
-                )
+                print(f"[compdb] no entries captured in this run; not writing empty database {out_path}")
             return None
 
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as handle:
-            json.dump(unique, handle, indent=2)
-            handle.write("\n")
+        out_dir = os.path.dirname(out_path) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(unique, fh, indent=2)
+            fh.write("\n")
 
         print(f"[compdb] wrote {out_path} ({len(unique)} entries)")
         return None
@@ -156,13 +131,11 @@ def generate(env):
         action = env.get(varname)
         if not action:
             return
-        base = list(action) if isinstance(action, list) else [action]
+        base = action if isinstance(action, list) else [action]
         env[varname] = base + [Action(record_command, cmdstr="")]
 
-    wrap("CCCOM")
-    wrap("CXXCOM")
-    wrap("SHCCCOM")
-    wrap("SHCXXCOM")
+    for var in _COMPILE_VARS:
+        wrap(var)
 
     env["COMPDB_WRITE_ACTION"] = Action(write_compdb, cmdstr="")
 
