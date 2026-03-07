@@ -32,8 +32,6 @@ def _render_action(env, action, target, source):
     for item in _flatten_actions(action):
         text = ""
 
-        # SCons command actions usually support genstring(); function actions
-        # either stringify to placeholders or names that must not enter compdb.
         if hasattr(item, "genstring"):
             try:
                 text = item.genstring(target, source, env)
@@ -61,6 +59,19 @@ def _render_action(env, action, target, source):
             return rendered
 
     return ""
+
+
+def _load_existing_entries(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            return data
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        print(f"[compdb] warning: could not read existing database {path}: {exc}")
+    return []
 
 
 def generate(env):
@@ -114,11 +125,24 @@ def generate(env):
         seen = set()
         unique = []
         for entry in entries:
-            key = (entry["file"], entry["command"])
+            key = (entry.get("file"), entry.get("command"))
             if key in seen:
                 continue
             seen.add(key)
             unique.append(entry)
+
+        if not unique:
+            existing = _load_existing_entries(out_path)
+            if existing:
+                print(
+                    f"[compdb] no entries captured in this run; preserving existing {out_path} "
+                    f"({len(existing)} entries)"
+                )
+            else:
+                print(
+                    f"[compdb] no entries captured in this run; not writing empty database to {out_path}"
+                )
+            return None
 
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as handle:

@@ -1,11 +1,18 @@
 #pragma once
 
+#include <functional>
 #include <string>
+#include <vector>
 
-#include "smoke/scenario/scenario_model.h"
+#include "smoke/scenario/scenario_harness.h"
 
 namespace cambang {
 
-bool load_scenario(const std::string& name, Scenario& out);
+struct ScenarioDefinition {
+  std::string name;
+  std::function<int()> run;
+};
+
+std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind);
 
 } // namespace cambang
