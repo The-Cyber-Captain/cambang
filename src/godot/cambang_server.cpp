@@ -82,6 +82,18 @@ void CamBANGServer::start() {
   has_latest_export_ = false;
   has_godot_counters_ = false;
 
+  // Begin a new boundary session and reject any prior-generation late publishes
+  // until the first snapshot from the next expected generation is observed.
+  active_session_id_ = ++session_counter_;
+  if (has_last_completed_gen_) {
+    accepted_min_gen_ = last_completed_gen_ + 1;
+    enforce_min_gen_gate_ = true;
+  } else {
+    accepted_min_gen_ = 0;
+    enforce_min_gen_gate_ = false;
+  }
+  last_seen_published_seq_ = runtime_.published_seq();
+
   // Defensive re-check: requested mode must be supported in this build.
   {
     ProviderResult cap = ProviderBroker::check_mode_supported_in_build(provider_mode_requested_);
@@ -113,6 +125,11 @@ void CamBANGServer::stop() {
   }
   runtime_.stop();
 
+  if (has_godot_counters_) {
+    has_last_completed_gen_ = true;
+    last_completed_gen_ = godot_gen_;
+  }
+
   // Enforce documented NIL pre-baseline behaviour across restart boundaries.
   latest_.reset();
   latest_export_.clear();
@@ -120,6 +137,8 @@ void CamBANGServer::stop() {
   has_godot_counters_ = false;
   snapshot_buffer_.clear();
   last_seen_published_seq_ = runtime_.published_seq();
+  active_session_id_ = 0;
+  enforce_min_gen_gate_ = false;
 
   // Allow a fresh "busy" log once per live session.
   provider_mode_busy_logged_ = false;
@@ -206,6 +225,18 @@ void CamBANGServer::_on_godot_tick(double delta) {
     return;
   }
   last_seen_published_seq_ = published_seq;
+
+  if (active_session_id_ == 0) {
+    return;
+  }
+
+  if (enforce_min_gen_gate_) {
+    if (snap->gen < accepted_min_gen_) {
+      // Late prior-generation publication after stop/start boundary; ignore.
+      return;
+    }
+    enforce_min_gen_gate_ = false;
+  }
 
   // Establish / reset tick-bounded counters on new gen.
   // gen is defined from the Godot-facing perspective but still aligns with
