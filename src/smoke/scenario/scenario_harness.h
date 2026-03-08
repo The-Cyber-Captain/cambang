@@ -46,12 +46,30 @@ struct ObservedSnapshot {
 
 class SnapshotExpectation final {
 public:
-  SnapshotExpectation& is_nil(bool value) { is_nil_ = value; return *this; }
-  SnapshotExpectation& gen(uint64_t value) { gen_ = value; return *this; }
-  SnapshotExpectation& version(uint64_t value) { version_ = value; return *this; }
-  SnapshotExpectation& topology_version(uint64_t value) { topology_version_ = value; return *this; }
-  SnapshotExpectation& device_count(size_t value) { device_count_ = value; return *this; }
-  SnapshotExpectation& stream_count(size_t value) { stream_count_ = value; return *this; }
+  SnapshotExpectation& is_nil(bool value) {
+    is_nil_ = value;
+    return *this;
+  }
+  SnapshotExpectation& gen(uint64_t value) {
+    gen_ = value;
+    return *this;
+  }
+  SnapshotExpectation& version(uint64_t value) {
+    version_ = value;
+    return *this;
+  }
+  SnapshotExpectation& topology_version(uint64_t value) {
+    topology_version_ = value;
+    return *this;
+  }
+  SnapshotExpectation& device_count(size_t value) {
+    device_count_ = value;
+    return *this;
+  }
+  SnapshotExpectation& stream_count(size_t value) {
+    stream_count_ = value;
+    return *this;
+  }
 
   bool matches(const ObservedSnapshot& observed, std::string& error) const {
     std::ostringstream oss;
@@ -108,8 +126,6 @@ public:
     godot_version_ = 0;
     godot_topology_version_ = 0;
     last_emitted_topology_sig_ = 0;
-    // New Godot sessions begin NIL until the next observation tick, even if
-    // core already completed the baseline publish before that first tick.
     last_seen_published_seq_ = (current_published_seq > 0) ? (current_published_seq - 1) : 0;
   }
 
@@ -168,15 +184,16 @@ public:
   static constexpr uint64_t kDeviceId = 100;
   static constexpr uint64_t kStreamId = 200;
   static constexpr uint64_t kRootId = 900;
+  static constexpr uint64_t kDeviceBId = 101;
+  static constexpr uint64_t kStreamBId = 201;
+  static constexpr uint64_t kRootBId = 901;
 
   explicit ScenarioHarness(ScenarioProviderKind provider_kind = ScenarioProviderKind::Synthetic)
       : provider_kind_(provider_kind) {
     runtime_.set_snapshot_publisher(&snapshot_buffer_);
   }
 
-  ~ScenarioHarness() {
-    stop_runtime();
-  }
+  ~ScenarioHarness() { stop_runtime(); }
 
   ScenarioProviderKind provider_kind() const noexcept { return provider_kind_; }
 
@@ -203,7 +220,7 @@ public:
     }
 
     runtime_.attach_provider(provider_.get());
-    if (!select_endpoint_(error)) {
+    if (!select_endpoints_(error)) {
       runtime_.attach_provider(nullptr);
       (void)provider_->shutdown();
       provider_.reset();
@@ -225,13 +242,19 @@ public:
       runtime_.stop();
     }
     snapshot_buffer_.clear();
-    endpoint_hardware_id_.clear();
+    endpoint_hardware_ids_.clear();
     synthetic_frame_period_ns_ = 0;
     boundary_.reset(runtime_.published_seq());
   }
 
-  bool wait_for_core_publish_count(uint64_t min_count, std::string& error, int max_iters = 500, int sleep_ms = 5) {
-    return wait_until([&]() { return runtime_.published_seq() >= min_count; }, error, max_iters, sleep_ms,
+  bool wait_for_core_publish_count(uint64_t min_count,
+                                   std::string& error,
+                                   int max_iters = 500,
+                                   int sleep_ms = 5) {
+    return wait_until([&]() { return runtime_.published_seq() >= min_count; },
+                      error,
+                      max_iters,
+                      sleep_ms,
                       "timed out waiting for core publish count");
   }
 
@@ -246,39 +269,58 @@ public:
     }, error, max_iters, sleep_ms, timeout_msg);
   }
 
-  bool open_device(std::string& error) {
+  bool open_device(std::string& error) { return open_device_id(kDeviceId, 0, kRootId, error); }
+
+  bool open_device_id(uint64_t device_id, size_t endpoint_index, uint64_t root_id, std::string& error) {
     if (!provider_) {
       error = "provider not attached";
       return false;
     }
-    const ProviderResult r = provider_->open_device(endpoint_hardware_id_, kDeviceId, kRootId);
+    if (endpoint_index >= endpoint_hardware_ids_.size()) {
+      error = "endpoint index out of range";
+      return false;
+    }
+    const ProviderResult r = provider_->open_device(endpoint_hardware_ids_[endpoint_index], device_id, root_id);
     if (!r.ok()) {
       error = "open_device failed";
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return s.devices.size() == 1;
+      return has_device(s, device_id);
     }, error, 500, 5, "timed out waiting for device open publish");
   }
 
-  bool close_device(std::string& error) {
+  bool close_device(std::string& error) { return close_device_id(kDeviceId, error); }
+
+  bool close_device_id(uint64_t device_id, std::string& error) {
     if (!provider_) {
       error = "provider not attached";
       return false;
     }
-    const ProviderResult r = provider_->close_device(kDeviceId);
+    const ProviderResult r = provider_->close_device(device_id);
     if (!r.ok()) {
       error = "close_device failed";
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return s.devices.empty();
+      return !has_device(s, device_id);
     }, error, 500, 5, "timed out waiting for device close publish");
   }
 
+  ProviderResult close_device_result(uint64_t device_id) {
+    if (!provider_) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    return provider_->close_device(device_id);
+  }
+
   bool create_stream(std::string& error, uint64_t profile_version = 1) {
+    return create_stream_id(kStreamId, kDeviceId, profile_version, error);
+  }
+
+  bool create_stream_id(uint64_t stream_id, uint64_t device_id, uint64_t profile_version, std::string& error) {
     const uint64_t before = runtime_.published_seq();
-    const auto r = runtime_.try_create_stream(kStreamId, kDeviceId, StreamIntent::PREVIEW, nullptr, nullptr, profile_version);
+    const auto r = runtime_.try_create_stream(stream_id, device_id, StreamIntent::PREVIEW, nullptr, nullptr, profile_version);
     if (r != TryCreateStreamStatus::OK) {
       error = "try_create_stream failed";
       return false;
@@ -288,13 +330,15 @@ public:
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return s.streams.size() == 1;
+      return has_stream(s, stream_id);
     }, error, 500, 5, "timed out waiting for stream create publish");
   }
 
-  bool start_stream(std::string& error) {
+  bool start_stream(std::string& error) { return start_stream_id(kStreamId, error); }
+
+  bool start_stream_id(uint64_t stream_id, std::string& error) {
     const uint64_t before = runtime_.published_seq();
-    const auto r = runtime_.try_start_stream(kStreamId);
+    const auto r = runtime_.try_start_stream(stream_id);
     if (r != TryStartStreamStatus::OK) {
       error = "try_start_stream failed";
       return false;
@@ -304,13 +348,16 @@ public:
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return s.streams.size() == 1 && !s.streams.empty() && s.streams[0].mode == CBStreamMode::FLOWING;
+      const auto* stream = find_stream(s, stream_id);
+      return stream && stream->mode == CBStreamMode::FLOWING;
     }, error, 500, 5, "timed out waiting for stream start publish");
   }
 
-  bool stop_stream(std::string& error) {
+  bool stop_stream(std::string& error) { return stop_stream_id(kStreamId, error); }
+
+  bool stop_stream_id(uint64_t stream_id, std::string& error) {
     const uint64_t before = runtime_.published_seq();
-    const auto r = runtime_.try_stop_stream(kStreamId);
+    const auto r = runtime_.try_stop_stream(stream_id);
     if (r != TryStopStreamStatus::OK) {
       error = "try_stop_stream failed";
       return false;
@@ -320,13 +367,16 @@ public:
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return s.streams.size() == 1 && !s.streams.empty() && s.streams[0].mode == CBStreamMode::STOPPED;
+      const auto* stream = find_stream(s, stream_id);
+      return stream && stream->mode == CBStreamMode::STOPPED;
     }, error, 500, 5, "timed out waiting for stream stop publish");
   }
 
-  bool destroy_stream(std::string& error) {
+  bool destroy_stream(std::string& error) { return destroy_stream_id(kStreamId, error); }
+
+  bool destroy_stream_id(uint64_t stream_id, std::string& error) {
     const uint64_t before = runtime_.published_seq();
-    const auto r = runtime_.try_destroy_stream(kStreamId);
+    const auto r = runtime_.try_destroy_stream(stream_id);
     if (r != TryDestroyStreamStatus::OK) {
       error = "try_destroy_stream failed";
       return false;
@@ -336,11 +386,13 @@ public:
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return s.streams.empty();
+      return !has_stream(s, stream_id);
     }, error, 500, 5, "timed out waiting for stream destroy publish");
   }
 
-  bool emit_frame(std::string& error) {
+  bool emit_frame(std::string& error) { return emit_frame_for_stream(kStreamId, error); }
+
+  bool emit_frame_for_stream(uint64_t stream_id, std::string& error) {
     const uint64_t before = runtime_.published_seq();
 
     switch (provider_kind_) {
@@ -359,7 +411,7 @@ public:
           error = "stub provider cast failed";
           return false;
         }
-        stub->emit_test_frames(kStreamId, 1);
+        stub->emit_test_frames(stream_id, 1);
         break;
       }
     }
@@ -369,14 +421,44 @@ public:
       return false;
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      return !s.streams.empty() && s.streams[0].frames_received >= 1;
+      const auto* stream = find_stream(s, stream_id);
+      return stream && stream->frames_received >= 1;
     }, error, 500, 5, "timed out waiting for frame publish");
   }
 
+  bool request_publish_only(std::string& error) {
+    const uint64_t before = runtime_.published_seq();
+    runtime_.request_publish();
+    return wait_for_core_publish_count(before + 1, error, 500, 5);
+  }
+
+  bool inject_provider_stream_stop(uint64_t stream_id, ProviderError error_code, std::string& error) {
+    runtime_.provider_callbacks()->on_stream_stopped(stream_id, error_code);
+    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+      const auto* stream = find_stream(s, stream_id);
+      return stream && stream->mode == CBStreamMode::STOPPED;
+    }, error, 500, 5, "timed out waiting for provider stream stop publish");
+  }
+
+  bool inject_provider_stream_destroyed(uint64_t stream_id, std::string& error) {
+    runtime_.provider_callbacks()->on_stream_destroyed(stream_id);
+    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+      return !has_stream(s, stream_id);
+    }, error, 500, 5, "timed out waiting for provider stream destroy publish");
+  }
+
+  bool inject_provider_device_closed(uint64_t device_id, std::string& error) {
+    runtime_.provider_callbacks()->on_device_closed(device_id);
+    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+      return !has_device(s, device_id);
+    }, error, 500, 5, "timed out waiting for provider device close publish");
+  }
+
+  void inject_provider_stream_error(uint64_t stream_id, ProviderError error_code) {
+    runtime_.provider_callbacks()->on_stream_error(stream_id, error_code);
+  }
+
   bool perform_coalesced_burst(std::string& error) {
-    // Godot-facing publication is tick-bounded. For this verifier we only need
-    // multiple runtime changes to occur before the next observation tick; the
-    // core is free to publish intermediate states internally.
     if (!open_device(error)) {
       return false;
     }
@@ -397,6 +479,32 @@ public:
   CoreRuntime& runtime() noexcept { return runtime_; }
   StateSnapshotBuffer& snapshot_buffer() noexcept { return snapshot_buffer_; }
 
+  static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& snap, uint64_t device_id) {
+    for (const auto& device : snap.devices) {
+      if (device.instance_id == device_id) {
+        return &device;
+      }
+    }
+    return nullptr;
+  }
+
+  static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& snap, uint64_t stream_id) {
+    for (const auto& stream : snap.streams) {
+      if (stream.stream_id == stream_id) {
+        return &stream;
+      }
+    }
+    return nullptr;
+  }
+
+  static bool has_device(const CamBANGStateSnapshot& snap, uint64_t device_id) {
+    return find_device(snap, device_id) != nullptr;
+  }
+
+  static bool has_stream(const CamBANGStateSnapshot& snap, uint64_t stream_id) {
+    return find_stream(snap, stream_id) != nullptr;
+  }
+
 private:
   std::unique_ptr<ICameraProvider> make_provider_() {
     if (provider_kind_ == ScenarioProviderKind::Stub) {
@@ -406,7 +514,7 @@ private:
     SyntheticProviderConfig cfg{};
     cfg.synthetic_role = SyntheticRole::Timeline;
     cfg.timing_driver = TimingDriver::VirtualTime;
-    cfg.endpoint_count = 1;
+    cfg.endpoint_count = 2;
     cfg.nominal.width = 320;
     cfg.nominal.height = 180;
     cfg.nominal.fps_num = 30;
@@ -416,13 +524,18 @@ private:
     return std::make_unique<SyntheticProvider>(cfg);
   }
 
-  bool select_endpoint_(std::string& error) {
+  bool select_endpoints_(std::string& error) {
     std::vector<CameraEndpoint> endpoints;
     if (!provider_->enumerate_endpoints(endpoints).ok() || endpoints.empty()) {
       error = "enumerate_endpoints failed";
       return false;
     }
-    endpoint_hardware_id_ = endpoints.front().hardware_id;
+
+    endpoint_hardware_ids_.clear();
+    endpoint_hardware_ids_.reserve(endpoints.size());
+    for (const auto& endpoint : endpoints) {
+      endpoint_hardware_ids_.push_back(endpoint.hardware_id);
+    }
 
     if (provider_kind_ == ScenarioProviderKind::Synthetic) {
       auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get());
@@ -461,7 +574,7 @@ private:
   CoreRuntime runtime_;
   StateSnapshotBuffer snapshot_buffer_;
   std::unique_ptr<ICameraProvider> provider_;
-  std::string endpoint_hardware_id_;
+  std::vector<std::string> endpoint_hardware_ids_;
   uint64_t synthetic_frame_period_ns_ = 0;
   ObservationBoundary boundary_;
 };

@@ -515,6 +515,117 @@ ProviderResult SyntheticProvider::apply_imaging_spec_patch(
   return ProviderResult::success();
 }
 
+
+
+void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
+                                               ProviderError stop_error,
+                                               bool emit_stop_event) {
+  if (it == streams_.end()) {
+    return;
+  }
+
+  StreamState& s = it->second;
+  if (emit_stop_event && s.started) {
+    strand_.post_stream_stopped(s.req.stream_id, stop_error);
+  }
+  if (s.producing) {
+    emit_native_destroy_(s.frame_producer_native_id);
+    s.producing = false;
+    s.frame_producer_native_id = 0;
+  }
+  s.started = false;
+  strand_.post_stream_destroyed(s.req.stream_id);
+  emit_native_destroy_(s.native_id);
+  streams_.erase(it);
+}
+
+void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::iterator it) {
+  if (it == devices_.end()) {
+    return;
+  }
+  it->second.open = false;
+  strand_.post_device_closed(it->second.device_instance_id);
+  emit_native_destroy_(it->second.native_id);
+  devices_.erase(it);
+}
+
+ProviderResult SyntheticProvider::disconnect_device_for_test(uint64_t device_instance_id) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto dit = devices_.find(device_instance_id);
+  if (dit == devices_.end() || !dit->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  std::vector<uint64_t> stream_ids;
+  for (const auto& kv : streams_) {
+    if (kv.second.created && kv.second.req.device_instance_id == device_instance_id) {
+      stream_ids.push_back(kv.first);
+    }
+  }
+  for (uint64_t sid : stream_ids) {
+    auto it = streams_.find(sid);
+    if (it != streams_.end()) {
+      destroy_stream_storage_(it, ProviderError::ERR_PROVIDER_FAILED, true);
+    }
+  }
+
+  close_device_storage_(dit);
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::force_close_device_for_test(uint64_t device_instance_id) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto dit = devices_.find(device_instance_id);
+  if (dit == devices_.end() || !dit->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  std::vector<uint64_t> stream_ids;
+  for (const auto& kv : streams_) {
+    if (kv.second.created && kv.second.req.device_instance_id == device_instance_id) {
+      stream_ids.push_back(kv.first);
+    }
+  }
+  for (uint64_t sid : stream_ids) {
+    auto it = streams_.find(sid);
+    if (it != streams_.end()) {
+      destroy_stream_storage_(it, ProviderError::OK, true);
+    }
+  }
+
+  close_device_storage_(dit);
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::fail_stream_for_test(uint64_t stream_id, ProviderError error) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (error == ProviderError::OK) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end() || !it->second.created) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  strand_.post_stream_error(stream_id, error);
+  if (it->second.started) {
+    strand_.post_stream_stopped(stream_id, error);
+  }
+  if (it->second.producing) {
+    emit_native_destroy_(it->second.frame_producer_native_id);
+    it->second.producing = false;
+    it->second.frame_producer_native_id = 0;
+  }
+  it->second.started = false;
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::shutdown() {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -529,10 +640,10 @@ ProviderResult SyntheticProvider::shutdown() {
     }
   }
   while (!streams_.empty()) {
-    (void)destroy_stream(streams_.begin()->first);
+    destroy_stream_storage_(streams_.begin(), ProviderError::OK, false);
   }
   while (!devices_.empty()) {
-    (void)close_device(devices_.begin()->first);
+    close_device_storage_(devices_.begin());
   }
 
   // Clear any pending timeline events.
