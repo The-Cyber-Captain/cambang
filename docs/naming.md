@@ -16,6 +16,15 @@ latest published state snapshot.
 CamBANGServer is Engine singleton; explicit start()/stop(); get_state_snapshot() returns NIL before first publish;
 state_published(gen, version, topology_version) begins at version/topology_version 0/0 for each new gen.
 
+`get_state_snapshot()` refers to the latest published snapshot of the currently
+active generation. After a completed `stop()`, no active generation snapshot is
+exposed and the getter returns `NIL` until the first publish of the next
+generation.
+
+Generation exists to disambiguate identity and lifecycle across restart
+boundaries; it does not imply that prior-generation live state remains visible
+through the current generation's parameter-less snapshot API.
+
 ------------------------------------------------------------------------
 
 ### `CamBANGRig`

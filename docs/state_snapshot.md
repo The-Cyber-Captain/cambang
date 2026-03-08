@@ -127,6 +127,28 @@ eligible tick.
   corresponding to that emission (self-consistent with the signal arguments).
 - Outside the handler, it returns the most recently latched snapshot (latest
   observable truth).
+- 
+### 1.3.z Stop/start boundary contract
+
+`CamBANGServer.get_state_snapshot()` exposes the latest published snapshot for
+the currently active generation.
+
+After a completed `CamBANGServer.stop()`:
+
+- there is no active published snapshot
+- `CamBANGServer.get_state_snapshot()` returns `NIL`
+
+After a subsequent successful `CamBANGServer.start()`:
+
+- a new `gen` is created only after the prior generation has completed stop/teardown
+- `CamBANGServer.get_state_snapshot()` remains `NIL` until the first published
+  baseline snapshot of the new generation
+- no stale snapshot from the prior generation may remain visible through the
+  parameter-less `get_state_snapshot()` API
+
+Teardown truth for the previous generation must be exposed by that generation's
+final published snapshot(s), not by leaking prior-generation state into the next
+generation's pre-baseline window.
 
 ### 1.4 Schema versioning
 
@@ -421,6 +443,15 @@ running session after a complete stop/teardown.
 but aligns 1:1 with core generations because `start()` is the authoritative
 boundary operation.
 
+A generation is not considered closed merely because stop has been requested.
+A new generation must not begin until deterministic shutdown of the prior
+generation has completed.
+
+For this purpose, "complete stop/teardown" means that no prior-generation live
+runtime state remains active at the Godot-facing boundary. Retained diagnostic
+records for already-destroyed objects do not by themselves keep the prior
+generation open.
+
 ### 8.1 `version`
 
 `version` increments on any **tick-bounded observable** snapshot publish
@@ -454,6 +485,20 @@ The baseline is not considered a "change from -1"; it is the first structural st
 
 -   `DESTROYED` native object records are retained for a fixed retention
     window to support diagnostics.
+- Destroyed-record retention is a diagnostic facility, not a reason to keep the
+  active generation open indefinitely. Retained `DESTROYED` records may remain
+  available within the prior generation's final published truth, but they must not
+  cause prior-generation state to appear as the live baseline of a later
+  generation.
+
 -   A retirement sweep removes expired retained records.
--   **If the sweep removes any records, a new snapshot must be
-    published.**
+  
+- **If the sweep removes any records while the generation is still active,
+a new snapshot must be published.**
+
+A generation must not be considered fully stopped/closed until any final
+retention-sweep-driven snapshot changes required for that generation have
+been published.
+
+After completed stop/teardown, the Godot-facing `get_state_snapshot()`
+returns `NIL` until the first publish of the next generation.
