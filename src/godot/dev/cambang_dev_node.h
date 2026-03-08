@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/variant/string.hpp>
 
 #include "imaging/api/provider_contract_datatypes.h"
 
@@ -30,6 +31,10 @@ public:
 
     // Dev-only read access for display nodes.
     const LatestFrameMailbox* get_latest_frame_mailbox() const;
+
+    // Dev-only scenario trigger.
+    // Returns true when the named scenario trigger was accepted.
+    bool start_scenario(const godot::String& name);
 
 protected:
     static void _bind_methods();

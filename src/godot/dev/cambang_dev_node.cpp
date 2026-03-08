@@ -15,6 +15,7 @@
 #include <cstdlib>
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/engine.hpp>
 
 using godot::UtilityFunctions;
@@ -30,7 +31,93 @@ CamBANGDevNode::~CamBANGDevNode() {
 }
 
 void CamBANGDevNode::_bind_methods() {
-    // Temporary scaffolding: no exposed methods/properties.
+    godot::ClassDB::bind_method(godot::D_METHOD("start_scenario", "name"), &CamBANGDevNode::start_scenario);
+}
+
+bool CamBANGDevNode::start_scenario(const godot::String& name) {
+    if (!runtime_ || !runtime_->is_running()) {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario requires a running runtime.");
+        return false;
+    }
+    if (!provider_) {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario requires a running provider.");
+        return false;
+    }
+
+    const godot::String normalized = name.strip_edges().to_lower();
+    std::string error;
+
+    auto open_default_device = [&]() -> bool {
+        std::vector<CameraEndpoint> eps;
+        ProviderResult pr = provider_->enumerate_endpoints(eps);
+        if (!pr.ok() || eps.empty()) {
+            error = "enumerate_endpoints failed";
+            return false;
+        }
+        pr = provider_->open_device(eps[0].hardware_id, device_instance_id_, root_id_);
+        if (!pr.ok()) {
+            error = "open_device failed";
+            return false;
+        }
+        return true;
+    };
+
+    if (normalized == "stream_lifecycle_versions") {
+        stop_provider_();
+        if (!open_default_device()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions: ", error.c_str());
+            return false;
+        }
+        StreamTemplate tmpl = provider_->stream_template();
+        effective_profile_ = tmpl.profile;
+        effective_picture_ = tmpl.picture;
+        effective_profile_version_ = 1;
+        bringup_state_ = BringUpState::CreatePending;
+        bringup_ticks_ = 0;
+        tick_bringup_();
+        UtilityFunctions::print("[CamBANGDevNode] scenario started: stream_lifecycle_versions");
+        return true;
+    }
+
+    if (normalized == "topology_change_versions") {
+        stop_provider_();
+        if (!open_default_device()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(open): ", error.c_str());
+            return false;
+        }
+        if (runtime_->try_create_stream(stream_id_, device_instance_id_, StreamIntent::PREVIEW, nullptr, nullptr, 1) == TryCreateStreamStatus::InvalidArgument) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(create) invalid argument");
+            return false;
+        }
+        (void)runtime_->try_destroy_stream(stream_id_);
+        (void)provider_->close_device(device_instance_id_);
+        UtilityFunctions::print("[CamBANGDevNode] scenario started: topology_change_versions");
+        return true;
+    }
+
+    if (normalized == "publication_coalescing") {
+        stop_provider_();
+        if (!open_default_device()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing(open): ", error.c_str());
+            return false;
+        }
+        StreamTemplate tmpl = provider_->stream_template();
+        effective_profile_ = tmpl.profile;
+        effective_picture_ = tmpl.picture;
+        effective_profile_version_ = 1;
+
+        (void)runtime_->try_create_stream(stream_id_, device_instance_id_, StreamIntent::PREVIEW, &effective_profile_, nullptr, effective_profile_version_);
+        (void)runtime_->try_start_stream(stream_id_);
+        (void)runtime_->try_stop_stream(stream_id_);
+        (void)runtime_->try_destroy_stream(stream_id_);
+
+        bringup_state_ = BringUpState::Idle;
+        UtilityFunctions::print("[CamBANGDevNode] scenario started: publication_coalescing");
+        return true;
+    }
+
+    UtilityFunctions::printerr("[CamBANGDevNode] Unknown scenario: ", name);
+    return false;
 }
 
 void CamBANGDevNode::_enter_tree() {
