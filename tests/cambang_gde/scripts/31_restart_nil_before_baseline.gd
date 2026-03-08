@@ -2,10 +2,16 @@ extends Node
 
 const TIMEOUT_MS := 3000
 
+const PHASE_WAIT_INITIAL_PUBLISH := 0
+const PHASE_RESTART_DEFERRED_PENDING := 1
+const PHASE_WAIT_POST_RESTART_PUBLISH := 2
+const PHASE_DONE := 3
+
+var _phase := PHASE_WAIT_INITIAL_PUBLISH
 var _done := false
-var _saw_initial_publish := false
-var _saw_restart_publish := false
+var _quit_requested := false
 var _timeout_timer: Timer
+var _initial_gen := -1
 
 
 func _ready() -> void:
@@ -32,33 +38,56 @@ func _exit_tree() -> void:
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
+	if not _done:
+		print("FAIL: scene exited before reaching terminal verification state")
+
 
 func _on_timeout() -> void:
 	_finish_fail("FAIL: timed out waiting for restart NIL-before-baseline verification")
 
 
-func _on_state_published(_gen: int, _version: int, _topology_version: int) -> void:
+func _on_state_published(gen: int, _version: int, _topology_version: int) -> void:
 	if _done:
 		return
 
-	if not _saw_initial_publish:
-		_saw_initial_publish = true
-		call_deferred("_perform_restart")
-		return
+	match _phase:
+		PHASE_WAIT_INITIAL_PUBLISH:
+			var initial_snapshot = CamBANGServer.get_state_snapshot()
+			if initial_snapshot == null:
+				_finish_fail("FAIL: expected non-NIL snapshot after initial baseline publish")
+				return
 
-	if not _saw_restart_publish:
-		_saw_restart_publish = true
+			_initial_gen = gen
+			_phase = PHASE_RESTART_DEFERRED_PENDING
+			call_deferred("_perform_restart")
 
-		var s = CamBANGServer.get_state_snapshot()
-		if s == null:
-			_finish_fail("FAIL: expected non-NIL snapshot after restart baseline publish")
+		PHASE_RESTART_DEFERRED_PENDING:
+			_finish_fail("FAIL: received state_published before deferred restart completed")
+
+		PHASE_WAIT_POST_RESTART_PUBLISH:
+			var restart_snapshot = CamBANGServer.get_state_snapshot()
+			if restart_snapshot == null:
+				_finish_fail("FAIL: expected non-NIL snapshot after restart baseline publish")
+				return
+
+			if gen != _initial_gen + 1:
+				_finish_fail(
+					"FAIL: expected post-restart generation %d, got %d" % [_initial_gen + 1, gen]
+				)
+				return
+
+			_finish_ok("OK: restart NIL-before-baseline verified")
+
+		PHASE_DONE:
 			return
-
-		_finish_ok("OK: restart NIL-before-baseline verified")
 
 
 func _perform_restart() -> void:
 	if _done:
+		return
+
+	if _phase != PHASE_RESTART_DEFERRED_PENDING:
+		_finish_fail("FAIL: deferred restart called in unexpected phase")
 		return
 
 	CamBANGServer.stop()
@@ -75,12 +104,15 @@ func _perform_restart() -> void:
 		_finish_fail("FAIL: expected NIL snapshot before first post-restart publish")
 		return
 
+	_phase = PHASE_WAIT_POST_RESTART_PUBLISH
+
 
 func _finish_ok(msg: String) -> void:
 	if _done:
 		return
 
 	_done = true
+	_phase = PHASE_DONE
 	print(msg)
 
 	if _timeout_timer != null and is_instance_valid(_timeout_timer):
@@ -90,7 +122,9 @@ func _finish_ok(msg: String) -> void:
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
 	CamBANGServer.stop()
-	call_deferred("_quit_with_code", 0)
+	if not _quit_requested:
+		_quit_requested = true
+		call_deferred("_quit_next_frame", 0)
 
 
 func _finish_fail(msg: String) -> void:
@@ -98,6 +132,7 @@ func _finish_fail(msg: String) -> void:
 		return
 
 	_done = true
+	_phase = PHASE_DONE
 	push_error(msg)
 	print(msg)
 
@@ -108,8 +143,11 @@ func _finish_fail(msg: String) -> void:
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
 	CamBANGServer.stop()
-	call_deferred("_quit_with_code", 1)
+	if not _quit_requested:
+		_quit_requested = true
+		call_deferred("_quit_next_frame", 1)
 
 
-func _quit_with_code(code: int) -> void:
+func _quit_next_frame(code: int) -> void:
+	await get_tree().process_frame
 	get_tree().quit(code)

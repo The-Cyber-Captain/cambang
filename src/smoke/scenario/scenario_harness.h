@@ -138,11 +138,13 @@ public:
     }
 
     auto snap = buffer.snapshot_copy();
-    last_seen_published_seq_ = published_seq;
     if (!snap) {
+      // Do not consume published_seq yet; retry on a later boundary tick so a
+      // transient visibility gap cannot drop this publish.
       current_ = ObservedSnapshot{};
       return false;
     }
+    last_seen_published_seq_ = published_seq;
 
     if (!has_counters_ || snap->gen != godot_gen_) {
       has_counters_ = true;
