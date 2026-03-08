@@ -123,6 +123,17 @@ private:
   // O(1) "changed since last Godot tick" marker: core publish sequence.
   uint64_t last_seen_published_seq_ = 0;
 
+  // Godot-boundary run/session guard.
+  // - active_session_id_ is non-zero only while a start()-initiated run is active.
+  // - accepted_min_gen_ prevents old-generation late publications from repopulating
+  //   get_state_snapshot() across stop/start boundaries.
+  uint64_t session_counter_ = 0;
+  uint64_t active_session_id_ = 0;
+  bool has_last_completed_gen_ = false;
+  uint64_t last_completed_gen_ = 0;
+  bool enforce_min_gen_gate_ = false;
+  uint64_t accepted_min_gen_ = 0;
+
   void _ensure_tick_connected();
   bool _ensure_provider_attached_and_initialized();
 

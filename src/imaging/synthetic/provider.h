@@ -19,17 +19,6 @@
 
 namespace cambang {
 
-// (No provider-wide pattern switching; picture is stream-scoped.)
-
-// Deterministic synthetic provider.
-//
-// First landing:
-// - nominal role only
-// - virtual_time driver only (frames emitted only via advance(dt_ns))
-//
-// Future work:
-// - real_time driver (single pump thread)
-// - timeline role (scenario executor)
 class SyntheticProvider final : public ICameraProvider {
 public:
   explicit SyntheticProvider(const SyntheticProviderConfig& cfg);
@@ -75,16 +64,18 @@ public:
 
   ProviderResult shutdown() override;
 
-  // Synthetic-only virtual time driver (not part of ICameraProvider).
-  // Emits any due frames.
   void advance(uint64_t dt_ns);
+
+  // Smoke/scenario-only helpers. These preserve the main runtime architecture
+  // while allowing deterministic lifecycle edge cases to be exercised.
+  ProviderResult disconnect_device_for_test(uint64_t device_instance_id);
+  ProviderResult force_close_device_for_test(uint64_t device_instance_id);
+  ProviderResult fail_stream_for_test(uint64_t stream_id, ProviderError error);
 
 private:
   CBProviderStrand strand_;
-  // Timeline event queue (Phase 2 foundation).
   struct TimelineEventCompare {
     bool operator()(const SyntheticScheduledEvent& a, const SyntheticScheduledEvent& b) const noexcept {
-      // Min-heap semantics via priority_queue ("largest" on top).
       if (a.at_ns != b.at_ns) {
         return a.at_ns > b.at_ns;
       }
@@ -122,8 +113,6 @@ private:
       std::vector<std::uint8_t> bytes;
       std::atomic<bool> in_use{false};
     };
-    // Note: BufferSlot contains std::atomic, which is non-movable. Store slots
-    // behind unique_ptr so the pool container can resize/move safely.
     std::vector<std::unique_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
   };
@@ -138,6 +127,11 @@ private:
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
 
+  void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
+                               ProviderError stop_error,
+                               bool emit_stop_event);
+  void close_device_storage_(std::map<uint64_t, DeviceState>::iterator it);
+
 private:
   SyntheticProviderConfig cfg_{};
   IProviderCallbacks* callbacks_ = nullptr;
@@ -146,19 +140,17 @@ private:
 
   SyntheticVirtualClock clock_;
 
-  std::map<uint64_t, DeviceState> devices_; // key: device_instance_id
-  std::map<uint64_t, StreamState> streams_; // key: stream_id
+  std::map<uint64_t, DeviceState> devices_;
+  std::map<uint64_t, StreamState> streams_;
 
   uint64_t provider_native_id_ = 0;
 
-  // Timeline scheduler state.
   uint64_t timeline_seq_ = 0;
   std::priority_queue<SyntheticScheduledEvent,
                       std::vector<SyntheticScheduledEvent>,
                       TimelineEventCompare>
       timeline_q_;
 
-  // Count of invalid preset requests observed at runtime (e.g. bad enum value).
   std::atomic<uint64_t> invalid_preset_requests_{0};
 };
 

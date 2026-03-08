@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
   for (const auto& scenario : scenarios) {
     if (scenario.name == requested) {
       cli::line("scenario_runner ", scenario.name, " --provider=", cambang::scenario_provider_name(provider_kind));
-      std::cout << std::endl;
+      cli::blank();
       return scenario.run();
     }
   }

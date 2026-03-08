@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="cambang_gde"
-run/main_scene="uid://d2bn8rdhyce7q"
+run/main_scene="res://scenes/31_restart_nil_before_baseline.tscn"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
 
