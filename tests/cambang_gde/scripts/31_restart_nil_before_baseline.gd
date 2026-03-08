@@ -9,6 +9,7 @@ const PHASE_DONE := 3
 
 var _phase := PHASE_WAIT_INITIAL_PUBLISH
 var _done := false
+var _quit_requested := false
 var _timeout_timer: Timer
 var _initial_gen := -1
 
@@ -36,6 +37,9 @@ func _exit_tree() -> void:
 
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
+
+	if not _done:
+		print("FAIL: scene exited before reaching terminal verification state")
 
 
 func _on_timeout() -> void:
@@ -118,7 +122,9 @@ func _finish_ok(msg: String) -> void:
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
 	CamBANGServer.stop()
-	call_deferred("_quit_with_code", 0)
+	if not _quit_requested:
+		_quit_requested = true
+		call_deferred("_quit_next_frame", 0)
 
 
 func _finish_fail(msg: String) -> void:
@@ -137,8 +143,11 @@ func _finish_fail(msg: String) -> void:
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
 	CamBANGServer.stop()
-	call_deferred("_quit_with_code", 1)
+	if not _quit_requested:
+		_quit_requested = true
+		call_deferred("_quit_next_frame", 1)
 
 
-func _quit_with_code(code: int) -> void:
+func _quit_next_frame(code: int) -> void:
+	await get_tree().process_frame
 	get_tree().quit(code)
