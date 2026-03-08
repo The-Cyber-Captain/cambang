@@ -293,6 +293,22 @@ if env["smoke"]:
         source=phase3_verify_sources,
     )
 
+    # Deterministic restart boundary verifier (NIL-before-baseline contract).
+    restart_boundary_verify_sources = []
+    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
+    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    restart_boundary_verify_sources += [
+        "src/smoke/restart_boundary_verify.cpp",
+    ]
+    restart_boundary_verify_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "restart_boundary_verify"),
+        source=restart_boundary_verify_sources,
+    )
+
     # Deterministic scenario playback harness.
     scenario_runner_sources = []
     scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
@@ -325,7 +341,7 @@ if env["smoke"]:
         source=provider_verify_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, scenario_runner_prog, provider_verify_prog])
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, scenario_runner_prog, provider_verify_prog, restart_boundary_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     smoke_alias = Alias("smoke", [])
