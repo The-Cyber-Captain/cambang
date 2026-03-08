@@ -219,9 +219,8 @@ void CamBANGServer::_on_godot_tick(double delta) {
   // Something changed since last tick. Latch the latest core snapshot.
   auto snap = snapshot_buffer_.snapshot_copy();
   if (!snap) {
-    // A publish marker advanced but the buffer has no snapshot yet.
-    // This should be extremely rare (publisher ordering), but be defensive.
-    last_seen_published_seq_ = published_seq;
+    // Do not consume published_seq yet; retry next tick so we do not lose this
+    // publish if the marker becomes observable before buffer visibility.
     return;
   }
   last_seen_published_seq_ = published_seq;

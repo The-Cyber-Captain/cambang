@@ -276,13 +276,13 @@ if (dispatcher_.consume_relevant_state_changed()) {
     // Advance per-generation publish counter only after snapshot assembly succeeds.
     ++version_;
 
-    // Core-side publish marker used by the Godot-facing tick bridge to detect
-    // "changed since last tick" in O(1).
-    published_seq_.fetch_add(1, std::memory_order_acq_rel);
-
     if (IStateSnapshotPublisher* pub = snapshot_publisher_.load(std::memory_order_acquire)) {
       pub->publish(std::move(shared));
     }
+
+    // published_seq_ must not become visible before the corresponding snapshot
+    // is visible to boundary consumers.
+    published_seq_.fetch_add(1, std::memory_order_acq_rel);
   }
 
   // 5) Shutdown choreography (§10).
