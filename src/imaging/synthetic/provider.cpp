@@ -440,16 +440,6 @@ ProviderResult SyntheticProvider::start_stream(
   s.frame_index = 0;
   // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
-  // Timeline role should emit at most one frame for a single frame-period
-  // virtual-time advance. With zero warmup, scheduling at `now` causes the
-  // first advance(period) to consume two due events (`now` and `now+period`).
-  // Anchor the first due event to the next frame boundary instead.
-  if (cfg_.synthetic_role == SyntheticRole::Timeline && cfg_.nominal.start_stream_warmup_ns == 0) {
-    const uint64_t period = fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
-    if (period != 0) {
-      s.next_due_ns = clock_.now_ns() + period;
-    }
-  }
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Timeline role: drive emission via explicit scheduled events.
     timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, stream_id);
