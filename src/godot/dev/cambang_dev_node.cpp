@@ -40,43 +40,39 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
         return false;
     }
     const godot::String normalized = name.strip_edges().to_lower();
+    ActiveScenario requested = ActiveScenario::None;
 
     if (normalized == "stream_lifecycle_versions") {
-        if (bringup_state_ != BringUpState::Running) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions dispatch failed: provider stream is not running.");
-            return false;
-        }
-        active_scenario_ = ActiveScenario::StreamLifecycleVersions;
-        scenario_tick_ = 0;
-        UtilityFunctions::print("[CamBANGDevNode] scenario started: stream_lifecycle_versions");
-        return true;
+        requested = ActiveScenario::StreamLifecycleVersions;
+    } else if (normalized == "topology_change_versions") {
+        requested = ActiveScenario::None;
+    } else if (normalized == "publication_coalescing") {
+        requested = ActiveScenario::PublicationCoalescing;
+    } else {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario resolution failed: unknown scenario name '", name, "'.");
+        return false;
     }
 
     if (normalized == "topology_change_versions") {
-        if (bringup_state_ != BringUpState::Running) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions dispatch failed: provider stream is not running.");
-            return false;
-        }
         // Existing scenario name accepted for dev glue completeness.
-        // Do not route this path through endpoint/device open in start_scenario.
-        active_scenario_ = ActiveScenario::None;
         UtilityFunctions::print("[CamBANGDevNode] scenario started: topology_change_versions");
         return true;
     }
 
-    if (normalized == "publication_coalescing") {
-        if (bringup_state_ != BringUpState::Running) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing dispatch failed: provider stream is not running.");
-            return false;
-        }
-        active_scenario_ = ActiveScenario::PublicationCoalescing;
+    if (bringup_state_ != BringUpState::Running) {
+        pending_scenario_ = requested;
         scenario_tick_ = 0;
-        UtilityFunctions::print("[CamBANGDevNode] scenario started: publication_coalescing");
+        UtilityFunctions::print("[CamBANGDevNode] scenario queued: ", normalized, " (waiting for provider stream Running)");
         return true;
     }
 
-    UtilityFunctions::printerr("[CamBANGDevNode] start_scenario resolution failed: unknown scenario name '", name, "'.");
-    return false;
+    if (!dispatch_scenario_now_(requested)) {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario ", normalized, " dispatch failed: provider stream is not running.");
+        return false;
+    }
+
+    UtilityFunctions::print("[CamBANGDevNode] scenario started: ", normalized);
+    return true;
 }
 
 void CamBANGDevNode::_enter_tree() {
@@ -127,6 +123,12 @@ void CamBANGDevNode::_process(double delta) {
     // asynchronously across ticks.
     if (bringup_state_ != BringUpState::Idle && bringup_state_ != BringUpState::Running) {
         tick_bringup_();
+    }
+
+    if (bringup_state_ == BringUpState::Running && pending_scenario_ != ActiveScenario::None) {
+        if (dispatch_scenario_now_(pending_scenario_)) {
+            pending_scenario_ = ActiveScenario::None;
+        }
     }
 
     if (bringup_state_ == BringUpState::Running) {
@@ -348,6 +350,7 @@ void CamBANGDevNode::stop_provider_() {
     bringup_state_ = BringUpState::Idle;
     bringup_ticks_ = 0;
     active_scenario_ = ActiveScenario::None;
+    pending_scenario_ = ActiveScenario::None;
     scenario_tick_ = 0;
 }
 
@@ -383,6 +386,9 @@ void CamBANGDevNode::tick_bringup_() {
         const auto ss = runtime_->try_start_stream(stream_id_);
         if (ss == TryStartStreamStatus::OK) {
             bringup_state_ = BringUpState::Running;
+            if (pending_scenario_ != ActiveScenario::None && dispatch_scenario_now_(pending_scenario_)) {
+                pending_scenario_ = ActiveScenario::None;
+            }
             return;
         }
         // Busy => retry next tick.
@@ -390,6 +396,18 @@ void CamBANGDevNode::tick_bringup_() {
         // on the core thread yet; retry.
         return;
     }
+}
+
+bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
+    if (bringup_state_ != BringUpState::Running) {
+        return false;
+    }
+    if (scenario == ActiveScenario::None) {
+        return true;
+    }
+    active_scenario_ = scenario;
+    scenario_tick_ = 0;
+    return true;
 }
 
 void CamBANGDevNode::tick_active_scenario_() {
@@ -453,6 +471,9 @@ void CamBANGDevNode::stop_runtime_() {
         provider_ = nullptr;
         started_ = false;
         last_running_ = false;
+        active_scenario_ = ActiveScenario::None;
+        pending_scenario_ = ActiveScenario::None;
+        scenario_tick_ = 0;
         return;
     }
 

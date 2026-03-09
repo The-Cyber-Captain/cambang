@@ -88,6 +88,7 @@ private:
         PublicationCoalescing,
     };
     ActiveScenario active_scenario_ = ActiveScenario::None;
+    ActiveScenario pending_scenario_ = ActiveScenario::None;
     uint32_t scenario_tick_ = 0;
     uint32_t scenario_seed_ = 1;
 
@@ -102,6 +103,7 @@ private:
     // Bring-up continues asynchronously (core commands are non-blocking).
     void tick_bringup_();
     void tick_active_scenario_();
+    bool dispatch_scenario_now_(ActiveScenario scenario);
 };
 
 } // namespace cambang
