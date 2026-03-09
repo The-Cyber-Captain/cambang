@@ -63,7 +63,42 @@ Maintainer tools fall into three broad categories.
   `pattern_render_bench`          Pattern renderer performance         Benchmark
                                   benchmark                            
   --------------------------------------------------------------------------------------------
+------------------------------------------------------------------------
 
+## Godot Boundary Verification Scenes
+
+In addition to the native CLI validation tools, the repository also
+contains **Godot-side boundary verification scenes**.
+
+These scenes validate the observable contract between:
+
+Core Runtime → Snapshot Publication → CamBANGServer → Godot consumers.
+
+They are development diagnostics and are **not product UI**.
+
+Location:
+docs/dev/godot_abuse_scenes.md
+
+
+Primary scenes:
+
+| Scene | Purpose |
+|---|---|
+| `60_restart_boundary_abuse` | Verifies restart NIL-before-baseline behaviour |
+| `61_tick_bounded_coalescing_abuse` | Verifies Godot-visible tick-bounded publication |
+| `62_snapshot_polling_immutability_abuse` | Verifies snapshot immutability and polling safety |
+| `63_snapshot_observer_minimal` | Minimal snapshot observer for diagnostics |
+
+These scenes intentionally use **SyntheticProvider** as the deterministic
+runtime driver even when validating builds configured for other
+providers.
+
+The scenes complement the CLI tools:
+
+| Layer | Validation |
+|---|---|
+| CLI tools | Core invariants, provider contracts |
+| Godot scenes | Godot-facing runtime boundary behaviour |
 ------------------------------------------------------------------------
 
 # Terminology

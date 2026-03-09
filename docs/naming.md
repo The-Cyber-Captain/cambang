@@ -25,6 +25,12 @@ Generation exists to disambiguate identity and lifecycle across restart
 boundaries; it does not imply that prior-generation live state remains visible
 through the current generation's parameter-less snapshot API.
 
+The full behavioural contract for the Godot-facing runtime boundary
+(start semantics, restart generation rules, snapshot visibility, and
+tick-bounded publication) is documented in: docs/architecture/godot_boundary_contract.md
+This document defines the canonical observable behaviour expected by
+Godot consumers.
+
 ------------------------------------------------------------------------
 
 ### `CamBANGRig`

@@ -35,6 +35,16 @@ The snapshot *contract* exposed to Godot is **tick-bounded observable truth**:
   Those intermediate states are **not** part of the Godot-facing contract.
   The Godot boundary coalesces them into a single per-tick observable snapshot.
 
+### Godot Boundary Contract Reference
+
+The observable behaviour of the Godot-facing runtime boundary
+(start/stop semantics, generation baseline publication, snapshot
+immutability, and tick-bounded publication) is consolidated in: docs/architecture/godot_boundary_contract.md
+
+
+That document describes the **external behavioural guarantees** of the
+Godot boundary without exposing internal provider lifecycle phases.
+
 ### 1.2.x Pre-publication state
 
 Before the first publish in a new core generation (`gen`), no snapshot exists.

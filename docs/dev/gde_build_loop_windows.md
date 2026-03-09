@@ -141,3 +141,23 @@ Another instance already live; freeing this node.
 ```
 
 This validates the single-instance guard during scaffolding.
+
+
+------------------------------------------------------------------------
+
+## Running Godot Boundary Abuse Scenes
+
+The Godot development project includes deterministic boundary
+verification scenes.
+
+These scenes verify the behaviour of the CamBANG runtime from the
+Godot boundary.
+
+Typical scenes:
+
+- `60_restart_boundary_abuse`
+- `61_tick_bounded_coalescing_abuse`
+- `62_snapshot_polling_immutability_abuse`
+- `63_snapshot_observer_minimal`
+
+Expected final output from each scene:
