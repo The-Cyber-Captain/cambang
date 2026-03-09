@@ -47,7 +47,24 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
     const godot::String normalized = name.strip_edges().to_lower();
     std::string error;
 
+    auto refresh_provider = [&]() -> bool {
+        auto* server = CamBANGServer::get_singleton();
+        if (!server) {
+            error = "CamBANGServer singleton unavailable";
+            return false;
+        }
+        provider_ = server->provider_broker_for_dev();
+        if (!provider_) {
+            error = "provider broker unavailable";
+            return false;
+        }
+        return true;
+    };
+
     auto open_default_device = [&]() -> bool {
+        if (!provider_ && !refresh_provider()) {
+            return false;
+        }
         std::vector<CameraEndpoint> eps;
         ProviderResult pr = provider_->enumerate_endpoints(eps);
         if (!pr.ok() || eps.empty()) {
@@ -64,6 +81,10 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
 
     if (normalized == "stream_lifecycle_versions") {
         stop_provider_();
+        if (!refresh_provider()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions: ", error.c_str());
+            return false;
+        }
         if (!open_default_device()) {
             UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions: ", error.c_str());
             return false;
@@ -81,6 +102,10 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
 
     if (normalized == "topology_change_versions") {
         stop_provider_();
+        if (!refresh_provider()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(open): ", error.c_str());
+            return false;
+        }
         if (!open_default_device()) {
             UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(open): ", error.c_str());
             return false;
@@ -97,6 +122,10 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
 
     if (normalized == "publication_coalescing") {
         stop_provider_();
+        if (!refresh_provider()) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing(open): ", error.c_str());
+            return false;
+        }
         if (!open_default_device()) {
             UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing(open): ", error.c_str());
             return false;
