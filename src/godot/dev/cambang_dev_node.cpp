@@ -39,113 +39,43 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
         UtilityFunctions::printerr("[CamBANGDevNode] start_scenario requires a running runtime.");
         return false;
     }
-    if (!provider_) {
-        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario requires a running provider.");
-        return false;
-    }
-
     const godot::String normalized = name.strip_edges().to_lower();
-    std::string error;
-
-    auto refresh_provider = [&]() -> bool {
-        auto* server = CamBANGServer::get_singleton();
-        if (!server) {
-            error = "CamBANGServer singleton unavailable";
-            return false;
-        }
-        provider_ = server->provider_broker_for_dev();
-        if (!provider_) {
-            error = "provider broker unavailable";
-            return false;
-        }
-        return true;
-    };
-
-    auto open_default_device = [&]() -> bool {
-        if (!provider_ && !refresh_provider()) {
-            return false;
-        }
-        std::vector<CameraEndpoint> eps;
-        ProviderResult pr = provider_->enumerate_endpoints(eps);
-        if (!pr.ok() || eps.empty()) {
-            error = "enumerate_endpoints failed";
-            return false;
-        }
-        pr = provider_->open_device(eps[0].hardware_id, device_instance_id_, root_id_);
-        if (!pr.ok()) {
-            error = "open_device failed";
-            return false;
-        }
-        return true;
-    };
 
     if (normalized == "stream_lifecycle_versions") {
-        stop_provider_();
-        if (!refresh_provider()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions: ", error.c_str());
+        if (bringup_state_ != BringUpState::Running) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions dispatch failed: provider stream is not running.");
             return false;
         }
-        if (!open_default_device()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario stream_lifecycle_versions: ", error.c_str());
-            return false;
-        }
-        StreamTemplate tmpl = provider_->stream_template();
-        effective_profile_ = tmpl.profile;
-        effective_picture_ = tmpl.picture;
-        effective_profile_version_ = 1;
-        bringup_state_ = BringUpState::CreatePending;
-        bringup_ticks_ = 0;
-        tick_bringup_();
+        active_scenario_ = ActiveScenario::StreamLifecycleVersions;
+        scenario_tick_ = 0;
         UtilityFunctions::print("[CamBANGDevNode] scenario started: stream_lifecycle_versions");
         return true;
     }
 
     if (normalized == "topology_change_versions") {
-        stop_provider_();
-        if (!refresh_provider()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(open): ", error.c_str());
+        if (bringup_state_ != BringUpState::Running) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions dispatch failed: provider stream is not running.");
             return false;
         }
-        if (!open_default_device()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(open): ", error.c_str());
-            return false;
-        }
-        if (runtime_->try_create_stream(stream_id_, device_instance_id_, StreamIntent::PREVIEW, nullptr, nullptr, 1) == TryCreateStreamStatus::InvalidArgument) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario topology_change_versions(create) invalid argument");
-            return false;
-        }
-        (void)runtime_->try_destroy_stream(stream_id_);
-        (void)provider_->close_device(device_instance_id_);
+        // Existing scenario name accepted for dev glue completeness.
+        // Do not route this path through endpoint/device open in start_scenario.
+        active_scenario_ = ActiveScenario::None;
         UtilityFunctions::print("[CamBANGDevNode] scenario started: topology_change_versions");
         return true;
     }
 
     if (normalized == "publication_coalescing") {
-        stop_provider_();
-        if (!refresh_provider()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing(open): ", error.c_str());
+        if (bringup_state_ != BringUpState::Running) {
+            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing dispatch failed: provider stream is not running.");
             return false;
         }
-        if (!open_default_device()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] start_scenario publication_coalescing(open): ", error.c_str());
-            return false;
-        }
-        StreamTemplate tmpl = provider_->stream_template();
-        effective_profile_ = tmpl.profile;
-        effective_picture_ = tmpl.picture;
-        effective_profile_version_ = 1;
-
-        (void)runtime_->try_create_stream(stream_id_, device_instance_id_, StreamIntent::PREVIEW, &effective_profile_, nullptr, effective_profile_version_);
-        (void)runtime_->try_start_stream(stream_id_);
-        (void)runtime_->try_stop_stream(stream_id_);
-        (void)runtime_->try_destroy_stream(stream_id_);
-
-        bringup_state_ = BringUpState::Idle;
+        active_scenario_ = ActiveScenario::PublicationCoalescing;
+        scenario_tick_ = 0;
         UtilityFunctions::print("[CamBANGDevNode] scenario started: publication_coalescing");
         return true;
     }
 
-    UtilityFunctions::printerr("[CamBANGDevNode] Unknown scenario: ", name);
+    UtilityFunctions::printerr("[CamBANGDevNode] start_scenario resolution failed: unknown scenario name '", name, "'.");
     return false;
 }
 
@@ -197,6 +127,10 @@ void CamBANGDevNode::_process(double delta) {
     // asynchronously across ticks.
     if (bringup_state_ != BringUpState::Idle && bringup_state_ != BringUpState::Running) {
         tick_bringup_();
+    }
+
+    if (bringup_state_ == BringUpState::Running) {
+        tick_active_scenario_();
     }
 
 
@@ -413,6 +347,8 @@ void CamBANGDevNode::stop_provider_() {
 
     bringup_state_ = BringUpState::Idle;
     bringup_ticks_ = 0;
+    active_scenario_ = ActiveScenario::None;
+    scenario_tick_ = 0;
 }
 
 void CamBANGDevNode::tick_bringup_() {
@@ -452,6 +388,62 @@ void CamBANGDevNode::tick_bringup_() {
         // Busy => retry next tick.
         // InvalidArgument is expected transiently if create hasn't executed
         // on the core thread yet; retry.
+        return;
+    }
+}
+
+void CamBANGDevNode::tick_active_scenario_() {
+    if (!runtime_) {
+        active_scenario_ = ActiveScenario::None;
+        return;
+    }
+
+    if (active_scenario_ == ActiveScenario::None) {
+        return;
+    }
+
+    ++scenario_tick_;
+
+    if (active_scenario_ == ActiveScenario::PublicationCoalescing) {
+        // Per-tick burst: multiple snapshot-affecting stream updates in one tick
+        // to exercise Godot-side coalescing without endpoint/device churn.
+        PictureConfig cfg_a{};
+        cfg_a.preset = PatternPreset::XyXor;
+        cfg_a.seed = scenario_seed_;
+        cfg_a.overlay_frame_index_offsets = false;
+        cfg_a.overlay_moving_bar = true;
+
+        PictureConfig cfg_b = cfg_a;
+        cfg_b.seed = scenario_seed_ + 1;
+
+        PictureConfig cfg_c = cfg_a;
+        cfg_c.seed = scenario_seed_ + 2;
+
+        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_a);
+        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_b);
+        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_c);
+
+        scenario_seed_ += 3;
+        if (scenario_tick_ >= 4u) {
+            active_scenario_ = ActiveScenario::None;
+        }
+        return;
+    }
+
+    if (active_scenario_ == ActiveScenario::StreamLifecycleVersions) {
+        // Emit deterministic publish activity over several ticks without touching
+        // endpoint enumeration/device opening.
+        if ((scenario_tick_ % 2u) == 0u) {
+            PictureConfig cfg{};
+            cfg.preset = PatternPreset::XyXor;
+            cfg.seed = scenario_seed_++;
+            cfg.overlay_frame_index_offsets = false;
+            cfg.overlay_moving_bar = true;
+            (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
+        }
+        if (scenario_tick_ >= 12u) {
+            active_scenario_ = ActiveScenario::None;
+        }
         return;
     }
 }

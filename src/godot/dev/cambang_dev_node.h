@@ -81,6 +81,16 @@ private:
     PictureConfig effective_picture_{};
     uint64_t effective_profile_version_ = 1;
 
+    // Dev-only lightweight scenario runner (Godot abuse scenes).
+    enum class ActiveScenario {
+        None,
+        StreamLifecycleVersions,
+        PublicationCoalescing,
+    };
+    ActiveScenario active_scenario_ = ActiveScenario::None;
+    uint32_t scenario_tick_ = 0;
+    uint32_t scenario_seed_ = 1;
+
 
     void start_runtime_();
     void stop_runtime_();
@@ -91,6 +101,7 @@ private:
 
     // Bring-up continues asynchronously (core commands are non-blocking).
     void tick_bringup_();
+    void tick_active_scenario_();
 };
 
 } // namespace cambang
