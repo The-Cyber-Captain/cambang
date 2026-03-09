@@ -1,6 +1,7 @@
 #include "core/snapshot/snapshot_builder.h"
 
 #include <cstring>
+#include <limits>
 #include <set>
 
 #include "core/core_device_registry.h"
@@ -117,6 +118,17 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
                          ? CBDeviceMode::STREAMING
                          : CBDeviceMode::IDLE;
             d.engaged = rec.open;
+            d.warm_hold_ms = rec.warm_hold_ms;
+            if (rec.warm_deadline_active && rec.warm_deadline_ns > timestamp_ns) {
+                const uint64_t remaining_ns = rec.warm_deadline_ns - timestamp_ns;
+                const uint64_t remaining_ms = (remaining_ns + 999999ull) / 1000000ull;
+                d.warm_remaining_ms =
+                    remaining_ms > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())
+                        ? std::numeric_limits<uint32_t>::max()
+                        : static_cast<uint32_t>(remaining_ms);
+            } else {
+                d.warm_remaining_ms = 0;
+            }
             d.last_error_code = static_cast<int32_t>(rec.last_error_code);
             d.errors_count = rec.errors_count;
 

@@ -26,6 +26,68 @@ bool CoreDeviceRegistry::set_camera_spec_version(uint64_t device_instance_id, ui
   return true;
 }
 
+bool CoreDeviceRegistry::set_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  auto& rec = devices_[device_instance_id];
+  rec.device_instance_id = device_instance_id;
+  rec.warm_hold_ms = warm_hold_ms;
+  if (warm_hold_ms == 0) {
+    rec.warm_deadline_active = false;
+    rec.warm_deadline_ns = 0;
+    rec.warm_expired_close_requested = false;
+  }
+  return true;
+}
+
+bool CoreDeviceRegistry::arm_warm_deadline(uint64_t device_instance_id, uint64_t deadline_ns) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+
+  it->second.warm_deadline_active = true;
+  it->second.warm_deadline_ns = deadline_ns;
+  it->second.warm_expired_close_requested = false;
+  return true;
+}
+
+bool CoreDeviceRegistry::clear_warm_deadline(uint64_t device_instance_id) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+
+  it->second.warm_deadline_active = false;
+  it->second.warm_deadline_ns = 0;
+  it->second.warm_expired_close_requested = false;
+  return true;
+}
+
+bool CoreDeviceRegistry::mark_warm_expired_close_requested(uint64_t device_instance_id, bool requested) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+
+  it->second.warm_expired_close_requested = requested;
+  return true;
+}
+
 bool CoreDeviceRegistry::on_device_opened(uint64_t device_instance_id) {
   if (device_instance_id == 0) {
     return false;
@@ -34,6 +96,9 @@ bool CoreDeviceRegistry::on_device_opened(uint64_t device_instance_id) {
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
   rec.open = true;
+  rec.warm_deadline_active = false;
+  rec.warm_deadline_ns = 0;
+  rec.warm_expired_close_requested = false;
   return true;
 }
 

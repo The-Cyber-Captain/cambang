@@ -5,11 +5,28 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <memory>
 
 #include <utility>
 
 namespace cambang {
+
+namespace {
+
+constexpr uint64_t kNsPerMs = 1000000ull;
+
+uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
+  if (warm_hold_ms == 0) {
+    return 0;
+  }
+  if (warm_hold_ms >= (std::numeric_limits<uint64_t>::max() / kNsPerMs)) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(warm_hold_ms) * kNsPerMs;
+}
+
+} // namespace
 
 static bool banners_enabled() noexcept {
   const char* v = std::getenv("CAMBANG_BANNERS");
@@ -224,16 +241,82 @@ if (dispatcher_.consume_relevant_state_changed()) {
   }
 
   // 3) Retention / timers.
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+
+  uint64_t next_warm_delay_ns = 0;
+  bool has_next_warm_delay = false;
+  for (const auto& [device_id, rec] : devices_.all()) {
+    (void)device_id;
+    if (!rec.open) {
+      continue;
+    }
+
+    const bool active_use = streams_.has_flowing_stream_for_device(rec.device_instance_id);
+
+    if (active_use) {
+      if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
+        (void)devices_.clear_warm_deadline(rec.device_instance_id);
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    if (rec.warm_hold_ms == 0) {
+      if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
+        (void)devices_.clear_warm_deadline(rec.device_instance_id);
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    if (!rec.warm_deadline_active) {
+      const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
+      const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
+          ? std::numeric_limits<uint64_t>::max()
+          : (now_ns + hold_ns);
+      if (devices_.arm_warm_deadline(rec.device_instance_id, deadline_ns)) {
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    if (now_ns >= rec.warm_deadline_ns) {
+      if (!rec.warm_expired_close_requested && prov) {
+        (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
+        (void)prov->close_device(rec.device_instance_id);
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    const uint64_t remaining_ns = rec.warm_deadline_ns - now_ns;
+    if (!has_next_warm_delay || remaining_ns < next_warm_delay_ns) {
+      has_next_warm_delay = true;
+      next_warm_delay_ns = remaining_ns;
+    }
+  }
+
   const size_t retired_count =
       native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
   if (retired_count > 0) {
     request_publish_from_core_unchecked();
   }
 
+  uint64_t next_deadline_delay_ns = 0;
+  bool has_next_deadline_delay = false;
   if (const auto next_retirement_delay_ns =
           native_objects_.next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
       next_retirement_delay_ns.has_value()) {
-    core_thread_.set_timer_deadline_ns(*next_retirement_delay_ns);
+    has_next_deadline_delay = true;
+    next_deadline_delay_ns = *next_retirement_delay_ns;
+  }
+  if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
+    has_next_deadline_delay = true;
+    next_deadline_delay_ns = next_warm_delay_ns;
+  }
+
+  if (has_next_deadline_delay) {
+    core_thread_.set_timer_deadline_ns(next_deadline_delay_ns);
   } else {
     core_thread_.clear_timer_deadline();
   }
@@ -303,8 +386,6 @@ if (dispatcher_.consume_relevant_state_changed()) {
     }
 
     constexpr uint32_t kMaxShutdownWaitTicks = 200; // deterministic bound; avoids teardown hangs.
-
-    ICameraProvider* prov = provider_.load(std::memory_order_acquire);
 
     auto any_stream_started = [this]() -> bool {
       for (const auto& kv : streams_.all()) {
