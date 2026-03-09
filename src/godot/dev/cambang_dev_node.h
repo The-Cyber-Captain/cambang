@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/variant/string.hpp>
 
 #include "imaging/api/provider_contract_datatypes.h"
 
@@ -30,6 +31,10 @@ public:
 
     // Dev-only read access for display nodes.
     const LatestFrameMailbox* get_latest_frame_mailbox() const;
+
+    // Dev-only scenario trigger.
+    // Returns true when the named scenario trigger was accepted.
+    bool start_scenario(const godot::String& name);
 
 protected:
     static void _bind_methods();
@@ -76,6 +81,17 @@ private:
     PictureConfig effective_picture_{};
     uint64_t effective_profile_version_ = 1;
 
+    // Dev-only lightweight scenario runner (Godot abuse scenes).
+    enum class ActiveScenario {
+        None,
+        StreamLifecycleVersions,
+        PublicationCoalescing,
+    };
+    ActiveScenario active_scenario_ = ActiveScenario::None;
+    ActiveScenario pending_scenario_ = ActiveScenario::None;
+    uint32_t scenario_tick_ = 0;
+    uint32_t scenario_seed_ = 1;
+
 
     void start_runtime_();
     void stop_runtime_();
@@ -86,6 +102,8 @@ private:
 
     // Bring-up continues asynchronously (core commands are non-blocking).
     void tick_bringup_();
+    void tick_active_scenario_();
+    bool dispatch_scenario_now_(ActiveScenario scenario);
 };
 
 } // namespace cambang

@@ -15,6 +15,7 @@
 #include <cstdlib>
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/engine.hpp>
 
 using godot::UtilityFunctions;
@@ -30,7 +31,48 @@ CamBANGDevNode::~CamBANGDevNode() {
 }
 
 void CamBANGDevNode::_bind_methods() {
-    // Temporary scaffolding: no exposed methods/properties.
+    godot::ClassDB::bind_method(godot::D_METHOD("start_scenario", "name"), &CamBANGDevNode::start_scenario);
+}
+
+bool CamBANGDevNode::start_scenario(const godot::String& name) {
+    if (!runtime_ || !runtime_->is_running()) {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario requires a running runtime.");
+        return false;
+    }
+    const godot::String normalized = name.strip_edges().to_lower();
+    ActiveScenario requested = ActiveScenario::None;
+
+    if (normalized == "stream_lifecycle_versions") {
+        requested = ActiveScenario::StreamLifecycleVersions;
+    } else if (normalized == "topology_change_versions") {
+        requested = ActiveScenario::None;
+    } else if (normalized == "publication_coalescing") {
+        requested = ActiveScenario::PublicationCoalescing;
+    } else {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario resolution failed: unknown scenario name '", name, "'.");
+        return false;
+    }
+
+    if (normalized == "topology_change_versions") {
+        // Existing scenario name accepted for dev glue completeness.
+        UtilityFunctions::print("[CamBANGDevNode] scenario started: topology_change_versions");
+        return true;
+    }
+
+    if (bringup_state_ != BringUpState::Running) {
+        pending_scenario_ = requested;
+        scenario_tick_ = 0;
+        UtilityFunctions::print("[CamBANGDevNode] scenario queued: ", normalized, " (waiting for provider stream Running)");
+        return true;
+    }
+
+    if (!dispatch_scenario_now_(requested)) {
+        UtilityFunctions::printerr("[CamBANGDevNode] start_scenario ", normalized, " dispatch failed: provider stream is not running.");
+        return false;
+    }
+
+    UtilityFunctions::print("[CamBANGDevNode] scenario started: ", normalized);
+    return true;
 }
 
 void CamBANGDevNode::_enter_tree() {
@@ -81,6 +123,16 @@ void CamBANGDevNode::_process(double delta) {
     // asynchronously across ticks.
     if (bringup_state_ != BringUpState::Idle && bringup_state_ != BringUpState::Running) {
         tick_bringup_();
+    }
+
+    if (bringup_state_ == BringUpState::Running && pending_scenario_ != ActiveScenario::None) {
+        if (dispatch_scenario_now_(pending_scenario_)) {
+            pending_scenario_ = ActiveScenario::None;
+        }
+    }
+
+    if (bringup_state_ == BringUpState::Running) {
+        tick_active_scenario_();
     }
 
 
@@ -297,6 +349,9 @@ void CamBANGDevNode::stop_provider_() {
 
     bringup_state_ = BringUpState::Idle;
     bringup_ticks_ = 0;
+    active_scenario_ = ActiveScenario::None;
+    pending_scenario_ = ActiveScenario::None;
+    scenario_tick_ = 0;
 }
 
 void CamBANGDevNode::tick_bringup_() {
@@ -331,6 +386,9 @@ void CamBANGDevNode::tick_bringup_() {
         const auto ss = runtime_->try_start_stream(stream_id_);
         if (ss == TryStartStreamStatus::OK) {
             bringup_state_ = BringUpState::Running;
+            if (pending_scenario_ != ActiveScenario::None && dispatch_scenario_now_(pending_scenario_)) {
+                pending_scenario_ = ActiveScenario::None;
+            }
             return;
         }
         // Busy => retry next tick.
@@ -340,11 +398,82 @@ void CamBANGDevNode::tick_bringup_() {
     }
 }
 
+bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
+    if (bringup_state_ != BringUpState::Running) {
+        return false;
+    }
+    if (scenario == ActiveScenario::None) {
+        return true;
+    }
+    active_scenario_ = scenario;
+    scenario_tick_ = 0;
+    return true;
+}
+
+void CamBANGDevNode::tick_active_scenario_() {
+    if (!runtime_) {
+        active_scenario_ = ActiveScenario::None;
+        return;
+    }
+
+    if (active_scenario_ == ActiveScenario::None) {
+        return;
+    }
+
+    ++scenario_tick_;
+
+    if (active_scenario_ == ActiveScenario::PublicationCoalescing) {
+        // Per-tick burst: multiple snapshot-affecting stream updates in one tick
+        // to exercise Godot-side coalescing without endpoint/device churn.
+        PictureConfig cfg_a{};
+        cfg_a.preset = PatternPreset::XyXor;
+        cfg_a.seed = scenario_seed_;
+        cfg_a.overlay_frame_index_offsets = false;
+        cfg_a.overlay_moving_bar = true;
+
+        PictureConfig cfg_b = cfg_a;
+        cfg_b.seed = scenario_seed_ + 1;
+
+        PictureConfig cfg_c = cfg_a;
+        cfg_c.seed = scenario_seed_ + 2;
+
+        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_a);
+        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_b);
+        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_c);
+
+        scenario_seed_ += 3;
+        if (scenario_tick_ >= 4u) {
+            active_scenario_ = ActiveScenario::None;
+        }
+        return;
+    }
+
+    if (active_scenario_ == ActiveScenario::StreamLifecycleVersions) {
+        // Emit deterministic publish activity over several ticks without touching
+        // endpoint enumeration/device opening.
+        if ((scenario_tick_ % 2u) == 0u) {
+            PictureConfig cfg{};
+            cfg.preset = PatternPreset::XyXor;
+            cfg.seed = scenario_seed_++;
+            cfg.overlay_frame_index_offsets = false;
+            cfg.overlay_moving_bar = true;
+            (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
+        }
+        if (scenario_tick_ >= 12u) {
+            active_scenario_ = ActiveScenario::None;
+        }
+        return;
+    }
+}
+
 void CamBANGDevNode::stop_runtime_() {
     if (!runtime_) {
         provider_ = nullptr;
         started_ = false;
         last_running_ = false;
+        active_scenario_ = ActiveScenario::None;
+        pending_scenario_ = ActiveScenario::None;
+        scenario_tick_ = 0;
         return;
     }
 

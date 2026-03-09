@@ -55,9 +55,10 @@ They must:
 -   Avoid duplicating or restating core architecture unnecessarily.
 -   Remain narrowly scoped.
 
-Example: - architecture/frame_sinks.md
-
-         - architecture/pattern_module.md
+Example:
+- architecture/frame_sinks.md
+- architecture/pattern_module.md
+- architecture/godot_boundary_contract.md
 ------------------------------------------------------------------------
 
 ## 3. Development / Scaffolding Notes
@@ -75,10 +76,10 @@ These documents describe:
 
 They are intentionally non-canonical and may evolve or be removed.
 
-Example: - dev/frameview_stage.md
+Example:
 
-Additional examples:
-
+- dev/frameview_stage.md
+- dev/godot_abuse_scenes.md
 - dev/maintainer_tools.md
     - describes maintainer CLI validation tools
     - includes provider_compliance_verify
