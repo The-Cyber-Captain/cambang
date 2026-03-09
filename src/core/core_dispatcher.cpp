@@ -156,7 +156,7 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     const uint64_t sid = p.frame.stream_id;
     if (streams_) {
       const uint64_t integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
-      if (!streams_->on_frame_received(sid, integrated_ts_ns, p.ingress_queue_depth)) {
+      if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
       }
     }

@@ -94,7 +94,6 @@ struct CmdProviderCaptureFailed {
 
 struct CmdProviderFrame {
   FrameView frame; // By value: preserves release hook and all metadata.
-  uint32_t ingress_queue_depth = 0;
 };
   
 struct CmdProviderDeviceError {

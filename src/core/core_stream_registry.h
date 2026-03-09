@@ -46,7 +46,6 @@ public:
     // Reserved for later flow control semantics; currently always 0.
     uint64_t frames_dropped = 0;
     uint64_t last_frame_ts_ns = 0;
-    uint32_t ingress_queue_depth = 0;
 
     uint32_t last_error_code = 0;
   };
@@ -68,7 +67,7 @@ public:
   bool mark_stop_requested_by_core(uint64_t stream_id);
 
   // Frame accounting (stream must exist).
-  bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns, uint32_t ingress_queue_depth);
+  bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);
   bool on_frame_released(uint64_t stream_id);
   bool on_frame_dropped(uint64_t stream_id);
 

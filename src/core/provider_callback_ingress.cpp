@@ -71,6 +71,15 @@ ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexc
   return s;
 }
 
+uint32_t ProviderCallbackIngress::ingress_depth_for_stream(uint64_t stream_id) const {
+  if (stream_id == 0) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(ingress_mu_);
+  const auto it = stream_ingress_depth_.find(stream_id);
+  return (it != stream_ingress_depth_.end()) ? it->second : 0;
+}
+
 void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
@@ -240,7 +249,8 @@ void ProviderCallbackIngress::on_frame(const FrameView& frame) {
   // core calls frame.release_now(). The core dispatcher MUST ensure release-on-drop.
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_FRAME;
-  cmd.payload = CmdProviderFrame{frame, on_frame_ingress_enqueued_(frame.stream_id)}; // copies the view (not the buffer)
+  (void)on_frame_ingress_enqueued_(frame.stream_id);
+  cmd.payload = CmdProviderFrame{frame}; // copies the view (not the buffer)
   post_command(std::move(cmd));
 }
 

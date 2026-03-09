@@ -13,7 +13,6 @@ bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective
   rec.profile_version = effective.profile_version;
   rec.profile = effective.profile;
   rec.picture = effective.picture;
-  rec.ingress_queue_depth = 0;
   // created/started are driven by provider callbacks.
   return true;
 }
@@ -44,11 +43,14 @@ bool CoreStreamRegistry::on_stream_started(uint64_t stream_id) {
 bool CoreStreamRegistry::on_stream_stopped(uint64_t stream_id, uint32_t error_code) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
+
+  const bool latch_user_stop = it->second.stop_requested_by_core ||
+      (!it->second.started && it->second.last_stop_origin == StopOrigin::User);
+
   it->second.started = false;
   it->second.last_error_code = error_code;
-  it->second.last_stop_origin = it->second.stop_requested_by_core ? StopOrigin::User : StopOrigin::Provider;
+  it->second.last_stop_origin = latch_user_stop ? StopOrigin::User : StopOrigin::Provider;
   it->second.stop_requested_by_core = false;
-  it->second.ingress_queue_depth = 0;
   return true;
 }
 
@@ -59,12 +61,11 @@ bool CoreStreamRegistry::mark_stop_requested_by_core(uint64_t stream_id) {
   return true;
 }
 
-bool CoreStreamRegistry::on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns, uint32_t ingress_queue_depth) {
+bool CoreStreamRegistry::on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   it->second.frames_received++;
   it->second.last_frame_ts_ns = integrated_ts_ns;
-  it->second.ingress_queue_depth = ingress_queue_depth;
   return true;
 }
 
@@ -72,9 +73,6 @@ bool CoreStreamRegistry::on_frame_released(uint64_t stream_id) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   it->second.frames_released++;
-  if (it->second.ingress_queue_depth > 0) {
-    it->second.ingress_queue_depth--;
-  }
   return true;
 }
 
@@ -82,9 +80,6 @@ bool CoreStreamRegistry::on_frame_dropped(uint64_t stream_id) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   it->second.frames_dropped++;
-  if (it->second.ingress_queue_depth > 0) {
-    it->second.ingress_queue_depth--;
-  }
   return true;
 }
 

@@ -51,6 +51,7 @@ public:
   ProviderCallbackIngress& operator=(const ProviderCallbackIngress&) = delete;
 
   Stats stats_copy() const noexcept;
+  uint32_t ingress_depth_for_stream(uint64_t stream_id) const;
 
   // IProviderCallbacks (core-issued services)
   uint64_t allocate_native_id(NativeObjectType type) override;
@@ -102,7 +103,7 @@ private:
   std::atomic<uint64_t> frames_released_on_drop_closed_{0};
   std::atomic<uint64_t> frames_released_on_drop_allocfail_{0};
 
-  std::mutex ingress_mu_;
+  mutable std::mutex ingress_mu_;
   std::unordered_map<uint64_t, uint32_t> stream_ingress_depth_;
 };
 

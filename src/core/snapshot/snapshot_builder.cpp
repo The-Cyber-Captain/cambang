@@ -6,6 +6,7 @@
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/provider_callback_ingress.h"
 
 namespace cambang {
 
@@ -137,6 +138,9 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             if (!rec.created) {
                 s.mode = CBStreamMode::STOPPED;
             } else {
+                // Packet A intentionally projects only STOPPED/FLOWING from currently
+                // retained runtime truth. STARVED/ERROR modes need richer retained
+                // state and remain future work.
                 s.mode = rec.started ? CBStreamMode::FLOWING : CBStreamMode::STOPPED;
             }
 
@@ -160,7 +164,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.frames_received = rec.frames_received;
             s.frames_delivered = rec.frames_released; // in this slice, release == delivered to sink
             s.frames_dropped = rec.frames_dropped;
-            s.queue_depth = rec.ingress_queue_depth;
+            s.queue_depth = in.ingress ? in.ingress->ingress_depth_for_stream(sid) : 0;
             s.last_frame_ts_ns = rec.last_frame_ts_ns;
 
             snap.streams.push_back(std::move(s));
