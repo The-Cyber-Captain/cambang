@@ -150,7 +150,7 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
-  spec_state_.reset_for_generation(1);
+  spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
   // Start "dirty": publish an initial baseline snapshot (version=0, topology_version=0)
@@ -478,7 +478,7 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
     }
     devices_.set_camera_spec_version(
         device_instance_id,
-        spec_state_.ensure_camera_spec_version(hardware_id, 1));
+        spec_state_.camera_spec_version(hardware_id));
     request_publish_from_core_unchecked();
   });
 }

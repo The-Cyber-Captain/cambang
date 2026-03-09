@@ -14,18 +14,6 @@ void CoreSpecState::set_camera_spec_version(const std::string& hardware_id, uint
   camera_spec_versions_[hardware_id] = camera_spec_version;
 }
 
-uint64_t CoreSpecState::ensure_camera_spec_version(const std::string& hardware_id, uint64_t fallback_version) {
-  if (hardware_id.empty()) {
-    return 0;
-  }
-  const auto it = camera_spec_versions_.find(hardware_id);
-  if (it != camera_spec_versions_.end()) {
-    return it->second;
-  }
-  camera_spec_versions_[hardware_id] = fallback_version;
-  return fallback_version;
-}
-
 uint64_t CoreSpecState::camera_spec_version(const std::string& hardware_id) const noexcept {
   if (hardware_id.empty()) {
     return 0;
