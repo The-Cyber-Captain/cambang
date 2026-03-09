@@ -432,6 +432,7 @@ int main(int argc, char** argv) {
     rt.stop();
     return 2;
   }
+  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
     std::cerr << "FAIL: open_device failed\n";
     rt.stop();

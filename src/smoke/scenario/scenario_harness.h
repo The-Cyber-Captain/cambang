@@ -282,6 +282,7 @@ public:
       error = "endpoint index out of range";
       return false;
     }
+    runtime_.retain_device_identity(device_id, endpoint_hardware_ids_[endpoint_index]);
     const ProviderResult r = provider_->open_device(endpoint_hardware_ids_[endpoint_index], device_id, root_id);
     if (!r.ok()) {
       error = "open_device failed";

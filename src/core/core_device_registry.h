@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <string>
 
 namespace cambang {
 
@@ -18,10 +19,15 @@ class CoreDeviceRegistry final {
 public:
   struct DeviceRecord {
     uint64_t device_instance_id = 0;
+    std::string hardware_id;
+    uint64_t camera_spec_version = 0;
     bool open = false;
     uint32_t last_error_code = 0;
     uint64_t errors_count = 0;
   };
+
+  bool note_device_identity(uint64_t device_instance_id, const std::string& hardware_id);
+  bool set_camera_spec_version(uint64_t device_instance_id, uint64_t camera_spec_version);
 
   bool on_device_opened(uint64_t device_instance_id);
   bool on_device_closed(uint64_t device_instance_id);

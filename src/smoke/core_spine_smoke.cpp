@@ -283,6 +283,8 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) return false;
 
+  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) return false;
 
   const StreamRequest req = make_req();

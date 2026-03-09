@@ -150,6 +150,7 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
+  spec_state_.reset_for_generation(1);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
   // Start "dirty": publish an initial baseline snapshot (version=0, topology_version=0)
@@ -247,6 +248,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     in.streams = &streams_;
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;
+    in.spec_state = &spec_state_;
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 
@@ -463,6 +465,45 @@ void CoreRuntime::on_core_stop() {
 
 void CoreRuntime::post(CoreThread::Task task) {
   (void)try_post(std::move(task));
+}
+
+void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id) {
+  if (device_instance_id == 0 || hardware_id.empty()) {
+    return;
+  }
+
+  (void)try_post([this, device_instance_id, hardware_id]() {
+    if (!devices_.note_device_identity(device_instance_id, hardware_id)) {
+      return;
+    }
+    devices_.set_camera_spec_version(
+        device_instance_id,
+        spec_state_.ensure_camera_spec_version(hardware_id, 1));
+    request_publish_from_core_unchecked();
+  });
+}
+
+void CoreRuntime::retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version) {
+  if (hardware_id.empty()) {
+    return;
+  }
+
+  (void)try_post([this, hardware_id, camera_spec_version]() {
+    spec_state_.set_camera_spec_version(hardware_id, camera_spec_version);
+    for (const auto& [device_instance_id, rec] : devices_.all()) {
+      if (rec.hardware_id == hardware_id) {
+        (void)devices_.set_camera_spec_version(device_instance_id, camera_spec_version);
+      }
+    }
+    request_publish_from_core_unchecked();
+  });
+}
+
+void CoreRuntime::retain_imaging_spec_version(uint64_t imaging_spec_version) {
+  (void)try_post([this, imaging_spec_version]() {
+    spec_state_.set_imaging_spec_version(imaging_spec_version);
+    request_publish_from_core_unchecked();
+  });
 }
 
 CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {

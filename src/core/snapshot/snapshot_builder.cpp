@@ -6,6 +6,7 @@
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_spec_state.h"
 #include "core/provider_callback_ingress.h"
 
 namespace cambang {
@@ -99,17 +100,16 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
     snap.topology_version = topology_version;
     snap.timestamp_ns = timestamp_ns;
 
-    // imaging_spec_version is not implemented in this scaffolding slice.
-    snap.imaging_spec_version = 0;
+    snap.imaging_spec_version = in.spec_state ? in.spec_state->imaging_spec_version() : 0;
 
     // Devices
     if (in.devices) {
         snap.devices.reserve(in.devices->all().size());
         for (const auto& [id, rec] : in.devices->all()) {
-            (void)rec;
             CamBANGDeviceState d;
             d.instance_id = id;
-            d.hardware_id = std::string(); // unknown in current scaffolding
+            d.hardware_id = rec.hardware_id;
+            d.camera_spec_version = rec.camera_spec_version;
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
