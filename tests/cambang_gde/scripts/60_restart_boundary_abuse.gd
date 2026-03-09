@@ -1,5 +1,6 @@
 extends Node
 
+const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 5000
 
 var _done := false
@@ -112,5 +113,6 @@ func _cleanup_and_quit(code: int) -> void:
 
 
 func _quit_next_frame(code: int) -> void:
-	await get_tree().process_frame
+	for _i in range(QUIT_FLUSH_FRAMES):
+		await get_tree().process_frame
 	get_tree().quit(code)
