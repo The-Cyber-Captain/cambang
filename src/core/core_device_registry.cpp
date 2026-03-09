@@ -88,6 +88,20 @@ bool CoreDeviceRegistry::mark_warm_expired_close_requested(uint64_t device_insta
   return true;
 }
 
+bool CoreDeviceRegistry::set_warm_was_in_use(uint64_t device_instance_id, bool warm_was_in_use) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+
+  it->second.warm_was_in_use = warm_was_in_use;
+  return true;
+}
+
 bool CoreDeviceRegistry::on_device_opened(uint64_t device_instance_id) {
   if (device_instance_id == 0) {
     return false;
@@ -99,6 +113,7 @@ bool CoreDeviceRegistry::on_device_opened(uint64_t device_instance_id) {
   rec.warm_deadline_active = false;
   rec.warm_deadline_ns = 0;
   rec.warm_expired_close_requested = false;
+  rec.warm_was_in_use = false;
   return true;
 }
 

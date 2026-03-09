@@ -254,11 +254,17 @@ if (dispatcher_.consume_relevant_state_changed()) {
     const bool active_use = streams_.has_flowing_stream_for_device(rec.device_instance_id);
 
     if (active_use) {
+      (void)devices_.set_warm_was_in_use(rec.device_instance_id, true);
       if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
         (void)devices_.clear_warm_deadline(rec.device_instance_id);
         request_publish_from_core_unchecked();
       }
       continue;
+    }
+
+    const bool became_not_in_use = rec.warm_was_in_use;
+    if (became_not_in_use) {
+      (void)devices_.set_warm_was_in_use(rec.device_instance_id, false);
     }
 
     if (rec.warm_hold_ms == 0) {
@@ -269,7 +275,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (!rec.warm_deadline_active) {
+    if (became_not_in_use && !rec.warm_deadline_active) {
       const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
       const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
           ? std::numeric_limits<uint64_t>::max()
