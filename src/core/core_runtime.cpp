@@ -622,8 +622,15 @@ TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
   const CoreThread::PostResult pr = try_post([this, stream_id, picture]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
-    (void)p->set_stream_picture_config(stream_id, picture);
-    (void)streams_.set_picture(stream_id, picture);
+    const ProviderResult sr = p->set_stream_picture_config(stream_id, picture);
+    if (!sr.ok()) {
+      return;
+    }
+    if (streams_.set_picture(stream_id, picture)) {
+      // Picture config is snapshot-visible stream state. Route updates through
+      // the normal core coalesced publication path.
+      request_publish_from_core_unchecked();
+    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TrySetStreamPictureStatus::OK
