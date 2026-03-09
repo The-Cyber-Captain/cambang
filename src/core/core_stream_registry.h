@@ -19,6 +19,12 @@ namespace cambang {
 // - Core-thread-only. Not atomic. Determinism-first.
 class CoreStreamRegistry final {
 public:
+  enum class StopOrigin : uint8_t {
+    None = 0,
+    User = 1,
+    Provider = 2,
+  };
+
   struct StreamRecord {
     uint64_t stream_id = 0;
 
@@ -31,12 +37,15 @@ public:
 
     bool created = false;
     bool started = false;
+    bool stop_requested_by_core = false;
+    StopOrigin last_stop_origin = StopOrigin::None;
 
     uint64_t frames_received = 0;
     uint64_t frames_released = 0;
 
     // Reserved for later flow control semantics; currently always 0.
     uint64_t frames_dropped = 0;
+    uint64_t last_frame_ts_ns = 0;
 
     uint32_t last_error_code = 0;
   };
@@ -55,9 +64,10 @@ public:
   bool on_stream_destroyed(uint64_t stream_id);
   bool on_stream_started(uint64_t stream_id);
   bool on_stream_stopped(uint64_t stream_id, uint32_t error_code);
+  bool mark_stop_requested_by_core(uint64_t stream_id);
 
   // Frame accounting (stream must exist).
-  bool on_frame_received(uint64_t stream_id);
+  bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);
   bool on_frame_released(uint64_t stream_id);
   bool on_frame_dropped(uint64_t stream_id);
 
@@ -75,6 +85,7 @@ public:
 
   // For future snapshot/publisher. Core-thread-only.
   const std::map<uint64_t, StreamRecord>& all() const noexcept { return streams_; }
+  bool has_flowing_stream_for_device(uint64_t device_instance_id) const noexcept;
 
 private:
   std::map<uint64_t, StreamRecord> streams_; // key: stream_id

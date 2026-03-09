@@ -5,11 +5,28 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <memory>
 
 #include <utility>
 
 namespace cambang {
+
+namespace {
+
+constexpr uint64_t kNsPerMs = 1000000ull;
+
+uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
+  if (warm_hold_ms == 0) {
+    return 0;
+  }
+  if (warm_hold_ms >= (std::numeric_limits<uint64_t>::max() / kNsPerMs)) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(warm_hold_ms) * kNsPerMs;
+}
+
+} // namespace
 
 static bool banners_enabled() noexcept {
   const char* v = std::getenv("CAMBANG_BANNERS");
@@ -150,6 +167,7 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
+  spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
   // Start "dirty": publish an initial baseline snapshot (version=0, topology_version=0)
@@ -223,16 +241,88 @@ if (dispatcher_.consume_relevant_state_changed()) {
   }
 
   // 3) Retention / timers.
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+
+  uint64_t next_warm_delay_ns = 0;
+  bool has_next_warm_delay = false;
+  for (const auto& [device_id, rec] : devices_.all()) {
+    (void)device_id;
+    if (!rec.open) {
+      continue;
+    }
+
+    const bool active_use = streams_.has_flowing_stream_for_device(rec.device_instance_id);
+
+    if (active_use) {
+      (void)devices_.set_warm_was_in_use(rec.device_instance_id, true);
+      if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
+        (void)devices_.clear_warm_deadline(rec.device_instance_id);
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    const bool became_not_in_use = rec.warm_was_in_use;
+    if (became_not_in_use) {
+      (void)devices_.set_warm_was_in_use(rec.device_instance_id, false);
+    }
+
+    if (rec.warm_hold_ms == 0) {
+      if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
+        (void)devices_.clear_warm_deadline(rec.device_instance_id);
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    if (became_not_in_use && !rec.warm_deadline_active) {
+      const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
+      const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
+          ? std::numeric_limits<uint64_t>::max()
+          : (now_ns + hold_ns);
+      if (devices_.arm_warm_deadline(rec.device_instance_id, deadline_ns)) {
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    if (now_ns >= rec.warm_deadline_ns) {
+      if (!rec.warm_expired_close_requested && prov) {
+        (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
+        (void)prov->close_device(rec.device_instance_id);
+        request_publish_from_core_unchecked();
+      }
+      continue;
+    }
+
+    const uint64_t remaining_ns = rec.warm_deadline_ns - now_ns;
+    if (!has_next_warm_delay || remaining_ns < next_warm_delay_ns) {
+      has_next_warm_delay = true;
+      next_warm_delay_ns = remaining_ns;
+    }
+  }
+
   const size_t retired_count =
       native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
   if (retired_count > 0) {
     request_publish_from_core_unchecked();
   }
 
+  uint64_t next_deadline_delay_ns = 0;
+  bool has_next_deadline_delay = false;
   if (const auto next_retirement_delay_ns =
           native_objects_.next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
       next_retirement_delay_ns.has_value()) {
-    core_thread_.set_timer_deadline_ns(*next_retirement_delay_ns);
+    has_next_deadline_delay = true;
+    next_deadline_delay_ns = *next_retirement_delay_ns;
+  }
+  if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
+    has_next_deadline_delay = true;
+    next_deadline_delay_ns = next_warm_delay_ns;
+  }
+
+  if (has_next_deadline_delay) {
+    core_thread_.set_timer_deadline_ns(next_deadline_delay_ns);
   } else {
     core_thread_.clear_timer_deadline();
   }
@@ -247,6 +337,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     in.streams = &streams_;
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;
+    in.spec_state = &spec_state_;
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 
@@ -301,8 +392,6 @@ if (dispatcher_.consume_relevant_state_changed()) {
     }
 
     constexpr uint32_t kMaxShutdownWaitTicks = 200; // deterministic bound; avoids teardown hangs.
-
-    ICameraProvider* prov = provider_.load(std::memory_order_acquire);
 
     auto any_stream_started = [this]() -> bool {
       for (const auto& kv : streams_.all()) {
@@ -465,6 +554,45 @@ void CoreRuntime::post(CoreThread::Task task) {
   (void)try_post(std::move(task));
 }
 
+void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id) {
+  if (device_instance_id == 0 || hardware_id.empty()) {
+    return;
+  }
+
+  (void)try_post([this, device_instance_id, hardware_id]() {
+    if (!devices_.note_device_identity(device_instance_id, hardware_id)) {
+      return;
+    }
+    devices_.set_camera_spec_version(
+        device_instance_id,
+        spec_state_.camera_spec_version(hardware_id));
+    request_publish_from_core_unchecked();
+  });
+}
+
+void CoreRuntime::retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version) {
+  if (hardware_id.empty()) {
+    return;
+  }
+
+  (void)try_post([this, hardware_id, camera_spec_version]() {
+    spec_state_.set_camera_spec_version(hardware_id, camera_spec_version);
+    for (const auto& [device_instance_id, rec] : devices_.all()) {
+      if (rec.hardware_id == hardware_id) {
+        (void)devices_.set_camera_spec_version(device_instance_id, camera_spec_version);
+      }
+    }
+    request_publish_from_core_unchecked();
+  });
+}
+
+void CoreRuntime::retain_imaging_spec_version(uint64_t imaging_spec_version) {
+  (void)try_post([this, imaging_spec_version]() {
+    spec_state_.set_imaging_spec_version(imaging_spec_version);
+    request_publish_from_core_unchecked();
+  });
+}
+
 CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {
   const CoreRuntimeState st = state_.load(std::memory_order_acquire);
   if (st != CoreRuntimeState::LIVE) {
@@ -568,6 +696,7 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
   const CoreThread::PostResult pr = try_post([this, stream_id]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
+    (void)streams_.mark_stop_requested_by_core(stream_id);
     (void)p->stop_stream(stream_id);
     (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
   });

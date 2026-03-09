@@ -301,6 +301,8 @@ bool CamBANGDevNode::start_provider_() {
 
     UtilityFunctions::print("[CamBANGDevNode] Opening endpoint index ", (int)selected, ": ", eps[selected].name.c_str());
 
+    runtime_->retain_device_identity(device_instance_id_, eps[selected].hardware_id);
+
     pr = provider_->open_device(eps[selected].hardware_id, device_instance_id_, root_id_);
     if (!pr.ok()) {
         UtilityFunctions::printerr("[CamBANGDevNode] Provider open_device failed.");

@@ -6,6 +6,18 @@
 
 namespace cambang {
 
+namespace {
+uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
+  if (ts.tick_ns == 0) {
+    return 0;
+  }
+  if (ts.domain != CaptureTimestampDomain::CORE_MONOTONIC) {
+    return 0;
+  }
+  return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
+}
+} // namespace
+
 
 
 void CoreDispatcher::dispatch(CoreCommand&& cmd) {
@@ -143,7 +155,8 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
 
     const uint64_t sid = p.frame.stream_id;
     if (streams_) {
-      if (!streams_->on_frame_received(sid)) {
+      const uint64_t integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+      if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
       }
     }

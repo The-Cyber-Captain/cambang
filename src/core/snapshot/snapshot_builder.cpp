@@ -1,11 +1,14 @@
 #include "core/snapshot/snapshot_builder.h"
 
 #include <cstring>
+#include <limits>
 #include <set>
 
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_spec_state.h"
+#include "core/provider_callback_ingress.h"
 
 namespace cambang {
 
@@ -98,24 +101,36 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
     snap.topology_version = topology_version;
     snap.timestamp_ns = timestamp_ns;
 
-    // imaging_spec_version is not implemented in this scaffolding slice.
-    snap.imaging_spec_version = 0;
+    snap.imaging_spec_version = in.spec_state ? in.spec_state->imaging_spec_version() : 0;
 
     // Devices
     if (in.devices) {
         snap.devices.reserve(in.devices->all().size());
         for (const auto& [id, rec] : in.devices->all()) {
-            (void)rec;
             CamBANGDeviceState d;
             d.instance_id = id;
-            d.hardware_id = std::string(); // unknown in current scaffolding
+            d.hardware_id = rec.hardware_id;
+            d.camera_spec_version = rec.camera_spec_version;
 
             // Map minimal state.
-            d.phase = CBLifecyclePhase::LIVE;
-            d.mode = CBDeviceMode::IDLE;
+            d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
+            d.mode = (in.streams && in.streams->has_flowing_stream_for_device(id))
+                         ? CBDeviceMode::STREAMING
+                         : CBDeviceMode::IDLE;
             d.engaged = rec.open;
+            d.warm_hold_ms = rec.warm_hold_ms;
+            if (rec.warm_deadline_active && rec.warm_deadline_ns > timestamp_ns) {
+                const uint64_t remaining_ns = rec.warm_deadline_ns - timestamp_ns;
+                const uint64_t remaining_ms = (remaining_ns + 999999ull) / 1000000ull;
+                d.warm_remaining_ms =
+                    remaining_ms > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())
+                        ? std::numeric_limits<uint32_t>::max()
+                        : static_cast<uint32_t>(remaining_ms);
+            } else {
+                d.warm_remaining_ms = 0;
+            }
             d.last_error_code = static_cast<int32_t>(rec.last_error_code);
-            d.errors_count = (rec.last_error_code != 0) ? 1u : 0u;
+            d.errors_count = rec.errors_count;
 
             snap.devices.push_back(std::move(d));
         }
@@ -135,10 +150,21 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             if (!rec.created) {
                 s.mode = CBStreamMode::STOPPED;
             } else {
+                // Packet A intentionally projects only STOPPED/FLOWING from currently
+                // retained runtime truth. STARVED/ERROR modes need richer retained
+                // state and remain future work.
                 s.mode = rec.started ? CBStreamMode::FLOWING : CBStreamMode::STOPPED;
             }
 
-            s.stop_reason = CBStreamStopReason::NONE;
+            if (rec.started || rec.last_stop_origin == CoreStreamRegistry::StopOrigin::None) {
+                s.stop_reason = CBStreamStopReason::NONE;
+            } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User) {
+                s.stop_reason = CBStreamStopReason::USER;
+            } else if (rec.last_error_code != 0) {
+                s.stop_reason = CBStreamStopReason::PROVIDER;
+            } else {
+                s.stop_reason = CBStreamStopReason::PROVIDER;
+            }
             s.profile_version = rec.profile_version;
 
             s.width = rec.profile.width;
@@ -150,11 +176,8 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.frames_received = rec.frames_received;
             s.frames_delivered = rec.frames_released; // in this slice, release == delivered to sink
             s.frames_dropped = rec.frames_dropped;
-            s.queue_depth = 0;
-
-            // last_frame_ts_ns requires mapping capture timestamps into core timebase.
-            // Not implemented in this slice.
-            s.last_frame_ts_ns = 0;
+            s.queue_depth = in.ingress ? in.ingress->ingress_depth_for_stream(sid) : 0;
+            s.last_frame_ts_ns = rec.last_frame_ts_ns;
 
             snap.streams.push_back(std::move(s));
         }

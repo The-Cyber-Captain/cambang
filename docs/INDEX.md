@@ -80,6 +80,9 @@ Example:
 
 - dev/frameview_stage.md
 - dev/godot_abuse_scenes.md
+- dev/snapshot_truth_rules.md`  
+    Developer rules ensuring snapshot fields always reflect real runtime
+    truth and are never populated with fabricated placeholder values.
 - dev/maintainer_tools.md
     - describes maintainer CLI validation tools
     - includes provider_compliance_verify
@@ -105,7 +108,6 @@ semantics to match a backend API.
 This is especially important as additional platform-backed providers are
 introduced (for example future `android_camera2` alongside
 `windows_mediafoundation`).
-
 
 ------------------------------------------------------------------------
 

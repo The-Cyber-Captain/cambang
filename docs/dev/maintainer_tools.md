@@ -117,7 +117,20 @@ on:
 -   local machine state
 
 Platform runtime validation must remain **explicitly opt-in**.
+------------------------------------------------------------------------
 
+# Related Developer Documentation
+
+The following documents describe internal runtime design rules and
+diagnostic expectations used while developing the CamBANG runtime.
+
+| Document | Purpose |
+|---|---|
+| `docs/dev/godot_abuse_scenes.md` | Description of Godot boundary verification scenes |
+| `docs/developer/snapshot_truth_rules.md` | Rules ensuring snapshot fields always reflect real runtime truth |
+
+These documents are intended for maintainers working on runtime
+architecture and diagnostic tooling.
 ------------------------------------------------------------------------
 
 ## Benchmark
