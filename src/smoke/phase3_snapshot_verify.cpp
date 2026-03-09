@@ -345,7 +345,7 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
 
   CoreCommand cmd{};
   cmd.type = CoreCommandType::PROVIDER_FRAME;
-  cmd.payload = CmdProviderFrame{frame};
+  cmd.payload = CmdProviderFrame{frame, 1};
   dispatcher.dispatch(std::move(cmd));
 
   if (releases != 1) {

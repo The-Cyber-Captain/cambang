@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <unordered_map>
 
 #include "core/core_mailbox.h"
 #include "core/core_thread.h"
@@ -76,6 +78,10 @@ public:
   void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override;
 
 private:
+  uint32_t on_frame_ingress_enqueued_(uint64_t stream_id);
+  void on_frame_ingress_failed_(uint64_t stream_id);
+  void on_frame_ingress_dispatched_(uint64_t stream_id);
+
   void post_command(CoreCommand cmd);
 
   CoreThread* core_thread_ = nullptr; // non-owning
@@ -95,6 +101,9 @@ private:
   std::atomic<uint64_t> frames_released_on_drop_full_{0};
   std::atomic<uint64_t> frames_released_on_drop_closed_{0};
   std::atomic<uint64_t> frames_released_on_drop_allocfail_{0};
+
+  std::mutex ingress_mu_;
+  std::unordered_map<uint64_t, uint32_t> stream_ingress_depth_;
 };
 
 } // namespace cambang

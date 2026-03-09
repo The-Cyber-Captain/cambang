@@ -568,6 +568,7 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
   const CoreThread::PostResult pr = try_post([this, stream_id]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
+    (void)streams_.mark_stop_requested_by_core(stream_id);
     (void)p->stop_stream(stream_id);
     (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
   });
