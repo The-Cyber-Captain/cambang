@@ -17,52 +17,24 @@ build outputs unless explicitly requested.
 
 Maintainer tools fall into three broad categories.
 
-  -----------------------------------------------------------------------
-  Category                            Purpose
-  ----------------------------------- -----------------------------------
-  Smoke test                          Minimal sanity check ensuring the
-                                      core runtime spine operates
-                                      correctly
-
-  Verification                        Deterministic validation of
-                                      specific runtime invariants
-
-  Benchmark                           Performance measurement utilities
-  -----------------------------------------------------------------------
-
+| Category | Purpose |
+|---|---|
+| Smoke test | Minimal sanity check ensuring the core runtime spine operates correctly |
+| Verification | Deterministic validation of specific runtime invariants |
+| Benchmark | Performance measurement utilities |
 ------------------------------------------------------------------------
 
 # Tool Overview
+| Tool | Purpose | Category |
+|---|---|---|
+| `core_spine_smoke` | Minimal Core runtime invariant validation using the stub provider | Smoke test |
+| `synthetic_timeline_verify` | Deterministic verification of SyntheticProvider timeline behaviour and Core registry truth | Verification |
+| `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication Phase 3 semantics | Verification |
+| `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
+| `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
+| `windows_mf_runtime_validate` | Opt-in Windows Media Foundation runtime validation against real hardware | Verification |
+| `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
 
-  --------------------------------------------------------------------------------------------
-  Tool                            Purpose                              Category
-  ------------------------------- ------------------------------------ -----------------------
-  `core_spine_smoke`              Minimal Core runtime invariant       Smoke test
-                                  validation using the stub provider   
-
-  `synthetic_timeline_verify`     Deterministic verification of        Verification
-                                  SyntheticProvider timeline behaviour 
-                                  and Core registry truth              
-
-  `phase3_snapshot_verify`        Focused verification for             Verification
-                                  snapshot/native-object/publication   
-                                  Phase 3 semantics                    
-
-  `provider_compliance_verify`    Deterministic provider-contract      Verification
-                                  verification using Stub and          
-                                  Synthetic only                       
-
-  `restart_boundary_verify`       Deterministic verification of the    Verification
-                                  CamBANGServer stop/start boundary    
-                                  contract                             
-
-  `windows_mf_runtime_validate`   Opt-in Windows Media Foundation      Verification
-                                  runtime validation against real      
-                                  hardware                             
-
-  `pattern_render_bench`          Pattern renderer performance         Benchmark
-                                  benchmark                            
-  --------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------
 
 ## Godot Boundary Verification Scenes
