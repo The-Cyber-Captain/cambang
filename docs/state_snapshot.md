@@ -247,7 +247,24 @@ CamBANGStateSnapshot {
 
   detached_root_ids: Array<uint64> // computed by core (see §7)
 }
+
 ```
+### Spec version semantics
+
+`imaging_spec_version` and `camera_spec_version` represent the
+**effective specification versions currently retained by Core**.
+
+Rules:
+
+- A **non-zero value** indicates that an effective specification has
+  been applied and is currently active in runtime state.
+- If no effective specification has been retained by Core, the value
+  **must remain `0`**.
+- Snapshot publication must **never fabricate bootstrap versions**.
+
+Version fields therefore reflect **actual runtime truth**, not
+placeholder values.
+
 ### 5.x Timestamp semantics (normative)
 
 `timestamp_ns` is a **monotonic publish timestamp** produced by core at snapshot assembly time.
@@ -327,6 +344,33 @@ CamBANGDeviceState {
   last_error_code: int32                 // 0 if none
 }
 ```
+### Warm retention semantics
+
+Devices may remain engaged briefly after they become not-in-use.
+
+The snapshot exposes this state using:
+
+- `warm_hold_ms`
+- `warm_remaining_ms`
+
+Interpretation:
+
+- `warm_hold_ms`
+  Effective warm retention policy currently applied to the device.
+
+- `warm_remaining_ms`
+  Remaining time in the active warm grace interval at snapshot
+  publication time.
+
+Rules:
+
+- If no warm policy is currently applied, `warm_hold_ms = 0`.
+- If the device is not currently in a warm grace interval,
+  `warm_remaining_ms = 0`.
+- A non-zero `warm_remaining_ms` implies that Core has retained a real
+  warm deadline for the device.
+
+Warm scheduling and expiry are **Core-owned runtime behaviour**.
 
 ### 6.3 `CamBANGStreamState`
 

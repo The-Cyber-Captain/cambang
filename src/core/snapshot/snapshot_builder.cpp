@@ -1,11 +1,13 @@
 #include "core/snapshot/snapshot_builder.h"
 
 #include <cstring>
+#include <limits>
 #include <set>
 
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_spec_state.h"
 #include "core/provider_callback_ingress.h"
 
 namespace cambang {
@@ -99,17 +101,16 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
     snap.topology_version = topology_version;
     snap.timestamp_ns = timestamp_ns;
 
-    // imaging_spec_version is not implemented in this scaffolding slice.
-    snap.imaging_spec_version = 0;
+    snap.imaging_spec_version = in.spec_state ? in.spec_state->imaging_spec_version() : 0;
 
     // Devices
     if (in.devices) {
         snap.devices.reserve(in.devices->all().size());
         for (const auto& [id, rec] : in.devices->all()) {
-            (void)rec;
             CamBANGDeviceState d;
             d.instance_id = id;
-            d.hardware_id = std::string(); // unknown in current scaffolding
+            d.hardware_id = rec.hardware_id;
+            d.camera_spec_version = rec.camera_spec_version;
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
@@ -117,6 +118,17 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
                          ? CBDeviceMode::STREAMING
                          : CBDeviceMode::IDLE;
             d.engaged = rec.open;
+            d.warm_hold_ms = rec.warm_hold_ms;
+            if (rec.warm_deadline_active && rec.warm_deadline_ns > timestamp_ns) {
+                const uint64_t remaining_ns = rec.warm_deadline_ns - timestamp_ns;
+                const uint64_t remaining_ms = (remaining_ns + 999999ull) / 1000000ull;
+                d.warm_remaining_ms =
+                    remaining_ms > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())
+                        ? std::numeric_limits<uint32_t>::max()
+                        : static_cast<uint32_t>(remaining_ms);
+            } else {
+                d.warm_remaining_ms = 0;
+            }
             d.last_error_code = static_cast<int32_t>(rec.last_error_code);
             d.errors_count = rec.errors_count;
 

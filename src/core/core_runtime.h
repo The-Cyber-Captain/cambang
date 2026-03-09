@@ -5,11 +5,13 @@
 #include <chrono>
 #include <cstring>
 #include <deque>
+#include <string>
 
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_runtime_state.h"
+#include "core/core_spec_state.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
 #include "core/core_frame_sink.h"
@@ -189,6 +191,12 @@ enum class TryDestroyStreamStatus : uint8_t {
     return provider_.load(std::memory_order_acquire);
   }
 
+  // Core-owned identity/spec truth retention hooks.
+  // These are internal runtime surfaces used by orchestrators that issue provider calls.
+  void retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id);
+  void retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version);
+  void retain_imaging_spec_version(uint64_t imaging_spec_version);
+
   // Internal dev visibility: allow the Godot main thread to echo a core-thread
   // banner line via UtilityFunctions::print for environments where stdout isn't
   // reliably visible (e.g. Godot editor output on Windows).
@@ -217,6 +225,7 @@ private:
 private:
   CoreThread core_thread_;
   CoreDeviceRegistry devices_;
+  CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
 
