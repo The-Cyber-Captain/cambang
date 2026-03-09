@@ -4,6 +4,37 @@
 
 namespace cambang {
 
+uint32_t ProviderCallbackIngress::on_frame_ingress_enqueued_(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(ingress_mu_);
+  uint32_t& depth = stream_ingress_depth_[stream_id];
+  depth++;
+  return depth;
+}
+
+void ProviderCallbackIngress::on_frame_ingress_failed_(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(ingress_mu_);
+  auto it = stream_ingress_depth_.find(stream_id);
+  if (it == stream_ingress_depth_.end()) {
+    return;
+  }
+  if (it->second > 0) {
+    it->second--;
+  }
+  if (it->second == 0) {
+    stream_ingress_depth_.erase(it);
+  }
+}
+
+void ProviderCallbackIngress::on_frame_ingress_dispatched_(uint64_t stream_id) {
+  on_frame_ingress_failed_(stream_id);
+}
+
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
                                                  std::function<void(CoreCommand&&)> sink,
                                                  std::function<uint64_t()> core_monotonic_now_ns)
@@ -40,6 +71,15 @@ ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexc
   return s;
 }
 
+uint32_t ProviderCallbackIngress::ingress_depth_for_stream(uint64_t stream_id) const {
+  if (stream_id == 0) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(ingress_mu_);
+  const auto it = stream_ingress_depth_.find(stream_id);
+  return (it != stream_ingress_depth_.end()) ? it->second : 0;
+}
+
 void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
@@ -49,19 +89,25 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   }
 
   const CoreCommandType type = cmd.type;
+  uint64_t frame_stream_id = 0;
 
   // Preserve a copy of the frame for the failure-to-enqueue path. We must not rely on
   // moved-from CoreCommand contents after constructing the posted lambda.
   FrameView fail_frame;
   bool has_fail_frame = false;
   if (type == CoreCommandType::PROVIDER_FRAME) {
-    fail_frame = std::get<CmdProviderFrame>(cmd.payload).frame;
+    auto& frame_payload = std::get<CmdProviderFrame>(cmd.payload);
+    fail_frame = frame_payload.frame;
+    frame_stream_id = frame_payload.frame.stream_id;
     has_fail_frame = true;
   }
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
-  const CoreThread::PostResult r = core_thread_->try_post([c = std::move(cmd), sink = sink_]() mutable {
+  const CoreThread::PostResult r = core_thread_->try_post([this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
+    if (c.type == CoreCommandType::PROVIDER_FRAME) {
+      on_frame_ingress_dispatched_(frame_stream_id);
+    }
     if (sink) {
       sink(std::move(c));
       return;
@@ -130,6 +176,7 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   account_command_drop(r);
 
   if (has_fail_frame) {
+    on_frame_ingress_failed_(frame_stream_id);
     account_frame_drop_and_release(r, fail_frame);
   }
 }
@@ -202,6 +249,7 @@ void ProviderCallbackIngress::on_frame(const FrameView& frame) {
   // core calls frame.release_now(). The core dispatcher MUST ensure release-on-drop.
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_FRAME;
+  (void)on_frame_ingress_enqueued_(frame.stream_id);
   cmd.payload = CmdProviderFrame{frame}; // copies the view (not the buffer)
   post_command(std::move(cmd));
 }

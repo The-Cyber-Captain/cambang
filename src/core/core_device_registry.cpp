@@ -35,6 +35,7 @@ bool CoreDeviceRegistry::on_device_error(uint64_t device_instance_id, uint32_t e
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
   rec.last_error_code = error_code;
+  rec.errors_count++;
   return true;
 }
 

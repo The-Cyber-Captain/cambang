@@ -6,6 +6,7 @@
 #include "core/core_device_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/provider_callback_ingress.h"
 
 namespace cambang {
 
@@ -111,11 +112,13 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             d.hardware_id = std::string(); // unknown in current scaffolding
 
             // Map minimal state.
-            d.phase = CBLifecyclePhase::LIVE;
-            d.mode = CBDeviceMode::IDLE;
+            d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
+            d.mode = (in.streams && in.streams->has_flowing_stream_for_device(id))
+                         ? CBDeviceMode::STREAMING
+                         : CBDeviceMode::IDLE;
             d.engaged = rec.open;
             d.last_error_code = static_cast<int32_t>(rec.last_error_code);
-            d.errors_count = (rec.last_error_code != 0) ? 1u : 0u;
+            d.errors_count = rec.errors_count;
 
             snap.devices.push_back(std::move(d));
         }
@@ -135,10 +138,21 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             if (!rec.created) {
                 s.mode = CBStreamMode::STOPPED;
             } else {
+                // Packet A intentionally projects only STOPPED/FLOWING from currently
+                // retained runtime truth. STARVED/ERROR modes need richer retained
+                // state and remain future work.
                 s.mode = rec.started ? CBStreamMode::FLOWING : CBStreamMode::STOPPED;
             }
 
-            s.stop_reason = CBStreamStopReason::NONE;
+            if (rec.started || rec.last_stop_origin == CoreStreamRegistry::StopOrigin::None) {
+                s.stop_reason = CBStreamStopReason::NONE;
+            } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User) {
+                s.stop_reason = CBStreamStopReason::USER;
+            } else if (rec.last_error_code != 0) {
+                s.stop_reason = CBStreamStopReason::PROVIDER;
+            } else {
+                s.stop_reason = CBStreamStopReason::PROVIDER;
+            }
             s.profile_version = rec.profile_version;
 
             s.width = rec.profile.width;
@@ -150,11 +164,8 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.frames_received = rec.frames_received;
             s.frames_delivered = rec.frames_released; // in this slice, release == delivered to sink
             s.frames_dropped = rec.frames_dropped;
-            s.queue_depth = 0;
-
-            // last_frame_ts_ns requires mapping capture timestamps into core timebase.
-            // Not implemented in this slice.
-            s.last_frame_ts_ns = 0;
+            s.queue_depth = in.ingress ? in.ingress->ingress_depth_for_stream(sid) : 0;
+            s.last_frame_ts_ns = rec.last_frame_ts_ns;
 
             snap.streams.push_back(std::move(s));
         }

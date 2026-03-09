@@ -20,6 +20,7 @@ public:
     uint64_t device_instance_id = 0;
     bool open = false;
     uint32_t last_error_code = 0;
+    uint64_t errors_count = 0;
   };
 
   bool on_device_opened(uint64_t device_instance_id);
