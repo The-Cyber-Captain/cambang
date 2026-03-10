@@ -3,98 +3,139 @@
 This directory contains both canonical architectural documentation and
 development-stage notes.
 
-To prevent drift and contradiction, documents are categorised
-explicitly.
+To prevent drift and contradiction, documents are categorised explicitly.
 
-------------------------------------------------------------------------
+---
 
-## 1. Canonical Architecture (Source of Truth)
+## 1. Canonical architecture (source of truth)
 
-These documents define CamBANG's architectural model and design intent.
+These documents define CamBANG’s architectural model and design intent.
 They are authoritative and must not be contradicted by other documents.
 
--   provider_architecture.md
--   core_runtime_model.md
--   arbitration_policy.md
--   state_snapshot.md
--   naming.md
--   repo_structure.md
+- `provider_architecture.md`
+- `core_runtime_model.md`
+- `arbitration_policy.md`
+- `state_snapshot.md`
+- `naming.md`
+- `repo_structure.md`
 
-Note:
+Notes:
 
-Godot-facing snapshot publication uses a **tick-bounded observable truth**
-model (≤ 1 `state_published` emission per Godot tick when changed). This
-contract is defined in `state_snapshot.md` and the boundary mechanics are
-described in `core_runtime_model.md`.
+- Godot-facing snapshot publication uses a **tick-bounded observable truth**
+  model (≤ 1 `state_published` emission per Godot tick when changed).
+  The public contract is defined in `state_snapshot.md`.
+- Validation layering (core invariant validation vs platform integration
+  validation) is defined in `core_runtime_model.md`.
+- Platform-specific validation documents must not redefine core invariants.
 
-Validation layering (core invariant validation vs platform integration
-validation) is defined in `core_runtime_model.md`.
+If any supplementary document appears to conflict with these, canonical
+architecture documents take precedence.
 
-Platform-specific validation documents must not redefine core invariants.
+Changes to canonical documents should be deliberate and reviewed carefully.
 
-If any supplementary document appears to conflict with these, the
-canonical architecture documents take precedence.
+---
 
-Changes to canonical documents should be deliberate and reviewed
-carefully.
-
-------------------------------------------------------------------------
-
-## 2. Architectural Supplements
+## 2. Architectural supplements
 
 Located in:
 
+```text
 docs/architecture/
+```
 
-These documents clarify or extend specific aspects of the canonical
-model, but do not redefine it.
+These documents clarify or extend specific aspects of the canonical model,
+but do not redefine it.
 
 They must:
 
--   Explicitly reference the canonical document(s) they supplement.
--   Avoid duplicating or restating core architecture unnecessarily.
--   Remain narrowly scoped.
+- explicitly reference the canonical document(s) they supplement
+- avoid duplicating or restating core architecture unnecessarily
+- remain narrowly scoped
 
-Example:
-- architecture/frame_sinks.md
-- architecture/pattern_module.md
-- architecture/godot_boundary_contract.md
-------------------------------------------------------------------------
+The lists in this index are intended to be complete for the current canonical documentation set.
+Any change that adds, removes, renames, or reclassifies a canonical or supplement document must update this index in the same change.
 
-## 3. Development / Scaffolding Notes
+Current supplements:
+
+Architectural supplements provide focused explanations of subsystems,
+edge cases, or conceptual models that support the canonical documents.
+
+They may include diagrams, examples, and reasoning aids, but must not
+redefine canonical rules.
+
+| Document                        | Purpose                                                                                   |
+|---------------------------------|-------------------------------------------------------------------------------------------|
+| lifecycle_model.md              | Explains lifecycle hierarchy and event flow across provider → core → Godot.               |
+| provider_state_machines.md      | Defines provider/device/stream/frame-producer state machines and valid transitions.       |
+| provider_strand_model.md        | Clarifies provider-strand delivery rules and event-class guarantees.                      |
+| publication_model.md            | Describes tick-bounded publication and Godot-visible snapshot behaviour.                  |
+| publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`.                   |
+| frame_sinks.md                  | Describes frame sink types and responsibilities.                                          |
+| maintainer_tools.md             | Defines the Godot runtime boundary and interaction contract, plus CLI verification tools. |
+| pattern_module.md               | Explains the deterministic pattern generator module used for testing and diagnostics.     |
+
+### Reading guidance
+
+For lifecycle behaviour, read:
+
+1. provider_architecture.md (canonical rules)
+2. lifecycle_model.md (hierarchy and event flow)
+3. provider_state_machines.md (resource state transitions)
+
+For snapshot publication behaviour, read:
+
+1. state_snapshot.md (canonical snapshot structure)
+2. publication_model.md (tick-bounded publication)
+3. publication_counter_examples.md (counter interpretation)
+
+### Roles of current supplements include:
+
+- `lifecycle_model.md` explains hierarchy, lifecycle phases, and provider-strand event flow
+- `provider_state_machines.md` provides a compact reference of provider lifecycle
+  and resource-state axes
+- `provider_strand_model.md` clarifies serialized provider → core delivery and non-droppable event classes
+- `publication_model.md` explains internal-vs-observable publication and tick-bounded coalescing
+- `publication_counter_examples.md` illustrates progression of `gen`, `version`,
+  and `topology_version` across representative runtime situations
+- `frame_sinks.md` explains the core frame-consumer boundary
+- `godot_boundary_contract.md` consolidates the externally visible Godot-facing runtime contract
+- `pattern_module.md` documents synthetic pixel rendering
+---
+
+## 3. Development / scaffolding notes
 
 Located in:
 
+```text
 docs/dev/
+```
 
 These documents describe:
 
--   Build stages
--   Temporary scaffolding
--   Development-only utilities
--   Diagnostic tools
+- build stages
+- temporary scaffolding
+- development-only utilities
+- diagnostic tools
+- platform-specific implementation notes
 
 They are intentionally non-canonical and may evolve or be removed.
 
-Example:
+Current dev notes:
 
-- dev/frameview_stage.md
-- dev/godot_abuse_scenes.md
-- dev/snapshot_truth_rules.md`  
-    Developer rules ensuring snapshot fields always reflect real runtime
-    truth and are never populated with fabricated placeholder values.
-- dev/maintainer_tools.md
-    - describes maintainer CLI validation tools
-    - includes provider_compliance_verify
-      (deterministic provider-contract verification using Stub and Synthetic)
-    - includes restart_boundary_verify
-      (deterministic verification of the CamBANGServer restart
-      NIL-before-baseline boundary contract)
-    - includes windows_mf_runtime_validate
-      (opt-in Windows Media Foundation runtime validation against real hardware)
+- `dev/build_and_scaffolding.md`
+- `dev/frameview_stage.md`
+- `dev/godot_boundary_verification_scenes.md`
+- `dev/maintainer_tools.md`
+- `dev/provider_compliance_checklist.md`
+- `dev/snapshot_truth_rules.md`
+- `dev/upstream_discrepancies.md`
+- `dev/windows_mf_visibility_phase.md`
 
-These documents must clearly state when code is: - Development-only -
-Intended for replacement - Not representative of release architecture
+These documents must clearly state when code is:
+
+- development-only
+- intended for replacement
+- not representative of release architecture
 
 ### Additional provider-discipline note
 
@@ -106,21 +147,28 @@ redefine lifecycle, defaulting, registry, snapshot, or timestamp
 semantics to match a backend API.
 
 This is especially important as additional platform-backed providers are
-introduced (for example future `android_camera2` alongside
-`windows_mediafoundation`).
+introduced.
 
-------------------------------------------------------------------------
+---
 
-## Documentation Discipline Rules
+## 4. Documentation discipline rules
 
-1.  Canonical architecture documents are the single source of truth.
-2.  Supplements must reference, not replace, canonical docs.
-3.  Dev notes must explicitly mark temporary code paths.
-4.  Avoid duplicating architectural explanations across files.
-5.  If in doubt, update a canonical document rather than creating a
-    parallel explanation.
+1. canonical architecture documents are the single source of truth
+2. supplements must reference, not replace, canonical docs
+3. dev notes must explicitly mark temporary code paths
+4. avoid duplicating architectural explanations across files
+5. if in doubt, update a canonical document rather than creating a parallel explanation
 
-------------------------------------------------------------------------
+---
 
-This structure ensures that CamBANG documentation remains precise,
-authoritative, and resistant to drift as the project evolves.
+This structure helps keep CamBANG documentation precise, authoritative,
+and resistant to drift as the project evolves.
+
+
+## Recently Consolidated Topics
+
+| Former Topic | Current Location |
+|---|---|
+| Provider strand detail | `architecture/provider_strand_model.md` |
+| Snapshot truth guidance | `dev/snapshot_truth_rules.md` |
+| Godot boundary verification scenes | `dev/godot_boundary_verification_scenes.md` |

@@ -218,6 +218,11 @@ Native/core objects created by the provider on behalf of CamBANG are tracked as 
 These counter names are **preserved**, but their definitions are from the
 **Godot-facing tick-bounded** perspective (observable truth):
 
+- `gen` identifies the current runtime generation
+- `version` counts observable changes within that generation
+- `topology_version` counts observable topology changes within that generation
+- when `gen` changes, both `version` and `topology_version` reset to zero for the new baseline
+
 - `gen`: zero-indexed and advances by +1 on each successful
   `CamBANGServer.start()` that transitions from stopped → running.
   For each new `gen`, `version` and `topology_version` reset to 0.

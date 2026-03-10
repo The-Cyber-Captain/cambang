@@ -1,19 +1,21 @@
 # Maintainer Tools
 
-This document describes the small command-line utilities used by
-maintainers to validate internal invariants, provider behaviour, and
-selected performance characteristics of the CamBANG runtime.
+This document describes the command-line utilities, Godot-side
+verification scenes, and tool-facing diagnostic conventions used by
+maintainers to validate internal invariants, provider behaviour,
+boundary semantics, and selected performance characteristics of the
+CamBANG runtime.
 
 These tools are **not user-facing applications** and are not intended to
-ship as part of production builds. They exist to help maintainers
-validate correctness while developing the runtime.
+ship as part of production builds. They exist to help maintainers validate
+correctness while developing the runtime.
 
 Most tools are **opt-in build artifacts** and will not appear in normal
 build outputs unless explicitly requested.
 
-------------------------------------------------------------------------
+---
 
-# Tool Categories
+## 1. Tool categories
 
 Maintainer tools fall into three broad categories.
 
@@ -22,413 +24,312 @@ Maintainer tools fall into three broad categories.
 | Smoke test | Minimal sanity check ensuring the core runtime spine operates correctly |
 | Verification | Deterministic validation of specific runtime invariants |
 | Benchmark | Performance measurement utilities |
-------------------------------------------------------------------------
 
-# Tool Overview
-| Tool | Purpose | Category |
+---
+
+## 2. Tool overview
+
+| Tool / asset | Purpose | Category |
 |---|---|---|
 | `core_spine_smoke` | Minimal Core runtime invariant validation using the stub provider | Smoke test |
 | `synthetic_timeline_verify` | Deterministic verification of SyntheticProvider timeline behaviour and Core registry truth | Verification |
-| `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication Phase 3 semantics | Verification |
+| `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication semantics | Verification |
 | `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
 | `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
 | `windows_mf_runtime_validate` | Opt-in Windows Media Foundation runtime validation against real hardware | Verification |
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
+| Godot boundary verification scenes | Validation of the Godot-facing runtime boundary | Verification |
 
-------------------------------------------------------------------------
+---
 
-## Godot Boundary Verification Scenes
+## 3. Terminology
 
-In addition to the native CLI validation tools, the repository also
-contains **Godot-side boundary verification scenes**.
-
-These scenes validate the observable contract between:
-
-Core Runtime → Snapshot Publication → CamBANGServer → Godot consumers.
-
-They are development diagnostics and are **not product UI**.
-
-Location:
-docs/dev/godot_abuse_scenes.md
-
-
-Primary scenes:
-
-| Scene | Purpose |
-|---|---|
-| `60_restart_boundary_abuse` | Verifies restart NIL-before-baseline behaviour |
-| `61_tick_bounded_coalescing_abuse` | Verifies Godot-visible tick-bounded publication |
-| `62_snapshot_polling_immutability_abuse` | Verifies snapshot immutability and polling safety |
-| `63_snapshot_observer_minimal` | Minimal snapshot observer for diagnostics |
-
-These scenes intentionally use **SyntheticProvider** as the deterministic
-runtime driver even when validating builds configured for other
-providers.
-
-The scenes complement the CLI tools:
-
-| Layer | Validation |
-|---|---|
-| CLI tools | Core invariants, provider contracts |
-| Godot scenes | Godot-facing runtime boundary behaviour |
-------------------------------------------------------------------------
-
-# Terminology
-
-## Smoke Test
+### Smoke test
 
 A minimal executable that validates the runtime spine:
 
--   Core runtime start
--   provider registration
--   state publication
--   basic teardown
+- core runtime start
+- provider registration
+- state publication
+- basic teardown
 
 Smoke tests should remain **deterministic and provider-independent**.
 They must not depend on real hardware.
 
-------------------------------------------------------------------------
-
-## Verification Tool
+### Verification tool
 
 A deterministic executable used to validate specific internal invariants
 or subsystem behaviour.
 
 Verification tools should:
 
--   be deterministic
--   avoid platform hardware dependencies
--   produce a clear pass/fail result
--   run quickly
+- be deterministic
+- avoid platform hardware dependencies where possible
+- produce a clear pass / fail result
+- run quickly
 
-------------------------------------------------------------------------
-
-## Platform Runtime Validation
+### Platform runtime validation
 
 A maintainer tool that validates a platform-backed provider against real
 OS APIs and, where applicable, real hardware.
 
-Unlike deterministic verification tools, platform validation may depend
-on:
+Unlike deterministic verifiers, platform validation may depend on:
 
--   device presence
--   driver behaviour
--   negotiated formats
--   local machine state
+- device presence
+- driver behaviour
+- negotiated formats
+- local machine state
 
-Platform runtime validation must remain **explicitly opt-in**.
-------------------------------------------------------------------------
+Platform runtime validation must remain explicitly opt-in.
 
-# Related Developer Documentation
+### Benchmark
 
-The following documents describe internal runtime design rules and
-diagnostic expectations used while developing the CamBANG runtime.
-
-| Document | Purpose |
-|---|---|
-| `docs/dev/godot_abuse_scenes.md` | Description of Godot boundary verification scenes |
-| `docs/developer/snapshot_truth_rules.md` | Rules ensuring snapshot fields always reflect real runtime truth |
-
-These documents are intended for maintainers working on runtime
-architecture and diagnostic tooling.
-------------------------------------------------------------------------
-
-## Benchmark
-
-A performance measurement utility used to characterise runtime
-behaviour.
+A performance measurement utility.
 
 Benchmarks do not validate correctness; they measure throughput,
 latency, or resource usage.
 
-------------------------------------------------------------------------
+---
 
-# Provider Validation Tools
+## 4. Provider validation layering
 
 Provider correctness is validated in **two layers**:
 
-1.  Deterministic provider-contract verification\
-2.  Platform-backed runtime validation
+1. deterministic provider-contract verification
+2. platform-backed runtime validation
 
 This layering matches the architecture rules defined in:
 
--   `docs/provider_architecture.md`
--   `docs/core_runtime_model.md`
+- `docs/provider_architecture.md`
+- `docs/core_runtime_model.md`
 
 Deterministic provider validation must not rely on physical hardware.
 Platform validation is performed separately using explicit tools.
 
-------------------------------------------------------------------------
+The terse provider-audit checklist remains separately documented in:
 
-# `provider_compliance_verify`
+```text
+docs/dev/provider_compliance_checklist.md
+```
 
-**Category:** Verification Tool
+---
 
-## Purpose
+## 5. Snapshot truth requirements
 
-`provider_compliance_verify` validates the provider contract and
-lifecycle rules using only deterministic providers.
+Maintainer tools and Godot-side verification scenes assume that providers
+follow the snapshot truth rules.
+
+Those rules define how snapshots represent:
+
+- absence and unknown values
+- retained identity
+- publication consistency
+- non-fabricated state
+
+The canonical source for those requirements is:
+
+```text
+docs/dev/snapshot_truth_rules.md
+```
+
+This document does not restate the rules. When diagnosing a suspected
+truth-discipline failure, consult the canonical rules document first and
+then interpret the relevant verifier output in that light.
+
+### Interpreting verifier output
+
+The following output shapes usually indicate a snapshot-truth violation
+rather than a mere presentation issue:
+
+- a value appears before any runtime event authorizes it
+- an identifier changes without a corresponding lifecycle transition
+- a supposedly retained value resets to a convenience default
+- a new generation exposes non-`NIL` state before authoritative
+  publication
+- the same published snapshot mixes truths from different runtime moments
+
+When a verifier reports one of these patterns, the likely defect is in
+retained runtime state, publication timing, or snapshot projection.
+
+---
+
+## 6. `provider_compliance_verify`
+
+**Category:** Verification tool
+
+### Purpose
+
+`provider_compliance_verify` validates the provider contract and lifecycle
+rules using deterministic providers only.
 
 It exercises:
 
--   StubProvider
--   SyntheticProvider
+- `StubProvider`
+- `SyntheticProvider`
 
-This tool is the primary maintainer check for the provider compliance
-rules recorded in:
+This is the primary maintainer check for provider-contract rules such as:
 
--   `docs/provider_architecture.md`
--   `docs/core_runtime_model.md`
--   `docs/dev/provider_compliance_checklist.md`
+- serialized provider → core callback delivery
+- lifecycle ordering correctness
+- native-object create / destroy reporting
+- non-lossy lifecycle/native-object/error delivery
+- deterministic shutdown sequencing
+- synthetic ordering and timeline invariants
 
-## What it validates
+### What it does not do
 
-The tool verifies core provider-contract invariants such as:
+It deliberately does **not**:
 
--   serialized provider → core callback delivery
--   lifecycle ordering correctness
--   native-object create/destroy reporting
--   non-lossy lifecycle/native-object/error delivery
--   deterministic shutdown sequencing
--   SyntheticProvider ordering and timeline invariants
-
-## What it does not do
-
-`provider_compliance_verify` deliberately does **not**:
-
--   enumerate physical cameras
--   open platform-backed devices
--   validate Media Foundation or other platform APIs
--   exercise real asynchronous device callbacks
+- enumerate physical cameras
+- open platform-backed devices
+- validate real Media Foundation or other platform APIs
+- exercise hardware-driven asynchronous device callbacks
 
 Those concerns belong to platform validation tools.
 
-## Build
+### Build and usage
 
 Typical build form:
 
-    scons smoke=1 smoke
+```text
+scons smoke=1 smoke
+```
 
-The executable will appear in the `out/` directory.
+Usage:
 
-## Usage
-
-    ./out/provider_compliance_verify.exe
+```text
+./out/provider_compliance_verify.exe
+```
 
 Expected result:
 
-    PASS provider_compliance_verify
+```text
+PASS provider_compliance_verify
+```
 
-------------------------------------------------------------------------
+---
 
-# `restart_boundary_verify`
+## 7. `restart_boundary_verify`
 
-**Category:** Verification Tool
+**Category:** Verification tool
 
-## Purpose
+### Purpose
 
-`restart_boundary_verify` is the **authoritative deterministic
-verifier** for the CamBANGServer stop/start boundary contract.
+`restart_boundary_verify` is the authoritative deterministic verifier for
+the CamBANGServer stop/start boundary contract.
 
-It directly validates the **NIL-before-baseline rule** across a full
+It directly validates the **NIL-before-baseline** rule across a full
 stop → restart cycle.
 
-This tool exists because restart behaviour must be provable
-**independently of Godot scene scheduling behaviour**.
+This tool exists because restart behaviour must be provable independently
+of Godot-scene scheduling behaviour.
 
-## Contract validated
+### Contract validated
 
-The verifier enforces the following runtime rules:
+The verifier enforces these runtime rules:
 
-1.  After a completed `CamBANGServer.stop()`, the public snapshot must
-    be `NIL`.
-2.  After a subsequent `start()`, `get_state_snapshot()` must remain
-    `NIL` until the first published snapshot of the new generation.
-3.  The first post-restart publish must produce a valid snapshot.
-4.  Stale publications from the previous generation must **not**
-    repopulate the public snapshot.
-5.  Restart initiated from callback-context-equivalent execution must be
-    safe.
+1. after completed `CamBANGServer.stop()`, the public snapshot is `NIL`
+2. after a subsequent `start()`, `get_state_snapshot()` remains `NIL`
+   until the first published snapshot of the new generation
+3. the first post-restart publish yields a valid snapshot
+4. stale publications from the previous generation do **not** repopulate
+   the public snapshot
+5. restart initiated from callback-context-equivalent execution remains safe
 
-These rules correspond to the snapshot-generation semantics described
-in:
+### Usage
 
--   `docs/state_snapshot.md`
--   `docs/naming.md`
--   `docs/core_runtime_model.md`
+```text
+./out/restart_boundary_verify.exe
+```
 
-## Usage
+Expected output shape:
 
-    ./out/restart_boundary_verify.exe
+```text
+step 0 OK
+step 1 OK
+step 2 OK
+step 3 OK
+step 4 OK
+OK: restart_boundary_verify passed
+```
 
-Expected output:
+Any failure indicates a regression in Godot-boundary snapshot exposure.
 
-    step 0 OK
-    step 1 OK
-    step 2 OK
-    step 3 OK
-    step 4 OK
-    OK: restart_boundary_verify passed
+---
 
-Any failure indicates a regression in the **Godot boundary snapshot
-exposure semantics**.
+## 8. `windows_mf_runtime_validate`
 
-------------------------------------------------------------------------
+**Category:** Verification tool (platform-backed)
 
-# `windows_mf_runtime_validate`
-
-**Category:** Verification Tool (platform-backed)
-
-## Purpose
+### Purpose
 
 `windows_mf_runtime_validate` validates the Windows Media Foundation
-provider under **real asynchronous hardware-backed execution**.
+provider under real asynchronous hardware-backed execution.
 
 It exercises:
 
--   WindowsMediaFoundationProvider
--   Media Foundation device enumeration
--   real device open
--   stream start / stop
--   shutdown behaviour
+- device enumeration
+- real device open
+- stream start / stop
+- shutdown behaviour
 
-This tool complements deterministic provider verification but does not
-replace it.
+This complements deterministic provider verification but does not replace it.
 
-## Build
+### Build and usage
 
-    scons platform_validate=1 windows_mf_runtime_validate
+```text
+scons platform_validate=1 windows_mf_runtime_validate
+./out/windows_mf_runtime_validate.exe --real-hardware
+```
 
-## Usage
+Expected high-level behaviour:
 
-    ./out/windows_mf_runtime_validate.exe --real-hardware
+1. enumerate camera
+2. open device
+3. negotiate media type
+4. start stream
+5. shut down cleanly
 
-Expected behaviour:
+---
 
-1.  enumerate camera
-2.  open device
-3.  negotiate media type
-4.  start stream
-5.  shut down cleanly
+## 9. Other native tools
 
-------------------------------------------------------------------------
-
-# Other Tools
-
-## `core_spine_smoke`
+### `core_spine_smoke`
 
 Minimal runtime sanity check validating the Core runtime spine using the
-Stub provider.
+stub provider.
 
-This tool verifies the runtime can:
 
--   start
--   process provider events
--   publish state
--   shut down cleanly
 
-Two modes:
+# Godot Boundary Verification Scenes
 
-  Mode         Purpose
-  ------------ --------------------------------------------
-  default      baseline runtime validation
-  `--stress`   lifecycle churn and queue pressure testing
+Status: Dev Note  
+Purpose: Documents the Godot-side scenes used to verify runtime publication behaviour.
 
-------------------------------------------------------------------------
+## Goal
 
-## `synthetic_timeline_verify`
+These scenes verify behaviour observable from the Godot boundary including:
 
-Validates deterministic behaviour of the SyntheticProvider timeline and
-its interaction with the core lifecycle registry.
+- restart semantics
+- snapshot publication ordering
+- tick-bounded coalescing
+- NIL-before-baseline behaviour
 
-Supported scenarios:
+## Provider Selection
 
--   `basic_lifecycle`
--   `invalid_sequence`
--   `catchup_stress`
+Scenes normally use **SyntheticProvider** to produce deterministic behaviour.
 
-This tool validates:
+## Test Philosophy
 
--   deterministic frame scheduling
--   lifecycle event emission
--   registry truthfulness under timeline-driven events
+Native tools verify internal runtime correctness.
 
-------------------------------------------------------------------------
+Godot scenes verify:
 
-## `phase3_snapshot_verify`
+- boundary stability
+- snapshot immutability
+- restart behaviour
+- publication ordering
 
-Focused verifier for Phase 3 snapshot/publication correctness.
+## Output Discipline
 
-Covers:
-
--   detached-root visibility semantics
--   retirement/removal observability
--   topology-version transitions
--   timestamp semantics
--   delivered vs dropped accounting
-
-This tool intentionally **does not verify restart behaviour**.
-
-Restart boundary behaviour is verified by:
-
--   `restart_boundary_verify` (deterministic native verifier)
--   `31_restart_nil_before_baseline.tscn` (Godot smoke scene)
-
-------------------------------------------------------------------------
-
-# Godot Boundary Smoke Test
-
-## `31_restart_nil_before_baseline.tscn`
-
-This Godot scene exercises the **consumer-facing restart behaviour**
-through the Godot runtime boundary.
-
-It verifies the same contract as `restart_boundary_verify`, but from the
-perspective of the Godot plugin integration.
-
-Expected behaviour:
-
--   restart may be initiated from callback context
--   after restart the snapshot must remain `NIL` until the next publish
--   the first publish must produce a valid snapshot
-
-On success the scene prints:
-
-    OK: restart NIL-before-baseline verified
-
-This scene is a **smoke-level contract check** for the Godot boundary.
-
-Because it runs inside the Godot scene lifecycle, its execution may be
-influenced by editor/debug scheduling behaviour. The deterministic
-verifier for this contract is `restart_boundary_verify`.
-
-------------------------------------------------------------------------
-
-# `pattern_render_bench`
-
-Benchmark tool used to measure pattern renderer performance.
-
-Measures:
-
--   throughput
--   rendering cost
--   memory bandwidth
-
-Benchmarks **do not validate correctness**.
-
-------------------------------------------------------------------------
-
-# Design Principles
-
-Maintainer tools follow several rules:
-
-1.  **Deterministic verification tools must remain
-    hardware-independent.**
-2.  **Platform validation must be explicit and opt-in.**
-3.  **Smoke tests must remain minimal and fast.**
-4.  **Verification tools must produce clear pass/fail results.**
-5.  **Benchmarks measure performance but do not assert correctness.**
-
-These principles ensure the CamBANG runtime can be validated
-deterministically while keeping platform-dependent behaviour clearly
-separated.
+Scenes must flush output before quitting so that PASS/FAIL messages are reliably captured by automated runs.
