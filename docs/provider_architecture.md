@@ -216,8 +216,9 @@ Providers must not add a second hidden layer of defaulting beneath that.
 
 ## 7. Provider event classes and delivery guarantees
 
-Providers communicate facts to Core through the **provider strand** (see
-`provider_strand_unification.md`).
+Providers communicate facts to Core through the **provider strand**
+(see `architecture/provider_state_machines.md` and
+`architecture/lifecycle_model.md`).
 
 The strand is the single serialized callback context through which
 provider → Core facts are delivered.

@@ -247,23 +247,39 @@ CamBANGStateSnapshot {
 
   detached_root_ids: Array<uint64> // computed by core (see §7)
 }
-
 ```
-### Spec version semantics
+### 5.x Effective retained truth (normative)
 
-`imaging_spec_version` and `camera_spec_version` represent the
-**effective specification versions currently retained by Core**.
+Certain snapshot fields represent **effective retained truth** within Core.
 
-Rules:
+In particular:
 
-- A **non-zero value** indicates that an effective specification has
-  been applied and is currently active in runtime state.
-- If no effective specification has been retained by Core, the value
-  **must remain `0`**.
-- Snapshot publication must **never fabricate bootstrap versions**.
+- `imaging_spec_version`
+- `camera_spec_version` (per device)
 
-Version fields therefore reflect **actual runtime truth**, not
-placeholder values.
+These fields report the specification version that Core currently
+retains as the **effective runtime specification**.
+
+They do **not** represent:
+
+- the most recently requested specification version
+- a provider default
+- an implied bootstrap value
+- a speculative or not-yet-applied configuration
+
+The values therefore follow these rules:
+
+- `0` means **no effective specification is currently retained**.
+- A **non-zero value** means a real specification has been accepted by
+  Core and is currently retained as the active runtime specification.
+
+Snapshot publication must **never fabricate bootstrap or placeholder
+values** for these fields. The snapshot must reflect the actual retained
+state held by Core at the time of publication.
+
+More generally, snapshot fields represent **runtime truth retained by
+Core at publication time**. They do not report speculative, inferred,
+or not-yet-effective state.
 
 ### 5.x Timestamp semantics (normative)
 
@@ -344,33 +360,6 @@ CamBANGDeviceState {
   last_error_code: int32                 // 0 if none
 }
 ```
-### Warm retention semantics
-
-Devices may remain engaged briefly after they become not-in-use.
-
-The snapshot exposes this state using:
-
-- `warm_hold_ms`
-- `warm_remaining_ms`
-
-Interpretation:
-
-- `warm_hold_ms`
-  Effective warm retention policy currently applied to the device.
-
-- `warm_remaining_ms`
-  Remaining time in the active warm grace interval at snapshot
-  publication time.
-
-Rules:
-
-- If no warm policy is currently applied, `warm_hold_ms = 0`.
-- If the device is not currently in a warm grace interval,
-  `warm_remaining_ms = 0`.
-- A non-zero `warm_remaining_ms` implies that Core has retained a real
-  warm deadline for the device.
-
-Warm scheduling and expiry are **Core-owned runtime behaviour**.
 
 ### 6.3 `CamBANGStreamState`
 
@@ -556,3 +545,17 @@ been published.
 
 After completed stop/teardown, the Godot-facing `get_state_snapshot()`
 returns `NIL` until the first publish of the next generation.
+
+## Warm Retention Semantics
+
+`warm_hold_ms`  
+: Effective warm-retention policy currently applied to the device.
+
+`warm_remaining_ms`  
+: Remaining time in the active warm-retention grace interval at the moment the snapshot was published.
+
+Rules:
+
+- `warm_hold_ms = 0` when no warm retention policy is active.
+- `warm_remaining_ms = 0` when no warm grace interval is active.
+- Non-zero `warm_remaining_ms` implies the core currently owns a valid warm deadline.

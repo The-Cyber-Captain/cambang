@@ -9,6 +9,21 @@ boundary) - `state_snapshot.md` (public snapshot schema v1)
 
 ------------------------------------------------------------------------
 
+## Canonical architecture authority
+
+This document defines the runtime authority model for CamBANG core.
+
+Related documents are subordinate in scope:
+
+- `provider_architecture.md` defines the core ↔ provider contract
+- `architecture/lifecycle_model.md` explains lifecycle structure and event flow
+- `architecture/publication_model.md` explains Godot-visible snapshot publication
+
+These supplementary documents may clarify behaviour, but they must not
+redefine the runtime authority described here.
+
+------------------------------------------------------------------------
+
 ## 1. Execution model overview
 
 CamBANG core runs on a **dedicated core thread**.

@@ -1,37 +1,123 @@
 # Snapshot Truth Rules
 
-Snapshot fields must always represent **real runtime truth**.
+Status: Canonical Dev Note  
+Supplements: `state_snapshot.md`
+
+This document is the canonical definition of snapshot truth requirements
+for providers and maintainers.
+
+All other documentation that references snapshot truth should link to
+this document rather than restating the rules.
+
+## Principle
+
+Snapshot fields must represent **actual retained runtime truth**.
+
+They must never contain:
+
+- fabricated bootstrap values
+- guessed provider state
+- predicted future state
+- synthetic repair values introduced only to make snapshots look complete
 
 If authoritative runtime truth does not exist for a field, the snapshot
-must publish `0` or an empty value rather than fabricate a placeholder.
+must publish `0`, `NIL`, or an empty value as appropriate rather than
+fabricate a placeholder.
 
-## Acceptable states
+## Acceptable States
 
-1. Runtime truth exists and is projected.
-2. Runtime truth does not yet exist and the snapshot publishes `0`.
-3. Retention plumbing exists but the value remains unset until real
-   truth arrives.
+A snapshot field is valid only when one of the following is true:
 
-## Forbidden pattern
+1. runtime truth exists and is projected faithfully
+2. runtime truth does not yet exist and the snapshot publishes the
+   correct empty or zero value
+3. retention plumbing exists but the field remains unset until real truth
+   arrives
 
-The runtime must never fabricate bootstrap values for snapshot fields.
+A non-zero or non-empty value implies that real runtime truth exists.
 
-Examples of problematic patterns:  
-- ensure_camera_spec_version(hardware_id, 1)
-- reset_for_generation(1)
-- default_version = 1
-- seed_if_missing()
+## When Zero, Empty, or `NIL` Is Correct
 
+Fields may legitimately remain zero, empty, or `NIL` when:
 
-A non-zero value implies that real runtime truth exists.
+- the runtime has not yet observed the value
+- the provider has not yet reported the information
+- the resource does not exist
+- a new generation has started and no authoritative publication has yet
+  established replacement truth
 
-## Code review rule
+Unknown values must remain unknown until authorized by runtime state.
 
-When reviewing snapshot fields ask:
+## Core Rules
 
-1. Where does this value become true?
-2. What event authorizes that truth?
-3. What happens if that event never occurs?
+### Truthful presence
+
+A field may appear populated only when the runtime actually retains the
+corresponding truth.
+
+### Truthful absence
+
+If the runtime does not retain that truth, the snapshot must expose the
+correct empty representation rather than a guessed stand-in.
+
+### No synthetic repair
+
+The runtime must not backfill missing snapshot fields with convenience
+values, bootstrap seeds, inferred identifiers, or default versions.
+
+### Stable identity
+
+Identifiers exposed in snapshots must come from the retained runtime
+identity model. They must not be invented to make publications appear
+stable.
+
+### Snapshot consistency
+
+Each published snapshot must be internally consistent with the retained
+runtime state that authorized the publication.
+
+## Invalid Patterns
+
+Examples of invalid snapshot behaviour include:
+
+- populating format fields before the provider reports them
+- inventing topology identifiers
+- guessing warm retention values
+- seeding default versions before the corresponding truth exists
+- repairing absent state by publishing a synthetic non-zero value
+
+Examples of problematic code patterns:
+
+- `ensure_camera_spec_version(hardware_id, 1)`
+- `reset_for_generation(1)`
+- `default_version = 1`
+- `seed_if_missing()`
+
+## Code Review Rule
+
+When reviewing snapshot fields, ask:
+
+1. where does this value become true?
+2. what event authorizes that truth?
+3. what happens if that event never occurs?
 
 If the code fabricates a value in that case, the snapshot field is
 incorrect.
+
+## Adding New Snapshot Fields
+
+When adding fields:
+
+1. the value must originate from retained runtime state
+2. the snapshot must remain immutable after publication
+3. unknown values must remain unknown instead of fabricated
+4. empty or zero values must be chosen because they truthfully represent
+   absence, not because they are convenient defaults
+
+## Where These Rules Are Enforced
+
+These rules are exercised or assumed by:
+
+- `docs/dev/maintainer_tools.md`
+- `docs/architecture/publication_model.md`
+- `docs/state_snapshot.md`

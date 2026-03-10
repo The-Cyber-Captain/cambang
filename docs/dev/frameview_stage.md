@@ -1,149 +1,150 @@
 # FrameView Stage (Dev Visibility – Server-Owned Core Loop)
 
-This stage exists to produce a **visible, end-to-end validation** of the CamBANG pipeline inside Godot:
+This stage exists to produce a **visible, end-to-end validation** of the
+CamBANG pipeline inside Godot:
 
-Provider  
-→ ingress  
-→ core thread  
-→ dispatcher  
-→ frame sink  
-→ mailbox  
-→ Godot main thread  
+```text
+Provider
+→ ingress
+→ core thread
+→ dispatcher
+→ frame sink
+→ mailbox
+→ Godot main thread
 → ImageTexture
+```
 
 It is intentionally **development-only scaffolding**.
 
 This document reflects the current architecture in which:
 
 - `CoreRuntime` is owned by `CamBANGServer`
-- Dev nodes do not own the core
-- Core snapshot publication is dirty-driven; Godot-visible publication is tick-bounded
-- Visibility is implemented via a development-only frame sink
+- dev nodes do not own the core
+- core snapshot publication is dirty-driven
+- Godot-visible publication is tick-bounded
+- visibility is implemented via a development-only frame sink
 
 This document supplements:
 
-- `core_core_model.md`
+- `core_runtime_model.md`
 - `state_snapshot.md`
 - `architecture/frame_sinks.md`
+- `architecture/publication_model.md`
 
 It does not redefine canonical architecture.
 
 ---
 
-## 1. Architectural Context (Current Model)
+## 1. Architectural context
 
-### 1.1 `CoreRuntime` ownership
+### `CoreRuntime` ownership
 
 `CoreRuntime` is owned by `CamBANGServer`, registered as an Engine-level singleton.
 
-- `CamBANGServer.start()` starts the core thread.
-- `CamBANGServer.stop()` performs deterministic shutdown.
+- `CamBANGServer.start()` starts the core thread
+- `CamBANGServer.stop()` performs deterministic shutdown
 - `CamBANGServer` owns snapshot publication and exposes:
   - `get_state_snapshot()`
   - `state_published(gen, version, topology_version)`
 
 Dev nodes do **not** own `CoreRuntime`.
 
-This aligns with the canonical core model.
-
 ---
 
-## 2. What Is Dev-Only
+## 2. What is dev-only
 
 The following are development scaffolding and not release-facing API:
 
 - `CamBANGDevNode`
 - `CamBANGDevFrameViewNode`
 - `LatestFrameMailbox`
-- Dev autostart convenience logic
-- Stub frame emission from `_process()`
-  (stub pixel content is generated via the Pattern Module; the `_process()` driving model remains dev-only convenience)
+- dev autostart convenience logic
+- stub frame emission from `_process()`
 
-All dev-only code is gated behind:
+Stub pixel content may be generated through the Pattern Module, but the
+`_process()`-driven model remains a dev-only convenience.
 
-```
+All such code is gated behind:
+
+```text
 CAMBANG_ENABLE_DEV_NODES
 ```
 
-These components may evolve or be removed without affecting canonical architecture.
+These components may evolve or disappear without affecting canonical architecture.
 
 ---
 
-## 3. Dev Node Behaviour
+## 3. Dev-node behaviour
 
-### 3.1 `CamBANGDevNode`
+### `CamBANGDevNode`
 
 Responsibilities:
 
-- Optionally starts `CamBANGServer` if not already running (dev convenience).
-- Optionally stops it if this node started it.
-- Drives stub-provider frame emission (dev-only).
-- Coordinates visibility stream start/stop (dev-only).
+- optionally starts `CamBANGServer` if not already running
+- optionally stops it if this node initiated the start
+- drives stub-provider frame emission for development visibility
+- coordinates visibility stream start / stop in dev flows
 
-Important:
+Important non-responsibilities:
 
-- It does not own `CoreRuntime`.
-- It does not publish snapshots.
-- It does not bypass core arbitration.
+- it does not own `CoreRuntime`
+- it does not publish snapshots
+- it does not bypass core arbitration
 
-Autostart behaviour is convenience scaffolding only.
+Autostart is convenience scaffolding only.
 
 ---
 
-## 4. Baseline Snapshot Behaviour
+## 4. Baseline snapshot behaviour
 
 On successful `CamBANGServer.start()`:
 
-- Core begins logically dirty.
-- Core publishes a baseline snapshot as soon as the core loop becomes LIVE.
-- First snapshot has:
+- core begins logically dirty
+- core publishes a baseline snapshot as soon as the core loop becomes `LIVE`
+- the first snapshot has:
   - `version = 0`
   - `topology_version = 0`
   - valid monotonic `timestamp_ns`
 
-Godot-facing publication is tick-bounded:
+Godot-facing publication remains tick-bounded:
 
-- `state_published(gen,0,0)` is emitted on the first Godot tick where the running
-  state becomes observable.
-- Until that first emission occurs, `get_state_snapshot()` may return null.
+- `state_published(gen, 0, 0)` is emitted on the first Godot tick where
+  the running state becomes observable
+- until that emission, `get_state_snapshot()` may return `NIL`
 
-`gen` is monotonic across the app/server lifetime and may therefore be non-zero when the server restarts after a previous stop.
-
-This guarantees each core generation produces exactly one deterministic baseline snapshot.
+This guarantees each generation produces exactly one deterministic baseline.
 
 ---
 
-## 5. Frame Sink Wiring
+## 5. Frame-sink wiring
 
-### 5.1 Core hook
+### Core hook
 
-Core exposes:
+Core exposes a sink hook conceptually equivalent to:
 
-```
+```text
 ICoreFrameSink
 ```
 
 Properties:
 
-- Invoked on the core thread.
-- Receives `FrameView` by value (moved).
-- Must preserve deterministic release semantics.
+- invoked on the core thread
+- receives `FrameView` by value (moved)
+- must preserve deterministic release semantics
 
-Dispatcher enforces release-on-drop before invoking the sink.
+The dispatcher enforces release-on-drop before sink invocation.
 
----
-
-### 5.2 LatestFrameMailbox (Dev Sink)
+### `LatestFrameMailbox` (dev sink)
 
 `LatestFrameMailbox` is development-only.
 
 It:
 
-- Accepts tightly packed 32-bit RGBA-class frames.
-- Normalizes stride.
-- Swizzles BGRA → RGBA.
-- Drops unsupported formats deterministically.
-- Stores only the latest frame.
+- accepts tightly packed 32-bit RGBA-class frames
+- normalises stride
+- swizzles BGRA → RGBA
+- drops unsupported formats deterministically
+- stores only the latest frame
 
 Mailbox wiring occurs inside `CamBANGServer` when dev nodes are enabled.
 
@@ -151,121 +152,119 @@ It is not part of the production design.
 
 ---
 
-## 6. Accepted Formats (Visibility Phase Policy)
+## 6. Accepted formats (visibility phase policy)
 
 Accepted:
 
 - `FOURCC_RGBA`
 - `FOURCC_BGRA` (swizzled to RGBA)
 
-Not supported:
+Not supported in this phase:
 
 - NV12
 - YUY2
 - MJPG
 - RAW formats
-- Any YUV format
+- other YUV formats
 
 Unsupported formats are dropped and released immediately.
 
 No YUV → RGB CPU conversion is performed.
 
-This isolates lifecycle validation from color conversion policy.
+This isolates lifecycle validation from colour-conversion policy.
 
 ---
 
-## 7. Stub Provider Visibility
+## 7. Stub-provider visibility
 
 The stub provider remains useful for:
 
-- Lifecycle determinism validation
-- Dispatcher release semantics
-- Snapshot counter validation
-- Visual feedback (synthetic pixel generation)
+- lifecycle determinism validation
+- dispatcher release semantics
+- snapshot counter validation
+- visual feedback during early integration
 
-Stub frames are generated from `_process()` for convenience only.
+Stub frames generated from `_process()` are a convenience only.
+They do **not** represent production threading behaviour.
 
-This does not represent production threading.
-
-Pixel content for stub frames is generated via the provider-agnostic Pattern Module into packed RGBA/BGRA buffers.
-Frames enter the pipeline identically to platform-backed-origin frames; visibility policy remains format-gated and dev-only.
+Pixel content may be generated via the provider-agnostic Pattern Module
+into packed RGBA/BGRA buffers.
 
 ---
 
-## 8. Windows Media Foundation Visibility
+## 8. Windows Media Foundation visibility
 
 When:
 
-```
+```text
 MF_READWRITE_DISABLE_CONVERTERS = TRUE
 ```
 
-Only native camera formats are selectable.
+only native camera formats are selectable.
 
-Many cameras expose YUV-only formats, resulting in:
+Many cameras expose YUV-only formats, which leads to:
 
-- Frames received
-- Frames dropped as unsupported
-- No visible pixels
+- frames received
+- frames dropped as unsupported
+- no visible pixels
 
 This is expected behaviour.
 
-It validates provider ↔ core contract without introducing conversion.
+It validates provider ↔ core contract without silently introducing
+format conversion.
 
 See:
 
-```
+```text
 docs/dev/windows_mf_visibility_phase.md
 ```
 
 ---
 
-## 9. Determinism Guarantees Preserved
+## 9. Determinism guarantees preserved
 
 Even in visibility mode:
 
-- All core state mutation occurs on the core thread.
-- Provider callbacks remain serialized.
-- Release-on-drop discipline is preserved.
-- Shutdown remains deterministic.
-- Snapshot publication remains dirty-driven.
+- all core state mutation occurs on the core thread
+- provider callbacks remain serialized
+- release-on-drop discipline is preserved
+- shutdown remains deterministic
+- snapshot publication remains dirty-driven internally
+- Godot-visible publication remains tick-bounded
 
-Visibility scaffolding does not alter invariants.
+Visibility scaffolding does not alter canonical invariants.
 
 ---
 
-## 10. Production Expectations
+## 10. Production expectations
 
 Production display paths are expected to use alternative sinks:
 
 - GPU-native YUV import
-- Shader-based color conversion
-- Platform-native texture paths
-- Compute-based processing
+- shader-based colour conversion
+- platform-native texture paths
+- compute-based processing
 
 These can be introduced without modifying:
 
-- Ingress ordering
-- Dispatcher discipline
-- Snapshot schema
-- Lifecycle invariants
+- ingress ordering
+- dispatcher discipline
+- lifecycle invariants
+- snapshot schema
+- publication model
 
 The mailbox is intentionally temporary.
 
 ---
 
-## 11. Exit Criteria for This Stage
+## 11. Exit criteria for this stage
 
 This dev visibility stage is considered complete when:
 
-- Pixels appear for providers capable of native RGBA-class output.
-- Drop-heavy providers behave deterministically.
-- Start/stop cycles do not hang.
-- Snapshot publication remains correct (`gen`, `version`, `topology_version`).
-- No release leaks occur under stress.
+- pixels appear for providers capable of native RGBA-class output
+- drop-heavy providers behave deterministically
+- start / stop cycles do not hang
+- snapshot publication remains correct (`gen`, `version`, `topology_version`)
+- no release leaks occur under stress
 
 Once production GPU paths are introduced, this stage may be retired.
-
----
-
-End of FrameView Stage (Dev Visibility) document.
