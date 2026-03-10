@@ -35,3 +35,22 @@ Notes:
 - Scenes force provider mode to `synthetic` before `start()`.
 - `61` and `62` instantiate a dev node and trigger existing scenario names via
   `CamBANGDevNode.start_scenario(name)`.
+
+## Shared status panel and editor dock
+
+This branch now includes:
+
+- `res://addons/cambang/cambang_status_panel.gd`
+  - shared status-only observer panel for runtime and editor use
+- `res://addons/cambang_editor/plugin.cfg`
+  - editor plugin that adds a CamBANG dock and stops the server in `_build()` before Play
+- `res://scenes/64_status_panel_runtime_smoke.tscn`
+  - minimal runtime scene hosting `CamBANGStatusPanel`
+
+The editor dock uses only the public singleton API:
+
+- `CamBANGServer.start()`
+- `CamBANGServer.stop()`
+- `CamBANGServer.set_provider_mode()`
+- `CamBANGServer.get_provider_mode()`
+- `CamBANGServer.get_state_snapshot()`

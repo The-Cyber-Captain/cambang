@@ -15,6 +15,10 @@ run/main_scene="uid://d2bn8rdhyce7q"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/cambang_editor/plugin.cfg")
+
 [input]
 
 request_synthetic_provider={
