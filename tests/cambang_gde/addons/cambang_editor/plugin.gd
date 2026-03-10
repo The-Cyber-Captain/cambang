@@ -4,12 +4,13 @@ extends EditorPlugin
 const DOCK_SCRIPT := preload("res://addons/cambang_editor/cambang_editor_dock.gd")
 const SERVER_SINGLETON_NAME := "CamBANGServer"
 
-var _dock: Control
+var _dock: Control = null
 
 
 func _enter_tree() -> void:
 	if _dock == null:
 		_dock = DOCK_SCRIPT.new()
+		_dock.name = "CamBANG"
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, _dock)
 	_dock.refresh_from_server()
 
