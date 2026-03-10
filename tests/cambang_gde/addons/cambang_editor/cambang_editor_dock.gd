@@ -97,9 +97,23 @@ func _refresh_from_server() -> void:
 	var has_snapshot := typeof(snapshot) == TYPE_DICTIONARY
 	var state := _derive_ui_state(has_snapshot)
 
-	_start_button.disabled = has_snapshot or _start_pending
-	_stop_button.disabled = not has_snapshot and not _stop_pending
-	_provider_mode_option.disabled = has_snapshot or _start_pending or _stop_pending
+	match state:
+		UI_STATE_RUNNING:
+			_start_button.disabled = true
+			_stop_button.disabled = false
+			_provider_mode_option.disabled = true
+		UI_STATE_STARTING:
+			_start_button.disabled = true
+			_stop_button.disabled = true
+			_provider_mode_option.disabled = true
+		UI_STATE_STOPPING:
+			_start_button.disabled = true
+			_stop_button.disabled = false
+			_provider_mode_option.disabled = true
+		_:
+			_start_button.disabled = false
+			_stop_button.disabled = true
+			_provider_mode_option.disabled = false
 
 	var mode := str(server.get_provider_mode())
 	for index in range(_provider_mode_option.item_count):
@@ -112,9 +126,6 @@ func _refresh_from_server() -> void:
 
 func _derive_ui_state(has_snapshot: bool) -> String:
 	if has_snapshot:
-		if _stop_pending:
-			_start_pending = false
-			return UI_STATE_STOPPING
 		_start_pending = false
 		_stop_pending = false
 		return UI_STATE_RUNNING
