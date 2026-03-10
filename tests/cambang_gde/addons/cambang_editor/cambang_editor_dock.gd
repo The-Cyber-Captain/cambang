@@ -4,9 +4,19 @@ extends VBoxContainer
 
 const SERVER_SINGLETON_NAME := "CamBANGServer"
 
+const UI_STATE_STOPPED := "stopped"
+const UI_STATE_STARTING := "starting"
+const UI_STATE_RUNNING := "running"
+const UI_STATE_STOPPING := "stopping"
+
 var _status_panel: Control
 var _provider_mode_option: OptionButton
 var _message_label: Label
+var _start_button: Button
+var _stop_button: Button
+
+var _start_pending := false
+var _stop_pending := false
 
 
 func _ready() -> void:
@@ -30,15 +40,15 @@ func _build_ui_if_needed() -> void:
 	controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(controls)
 
-	var start_button := Button.new()
-	start_button.text = "Start Server"
-	start_button.pressed.connect(_on_start_pressed)
-	controls.add_child(start_button)
+	_start_button = Button.new()
+	_start_button.text = "Start Server"
+	_start_button.pressed.connect(_on_start_pressed)
+	controls.add_child(_start_button)
 
-	var stop_button := Button.new()
-	stop_button.text = "Stop Server"
-	stop_button.pressed.connect(_on_stop_pressed)
-	controls.add_child(stop_button)
+	_stop_button = Button.new()
+	_stop_button.text = "Stop Server"
+	_stop_button.pressed.connect(_on_stop_pressed)
+	controls.add_child(_stop_button)
 
 	var mode_label := Label.new()
 	mode_label.text = "Provider Mode"
@@ -75,16 +85,62 @@ func _refresh_from_server() -> void:
 
 	var server := _get_server()
 	if server == null:
-		_message_label.text = "CamBANGServer singleton not available."
+		_start_pending = false
+		_stop_pending = false
+		_start_button.disabled = true
+		_stop_button.disabled = true
 		_provider_mode_option.disabled = true
+		_message_label.text = "CamBANGServer singleton not available."
 		return
 
-	_provider_mode_option.disabled = false
+	var snapshot: Variant = server.get_state_snapshot()
+	var has_snapshot := typeof(snapshot) == TYPE_DICTIONARY
+	var state := _derive_ui_state(has_snapshot)
+
+	_start_button.disabled = has_snapshot or _start_pending
+	_stop_button.disabled = not has_snapshot and not _stop_pending
+	_provider_mode_option.disabled = has_snapshot or _start_pending or _stop_pending
+
 	var mode := str(server.get_provider_mode())
 	for index in range(_provider_mode_option.item_count):
 		if _provider_mode_option.get_item_text(index) == mode:
 			_provider_mode_option.select(index)
 			break
+
+	_message_label.text = _state_message(state)
+
+
+func _derive_ui_state(has_snapshot: bool) -> String:
+	if has_snapshot:
+		if _stop_pending:
+			_start_pending = false
+			return UI_STATE_STOPPING
+		_start_pending = false
+		_stop_pending = false
+		return UI_STATE_RUNNING
+
+	if _stop_pending:
+		_stop_pending = false
+		return UI_STATE_STOPPED
+
+	if _start_pending:
+		return UI_STATE_STARTING
+
+	return UI_STATE_STOPPED
+
+
+func _state_message(state: String) -> String:
+	match state:
+		UI_STATE_STOPPED:
+			return "Stopped. Provider mode can be changed."
+		UI_STATE_STARTING:
+			return "Starting… waiting for baseline snapshot."
+		UI_STATE_RUNNING:
+			return "Running. Provider mode is locked until stopped."
+		UI_STATE_STOPPING:
+			return "Stopping… waiting for snapshot to clear."
+		_:
+			return "Stopped. Provider mode can be changed."
 
 
 func _on_start_pressed() -> void:
@@ -92,9 +148,15 @@ func _on_start_pressed() -> void:
 	if server == null:
 		_message_label.text = "Cannot start: CamBANGServer singleton not available."
 		return
+
+	if _start_button.disabled:
+		return
+
 	server.start()
-	_message_label.text = "Start requested via CamBANGServer.start()."
+	_start_pending = true
+	_stop_pending = false
 	_refresh_from_server()
+	_message_label.text = "Start requested; waiting for baseline snapshot."
 
 
 func _on_stop_pressed() -> void:
@@ -102,15 +164,24 @@ func _on_stop_pressed() -> void:
 	if server == null:
 		_message_label.text = "Cannot stop: CamBANGServer singleton not available."
 		return
+
+	if _stop_button.disabled:
+		return
+
 	server.stop()
-	_message_label.text = "Stop requested via CamBANGServer.stop()."
+	_stop_pending = true
+	_start_pending = false
 	_refresh_from_server()
+	_message_label.text = "Stop requested; waiting for snapshot to clear."
 
 
 func _on_provider_mode_selected(index: int) -> void:
 	var server := _get_server()
 	if server == null:
 		_message_label.text = "Cannot set provider mode: CamBANGServer singleton not available."
+		return
+
+	if _provider_mode_option.disabled:
 		return
 
 	var selected_mode := _provider_mode_option.get_item_text(index)
