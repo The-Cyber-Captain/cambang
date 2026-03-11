@@ -19,6 +19,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Minimal snapshot-only observer diagnostics (`gen/version/topology_version`,
     device/stream counts, frame counters, stream error count).
   - Expected pass string: `OK: godot snapshot observer minimal PASS`
+- `scenes/65_public_boundary_verify.tscn`
+  - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
+    synchronous handler/snapshot consistency, NIL-after-stop, and no stale generation leakage.
+  - Expected pass string: `OK: godot public boundary verify PASS`
 
 ## Running
 
@@ -29,6 +33,7 @@ godot4 --headless --path . --scene res://scenes/60_restart_boundary_abuse.tscn -
 godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
 ```
 
 Notes:
