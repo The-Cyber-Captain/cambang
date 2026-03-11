@@ -9,19 +9,31 @@ const UI_STATE_STARTING := "starting"
 const UI_STATE_RUNNING := "running"
 const UI_STATE_STOPPING := "stopping"
 
+const TRANSITION_NONE := "none"
+const TRANSITION_STARTING := "starting"
+const TRANSITION_STOPPING := "stopping"
+
+const TRANSITION_POLL_INTERVAL_SEC := 0.1
+
 var _status_panel: Control
 var _provider_mode_option: OptionButton
 var _message_label: Label
 var _start_button: Button
 var _stop_button: Button
+var _transition_timer: Timer
 
-var _start_pending := false
-var _stop_pending := false
+var _transition_pending := TRANSITION_NONE
+var _server_connected := false
 
 
 func _ready() -> void:
 	_build_ui_if_needed()
+	_connect_server_if_needed()
 	_refresh_from_server()
+
+
+func _exit_tree() -> void:
+	_disconnect_server_if_needed()
 
 
 func refresh_from_server() -> void:
@@ -69,6 +81,13 @@ func _build_ui_if_needed() -> void:
 	_status_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(_status_panel)
 
+	_transition_timer = Timer.new()
+	_transition_timer.wait_time = TRANSITION_POLL_INTERVAL_SEC
+	_transition_timer.one_shot = false
+	_transition_timer.autostart = false
+	_transition_timer.timeout.connect(_on_transition_timer_timeout)
+	add_child(_transition_timer)
+
 
 func _get_server() -> Object:
 	if Engine.has_singleton(SERVER_SINGLETON_NAME):
@@ -78,15 +97,62 @@ func _get_server() -> Object:
 	return null
 
 
+func _connect_server_if_needed() -> void:
+	if _server_connected:
+		return
+
+	var server := _get_server()
+	if server == null:
+		return
+
+	if not server.state_published.is_connected(_on_state_published):
+		server.state_published.connect(_on_state_published)
+
+	_server_connected = true
+
+
+func _disconnect_server_if_needed() -> void:
+	if not _server_connected:
+		return
+
+	var server := _get_server()
+	if server != null and server.state_published.is_connected(_on_state_published):
+		server.state_published.disconnect(_on_state_published)
+
+	_server_connected = false
+
+
+func _on_state_published(_gen: int, _version: int, _topology_version: int) -> void:
+	_refresh_from_server()
+
+
+func _on_transition_timer_timeout() -> void:
+	_refresh_from_server()
+
+
+func _set_transition_polling(enabled: bool) -> void:
+	if _transition_timer == null:
+		return
+
+	if enabled:
+		if _transition_timer.is_stopped():
+			_transition_timer.start()
+	else:
+		if not _transition_timer.is_stopped():
+			_transition_timer.stop()
+
+
 func _refresh_from_server() -> void:
 	_build_ui_if_needed()
+	_connect_server_if_needed()
+
 	if _status_panel != null:
 		_status_panel.force_refresh()
 
 	var server := _get_server()
 	if server == null:
-		_start_pending = false
-		_stop_pending = false
+		_transition_pending = TRANSITION_NONE
+		_set_transition_polling(false)
 		_start_button.disabled = true
 		_stop_button.disabled = true
 		_provider_mode_option.disabled = true
@@ -102,18 +168,22 @@ func _refresh_from_server() -> void:
 			_start_button.disabled = true
 			_stop_button.disabled = false
 			_provider_mode_option.disabled = true
+			_set_transition_polling(false)
 		UI_STATE_STARTING:
 			_start_button.disabled = true
 			_stop_button.disabled = true
 			_provider_mode_option.disabled = true
+			_set_transition_polling(true)
 		UI_STATE_STOPPING:
 			_start_button.disabled = true
-			_stop_button.disabled = false
+			_stop_button.disabled = true
 			_provider_mode_option.disabled = true
+			_set_transition_polling(true)
 		_:
 			_start_button.disabled = false
 			_stop_button.disabled = true
 			_provider_mode_option.disabled = false
+			_set_transition_polling(false)
 
 	var mode := str(server.get_provider_mode())
 	for index in range(_provider_mode_option.item_count):
@@ -126,18 +196,17 @@ func _refresh_from_server() -> void:
 
 func _derive_ui_state(has_snapshot: bool) -> String:
 	if has_snapshot:
-		_start_pending = false
-		_stop_pending = false
+		_transition_pending = TRANSITION_NONE
 		return UI_STATE_RUNNING
 
-	if _stop_pending:
-		_stop_pending = false
-		return UI_STATE_STOPPED
-
-	if _start_pending:
-		return UI_STATE_STARTING
-
-	return UI_STATE_STOPPED
+	match _transition_pending:
+		TRANSITION_STARTING:
+			return UI_STATE_STARTING
+		TRANSITION_STOPPING:
+			_transition_pending = TRANSITION_NONE
+			return UI_STATE_STOPPED
+		_:
+			return UI_STATE_STOPPED
 
 
 func _state_message(state: String) -> String:
@@ -163,9 +232,8 @@ func _on_start_pressed() -> void:
 	if _start_button.disabled:
 		return
 
+	_transition_pending = TRANSITION_STARTING
 	server.start()
-	_start_pending = true
-	_stop_pending = false
 	_refresh_from_server()
 	_message_label.text = "Start requested; waiting for baseline snapshot."
 
@@ -179,9 +247,8 @@ func _on_stop_pressed() -> void:
 	if _stop_button.disabled:
 		return
 
+	_transition_pending = TRANSITION_STOPPING
 	server.stop()
-	_stop_pending = true
-	_start_pending = false
 	_refresh_from_server()
 	_message_label.text = "Stop requested; waiting for snapshot to clear."
 
