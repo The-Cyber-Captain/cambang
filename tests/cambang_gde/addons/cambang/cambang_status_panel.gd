@@ -11,24 +11,26 @@ class PanelModel extends RefCounted:
 
 
 class StatusEntryModel extends RefCounted:
+	var id: String = ""
+	var parent_id: String = ""
 	var depth: int = 0
-	var can_expand: bool = false
-	var expanded: bool = false
 	var label: String = ""
+	var expanded: bool = false
+	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
 	var counters: Array[CounterModel] = []
 	var info_lines: Array[String] = []
 
 
 class BadgeModel extends RefCounted:
-	var text: String = ""
-	var theme: String = "neutral"
+	var role: String = "neutral"
+	var label: String = ""
 
 
 class CounterModel extends RefCounted:
 	var name: String = ""
-	var value: String = ""
-	var theme: String = "neutral"
+	var value: int = 0
+	var digits: int = 1
 
 var _title_label: Label
 var _provider_mode_value: Label
@@ -216,88 +218,116 @@ func _build_fake_panel_model() -> PanelModel:
 	var panel := PanelModel.new()
 
 	panel.entries.append(_entry(
+		"server/main",
+		"",
 		0,
 		"server/main",
 		true,
 		true,
-		[_badge("up", "ok")],
-		[_counter("providers", "1", "neutral")],
+		[_badge("success", "up")],
+		[_counter("providers", 1, 1)],
 		[]
 	))
 	panel.entries.append(_entry(
+		"provider/windows-mf",
+		"server/main",
 		1,
 		"provider/windows-mf",
 		true,
 		true,
-		[_badge("running", "ok")],
-		[_counter("devices", "1", "neutral")],
+		[_badge("info", "windows-mf")],
+		[_counter("devices", 1, 1)],
 		[]
 	))
 	panel.entries.append(_entry(
+		"device/cam-front",
+		"provider/windows-mf",
 		2,
 		"device/cam-front",
 		true,
 		true,
-		[_badge("active", "ok")],
-		[_counter("streams", "1", "neutral")],
+		[_badge("success", "active")],
+		[_counter("streams", 1, 1)],
 		[]
 	))
 	panel.entries.append(_entry(
+		"stream/video0",
+		"device/cam-front",
 		3,
 		"stream/video0",
 		false,
 		false,
-		[_badge("rgb8", "neutral")],
-		[_counter("fps", "60", "ok")],
+		[_badge("neutral", "rgb8")],
+		[_counter("fps", 60, 2)],
 		[]
 	))
 
 	panel.entries.append(_entry(
+		"rig/stereo-a",
+		"server/main",
 		1,
 		"rig/stereo-a",
 		true,
 		true,
-		[_badge("dual-device", "neutral")],
-		[_counter("devices", "2", "neutral")],
+		[_badge("neutral", "dual-device")],
+		[_counter("devices", 2, 1)],
 		[]
 	))
 	panel.entries.append(_entry(
+		"device/left-eye",
+		"rig/stereo-a",
 		2,
 		"device/left-eye",
 		false,
 		false,
-		[_badge("attached", "ok")],
-		[_counter("streams", "1", "neutral")],
+		[_badge("success", "attached")],
+		[_counter("streams", 1, 1)],
 		[]
 	))
 	panel.entries.append(_entry(
+		"device/right-eye",
+		"rig/stereo-a",
 		2,
 		"device/right-eye",
 		false,
 		false,
-		[_badge("attached", "ok")],
-		[_counter("streams", "1", "neutral")],
+		[_badge("success", "attached")],
+		[_counter("streams", 1, 1)],
 		[]
 	))
 
 	panel.entries.append(_entry(
+		"native_object/orphan-42",
+		"",
 		0,
 		"native_object/orphan-42",
 		true,
 		false,
-		[_badge("orphan", "warn")],
-		[_counter("refs", "0", "warn")],
-		[]
+		[
+			_badge("warning", "orphan"),
+			_badge("error", "unbound"),
+		],
+		[
+			_counter("refs", 15, 1),
+			_counter("watchers", 237, 2),
+			_counter("frames", 2378, 3),
+			_counter("bytes", 37367, 3),
+			_counter("events", 104552, 4),
+		],
+		[
+			"Contract gap: stream published before rig association.",
+		]
 	))
 	panel.entries.append(_entry(
+		"stream/unclaimed",
+		"native_object/orphan-42",
 		1,
 		"stream/unclaimed",
 		false,
 		false,
-		[_badge("contract-gap", "error")],
-		[_counter("frames", "0", "warn")],
+		[_badge("error", "contract-gap")],
+		[_counter("frames", 0, 2)],
 		[
-			"Provider reported stream before rig association.",
 			"Projection path not implemented in prototype.",
 		]
 	))
@@ -319,35 +349,39 @@ func _render_panel_model(model: PanelModel) -> void:
 
 
 func _entry(
+		id: String,
+		parent_id: String,
 		depth: int,
 		label: String,
-		can_expand: bool,
 		expanded: bool,
+		can_expand: bool,
 		badges: Array[BadgeModel],
 		counters: Array[CounterModel],
 		info_lines: Array[String]
 	) -> StatusEntryModel:
 	var model := StatusEntryModel.new()
+	model.id = id
+	model.parent_id = parent_id
 	model.depth = depth
 	model.label = label
-	model.can_expand = can_expand
 	model.expanded = expanded
+	model.can_expand = can_expand
 	model.badges = badges
 	model.counters = counters
 	model.info_lines = info_lines
 	return model
 
 
-func _badge(text_value: String, theme: String) -> BadgeModel:
+func _badge(role: String, label: String) -> BadgeModel:
 	var model := BadgeModel.new()
-	model.text = text_value
-	model.theme = theme
+	model.role = role
+	model.label = label
 	return model
 
 
-func _counter(name: String, value: String, theme: String) -> CounterModel:
+func _counter(name: String, value: int, digits: int) -> CounterModel:
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
-	model.theme = theme
+	model.digits = digits
 	return model
