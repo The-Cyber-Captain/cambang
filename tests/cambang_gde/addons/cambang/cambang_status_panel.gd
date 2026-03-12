@@ -3,6 +3,34 @@ class_name CamBANGStatusPanel
 extends PanelContainer
 
 const SERVER_SINGLETON_NAME := "CamBANGServer"
+const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
+
+
+class PanelModel extends RefCounted:
+	var entries: Array[StatusEntryModel] = []
+
+
+class StatusEntryModel extends RefCounted:
+	var id: String = ""
+	var parent_id: String = ""
+	var depth: int = 0
+	var label: String = ""
+	var expanded: bool = false
+	var can_expand: bool = false
+	var badges: Array[BadgeModel] = []
+	var counters: Array[CounterModel] = []
+	var info_lines: Array[String] = []
+
+
+class BadgeModel extends RefCounted:
+	var role: String = "neutral"
+	var label: String = ""
+
+
+class CounterModel extends RefCounted:
+	var name: String = ""
+	var value: int = 0
+	var digits: int = 1
 
 var _title_label: Label
 var _provider_mode_value: Label
@@ -13,6 +41,10 @@ var _topology_version_value: Label
 var _schema_version_value: Label
 var _counts_value: Label
 var _timestamp_value: Label
+var _status_rows_scroll: ScrollContainer
+var _status_rows: VBoxContainer
+var _dev_expanded_by_id: Dictionary = {}
+var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
 
 
@@ -20,6 +52,7 @@ func _ready() -> void:
 	_build_ui_if_needed()
 	_connect_server()
 	_refresh_from_server()
+	_render_panel_model(_build_fake_panel_model())
 
 
 func _enter_tree() -> void:
@@ -72,6 +105,17 @@ func _build_ui_if_needed() -> void:
 	_schema_version_value = _add_row(grid, "Schema Version")
 	_counts_value = _add_row(grid, "Entity Counts")
 	_timestamp_value = _add_row(grid, "timestamp_ns")
+
+	_status_rows_scroll = ScrollContainer.new()
+	_status_rows_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status_rows_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_status_rows_scroll.custom_minimum_size = Vector2(0, 220)
+	root.add_child(_status_rows_scroll)
+
+	_status_rows = VBoxContainer.new()
+	_status_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status_rows.add_theme_constant_override("separation", 2)
+	_status_rows_scroll.add_child(_status_rows)
 
 
 func _add_row(grid: GridContainer, label_text: String) -> Label:
@@ -178,3 +222,210 @@ func _apply_snapshot_read(reading: Dictionary) -> void:
 	_schema_version_value.text = str(reading.get("schema_version", "-"))
 	_counts_value.text = str(reading.get("counts", "-"))
 	_timestamp_value.text = "%s (monotonic publish timestamp)" % str(reading.get("timestamp", "-"))
+
+
+func _build_fake_panel_model() -> PanelModel:
+	var panel := PanelModel.new()
+
+	panel.entries.append(_entry(
+		"server/main",
+		"",
+		0,
+		"server/main",
+		true,
+		true,
+		[_badge("success", "up")],
+		[_counter("providers", 1, 1)],
+		[]
+	))
+	panel.entries.append(_entry(
+		"provider/windows-mf",
+		"server/main",
+		1,
+		"provider/windows-mf",
+		true,
+		true,
+		[_badge("info", "windows-mf")],
+		[_counter("devices", 1, 1)],
+		[]
+	))
+	panel.entries.append(_entry(
+		"device/cam-front",
+		"provider/windows-mf",
+		2,
+		"device/cam-front",
+		true,
+		true,
+		[_badge("success", "active")],
+		[_counter("streams", 1, 1)],
+		[]
+	))
+	panel.entries.append(_entry(
+		"stream/video0",
+		"device/cam-front",
+		3,
+		"stream/video0",
+		false,
+		false,
+		[_badge("neutral", "rgb8")],
+		[_counter("fps", 60, 2)],
+		[]
+	))
+
+	panel.entries.append(_entry(
+		"rig/stereo-a",
+		"server/main",
+		1,
+		"rig/stereo-a",
+		false,
+		true,
+		[_badge("neutral", "dual-device")],
+		[_counter("devices", 2, 1)],
+		[]
+	))
+	panel.entries.append(_entry(
+		"device/left-eye",
+		"rig/stereo-a",
+		2,
+		"device/left-eye",
+		false,
+		false,
+		[_badge("success", "attached")],
+		[_counter("streams", 1, 1)],
+		[]
+	))
+	panel.entries.append(_entry(
+		"device/right-eye",
+		"rig/stereo-a",
+		2,
+		"device/right-eye",
+		false,
+		false,
+		[_badge("success", "attached")],
+		[_counter("streams", 1, 1)],
+		[]
+	))
+
+	panel.entries.append(_entry(
+		"native_object/orphan-42",
+		"",
+		0,
+		"native_object/orphan-42",
+		true,
+		false,
+		[
+			_badge("warning", "orphan"),
+			_badge("error", "unbound"),
+		],
+		[
+			_counter("refs", 15, 1),
+			_counter("watchers", 237, 2),
+			_counter("frames", 2378, 3),
+			_counter("bytes", 37367, 3),
+			_counter("events", 104552, 4),
+		],
+		[
+			"Contract gap: stream published before rig association.",
+		]
+	))
+	panel.entries.append(_entry(
+		"stream/unclaimed",
+		"native_object/orphan-42",
+		1,
+		"stream/unclaimed",
+		false,
+		false,
+		[_badge("error", "contract-gap")],
+		[_counter("frames", 0, 2)],
+		[
+			"Projection path not implemented in prototype.",
+		]
+	))
+
+	return panel
+
+
+func _render_panel_model(model: PanelModel) -> void:
+	if _status_rows == null:
+		return
+
+	for child in _status_rows.get_children():
+		child.queue_free()
+
+	_dev_parent_by_id.clear()
+	for entry_model in model.entries:
+		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
+
+	for entry_model in model.entries:
+		if not _dev_expanded_by_id.has(entry_model.id):
+			_dev_expanded_by_id[entry_model.id] = entry_model.expanded
+		entry_model.expanded = bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded))
+
+		if not _is_entry_visible(entry_model):
+			continue
+
+		var entry := STATUS_ENTRY_SCENE.instantiate()
+		_status_rows.add_child(entry)
+		entry.set_model(entry_model)
+		if entry.has_signal("disclosure_toggled"):
+			entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+
+
+func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
+	if entry_model.parent_id == "":
+		return true
+
+	var current_parent := entry_model.parent_id
+	while current_parent != "":
+		if not bool(_dev_expanded_by_id.get(current_parent, true)):
+			return false
+		current_parent = _find_parent_id(current_parent)
+	return true
+
+
+func _find_parent_id(entry_id: String) -> String:
+	return str(_dev_parent_by_id.get(entry_id, ""))
+
+
+func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
+	_dev_expanded_by_id[entry_id] = expanded
+	_render_panel_model(_build_fake_panel_model())
+
+
+func _entry(
+		id: String,
+		parent_id: String,
+		depth: int,
+		label: String,
+		expanded: bool,
+		can_expand: bool,
+		badges: Array[BadgeModel],
+		counters: Array[CounterModel],
+		info_lines: Array[String]
+	) -> StatusEntryModel:
+	var model := StatusEntryModel.new()
+	model.id = id
+	model.parent_id = parent_id
+	model.depth = depth
+	model.label = label
+	model.expanded = expanded
+	model.can_expand = can_expand
+	model.badges = badges
+	model.counters = counters
+	model.info_lines = info_lines
+	return model
+
+
+func _badge(role: String, label: String) -> BadgeModel:
+	var model := BadgeModel.new()
+	model.role = role
+	model.label = label
+	return model
+
+
+func _counter(name: String, value: int, digits: int) -> CounterModel:
+	var model := CounterModel.new()
+	model.name = name
+	model.value = value
+	model.digits = digits
+	return model
