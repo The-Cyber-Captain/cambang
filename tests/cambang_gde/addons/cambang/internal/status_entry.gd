@@ -4,17 +4,23 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
-const DISCLOSURE_WIDTH := 18.0
+const DISCLOSURE_WIDTH := 22.0
 
 var _entry_id: String = ""
 var _indent_spacer: Control
 var _disclosure_button: Button
 var _disclosure_placeholder: Control
+var _disclosure_indicator: Control
 var _name_label: Label
 var _state_segment: HBoxContainer
 var _counter_segment: HBoxContainer
 var _info_lines_container: VBoxContainer
 var _info_panel: PanelContainer
+var _row_shell: PanelContainer
+
+var _badge_pairs: Array[HBoxContainer] = []
+var _counter_widgets: Array[VBoxContainer] = []
+var _info_line_rows: Array[HBoxContainer] = []
 
 
 func _ready() -> void:
@@ -35,7 +41,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_disclosure_button.visible = model.can_expand
 	_disclosure_placeholder.visible = not model.can_expand
 	_disclosure_button.button_pressed = model.expanded
-	_disclosure_button.text = "▾" if model.expanded else "▸"
+	_disclosure_indicator.set_expanded(model.expanded)
 
 	_render_badges(model.badges)
 	_render_counters(model.counters)
@@ -43,73 +49,111 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 
 
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
-	for child in _state_segment.get_children():
-		child.queue_free()
+	for i in range(badges.size()):
+		var pair := _ensure_badge_pair(i)
+		pair.visible = true
+		var indicator := pair.get_child(0) as ColorRect
+		var label := pair.get_child(1) as Label
+		indicator.color = _badge_color_for_role(badges[i].role)
+		label.text = badges[i].label
 
-	for badge in badges:
-		var pair := HBoxContainer.new()
-		pair.add_theme_constant_override("separation", 3)
+	for i in range(badges.size(), _badge_pairs.size()):
+		_badge_pairs[i].visible = false
 
-		var indicator := ColorRect.new()
-		indicator.custom_minimum_size = Vector2(7, 7)
-		indicator.color = _badge_color_for_role(badge.role)
-		pair.add_child(indicator)
 
-		var label := Label.new()
-		label.text = badge.label
-		pair.add_child(label)
+func _ensure_badge_pair(index: int) -> HBoxContainer:
+	if index < _badge_pairs.size():
+		return _badge_pairs[index]
 
-		_state_segment.add_child(pair)
+	var pair := HBoxContainer.new()
+	pair.add_theme_constant_override("separation", 3)
+
+	var indicator := ColorRect.new()
+	indicator.custom_minimum_size = Vector2(7, 7)
+	pair.add_child(indicator)
+
+	var label := Label.new()
+	pair.add_child(label)
+
+	_state_segment.add_child(pair)
+	_badge_pairs.append(pair)
+	return pair
 
 
 func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> void:
-	for child in _counter_segment.get_children():
-		child.queue_free()
+	for i in range(counters.size()):
+		var widget := _ensure_counter_widget(i)
+		widget.visible = true
+		var name_label := widget.get_child(0) as Label
+		var value_box := widget.get_child(1) as PanelContainer
+		var value_label := value_box.get_child(0) as Label
 
-	for counter in counters:
-		var counter_widget := VBoxContainer.new()
-		counter_widget.add_theme_constant_override("separation", 1)
+		name_label.text = counters[i].name
+		value_label.text = _format_counter_value(counters[i].value, counters[i].digits)
+		value_label.custom_minimum_size = Vector2(max(counters[i].digits, 1) * 10.0 + 8.0, 0)
 
-		var name_label := Label.new()
-		name_label.text = counter.name
-		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		counter_widget.add_child(name_label)
+	for i in range(counters.size(), _counter_widgets.size()):
+		_counter_widgets[i].visible = false
 
-		var value_box := PanelContainer.new()
-		value_box.add_theme_stylebox_override("panel", _counter_value_style())
-		counter_widget.add_child(value_box)
 
-		var value_label := Label.new()
-		value_label.text = _format_counter_value(counter.value, counter.digits)
-		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		value_label.custom_minimum_size = Vector2(max(counter.digits, 1) * 10.0 + 8.0, 0)
-		value_box.add_child(value_label)
+func _ensure_counter_widget(index: int) -> VBoxContainer:
+	if index < _counter_widgets.size():
+		return _counter_widgets[index]
 
-		_counter_segment.add_child(counter_widget)
+	var counter_widget := VBoxContainer.new()
+	counter_widget.add_theme_constant_override("separation", 1)
+
+	var name_label := Label.new()
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	counter_widget.add_child(name_label)
+
+	var value_box := PanelContainer.new()
+	value_box.add_theme_stylebox_override("panel", _counter_value_style())
+	counter_widget.add_child(value_box)
+
+	var value_label := Label.new()
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	value_box.add_child(value_label)
+
+	_counter_segment.add_child(counter_widget)
+	_counter_widgets.append(counter_widget)
+	return counter_widget
 
 
 func _render_info_lines(depth: int, info_lines: Array[String]) -> void:
-	for child in _info_lines_container.get_children():
-		child.queue_free()
+	for i in range(info_lines.size()):
+		var row := _ensure_info_line_row(i)
+		row.visible = true
+		var spacer := row.get_child(0) as Control
+		var info := row.get_child(1) as Label
+		spacer.custom_minimum_size = Vector2(max(depth, 0) * INDENT_WIDTH + DISCLOSURE_WIDTH + 6.0, 0)
+		info.text = "• %s" % info_lines[i]
 
-	for line in info_lines:
-		var row := HBoxContainer.new()
-		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_theme_constant_override("separation", 4)
-
-		var spacer := Control.new()
-		spacer.custom_minimum_size = Vector2(max(depth, 0) * INDENT_WIDTH + DISCLOSURE_WIDTH + 4.0, 0)
-		row.add_child(spacer)
-
-		var info := Label.new()
-		info.text = "• %s" % line
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		row.add_child(info)
-
-		_info_lines_container.add_child(row)
+	for i in range(info_lines.size(), _info_line_rows.size()):
+		_info_line_rows[i].visible = false
 
 	_info_lines_container.visible = not info_lines.is_empty()
+
+
+func _ensure_info_line_row(index: int) -> HBoxContainer:
+	if index < _info_line_rows.size():
+		return _info_line_rows[index]
+
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 4)
+
+	var spacer := Control.new()
+	row.add_child(spacer)
+
+	var info := Label.new()
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(info)
+
+	_info_lines_container.add_child(row)
+	_info_line_rows.append(row)
+	return row
 
 
 func _format_counter_value(value: int, digits: int) -> String:
@@ -165,29 +209,42 @@ func _info_panel_style() -> StyleBoxFlat:
 	style.corner_radius_top_right = 3
 	style.corner_radius_bottom_right = 3
 	style.corner_radius_bottom_left = 3
-	style.content_margin_left = 0
-	style.content_margin_right = 0
-	style.content_margin_top = 0
-	style.content_margin_bottom = 0
+	return style
+
+
+func _row_shell_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.11, 0.11, 0.13, 0.4)
+	style.corner_radius_top_left = 5
+	style.corner_radius_top_right = 5
+	style.corner_radius_bottom_right = 5
+	style.corner_radius_bottom_left = 5
+	style.content_margin_left = 3
+	style.content_margin_right = 3
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
 	return style
 
 
 func _on_disclosure_pressed() -> void:
-	_disclosure_button.text = "▾" if _disclosure_button.button_pressed else "▸"
+	_disclosure_indicator.set_expanded(_disclosure_button.button_pressed)
 	disclosure_toggled.emit(_entry_id, _disclosure_button.button_pressed)
 
 
 func _bind_nodes() -> void:
 	if _indent_spacer != null:
 		return
-	_indent_spacer = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/IndentSpacer
-	_disclosure_button = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton
-	_disclosure_placeholder = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosurePlaceholder
-	_name_label = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/NameLabel
-	_state_segment = $StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/StateSegment
-	_counter_segment = $StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/CounterSegment
-	_info_lines_container = $StatusEntryRoot/InfoLines
-	_info_panel = $StatusEntryRoot/MainRow/RowContent/InfoPanel
+	_indent_spacer = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/IndentSpacer
+	_disclosure_button = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton
+	_disclosure_placeholder = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosurePlaceholder
+	_disclosure_indicator = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton/DisclosureIndicator
+	_name_label = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/NameLabel
+	_state_segment = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/StateSegment
+	_counter_segment = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/CounterSegment
+	_info_lines_container = $StatusEntryRoot/RowShell/ShellContent/InfoLines
+	_info_panel = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel
+	_row_shell = $StatusEntryRoot/RowShell
 	_info_panel.add_theme_stylebox_override("panel", _info_panel_style())
+	_row_shell.add_theme_stylebox_override("panel", _row_shell_style())
 	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):
 		_disclosure_button.pressed.connect(_on_disclosure_pressed)
