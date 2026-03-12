@@ -4,6 +4,7 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
+const DISCLOSURE_WIDTH := 18.0
 
 var _entry_id: String = ""
 var _indent_spacer: Control
@@ -13,6 +14,7 @@ var _name_label: Label
 var _state_segment: HBoxContainer
 var _counter_segment: HBoxContainer
 var _info_lines_container: VBoxContainer
+var _info_panel: PanelContainer
 
 
 func _ready() -> void:
@@ -37,7 +39,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 
 	_render_badges(model.badges)
 	_render_counters(model.counters)
-	_render_info_lines(model.info_lines)
+	_render_info_lines(model.depth, model.info_lines)
 
 
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
@@ -65,36 +67,47 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> void:
 		child.queue_free()
 
 	for counter in counters:
-		var counter_box := VBoxContainer.new()
-		counter_box.add_theme_constant_override("separation", 1)
+		var counter_widget := VBoxContainer.new()
+		counter_widget.add_theme_constant_override("separation", 1)
 
 		var name_label := Label.new()
 		name_label.text = counter.name
 		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		counter_box.add_child(name_label)
+		counter_widget.add_child(name_label)
 
-		var value_panel := PanelContainer.new()
-		value_panel.add_theme_stylebox_override("panel", _counter_value_style())
-		counter_box.add_child(value_panel)
+		var value_box := PanelContainer.new()
+		value_box.add_theme_stylebox_override("panel", _counter_value_style())
+		counter_widget.add_child(value_box)
 
 		var value_label := Label.new()
 		value_label.text = _format_counter_value(counter.value, counter.digits)
 		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		value_label.custom_minimum_size = Vector2(max(counter.digits, 1) * 10.0 + 8.0, 0)
-		value_panel.add_child(value_label)
+		value_box.add_child(value_label)
 
-		_counter_segment.add_child(counter_box)
+		_counter_segment.add_child(counter_widget)
 
 
-func _render_info_lines(info_lines: Array[String]) -> void:
+func _render_info_lines(depth: int, info_lines: Array[String]) -> void:
 	for child in _info_lines_container.get_children():
 		child.queue_free()
 
 	for line in info_lines:
+		var row := HBoxContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_theme_constant_override("separation", 4)
+
+		var spacer := Control.new()
+		spacer.custom_minimum_size = Vector2(max(depth, 0) * INDENT_WIDTH + DISCLOSURE_WIDTH + 4.0, 0)
+		row.add_child(spacer)
+
 		var info := Label.new()
 		info.text = "• %s" % line
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_info_lines_container.add_child(info)
+		row.add_child(info)
+
+		_info_lines_container.add_child(row)
 
 	_info_lines_container.visible = not info_lines.is_empty()
 
@@ -145,6 +158,20 @@ func _counter_value_style() -> StyleBoxFlat:
 	return style
 
 
+func _info_panel_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.12, 0.12, 0.14, 0.55)
+	style.corner_radius_top_left = 3
+	style.corner_radius_top_right = 3
+	style.corner_radius_bottom_right = 3
+	style.corner_radius_bottom_left = 3
+	style.content_margin_left = 0
+	style.content_margin_right = 0
+	style.content_margin_top = 0
+	style.content_margin_bottom = 0
+	return style
+
+
 func _on_disclosure_pressed() -> void:
 	_disclosure_button.text = "▾" if _disclosure_button.button_pressed else "▸"
 	disclosure_toggled.emit(_entry_id, _disclosure_button.button_pressed)
@@ -153,12 +180,14 @@ func _on_disclosure_pressed() -> void:
 func _bind_nodes() -> void:
 	if _indent_spacer != null:
 		return
-	_indent_spacer = $Root/MainRow/IdentitySegment/Indent
-	_disclosure_button = $Root/MainRow/IdentitySegment/DisclosureButton
-	_disclosure_placeholder = $Root/MainRow/IdentitySegment/DisclosurePlaceholder
-	_name_label = $Root/MainRow/IdentitySegment/NameLabel
-	_state_segment = $Root/MainRow/InfoPanel/InfoContent/StateSegment
-	_counter_segment = $Root/MainRow/InfoPanel/InfoContent/CounterSegment
-	_info_lines_container = $Root/InfoLines
+	_indent_spacer = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/IndentSpacer
+	_disclosure_button = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton
+	_disclosure_placeholder = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosurePlaceholder
+	_name_label = $StatusEntryRoot/MainRow/RowContent/IdentitySegment/NameLabel
+	_state_segment = $StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/StateSegment
+	_counter_segment = $StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/CounterSegment
+	_info_lines_container = $StatusEntryRoot/InfoLines
+	_info_panel = $StatusEntryRoot/MainRow/RowContent/InfoPanel
+	_info_panel.add_theme_stylebox_override("panel", _info_panel_style())
 	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):
 		_disclosure_button.pressed.connect(_on_disclosure_pressed)

@@ -6,43 +6,74 @@
 script = ExtResource("1_ut2wq")
 size_flags_horizontal = 3
 
-[node name="Root" type="VBoxContainer" parent="."]
+[node name="StatusEntryRoot" type="VBoxContainer" parent="."]
+size_flags_horizontal = 3
+
+[node name="MainRow" type="HBoxContainer" parent="StatusEntryRoot"]
+size_flags_horizontal = 3
+
+[node name="RowContent" type="HBoxContainer" parent="StatusEntryRoot/MainRow"]
 size_flags_horizontal = 0
-alignment = 0
 
-[node name="MainRow" type="HBoxContainer" parent="Root"]
+[node name="IdentitySegment" type="HBoxContainer" parent="StatusEntryRoot/MainRow/RowContent"]
 size_flags_horizontal = 0
-alignment = 0
 
-[node name="IdentitySegment" type="HBoxContainer" parent="Root/MainRow"]
-custom_minimum_size = Vector2(240, 0)
-
-[node name="Indent" type="Control" parent="Root/MainRow/IdentitySegment"]
+[node name="IndentSpacer" type="Control" parent="StatusEntryRoot/MainRow/RowContent/IdentitySegment"]
 custom_minimum_size = Vector2(0, 0)
 
-[node name="DisclosureButton" type="Button" parent="Root/MainRow/IdentitySegment"]
+[node name="DisclosureSlot" type="Control" parent="StatusEntryRoot/MainRow/RowContent/IdentitySegment"]
 custom_minimum_size = Vector2(18, 18)
+
+[node name="DisclosureButton" type="Button" parent="StatusEntryRoot/MainRow/RowContent/IdentitySegment/DisclosureSlot"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -9.0
+offset_top = -9.0
+offset_right = 9.0
+offset_bottom = 9.0
+grow_horizontal = 2
+grow_vertical = 2
 text = "▸"
 flat = true
 toggle_mode = true
 
-[node name="DisclosurePlaceholder" type="Control" parent="Root/MainRow/IdentitySegment"]
-custom_minimum_size = Vector2(18, 18)
+[node name="DisclosurePlaceholder" type="Control" parent="StatusEntryRoot/MainRow/RowContent/IdentitySegment/DisclosureSlot"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 
-[node name="NameLabel" type="Label" parent="Root/MainRow/IdentitySegment"]
-size_flags_horizontal = 3
+[node name="NameLabel" type="Label" parent="StatusEntryRoot/MainRow/RowContent/IdentitySegment"]
+size_flags_horizontal = 0
 text = "Entry"
 
-[node name="InfoPanel" type="PanelContainer" parent="Root/MainRow"]
+[node name="InfoPanel" type="PanelContainer" parent="StatusEntryRoot/MainRow/RowContent"]
 size_flags_horizontal = 0
 
-[node name="InfoContent" type="HBoxContainer" parent="Root/MainRow/InfoPanel"]
+[node name="InfoMargin" type="MarginContainer" parent="StatusEntryRoot/MainRow/RowContent/InfoPanel"]
+theme_override_constants/margin_left = 4
+theme_override_constants/margin_top = 2
+theme_override_constants/margin_right = 4
+theme_override_constants/margin_bottom = 2
+
+[node name="InfoInner" type="HBoxContainer" parent="StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin"]
 size_flags_horizontal = 0
+theme_override_constants/separation = 8
 
-[node name="StateSegment" type="HBoxContainer" parent="Root/MainRow/InfoPanel/InfoContent"]
+[node name="StateSegment" type="HBoxContainer" parent="StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner"]
+theme_override_constants/separation = 6
 
-[node name="CounterSegment" type="HBoxContainer" parent="Root/MainRow/InfoPanel/InfoContent"]
+[node name="CounterSegment" type="HBoxContainer" parent="StatusEntryRoot/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner"]
+theme_override_constants/separation = 6
 
-[node name="InfoLines" type="VBoxContainer" parent="Root"]
+[node name="RowFiller" type="Control" parent="StatusEntryRoot/MainRow"]
+size_flags_horizontal = 3
+
+[node name="InfoLines" type="VBoxContainer" parent="StatusEntryRoot"]
 visible = false
-size_flags_horizontal = 0
+size_flags_horizontal = 3
+theme_override_constants/separation = 1
