@@ -4,10 +4,10 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
-const DISCLOSURE_WIDTH := 22.0
+const DISCLOSURE_WIDTH := 28.0
 
 var _entry_id: String = ""
-var _indent_spacer: Control
+var _indent_region: Control
 var _disclosure_button: Button
 var _disclosure_placeholder: Control
 var _disclosure_indicator: Control
@@ -35,7 +35,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	visible = true
 
 	_entry_id = model.id
-	_indent_spacer.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
+	_indent_region.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
 	_name_label.text = model.label
 
 	_disclosure_button.visible = model.can_expand
@@ -232,18 +232,20 @@ func _on_disclosure_pressed() -> void:
 
 
 func _bind_nodes() -> void:
-	if _indent_spacer != null:
+	if _indent_region != null:
 		return
-	_indent_spacer = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/IndentSpacer
-	_disclosure_button = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton
-	_disclosure_placeholder = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosurePlaceholder
-	_disclosure_indicator = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton/DisclosureIndicator
-	_name_label = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/NameLabel
-	_state_segment = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/StateSegment
-	_counter_segment = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner/CounterSegment
-	_info_lines_container = $StatusEntryRoot/RowShell/ShellContent/InfoLines
-	_info_panel = $StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel
-	_row_shell = $StatusEntryRoot/RowShell
+	_indent_region = $StatusEntryRoot/MainRow/IndentRegion
+	_disclosure_button = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton
+	_disclosure_placeholder = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosurePlaceholder
+	_disclosure_indicator = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton/DisclosureIndicator
+	_name_label = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/NameLabel
+	_state_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/StateSegment
+	_counter_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/CounterSegment
+	_info_lines_container = $StatusEntryRoot/InfoLines
+	_info_panel = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel
+	_row_shell = $StatusEntryRoot/MainRow/EntryShell
+	_disclosure_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_disclosure_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_info_panel.add_theme_stylebox_override("panel", _info_panel_style())
 	_row_shell.add_theme_stylebox_override("panel", _row_shell_style())
 	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):

@@ -10,30 +10,30 @@ size_flags_horizontal = 3
 [node name="StatusEntryRoot" type="VBoxContainer" parent="."]
 size_flags_horizontal = 3
 
-[node name="RowShell" type="PanelContainer" parent="StatusEntryRoot"]
-size_flags_horizontal = 0
-
-[node name="ShellContent" type="VBoxContainer" parent="StatusEntryRoot/RowShell"]
-theme_override_constants/separation = 1
-
-[node name="MainRow" type="HBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent"]
+[node name="MainRow" type="HBoxContainer" parent="StatusEntryRoot"]
 size_flags_horizontal = 3
 
-[node name="RowContent" type="HBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow"]
+[node name="IndentRegion" type="Control" parent="StatusEntryRoot/MainRow"]
+custom_minimum_size = Vector2(0, 0)
+
+[node name="EntryShell" type="PanelContainer" parent="StatusEntryRoot/MainRow"]
+size_flags_horizontal = 0
+
+[node name="ShellContent" type="VBoxContainer" parent="StatusEntryRoot/MainRow/EntryShell"]
+theme_override_constants/separation = 1
+
+[node name="RowContent" type="HBoxContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent"]
 size_flags_horizontal = 0
 theme_override_constants/separation = 6
 
-[node name="IdentitySegment" type="HBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent"]
+[node name="IdentitySegment" type="HBoxContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent"]
 size_flags_horizontal = 0
 theme_override_constants/separation = 2
 
-[node name="IndentSpacer" type="Control" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment"]
-custom_minimum_size = Vector2(0, 0)
+[node name="DisclosureSlot" type="Control" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment"]
+custom_minimum_size = Vector2(28, 22)
 
-[node name="DisclosureSlot" type="Control" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment"]
-custom_minimum_size = Vector2(22, 22)
-
-[node name="DisclosureButton" type="Button" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot"]
+[node name="DisclosureButton" type="Button" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot"]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -42,55 +42,63 @@ grow_vertical = 2
 flat = true
 toggle_mode = true
 
-[node name="DisclosureIndicator" type="Control" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton"]
+[node name="DisclosureIndicator" type="Control" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton"]
 layout_mode = 1
 anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
-offset_left = -7.0
-offset_top = -7.0
-offset_right = 7.0
-offset_bottom = 7.0
+offset_left = -9.0
+offset_top = -9.0
+offset_right = 9.0
+offset_bottom = 9.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
 script = ExtResource("2_h3m1k")
 
-[node name="DisclosurePlaceholder" type="Control" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment/DisclosureSlot"]
+[node name="DisclosurePlaceholder" type="Control" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot"]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
 
-[node name="NameLabel" type="Label" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/IdentitySegment"]
+[node name="NameLabel" type="Label" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment"]
 size_flags_horizontal = 0
 text = "Entry"
 
-[node name="InfoPanel" type="PanelContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent"]
+[node name="InfoPanelInset" type="MarginContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent"]
+theme_override_constants/margin_left = 1
+theme_override_constants/margin_top = 1
+theme_override_constants/margin_right = 2
+theme_override_constants/margin_bottom = 1
+
+[node name="InfoPanel" type="PanelContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset"]
 size_flags_horizontal = 0
 
-[node name="InfoMargin" type="MarginContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel"]
-theme_override_constants/margin_left = 4
+[node name="InfoMargin" type="MarginContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel"]
+theme_override_constants/margin_left = 5
 theme_override_constants/margin_top = 2
-theme_override_constants/margin_right = 4
+theme_override_constants/margin_right = 5
 theme_override_constants/margin_bottom = 2
 
-[node name="InfoInner" type="HBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin"]
+[node name="InfoInner" type="HBoxContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin"]
 size_flags_horizontal = 0
 theme_override_constants/separation = 8
 
-[node name="StateSegment" type="HBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner"]
+[node name="StateSegment" type="HBoxContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner"]
 theme_override_constants/separation = 6
 
-[node name="CounterSegment" type="HBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent/MainRow/RowContent/InfoPanel/InfoMargin/InfoInner"]
+[node name="CounterSegment" type="HBoxContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner"]
 theme_override_constants/separation = 6
 
-[node name="RowFiller" type="Control" parent="StatusEntryRoot/RowShell/ShellContent/MainRow"]
+[node name="RowFiller" type="Control" parent="StatusEntryRoot/MainRow"]
 size_flags_horizontal = 3
 
-[node name="InfoLines" type="VBoxContainer" parent="StatusEntryRoot/RowShell/ShellContent"]
+[node name="InfoLines" type="VBoxContainer" parent="StatusEntryRoot"]
 visible = false
 size_flags_horizontal = 3
 theme_override_constants/separation = 1
