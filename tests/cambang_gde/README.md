@@ -19,6 +19,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Minimal snapshot-only observer diagnostics (`gen/version/topology_version`,
     device/stream counts, frame counters, stream error count).
   - Expected pass string: `OK: godot snapshot observer minimal PASS`
+- `scenes/65_public_boundary_verify.tscn`
+  - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
+    synchronous handler/snapshot consistency, NIL-after-stop, and no stale generation leakage.
+  - Expected pass string: `OK: godot public boundary verify PASS`
 
 ## Running
 
@@ -29,9 +33,29 @@ godot4 --headless --path . --scene res://scenes/60_restart_boundary_abuse.tscn -
 godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
 ```
 
 Notes:
 - Scenes force provider mode to `synthetic` before `start()`.
 - `61` and `62` instantiate a dev node and trigger existing scenario names via
   `CamBANGDevNode.start_scenario(name)`.
+
+## Shared status panel and editor dock
+
+This branch now includes:
+
+- `res://addons/cambang/cambang_status_panel.gd`
+  - shared status-only observer panel for runtime and editor use
+- `res://addons/cambang_editor/plugin.cfg`
+  - editor plugin that adds a CamBANG dock and stops the server in `_build()` before Play
+- `res://scenes/64_status_panel_runtime_smoke.tscn`
+  - minimal runtime scene hosting `CamBANGStatusPanel`
+
+The editor dock uses only the public singleton API:
+
+- `CamBANGServer.start()`
+- `CamBANGServer.stop()`
+- `CamBANGServer.set_provider_mode()`
+- `CamBANGServer.get_provider_mode()`
+- `CamBANGServer.get_state_snapshot()`

@@ -11,9 +11,13 @@ config_version=5
 [application]
 
 config/name="cambang_gde"
-run/main_scene="uid://d2bn8rdhyce7q"
+run/main_scene="res://scenes/64_status_panel_runtime_smoke.tscn"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/cambang_editor/plugin.cfg")
 
 [input]
 
