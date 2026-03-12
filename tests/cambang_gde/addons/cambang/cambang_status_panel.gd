@@ -41,7 +41,10 @@ var _topology_version_value: Label
 var _schema_version_value: Label
 var _counts_value: Label
 var _timestamp_value: Label
+var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
+var _dev_expanded_by_id: Dictionary = {}
+var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
 
 
@@ -103,9 +106,16 @@ func _build_ui_if_needed() -> void:
 	_counts_value = _add_row(grid, "Entity Counts")
 	_timestamp_value = _add_row(grid, "timestamp_ns")
 
+	_status_rows_scroll = ScrollContainer.new()
+	_status_rows_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status_rows_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_status_rows_scroll.custom_minimum_size = Vector2(0, 220)
+	root.add_child(_status_rows_scroll)
+
 	_status_rows = VBoxContainer.new()
 	_status_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_child(_status_rows)
+	_status_rows.add_theme_constant_override("separation", 2)
+	_status_rows_scroll.add_child(_status_rows)
 
 
 func _add_row(grid: GridContainer, label_text: String) -> Label:
@@ -267,7 +277,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"server/main",
 		1,
 		"rig/stereo-a",
-		true,
+		false,
 		true,
 		[_badge("neutral", "dual-device")],
 		[_counter("devices", 2, 1)],
@@ -342,10 +352,44 @@ func _render_panel_model(model: PanelModel) -> void:
 	for child in _status_rows.get_children():
 		child.queue_free()
 
+	_dev_parent_by_id.clear()
 	for entry_model in model.entries:
+		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
+
+	for entry_model in model.entries:
+		if not _dev_expanded_by_id.has(entry_model.id):
+			_dev_expanded_by_id[entry_model.id] = entry_model.expanded
+		entry_model.expanded = bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded))
+
+		if not _is_entry_visible(entry_model):
+			continue
+
 		var entry := STATUS_ENTRY_SCENE.instantiate()
 		_status_rows.add_child(entry)
 		entry.set_model(entry_model)
+		if entry.has_signal("disclosure_toggled"):
+			entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+
+
+func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
+	if entry_model.parent_id == "":
+		return true
+
+	var current_parent := entry_model.parent_id
+	while current_parent != "":
+		if not bool(_dev_expanded_by_id.get(current_parent, true)):
+			return false
+		current_parent = _find_parent_id(current_parent)
+	return true
+
+
+func _find_parent_id(entry_id: String) -> String:
+	return str(_dev_parent_by_id.get(entry_id, ""))
+
+
+func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
+	_dev_expanded_by_id[entry_id] = expanded
+	_render_panel_model(_build_fake_panel_model())
 
 
 func _entry(

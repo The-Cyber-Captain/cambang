@@ -1,10 +1,14 @@
 @tool
 extends MarginContainer
 
-const INDENT_WIDTH := 16.0
+signal disclosure_toggled(entry_id: String, expanded: bool)
 
+const INDENT_WIDTH := 14.0
+
+var _entry_id: String = ""
 var _indent_spacer: Control
-var _disclosure_label: Label
+var _disclosure_button: Button
+var _disclosure_placeholder: Control
 var _name_label: Label
 var _state_segment: HBoxContainer
 var _counter_segment: HBoxContainer
@@ -22,14 +26,15 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 		return
 	visible = true
 
+	_entry_id = model.id
 	_indent_spacer.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
-
-	if model.can_expand:
-		_disclosure_label.text = "▾" if model.expanded else "▸"
-	else:
-		_disclosure_label.text = "•"
-
 	_name_label.text = model.label
+
+	_disclosure_button.visible = model.can_expand
+	_disclosure_placeholder.visible = not model.can_expand
+	_disclosure_button.button_pressed = model.expanded
+	_disclosure_button.text = "▾" if model.expanded else "▸"
+
 	_render_badges(model.badges)
 	_render_counters(model.counters)
 	_render_info_lines(model.info_lines)
@@ -41,10 +46,10 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 
 	for badge in badges:
 		var pair := HBoxContainer.new()
-		pair.add_theme_constant_override("separation", 4)
+		pair.add_theme_constant_override("separation", 3)
 
 		var indicator := ColorRect.new()
-		indicator.custom_minimum_size = Vector2(8, 8)
+		indicator.custom_minimum_size = Vector2(7, 7)
 		indicator.color = _badge_color_for_role(badge.role)
 		pair.add_child(indicator)
 
@@ -61,7 +66,7 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> void:
 
 	for counter in counters:
 		var counter_box := VBoxContainer.new()
-		counter_box.add_theme_constant_override("separation", 2)
+		counter_box.add_theme_constant_override("separation", 1)
 
 		var name_label := Label.new()
 		name_label.text = counter.name
@@ -75,7 +80,7 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> void:
 		var value_label := Label.new()
 		value_label.text = _format_counter_value(counter.value, counter.digits)
 		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		value_label.custom_minimum_size = Vector2(max(counter.digits, 1) * 10.0 + 12.0, 0)
+		value_label.custom_minimum_size = Vector2(max(counter.digits, 1) * 10.0 + 8.0, 0)
 		value_panel.add_child(value_label)
 
 		_counter_segment.add_child(counter_box)
@@ -129,23 +134,31 @@ func _badge_color_for_role(role: String) -> Color:
 func _counter_value_style() -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.16, 0.16, 0.18, 0.85)
-	style.corner_radius_top_left = 3
-	style.corner_radius_top_right = 3
-	style.corner_radius_bottom_right = 3
-	style.corner_radius_bottom_left = 3
-	style.content_margin_left = 4
-	style.content_margin_right = 4
-	style.content_margin_top = 2
-	style.content_margin_bottom = 2
+	style.corner_radius_top_left = 2
+	style.corner_radius_top_right = 2
+	style.corner_radius_bottom_right = 2
+	style.corner_radius_bottom_left = 2
+	style.content_margin_left = 3
+	style.content_margin_right = 3
+	style.content_margin_top = 1
+	style.content_margin_bottom = 1
 	return style
+
+
+func _on_disclosure_pressed() -> void:
+	_disclosure_button.text = "▾" if _disclosure_button.button_pressed else "▸"
+	disclosure_toggled.emit(_entry_id, _disclosure_button.button_pressed)
 
 
 func _bind_nodes() -> void:
 	if _indent_spacer != null:
 		return
-	_indent_spacer = $MainRow/IdentitySegment/Indent
-	_disclosure_label = $MainRow/IdentitySegment/Disclosure
-	_name_label = $MainRow/IdentitySegment/NameLabel
-	_state_segment = $MainRow/InfoPanel/InfoContent/StateSegment
-	_counter_segment = $MainRow/InfoPanel/InfoContent/CounterSegment
-	_info_lines_container = $InfoLines
+	_indent_spacer = $Root/MainRow/IdentitySegment/Indent
+	_disclosure_button = $Root/MainRow/IdentitySegment/DisclosureButton
+	_disclosure_placeholder = $Root/MainRow/IdentitySegment/DisclosurePlaceholder
+	_name_label = $Root/MainRow/IdentitySegment/NameLabel
+	_state_segment = $Root/MainRow/InfoPanel/InfoContent/StateSegment
+	_counter_segment = $Root/MainRow/InfoPanel/InfoContent/CounterSegment
+	_info_lines_container = $Root/InfoLines
+	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):
+		_disclosure_button.pressed.connect(_on_disclosure_pressed)
