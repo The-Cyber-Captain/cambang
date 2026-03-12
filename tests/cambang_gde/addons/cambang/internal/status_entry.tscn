@@ -1,0 +1,31 @@
+[gd_scene load_steps=2 format=3 uid="uid://bufbd7mu0ugv4"]
+
+[ext_resource type="Script" path="res://addons/cambang/internal/status_entry.gd" id="1_ut2wq"]
+
+[node name="StatusEntry" type="MarginContainer"]
+script = ExtResource("1_ut2wq")
+size_flags_horizontal = 3
+
+[node name="Root" type="VBoxContainer" parent="."]
+size_flags_horizontal = 3
+
+[node name="MainRow" type="HBoxContainer" parent="Root"]
+size_flags_horizontal = 3
+
+[node name="Indent" type="Control" parent="Root/MainRow"]
+custom_minimum_size = Vector2(0, 0)
+
+[node name="Disclosure" type="Label" parent="Root/MainRow"]
+text = "•"
+
+[node name="Name" type="Label" parent="Root/MainRow"]
+size_flags_horizontal = 3
+text = "Entry"
+
+[node name="Badges" type="HBoxContainer" parent="Root/MainRow"]
+
+[node name="Counters" type="HBoxContainer" parent="Root/MainRow"]
+
+[node name="InfoLines" type="VBoxContainer" parent="Root"]
+visible = false
+size_flags_horizontal = 3
