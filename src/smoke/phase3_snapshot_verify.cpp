@@ -170,6 +170,131 @@ static int test_destroyed_retention_does_not_cross_generation_baseline() {
   return 0;
 }
 
+static int test_live_session_retirement_expiry_publication() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start (live retention expiry)\n";
+    return 1;
+  }
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->version == 0;
+      })) {
+    std::cerr << "FAIL: missing baseline snapshot\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto baseline = snapshot_copy(buf);
+  if (!baseline) {
+    std::cerr << "FAIL: missing baseline snapshot copy\n";
+    rt.stop();
+    return 1;
+  }
+
+  const uint64_t gen0 = baseline->gen;
+  const uint64_t version_before_destroy = baseline->version;
+
+  NativeObjectCreateInfo c{};
+  c.native_id = 93001;
+  c.type = static_cast<uint32_t>(NativeObjectType::Stream);
+  c.root_id = 93002;
+  c.has_created_ns = true;
+  c.created_ns = 100;
+  rt.provider_callbacks()->on_native_object_created(c);
+  rt.request_publish();
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->gen == gen0 && find_native(*s, c.native_id) != nullptr;
+      })) {
+    std::cerr << "FAIL: native object not visible after create\n";
+    rt.stop();
+    return 1;
+  }
+
+  NativeObjectDestroyInfo d{};
+  d.native_id = c.native_id;
+  d.has_destroyed_ns = true;
+  d.destroyed_ns = 200;
+  rt.provider_callbacks()->on_native_object_destroyed(d);
+  rt.request_publish();
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        const NativeObjectRecord* n = s ? find_native(*s, c.native_id) : nullptr;
+        return s && s->gen == gen0 && n && n->phase == CBLifecyclePhase::DESTROYED;
+      })) {
+    std::cerr << "FAIL: destroyed native record not retained during retention window\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto retained = snapshot_copy(buf);
+  if (!retained) {
+    std::cerr << "FAIL: missing retained-destroyed snapshot copy\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t version_with_retained_destroyed = retained->version;
+  const size_t retained_native_count = retained->native_objects.size();
+
+  // Retention window in CoreRuntime is 5 seconds. During live operation, timer-driven
+  // retirement sweep should remove the expired destroyed record and trigger a publish.
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        if (!s) return false;
+        if (s->gen != gen0) return false;
+        if (find_native(*s, c.native_id) != nullptr) return false;
+        return s->version > version_with_retained_destroyed;
+      }, /*max_iters=*/1700, /*sleep_ms=*/5)) {
+    std::cerr << "FAIL: destroyed native record did not retire during live session\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto retired = snapshot_copy(buf);
+  if (!retired) {
+    std::cerr << "FAIL: missing post-retirement snapshot copy\n";
+    rt.stop();
+    return 1;
+  }
+
+  const uint64_t version_after_retirement = retired->version;
+  if (retired->gen != gen0) {
+    std::cerr << "FAIL: generation changed during live-session retirement expiry\n";
+    rt.stop();
+    return 1;
+  }
+  if (!(version_with_retained_destroyed > version_before_destroy)) {
+    std::cerr << "FAIL: retained-destroyed snapshot version did not advance after destroy\n";
+    rt.stop();
+    return 1;
+  }
+  if (!(version_after_retirement > version_with_retained_destroyed)) {
+    std::cerr << "FAIL: version did not advance on retirement removal publish\n";
+    rt.stop();
+    return 1;
+  }
+  if (find_native(*retired, c.native_id) != nullptr) {
+    std::cerr << "FAIL: stale retained destroyed record remains after retirement\n";
+    rt.stop();
+    return 1;
+  }
+  if (!(retired->native_objects.size() < retained_native_count)) {
+    std::cerr << "FAIL: native object count did not reflect retirement removal\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_topology_detached_and_retirement() {
   CoreRuntime rt;
   StateSnapshotBuffer buf;
@@ -452,6 +577,7 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
 int main() {
   if (int r = test_topology_detached_and_retirement()) return r;
   if (int r = test_destroyed_retention_does_not_cross_generation_baseline()) return r;
+  if (int r = test_live_session_retirement_expiry_publication()) return r;
   if (int r = test_timestamp_preservation_and_fallback()) return r;
   if (int r = test_no_sink_delivered_vs_dropped_accounting()) return r;
 
