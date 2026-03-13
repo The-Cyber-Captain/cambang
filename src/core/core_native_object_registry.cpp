@@ -53,6 +53,19 @@ void CoreNativeObjectRegistry::on_native_object_destroyed(uint64_t native_id,
   it->second.destroyed_integration_ns = destroyed_integration_ns;
 }
 
+size_t CoreNativeObjectRegistry::clear_destroyed() {
+  size_t retired = 0;
+  for (auto it = records_.begin(); it != records_.end();) {
+    if (!it->second.destroyed) {
+      ++it;
+      continue;
+    }
+    it = records_.erase(it);
+    ++retired;
+  }
+  return retired;
+}
+
 size_t CoreNativeObjectRegistry::retire_destroyed_older_than(uint64_t now_ns,
                                                              uint64_t retention_window_ns) {
   size_t retired = 0;

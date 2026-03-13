@@ -91,6 +91,85 @@ static bool wait_for_snapshot_with_version(StateSnapshotBuffer& buf, uint64_t mi
   });
 }
 
+static int test_destroyed_retention_does_not_cross_generation_baseline() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start (gen0)\n";
+    return 1;
+  }
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->gen == 0 && s->version == 0;
+      })) {
+    std::cerr << "FAIL: missing baseline snapshot for gen0\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto* cb = rt.provider_callbacks();
+  NativeObjectCreateInfo c{};
+  c.native_id = 91001;
+  c.type = static_cast<uint32_t>(NativeObjectType::Stream);
+  c.root_id = 91002;
+  c.owner_device_instance_id = 0;
+  c.owner_stream_id = 0;
+  c.has_created_ns = true;
+  c.created_ns = 111;
+  cb->on_native_object_created(c);
+
+  NativeObjectDestroyInfo d{};
+  d.native_id = c.native_id;
+  d.has_destroyed_ns = true;
+  d.destroyed_ns = 222;
+  cb->on_native_object_destroyed(d);
+
+  rt.request_publish();
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        auto* n = s ? find_native(*s, c.native_id) : nullptr;
+        return s && s->gen == 0 && n && n->phase == CBLifecyclePhase::DESTROYED;
+      })) {
+    std::cerr << "FAIL: destroyed native not retained in live gen0\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime restart (gen1)\n";
+    return 1;
+  }
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->gen == 1 && s->version == 0;
+      })) {
+    std::cerr << "FAIL: missing baseline snapshot for gen1\n";
+    rt.stop();
+    return 1;
+  }
+
+  {
+    auto s1 = snapshot_copy(buf);
+    if (!s1) {
+      std::cerr << "FAIL: missing gen1 baseline snapshot copy\n";
+      rt.stop();
+      return 1;
+    }
+    if (find_native(*s1, c.native_id) != nullptr) {
+      std::cerr << "FAIL: gen1 baseline leaked retained destroyed native from gen0\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_topology_detached_and_retirement() {
   CoreRuntime rt;
   StateSnapshotBuffer buf;
@@ -372,6 +451,7 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
 
 int main() {
   if (int r = test_topology_detached_and_retirement()) return r;
+  if (int r = test_destroyed_retention_does_not_cross_generation_baseline()) return r;
   if (int r = test_timestamp_preservation_and_fallback()) return r;
   if (int r = test_no_sink_delivered_vs_dropped_accounting()) return r;
 
