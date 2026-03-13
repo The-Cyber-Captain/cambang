@@ -5,7 +5,7 @@ var _expanded: bool = false
 
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(10, 10)
+	custom_minimum_size = Vector2(14, 14)
 	queue_redraw()
 
 
@@ -19,7 +19,7 @@ func set_expanded(expanded: bool) -> void:
 func _draw() -> void:
 	var rect := Rect2(Vector2.ZERO, size)
 	var center := rect.get_center()
-	var radius := minf(rect.size.x, rect.size.y) * 0.34
+	var radius := minf(rect.size.x, rect.size.y) * 0.4
 	var points := PackedVector2Array()
 
 	if _expanded:

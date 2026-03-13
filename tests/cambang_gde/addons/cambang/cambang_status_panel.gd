@@ -4,6 +4,7 @@ extends PanelContainer
 
 const SERVER_SINGLETON_NAME := "CamBANGServer"
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
+const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
 
 
 class PanelModel extends RefCounted:
@@ -32,6 +33,47 @@ class CounterModel extends RefCounted:
 	var value: int = 0
 	var digits: int = 1
 
+
+class StatusPanelStyle extends RefCounted:
+	var panel_bg: Color
+	var identity_font: Font
+	var identity_font_size: int
+	var identity_font_color: Color
+	var identity_outline_color: Color
+	var identity_outline_size: int
+
+	var info_font: Font
+	var info_panel_bg: Color
+	var counter_box_bg: Color
+	var counter_box_border: Color
+
+	var state_font_size: int
+	var state_font_color: Color
+	var state_outline_color: Color
+	var state_outline_size: int
+
+	var counter_font: Font
+	var counter_font_size: int
+	var counter_font_color: Color
+
+	var row_shell_bg: Color
+	var row_shell_radius: int
+	var row_shell_padding: Vector4
+	var identity_info_gap: int
+	var info_panel_outer_inset: Vector4
+	var info_panel_inner_padding: Vector4
+	var counter_box_radius: int
+	var counter_box_h_padding: int
+	var counter_box_v_padding: int
+	var counter_box_border_width: int
+	var disclosure_slot_width: int
+	var disclosure_visual_scale: float
+	var badge_strip_width: int
+
+
+@export var panel_style_overrides: Dictionary = {}
+@export var shared_style_overrides: Dictionary = {}
+
 var _title_label: Label
 var _provider_mode_value: Label
 var _snapshot_state_value: Label
@@ -50,6 +92,7 @@ var _server: Object = null
 
 func _ready() -> void:
 	_build_ui_if_needed()
+	_apply_panel_style(_resolve_style())
 	_connect_server()
 	_refresh_from_server()
 	_render_panel_model(_build_fake_panel_model())
@@ -58,6 +101,7 @@ func _ready() -> void:
 func _enter_tree() -> void:
 	if is_node_ready():
 		_build_ui_if_needed()
+		_apply_panel_style(_resolve_style())
 		_connect_server()
 		_refresh_from_server()
 
@@ -107,6 +151,7 @@ func _build_ui_if_needed() -> void:
 	_timestamp_value = _add_row(grid, "timestamp_ns")
 
 	_status_rows_scroll = ScrollContainer.new()
+	_status_rows_scroll.set_script(TOUCH_SCROLL_SCRIPT)
 	_status_rows_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status_rows_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_status_rows_scroll.custom_minimum_size = Vector2(0, 220)
@@ -129,6 +174,129 @@ func _add_row(grid: GridContainer, label_text: String) -> Label:
 	value.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	grid.add_child(value)
 	return value
+
+
+func _resolve_style() -> StatusPanelStyle:
+	var style := StatusPanelStyle.new()
+	var fallback_font := ThemeDB.fallback_font
+
+	style.panel_bg = _resolve_panel_color("status_panel_bg", Color(0.07, 0.09, 0.12, 0.9))
+	style.identity_font = _resolve_shared_font("status_identity_font", fallback_font)
+	style.identity_font_size = _resolve_shared_int("status_identity_font_size", 13)
+	style.identity_font_color = _resolve_panel_color("status_identity_font_color", Color(0.88, 0.90, 0.93, 1.0))
+	style.identity_outline_color = _resolve_panel_color("status_identity_outline_color", Color(0.02, 0.03, 0.04, 0.55))
+	style.identity_outline_size = maxi(
+		1,
+		int(round(float(style.identity_font_size) * _resolve_shared_float("status_identity_outline_ratio", 0.08)))
+	)
+
+	style.info_font = _resolve_shared_font("status_info_font", fallback_font)
+	style.info_panel_bg = _resolve_shared_color("status_info_panel_bg", Color(0.10, 0.12, 0.15, 0.88))
+	style.counter_box_bg = _resolve_shared_color("status_counter_box_bg", Color(0.1, 0.11, 0.14, 0.95))
+	style.counter_box_border = _resolve_shared_color("status_counter_box_border", Color(0.34, 0.38, 0.44, 0.85))
+
+	style.state_font_size = maxi(
+		10,
+		int(round(float(style.identity_font_size) * _resolve_shared_float("status_state_font_ratio", 0.86)))
+	)
+	style.state_font_color = _resolve_shared_color("status_state_font_color", Color(0.84, 0.87, 0.90, 1.0))
+	style.state_outline_color = _resolve_shared_color("status_state_outline_color", Color(0.01, 0.02, 0.03, 0.45))
+	style.state_outline_size = maxi(
+		1,
+		int(round(float(style.identity_font_size) * _resolve_shared_float("status_state_outline_ratio", 0.07)))
+	)
+
+	style.counter_font = _make_bold_font(style.info_font)
+	style.counter_font_size = maxi(
+		10,
+		int(round(float(style.identity_font_size) * _resolve_shared_float("status_counter_font_ratio", 0.84)))
+	)
+	style.counter_font_color = _resolve_shared_color("status_counter_font_color", Color(0.90, 0.92, 0.95, 1.0))
+
+	style.row_shell_bg = Color(0.16, 0.18, 0.22, 0.68)
+	style.row_shell_radius = 5
+	style.row_shell_padding = Vector4(3, 2, 3, 2)
+	style.identity_info_gap = 6
+	style.info_panel_outer_inset = Vector4(3, 2, 3, 2)
+	style.info_panel_inner_padding = Vector4(5, 2, 5, 2)
+	style.counter_box_radius = 3
+	style.counter_box_h_padding = 4
+	style.counter_box_v_padding = 2
+	style.counter_box_border_width = 1
+	style.disclosure_slot_width = 28
+	style.disclosure_visual_scale = 1.0
+	style.badge_strip_width = 7
+
+	return style
+
+
+func _make_bold_font(base_font: Font) -> Font:
+	if base_font == null:
+		return ThemeDB.fallback_font
+	var variation := FontVariation.new()
+	variation.base_font = base_font
+	variation.variation_embolden = 0.8
+	return variation
+
+
+func _resolve_panel_color(token: StringName, fallback: Color) -> Color:
+	if panel_style_overrides.has(token):
+		return panel_style_overrides[token]
+	if panel_style_overrides.has(str(token)):
+		return panel_style_overrides[str(token)]
+	if has_theme_color(token, "CamBANGStatusPanel"):
+		return get_theme_color(token, "CamBANGStatusPanel")
+	return fallback
+
+
+func _resolve_shared_color(token: StringName, fallback: Color) -> Color:
+	if shared_style_overrides.has(token):
+		return shared_style_overrides[token]
+	if shared_style_overrides.has(str(token)):
+		return shared_style_overrides[str(token)]
+	if has_theme_color(token, "CamBANGStatusPanel"):
+		return get_theme_color(token, "CamBANGStatusPanel")
+	return fallback
+
+
+func _resolve_shared_font(token: StringName, fallback: Font) -> Font:
+	if shared_style_overrides.has(token):
+		return shared_style_overrides[token]
+	if shared_style_overrides.has(str(token)):
+		return shared_style_overrides[str(token)]
+	if has_theme_font(token, "CamBANGStatusPanel"):
+		return get_theme_font(token, "CamBANGStatusPanel")
+	return fallback
+
+
+func _resolve_shared_int(token: StringName, fallback: int) -> int:
+	if shared_style_overrides.has(token):
+		return int(shared_style_overrides[token])
+	if shared_style_overrides.has(str(token)):
+		return int(shared_style_overrides[str(token)])
+	if has_theme_constant(token, "CamBANGStatusPanel"):
+		return get_theme_constant(token, "CamBANGStatusPanel")
+	return fallback
+
+
+func _resolve_shared_float(token: StringName, fallback: float) -> float:
+	if shared_style_overrides.has(token):
+		return float(shared_style_overrides[token])
+	if shared_style_overrides.has(str(token)):
+		return float(shared_style_overrides[str(token)])
+	if has_theme_constant(token, "CamBANGStatusPanel"):
+		return float(get_theme_constant(token, "CamBANGStatusPanel"))
+	return fallback
+
+
+func _apply_panel_style(style: StatusPanelStyle) -> void:
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = style.panel_bg
+	panel_style.corner_radius_top_left = 6
+	panel_style.corner_radius_top_right = 6
+	panel_style.corner_radius_bottom_right = 6
+	panel_style.corner_radius_bottom_left = 6
+	add_theme_stylebox_override("panel", panel_style)
 
 
 func _connect_server() -> void:
@@ -352,6 +520,7 @@ func _render_panel_model(model: PanelModel) -> void:
 	for child in _status_rows.get_children():
 		child.queue_free()
 
+	var style := _resolve_style()
 	_dev_parent_by_id.clear()
 	for entry_model in model.entries:
 		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
@@ -366,6 +535,7 @@ func _render_panel_model(model: PanelModel) -> void:
 
 		var entry := STATUS_ENTRY_SCENE.instantiate()
 		_status_rows.add_child(entry)
+		entry.set_style(style)
 		entry.set_model(entry_model)
 		if entry.has_signal("disclosure_toggled"):
 			entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
