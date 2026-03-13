@@ -275,6 +275,8 @@ void ProviderCallbackIngress::on_native_object_created(const NativeObjectCreateI
   p.root_id = info.root_id;
   p.owner_device_instance_id = info.owner_device_instance_id;
   p.owner_stream_id = info.owner_stream_id;
+  p.owner_provider_native_id = info.owner_provider_native_id;
+  p.owner_rig_id = info.owner_rig_id;
   p.bytes_allocated = info.bytes_allocated;
   p.buffers_in_use = info.buffers_in_use;
   p.has_created_ns = info.has_created_ns;

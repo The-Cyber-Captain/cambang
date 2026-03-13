@@ -522,6 +522,16 @@ if (dispatcher_.consume_relevant_state_changed()) {
           return;
         }
 
+        set_phase(ShutdownPhase::CLEAR_DESTROYED_RETAINED_NATIVE_OBJECTS);
+        shutdown_wait_ticks_ = 0;
+        // fallthrough
+      }
+
+      case ShutdownPhase::CLEAR_DESTROYED_RETAINED_NATIVE_OBJECTS: {
+        // Do not carry retained DESTROYED records across stop/start boundaries.
+        // They remain truthfully retained while the generation is live and through
+        // final prior-generation publication, then are quarantined before exit.
+        (void)native_objects_.clear_destroyed();
         set_phase(ShutdownPhase::EXIT);
         shutdown_wait_ticks_ = 0;
         // fallthrough

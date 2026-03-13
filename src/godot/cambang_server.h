@@ -100,6 +100,10 @@ private:
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
 
+  // Consume latest core snapshot (if published_seq advanced) and optionally emit
+  // state_published for this boundary observation.
+  bool _consume_latest_core_snapshot(bool emit_signal);
+
   static CamBANGServer* singleton_;
 
   CoreRuntime runtime_;

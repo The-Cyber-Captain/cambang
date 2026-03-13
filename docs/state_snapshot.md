@@ -418,8 +418,10 @@ NativeObjectRecord {
 
   phase: phase
 
-  owner_device_instance_id: uint64       // 0 if none
-  owner_stream_id: uint64                // 0 if none
+  owner_device_instance_id: uint64       // 0 if none/unknown
+  owner_stream_id: uint64                // 0 if none/unknown
+  owner_provider_native_id: uint64       // 0 if none/unknown
+  owner_rig_id: uint64                   // 0 if none/unknown
 
   root_id: uint64
 

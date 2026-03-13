@@ -240,9 +240,18 @@ public:
       runtime_.attach_provider(nullptr);
       provider_.reset();
     }
-    if (runtime_.is_running()) {
+
+    const bool was_running = runtime_.is_running();
+    if (was_running) {
       runtime_.stop();
+      // Mirror Godot stop-boundary behaviour: consume one final publication (if any)
+      // before returning to NIL.
+      (void)boundary_.tick(runtime_, snapshot_buffer_);
+      last_snapshot_before_stop_clear_ = boundary_.current();
+    } else {
+      last_snapshot_before_stop_clear_ = ObservedSnapshot{};
     }
+
     snapshot_buffer_.clear();
     endpoint_hardware_ids_.clear();
     synthetic_frame_period_ns_ = 0;
@@ -479,6 +488,9 @@ public:
 
   bool tick() { return boundary_.tick(runtime_, snapshot_buffer_); }
   const ObservedSnapshot& observed() const noexcept { return boundary_.current(); }
+  const ObservedSnapshot& last_snapshot_before_stop_clear() const noexcept {
+    return last_snapshot_before_stop_clear_;
+  }
   CoreRuntime& runtime() noexcept { return runtime_; }
   StateSnapshotBuffer& snapshot_buffer() noexcept { return snapshot_buffer_; }
 
@@ -580,6 +592,7 @@ private:
   std::vector<std::string> endpoint_hardware_ids_;
   uint64_t synthetic_frame_period_ns_ = 0;
   ObservationBoundary boundary_;
+  ObservedSnapshot last_snapshot_before_stop_clear_{};
 };
 
 } // namespace cambang
