@@ -88,6 +88,8 @@ var _status_rows: VBoxContainer
 var _dev_expanded_by_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
+var _last_snapshot_meta: Dictionary = {}
+var _last_panel_model: PanelModel = null
 
 
 func _ready() -> void:
@@ -95,7 +97,6 @@ func _ready() -> void:
 	_apply_panel_style(_resolve_style())
 	_connect_server()
 	_refresh_from_server()
-	_render_panel_model(_build_fake_panel_model())
 
 
 func _enter_tree() -> void:
@@ -336,11 +337,89 @@ func _refresh_from_server() -> void:
 		_server = _get_server()
 	if _server == null:
 		_provider_mode_value.text = "unavailable"
-		_apply_snapshot_read({"state": "No snapshot", "counts": "-", "timestamp": "-"})
+		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
+		_last_snapshot_meta.clear()
+		var no_server_panel := _build_nil_panel_model("No server singleton available.")
+		_last_panel_model = no_server_panel
+		_render_panel_model(no_server_panel)
 		return
 
-	_provider_mode_value.text = str(_server.get_provider_mode())
-	_apply_snapshot_read(_read_snapshot(_server.get_state_snapshot()))
+	var provider_mode := str(_server.get_provider_mode())
+	_provider_mode_value.text = provider_mode
+	var snapshot := _fetch_snapshot()
+	var reading := _read_snapshot(snapshot)
+	_apply_snapshot_read(reading)
+
+	if snapshot == null:
+		_last_snapshot_meta.clear()
+		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
+		_last_panel_model = nil_panel
+		_render_panel_model(nil_panel)
+		return
+
+	if typeof(snapshot) != TYPE_DICTIONARY:
+		_last_snapshot_meta.clear()
+		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
+		_last_panel_model = bad_type_panel
+		_render_panel_model(bad_type_panel)
+		return
+
+	var category := _categorize_snapshot_update(snapshot)
+	match category:
+		"none":
+			if _last_panel_model != null:
+				_render_panel_model(_last_panel_model)
+		"value_refresh":
+			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
+			# while preserving explicit category separation for later optimization.
+			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
+			_last_panel_model = value_panel
+			_render_panel_model(value_panel)
+		_:
+			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
+			_last_panel_model = full_panel
+			_render_panel_model(full_panel)
+
+
+func _fetch_snapshot() -> Variant:
+	if _server == null:
+		return null
+	if not _server.has_method("get_state_snapshot"):
+		return null
+	return _server.get_state_snapshot()
+
+
+func _categorize_snapshot_update(snapshot: Dictionary) -> String:
+	var gen := int(snapshot.get("gen", -1))
+	var version := int(snapshot.get("version", -1))
+	var topology_version := int(snapshot.get("topology_version", -1))
+
+	if _last_snapshot_meta.is_empty():
+		_last_snapshot_meta = {
+			"gen": gen,
+			"version": version,
+			"topology_version": topology_version,
+		}
+		return "structural_rebuild"
+
+	var last_gen := int(_last_snapshot_meta.get("gen", -1))
+	var last_version := int(_last_snapshot_meta.get("version", -1))
+	var last_topology := int(_last_snapshot_meta.get("topology_version", -1))
+
+	var category := "none"
+	if gen != last_gen:
+		category = "structural_rebuild"
+	elif topology_version != last_topology:
+		category = "structural_rebuild"
+	elif version != last_version:
+		category = "value_refresh"
+
+	_last_snapshot_meta = {
+		"gen": gen,
+		"version": version,
+		"topology_version": topology_version,
+	}
+	return category
 
 
 func _read_snapshot(snapshot: Variant) -> Dictionary:
@@ -513,7 +592,473 @@ func _build_fake_panel_model() -> PanelModel:
 	return panel
 
 
+func _build_nil_panel_model(reason: String) -> PanelModel:
+	var panel := PanelModel.new()
+	panel.entries.append(_entry(
+		"server/main",
+		"",
+		0,
+		"server/main",
+		true,
+		true,
+		[_badge("warning", "snapshot-unavailable")],
+		[],
+		[reason]
+	))
+	return panel
+
+
+func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: String) -> PanelModel:
+	var panel := PanelModel.new()
+	var issues: Array[String] = []
+
+	var provider_id := "provider/%s" % _safe_slug(provider_mode, "unknown")
+	var server_badges: Array[BadgeModel] = [_badge("success", "snapshot")]
+	var server_counters: Array[CounterModel] = [
+		_counter("gen", int(snapshot.get("gen", 0)), 1),
+		_counter("version", int(snapshot.get("version", 0)), 1),
+		_counter("topology", int(snapshot.get("topology_version", 0)), 1),
+	]
+	var server_info_lines: Array[String] = []
+	var server_entry := _entry(
+		"server/main",
+		"",
+		0,
+		"server/main",
+		true,
+		true,
+		server_badges,
+		server_counters,
+		server_info_lines
+	)
+	panel.entries.append(server_entry)
+
+	var devices := _safe_array(snapshot.get("devices", []), issues, "devices")
+	var rigs := _safe_array(snapshot.get("rigs", []), issues, "rigs")
+	var streams := _safe_array(snapshot.get("streams", []), issues, "streams")
+	var native_objects := _safe_array(snapshot.get("native_objects", []), issues, "native_objects")
+	var detached_root_ids := _safe_array(snapshot.get("detached_root_ids", []), issues, "detached_root_ids")
+	var snapshot_gen := int(snapshot.get("gen", -1))
+	var native_partition := _partition_native_objects_by_generation(snapshot_gen, native_objects, issues)
+	var current_native_objects: Array = native_partition.get("current", [])
+	var prior_native_objects: Array = native_partition.get("prior", [])
+	var native_dead_count := _count_native_destroyed(native_objects)
+
+	var provider_counters: Array[CounterModel] = [
+		_counter("rigs", rigs.size(), 1),
+		_counter("devices", devices.size(), 1),
+		_counter("streams", streams.size(), 1),
+		_counter("native_all", native_objects.size(), 1),
+		_counter("native_cur", current_native_objects.size(), 1),
+		_counter("native_prev", prior_native_objects.size(), 1),
+		_counter("native_dead", native_dead_count, 1),
+	]
+	var provider_badges: Array[BadgeModel] = [_badge("info", "published")]
+	var provider_info_lines: Array[String] = []
+	var provider_entry := _entry(
+		provider_id,
+		"server/main",
+		1,
+		"provider/%s" % _safe_label_component(provider_mode, "unknown"),
+		true,
+		true,
+		provider_badges,
+		provider_counters,
+		provider_info_lines
+	)
+	panel.entries.append(provider_entry)
+
+	var devices_by_instance := {}
+	var provider_device_ids_by_instance := {}
+	for i in range(devices.size()):
+		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
+		if rec.is_empty():
+			continue
+		var instance_id := int(rec.get("instance_id", 0))
+		if instance_id <= 0:
+			issues.append("Contract gap: devices[%d] missing valid instance_id." % i)
+			continue
+		devices_by_instance[instance_id] = rec
+		var device_label := "device/%s" % _safe_device_name(rec)
+		var device_entry_id := "device/%d" % instance_id
+		provider_device_ids_by_instance[instance_id] = device_entry_id
+		panel.entries.append(_entry(
+			device_entry_id,
+			provider_id,
+			2,
+			device_label,
+			true,
+			true,
+			[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+			[
+				_counter("mode", int(rec.get("mode", 0)), 1),
+				_counter("errors", int(rec.get("errors_count", 0)), 1),
+			],
+			[]
+		))
+
+	var streams_by_device := {}
+	for i in range(streams.size()):
+		var rec := _safe_dict(streams[i], issues, "streams[%d]" % i)
+		if rec.is_empty():
+			continue
+		var stream_id := int(rec.get("stream_id", 0))
+		var owner_instance := int(rec.get("device_instance_id", 0))
+		if stream_id <= 0:
+			issues.append("Contract gap: streams[%d] missing valid stream_id." % i)
+			continue
+		if owner_instance <= 0:
+			issues.append("Contract gap: stream/%d missing owner device_instance_id." % stream_id)
+			continue
+		if not streams_by_device.has(owner_instance):
+			streams_by_device[owner_instance] = []
+		streams_by_device[owner_instance].append(rec)
+
+	for instance_id in provider_device_ids_by_instance.keys():
+		var parent_entry_id := str(provider_device_ids_by_instance[instance_id])
+		var per_device_streams: Array = streams_by_device.get(instance_id, [])
+		for rec in per_device_streams:
+			var stream_id := int(rec.get("stream_id", 0))
+			panel.entries.append(_entry(
+				"stream/%d" % stream_id,
+				parent_entry_id,
+				3,
+				"stream/%d" % stream_id,
+				false,
+				true,
+				[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+				[
+					_counter("mode", int(rec.get("mode", 0)), 1),
+					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
+					_counter("frames", int(rec.get("frames_received", 0)), 3),
+				],
+				[]
+			))
+
+	for i in range(rigs.size()):
+		var rec := _safe_dict(rigs[i], issues, "rigs[%d]" % i)
+		if rec.is_empty():
+			continue
+		var rig_id := int(rec.get("rig_id", 0))
+		if rig_id <= 0:
+			issues.append("Contract gap: rigs[%d] missing valid rig_id." % i)
+			continue
+		var rig_entry_id := "rig/%d" % rig_id
+		panel.entries.append(_entry(
+			rig_entry_id,
+			provider_id,
+			2,
+			"rig/%s" % _safe_rig_name(rec),
+			false,
+			true,
+			[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+			[
+				_counter("mode", int(rec.get("mode", 0)), 1),
+				_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+			],
+			[]
+		))
+
+		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
+		for j in range(members.size()):
+			var hardware_id := str(members[j])
+			var member_device := _find_device_by_hardware(devices, hardware_id, issues)
+			var member_info: Array[String] = []
+			if member_device.is_empty():
+				member_info.append("Contract gap: rig member hardware_id not present in devices list.")
+			panel.entries.append(_entry(
+				"rig/%d/device/%s" % [rig_id, _safe_slug(hardware_id, "unknown")],
+				rig_entry_id,
+				3,
+				"device/%s" % _safe_label_component(hardware_id, "unknown"),
+				false,
+				false,
+				[_badge("info", "rig-context")],
+				[],
+				member_info
+			))
+
+	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
+	var orphan_rows: Array[StatusEntryModel] = []
+	for i in range(current_native_objects.size()):
+		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
+		if rec.is_empty():
+			continue
+		var native_entry := _build_native_object_entry(
+			rec,
+			provider_id,
+			orphan_row_id,
+			detached_root_ids,
+			devices_by_instance,
+			panel.entries,
+			issues,
+			snapshot_gen,
+			false
+		)
+		if native_entry == null:
+			continue
+		if native_entry.parent_id == orphan_row_id:
+			orphan_rows.append(native_entry)
+		else:
+			panel.entries.append(native_entry)
+
+	if orphan_rows.size() > 0:
+		panel.entries.append(_entry(
+			orphan_row_id,
+			provider_id,
+			2,
+			"orphaned native objects",
+			true,
+			true,
+			[_badge("warning", "detached")],
+			[_counter("roots", detached_root_ids.size(), 1)],
+			[]
+		))
+		for row in orphan_rows:
+			panel.entries.append(row)
+
+	if prior_native_objects.size() > 0:
+		var retained_group_id := "%s/retained_prior_generation_native_objects" % provider_id
+		panel.entries.append(_entry(
+			retained_group_id,
+			provider_id,
+			2,
+			"retained prior-generation native objects",
+			true,
+			true,
+			[_badge("warning", "retained")],
+			[_counter("count", prior_native_objects.size(), 1)],
+			[]
+		))
+		for i in range(prior_native_objects.size()):
+			var rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
+			if rec.is_empty():
+				continue
+			var retained_entry := _build_native_object_entry(
+				rec,
+				provider_id,
+				orphan_row_id,
+				detached_root_ids,
+				devices_by_instance,
+				panel.entries,
+				issues,
+				snapshot_gen,
+				true
+			)
+			if retained_entry == null:
+				continue
+			retained_entry.parent_id = retained_group_id
+			retained_entry.depth = 3
+			panel.entries.append(retained_entry)
+
+	if issues.size() > 0:
+		panel.entries.append(_entry(
+			"%s/contract_gaps" % provider_id,
+			provider_id,
+			2,
+			"contract_gaps",
+			true,
+			false,
+			[_badge("warning", "schema")],
+			[_counter("count", issues.size(), 1)],
+			issues
+		))
+
+	_ensure_expandability(panel)
+	return panel
+
+
+func _partition_native_objects_by_generation(snapshot_gen: int, native_objects: Array, issues: Array[String]) -> Dictionary:
+	var current: Array = []
+	var prior: Array = []
+	for i in range(native_objects.size()):
+		var rec := _safe_dict(native_objects[i], issues, "native_objects[%d]" % i)
+		if rec.is_empty():
+			continue
+		if _native_object_is_current_gen(rec, snapshot_gen, issues, "native_objects[%d]" % i):
+			current.append(rec)
+		else:
+			prior.append(rec)
+	return {"current": current, "prior": prior}
+
+
+func _native_object_is_current_gen(rec: Dictionary, snapshot_gen: int, issues: Array[String], path: String) -> bool:
+	if not rec.has("creation_gen"):
+		issues.append("Contract gap: %s missing creation_gen; treating as prior-generation retained record." % path)
+		return false
+	var value := rec.get("creation_gen")
+	if typeof(value) not in [TYPE_INT, TYPE_FLOAT]:
+		issues.append("Contract gap: %s creation_gen has unexpected type=%d; treating as prior-generation retained record." % [path, typeof(value)])
+		return false
+	return int(value) == snapshot_gen
+
+
+func _count_native_destroyed(native_objects: Array) -> int:
+	var count := 0
+	for item in native_objects:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		if int((item as Dictionary).get("phase", -1)) == 3:
+			count += 1
+	return count
+
+
+func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, snapshot_gen: int) -> void:
+	var creation_gen_text := "unknown"
+	if rec.has("creation_gen"):
+		creation_gen_text = str(rec.get("creation_gen"))
+	info_lines.append("Retained record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
+	if int(rec.get("phase", -1)) == 3:
+		info_lines.append("Retained DESTROYED record from prior generation.")
+
+
+func _build_native_object_entry(
+		rec: Dictionary,
+		provider_id: String,
+		orphan_row_id: String,
+		detached_root_ids: Array,
+		devices_by_instance: Dictionary,
+		existing_entries: Array[StatusEntryModel],
+		issues: Array[String],
+		snapshot_gen: int,
+		is_prior_generation: bool
+	) -> StatusEntryModel:
+	var native_id := int(rec.get("native_id", 0))
+	if native_id <= 0:
+		issues.append("Contract gap: native object missing valid native_id.")
+		return null
+	var owner_stream_id := int(rec.get("owner_stream_id", 0))
+	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
+	var root_id := int(rec.get("root_id", 0))
+	var parent_id := provider_id
+	var info_lines: Array[String] = []
+
+	if owner_stream_id > 0:
+		parent_id = "stream/%d" % owner_stream_id
+		if not _entry_exists(existing_entries, parent_id):
+			info_lines.append("Contract gap: owner stream not present in snapshot streams.")
+			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+	elif owner_device_instance_id > 0:
+		parent_id = "device/%d" % owner_device_instance_id
+		if not _entry_exists(existing_entries, parent_id):
+			info_lines.append("Contract gap: owner device not present in snapshot devices.")
+			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+		else:
+			var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
+			if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
+				info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
+	elif _contains_int(detached_root_ids, root_id):
+		parent_id = orphan_row_id
+	else:
+		info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
+
+	if is_prior_generation:
+		_append_native_generation_note(info_lines, rec, snapshot_gen)
+
+	var target_depth := _depth_for_parent(parent_id)
+	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	var native_counters: Array[CounterModel] = [
+		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
+		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
+	]
+	return _entry(
+		"native_object/%d" % native_id,
+		parent_id,
+		target_depth,
+		"native_object/%d" % native_id,
+		false,
+		false,
+		native_badges,
+		native_counters,
+		info_lines
+	)
+
+
+func _ensure_expandability(panel: PanelModel) -> void:
+	var child_counts := {}
+	for e in panel.entries:
+		if str(e.parent_id) == "":
+			continue
+		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
+	for e in panel.entries:
+		e.can_expand = int(child_counts.get(e.id, 0)) > 0
+
+
+func _depth_for_parent(parent_id: String) -> int:
+	if parent_id.begins_with("stream/"):
+		return 4
+	if parent_id.begins_with("device/") or parent_id.begins_with("rig/"):
+		return 3
+	if parent_id.contains("orphaned_native_objects"):
+		return 3
+	if parent_id.begins_with("provider/"):
+		return 2
+	return 1
+
+
+func _safe_array(value: Variant, issues: Array[String], path: String) -> Array:
+	if typeof(value) == TYPE_ARRAY:
+		return value
+	issues.append("Contract gap: %s expected Array, got type=%d." % [path, typeof(value)])
+	return []
+
+
+func _safe_dict(value: Variant, issues: Array[String], path: String) -> Dictionary:
+	if typeof(value) == TYPE_DICTIONARY:
+		return value
+	issues.append("Contract gap: %s expected Dictionary, got type=%d." % [path, typeof(value)])
+	return {}
+
+
+func _safe_device_name(rec: Dictionary) -> String:
+	return _safe_label_component(str(rec.get("hardware_id", "")), "unknown")
+
+
+func _safe_rig_name(rec: Dictionary) -> String:
+	var name := str(rec.get("name", ""))
+	if name.is_empty():
+		return str(rec.get("rig_id", 0))
+	return name
+
+
+func _safe_label_component(raw: String, fallback: String) -> String:
+	if raw.is_empty():
+		return fallback
+	return raw
+
+
+func _safe_slug(raw: String, fallback: String) -> String:
+	if raw.is_empty():
+		return fallback
+	return raw.replace("/", "-").replace(" ", "-")
+
+
+func _entry_exists(entries: Array[StatusEntryModel], id: String) -> bool:
+	for e in entries:
+		if e.id == id:
+			return true
+	return false
+
+
+func _contains_int(values: Array, needle: int) -> bool:
+	for value in values:
+		if int(value) == needle:
+			return true
+	return false
+
+
+func _find_device_by_hardware(devices: Array, hardware_id: String, issues: Array[String]) -> Dictionary:
+	for i in range(devices.size()):
+		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
+		if str(rec.get("hardware_id", "")) == hardware_id:
+			return rec
+	return {}
+
+
 func _render_panel_model(model: PanelModel) -> void:
+	if model == null:
+		push_warning("CamBANGStatusPanel: null PanelModel render request ignored.")
+		return
 	if _status_rows == null:
 		return
 
@@ -559,7 +1104,10 @@ func _find_parent_id(entry_id: String) -> String:
 
 func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
 	_dev_expanded_by_id[entry_id] = expanded
-	_render_panel_model(_build_fake_panel_model())
+	if _last_panel_model != null:
+		_render_panel_model(_last_panel_model)
+	else:
+		_render_panel_model(_build_fake_panel_model())
 
 
 func _entry(
