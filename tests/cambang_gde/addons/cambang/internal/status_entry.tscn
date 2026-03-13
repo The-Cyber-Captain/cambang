@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3 uid="uid://bufbd7mu0ugv4"]
+[gd_scene load_steps=4 format=3 uid="uid://bufbd7mu0ugv4"]
 
 [ext_resource type="Script" path="res://addons/cambang/internal/status_entry.gd" id="1_ut2wq"]
 [ext_resource type="Script" path="res://addons/cambang/internal/disclosure_indicator.gd" id="2_h3m1k"]
+[ext_resource type="Script" path="res://addons/cambang/internal/touch_disclosure_button.gd" id="3_tdbtn"]
 
 [node name="StatusEntry" type="MarginContainer"]
 script = ExtResource("1_ut2wq")
@@ -41,6 +42,7 @@ grow_horizontal = 2
 grow_vertical = 2
 flat = true
 toggle_mode = true
+script = ExtResource("3_tdbtn")
 
 [node name="DisclosureIndicator" type="Control" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton"]
 layout_mode = 1

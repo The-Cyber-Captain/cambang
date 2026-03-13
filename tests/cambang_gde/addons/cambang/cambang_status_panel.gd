@@ -4,6 +4,7 @@ extends PanelContainer
 
 const SERVER_SINGLETON_NAME := "CamBANGServer"
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
+const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
 
 
 class PanelModel extends RefCounted:
@@ -44,6 +45,7 @@ class StatusPanelStyle extends RefCounted:
 	var info_font: Font
 	var info_panel_bg: Color
 	var counter_box_bg: Color
+	var counter_box_border: Color
 
 	var state_font_size: int
 	var state_font_color: Color
@@ -63,6 +65,7 @@ class StatusPanelStyle extends RefCounted:
 	var counter_box_radius: int
 	var counter_box_h_padding: int
 	var counter_box_v_padding: int
+	var counter_box_border_width: int
 	var disclosure_slot_width: int
 	var disclosure_visual_scale: float
 	var badge_strip_width: int
@@ -148,6 +151,7 @@ func _build_ui_if_needed() -> void:
 	_timestamp_value = _add_row(grid, "timestamp_ns")
 
 	_status_rows_scroll = ScrollContainer.new()
+	_status_rows_scroll.set_script(TOUCH_SCROLL_SCRIPT)
 	_status_rows_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status_rows_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_status_rows_scroll.custom_minimum_size = Vector2(0, 220)
@@ -176,7 +180,7 @@ func _resolve_style() -> StatusPanelStyle:
 	var style := StatusPanelStyle.new()
 	var fallback_font := ThemeDB.fallback_font
 
-	style.panel_bg = _resolve_panel_color("status_panel_bg", Color(0.10, 0.12, 0.15, 0.88))
+	style.panel_bg = _resolve_panel_color("status_panel_bg", Color(0.07, 0.09, 0.12, 0.9))
 	style.identity_font = _resolve_shared_font("status_identity_font", fallback_font)
 	style.identity_font_size = _resolve_shared_int("status_identity_font_size", 13)
 	style.identity_font_color = _resolve_panel_color("status_identity_font_color", Color(0.88, 0.90, 0.93, 1.0))
@@ -187,8 +191,9 @@ func _resolve_style() -> StatusPanelStyle:
 	)
 
 	style.info_font = _resolve_shared_font("status_info_font", fallback_font)
-	style.info_panel_bg = _resolve_shared_color("status_info_panel_bg", Color(0.07, 0.08, 0.10, 0.92))
-	style.counter_box_bg = _resolve_shared_color("status_counter_box_bg", Color(0.17, 0.18, 0.21, 0.95))
+	style.info_panel_bg = _resolve_shared_color("status_info_panel_bg", Color(0.10, 0.12, 0.15, 0.88))
+	style.counter_box_bg = _resolve_shared_color("status_counter_box_bg", Color(0.1, 0.11, 0.14, 0.95))
+	style.counter_box_border = _resolve_shared_color("status_counter_box_border", Color(0.34, 0.38, 0.44, 0.85))
 
 	style.state_font_size = maxi(
 		10,
@@ -208,7 +213,7 @@ func _resolve_style() -> StatusPanelStyle:
 	)
 	style.counter_font_color = _resolve_shared_color("status_counter_font_color", Color(0.90, 0.92, 0.95, 1.0))
 
-	style.row_shell_bg = Color(0.13, 0.14, 0.16, 0.44)
+	style.row_shell_bg = Color(0.16, 0.18, 0.22, 0.68)
 	style.row_shell_radius = 5
 	style.row_shell_padding = Vector4(3, 2, 3, 2)
 	style.identity_info_gap = 6
@@ -217,6 +222,7 @@ func _resolve_style() -> StatusPanelStyle:
 	style.counter_box_radius = 3
 	style.counter_box_h_padding = 4
 	style.counter_box_v_padding = 2
+	style.counter_box_border_width = 1
 	style.disclosure_slot_width = 28
 	style.disclosure_visual_scale = 1.0
 	style.badge_strip_width = 7

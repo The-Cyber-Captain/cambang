@@ -85,11 +85,6 @@ func _apply_style() -> void:
 	info_style.corner_radius_top_right = 4
 	info_style.corner_radius_bottom_right = 4
 	info_style.corner_radius_bottom_left = 4
-	info_style.border_width_left = 1
-	info_style.border_width_top = 1
-	info_style.border_width_right = 1
-	info_style.border_width_bottom = 1
-	info_style.border_color = _style.row_shell_bg.lightened(0.14)
 	_info_panel.add_theme_stylebox_override("panel", info_style)
 
 	var shell_style := StyleBoxFlat.new()
@@ -293,6 +288,11 @@ func _counter_value_style() -> StyleBoxFlat:
 	style.content_margin_right = (_style.counter_box_h_padding if _style != null else 4)
 	style.content_margin_top = (_style.counter_box_v_padding if _style != null else 2)
 	style.content_margin_bottom = (_style.counter_box_v_padding if _style != null else 2)
+	style.border_width_left = (_style.counter_box_border_width if _style != null else 1)
+	style.border_width_top = (_style.counter_box_border_width if _style != null else 1)
+	style.border_width_right = (_style.counter_box_border_width if _style != null else 1)
+	style.border_width_bottom = (_style.counter_box_border_width if _style != null else 1)
+	style.border_color = (_style.counter_box_border if _style != null else Color(0.34, 0.38, 0.44, 0.85))
 	return style
 
 
