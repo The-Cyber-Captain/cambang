@@ -4,17 +4,22 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
-const DISCLOSURE_WIDTH := 28.0
 
 var _entry_id: String = ""
+var _style: CamBANGStatusPanel.StatusPanelStyle
+
 var _indent_region: Control
+var _disclosure_slot: Control
 var _disclosure_button: Button
 var _disclosure_placeholder: Control
 var _disclosure_indicator: Control
 var _name_label: Label
+var _row_content: HBoxContainer
 var _state_segment: HBoxContainer
 var _counter_segment: HBoxContainer
 var _info_lines_container: VBoxContainer
+var _info_panel_inset: MarginContainer
+var _info_margin: MarginContainer
 var _info_panel: PanelContainer
 var _row_shell: PanelContainer
 
@@ -25,6 +30,12 @@ var _info_line_rows: Array[HBoxContainer] = []
 
 func _ready() -> void:
 	_bind_nodes()
+
+
+func set_style(style: CamBANGStatusPanel.StatusPanelStyle) -> void:
+	_bind_nodes()
+	_style = style
+	_apply_style()
 
 
 func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
@@ -48,6 +59,47 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_render_info_lines(model.depth, model.info_lines)
 
 
+func _apply_style() -> void:
+	if _style == null:
+		return
+
+	_disclosure_slot.custom_minimum_size = Vector2(_style.disclosure_slot_width, 22)
+	_disclosure_indicator.scale = Vector2(_style.disclosure_visual_scale, _style.disclosure_visual_scale)
+	_row_content.add_theme_constant_override("separation", _style.identity_info_gap)
+
+	_info_panel_inset.add_theme_constant_override("margin_left", int(_style.info_panel_outer_inset.x))
+	_info_panel_inset.add_theme_constant_override("margin_top", int(_style.info_panel_outer_inset.y))
+	_info_panel_inset.add_theme_constant_override("margin_right", int(_style.info_panel_outer_inset.z))
+	_info_panel_inset.add_theme_constant_override("margin_bottom", int(_style.info_panel_outer_inset.w))
+
+	_info_margin.add_theme_constant_override("margin_left", int(_style.info_panel_inner_padding.x))
+	_info_margin.add_theme_constant_override("margin_top", int(_style.info_panel_inner_padding.y))
+	_info_margin.add_theme_constant_override("margin_right", int(_style.info_panel_inner_padding.z))
+	_info_margin.add_theme_constant_override("margin_bottom", int(_style.info_panel_inner_padding.w))
+
+	_name_label.label_settings = _identity_label_settings()
+
+	var info_style := StyleBoxFlat.new()
+	info_style.bg_color = _style.info_panel_bg
+	info_style.corner_radius_top_left = 3
+	info_style.corner_radius_top_right = 3
+	info_style.corner_radius_bottom_right = 3
+	info_style.corner_radius_bottom_left = 3
+	_info_panel.add_theme_stylebox_override("panel", info_style)
+
+	var shell_style := StyleBoxFlat.new()
+	shell_style.bg_color = _style.row_shell_bg
+	shell_style.corner_radius_top_left = _style.row_shell_radius
+	shell_style.corner_radius_top_right = _style.row_shell_radius
+	shell_style.corner_radius_bottom_right = _style.row_shell_radius
+	shell_style.corner_radius_bottom_left = _style.row_shell_radius
+	shell_style.content_margin_left = _style.row_shell_padding.x
+	shell_style.content_margin_top = _style.row_shell_padding.y
+	shell_style.content_margin_right = _style.row_shell_padding.z
+	shell_style.content_margin_bottom = _style.row_shell_padding.w
+	_row_shell.add_theme_stylebox_override("panel", shell_style)
+
+
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 	for i in range(badges.size()):
 		var pair := _ensure_badge_pair(i)
@@ -55,7 +107,9 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		var indicator := pair.get_child(0) as ColorRect
 		var label := pair.get_child(1) as Label
 		indicator.color = _badge_color_for_role(badges[i].role)
+		indicator.custom_minimum_size = Vector2((_style.badge_strip_width if _style != null else 7), (_style.badge_strip_width if _style != null else 7))
 		label.text = badges[i].label
+		label.label_settings = _state_label_settings()
 
 	for i in range(badges.size(), _badge_pairs.size()):
 		_badge_pairs[i].visible = false
@@ -89,7 +143,9 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> void:
 		var value_label := value_box.get_child(0) as Label
 
 		name_label.text = counters[i].name
+		name_label.label_settings = _counter_label_settings()
 		value_label.text = _format_counter_value(counters[i].value, counters[i].digits)
+		value_label.label_settings = _counter_label_settings()
 		value_label.custom_minimum_size = Vector2(max(counters[i].digits, 1) * 10.0 + 8.0, 0)
 
 	for i in range(counters.size(), _counter_widgets.size()):
@@ -126,8 +182,9 @@ func _render_info_lines(depth: int, info_lines: Array[String]) -> void:
 		row.visible = true
 		var spacer := row.get_child(0) as Control
 		var info := row.get_child(1) as Label
-		spacer.custom_minimum_size = Vector2(max(depth, 0) * INDENT_WIDTH + DISCLOSURE_WIDTH + 6.0, 0)
+		spacer.custom_minimum_size = Vector2(max(depth, 0) * INDENT_WIDTH + (_style.disclosure_slot_width if _style != null else 28) + 6.0, 0)
 		info.text = "• %s" % info_lines[i]
+		info.label_settings = _state_label_settings()
 
 	for i in range(info_lines.size(), _info_line_rows.size()):
 		_info_line_rows[i].visible = false
@@ -154,6 +211,37 @@ func _ensure_info_line_row(index: int) -> HBoxContainer:
 	_info_lines_container.add_child(row)
 	_info_line_rows.append(row)
 	return row
+
+
+func _identity_label_settings() -> LabelSettings:
+	var settings := LabelSettings.new()
+	if _style != null:
+		settings.font = _style.identity_font
+		settings.font_size = _style.identity_font_size
+		settings.font_color = _style.identity_font_color
+		settings.outline_color = _style.identity_outline_color
+		settings.outline_size = _style.identity_outline_size
+	return settings
+
+
+func _state_label_settings() -> LabelSettings:
+	var settings := LabelSettings.new()
+	if _style != null:
+		settings.font = _style.info_font
+		settings.font_size = _style.state_font_size
+		settings.font_color = _style.state_font_color
+		settings.outline_color = _style.state_outline_color
+		settings.outline_size = _style.state_outline_size
+	return settings
+
+
+func _counter_label_settings() -> LabelSettings:
+	var settings := LabelSettings.new()
+	if _style != null:
+		settings.font = _style.counter_font
+		settings.font_size = _style.counter_font_size
+		settings.font_color = _style.counter_font_color
+	return settings
 
 
 func _format_counter_value(value: int, digits: int) -> String:
@@ -190,39 +278,16 @@ func _badge_color_for_role(role: String) -> Color:
 
 func _counter_value_style() -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.16, 0.16, 0.18, 0.85)
-	style.corner_radius_top_left = 2
-	style.corner_radius_top_right = 2
-	style.corner_radius_bottom_right = 2
-	style.corner_radius_bottom_left = 2
-	style.content_margin_left = 3
-	style.content_margin_right = 3
-	style.content_margin_top = 1
-	style.content_margin_bottom = 1
-	return style
-
-
-func _info_panel_style() -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.12, 0.12, 0.14, 0.55)
-	style.corner_radius_top_left = 3
-	style.corner_radius_top_right = 3
-	style.corner_radius_bottom_right = 3
-	style.corner_radius_bottom_left = 3
-	return style
-
-
-func _row_shell_style() -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.11, 0.11, 0.13, 0.4)
-	style.corner_radius_top_left = 5
-	style.corner_radius_top_right = 5
-	style.corner_radius_bottom_right = 5
-	style.corner_radius_bottom_left = 5
-	style.content_margin_left = 3
-	style.content_margin_right = 3
-	style.content_margin_top = 2
-	style.content_margin_bottom = 2
+	style.bg_color = (_style.counter_box_bg if _style != null else Color(0.16, 0.16, 0.18, 0.85))
+	var radius := (_style.counter_box_radius if _style != null else 3)
+	style.corner_radius_top_left = radius
+	style.corner_radius_top_right = radius
+	style.corner_radius_bottom_right = radius
+	style.corner_radius_bottom_left = radius
+	style.content_margin_left = (_style.counter_box_h_padding if _style != null else 4)
+	style.content_margin_right = (_style.counter_box_h_padding if _style != null else 4)
+	style.content_margin_top = (_style.counter_box_v_padding if _style != null else 2)
+	style.content_margin_bottom = (_style.counter_box_v_padding if _style != null else 2)
 	return style
 
 
@@ -235,18 +300,20 @@ func _bind_nodes() -> void:
 	if _indent_region != null:
 		return
 	_indent_region = $StatusEntryRoot/MainRow/IndentRegion
+	_disclosure_slot = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot
 	_disclosure_button = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton
 	_disclosure_placeholder = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosurePlaceholder
 	_disclosure_indicator = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/DisclosureSlot/DisclosureButton/DisclosureIndicator
 	_name_label = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/IdentitySegment/NameLabel
+	_row_content = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent
 	_state_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/StateSegment
 	_counter_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/CounterSegment
 	_info_lines_container = $StatusEntryRoot/InfoLines
+	_info_panel_inset = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset
+	_info_margin = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin
 	_info_panel = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel
 	_row_shell = $StatusEntryRoot/MainRow/EntryShell
 	_disclosure_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_disclosure_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_info_panel.add_theme_stylebox_override("panel", _info_panel_style())
-	_row_shell.add_theme_stylebox_override("panel", _row_shell_style())
 	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):
 		_disclosure_button.pressed.connect(_on_disclosure_pressed)
