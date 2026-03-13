@@ -613,6 +613,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	var issues: Array[String] = []
 
 	var provider_id := "provider/%s" % _safe_slug(provider_mode, "unknown")
+	var server_badges: Array[BadgeModel] = [_badge("success", "snapshot")]
+	var server_counters: Array[CounterModel] = [
+		_counter("gen", int(snapshot.get("gen", 0)), 1),
+		_counter("version", int(snapshot.get("version", 0)), 1),
+		_counter("topology", int(snapshot.get("topology_version", 0)), 1),
+	]
+	var server_info_lines: Array[String] = []
 	var server_entry := _entry(
 		"server/main",
 		"",
@@ -620,22 +627,20 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		"server/main",
 		true,
 		true,
-		[_badge("success", "snapshot")],
-		[
-			_counter("gen", int(snapshot.get("gen", 0)), 1),
-			_counter("version", int(snapshot.get("version", 0)), 1),
-			_counter("topology", int(snapshot.get("topology_version", 0)), 1),
-		],
-		[]
+		server_badges,
+		server_counters,
+		server_info_lines
 	)
 	panel.entries.append(server_entry)
 
-	var provider_counters := [
+	var provider_counters: Array[CounterModel] = [
 		_counter("rigs", _safe_array(snapshot.get("rigs", []), issues, "rigs").size(), 1),
 		_counter("devices", _safe_array(snapshot.get("devices", []), issues, "devices").size(), 1),
 		_counter("streams", _safe_array(snapshot.get("streams", []), issues, "streams").size(), 1),
 		_counter("native", _safe_array(snapshot.get("native_objects", []), issues, "native_objects").size(), 1),
 	]
+	var provider_badges: Array[BadgeModel] = [_badge("info", "published")]
+	var provider_info_lines: Array[String] = []
 	var provider_entry := _entry(
 		provider_id,
 		"server/main",
@@ -643,9 +648,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		"provider/%s" % _safe_label_component(provider_mode, "unknown"),
 		true,
 		true,
-		[_badge("info", "published")],
+		provider_badges,
 		provider_counters,
-		[]
+		provider_info_lines
 	)
 	panel.entries.append(provider_entry)
 
@@ -934,6 +939,9 @@ func _find_device_by_hardware(devices: Array, hardware_id: String, issues: Array
 
 
 func _render_panel_model(model: PanelModel) -> void:
+	if model == null:
+		push_warning("CamBANGStatusPanel: null PanelModel render request ignored.")
+		return
 	if _status_rows == null:
 		return
 
