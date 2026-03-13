@@ -125,6 +125,13 @@ void CamBANGServer::stop() {
   }
   runtime_.stop();
 
+  // Stop is a boundary operation; core may have published final teardown/retirement
+  // truth during deterministic shutdown. Drain one final boundary observation before
+  // returning to NIL so the prior generation can be observed once more if changed.
+  if (has_godot_counters_) {
+    (void)_consume_latest_core_snapshot(/*emit_signal=*/true);
+  }
+
   if (has_godot_counters_) {
     has_last_completed_gen_ = true;
     last_completed_gen_ = godot_gen_;
@@ -186,53 +193,29 @@ void CamBANGServer::_on_godot_process_frame() {
   _on_godot_tick(delta_s);
 }
 
-void CamBANGServer::_on_godot_tick(double delta) {
-  // If a virtual_time provider is active (stub heartbeat, synthetic virtual_time),
-  // advance it using the Godot frame delta.
-  if (runtime_.is_running()) {
-    if (ICameraProvider* prov = runtime_.attached_provider()) {
-      if (auto* broker = dynamic_cast<ProviderBroker*>(prov)) {
-        const uint64_t dt_ns = static_cast<uint64_t>(delta * 1'000'000'000.0);
-        (void)broker->try_tick_virtual_time(dt_ns);
-      }
-    }
-
-    // Echo any core-thread banner line through Godot logging so it's visible in
-    // the editor output panel (stdout isn't reliably surfaced on Windows).
-    if (banners_enabled()) {
-      char line[192];
-      if (runtime_.take_core_banner_line(line, sizeof(line))) {
-        godot::UtilityFunctions::print(line);
-      }
-    }
-  }
-
-  // Godot-facing snapshot truth is tick-bounded.
-  // Core may publish multiple intermediate snapshots between Godot ticks.
-  // We emit at most once per tick, and only if *anything* has changed since
-  // the previous tick (as indicated by the core publish sequence marker).
+bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
   const uint64_t published_seq = runtime_.published_seq();
   if (published_seq == last_seen_published_seq_) {
-    return;
+    return false;
   }
 
-  // Something changed since last tick. Latch the latest core snapshot.
+  // Something changed since the last boundary observation. Latch the latest core snapshot.
   auto snap = snapshot_buffer_.snapshot_copy();
   if (!snap) {
-    // Do not consume published_seq yet; retry next tick so we do not lose this
-    // publish if the marker becomes observable before buffer visibility.
-    return;
+    // Do not consume published_seq yet; retry on a later observation so we do not
+    // lose this publish if the marker becomes observable before buffer visibility.
+    return false;
   }
   last_seen_published_seq_ = published_seq;
 
   if (active_session_id_ == 0) {
-    return;
+    return false;
   }
 
   if (enforce_min_gen_gate_) {
     if (snap->gen < accepted_min_gen_) {
       // Late prior-generation publication after stop/start boundary; ignore.
-      return;
+      return false;
     }
     enforce_min_gen_gate_ = false;
   }
@@ -265,10 +248,42 @@ void CamBANGServer::_on_godot_tick(double delta) {
   latest_export_ = export_snapshot_to_godot(*snap, godot_gen_, godot_version_, godot_topology_version_);
   has_latest_export_ = true;
 
-  emit_signal("state_published",
-              static_cast<uint64_t>(godot_gen_),
-              static_cast<uint64_t>(godot_version_),
-              static_cast<uint64_t>(godot_topology_version_));
+  if (should_emit_signal) {
+    emit_signal("state_published",
+                static_cast<uint64_t>(godot_gen_),
+                static_cast<uint64_t>(godot_version_),
+                static_cast<uint64_t>(godot_topology_version_));
+  }
+
+  return true;
+}
+
+void CamBANGServer::_on_godot_tick(double delta) {
+  // If a virtual_time provider is active (stub heartbeat, synthetic virtual_time),
+  // advance it using the Godot frame delta.
+  if (runtime_.is_running()) {
+    if (ICameraProvider* prov = runtime_.attached_provider()) {
+      if (auto* broker = dynamic_cast<ProviderBroker*>(prov)) {
+        const uint64_t dt_ns = static_cast<uint64_t>(delta * 1'000'000'000.0);
+        (void)broker->try_tick_virtual_time(dt_ns);
+      }
+    }
+
+    // Echo any core-thread banner line through Godot logging so it's visible in
+    // the editor output panel (stdout isn't reliably surfaced on Windows).
+    if (banners_enabled()) {
+      char line[192];
+      if (runtime_.take_core_banner_line(line, sizeof(line))) {
+        godot::UtilityFunctions::print(line);
+      }
+    }
+  }
+
+  // Godot-facing snapshot truth is tick-bounded.
+  // Core may publish multiple intermediate snapshots between Godot ticks.
+  // We emit at most once per tick, and only if *anything* has changed since
+  // the previous tick.
+  (void)_consume_latest_core_snapshot(/*emit_signal=*/true);
 }
 
 godot::Variant CamBANGServer::get_state_snapshot() const {

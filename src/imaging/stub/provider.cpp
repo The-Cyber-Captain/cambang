@@ -44,7 +44,9 @@ void StubProvider::emit_native_created_(
     NativeObjectType type,
     uint64_t root_id,
     uint64_t owner_device_id,
-    uint64_t owner_stream_id) {
+    uint64_t owner_stream_id,
+    uint64_t owner_provider_native_id,
+    uint64_t owner_rig_id) {
   if (!callbacks_ || native_id == 0) {
     return;
   }
@@ -54,6 +56,8 @@ void StubProvider::emit_native_created_(
   info.root_id = root_id;
   info.owner_device_instance_id = owner_device_id;
   info.owner_stream_id = owner_stream_id;
+  info.owner_provider_native_id = owner_provider_native_id;
+  info.owner_rig_id = owner_rig_id;
   info.has_created_ns = true;
   info.created_ns = 0;
   strand_.post_native_object_created(info);
@@ -90,7 +94,7 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   callbacks_ = callbacks;
   strand_.start(callbacks_, "stub_provider");
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
-  emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0);
+  emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0, 0, 0);
   initialized_ = true;
   shutting_down_ = false;
   now_ns_ = 1;
@@ -133,7 +137,7 @@ ProviderResult StubProvider::open_device(
   dev.stream_id = 0;
   dev.native_id = alloc_native_id_(NativeObjectType::Device);
 
-  emit_native_created_(dev.native_id, NativeObjectType::Device, root_id, device_instance_id, 0);
+  emit_native_created_(dev.native_id, NativeObjectType::Device, root_id, device_instance_id, 0, provider_native_id_, 0);
   strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
@@ -195,7 +199,7 @@ ProviderResult StubProvider::create_stream(const StreamRequest& req) {
 
   dev_it->second.stream_id = req.stream_id;
 
-  emit_native_created_(st.native_id, NativeObjectType::Stream, dev_it->second.root_id, req.device_instance_id, req.stream_id);
+  emit_native_created_(st.native_id, NativeObjectType::Stream, dev_it->second.root_id, req.device_instance_id, req.stream_id, provider_native_id_, 0);
   strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
@@ -296,7 +300,9 @@ ProviderResult StubProvider::start_stream(
       NativeObjectType::FrameProducer,
       root_id,
       st.req.device_instance_id,
-      stream_id);
+      stream_id,
+      provider_native_id_,
+      0);
   strand_.post_stream_started(stream_id);
 
   uint32_t fps = profile.target_fps_max;

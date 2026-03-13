@@ -206,6 +206,8 @@ struct NativeObjectCreateInfo {
 
   uint64_t owner_device_instance_id = 0;
   uint64_t owner_stream_id = 0;
+  uint64_t owner_provider_native_id = 0;  // 0 if unknown/none
+  uint64_t owner_rig_id = 0;              // 0 if unknown/none
 
   bool has_created_ns = false;            // true if provider supplied created_ns
   uint64_t created_ns = 0;                // provider value (0 is valid when has_created_ns=true)

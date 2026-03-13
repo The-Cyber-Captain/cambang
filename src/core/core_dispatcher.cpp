@@ -126,6 +126,8 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
         p.root_id,
         p.owner_device_instance_id,
         p.owner_stream_id,
+        p.owner_provider_native_id,
+        p.owner_rig_id,
         p.bytes_allocated,
         p.buffers_in_use,
         creation_gen,
