@@ -53,9 +53,38 @@ int main() {
   }
   cli::line("step 1 OK");
 
+  // Introduce additional observable state so shutdown teardown publication has
+  // something meaningful to surface at the boundary.
+  if (!h.open_device(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  h.tick();
+  if (!check(!h.observed().is_nil && h.observed().gen == 0 && h.observed().device_count > 0,
+             "expected non-empty observable state before stop")) {
+    return 1;
+  }
+  cli::line("step 1b OK");
+
   // Callback-context-equivalent restart flow: stop/start immediately while
   // handling the first publish in the same control flow.
   h.stop_runtime();
+
+  // Stop boundary must surface one final prior-generation observation (if changed)
+  // before public snapshot state is cleared to NIL.
+  if (!check(!h.last_snapshot_before_stop_clear().is_nil,
+             "expected final observable snapshot before stop clear")) {
+    return 1;
+  }
+  if (!check(h.last_snapshot_before_stop_clear().gen == 0,
+             "expected final pre-clear snapshot to belong to generation 0")) {
+    return 1;
+  }
+  if (!check(h.last_snapshot_before_stop_clear().device_count == 0,
+             "expected final pre-clear snapshot to include shutdown-teardown changes")) {
+    return 1;
+  }
+  cli::line("step 1c OK");
 
   // After completed stop, public snapshot must be NIL.
   if (!check(h.observed().is_nil, "expected NIL snapshot after completed stop")) {
