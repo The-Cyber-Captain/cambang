@@ -20,6 +20,8 @@ public:
     uint64_t root_id = 0;
     uint64_t owner_device_instance_id = 0;
     uint64_t owner_stream_id = 0;
+    uint64_t owner_provider_native_id = 0;
+    uint64_t owner_rig_id = 0;
     uint64_t creation_gen = 0;
 
     bool created = false;
@@ -37,6 +39,8 @@ public:
   void on_native_object_created(uint64_t native_id, uint32_t type, uint64_t root_id,
                               uint64_t owner_device_instance_id,
                               uint64_t owner_stream_id,
+                              uint64_t owner_provider_native_id,
+                              uint64_t owner_rig_id,
                               uint64_t bytes_allocated,
                               uint32_t buffers_in_use,
                               uint64_t creation_gen,

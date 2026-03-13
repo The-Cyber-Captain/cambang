@@ -204,6 +204,8 @@ if (in.native_objects) {
 
         n.owner_device_instance_id = rec.owner_device_instance_id;
         n.owner_stream_id = rec.owner_stream_id;
+        n.owner_provider_native_id = rec.owner_provider_native_id;
+        n.owner_rig_id = rec.owner_rig_id;
 
         n.creation_gen = rec.creation_gen;
 

@@ -88,6 +88,8 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     info.native_id = provider_native_id_;
     info.type = static_cast<uint32_t>(NativeObjectType::Provider);
     info.root_id = 0;
+    info.owner_provider_native_id = 0;
+    info.owner_rig_id = 0;
     info.has_created_ns = true;
     info.created_ns = clock_.now_ns();
     strand_.post_native_object_created(info);
@@ -218,6 +220,8 @@ void SyntheticProvider::emit_native_create_device_(const DeviceState& d) {
   info.type = static_cast<uint32_t>(NativeObjectType::Device);
   info.root_id = d.root_id;
   info.owner_device_instance_id = d.device_instance_id;
+  info.owner_provider_native_id = provider_native_id_;
+  info.owner_rig_id = 0;
   info.has_created_ns = true;
   info.created_ns = clock_.now_ns();
   strand_.post_native_object_created(info);
@@ -333,6 +337,8 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
     info.root_id = dit->second.root_id;
     info.owner_device_instance_id = req.device_instance_id;
     info.owner_stream_id = req.stream_id;
+    info.owner_provider_native_id = provider_native_id_;
+    info.owner_rig_id = 0;
     info.has_created_ns = true;
     info.created_ns = clock_.now_ns();
     strand_.post_native_object_created(info);
@@ -432,6 +438,8 @@ ProviderResult SyntheticProvider::start_stream(
     info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
     info.owner_device_instance_id = s.req.device_instance_id;
     info.owner_stream_id = s.req.stream_id;
+    info.owner_provider_native_id = provider_native_id_;
+    info.owner_rig_id = 0;
     info.has_created_ns = true;
     info.created_ns = clock_.now_ns();
     strand_.post_native_object_created(info);

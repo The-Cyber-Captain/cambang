@@ -84,6 +84,8 @@ static godot::Dictionary export_native_object(const NativeObjectRecord& r) {
   d["phase"] = static_cast<int>(r.phase);
   d["owner_device_instance_id"] = static_cast<uint64_t>(r.owner_device_instance_id);
   d["owner_stream_id"] = static_cast<uint64_t>(r.owner_stream_id);
+  d["owner_provider_native_id"] = static_cast<uint64_t>(r.owner_provider_native_id);
+  d["owner_rig_id"] = static_cast<uint64_t>(r.owner_rig_id);
   d["root_id"] = static_cast<uint64_t>(r.root_id);
   d["creation_gen"] = static_cast<uint64_t>(r.creation_gen);
   d["created_ns"] = static_cast<uint64_t>(r.created_ns);

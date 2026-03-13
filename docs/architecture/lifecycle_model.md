@@ -325,7 +325,7 @@ Relevant record fields include:
 - `native_id`
 - `type`
 - `phase`
-- ownership fields (`owner_device_instance_id`, `owner_stream_id`)
+- ownership fields (`owner_device_instance_id`, `owner_stream_id`, `owner_provider_native_id`, `owner_rig_id`)
 - `root_id`
 - `creation_gen`
 - `created_ns`

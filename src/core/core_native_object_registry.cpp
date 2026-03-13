@@ -7,6 +7,8 @@ void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
                                                        uint64_t root_id,
                                                        uint64_t owner_device_instance_id,
                                                        uint64_t owner_stream_id,
+                                                       uint64_t owner_provider_native_id,
+                                                       uint64_t owner_rig_id,
                                                        uint64_t bytes_allocated,
                                                        uint32_t buffers_in_use,
                                                        uint64_t creation_gen,
@@ -17,6 +19,8 @@ void CoreNativeObjectRegistry::on_native_object_created(uint64_t native_id,
   r.root_id = root_id;
   r.owner_device_instance_id = owner_device_instance_id;
   r.owner_stream_id = owner_stream_id;
+  r.owner_provider_native_id = owner_provider_native_id;
+  r.owner_rig_id = owner_rig_id;
   r.bytes_allocated = bytes_allocated;
   r.buffers_in_use = buffers_in_use;
   r.creation_gen = creation_gen;

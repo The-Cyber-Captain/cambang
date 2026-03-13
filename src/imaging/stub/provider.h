@@ -137,7 +137,7 @@ static constexpr const char* kStubHardwareId = "stub0";
   bool is_known_hardware_id(const std::string& hardware_id) const;
 
   uint64_t alloc_native_id_(NativeObjectType type) const;
-  void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_stream_id);
+  void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_stream_id, uint64_t owner_provider_native_id, uint64_t owner_rig_id);
   void emit_native_destroyed_(uint64_t native_id);
 
   uint64_t provider_native_id_ = 0;
