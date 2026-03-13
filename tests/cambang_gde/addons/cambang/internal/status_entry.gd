@@ -81,10 +81,15 @@ func _apply_style() -> void:
 
 	var info_style := StyleBoxFlat.new()
 	info_style.bg_color = _style.info_panel_bg
-	info_style.corner_radius_top_left = 3
-	info_style.corner_radius_top_right = 3
-	info_style.corner_radius_bottom_right = 3
-	info_style.corner_radius_bottom_left = 3
+	info_style.corner_radius_top_left = 4
+	info_style.corner_radius_top_right = 4
+	info_style.corner_radius_bottom_right = 4
+	info_style.corner_radius_bottom_left = 4
+	info_style.border_width_left = 1
+	info_style.border_width_top = 1
+	info_style.border_width_right = 1
+	info_style.border_width_bottom = 1
+	info_style.border_color = _style.row_shell_bg.lightened(0.14)
 	_info_panel.add_theme_stylebox_override("panel", info_style)
 
 	var shell_style := StyleBoxFlat.new()

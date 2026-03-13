@@ -71,10 +71,10 @@ size_flags_horizontal = 0
 text = "Entry"
 
 [node name="InfoPanelInset" type="MarginContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent"]
-theme_override_constants/margin_left = 2
-theme_override_constants/margin_top = 1
-theme_override_constants/margin_right = 2
-theme_override_constants/margin_bottom = 1
+theme_override_constants/margin_left = 3
+theme_override_constants/margin_top = 2
+theme_override_constants/margin_right = 3
+theme_override_constants/margin_bottom = 2
 
 [node name="InfoPanel" type="PanelContainer" parent="StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset"]
 size_flags_horizontal = 0

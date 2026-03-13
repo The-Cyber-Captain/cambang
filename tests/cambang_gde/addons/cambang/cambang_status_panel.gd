@@ -187,7 +187,7 @@ func _resolve_style() -> StatusPanelStyle:
 	)
 
 	style.info_font = _resolve_shared_font("status_info_font", fallback_font)
-	style.info_panel_bg = _resolve_shared_color("status_info_panel_bg", Color(0.10, 0.11, 0.13, 0.82))
+	style.info_panel_bg = _resolve_shared_color("status_info_panel_bg", Color(0.07, 0.08, 0.10, 0.92))
 	style.counter_box_bg = _resolve_shared_color("status_counter_box_bg", Color(0.17, 0.18, 0.21, 0.95))
 
 	style.state_font_size = maxi(
@@ -208,11 +208,11 @@ func _resolve_style() -> StatusPanelStyle:
 	)
 	style.counter_font_color = _resolve_shared_color("status_counter_font_color", Color(0.90, 0.92, 0.95, 1.0))
 
-	style.row_shell_bg = Color(0.11, 0.11, 0.13, 0.4)
+	style.row_shell_bg = Color(0.13, 0.14, 0.16, 0.44)
 	style.row_shell_radius = 5
 	style.row_shell_padding = Vector4(3, 2, 3, 2)
 	style.identity_info_gap = 6
-	style.info_panel_outer_inset = Vector4(2, 1, 2, 1)
+	style.info_panel_outer_inset = Vector4(3, 2, 3, 2)
 	style.info_panel_inner_padding = Vector4(5, 2, 5, 2)
 	style.counter_box_radius = 3
 	style.counter_box_h_padding = 4
