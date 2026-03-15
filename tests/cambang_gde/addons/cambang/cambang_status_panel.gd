@@ -716,6 +716,37 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	)
 	panel.entries.append(provider_entry)
 
+	var promoted_native_ids := {}
+	var current_device_native_matches_by_instance := {}
+	var current_stream_native_matches_by_stream_id := {}
+	var current_non_live_device_native_matches_by_instance := {}
+	var current_non_live_stream_native_matches_by_stream_id := {}
+	for i in range(current_native_objects.size()):
+		var native_rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
+		if native_rec.is_empty():
+			continue
+		var native_type_key := _native_object_type_key(native_rec)
+		if native_type_key == "device":
+			var owner_instance_id := int(native_rec.get("owner_device_instance_id", 0))
+			if owner_instance_id > 0:
+				if not current_device_native_matches_by_instance.has(owner_instance_id):
+					current_device_native_matches_by_instance[owner_instance_id] = []
+				current_device_native_matches_by_instance[owner_instance_id].append(native_rec)
+				if int(native_rec.get("phase", -1)) >= 2:
+					if not current_non_live_device_native_matches_by_instance.has(owner_instance_id):
+						current_non_live_device_native_matches_by_instance[owner_instance_id] = []
+					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
+		elif native_type_key == "stream":
+			var owner_stream_id := int(native_rec.get("owner_stream_id", 0))
+			if owner_stream_id > 0:
+				if not current_stream_native_matches_by_stream_id.has(owner_stream_id):
+					current_stream_native_matches_by_stream_id[owner_stream_id] = []
+				current_stream_native_matches_by_stream_id[owner_stream_id].append(native_rec)
+				if int(native_rec.get("phase", -1)) >= 2:
+					if not current_non_live_stream_native_matches_by_stream_id.has(owner_stream_id):
+						current_non_live_stream_native_matches_by_stream_id[owner_stream_id] = []
+					current_non_live_stream_native_matches_by_stream_id[owner_stream_id].append(native_rec)
+
 	var devices_by_instance := {}
 	var provider_device_ids_by_instance := {}
 	for i in range(devices.size()):
@@ -730,6 +761,18 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
+		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+		var device_info: Array[String] = []
+		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
+		if device_matches.size() == 1:
+			var device_native_rec: Dictionary = device_matches[0]
+			device_badges.append(_badge("neutral", "native_phase=%d" % int(device_native_rec.get("phase", -1))))
+			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
+		elif device_matches.size() > 1:
+			device_info.append(
+				"Contract ambiguity: device row has %d matching current-generation Device native objects."
+				% device_matches.size()
+			)
 		panel.entries.append(_entry(
 			device_entry_id,
 			provider_id,
@@ -737,12 +780,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			device_label,
 			true,
 			true,
-			[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+			device_badges,
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("errors", int(rec.get("errors_count", 0)), 1),
 			],
-			[]
+			device_info
 		))
 
 	var streams_by_device := {}
@@ -767,6 +810,18 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
+			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+			var stream_info: Array[String] = []
+			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
+			if stream_matches.size() == 1:
+				var stream_native_rec: Dictionary = stream_matches[0]
+				stream_badges.append(_badge("neutral", "native_phase=%d" % int(stream_native_rec.get("phase", -1))))
+				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
+			elif stream_matches.size() > 1:
+				stream_info.append(
+					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
+					% stream_matches.size()
+				)
 			panel.entries.append(_entry(
 				"stream/%d" % stream_id,
 				parent_entry_id,
@@ -774,15 +829,84 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"stream/%d" % stream_id,
 				false,
 				true,
-				[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+				stream_badges,
 				[
 					_counter("mode", int(rec.get("mode", 0)), 1),
 					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
 					_counter("frames", int(rec.get("frames_received", 0)), 3),
 				],
-				[]
+				stream_info
 			))
 
+	var current_grounded_destroyed_device_row_id_by_instance := {}
+	for instance_key in current_non_live_device_native_matches_by_instance.keys():
+		var canonical_device_id := "device/%d" % int(instance_key)
+		if _entry_exists(panel.entries, canonical_device_id):
+			continue
+		var destroyed_device_matches: Array = current_non_live_device_native_matches_by_instance[instance_key]
+		if destroyed_device_matches.size() == 1:
+			var destroyed_device_native: Dictionary = destroyed_device_matches[0]
+			var destroyed_device_native_id := int(destroyed_device_native.get("native_id", 0))
+			if destroyed_device_native_id <= 0:
+				issues.append("Contract ambiguity: current-generation DESTROYED Device native object missing valid native_id.")
+				continue
+			current_grounded_destroyed_device_row_id_by_instance[int(instance_key)] = canonical_device_id
+			promoted_native_ids[destroyed_device_native_id] = true
+			panel.entries.append(_entry(
+				canonical_device_id,
+				provider_id,
+				2,
+				"device/%d [destroyed]" % int(instance_key),
+				true,
+				true,
+				[
+					_badge("warning", "destroyed"),
+					_badge("neutral", "native_phase=%d" % int(destroyed_device_native.get("phase", -1))),
+				],
+				[],
+				[]
+			))
+		else:
+			issues.append(
+				"Contract ambiguity: current-generation non-live device owner_instance_id=%d has %d matching Device native objects."
+				% [int(instance_key), destroyed_device_matches.size()]
+			)
+
+	for stream_key in current_non_live_stream_native_matches_by_stream_id.keys():
+		var canonical_stream_id := "stream/%d" % int(stream_key)
+		if _entry_exists(panel.entries, canonical_stream_id):
+			continue
+		var destroyed_stream_matches: Array = current_non_live_stream_native_matches_by_stream_id[stream_key]
+		if destroyed_stream_matches.size() == 1:
+			var destroyed_stream_native: Dictionary = destroyed_stream_matches[0]
+			var destroyed_stream_native_id := int(destroyed_stream_native.get("native_id", 0))
+			if destroyed_stream_native_id <= 0:
+				issues.append("Contract ambiguity: current-generation DESTROYED Stream native object missing valid native_id.")
+				continue
+			var destroyed_stream_parent_id := provider_id
+			var destroyed_stream_owner_instance := int(destroyed_stream_native.get("owner_device_instance_id", 0))
+			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
+				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
+			promoted_native_ids[destroyed_stream_native_id] = true
+			panel.entries.append(_entry(
+				canonical_stream_id,
+				destroyed_stream_parent_id,
+				3 if destroyed_stream_parent_id != provider_id else 2,
+				"stream/%d [destroyed]" % int(stream_key),
+				true,
+				true,
+				[
+					_badge("warning", "destroyed"),
+					_badge("neutral", "native_phase=%d" % int(destroyed_stream_native.get("phase", -1))),
+				],
+				[],
+				[]
+			))
+		else:
+			issues.append(
+				"Contract ambiguity: current-generation non-live stream owner_stream_id=%d has %d matching Stream native objects."
+				% [int(stream_key), destroyed_stream_matches.size()]
+			)
 	for i in range(rigs.size()):
 		var rec := _safe_dict(rigs[i], issues, "rigs[%d]" % i)
 		if rec.is_empty():
@@ -832,7 +956,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
 		if rec.is_empty():
 			continue
-		if _native_object_is_provider(rec) and int(rec.get("native_id", 0)) == provider_native_id:
+		var current_native_id := int(rec.get("native_id", 0))
+		if _native_object_is_provider(rec) and current_native_id == provider_native_id:
+			continue
+		if bool(promoted_native_ids.get(current_native_id, false)):
 			continue
 		var native_entry := _build_native_object_entry(
 			rec,
@@ -1020,17 +1147,30 @@ func _build_native_object_entry(
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
 
+	var native_type_key := _native_object_type_key(rec)
+	var row_id := "native_object/%d" % native_id
+	var row_label := "native_object/%d" % native_id
+	if native_type_key == "frameproducer":
+		row_id = "frameproducer/%d" % native_id
+		row_label = "frameproducer/%d" % native_id
+		if owner_stream_id > 0:
+			info_lines.append("FrameProducer owner_stream_id=%d." % owner_stream_id)
+		if rec.has("creation_gen"):
+			info_lines.append("FrameProducer creation_gen=%s." % str(rec.get("creation_gen")))
+
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	if native_type_key == "frameproducer":
+		native_badges.append(_badge("info", "type=FrameProducer"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
 	]
 	return _entry(
-		"native_object/%d" % native_id,
+		row_id,
 		parent_id,
 		target_depth,
-		"native_object/%d" % native_id,
+		row_label,
 		false,
 		false,
 		native_badges,
