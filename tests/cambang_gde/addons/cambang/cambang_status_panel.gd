@@ -5,6 +5,9 @@ extends PanelContainer
 const SERVER_SINGLETON_NAME := "CamBANGServer"
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
 const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
+# PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
+const PROVISIONAL_RETAINED_PRESENTATION_TTL_NS := -1
+const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 
 
 class PanelModel extends RefCounted:
@@ -90,6 +93,12 @@ var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
 var _last_panel_model: PanelModel = null
+var _last_active_panel_model: PanelModel = null
+var _last_authoritative_panel_model: PanelModel = null
+var _last_authoritative_gen: int = -1
+var _retained_presentation_model: PanelModel = null
+var _retained_source_gen: int = -1
+var _retained_recorded_timestamp_ns: int = -1
 
 
 func _ready() -> void:
@@ -340,8 +349,9 @@ func _refresh_from_server() -> void:
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
-		_last_panel_model = no_server_panel
-		_render_panel_model(no_server_panel)
+		_last_active_panel_model = no_server_panel
+		_last_panel_model = _compose_presented_panel_model(no_server_panel)
+		_render_panel_model(_last_panel_model)
 		return
 
 	var provider_mode := str(_server.get_provider_mode())
@@ -353,15 +363,17 @@ func _refresh_from_server() -> void:
 	if snapshot == null:
 		_last_snapshot_meta.clear()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
-		_last_panel_model = nil_panel
-		_render_panel_model(nil_panel)
+		_last_active_panel_model = nil_panel
+		_last_panel_model = _compose_presented_panel_model(nil_panel)
+		_render_panel_model(_last_panel_model)
 		return
 
 	if typeof(snapshot) != TYPE_DICTIONARY:
 		_last_snapshot_meta.clear()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
-		_last_panel_model = bad_type_panel
-		_render_panel_model(bad_type_panel)
+		_last_active_panel_model = bad_type_panel
+		_last_panel_model = _compose_presented_panel_model(bad_type_panel)
+		_render_panel_model(_last_panel_model)
 		return
 
 	var category := _categorize_snapshot_update(snapshot)
@@ -373,12 +385,163 @@ func _refresh_from_server() -> void:
 			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
 			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
-			_last_panel_model = value_panel
-			_render_panel_model(value_panel)
+			_last_active_panel_model = value_panel
+			_last_panel_model = _compose_presented_panel_model(value_panel)
+			_render_panel_model(_last_panel_model)
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
-			_last_panel_model = full_panel
-			_render_panel_model(full_panel)
+			_last_active_panel_model = full_panel
+			_last_panel_model = _compose_presented_panel_model(full_panel)
+			_render_panel_model(_last_panel_model)
+
+
+func _compose_presented_panel_model(active_panel: PanelModel) -> PanelModel:
+	var active_gen := _extract_panel_generation(active_panel)
+	_capture_authoritative_for_retained(active_panel, active_gen)
+	_maybe_expire_retained_presentation()
+
+	var composed := _clone_panel_model(active_panel)
+	if _retained_presentation_model != null:
+		_append_retained_presentation_subtree(composed, _retained_presentation_model)
+	return composed
+
+
+func _capture_authoritative_for_retained(active_panel: PanelModel, active_gen: int) -> void:
+	var should_promote_to_retained := false
+	if _last_authoritative_panel_model != null:
+		if active_gen < 0:
+			should_promote_to_retained = true
+		elif _last_authoritative_gen >= 0 and active_gen != _last_authoritative_gen:
+			should_promote_to_retained = true
+
+	if should_promote_to_retained:
+		_retain_panel_for_presentation(_last_authoritative_panel_model, _last_authoritative_gen)
+
+	if active_gen >= 0:
+		_last_authoritative_panel_model = _clone_panel_model(active_panel)
+		_last_authoritative_gen = active_gen
+
+
+func _retain_panel_for_presentation(source_model: PanelModel, source_gen: int) -> void:
+	if source_model == null:
+		return
+	_retained_presentation_model = _clone_panel_model(source_model)
+	_retained_source_gen = source_gen
+	_retained_recorded_timestamp_ns = Time.get_ticks_usec() * 1000
+
+
+func _extract_panel_generation(panel: PanelModel) -> int:
+	if panel == null:
+		return -1
+	for entry in panel.entries:
+		if entry.id != "server/main":
+			continue
+		for counter in entry.counters:
+			if counter.name == "gen":
+				return counter.value
+	return -1
+
+
+func _maybe_expire_retained_presentation() -> void:
+	if _retained_presentation_model == null:
+		return
+	if PROVISIONAL_RETAINED_PRESENTATION_TTL_NS < 0:
+		return
+	var elapsed_ns := (Time.get_ticks_usec() * 1000) - _retained_recorded_timestamp_ns
+	if elapsed_ns >= PROVISIONAL_RETAINED_PRESENTATION_TTL_NS:
+		_clear_retained_presentation()
+
+
+func _clear_retained_presentation() -> void:
+	_retained_presentation_model = null
+	_retained_source_gen = -1
+	_retained_recorded_timestamp_ns = -1
+
+
+func _clone_panel_model(source: PanelModel) -> PanelModel:
+	var cloned := PanelModel.new()
+	if source == null:
+		return cloned
+	for entry in source.entries:
+		var cloned_badges: Array[BadgeModel] = []
+		for badge in entry.badges:
+			cloned_badges.append(_badge(badge.role, badge.label))
+		var cloned_counters: Array[CounterModel] = []
+		for counter in entry.counters:
+			cloned_counters.append(_counter(counter.name, counter.value, counter.digits))
+		var cloned_info_lines: Array[String] = []
+		for line in entry.info_lines:
+			cloned_info_lines.append(line)
+		cloned.entries.append(_entry(
+			entry.id,
+			entry.parent_id,
+			entry.depth,
+			entry.label,
+			entry.expanded,
+			entry.can_expand,
+			cloned_badges,
+			cloned_counters,
+			cloned_info_lines
+		))
+	return cloned
+
+
+func _append_retained_presentation_subtree(target_panel: PanelModel, retained_source: PanelModel) -> void:
+	if target_panel == null or retained_source == null:
+		return
+
+	target_panel.entries.append(_entry(
+		RETAINED_PRESENTATION_ROOT_ID,
+		"",
+		0,
+		"retained prior-authoritative view",
+		false,
+		true,
+		[_badge("warning", "retained")],
+		[_counter("source_gen", _retained_source_gen, 1)],
+		[
+			"Presentation continuity only. Not active snapshot truth.",
+			"Rows below are copied from the last authoritative projected model.",
+		]
+	))
+
+	for retained_entry in retained_source.entries:
+		var cloned_entry := _clone_status_entry(retained_entry)
+		cloned_entry.id = "retained_presentation/%s" % retained_entry.id
+		if retained_entry.parent_id == "":
+			cloned_entry.parent_id = RETAINED_PRESENTATION_ROOT_ID
+			cloned_entry.depth = 1
+		else:
+			cloned_entry.parent_id = "retained_presentation/%s" % retained_entry.parent_id
+			cloned_entry.depth = retained_entry.depth + 1
+		cloned_entry.label = "%s [retained]" % retained_entry.label
+		cloned_entry.badges.append(_badge("warning", "retained"))
+		target_panel.entries.append(cloned_entry)
+
+	_ensure_expandability(target_panel)
+
+
+func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
+	var cloned_badges: Array[BadgeModel] = []
+	for badge in source.badges:
+		cloned_badges.append(_badge(badge.role, badge.label))
+	var cloned_counters: Array[CounterModel] = []
+	for counter in source.counters:
+		cloned_counters.append(_counter(counter.name, counter.value, counter.digits))
+	var cloned_info_lines: Array[String] = []
+	for line in source.info_lines:
+		cloned_info_lines.append(line)
+	return _entry(
+		source.id,
+		source.parent_id,
+		source.depth,
+		source.label,
+		source.expanded,
+		source.can_expand,
+		cloned_badges,
+		cloned_counters,
+		cloned_info_lines
+	)
 
 
 func _fetch_snapshot() -> Variant:
