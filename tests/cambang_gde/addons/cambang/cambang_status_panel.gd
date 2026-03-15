@@ -716,7 +716,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	)
 	panel.entries.append(provider_entry)
 
-	var devices_by_instance := {}
 	var provider_device_ids_by_instance := {}
 	for i in range(devices.size()):
 		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
@@ -726,7 +725,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if instance_id <= 0:
 			issues.append("Contract gap: devices[%d] missing valid instance_id." % i)
 			continue
-		devices_by_instance[instance_id] = rec
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
@@ -839,7 +837,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			provider_id,
 			orphan_row_id,
 			detached_root_ids,
-			devices_by_instance,
 			panel.entries,
 			issues,
 			snapshot_gen,
@@ -889,7 +886,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				provider_id,
 				orphan_row_id,
 				detached_root_ids,
-				devices_by_instance,
 				panel.entries,
 				issues,
 				snapshot_gen,
@@ -982,7 +978,6 @@ func _build_native_object_entry(
 		provider_id: String,
 		orphan_row_id: String,
 		detached_root_ids: Array,
-		devices_by_instance: Dictionary,
 		existing_entries: Array[StatusEntryModel],
 		issues: Array[String],
 		snapshot_gen: int,
@@ -994,28 +989,50 @@ func _build_native_object_entry(
 		return null
 	var owner_stream_id := int(rec.get("owner_stream_id", 0))
 	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
+	var owner_rig_id := int(rec.get("owner_rig_id", 0))
+	var owner_provider_native_id := int(rec.get("owner_provider_native_id", 0))
 	var root_id := int(rec.get("root_id", 0))
 	var parent_id := provider_id
 	var info_lines: Array[String] = []
 
 	if owner_stream_id > 0:
-		parent_id = "stream/%d" % owner_stream_id
-		if not _entry_exists(existing_entries, parent_id):
-			info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
-	elif owner_device_instance_id > 0:
-		parent_id = "device/%d" % owner_device_instance_id
-		if not _entry_exists(existing_entries, parent_id):
-			info_lines.append("Contract gap: owner device not present in snapshot devices.")
-			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+		var stream_parent_id := "stream/%d" % owner_stream_id
+		if _entry_exists(existing_entries, stream_parent_id):
+			parent_id = stream_parent_id
 		else:
-			var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
-			if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
-				info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
-	elif _contains_int(detached_root_ids, root_id):
+			info_lines.append("Contract gap: owner_stream_id=%d does not resolve to a stream entry." % owner_stream_id)
+
+	if parent_id == provider_id and owner_device_instance_id > 0:
+		var device_parent_id := "device/%d" % owner_device_instance_id
+		if _entry_exists(existing_entries, device_parent_id):
+			parent_id = device_parent_id
+		else:
+			info_lines.append("Contract gap: owner_device_instance_id=%d does not resolve to a device entry." % owner_device_instance_id)
+
+	if parent_id == provider_id and owner_rig_id > 0:
+		var rig_parent_id := "rig/%d" % owner_rig_id
+		if _entry_exists(existing_entries, rig_parent_id):
+			parent_id = rig_parent_id
+		else:
+			info_lines.append("Contract gap: owner_rig_id=%d does not resolve to a rig entry." % owner_rig_id)
+
+	if parent_id == provider_id and owner_provider_native_id > 0:
+		var provider_parent_id := "provider/%d" % owner_provider_native_id
+		if _entry_exists(existing_entries, provider_parent_id):
+			parent_id = provider_parent_id
+		else:
+			info_lines.append(
+				"Contract gap: owner_provider_native_id=%d does not resolve to a provider entry."
+				% owner_provider_native_id
+			)
+
+	if parent_id == provider_id and _contains_int(detached_root_ids, root_id):
 		parent_id = orphan_row_id
-	else:
-		info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
+
+	if parent_id == provider_id and info_lines.is_empty():
+		info_lines.append(
+			"Contract gap: native object ownership is ambiguous; no resolvable owner_stream_id/owner_device_instance_id/owner_rig_id/owner_provider_native_id."
+		)
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
@@ -1216,11 +1233,20 @@ func _counter(name: String, value: int, digits: int) -> CounterModel:
 
 
 func _native_object_type_key(rec: Dictionary) -> String:
-	if not rec.has("type"):
+	var type_field := ""
+	if rec.has("native_object_type"):
+		type_field = "native_object_type"
+	elif rec.has("type"):
+		type_field = "type"
+	elif rec.has("native_type"):
+		type_field = "native_type"
+	if type_field == "":
 		return ""
-	var type_value = rec.get("type")
+	var type_value = rec.get(type_field)
 	if typeof(type_value) in [TYPE_INT, TYPE_FLOAT]:
 		match int(type_value):
+			0:
+				return "provider"
 			1:
 				return "provider"
 			2:
