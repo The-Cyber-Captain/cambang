@@ -612,7 +612,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	var panel := PanelModel.new()
 	var issues: Array[String] = []
 
-	var provider_id := "provider/%s" % _safe_slug(provider_mode, "unknown")
 	var server_badges: Array[BadgeModel] = [_badge("success", "snapshot")]
 	var server_counters: Array[CounterModel] = [
 		_counter("gen", int(snapshot.get("gen", 0)), 1),
@@ -643,6 +642,52 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	var current_native_objects: Array = native_partition.get("current", [])
 	var prior_native_objects: Array = native_partition.get("prior", [])
 	var native_dead_count := _count_native_destroyed(native_objects)
+	var current_provider_native_objects: Array = []
+	for i in range(current_native_objects.size()):
+		var current_rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
+		if current_rec.is_empty():
+			continue
+		if _native_object_is_provider(current_rec):
+			current_provider_native_objects.append(current_rec)
+
+	if current_provider_native_objects.size() != 1:
+		issues.append(
+			"Contract ambiguity: expected exactly one current-generation provider native object (type=Provider), found %d."
+			% current_provider_native_objects.size()
+		)
+		panel.entries.append(_entry(
+			"server/main/contract_gaps",
+			"server/main",
+			1,
+			"contract_gaps",
+			true,
+			false,
+			[_badge("warning", "schema")],
+			[_counter("count", issues.size(), 1)],
+			issues
+		))
+		_ensure_expandability(panel)
+		return panel
+
+	var provider_native_rec: Dictionary = current_provider_native_objects[0]
+	var provider_native_id := int(provider_native_rec.get("native_id", 0))
+	if provider_native_id <= 0:
+		issues.append("Contract ambiguity: provider native object missing valid native_id.")
+		panel.entries.append(_entry(
+			"server/main/contract_gaps",
+			"server/main",
+			1,
+			"contract_gaps",
+			true,
+			false,
+			[_badge("warning", "schema")],
+			[_counter("count", issues.size(), 1)],
+			issues
+		))
+		_ensure_expandability(panel)
+		return panel
+
+	var provider_id := "provider/%d" % provider_native_id
 
 	var provider_counters: Array[CounterModel] = [
 		_counter("rigs", rigs.size(), 1),
@@ -653,7 +698,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		_counter("native_prev", prior_native_objects.size(), 1),
 		_counter("native_dead", native_dead_count, 1),
 	]
-	var provider_badges: Array[BadgeModel] = [_badge("info", "published")]
+	var provider_badges: Array[BadgeModel] = [
+		_badge("info", "published"),
+		_badge("neutral", "phase=%d" % int(provider_native_rec.get("phase", -1))),
+	]
 	var provider_info_lines: Array[String] = []
 	var provider_entry := _entry(
 		provider_id,
@@ -784,6 +832,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
 		if rec.is_empty():
 			continue
+		if _native_object_is_provider(rec) and int(rec.get("native_id", 0)) == provider_native_id:
+			continue
 		var native_entry := _build_native_object_entry(
 			rec,
 			provider_id,
@@ -866,6 +916,15 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	_ensure_expandability(panel)
 	return panel
+
+
+func _native_object_is_provider(rec: Dictionary) -> bool:
+	if not rec.has("type"):
+		return false
+	var type_value := rec.get("type")
+	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
+		return str(type_value) == "Provider"
+	return false
 
 
 func _partition_native_objects_by_generation(snapshot_gen: int, native_objects: Array, issues: Array[String]) -> Dictionary:
