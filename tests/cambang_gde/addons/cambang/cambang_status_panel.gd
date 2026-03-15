@@ -658,6 +658,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			prior_provider_native_objects.append(prior_rec)
 
 	var provider_id := "provider/unresolved"
+	var provider_native_rec: Dictionary = {}
+	var provider_native_id := 0
 	var provider_lifecycle_state := "provider-native-missing"
 	var provider_lifecycle_role := "warning"
 	var provider_badges: Array[BadgeModel] = [
@@ -674,8 +676,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		provider_lifecycle_role = "warning"
 		provider_info_lines.append("Lifecycle ambiguity: multiple current-generation Provider native objects present.")
 	elif current_provider_native_objects.size() == 1:
-		var provider_native_rec: Dictionary = current_provider_native_objects[0]
-		var provider_native_id := int(provider_native_rec.get("native_id", 0))
+		provider_native_rec = current_provider_native_objects[0]
+		provider_native_id = int(provider_native_rec.get("native_id", 0))
 		if provider_native_id > 0:
 			provider_id = "provider/%d" % provider_native_id
 		else:
