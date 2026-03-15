@@ -911,6 +911,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			orphan_row_id,
 			detached_root_ids,
 			panel.entries,
+			{},
 			issues,
 			snapshot_gen,
 			false
@@ -950,9 +951,110 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			[_counter("count", prior_native_objects.size(), 1)],
 			[]
 		))
+
+		var retained_promoted_native_ids := {}
+		var retained_device_matches_by_instance := {}
+		var retained_stream_matches_by_stream_id := {}
+		for i in range(prior_native_objects.size()):
+			var prior_rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
+			if prior_rec.is_empty():
+				continue
+			if int(prior_rec.get("phase", -1)) != 3:
+				continue
+			var prior_native_type := _native_object_type_key(prior_rec)
+			if prior_native_type == "device":
+				var retained_owner_instance := int(prior_rec.get("owner_device_instance_id", 0))
+				if retained_owner_instance > 0:
+					if not retained_device_matches_by_instance.has(retained_owner_instance):
+						retained_device_matches_by_instance[retained_owner_instance] = []
+					retained_device_matches_by_instance[retained_owner_instance].append(prior_rec)
+			elif prior_native_type == "stream":
+				var retained_owner_stream := int(prior_rec.get("owner_stream_id", 0))
+				if retained_owner_stream > 0:
+					if not retained_stream_matches_by_stream_id.has(retained_owner_stream):
+						retained_stream_matches_by_stream_id[retained_owner_stream] = []
+					retained_stream_matches_by_stream_id[retained_owner_stream].append(prior_rec)
+
+		var retained_device_row_id_by_instance := {}
+		for instance_key in retained_device_matches_by_instance.keys():
+			var retained_device_matches: Array = retained_device_matches_by_instance[instance_key]
+			if retained_device_matches.size() == 1:
+				var retained_device_native: Dictionary = retained_device_matches[0]
+				var retained_device_native_id := int(retained_device_native.get("native_id", 0))
+				if retained_device_native_id <= 0:
+					issues.append("Contract ambiguity: retained DESTROYED Device native object missing valid native_id.")
+					continue
+				var retained_device_row_id := "%s/device/%d" % [retained_group_id, int(instance_key)]
+				retained_device_row_id_by_instance[int(instance_key)] = retained_device_row_id
+				retained_promoted_native_ids[retained_device_native_id] = true
+				panel.entries.append(_entry(
+					retained_device_row_id,
+					retained_group_id,
+					3,
+					"device/%d [retained]" % int(instance_key),
+					true,
+					true,
+					[
+						_badge("warning", "retained"),
+						_badge("neutral", "native_phase=%d" % int(retained_device_native.get("phase", -1))),
+					],
+					[],
+					[]
+				))
+			else:
+				issues.append(
+					"Contract ambiguity: retained DESTROYED device owner_instance_id=%d has %d matching Device native objects."
+					% [int(instance_key), retained_device_matches.size()]
+				)
+
+		var retained_stream_row_id_by_stream := {}
+		for stream_key in retained_stream_matches_by_stream_id.keys():
+			var retained_stream_matches: Array = retained_stream_matches_by_stream_id[stream_key]
+			if retained_stream_matches.size() == 1:
+				var retained_stream_native: Dictionary = retained_stream_matches[0]
+				var retained_stream_native_id := int(retained_stream_native.get("native_id", 0))
+				if retained_stream_native_id <= 0:
+					issues.append("Contract ambiguity: retained DESTROYED Stream native object missing valid native_id.")
+					continue
+				var retained_stream_parent_id := retained_group_id
+				var retained_stream_owner_instance := int(retained_stream_native.get("owner_device_instance_id", 0))
+				if retained_device_row_id_by_instance.has(retained_stream_owner_instance):
+					retained_stream_parent_id = str(retained_device_row_id_by_instance[retained_stream_owner_instance])
+				var retained_stream_row_id := "%s/stream/%d" % [retained_group_id, int(stream_key)]
+				retained_stream_row_id_by_stream[int(stream_key)] = retained_stream_row_id
+				retained_promoted_native_ids[retained_stream_native_id] = true
+				panel.entries.append(_entry(
+					retained_stream_row_id,
+					retained_stream_parent_id,
+					4 if retained_stream_parent_id != retained_group_id else 3,
+					"stream/%d [retained]" % int(stream_key),
+					true,
+					true,
+					[
+						_badge("warning", "retained"),
+						_badge("neutral", "native_phase=%d" % int(retained_stream_native.get("phase", -1))),
+					],
+					[],
+					[]
+				))
+			else:
+				issues.append(
+					"Contract ambiguity: retained DESTROYED stream owner_stream_id=%d has %d matching Stream native objects."
+					% [int(stream_key), retained_stream_matches.size()]
+				)
+
+		var retained_owner_parent_overrides := {}
+		for instance_key in retained_device_row_id_by_instance.keys():
+			retained_owner_parent_overrides["device/%d" % int(instance_key)] = retained_device_row_id_by_instance[instance_key]
+		for stream_key in retained_stream_row_id_by_stream.keys():
+			retained_owner_parent_overrides["stream/%d" % int(stream_key)] = retained_stream_row_id_by_stream[stream_key]
+
 		for i in range(prior_native_objects.size()):
 			var rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
 			if rec.is_empty():
+				continue
+			var retained_native_id := int(rec.get("native_id", 0))
+			if bool(retained_promoted_native_ids.get(retained_native_id, false)):
 				continue
 			var retained_entry := _build_native_object_entry(
 				rec,
@@ -960,14 +1062,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				orphan_row_id,
 				detached_root_ids,
 				panel.entries,
+				retained_owner_parent_overrides,
 				issues,
 				snapshot_gen,
 				true
 			)
 			if retained_entry == null:
 				continue
-			retained_entry.parent_id = retained_group_id
-			retained_entry.depth = 3
+			if retained_entry.parent_id == provider_id or retained_entry.parent_id == orphan_row_id:
+				retained_entry.parent_id = retained_group_id
+				retained_entry.depth = 3
 			panel.entries.append(retained_entry)
 
 	if issues.size() > 0:
@@ -1052,6 +1156,7 @@ func _build_native_object_entry(
 		orphan_row_id: String,
 		detached_root_ids: Array,
 		existing_entries: Array[StatusEntryModel],
+		owner_parent_overrides: Dictionary,
 		issues: Array[String],
 		snapshot_gen: int,
 		is_prior_generation: bool
@@ -1071,7 +1176,7 @@ func _build_native_object_entry(
 	var unresolved_owner_messages: Array[String] = []
 
 	if owner_stream_id > 0:
-		var stream_parent_id := "stream/%d" % owner_stream_id
+		var stream_parent_id := str(owner_parent_overrides.get("stream/%d" % owner_stream_id, "stream/%d" % owner_stream_id))
 		if _entry_exists(existing_entries, stream_parent_id):
 			parent_id = stream_parent_id
 			has_resolved_live_owner = true
@@ -1079,7 +1184,7 @@ func _build_native_object_entry(
 			unresolved_owner_messages.append("Contract gap: owner_stream_id=%d does not resolve to a stream entry." % owner_stream_id)
 
 	if not has_resolved_live_owner and owner_device_instance_id > 0:
-		var device_parent_id := "device/%d" % owner_device_instance_id
+		var device_parent_id := str(owner_parent_overrides.get("device/%d" % owner_device_instance_id, "device/%d" % owner_device_instance_id))
 		if _entry_exists(existing_entries, device_parent_id):
 			parent_id = device_parent_id
 			has_resolved_live_owner = true
