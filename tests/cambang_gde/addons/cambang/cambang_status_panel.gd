@@ -1011,6 +1011,7 @@ func _build_native_object_entry(
 	var owner_provider_native_id := int(rec.get("owner_provider_native_id", 0))
 	var root_id := int(rec.get("root_id", 0))
 	var parent_id := provider_id
+	var has_resolved_live_owner := false
 	var info_lines: Array[String] = []
 	var unresolved_owner_messages: Array[String] = []
 
@@ -1018,37 +1019,41 @@ func _build_native_object_entry(
 		var stream_parent_id := "stream/%d" % owner_stream_id
 		if _entry_exists(existing_entries, stream_parent_id):
 			parent_id = stream_parent_id
+			has_resolved_live_owner = true
 		else:
 			unresolved_owner_messages.append("Contract gap: owner_stream_id=%d does not resolve to a stream entry." % owner_stream_id)
 
-	if parent_id == provider_id and owner_device_instance_id > 0:
+	if not has_resolved_live_owner and owner_device_instance_id > 0:
 		var device_parent_id := "device/%d" % owner_device_instance_id
 		if _entry_exists(existing_entries, device_parent_id):
 			parent_id = device_parent_id
+			has_resolved_live_owner = true
 		else:
 			unresolved_owner_messages.append("Contract gap: owner_device_instance_id=%d does not resolve to a device entry." % owner_device_instance_id)
 
-	if parent_id == provider_id and owner_rig_id > 0:
+	if not has_resolved_live_owner and owner_rig_id > 0:
 		var rig_parent_id := "rig/%d" % owner_rig_id
 		if _entry_exists(existing_entries, rig_parent_id):
 			parent_id = rig_parent_id
+			has_resolved_live_owner = true
 		else:
 			unresolved_owner_messages.append("Contract gap: owner_rig_id=%d does not resolve to a rig entry." % owner_rig_id)
 
-	if parent_id == provider_id and owner_provider_native_id > 0:
+	if not has_resolved_live_owner and owner_provider_native_id > 0:
 		var provider_parent_id := "provider/%d" % owner_provider_native_id
 		if _entry_exists(existing_entries, provider_parent_id):
 			parent_id = provider_parent_id
+			has_resolved_live_owner = true
 		else:
 			unresolved_owner_messages.append(
 				"Contract gap: owner_provider_native_id=%d does not resolve to a provider entry."
 				% owner_provider_native_id
 			)
 
-	var detached_root_placement := parent_id == provider_id and _contains_int(detached_root_ids, root_id)
+	var detached_root_placement := (not has_resolved_live_owner) and _contains_int(detached_root_ids, root_id)
 	if detached_root_placement:
 		parent_id = orphan_row_id
-	elif parent_id == provider_id:
+	elif not has_resolved_live_owner:
 		if unresolved_owner_messages.is_empty():
 			info_lines.append(
 				"Contract gap: native object ownership is ambiguous; no resolvable owner_stream_id/owner_device_instance_id/owner_rig_id/owner_provider_native_id."
