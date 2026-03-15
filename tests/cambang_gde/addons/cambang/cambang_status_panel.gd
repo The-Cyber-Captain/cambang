@@ -1147,17 +1147,30 @@ func _build_native_object_entry(
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
 
+	var native_type_key := _native_object_type_key(rec)
+	var row_id := "native_object/%d" % native_id
+	var row_label := "native_object/%d" % native_id
+	if native_type_key == "frameproducer":
+		row_id = "frameproducer/%d" % native_id
+		row_label = "frameproducer/%d" % native_id
+		if owner_stream_id > 0:
+			info_lines.append("FrameProducer owner_stream_id=%d." % owner_stream_id)
+		if rec.has("creation_gen"):
+			info_lines.append("FrameProducer creation_gen=%s." % str(rec.get("creation_gen")))
+
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	if native_type_key == "frameproducer":
+		native_badges.append(_badge("info", "type=FrameProducer"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
 	]
 	return _entry(
-		"native_object/%d" % native_id,
+		row_id,
 		parent_id,
 		target_depth,
-		"native_object/%d" % native_id,
+		row_label,
 		false,
 		false,
 		native_badges,
