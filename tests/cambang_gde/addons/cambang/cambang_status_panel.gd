@@ -919,14 +919,18 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 
 func _native_object_is_provider(rec: Dictionary) -> bool:
-	if not rec.has("type"):
-		return false
-	var type_value := rec.get("type")
-	if typeof(type_value) in [TYPE_INT, TYPE_FLOAT]:
-		return int(type_value) == 1
-	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
-		return str(type_value).to_lower() == "provider"
-	return false
+	return _native_object_type_key(rec) == "provider"
+
+
+#func _native_object_is_provider(rec: Dictionary) -> bool:
+	#if not rec.has("type"):
+		#return false
+	#var type_value := rec.get("type")
+	#if typeof(type_value) in [TYPE_INT, TYPE_FLOAT]:
+		#return int(type_value) == 1
+	#if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
+		#return str(type_value).to_lower() == "provider"
+	#return false
 
 
 func _partition_native_objects_by_generation(snapshot_gen: int, native_objects: Array, issues: Array[String]) -> Dictionary:
@@ -1208,3 +1212,36 @@ func _counter(name: String, value: int, digits: int) -> CounterModel:
 	model.value = value
 	model.digits = digits
 	return model
+
+
+
+func _native_object_type_key(rec: Dictionary) -> String:
+	if not rec.has("type"):
+		return ""
+	var type_value = rec.get("type")
+	if typeof(type_value) in [TYPE_INT, TYPE_FLOAT]:
+		match int(type_value):
+			1:
+				return "provider"
+			2:
+				return "device"
+			3:
+				return "stream"
+			4:
+				return "frameproducer"
+			_:
+				return ""
+	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
+		var s := str(type_value).strip_edges().to_lower()
+		match s:
+			"provider":
+				return "provider"
+			"device":
+				return "device"
+			"stream":
+				return "stream"
+			"frameproducer", "frame_producer", "frame producer":
+				return "frameproducer"
+			_:
+				return ""
+	return ""
