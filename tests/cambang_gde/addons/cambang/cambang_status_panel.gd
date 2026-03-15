@@ -734,6 +734,30 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	)
 	panel.entries.append(provider_entry)
 
+	var promoted_native_ids := {}
+	var current_device_native_matches_by_instance := {}
+	var current_stream_native_matches_by_stream_id := {}
+	for i in range(current_native_objects.size()):
+		var native_rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
+		if native_rec.is_empty():
+			continue
+		var native_type_key := _native_object_type_key(native_rec)
+		var native_id := int(native_rec.get("native_id", 0))
+		if native_id <= 0:
+			continue
+		if native_type_key == "device":
+			var owner_instance_id := int(native_rec.get("owner_device_instance_id", 0))
+			if owner_instance_id > 0:
+				if not current_device_native_matches_by_instance.has(owner_instance_id):
+					current_device_native_matches_by_instance[owner_instance_id] = []
+				current_device_native_matches_by_instance[owner_instance_id].append(native_rec)
+		elif native_type_key == "stream":
+			var owner_stream_native_id := int(native_rec.get("owner_stream_id", 0))
+			if owner_stream_native_id > 0:
+				if not current_stream_native_matches_by_stream_id.has(owner_stream_native_id):
+					current_stream_native_matches_by_stream_id[owner_stream_native_id] = []
+				current_stream_native_matches_by_stream_id[owner_stream_native_id].append(native_rec)
+
 	var provider_device_ids_by_instance := {}
 	for i in range(devices.size()):
 		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
@@ -746,6 +770,20 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
+		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+		var device_info_lines: Array[String] = []
+		var device_native_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
+		if device_native_matches.size() == 1:
+			var device_native_rec: Dictionary = device_native_matches[0]
+			device_badges.append(_badge("neutral", "native_phase=%d" % int(device_native_rec.get("phase", -1))))
+			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
+		elif device_native_matches.size() == 0:
+			device_info_lines.append("Contract ambiguity: device row has no matching current-generation Device native object.")
+		else:
+			device_info_lines.append(
+				"Contract ambiguity: device row has %d matching current-generation Device native objects."
+				% device_native_matches.size()
+			)
 		panel.entries.append(_entry(
 			device_entry_id,
 			provider_id,
@@ -753,12 +791,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			device_label,
 			true,
 			true,
-			[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+			device_badges,
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("errors", int(rec.get("errors_count", 0)), 1),
 			],
-			[]
+			device_info_lines
 		))
 
 	var streams_by_device := {}
@@ -783,6 +821,20 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
+			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+			var stream_info_lines: Array[String] = []
+			var stream_native_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
+			if stream_native_matches.size() == 1:
+				var stream_native_rec: Dictionary = stream_native_matches[0]
+				stream_badges.append(_badge("neutral", "native_phase=%d" % int(stream_native_rec.get("phase", -1))))
+				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
+			elif stream_native_matches.size() == 0:
+				stream_info_lines.append("Contract ambiguity: stream row has no matching current-generation Stream native object.")
+			else:
+				stream_info_lines.append(
+					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
+					% stream_native_matches.size()
+				)
 			panel.entries.append(_entry(
 				"stream/%d" % stream_id,
 				parent_entry_id,
@@ -790,13 +842,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"stream/%d" % stream_id,
 				false,
 				true,
-				[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+				stream_badges,
 				[
 					_counter("mode", int(rec.get("mode", 0)), 1),
 					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
 					_counter("frames", int(rec.get("frames_received", 0)), 3),
 				],
-				[]
+				stream_info_lines
 			))
 
 	for i in range(rigs.size()):
@@ -848,7 +900,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
 		if rec.is_empty():
 			continue
-		if _native_object_is_provider(rec) and int(rec.get("native_id", 0)) == provider_native_id:
+		var current_native_id := int(rec.get("native_id", 0))
+		if _native_object_is_provider(rec) and current_native_id == provider_native_id:
+			continue
+		if bool(promoted_native_ids.get(current_native_id, false)):
 			continue
 		var native_entry := _build_native_object_entry(
 			rec,
