@@ -6,7 +6,7 @@ const SERVER_SINGLETON_NAME := "CamBANGServer"
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
 const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
 # PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
-const PROVISIONAL_RETAINED_PRESENTATION_TTL_NS := -1
+const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := -1
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 
 
@@ -74,6 +74,18 @@ class StatusPanelStyle extends RefCounted:
 	var badge_strip_width: int
 
 
+class RetainedSubtreeState extends RefCounted:
+	var panel_model: PanelModel = null
+	var retained_from_gen: int = -1
+	var source_snapshot_timestamp_ns: int = -1
+	var source_snapshot_version: int = -1
+	var source_topology_version: int = -1
+	var retained_at_msec: int = -1
+	var provider_root_id: String = ""
+	var root_status: String = "orphaned"
+
+
+
 @export var panel_style_overrides: Dictionary = {}
 @export var shared_style_overrides: Dictionary = {}
 
@@ -95,10 +107,8 @@ var _last_snapshot_meta: Dictionary = {}
 var _last_panel_model: PanelModel = null
 var _last_active_panel_model: PanelModel = null
 var _last_authoritative_panel_model: PanelModel = null
-var _last_authoritative_gen: int = -1
-var _retained_presentation_model: PanelModel = null
-var _retained_source_gen: int = -1
-var _retained_recorded_timestamp_ns: int = -1
+var _last_authoritative_snapshot_meta: Dictionary = {}
+var _retained_subtrees: Array[RetainedSubtreeState] = []
 
 
 func _ready() -> void:
@@ -350,7 +360,7 @@ func _refresh_from_server() -> void:
 		_last_snapshot_meta.clear()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
 		_last_active_panel_model = no_server_panel
-		_last_panel_model = _compose_presented_panel_model(no_server_panel)
+		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
 
@@ -364,7 +374,7 @@ func _refresh_from_server() -> void:
 		_last_snapshot_meta.clear()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 		_last_active_panel_model = nil_panel
-		_last_panel_model = _compose_presented_panel_model(nil_panel)
+		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
 
@@ -372,122 +382,138 @@ func _refresh_from_server() -> void:
 		_last_snapshot_meta.clear()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_last_active_panel_model = bad_type_panel
-		_last_panel_model = _compose_presented_panel_model(bad_type_panel)
+		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
 
+	var snapshot_meta := _extract_authoritative_snapshot_meta(snapshot)
 	var category := _categorize_snapshot_update(snapshot)
 	match category:
 		"none":
-			if _last_panel_model != null:
-				_render_panel_model(_last_panel_model)
+			if _last_active_panel_model == null:
+				_last_active_panel_model = _project_snapshot_to_panel_model(snapshot, provider_mode)
+			_last_panel_model = _compose_presented_panel_model(_last_active_panel_model, true, snapshot_meta)
+			_render_panel_model(_last_panel_model)
 		"value_refresh":
 			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
 			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_last_active_panel_model = value_panel
-			_last_panel_model = _compose_presented_panel_model(value_panel)
+			_last_panel_model = _compose_presented_panel_model(value_panel, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_last_active_panel_model = full_panel
-			_last_panel_model = _compose_presented_panel_model(full_panel)
+			_last_panel_model = _compose_presented_panel_model(full_panel, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 
 
-func _compose_presented_panel_model(active_panel: PanelModel) -> PanelModel:
-	var active_gen := _extract_panel_generation(active_panel)
-	_capture_authoritative_for_retained(active_panel, active_gen)
-	_maybe_expire_retained_presentation()
+func _compose_presented_panel_model(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> PanelModel:
+	_update_retained_lifecycle(active_panel, is_authoritative_snapshot, snapshot_meta)
+	_expire_retained_subtrees_by_policy()
 
 	var composed := _clone_panel_model(active_panel)
-	if _retained_presentation_model != null:
-		_append_retained_presentation_subtree(composed, _retained_presentation_model)
+	_append_retained_presentation_subtrees(composed)
 	return composed
 
 
-func _capture_authoritative_for_retained(active_panel: PanelModel, active_gen: int) -> void:
-	var should_promote_to_retained := false
-	if _last_authoritative_panel_model != null:
-		if active_gen < 0:
-			should_promote_to_retained = true
-		elif _last_authoritative_gen >= 0 and active_gen != _last_authoritative_gen:
-			should_promote_to_retained = true
-
-	if should_promote_to_retained:
-		_retain_panel_for_presentation(_last_authoritative_panel_model, _last_authoritative_gen)
-
-	if active_gen >= 0:
-		_last_authoritative_panel_model = _clone_panel_model(active_panel)
-		_last_authoritative_gen = active_gen
-
-
-func _retain_panel_for_presentation(source_model: PanelModel, source_gen: int) -> void:
-	if source_model == null:
+func _update_retained_lifecycle(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
+	if not is_authoritative_snapshot:
+		if _last_authoritative_panel_model != null and not _last_authoritative_snapshot_meta.is_empty():
+			_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
 		return
-	_retained_presentation_model = _clone_panel_model(source_model)
-	_retained_source_gen = source_gen
-	_retained_recorded_timestamp_ns = Time.get_ticks_usec() * 1000
+
+	var active_gen := int(snapshot_meta.get("gen", -1))
+	var last_gen := int(_last_authoritative_snapshot_meta.get("gen", -1))
+	if _last_authoritative_panel_model != null and last_gen >= 0 and active_gen >= 0 and active_gen != last_gen:
+		_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+
+	_last_authoritative_panel_model = _clone_panel_model(active_panel)
+	_last_authoritative_snapshot_meta = snapshot_meta.duplicate(true)
 
 
-func _extract_panel_generation(panel: PanelModel) -> int:
-	if panel == null:
-		return -1
-	for entry in panel.entries:
-		if entry.id != "server/main":
+func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Dictionary) -> void:
+	if source_model == null or source_meta.is_empty():
+		return
+	if _retained_subtree_exists(source_meta):
+		return
+
+	var retained := RetainedSubtreeState.new()
+	retained.panel_model = _clone_panel_model(source_model)
+	retained.retained_from_gen = int(source_meta.get("gen", -1))
+	retained.source_snapshot_timestamp_ns = int(source_meta.get("timestamp_ns", -1))
+	retained.source_snapshot_version = int(source_meta.get("version", -1))
+	retained.source_topology_version = int(source_meta.get("topology_version", -1))
+	retained.retained_at_msec = Time.get_ticks_msec()
+	var root_info := _resolve_retained_provider_root(retained.panel_model)
+	retained.provider_root_id = str(root_info.get("provider_root_id", ""))
+	retained.root_status = str(root_info.get("root_status", "orphaned"))
+	_retained_subtrees.insert(0, retained)
+
+
+func _retained_subtree_exists(source_meta: Dictionary) -> bool:
+	var target_gen := int(source_meta.get("gen", -1))
+	var target_version := int(source_meta.get("version", -1))
+	var target_topology := int(source_meta.get("topology_version", -1))
+	var target_timestamp := int(source_meta.get("timestamp_ns", -1))
+	for retained in _retained_subtrees:
+		if retained.retained_from_gen != target_gen:
 			continue
-		for counter in entry.counters:
-			if counter.name == "gen":
-				return counter.value
-	return -1
+		if retained.source_snapshot_version != target_version:
+			continue
+		if retained.source_topology_version != target_topology:
+			continue
+		if retained.source_snapshot_timestamp_ns != target_timestamp:
+			continue
+		return true
+	return false
 
 
-func _maybe_expire_retained_presentation() -> void:
-	if _retained_presentation_model == null:
-		return
-	if PROVISIONAL_RETAINED_PRESENTATION_TTL_NS < 0:
-		return
-	var elapsed_ns := (Time.get_ticks_usec() * 1000) - _retained_recorded_timestamp_ns
-	if elapsed_ns >= PROVISIONAL_RETAINED_PRESENTATION_TTL_NS:
-		_clear_retained_presentation()
-
-
-func _clear_retained_presentation() -> void:
-	_retained_presentation_model = null
-	_retained_source_gen = -1
-	_retained_recorded_timestamp_ns = -1
-
-
-func _clone_panel_model(source: PanelModel) -> PanelModel:
-	var cloned := PanelModel.new()
-	if source == null:
-		return cloned
-	for entry in source.entries:
-		var cloned_badges: Array[BadgeModel] = []
+func _resolve_retained_provider_root(panel: PanelModel) -> Dictionary:
+	if panel == null:
+		return {"provider_root_id": "", "root_status": "orphaned"}
+	var destroyed_provider_ids: Array[String] = []
+	for entry in panel.entries:
+		if not entry.id.begins_with("provider/"):
+			continue
 		for badge in entry.badges:
-			cloned_badges.append(_badge(badge.role, badge.label))
-		var cloned_counters: Array[CounterModel] = []
-		for counter in entry.counters:
-			cloned_counters.append(_counter(counter.name, counter.value, counter.digits))
-		var cloned_info_lines: Array[String] = []
-		for line in entry.info_lines:
-			cloned_info_lines.append(line)
-		cloned.entries.append(_entry(
-			entry.id,
-			entry.parent_id,
-			entry.depth,
-			entry.label,
-			entry.expanded,
-			entry.can_expand,
-			cloned_badges,
-			cloned_counters,
-			cloned_info_lines
-		))
-	return cloned
+			if badge.label == "phase=3":
+				destroyed_provider_ids.append(entry.id)
+				break
+	if destroyed_provider_ids.size() == 1:
+		return {"provider_root_id": destroyed_provider_ids[0], "root_status": "destroyed_provider"}
+	if destroyed_provider_ids.size() > 1:
+		return {"provider_root_id": "", "root_status": "ambiguous_provider"}
+	return {"provider_root_id": "", "root_status": "orphaned"}
 
 
-func _append_retained_presentation_subtree(target_panel: PanelModel, retained_source: PanelModel) -> void:
-	if target_panel == null or retained_source == null:
+func _expire_retained_subtrees_by_policy() -> void:
+	if _retained_subtrees.is_empty():
+		return
+	if PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC < 0:
+		return
+	var now_msec := Time.get_ticks_msec()
+	var kept: Array[RetainedSubtreeState] = []
+	for retained in _retained_subtrees:
+		if not _is_retained_subtree_expired(retained, now_msec):
+			kept.append(retained)
+	_retained_subtrees = kept
+
+
+func _is_retained_subtree_expired(retained: RetainedSubtreeState, now_msec: int) -> bool:
+	if PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC < 0:
+		return false
+	if retained == null:
+		return true
+	if retained.retained_at_msec < 0:
+		return true
+	return (now_msec - retained.retained_at_msec) >= PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC
+
+
+func _append_retained_presentation_subtrees(target_panel: PanelModel) -> void:
+	if target_panel == null:
+		return
+	if _retained_subtrees.is_empty():
 		return
 
 	target_panel.entries.append(_entry(
@@ -498,27 +524,120 @@ func _append_retained_presentation_subtree(target_panel: PanelModel, retained_so
 		false,
 		true,
 		[_badge("warning", "retained")],
-		[_counter("source_gen", _retained_source_gen, 1)],
+		[_counter("count", _retained_subtrees.size(), 1)],
 		[
 			"Presentation continuity only. Not active snapshot truth.",
-			"Rows below are copied from the last authoritative projected model.",
+			"Rows below are copied/frozen from prior authoritative projected models.",
 		]
 	))
 
-	for retained_entry in retained_source.entries:
-		var cloned_entry := _clone_status_entry(retained_entry)
-		cloned_entry.id = "retained_presentation/%s" % retained_entry.id
-		if retained_entry.parent_id == "":
-			cloned_entry.parent_id = RETAINED_PRESENTATION_ROOT_ID
-			cloned_entry.depth = 1
+	for idx in range(_retained_subtrees.size()):
+		_append_single_retained_subtree(target_panel, _retained_subtrees[idx], idx)
+
+	_ensure_expandability(target_panel)
+
+
+func _append_single_retained_subtree(target_panel: PanelModel, retained: RetainedSubtreeState, order_index: int) -> void:
+	if retained == null or retained.panel_model == null:
+		return
+	var subtree_prefix := "retained_presentation/subtree/%d/gen_%d" % [order_index, retained.retained_from_gen]
+	var container_id := "%s/container" % subtree_prefix
+	var root_note := "Retained subtree is orphaned because no truthful DESTROYED provider root was available."
+	if retained.root_status == "destroyed_provider":
+		root_note = "Retained subtree rooted at retained generation DESTROYED provider row."
+	elif retained.root_status == "ambiguous_provider":
+		root_note = "Retained subtree is orphaned because multiple DESTROYED provider rows were present."
+	target_panel.entries.append(_entry(
+		container_id,
+		RETAINED_PRESENTATION_ROOT_ID,
+		1,
+		"retained subtree #%d" % (order_index + 1),
+		false,
+		true,
+		[_badge("warning", "retained")],
+		[
+			_counter("retained_from_gen", retained.retained_from_gen, 1),
+			_counter("source_version", retained.source_snapshot_version, 1),
+			_counter("source_topology", retained.source_topology_version, 1),
+		],
+		[
+			"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
+			"retained_at_msec=%d" % retained.retained_at_msec,
+			root_note,
+		]
+	))
+
+	var retained_entries: Array[StatusEntryModel] = []
+	if retained.root_status == "destroyed_provider" and not retained.provider_root_id.is_empty():
+		retained_entries = _collect_retained_entries_under_root(retained.panel_model, retained.provider_root_id)
+	else:
+		retained_entries = _collect_retained_orphan_entries(retained.panel_model)
+
+	for source_entry in retained_entries:
+		var cloned_entry := _clone_status_entry(source_entry)
+		cloned_entry.id = "%s/%s" % [subtree_prefix, source_entry.id]
+		if source_entry.parent_id.is_empty() or not _retained_entry_is_included(retained_entries, source_entry.parent_id):
+			cloned_entry.parent_id = container_id
+			cloned_entry.depth = 2
 		else:
-			cloned_entry.parent_id = "retained_presentation/%s" % retained_entry.parent_id
-			cloned_entry.depth = retained_entry.depth + 1
-		cloned_entry.label = "%s [retained]" % retained_entry.label
+			cloned_entry.parent_id = "%s/%s" % [subtree_prefix, source_entry.parent_id]
+			cloned_entry.depth = source_entry.depth + 2
+		cloned_entry.label = "%s [retained]" % source_entry.label
 		cloned_entry.badges.append(_badge("warning", "retained"))
 		target_panel.entries.append(cloned_entry)
 
-	_ensure_expandability(target_panel)
+
+func _collect_retained_entries_under_root(panel: PanelModel, root_entry_id: String) -> Array[StatusEntryModel]:
+	var included_ids := {}
+	included_ids[root_entry_id] = true
+	var changed := true
+	while changed:
+		changed = false
+		for entry in panel.entries:
+			if included_ids.has(entry.id):
+				continue
+			if entry.parent_id.is_empty():
+				continue
+			if included_ids.has(entry.parent_id):
+				included_ids[entry.id] = true
+				changed = true
+	var out: Array[StatusEntryModel] = []
+	for entry in panel.entries:
+		if included_ids.has(entry.id):
+			out.append(entry)
+	return out
+
+
+func _collect_retained_orphan_entries(panel: PanelModel) -> Array[StatusEntryModel]:
+	var out: Array[StatusEntryModel] = []
+	for entry in panel.entries:
+		out.append(entry)
+	return out
+
+
+func _retained_entry_is_included(entries: Array[StatusEntryModel], id: String) -> bool:
+	for entry in entries:
+		if entry.id == id:
+			return true
+	return false
+
+
+func _extract_authoritative_snapshot_meta(snapshot: Dictionary) -> Dictionary:
+	return {
+		"gen": int(snapshot.get("gen", -1)),
+		"version": int(snapshot.get("version", -1)),
+		"topology_version": int(snapshot.get("topology_version", -1)),
+		"timestamp_ns": int(snapshot.get("timestamp_ns", -1)),
+	}
+
+
+func _clone_panel_model(source: PanelModel) -> PanelModel:
+	var cloned := PanelModel.new()
+	if source == null:
+		return cloned
+	for entry in source.entries:
+		cloned.entries.append(_clone_status_entry(entry))
+	return cloned
 
 
 func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
