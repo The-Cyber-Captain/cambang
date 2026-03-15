@@ -1012,52 +1012,60 @@ func _build_native_object_entry(
 	var root_id := int(rec.get("root_id", 0))
 	var parent_id := provider_id
 	var info_lines: Array[String] = []
+	var unresolved_owner_messages: Array[String] = []
 
 	if owner_stream_id > 0:
 		var stream_parent_id := "stream/%d" % owner_stream_id
 		if _entry_exists(existing_entries, stream_parent_id):
 			parent_id = stream_parent_id
 		else:
-			info_lines.append("Contract gap: owner_stream_id=%d does not resolve to a stream entry." % owner_stream_id)
+			unresolved_owner_messages.append("Contract gap: owner_stream_id=%d does not resolve to a stream entry." % owner_stream_id)
 
 	if parent_id == provider_id and owner_device_instance_id > 0:
 		var device_parent_id := "device/%d" % owner_device_instance_id
 		if _entry_exists(existing_entries, device_parent_id):
 			parent_id = device_parent_id
 		else:
-			info_lines.append("Contract gap: owner_device_instance_id=%d does not resolve to a device entry." % owner_device_instance_id)
+			unresolved_owner_messages.append("Contract gap: owner_device_instance_id=%d does not resolve to a device entry." % owner_device_instance_id)
 
 	if parent_id == provider_id and owner_rig_id > 0:
 		var rig_parent_id := "rig/%d" % owner_rig_id
 		if _entry_exists(existing_entries, rig_parent_id):
 			parent_id = rig_parent_id
 		else:
-			info_lines.append("Contract gap: owner_rig_id=%d does not resolve to a rig entry." % owner_rig_id)
+			unresolved_owner_messages.append("Contract gap: owner_rig_id=%d does not resolve to a rig entry." % owner_rig_id)
 
 	if parent_id == provider_id and owner_provider_native_id > 0:
 		var provider_parent_id := "provider/%d" % owner_provider_native_id
 		if _entry_exists(existing_entries, provider_parent_id):
 			parent_id = provider_parent_id
 		else:
-			info_lines.append(
+			unresolved_owner_messages.append(
 				"Contract gap: owner_provider_native_id=%d does not resolve to a provider entry."
 				% owner_provider_native_id
 			)
 
-	if parent_id == provider_id and _contains_int(detached_root_ids, root_id):
+	var detached_root_placement := parent_id == provider_id and _contains_int(detached_root_ids, root_id)
+	if detached_root_placement:
 		parent_id = orphan_row_id
-
-	if parent_id == provider_id and info_lines.is_empty():
-		info_lines.append(
-			"Contract gap: native object ownership is ambiguous; no resolvable owner_stream_id/owner_device_instance_id/owner_rig_id/owner_provider_native_id."
-		)
+	elif parent_id == provider_id:
+		if unresolved_owner_messages.is_empty():
+			info_lines.append(
+				"Contract gap: native object ownership is ambiguous; no resolvable owner_stream_id/owner_device_instance_id/owner_rig_id/owner_provider_native_id."
+			)
+		else:
+			for message in unresolved_owner_messages:
+				info_lines.append(message)
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
 
+	var native_type_key := _native_object_type_key(rec)
+	var native_type_label := _native_object_type_label(native_type_key)
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
-	if _native_object_is_provider(rec):
+	native_badges.append(_badge("info", "type=%s" % native_type_label))
+	if native_type_key == "provider":
 		native_badges.append(_badge("info", "provider-native"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
@@ -1067,7 +1075,7 @@ func _build_native_object_entry(
 		"native_object/%d" % native_id,
 		parent_id,
 		target_depth,
-		"native_object/%d" % native_id,
+		"native_object/%d [%s]" % [native_id, native_type_label],
 		false,
 		false,
 		native_badges,
@@ -1291,3 +1299,17 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			_:
 				return ""
 	return ""
+
+
+func _native_object_type_label(type_key: String) -> String:
+	match type_key:
+		"provider":
+			return "Provider"
+		"device":
+			return "Device"
+		"stream":
+			return "Stream"
+		"frameproducer":
+			return "FrameProducer"
+		_:
+			return "Unknown"
