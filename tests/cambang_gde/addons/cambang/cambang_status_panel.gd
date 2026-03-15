@@ -649,45 +649,64 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			continue
 		if _native_object_is_provider(current_rec):
 			current_provider_native_objects.append(current_rec)
+	var prior_provider_native_objects: Array = []
+	for i in range(prior_native_objects.size()):
+		var prior_rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
+		if prior_rec.is_empty():
+			continue
+		if _native_object_is_provider(prior_rec):
+			prior_provider_native_objects.append(prior_rec)
 
-	if current_provider_native_objects.size() != 1:
+	var provider_id := "provider/unresolved"
+	var provider_lifecycle_state := "provider-native-missing"
+	var provider_lifecycle_role := "warning"
+	var provider_badges: Array[BadgeModel] = [
+		_badge("info", "published"),
+	]
+	var provider_info_lines: Array[String] = []
+
+	if current_provider_native_objects.size() > 1:
 		issues.append(
-			"Contract ambiguity: expected exactly one current-generation provider native object (type=Provider), found %d."
+			"Contract ambiguity: expected at most one current-generation provider native object (type=Provider), found %d."
 			% current_provider_native_objects.size()
 		)
-		panel.entries.append(_entry(
-			"server/main/contract_gaps",
-			"server/main",
-			1,
-			"contract_gaps",
-			true,
-			false,
-			[_badge("warning", "schema")],
-			[_counter("count", issues.size(), 1)],
-			issues
-		))
-		_ensure_expandability(panel)
-		return panel
+		provider_lifecycle_state = "provider-native-ambiguous"
+		provider_lifecycle_role = "warning"
+		provider_info_lines.append("Lifecycle ambiguity: multiple current-generation Provider native objects present.")
+	elif current_provider_native_objects.size() == 1:
+		var provider_native_rec: Dictionary = current_provider_native_objects[0]
+		var provider_native_id := int(provider_native_rec.get("native_id", 0))
+		if provider_native_id > 0:
+			provider_id = "provider/%d" % provider_native_id
+		else:
+			issues.append("Contract ambiguity: current-generation provider native object missing valid native_id.")
+			provider_lifecycle_state = "provider-native-ambiguous"
+			provider_lifecycle_role = "warning"
+			provider_info_lines.append("Lifecycle ambiguity: current-generation Provider native object has invalid native_id.")
+		var provider_phase := int(provider_native_rec.get("phase", -1))
+		provider_badges.append(_badge("neutral", "phase=%d" % provider_phase))
+		if provider_phase == 2 or provider_phase == 3:
+			provider_lifecycle_state = "current-provider-non-live"
+			provider_lifecycle_role = "warning"
+		elif provider_phase >= 0:
+			provider_lifecycle_state = "current-provider-live"
+			provider_lifecycle_role = "success"
+		else:
+			provider_lifecycle_state = "provider-native-ambiguous"
+			provider_lifecycle_role = "warning"
+			provider_info_lines.append("Lifecycle ambiguity: current-generation Provider native object phase is missing or invalid.")
+	else:
+		if prior_provider_native_objects.size() > 0:
+			provider_lifecycle_state = "retained-prior-provider-native"
+			provider_lifecycle_role = "info"
+			provider_info_lines.append(
+				"Current-generation Provider native object is missing; retained prior-generation Provider records=%d."
+				% prior_provider_native_objects.size()
+			)
+		else:
+			provider_info_lines.append("Provider native object missing in snapshot native_objects.")
 
-	var provider_native_rec: Dictionary = current_provider_native_objects[0]
-	var provider_native_id := int(provider_native_rec.get("native_id", 0))
-	if provider_native_id <= 0:
-		issues.append("Contract ambiguity: provider native object missing valid native_id.")
-		panel.entries.append(_entry(
-			"server/main/contract_gaps",
-			"server/main",
-			1,
-			"contract_gaps",
-			true,
-			false,
-			[_badge("warning", "schema")],
-			[_counter("count", issues.size(), 1)],
-			issues
-		))
-		_ensure_expandability(panel)
-		return panel
-
-	var provider_id := "provider/%d" % provider_native_id
+	provider_badges.append(_badge(provider_lifecycle_role, provider_lifecycle_state))
 
 	var provider_counters: Array[CounterModel] = [
 		_counter("rigs", rigs.size(), 1),
@@ -697,12 +716,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		_counter("native_cur", current_native_objects.size(), 1),
 		_counter("native_prev", prior_native_objects.size(), 1),
 		_counter("native_dead", native_dead_count, 1),
+		_counter("provider_cur", current_provider_native_objects.size(), 1),
+		_counter("provider_prev", prior_provider_native_objects.size(), 1),
 	]
-	var provider_badges: Array[BadgeModel] = [
-		_badge("info", "published"),
-		_badge("neutral", "phase=%d" % int(provider_native_rec.get("phase", -1))),
-	]
-	var provider_info_lines: Array[String] = []
 	var provider_entry := _entry(
 		provider_id,
 		"server/main",
@@ -1039,6 +1055,8 @@ func _build_native_object_entry(
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	if _native_object_is_provider(rec):
+		native_badges.append(_badge("info", "provider-native"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
