@@ -922,8 +922,10 @@ func _native_object_is_provider(rec: Dictionary) -> bool:
 	if not rec.has("type"):
 		return false
 	var type_value := rec.get("type")
+	if typeof(type_value) in [TYPE_INT, TYPE_FLOAT]:
+		return int(type_value) == 1
 	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
-		return str(type_value) == "Provider"
+		return str(type_value).to_lower() == "provider"
 	return false
 
 
