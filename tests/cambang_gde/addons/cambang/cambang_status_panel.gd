@@ -516,21 +516,6 @@ func _append_retained_presentation_subtrees(target_panel: PanelModel) -> void:
 	if _retained_subtrees.is_empty():
 		return
 
-	target_panel.entries.append(_entry(
-		RETAINED_PRESENTATION_ROOT_ID,
-		"",
-		0,
-		"retained prior-authoritative view",
-		false,
-		true,
-		[_badge("warning", "retained")],
-		[_counter("count", _retained_subtrees.size(), 1)],
-		[
-			"Presentation continuity only. Not active snapshot truth.",
-			"Rows below are copied/frozen from prior authoritative projected models.",
-		]
-	))
-
 	for idx in range(_retained_subtrees.size()):
 		_append_single_retained_subtree(target_panel, _retained_subtrees[idx], idx)
 
@@ -540,51 +525,85 @@ func _append_retained_presentation_subtrees(target_panel: PanelModel) -> void:
 func _append_single_retained_subtree(target_panel: PanelModel, retained: RetainedSubtreeState, order_index: int) -> void:
 	if retained == null or retained.panel_model == null:
 		return
-	var subtree_prefix := "retained_presentation/subtree/%d/gen_%d" % [order_index, retained.retained_from_gen]
-	var container_id := "%s/container" % subtree_prefix
-	var root_note := "Retained subtree is orphaned because no truthful DESTROYED provider root was available."
-	if retained.root_status == "destroyed_provider":
-		root_note = "Retained subtree rooted at retained generation DESTROYED provider row."
-	elif retained.root_status == "ambiguous_provider":
-		root_note = "Retained subtree is orphaned because multiple DESTROYED provider rows were present."
-	target_panel.entries.append(_entry(
-		container_id,
-		RETAINED_PRESENTATION_ROOT_ID,
-		1,
-		"retained subtree #%d" % (order_index + 1),
-		false,
-		true,
-		[_badge("warning", "retained")],
-		[
-			_counter("retained_from_gen", retained.retained_from_gen, 1),
-			_counter("source_version", retained.source_snapshot_version, 1),
-			_counter("source_topology", retained.source_topology_version, 1),
-		],
-		[
-			"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
-			"retained_at_msec=%d" % retained.retained_at_msec,
-			root_note,
-		]
-	))
-
+	var subtree_prefix := "%s/subtree/%d/gen_%d" % [RETAINED_PRESENTATION_ROOT_ID, order_index, retained.retained_from_gen]
 	var retained_entries: Array[StatusEntryModel] = []
+	var retained_root_source_id := ""
 	if retained.root_status == "destroyed_provider" and not retained.provider_root_id.is_empty():
+		retained_root_source_id = retained.provider_root_id
 		retained_entries = _collect_retained_entries_under_root(retained.panel_model, retained.provider_root_id)
 	else:
+		retained_root_source_id = "%s/orphan_root" % subtree_prefix
 		retained_entries = _collect_retained_orphan_entries(retained.panel_model)
+
+	var included_ids := {}
+	for source_entry in retained_entries:
+		included_ids[source_entry.id] = true
+
+	var retained_root_projected_id := "%s/%s" % [subtree_prefix, retained_root_source_id]
+	if retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty():
+		var orphan_info := _retained_metadata_info_lines(retained)
+		if retained.root_status == "ambiguous_provider":
+			orphan_info.append("Retained subtree is orphaned because multiple DESTROYED provider rows were present.")
+		else:
+			orphan_info.append("Retained subtree is orphaned because no truthful DESTROYED provider root was available.")
+		target_panel.entries.append(_entry(
+			retained_root_projected_id,
+			"server/main",
+			1,
+			"retained_orphan/gen_%d" % retained.retained_from_gen,
+			false,
+			true,
+			[
+				_badge("warning", "retained"),
+				_badge("warning", "orphaned"),
+			],
+			[
+				_counter("retained_from_gen", retained.retained_from_gen, 1),
+				_counter("source_version", retained.source_snapshot_version, 1),
+				_counter("source_topology", retained.source_topology_version, 1),
+			],
+			orphan_info
+		))
 
 	for source_entry in retained_entries:
 		var cloned_entry := _clone_status_entry(source_entry)
-		cloned_entry.id = "%s/%s" % [subtree_prefix, source_entry.id]
-		if source_entry.parent_id.is_empty() or not _retained_entry_is_included(retained_entries, source_entry.parent_id):
-			cloned_entry.parent_id = container_id
+		var projected_id := "%s/%s" % [subtree_prefix, source_entry.id]
+		cloned_entry.id = projected_id
+		if source_entry.id == retained.provider_root_id and retained.root_status == "destroyed_provider":
+			cloned_entry.parent_id = "server/main"
+			cloned_entry.depth = 1
+			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
+			cloned_entry.badges.append(_badge("warning", "retained"))
+			cloned_entry.badges.append(_badge("warning", "retained-root"))
+		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
+			cloned_entry.parent_id = retained_root_projected_id
 			cloned_entry.depth = 2
+			cloned_entry.badges.append(_badge("warning", "retained"))
 		else:
 			cloned_entry.parent_id = "%s/%s" % [subtree_prefix, source_entry.parent_id]
-			cloned_entry.depth = source_entry.depth + 2
+			cloned_entry.depth = source_entry.depth
+			cloned_entry.badges.append(_badge("warning", "retained"))
 		cloned_entry.label = "%s [retained]" % source_entry.label
-		cloned_entry.badges.append(_badge("warning", "retained"))
 		target_panel.entries.append(cloned_entry)
+
+
+func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
+	return [
+		"Presentation continuity only. Not active snapshot truth.",
+		"retained_from_gen=%d" % retained.retained_from_gen,
+		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
+		"source version=%d, source topology=%d" % [retained.source_snapshot_version, retained.source_topology_version],
+		"retained_at_msec=%d" % retained.retained_at_msec,
+	]
+
+
+func _append_lines(base_lines: Array[String], extra_lines: Array[String]) -> Array[String]:
+	var out: Array[String] = []
+	for line in base_lines:
+		out.append(line)
+	for line in extra_lines:
+		out.append(line)
+	return out
 
 
 func _collect_retained_entries_under_root(panel: PanelModel, root_entry_id: String) -> Array[StatusEntryModel]:
@@ -613,13 +632,6 @@ func _collect_retained_orphan_entries(panel: PanelModel) -> Array[StatusEntryMod
 	for entry in panel.entries:
 		out.append(entry)
 	return out
-
-
-func _retained_entry_is_included(entries: Array[StatusEntryModel], id: String) -> bool:
-	for entry in entries:
-		if entry.id == id:
-			return true
-	return false
 
 
 func _extract_authoritative_snapshot_meta(snapshot: Dictionary) -> Dictionary:
