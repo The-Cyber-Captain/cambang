@@ -414,7 +414,140 @@ func _compose_presented_panel_model(active_panel: PanelModel, is_authoritative_s
 
 	var composed := _clone_panel_model(active_panel)
 	_append_retained_presentation_subtrees(composed)
+	var projection_issues := _validate_projection_invariants(composed)
+	_append_projection_gaps_row(composed, projection_issues)
 	return composed
+
+
+func _validate_projection_invariants(panel: PanelModel) -> Array[String]:
+	var issues: Array[String] = []
+	if panel == null:
+		issues.append("Projection invariant: composed panel model is null.")
+		return issues
+
+	var by_id := {}
+	for entry in panel.entries:
+		if not by_id.has(entry.id):
+			by_id[entry.id] = []
+		by_id[entry.id].append(entry)
+
+	var server_rows: Array = by_id.get("server/main", [])
+	if server_rows.size() != 1:
+		issues.append("Projection invariant: expected exactly one server/main row, found %d." % server_rows.size())
+	else:
+		var server_row: StatusEntryModel = server_rows[0]
+		if server_row.parent_id != "":
+			issues.append("Projection invariant: server/main must be a root row.")
+
+	for entry in panel.entries:
+		if not _is_retained_projection_entry(entry.id):
+			continue
+		if entry.id.ends_with("/server/main"):
+			issues.append("Projection invariant: retained projection must not include server/main as retained content.")
+			break
+
+	var retained_roots: Array[StatusEntryModel] = []
+	for entry in panel.entries:
+		if _has_badge_label(entry, "retained-root"):
+			retained_roots.append(entry)
+			if entry.parent_id != "server/main":
+				issues.append("Projection invariant: retained root %s must be a direct child of server/main." % entry.id)
+
+	var expected_retained_root_count := _retained_subtrees.size()
+	if retained_roots.size() != expected_retained_root_count:
+		issues.append(
+			"Projection invariant: retained root row count (%d) does not match retained state count (%d)."
+			% [retained_roots.size(), expected_retained_root_count]
+		)
+
+	var id_to_entry := {}
+	for entry in panel.entries:
+		id_to_entry[entry.id] = entry
+
+	var active_provider_ids := {}
+	for entry in panel.entries:
+		if entry.parent_id == "server/main" and entry.id.begins_with("provider/") and not _has_badge_label(entry, "retained-root"):
+			active_provider_ids[entry.id] = true
+
+	for entry in panel.entries:
+		var current_parent := entry.parent_id
+		while current_parent != "":
+			var parent_entry: StatusEntryModel = id_to_entry.get(current_parent, null)
+			if parent_entry == null:
+				break
+			if _has_badge_label(parent_entry, "retained-root") and not _is_retained_projection_entry(entry.id) and entry.id != parent_entry.id:
+				issues.append("Projection invariant: active row %s appears under retained root %s." % [entry.id, parent_entry.id])
+				break
+			if active_provider_ids.has(parent_entry.id) and _is_retained_projection_entry(entry.id):
+				issues.append("Projection invariant: retained row %s appears inside active provider tree %s." % [entry.id, parent_entry.id])
+				break
+			current_parent = parent_entry.parent_id
+
+	if _retained_subtrees.size() > 1:
+		for i in range(1, _retained_subtrees.size()):
+			var newer := _retained_subtrees[i - 1]
+			var older := _retained_subtrees[i]
+			if newer.retained_from_gen >= 0 and older.retained_from_gen >= 0 and older.retained_from_gen > newer.retained_from_gen:
+				issues.append("Projection invariant: retained generations are not ordered newest-first.")
+				break
+
+	for retained_entry in panel.entries:
+		if retained_entry.parent_id != "server/main":
+			continue
+		if not retained_entry.label.begins_with("retained_orphan/gen_"):
+			continue
+		var orphan_gen := _parse_orphan_retained_gen(retained_entry.label)
+		if orphan_gen < 0:
+			continue
+		for retained_state in _retained_subtrees:
+			if retained_state.retained_from_gen == orphan_gen and retained_state.root_status == "destroyed_provider":
+				issues.append(
+					"Projection invariant: orphan retained root used for gen=%d despite truthful destroyed provider root availability."
+					% orphan_gen
+				)
+				break
+
+	return issues
+
+
+func _append_projection_gaps_row(panel: PanelModel, issues: Array[String]) -> void:
+	if panel == null or issues.is_empty():
+		return
+	if _entry_exists(panel.entries, "server/main/projection_gaps"):
+		return
+	panel.entries.append(_entry(
+		"server/main/projection_gaps",
+		"server/main",
+		1,
+		"projection_gaps",
+		true,
+		false,
+		[_badge("warning", "projection")],
+		[_counter("count", issues.size(), 1)],
+		issues
+	))
+	_ensure_expandability(panel)
+
+
+func _has_badge_label(entry: StatusEntryModel, label: String) -> bool:
+	for badge in entry.badges:
+		if badge.label == label:
+			return true
+	return false
+
+
+func _is_retained_projection_entry(entry_id: String) -> bool:
+	return entry_id.begins_with("%s/" % RETAINED_PRESENTATION_ROOT_ID)
+
+
+func _parse_orphan_retained_gen(label: String) -> int:
+	var prefix := "retained_orphan/gen_"
+	if not label.begins_with(prefix):
+		return -1
+	var suffix := label.substr(prefix.length())
+	if suffix.is_empty() or not suffix.is_valid_int():
+		return -1
+	return int(suffix)
 
 
 func _update_retained_lifecycle(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
