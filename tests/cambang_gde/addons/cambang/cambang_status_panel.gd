@@ -439,16 +439,34 @@ func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Diction
 		return
 
 	var retained := RetainedSubtreeState.new()
-	retained.panel_model = _clone_panel_model(source_model)
 	retained.retained_from_gen = int(source_meta.get("gen", -1))
 	retained.source_snapshot_timestamp_ns = int(source_meta.get("timestamp_ns", -1))
 	retained.source_snapshot_version = int(source_meta.get("version", -1))
 	retained.source_topology_version = int(source_meta.get("topology_version", -1))
 	retained.retained_at_msec = Time.get_ticks_msec()
-	var root_info := _resolve_retained_provider_root(retained.panel_model)
+	var root_info := _resolve_retained_provider_root(source_model)
 	retained.provider_root_id = str(root_info.get("provider_root_id", ""))
 	retained.root_status = str(root_info.get("root_status", "orphaned"))
+	retained.panel_model = _extract_retained_panel_subtree(source_model, retained.provider_root_id, retained.root_status)
 	_retained_subtrees.insert(0, retained)
+
+
+func _extract_retained_panel_subtree(source_model: PanelModel, provider_root_id: String, root_status: String) -> PanelModel:
+	var extracted := PanelModel.new()
+	if source_model == null:
+		return extracted
+
+	if root_status == "destroyed_provider" and not provider_root_id.is_empty():
+		var provider_entries := _collect_retained_entries_under_root(source_model, provider_root_id)
+		for entry in provider_entries:
+			extracted.entries.append(_clone_status_entry(entry))
+		return extracted
+
+	for entry in source_model.entries:
+		if entry.id == "server/main":
+			continue
+		extracted.entries.append(_clone_status_entry(entry))
+	return extracted
 
 
 func _retained_subtree_exists(source_meta: Dictionary) -> bool:
@@ -629,6 +647,8 @@ func _collect_retained_entries_under_root(panel: PanelModel, root_entry_id: Stri
 func _collect_retained_orphan_entries(panel: PanelModel) -> Array[StatusEntryModel]:
 	var out: Array[StatusEntryModel] = []
 	for entry in panel.entries:
+		if entry.id == "server/main":
+			continue
 		out.append(entry)
 	return out
 
