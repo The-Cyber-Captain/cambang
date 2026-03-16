@@ -555,6 +555,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			true,
 			[
 				_badge("warning", "retained"),
+				_badge("warning", "retained-root"),
 				_badge("warning", "orphaned"),
 			],
 			[
@@ -575,15 +576,13 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
+			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
 			cloned_entry.parent_id = retained_root_projected_id
 			cloned_entry.depth = 2
-			cloned_entry.badges.append(_badge("warning", "retained"))
 		else:
 			cloned_entry.parent_id = "%s/%s" % [subtree_prefix, source_entry.parent_id]
 			cloned_entry.depth = source_entry.depth
-			cloned_entry.badges.append(_badge("warning", "retained"))
-		cloned_entry.label = "%s [retained]" % source_entry.label
 		target_panel.entries.append(cloned_entry)
 
 
@@ -994,7 +993,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	]
 	var provider_badges: Array[BadgeModel] = [
 		_badge("info", "published"),
-		_badge("neutral", "phase=%d" % int(provider_native_rec.get("phase", -1))),
+		_badge("neutral", "native_phase=%d" % int(provider_native_rec.get("phase", -1))),
 	]
 	var provider_info_lines: Array[String] = []
 	var provider_entry := _entry(
@@ -1055,12 +1054,15 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
-		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+		var device_phase := int(rec.get("phase", -1))
+		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % device_phase)]
 		var device_info: Array[String] = []
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
-			device_badges.append(_badge("neutral", "native_phase=%d" % int(device_native_rec.get("phase", -1))))
+			var device_native_phase := int(device_native_rec.get("phase", -1))
+			if device_native_phase != device_phase:
+				device_badges.append(_badge("neutral", "native_phase=%d" % device_native_phase))
 			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
 		elif device_matches.size() > 1:
 			device_info.append(
@@ -1104,12 +1106,15 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
-			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+			var stream_phase := int(rec.get("phase", -1))
+			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % stream_phase)]
 			var stream_info: Array[String] = []
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
-				stream_badges.append(_badge("neutral", "native_phase=%d" % int(stream_native_rec.get("phase", -1))))
+				var stream_native_phase := int(stream_native_rec.get("phase", -1))
+				if stream_native_phase != stream_phase:
+					stream_badges.append(_badge("neutral", "native_phase=%d" % stream_native_phase))
 				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
 			elif stream_matches.size() > 1:
 				stream_info.append(
@@ -1155,7 +1160,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				true,
 				[
 					_badge("warning", "destroyed"),
-					_badge("neutral", "native_phase=%d" % int(destroyed_device_native.get("phase", -1))),
 				],
 				[],
 				[]
@@ -1191,7 +1195,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				true,
 				[
 					_badge("warning", "destroyed"),
-					_badge("neutral", "native_phase=%d" % int(destroyed_stream_native.get("phase", -1))),
 				],
 				[],
 				[]
@@ -1454,8 +1457,6 @@ func _build_native_object_entry(
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
-	if native_type_key == "frameproducer":
-		native_badges.append(_badge("info", "type=FrameProducer"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
@@ -1627,10 +1628,43 @@ func _entry(
 	model.label = label
 	model.expanded = expanded
 	model.can_expand = can_expand
-	model.badges = badges
+	model.badges = _normalize_badges(badges)
 	model.counters = counters
 	model.info_lines = info_lines
 	return model
+
+
+func _normalize_badges(badges: Array[BadgeModel]) -> Array[BadgeModel]:
+	var dedup := {}
+	var normalized: Array[BadgeModel] = []
+	for badge in badges:
+		if badge == null:
+			continue
+		var key := "%s|%s" % [badge.role, badge.label]
+		if dedup.has(key):
+			continue
+		dedup[key] = true
+		normalized.append(_badge(badge.role, badge.label))
+	normalized.sort_custom(_badge_less)
+	return normalized
+
+
+func _badge_less(a: BadgeModel, b: BadgeModel) -> bool:
+	return _badge_sort_key(a) < _badge_sort_key(b)
+
+
+func _badge_sort_key(badge: BadgeModel) -> String:
+	var label := badge.label
+	var category := 9
+	if label == "retained" or label == "retained-root" or label == "orphaned":
+		category = 0
+	elif label == "destroyed" or label.begins_with("phase=") or label.begins_with("native_phase="):
+		category = 1
+	elif label.begins_with("type="):
+		category = 2
+	else:
+		category = 3
+	return "%d|%s|%s" % [category, label, badge.role]
 
 
 func _badge(role: String, label: String) -> BadgeModel:
