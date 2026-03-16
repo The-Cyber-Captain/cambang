@@ -495,7 +495,7 @@ func _resolve_retained_provider_root(panel: PanelModel) -> Dictionary:
 		if not entry.id.begins_with("provider/"):
 			continue
 		for badge in entry.badges:
-			if badge.label == "phase=3":
+			if badge.label == "phase=3" or badge.label == "native_phase=3":
 				destroyed_provider_ids.append(entry.id)
 				break
 	if destroyed_provider_ids.size() == 1:
