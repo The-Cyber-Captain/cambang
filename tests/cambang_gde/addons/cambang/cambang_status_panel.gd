@@ -738,13 +738,35 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 
 func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
-	return [
+	var lines: Array[String] = [
 		"Presentation continuity only. Not active snapshot truth.",
 		"retained_from_gen=%d" % retained.retained_from_gen,
 		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
 		"source version=%d, source topology=%d" % [retained.source_snapshot_version, retained.source_topology_version],
 		"retained_at_msec=%d" % retained.retained_at_msec,
 	]
+	for timing_line in _retained_timing_info_lines(retained):
+		lines.append(timing_line)
+	return lines
+
+
+func _retained_timing_info_lines(retained: RetainedSubtreeState) -> Array[String]:
+	var lines: Array[String] = []
+	var now_msec := Time.get_ticks_msec()
+	var age_msec := maxi(0, now_msec - retained.retained_at_msec)
+	lines.append("retained_age_msec=%d" % age_msec)
+
+	# PROVISIONAL: uses panel-local retention TTL until authoritative runtime retention window is exposed.
+	if PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC < 0:
+		lines.append("retained_expiry=disabled (provisional local TTL policy)")
+	else:
+		var remaining_msec := PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC - age_msec
+		if remaining_msec > 0:
+			lines.append("retained_expires_in_msec=%d (provisional local TTL policy)" % remaining_msec)
+		else:
+			lines.append("retained_expired_by_msec=%d (provisional local TTL policy)" % abs(remaining_msec))
+		lines.append("retained_ttl_msec=%d" % PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC)
+	return lines
 
 
 func _append_lines(base_lines: Array[String], extra_lines: Array[String]) -> Array[String]:
