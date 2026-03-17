@@ -6,9 +6,12 @@
   "expected_panel_outcome": {
     "contract_gap_count": 0,
     "projection_gap_count": 0,
+    "rendered_contract_gap_rows": 1,
     "required_row_ids": [
       "server/main",
-      "provider/100"
+      "provider/100",
+      "device/1",
+      "provider/100/contract_gaps"
     ]
   },
   "payload": {
@@ -18,9 +21,7 @@
     "topology_version": 1,
     "timestamp_ns": 50000000001,
     "imaging_spec_version": 1,
-
     "rigs": [],
-
     "devices": [
       {
         "instance_id": 1,
@@ -37,7 +38,6 @@
         "errors_count": 0
       }
     ],
-
     "streams": [],
     "native_objects": [
       {
@@ -47,7 +47,6 @@
         "creation_gen": 2
       }
     ],
-
     "detached_root_ids": []
   }
 }

@@ -1,6 +1,5 @@
 extends SceneTree
 
-const STATUS_PANEL_SCRIPT := preload("res://addons/cambang/cambang_status_panel.gd")
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
 const SnapshotValidator = preload("res://support/snapshot_schema_validator.gd")
 
@@ -41,7 +40,23 @@ func _initialize() -> void:
 	window.visible = true
 	get_root().add_child(window)
 
-	var panel: PanelContainer = STATUS_PANEL_SCRIPT.new()
+	var panel_script: Variant = load("res://addons/cambang/cambang_status_panel.gd")
+	if panel_script == null:
+		_printerr("failed to load status panel script")
+		quit(1)
+		return
+
+	if not panel_script is GDScript:
+		_printerr("loaded panel script is not a GDScript resource")
+		quit(1)
+		return
+
+	var panel: Variant = panel_script.new()
+	if panel == null:
+		_printerr("failed to instantiate status panel script")
+		quit(1)
+		return
+
 	panel.name = "CamBANGStatusPanel"
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -96,6 +111,14 @@ func _initialize() -> void:
 
 	var row_ids := _collect_entry_ids(rendered_model)
 	print("HARNESS row_ids: %s" % [row_ids])
+
+	var rendered_contract_gap_rows := 0
+	for id in row_ids:
+		if typeof(id) == TYPE_STRING and id.ends_with("/contract_gaps"):
+			rendered_contract_gap_rows += 1
+
+	print("HARNESS rendered_contract_gap_rows: %d" % rendered_contract_gap_rows)
+
 	_dump_rendered_entries(rendered_model)
 
 	var failures := _evaluate_expectations(
@@ -291,6 +314,20 @@ func _evaluate_expectations(
 			failures.append(
 				"projection_gap_count mismatch: got=%d want=%d gaps=%s"
 				% [projection_gaps.size(), want_projection, projection_gaps]
+			)
+
+	if expected_panel_outcome.has("rendered_contract_gap_rows"):
+		var want_rendered := int(expected_panel_outcome.get("rendered_contract_gap_rows", 0))
+
+		var rendered_contract_gap_rows := 0
+		for id in row_ids:
+			if typeof(id) == TYPE_STRING and id.ends_with("/contract_gaps"):
+				rendered_contract_gap_rows += 1
+
+		if rendered_contract_gap_rows != want_rendered:
+			failures.append(
+                "rendered_contract_gap_rows mismatch: got=%d want=%d"
+				% [rendered_contract_gap_rows, want_rendered]
 			)
 
 	var required_row_ids: Array = expected_panel_outcome.get("required_row_ids", [])

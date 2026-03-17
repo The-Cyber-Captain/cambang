@@ -1352,6 +1352,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if instance_id <= 0:
 			issues.append("Contract gap: devices[%d] missing valid instance_id." % i)
 			continue
+		if devices_by_instance.has(instance_id):
+			issues.append("Contract gap: duplicate device instance_id=%d." % instance_id)
+			continue
 		devices_by_instance[instance_id] = rec
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
@@ -1387,21 +1390,34 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		))
 
 	var streams_by_device := {}
+	var seen_stream_ids := {}
 	for i in range(streams.size()):
 		var rec := _safe_dict(streams[i], issues, "streams[%d]" % i)
 		if rec.is_empty():
 			continue
+
 		var stream_id := int(rec.get("stream_id", 0))
 		var owner_instance := int(rec.get("device_instance_id", 0))
+
 		if stream_id <= 0:
 			issues.append("Contract gap: streams[%d] missing valid stream_id." % i)
 			continue
+
+		if seen_stream_ids.has(stream_id):
+			issues.append("Contract gap: duplicate stream_id=%d." % stream_id)
+			continue
+
+		seen_stream_ids[stream_id] = true
+
 		if owner_instance <= 0:
 			issues.append("Contract gap: stream/%d missing owner device_instance_id." % stream_id)
 			continue
+
 		if not streams_by_device.has(owner_instance):
 			streams_by_device[owner_instance] = []
+
 		streams_by_device[owner_instance].append(rec)
+	
 
 	for instance_id in provider_device_ids_by_instance.keys():
 		var parent_entry_id := str(provider_device_ids_by_instance[instance_id])
