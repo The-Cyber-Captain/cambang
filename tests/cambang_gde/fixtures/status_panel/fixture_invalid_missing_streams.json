@@ -1,0 +1,28 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "invalid",
+  "should_run_projector": false,
+  "expected_panel_outcome": {
+    "contract_gap_count": 1,
+    "projection_gap_count": 0,
+    "rendered_contract_gap_rows": 1,
+    "required_row_ids": [
+      "server/main",
+      "server/main/contract_gaps"
+    ]
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 2,
+    "version": 21,
+    "topology_version": 1,
+    "timestamp_ns": 40096504700,
+    "imaging_spec_version": 1,
+
+    "rigs": [],
+    "devices": [],
+    "native_objects": [],
+    "detached_root_ids": []
+  }
+}

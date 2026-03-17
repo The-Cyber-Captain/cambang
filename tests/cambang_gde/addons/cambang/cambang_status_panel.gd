@@ -3,6 +3,7 @@ class_name CamBANGStatusPanel
 extends PanelContainer
 
 const SERVER_SINGLETON_NAME := "CamBANGServer"
+const SUPPORTED_SCHEMA_VERSION := 1
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
 const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
 # PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
@@ -383,6 +384,18 @@ func _refresh_from_server() -> void:
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_last_active_panel_model = bad_type_panel
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
+		_render_panel_model(_last_panel_model)
+		return
+
+	var compat := _check_snapshot_runtime_compat(snapshot)
+	if not bool(compat.get("ok", false)):
+		_last_snapshot_meta.clear()
+		var compat_panel := _build_runtime_compat_fallback_panel(
+			compat.get("contract_gaps", []),
+			compat.get("projection_gaps", [])
+		)
+		_last_active_panel_model = compat_panel
+		_last_panel_model = _compose_presented_panel_model(compat_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
 
@@ -906,27 +919,141 @@ func _read_snapshot(snapshot: Variant) -> Dictionary:
 		}
 
 	var d: Dictionary = snapshot
-	var rigs := (d.get("rigs", []) as Array).size()
-	var devices := (d.get("devices", []) as Array).size()
-	var streams := (d.get("streams", []) as Array).size()
-	var native_objects := (d.get("native_objects", []) as Array).size()
-	var detached_roots := (d.get("detached_root_ids", []) as Array).size()
+	var schema_text := str(d.get("schema_version", "?"))
+	if d.has("schema_version") and int(d.get("schema_version", -1)) != SUPPORTED_SCHEMA_VERSION:
+		schema_text = "%s (unsupported)" % schema_text
+
+	var rigs := _array_size_or_negative(d.get("rigs", null))
+	var devices := _array_size_or_negative(d.get("devices", null))
+	var streams := _array_size_or_negative(d.get("streams", null))
+	var native_objects := _array_size_or_negative(d.get("native_objects", null))
+	var detached_roots := _array_size_or_negative(d.get("detached_root_ids", null))
+	var counts_text := "rigs=%s  devices=%s  streams=%s  native_objects=%s  detached_roots=%s" % [
+		_count_text_or_type_gap(rigs),
+		_count_text_or_type_gap(devices),
+		_count_text_or_type_gap(streams),
+		_count_text_or_type_gap(native_objects),
+		_count_text_or_type_gap(detached_roots),
+	]
 
 	return {
 		"state": "Snapshot available",
 		"gen": str(d.get("gen", "?")),
 		"version": str(d.get("version", "?")),
 		"topology_version": str(d.get("topology_version", "?")),
-		"schema_version": str(d.get("schema_version", "?")),
-		"counts": "rigs=%d  devices=%d  streams=%d  native_objects=%d  detached_roots=%d" % [
-			rigs,
-			devices,
-			streams,
-			native_objects,
-			detached_roots,
-		],
+		"schema_version": schema_text,
+		"counts": counts_text,
 		"timestamp": str(d.get("timestamp_ns", "-")),
 	}
+
+
+func _array_size_or_negative(value: Variant) -> int:
+	if typeof(value) == TYPE_ARRAY:
+		return (value as Array).size()
+	return -1
+
+
+func _count_text_or_type_gap(count: int) -> String:
+	if count < 0:
+		return "type-gap"
+	return str(count)
+
+
+func _check_snapshot_runtime_compat(snapshot: Dictionary) -> Dictionary:
+	var contract_gaps: Array[String] = []
+	var projection_gaps: Array[String] = []
+
+	if not snapshot.has("schema_version"):
+		contract_gaps.append("Contract gap: snapshot missing schema_version.")
+	else:
+		var schema_version := snapshot.get("schema_version")
+		if typeof(schema_version) not in [TYPE_INT, TYPE_FLOAT]:
+			contract_gaps.append(
+				"Contract gap: schema_version has unexpected type=%d; expected integer." % typeof(schema_version)
+			)
+		else:
+			var as_int := int(schema_version)
+			if as_int != SUPPORTED_SCHEMA_VERSION:
+				projection_gaps.append(
+					"Projection gap: unsupported schema_version=%d; supported=%d."
+					% [as_int, SUPPORTED_SCHEMA_VERSION]
+				)
+
+	_check_required_numeric_field(snapshot, "gen", contract_gaps)
+	_check_required_numeric_field(snapshot, "version", contract_gaps)
+	_check_required_numeric_field(snapshot, "topology_version", contract_gaps)
+	_check_required_numeric_field(snapshot, "timestamp_ns", contract_gaps)
+
+	_check_required_array_field(snapshot, "rigs", contract_gaps)
+	_check_required_array_field(snapshot, "devices", contract_gaps)
+	_check_required_array_field(snapshot, "streams", contract_gaps)
+	_check_required_array_field(snapshot, "native_objects", contract_gaps)
+	_check_required_array_field(snapshot, "detached_root_ids", contract_gaps)
+
+	return {
+		"ok": contract_gaps.is_empty() and projection_gaps.is_empty(),
+		"contract_gaps": contract_gaps,
+		"projection_gaps": projection_gaps,
+	}
+
+
+func _check_required_numeric_field(snapshot: Dictionary, key: String, gaps: Array[String]) -> void:
+	if not snapshot.has(key):
+		gaps.append("Contract gap: snapshot missing required top-level field '%s'." % key)
+		return
+	var value := snapshot.get(key)
+	if typeof(value) not in [TYPE_INT, TYPE_FLOAT]:
+		gaps.append(
+			"Contract gap: snapshot.%s has unexpected type=%d; expected integer-compatible value."
+			% [key, typeof(value)]
+		)
+
+
+func _check_required_array_field(snapshot: Dictionary, key: String, gaps: Array[String]) -> void:
+	if not snapshot.has(key):
+		gaps.append("Contract gap: snapshot missing required top-level field '%s'." % key)
+		return
+	if typeof(snapshot.get(key)) != TYPE_ARRAY:
+		gaps.append("Contract gap: snapshot.%s expected Array, got type=%d." % [key, typeof(snapshot.get(key))])
+
+
+func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps: Array) -> PanelModel:
+	var panel := PanelModel.new()
+	var root_lines: Array[String] = []
+	root_lines.append("Runtime payload is unsupported or malformed; projection skipped safely.")
+	if not contract_gaps.is_empty():
+		root_lines.append("See contract_gaps row for details.")
+	if not projection_gaps.is_empty():
+		root_lines.append("See projection_gaps row for details.")
+
+	panel.entries.append(_entry(
+		"server/main",
+		"",
+		0,
+		"server/main",
+		true,
+		true,
+		[_badge("warning", "snapshot-incompatible")],
+		[],
+		root_lines
+	))
+
+	if not contract_gaps.is_empty():
+		panel.entries.append(_entry(
+			"server/main/contract_gaps",
+			"server/main",
+			1,
+			"contract_gaps",
+			true,
+			false,
+			[_badge("warning", "schema")],
+			[_counter("count", contract_gaps.size(), 1)],
+			contract_gaps
+		))
+
+	_append_projection_gaps_row(panel, projection_gaps)
+	_ensure_expandability(panel)
+	return panel
 
 
 func _apply_snapshot_read(reading: Dictionary) -> void:
@@ -1225,6 +1352,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if instance_id <= 0:
 			issues.append("Contract gap: devices[%d] missing valid instance_id." % i)
 			continue
+		if devices_by_instance.has(instance_id):
+			issues.append("Contract gap: duplicate device instance_id=%d." % instance_id)
+			continue
 		devices_by_instance[instance_id] = rec
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
@@ -1260,21 +1390,34 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		))
 
 	var streams_by_device := {}
+	var seen_stream_ids := {}
 	for i in range(streams.size()):
 		var rec := _safe_dict(streams[i], issues, "streams[%d]" % i)
 		if rec.is_empty():
 			continue
+
 		var stream_id := int(rec.get("stream_id", 0))
 		var owner_instance := int(rec.get("device_instance_id", 0))
+
 		if stream_id <= 0:
 			issues.append("Contract gap: streams[%d] missing valid stream_id." % i)
 			continue
+
+		if seen_stream_ids.has(stream_id):
+			issues.append("Contract gap: duplicate stream_id=%d." % stream_id)
+			continue
+
+		seen_stream_ids[stream_id] = true
+
 		if owner_instance <= 0:
 			issues.append("Contract gap: stream/%d missing owner device_instance_id." % stream_id)
 			continue
+
 		if not streams_by_device.has(owner_instance):
 			streams_by_device[owner_instance] = []
+
 		streams_by_device[owner_instance].append(rec)
+	
 
 	for instance_id in provider_device_ids_by_instance.keys():
 		var parent_entry_id := str(provider_device_ids_by_instance[instance_id])
