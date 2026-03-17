@@ -1,0 +1,421 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cambang.dev/schema/state_snapshot/v1/state_snapshot.schema.json",
+  "title": "CamBANG State Snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "gen",
+    "version",
+    "topology_version",
+    "timestamp_ns",
+    "imaging_spec_version",
+    "rigs",
+    "devices",
+    "streams",
+    "native_objects",
+    "detached_root_ids"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Version-discriminating schema version; fixed to 1 for this contract."
+    },
+    "gen": {
+      "$ref": "#/$defs/uint64"
+    },
+    "version": {
+      "$ref": "#/$defs/uint64"
+    },
+    "topology_version": {
+      "$ref": "#/$defs/uint64"
+    },
+    "timestamp_ns": {
+      "$ref": "#/$defs/uint64"
+    },
+    "imaging_spec_version": {
+      "$ref": "#/$defs/uint64"
+    },
+    "rigs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CamBANGRigState"
+      }
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CamBANGDeviceState"
+      }
+    },
+    "streams": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CamBANGStreamState"
+      }
+    },
+    "native_objects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NativeObjectRecord"
+      }
+    },
+    "detached_root_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/uint64"
+      }
+    }
+  },
+  "$defs": {
+    "uint32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "uint64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "int32": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647
+    },
+    "lifecycle_phase": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "LIVE",
+        "TEARING_DOWN",
+        "DESTROYED"
+      ],
+      "description": "Canonical lifecycle phase tokens."
+    },
+    "rig_mode": {
+      "type": "string",
+      "enum": [
+        "OFF",
+        "ARMED",
+        "TRIGGERING",
+        "COLLECTING",
+        "ERROR"
+      ],
+      "description": "Canonical rig mode tokens."
+    },
+    "device_mode": {
+      "type": "string",
+      "enum": [
+        "IDLE",
+        "STREAMING",
+        "CAPTURING",
+        "ERROR"
+      ],
+      "description": "Canonical device mode tokens."
+    },
+    "stream_mode": {
+      "type": "string",
+      "enum": [
+        "STOPPED",
+        "FLOWING",
+        "STARVED",
+        "ERROR"
+      ],
+      "description": "Canonical stream mode tokens."
+    },
+    "stream_intent": {
+      "type": "string",
+      "enum": [
+        "PREVIEW",
+        "VIEWFINDER"
+      ],
+      "description": "Canonical stream intent tokens."
+    },
+    "stream_stop_reason": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "USER",
+        "PREEMPTED",
+        "PROVIDER"
+      ],
+      "description": "Canonical stream stop reason tokens."
+    },
+    "CamBANGRigState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rig_id",
+        "name",
+        "phase",
+        "mode",
+        "member_hardware_ids",
+        "active_capture_id",
+        "capture_profile_version",
+        "captures_triggered",
+        "captures_completed",
+        "captures_failed",
+        "last_capture_id",
+        "last_capture_latency_ns",
+        "last_sync_skew_ns",
+        "error_code"
+      ],
+      "properties": {
+        "rig_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "name": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "mode": {
+          "$ref": "#/$defs/rig_mode"
+        },
+        "member_hardware_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "active_capture_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "capture_profile_version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_triggered": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_completed": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_failed": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_capture_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_capture_latency_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_sync_skew_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "error_code": {
+          "$ref": "#/$defs/int32"
+        }
+      }
+    },
+    "CamBANGDeviceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hardware_id",
+        "instance_id",
+        "phase",
+        "mode",
+        "engaged",
+        "rig_id",
+        "camera_spec_version",
+        "capture_profile_version",
+        "warm_hold_ms",
+        "warm_remaining_ms",
+        "rebuild_count",
+        "errors_count",
+        "last_error_code"
+      ],
+      "properties": {
+        "hardware_id": {
+          "type": "string"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "mode": {
+          "$ref": "#/$defs/device_mode"
+        },
+        "engaged": {
+          "type": "boolean"
+        },
+        "rig_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "camera_spec_version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "capture_profile_version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "warm_hold_ms": {
+          "$ref": "#/$defs/uint32"
+        },
+        "warm_remaining_ms": {
+          "$ref": "#/$defs/uint32"
+        },
+        "rebuild_count": {
+          "$ref": "#/$defs/uint64"
+        },
+        "errors_count": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_error_code": {
+          "$ref": "#/$defs/int32"
+        }
+      }
+    },
+    "CamBANGStreamState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stream_id",
+        "device_instance_id",
+        "phase",
+        "intent",
+        "mode",
+        "stop_reason",
+        "profile_version",
+        "width",
+        "height",
+        "format",
+        "target_fps_min",
+        "target_fps_max",
+        "frames_received",
+        "frames_delivered",
+        "frames_dropped",
+        "queue_depth",
+        "last_frame_ts_ns"
+      ],
+      "properties": {
+        "stream_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "intent": {
+          "$ref": "#/$defs/stream_intent"
+        },
+        "mode": {
+          "$ref": "#/$defs/stream_mode"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/stream_stop_reason"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "width": {
+          "$ref": "#/$defs/uint32"
+        },
+        "height": {
+          "$ref": "#/$defs/uint32"
+        },
+        "format": {
+          "$ref": "#/$defs/uint32"
+        },
+        "target_fps_min": {
+          "$ref": "#/$defs/uint32"
+        },
+        "target_fps_max": {
+          "$ref": "#/$defs/uint32"
+        },
+        "frames_received": {
+          "$ref": "#/$defs/uint64"
+        },
+        "frames_delivered": {
+          "$ref": "#/$defs/uint64"
+        },
+        "frames_dropped": {
+          "$ref": "#/$defs/uint64"
+        },
+        "queue_depth": {
+          "$ref": "#/$defs/uint32"
+        },
+        "last_frame_ts_ns": {
+          "$ref": "#/$defs/uint64"
+        }
+      }
+    },
+    "NativeObjectRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_id",
+        "type",
+        "phase",
+        "owner_device_instance_id",
+        "owner_stream_id",
+        "owner_provider_native_id",
+        "owner_rig_id",
+        "root_id",
+        "creation_gen",
+        "created_ns",
+        "destroyed_ns",
+        "bytes_allocated",
+        "buffers_in_use"
+      ],
+      "properties": {
+        "native_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "type": {
+          "$ref": "#/$defs/native_object_type"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "owner_device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "owner_stream_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "owner_provider_native_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "owner_rig_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "root_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "creation_gen": {
+          "$ref": "#/$defs/uint64"
+        },
+        "created_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "destroyed_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "bytes_allocated": {
+          "$ref": "#/$defs/uint64"
+        },
+        "buffers_in_use": {
+          "$ref": "#/$defs/uint32"
+        }
+      }
+    },
+    "native_object_type": {
+      "type": "string",
+      "enum": [
+        "provider",
+        "device",
+        "stream",
+        "frameproducer"
+      ],
+      "description": "Canonical native object type tokens."
+    }
+  }
+}
