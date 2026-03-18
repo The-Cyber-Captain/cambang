@@ -57,7 +57,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_disclosure_indicator.set_expanded(model.expanded)
 
 	_apply_row_palette(model)
-	_render_badges(model.badges)
+	_render_badges(_badges_for_render(model))
 	_render_counters(model.counters, model.expanded)
 	_render_info_lines(
 		model.depth,
@@ -129,9 +129,12 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		pair.visible = true
 		var indicator := pair.get_child(0) as ColorRect
 		var label := pair.get_child(1) as Label
-		indicator.color = _badge_color_for_role(badges[i].role)
-		indicator.custom_minimum_size = Vector2((_style.badge_strip_width if _style != null else 7), (_style.badge_strip_width if _style != null else 7))
-		label.text = badges[i].label
+		pair.custom_minimum_size = Vector2(0, 18)
+		pair.alignment = BoxContainer.ALIGNMENT_CENTER
+		indicator.color = _badge_color_for_role(_badge_role_for_render(badges[i]))
+		var indicator_size := max((_style.badge_strip_width if _style != null else 7), 8)
+		indicator.custom_minimum_size = Vector2(indicator_size, indicator_size)
+		label.text = _badge_display_label(badges[i].label)
 		label.label_settings = _state_label_settings()
 
 	for i in range(badges.size(), _badge_pairs.size()):
@@ -146,6 +149,7 @@ func _ensure_badge_pair(index: int) -> HBoxContainer:
 
 	var pair := HBoxContainer.new()
 	pair.add_theme_constant_override("separation", 4)
+	pair.custom_minimum_size = Vector2(0, 18)
 
 	var indicator := ColorRect.new()
 	indicator.custom_minimum_size = Vector2(7, 7)
@@ -354,30 +358,11 @@ func _counter_value_style() -> StyleBoxFlat:
 
 
 func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
-	var kind := _row_kind(model)
-	var accent := Color(0.41, 0.65, 0.92, 0.95)
+	var object_class := _object_class(model)
+	var accent := _class_color(object_class)
 	var shell_bg := (_style.row_shell_bg if _style != null else Color(0.16, 0.18, 0.22, 0.68))
 	var info_bg := (_style.info_panel_bg if _style != null else Color(0.10, 0.12, 0.15, 0.88))
-	var border := Color(1, 1, 1, 0.08)
-	match kind:
-		"retained":
-			accent = Color(0.95, 0.72, 0.25, 0.98)
-			shell_bg = shell_bg.lerp(Color(0.30, 0.23, 0.10, 0.84), 0.35)
-			info_bg = info_bg.lerp(Color(0.36, 0.26, 0.12, 0.88), 0.35)
-			border = accent.darkened(0.25)
-		"fallback":
-			accent = Color(0.39, 0.79, 0.84, 0.98)
-			shell_bg = shell_bg.lerp(Color(0.12, 0.22, 0.24, 0.82), 0.28)
-			info_bg = info_bg.lerp(Color(0.11, 0.23, 0.25, 0.88), 0.28)
-			border = accent.darkened(0.35)
-		"contract_gap":
-			accent = Color(0.96, 0.48, 0.31, 0.98)
-			shell_bg = shell_bg.lerp(Color(0.31, 0.15, 0.13, 0.85), 0.40)
-			info_bg = info_bg.lerp(Color(0.35, 0.15, 0.13, 0.90), 0.42)
-			border = accent.darkened(0.28)
-		_:
-			accent = Color(0.37, 0.71, 0.47, 0.95)
-			border = accent.darkened(0.45)
+	var border := accent.darkened(0.42)
 
 	var shell_style := StyleBoxFlat.new()
 	shell_style.bg_color = shell_bg
@@ -434,11 +419,164 @@ func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	return "authoritative"
 
 
+func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
+	if model == null:
+		return "generic"
+	if model.id == "server/main":
+		return "server"
+	if model.label == "contract_gaps" or model.label == "projection_gaps":
+		return "contract_gap"
+	if model.id.contains("orphaned_native_objects") or model.label.begins_with("retained_orphan/"):
+		return "orphan"
+	if model.id.begins_with("provider/") or model.id.contains("/provider/"):
+		return "provider"
+	if model.id.begins_with("stream/") or model.id.contains("/stream/"):
+		return "stream"
+	if model.id.begins_with("device/") or model.id.contains("/device/"):
+		return "device"
+	if model.id.begins_with("rig/") or model.id.contains("/rig/"):
+		return "rig"
+	if (
+		model.id.begins_with("native_object/")
+		or model.id.contains("/native_object/")
+		or model.id.begins_with("frameproducer/")
+		or model.id.contains("/frameproducer/")
+	):
+		return "native_object"
+	return "generic"
+
+
+func _class_color(object_class: String) -> Color:
+	match object_class:
+		"server":
+			return _resolve_class_theme_color("status_row_server_accent", Color(0.73, 0.81, 0.90, 0.96))
+		"provider":
+			return _resolve_class_theme_color("status_row_provider_accent", Color(0.47, 0.71, 0.96, 0.96))
+		"device":
+			return _resolve_class_theme_color("status_row_device_accent", Color(0.41, 0.82, 0.61, 0.96))
+		"stream":
+			return _resolve_class_theme_color("status_row_stream_accent", Color(0.63, 0.70, 0.97, 0.96))
+		"rig":
+			return _resolve_class_theme_color("status_row_rig_accent", Color(0.83, 0.68, 0.96, 0.96))
+		"native_object":
+			return _resolve_class_theme_color("status_row_native_accent", Color(0.44, 0.82, 0.85, 0.96))
+		"contract_gap":
+			return _resolve_class_theme_color("status_row_contract_gap_accent", Color(0.97, 0.54, 0.42, 0.98))
+		"orphan":
+			return _resolve_class_theme_color("status_row_orphan_accent", Color(0.98, 0.71, 0.33, 0.98))
+		_:
+			return _resolve_class_theme_color("status_row_generic_accent", Color(0.70, 0.74, 0.79, 0.94))
+
+
+func _resolve_class_theme_color(token: StringName, fallback: Color) -> Color:
+	if has_theme_color(token, "CamBANGStatusPanel"):
+		return get_theme_color(token, "CamBANGStatusPanel")
+	return fallback
+
+
 func _has_badge(model: CamBANGStatusPanel.StatusEntryModel, label: String) -> bool:
 	for badge in model.badges:
 		if badge.label == label:
 			return true
 	return false
+
+
+func _badges_for_render(model: CamBANGStatusPanel.StatusEntryModel) -> Array[CamBANGStatusPanel.BadgeModel]:
+	var rendered: Array[CamBANGStatusPanel.BadgeModel] = []
+	for badge in model.badges:
+		rendered.append(badge)
+
+	var row_kind := _row_kind(model)
+	if row_kind == "contract_gap" and not _contains_badge_label(rendered, "contract-gap"):
+		rendered.append(_make_badge("error", "contract-gap"))
+	elif row_kind == "fallback" and not _contains_badge_label(rendered, "fallback"):
+		rendered.append(_make_badge("info", "fallback"))
+	elif row_kind == "retained" and not _contains_badge_label(rendered, "retained"):
+		rendered.append(_make_badge("warning", "retained"))
+
+	return rendered
+
+
+func _contains_badge_label(badges: Array[CamBANGStatusPanel.BadgeModel], label: String) -> bool:
+	for badge in badges:
+		if badge.label == label:
+			return true
+	return false
+
+
+func _make_badge(role: String, label: String) -> CamBANGStatusPanel.BadgeModel:
+	var badge := CamBANGStatusPanel.BadgeModel.new()
+	badge.role = role
+	badge.label = label
+	return badge
+
+
+func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel) -> String:
+	if badge == null:
+		return "neutral"
+	match badge.label:
+		"contract-gap", "schema", "projection":
+			return "error"
+		"retained", "retained-root", "orphaned", "detached", "fallback":
+			return "warning"
+		_:
+			return badge.role
+
+
+func _badge_display_label(raw_label: String) -> String:
+	if raw_label.begins_with("phase="):
+		return _phase_display_label(int(raw_label.substr("phase=".length())), false)
+	if raw_label.begins_with("native_phase="):
+		return _phase_display_label(int(raw_label.substr("native_phase=".length())), true)
+	match raw_label:
+		"snapshot":
+			return "AUTHORITATIVE"
+		"published":
+			return "PUBLISHED"
+		"retained":
+			return "RETAINED"
+		"retained-root":
+			return "RETAINED ROOT"
+		"fallback":
+			return "FALLBACK"
+		"contract-gap":
+			return "CONTRACT GAP"
+		"schema":
+			return "CONTRACT GAP"
+		"projection":
+			return "PROJECTION GAP"
+		"destroyed":
+			return "DESTROYED"
+		"orphaned":
+			return "ORPHANED"
+		"detached":
+			return "DETACHED"
+		"snapshot-unavailable":
+			return "NO SNAPSHOT"
+		"snapshot-incompatible":
+			return "SNAPSHOT INCOMPATIBLE"
+		"rig-context":
+			return "RIG CONTEXT"
+		"info":
+			return "INFO"
+		_:
+			return raw_label.replace("-", " ").replace("_", " ").to_upper()
+
+
+func _phase_display_label(phase_value: int, is_native: bool) -> String:
+	var phase_text := "UNKNOWN"
+	match phase_value:
+		0:
+			phase_text = "CREATED"
+		1:
+			phase_text = "LIVE"
+		2:
+			phase_text = "TEARING DOWN"
+		3:
+			phase_text = "DESTROYED"
+	if is_native:
+		return "NATIVE %s" % phase_text
+	return phase_text
 
 
 func _is_anomaly_line(line: String) -> bool:
