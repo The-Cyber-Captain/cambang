@@ -87,6 +87,7 @@ class RetainedSubtreeState extends RefCounted:
 	var source_topology_version: int = -1
 	var retained_at_msec: int = -1
 	var provider_root_id: String = ""
+	var provider_identity_hint: String = ""
 	var root_status: String = "orphaned"
 
 
@@ -636,6 +637,7 @@ func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Diction
 	retained.provider_root_id = str(root_info.get("provider_root_id", ""))
 	retained.root_status = str(root_info.get("root_status", "orphaned"))
 	retained.panel_model = _extract_retained_panel_subtree(source_model, retained.provider_root_id, retained.root_status)
+	retained.provider_identity_hint = _resolve_retained_provider_identity_hint(retained.panel_model, retained.provider_root_id)
 	_retained_subtrees.insert(0, retained)
 	_reconcile_retained_subtrees_for_supersession()
 
@@ -652,19 +654,62 @@ func _retained_root_strength(root_status: String) -> int:
 			return 0
 
 
+func _resolve_retained_provider_identity_hint(panel: PanelModel, provider_root_id: String) -> String:
+	if not provider_root_id.is_empty():
+		return provider_root_id
+	if panel == null:
+		return ""
+
+	var provider_ids: Array[String] = []
+	var seen := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if seen.has(entry.id):
+			continue
+		seen[entry.id] = true
+		provider_ids.append(entry.id)
+
+	if provider_ids.size() == 1:
+		return provider_ids[0]
+	return ""
+
+
+func _retained_family_key_for_gen(retained_from_gen: int) -> String:
+	return "gen=%d" % retained_from_gen
+
+
+func _retained_family_key(retained: RetainedSubtreeState) -> String:
+	if retained == null:
+		return _retained_family_key_for_gen(-1)
+	return _retained_family_key_for_gen(retained.retained_from_gen)
+
+
+func _retained_primary_key(retained: RetainedSubtreeState) -> String:
+	var family_key := _retained_family_key(retained)
+	if retained == null:
+		return family_key
+	var provider_hint := str(retained.provider_identity_hint)
+	if provider_hint.is_empty():
+		return family_key
+	return "%s|provider=%s" % [family_key, provider_hint]
+
+
 func _reconcile_retained_subtrees(active_panel: PanelModel, is_authoritative_snapshot: bool) -> void:
-	var authoritative_destroyed_provider_gens := {}
+	var authoritative_destroyed_provider_keys := {}
 	if is_authoritative_snapshot:
-		authoritative_destroyed_provider_gens = _collect_authoritative_destroyed_provider_generations(active_panel)
-	_replace_retained_subtrees_with_reconciled_generations(authoritative_destroyed_provider_gens)
+		authoritative_destroyed_provider_keys = _collect_authoritative_destroyed_provider_reconciliation_keys(active_panel)
+	_replace_retained_subtrees_with_reconciled_keys(authoritative_destroyed_provider_keys)
 
 
 func _reconcile_retained_subtrees_for_supersession() -> bool:
-	return _replace_retained_subtrees_with_reconciled_generations({})
+	return _replace_retained_subtrees_with_reconciled_keys({})
 
 
-func _replace_retained_subtrees_with_reconciled_generations(authoritative_destroyed_provider_gens: Dictionary) -> bool:
-	var reconciled := _build_reconciled_retained_subtrees(authoritative_destroyed_provider_gens)
+func _replace_retained_subtrees_with_reconciled_keys(authoritative_destroyed_provider_keys: Dictionary) -> bool:
+	var reconciled := _build_reconciled_retained_subtrees(authoritative_destroyed_provider_keys)
 	var changed := reconciled.size() != _retained_subtrees.size()
 	if not changed:
 		for i in range(reconciled.size()):
@@ -675,27 +720,29 @@ func _replace_retained_subtrees_with_reconciled_generations(authoritative_destro
 	return changed
 
 
-func _build_reconciled_retained_subtrees(authoritative_destroyed_provider_gens: Dictionary) -> Array[RetainedSubtreeState]:
-	var groups_by_gen := {}
-	var gen_order: Array[int] = []
+func _build_reconciled_retained_subtrees(authoritative_destroyed_provider_keys: Dictionary) -> Array[RetainedSubtreeState]:
+	var groups_by_family := {}
+	var family_order: Array[String] = []
 	for retained in _retained_subtrees:
 		if retained == null:
 			continue
-		var gen := retained.retained_from_gen
-		if not groups_by_gen.has(gen):
-			groups_by_gen[gen] = []
-			gen_order.append(gen)
-		groups_by_gen[gen].append(retained)
+		var family_key := _retained_family_key(retained)
+		if not groups_by_family.has(family_key):
+			groups_by_family[family_key] = []
+			family_order.append(family_key)
+		groups_by_family[family_key].append(retained)
 
 	var reconciled: Array[RetainedSubtreeState] = []
-	for gen in gen_order:
-		var group := _typed_retained_subtree_group(groups_by_gen.get(gen, []))
-		var best := _select_strongest_retained_subtree_for_generation(
+	for family_key in family_order:
+		if authoritative_destroyed_provider_keys.has(family_key):
+			continue
+		var group := _typed_retained_subtree_group(groups_by_family.get(family_key, []))
+		var selected := _select_visible_retained_subtrees_for_family(
 			group,
-			bool(authoritative_destroyed_provider_gens.get(gen, false))
+			authoritative_destroyed_provider_keys
 		)
-		if best != null:
-			reconciled.append(best)
+		for retained in selected:
+			reconciled.append(retained)
 	return reconciled
 
 
@@ -709,25 +756,64 @@ func _typed_retained_subtree_group(group_value: Variant) -> Array[RetainedSubtre
 	return typed_group
 
 
-func _select_strongest_retained_subtree_for_generation(
+func _select_visible_retained_subtrees_for_family(
 		group: Array[RetainedSubtreeState],
-		has_authoritative_destroyed_provider_truth: bool
-	) -> RetainedSubtreeState:
-	var best: RetainedSubtreeState = null
+		authoritative_destroyed_provider_keys: Dictionary
+	) -> Array[RetainedSubtreeState]:
+	var best_by_primary := {}
+	var primary_order: Array[String] = []
+	var family_max_strength := 0
 	for retained in group:
 		if retained == null:
 			continue
-		if has_authoritative_destroyed_provider_truth and _retained_root_strength(retained.root_status) < _retained_root_strength("destroyed_provider"):
+		var primary_key := _retained_primary_key(retained)
+		var required_strength := int(authoritative_destroyed_provider_keys.get(primary_key, 0))
+		var retained_strength := _retained_root_strength(retained.root_status)
+		if retained_strength < required_strength:
 			continue
-		if best == null or _retained_root_strength(retained.root_status) > _retained_root_strength(best.root_status):
-			best = retained
-	return best
+		var best: RetainedSubtreeState = best_by_primary.get(primary_key, null)
+		if best == null:
+			best_by_primary[primary_key] = retained
+			primary_order.append(primary_key)
+		elif _is_stronger_retained_subtree(retained, best):
+			best_by_primary[primary_key] = retained
+		family_max_strength = maxi(family_max_strength, retained_strength)
+
+	var selected: Array[RetainedSubtreeState] = []
+	for primary_key in primary_order:
+		var best: RetainedSubtreeState = best_by_primary.get(primary_key, null)
+		if best == null:
+			continue
+		var best_strength := _retained_root_strength(best.root_status)
+		if primary_key == _retained_family_key(best) and family_max_strength > best_strength:
+			continue
+		selected.append(best)
+	return selected
 
 
-func _collect_authoritative_destroyed_provider_generations(panel: PanelModel) -> Dictionary:
-	var gens := {}
+func _is_stronger_retained_subtree(candidate: RetainedSubtreeState, incumbent: RetainedSubtreeState) -> bool:
+	if incumbent == null:
+		return true
+	if candidate == null:
+		return false
+
+	var candidate_strength := _retained_root_strength(candidate.root_status)
+	var incumbent_strength := _retained_root_strength(incumbent.root_status)
+	if candidate_strength != incumbent_strength:
+		return candidate_strength > incumbent_strength
+	if candidate.source_snapshot_version != incumbent.source_snapshot_version:
+		return candidate.source_snapshot_version > incumbent.source_snapshot_version
+	if candidate.source_topology_version != incumbent.source_topology_version:
+		return candidate.source_topology_version > incumbent.source_topology_version
+	if candidate.source_snapshot_timestamp_ns != incumbent.source_snapshot_timestamp_ns:
+		return candidate.source_snapshot_timestamp_ns > incumbent.source_snapshot_timestamp_ns
+	return candidate.retained_at_msec > incumbent.retained_at_msec
+
+
+func _collect_authoritative_destroyed_provider_reconciliation_keys(panel: PanelModel) -> Dictionary:
+	var keys := {}
 	if panel == null:
-		return gens
+		return keys
 	for entry in panel.entries:
 		if entry == null:
 			continue
@@ -738,9 +824,12 @@ func _collect_authoritative_destroyed_provider_generations(panel: PanelModel) ->
 		if not _entry_has_destroyed_provider_badge(entry):
 			continue
 		var creation_gen := _extract_creation_gen_from_info_lines(entry.info_lines)
-		if creation_gen >= 0:
-			gens[creation_gen] = true
-	return gens
+		if creation_gen < 0:
+			continue
+		var family_key := _retained_family_key_for_gen(creation_gen)
+		keys[family_key] = _retained_root_strength("destroyed_provider")
+		keys["%s|provider=%s" % [family_key, entry.id]] = _retained_root_strength("destroyed_provider")
+	return keys
 
 
 func _entry_has_destroyed_provider_badge(entry: StatusEntryModel) -> bool:
