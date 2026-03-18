@@ -1784,35 +1784,42 @@ func _build_native_object_entry(
 	var owner_stream_id := int(rec.get("owner_stream_id", 0))
 	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
 	var root_id := int(rec.get("root_id", 0))
+	var native_type_key := _native_object_type_key(rec)
+	# Preserve provider identity even when the record is retained from a prior generation.
+	# Destroyed providers must remain provider-root rows rather than degrading to generic native_object rows.
+	var is_provider_native := native_type_key == "provider"
 	var parent_id := provider_id
 	var info_lines: Array[String] = []
 
-	if owner_stream_id > 0:
-		parent_id = "stream/%d" % owner_stream_id
-		if not _entry_exists(existing_entries, parent_id):
-			info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
-	elif owner_device_instance_id > 0:
-		parent_id = "device/%d" % owner_device_instance_id
-		if not _entry_exists(existing_entries, parent_id):
-			info_lines.append("Contract gap: owner device not present in snapshot devices.")
-			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+	if not is_provider_native:
+		if owner_stream_id > 0:
+			parent_id = "stream/%d" % owner_stream_id
+			if not _entry_exists(existing_entries, parent_id):
+				info_lines.append("Contract gap: owner stream not present in snapshot streams.")
+				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+		elif owner_device_instance_id > 0:
+			parent_id = "device/%d" % owner_device_instance_id
+			if not _entry_exists(existing_entries, parent_id):
+				info_lines.append("Contract gap: owner device not present in snapshot devices.")
+				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+			else:
+				var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
+				if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
+					info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
+		elif _contains_int(detached_root_ids, root_id):
+			parent_id = orphan_row_id
 		else:
-			var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
-			if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
-				info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
-	elif _contains_int(detached_root_ids, root_id):
-		parent_id = orphan_row_id
-	else:
-		info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
+			info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
 
-	var native_type_key := _native_object_type_key(rec)
 	var row_id := "native_object/%d" % native_id
 	var row_label := "native_object/%d" % native_id
-	if native_type_key == "frameproducer":
+	if is_provider_native:
+		row_id = "provider/%d" % native_id
+		row_label = "provider/%d" % native_id
+	elif native_type_key == "frameproducer":
 		row_id = "frameproducer/%d" % native_id
 		row_label = "frameproducer/%d" % native_id
 		if owner_stream_id > 0:
