@@ -689,7 +689,7 @@ func _build_reconciled_retained_subtrees(authoritative_destroyed_provider_gens: 
 
 	var reconciled: Array[RetainedSubtreeState] = []
 	for gen in gen_order:
-		var group: Array[RetainedSubtreeState] = groups_by_gen.get(gen, [])
+		var group := _typed_retained_subtree_group(groups_by_gen.get(gen, []))
 		var best := _select_strongest_retained_subtree_for_generation(
 			group,
 			bool(authoritative_destroyed_provider_gens.get(gen, false))
@@ -697,6 +697,16 @@ func _build_reconciled_retained_subtrees(authoritative_destroyed_provider_gens: 
 		if best != null:
 			reconciled.append(best)
 	return reconciled
+
+
+func _typed_retained_subtree_group(group_value: Variant) -> Array[RetainedSubtreeState]:
+	var typed_group: Array[RetainedSubtreeState] = []
+	if typeof(group_value) != TYPE_ARRAY:
+		return typed_group
+	for item in group_value:
+		if item is RetainedSubtreeState:
+			typed_group.append(item)
+	return typed_group
 
 
 func _select_strongest_retained_subtree_for_generation(
