@@ -653,63 +653,65 @@ func _retained_root_strength(root_status: String) -> int:
 
 
 func _reconcile_retained_subtrees(active_panel: PanelModel, is_authoritative_snapshot: bool) -> void:
-	var changed := _reconcile_retained_subtrees_for_supersession()
+	var authoritative_destroyed_provider_gens := {}
 	if is_authoritative_snapshot:
-		changed = _reconcile_retained_subtrees_against_authoritative_panel(active_panel) or changed
-	if changed:
-		_expire_retained_subtrees_by_policy()
+		authoritative_destroyed_provider_gens = _collect_authoritative_destroyed_provider_generations(active_panel)
+	_replace_retained_subtrees_with_reconciled_generations(authoritative_destroyed_provider_gens)
 
 
 func _reconcile_retained_subtrees_for_supersession() -> bool:
-	if _retained_subtrees.size() <= 1:
-		return false
+	return _replace_retained_subtrees_with_reconciled_generations({})
 
-	var kept: Array[RetainedSubtreeState] = []
-	var kept_index_by_gen := {}
+
+func _replace_retained_subtrees_with_reconciled_generations(authoritative_destroyed_provider_gens: Dictionary) -> bool:
+	var reconciled := _build_reconciled_retained_subtrees(authoritative_destroyed_provider_gens)
+	var changed := reconciled.size() != _retained_subtrees.size()
+	if not changed:
+		for i in range(reconciled.size()):
+			if reconciled[i] != _retained_subtrees[i]:
+				changed = true
+				break
+	_retained_subtrees = reconciled
+	return changed
+
+
+func _build_reconciled_retained_subtrees(authoritative_destroyed_provider_gens: Dictionary) -> Array[RetainedSubtreeState]:
+	var groups_by_gen := {}
+	var gen_order: Array[int] = []
 	for retained in _retained_subtrees:
 		if retained == null:
 			continue
 		var gen := retained.retained_from_gen
-		if not kept_index_by_gen.has(gen):
-			kept_index_by_gen[gen] = kept.size()
-			kept.append(retained)
-			continue
+		if not groups_by_gen.has(gen):
+			groups_by_gen[gen] = []
+			gen_order.append(gen)
+		groups_by_gen[gen].append(retained)
 
-		var existing_index := int(kept_index_by_gen[gen])
-		var existing: RetainedSubtreeState = kept[existing_index]
-		if _retained_root_strength(retained.root_status) > _retained_root_strength(existing.root_status):
-			kept[existing_index] = retained
-
-	var changed := kept.size() != _retained_subtrees.size()
-	if not changed:
-		for i in range(kept.size()):
-			if kept[i] != _retained_subtrees[i]:
-				changed = true
-				break
-	_retained_subtrees = kept
-	return changed
+	var reconciled: Array[RetainedSubtreeState] = []
+	for gen in gen_order:
+		var group: Array[RetainedSubtreeState] = groups_by_gen.get(gen, [])
+		var best := _select_strongest_retained_subtree_for_generation(
+			group,
+			bool(authoritative_destroyed_provider_gens.get(gen, false))
+		)
+		if best != null:
+			reconciled.append(best)
+	return reconciled
 
 
-func _reconcile_retained_subtrees_against_authoritative_panel(active_panel: PanelModel) -> bool:
-	if active_panel == null or _retained_subtrees.is_empty():
-		return false
-
-	var destroyed_provider_gens := _collect_authoritative_destroyed_provider_generations(active_panel)
-	if destroyed_provider_gens.is_empty():
-		return false
-
-	var kept: Array[RetainedSubtreeState] = []
-	var changed := false
-	for retained in _retained_subtrees:
+func _select_strongest_retained_subtree_for_generation(
+		group: Array[RetainedSubtreeState],
+		has_authoritative_destroyed_provider_truth: bool
+	) -> RetainedSubtreeState:
+	var best: RetainedSubtreeState = null
+	for retained in group:
 		if retained == null:
-			changed = true
 			continue
-		if destroyed_provider_gens.has(retained.retained_from_gen) and _retained_root_strength(retained.root_status) < _retained_root_strength("destroyed_provider"):
-			changed = true
+		if has_authoritative_destroyed_provider_truth and _retained_root_strength(retained.root_status) < _retained_root_strength("destroyed_provider"):
 			continue
-		kept.append(retained)
-	_retained_subtrees = kept
-	return changed
+		if best == null or _retained_root_strength(retained.root_status) > _retained_root_strength(best.root_status):
+			best = retained
+	return best
 
 
 func _collect_authoritative_destroyed_provider_generations(panel: PanelModel) -> Dictionary:
