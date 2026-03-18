@@ -1420,6 +1420,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if _native_object_is_provider(current_rec):
 			current_provider_native_objects.append(current_rec)
 
+	var snapshot_version := int(snapshot.get("version", -1))
+	var topology_version := int(snapshot.get("topology_version", -1))
+	if current_provider_native_objects.is_empty() and issues.is_empty() and snapshot_version == 0 and topology_version == 0:
+		panel.entries.append(_entry(
+			"server/main/provider_pending",
+			"server/main",
+			1,
+			"provider_pending",
+			true,
+			false,
+			[_badge("info", "startup")],
+			[_counter("providers", 0, 1)],
+			["Startup baseline published before any current-generation provider native object is visible."]
+		))
+		_ensure_expandability(panel)
+		return panel
+
 	if current_provider_native_objects.size() != 1:
 		issues.append(
 			"Contract ambiguity: expected exactly one current-generation provider native object (type=Provider), found %d."
