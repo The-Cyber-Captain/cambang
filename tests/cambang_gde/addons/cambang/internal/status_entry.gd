@@ -137,6 +137,7 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		indicator.custom_minimum_size = Vector2(indicator_size, indicator_size)
 		label.text = _badge_display_label(badges[i].label)
 		label.label_settings = _state_label_settings()
+		label.autowrap_mode = TextServer.AUTOWRAP_OFF
 
 	for i in range(badges.size(), _badge_pairs.size()):
 		_badge_pairs[i].visible = false
@@ -157,7 +158,7 @@ func _ensure_badge_pair(index: int) -> HBoxContainer:
 	pair.add_child(indicator)
 
 	var label := Label.new()
-	label.clip_text = true
+	label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	pair.add_child(label)
 
 	_state_segment.add_child(pair)
