@@ -7,7 +7,7 @@ const SUPPORTED_SCHEMA_VERSION := 1
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
 const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
 # PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
-const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := -1
+const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 
 
@@ -25,6 +25,9 @@ class StatusEntryModel extends RefCounted:
 	var badges: Array[BadgeModel] = []
 	var counters: Array[CounterModel] = []
 	var info_lines: Array[String] = []
+	var summary_info_lines: Array[String] = []
+	var detail_info_lines: Array[String] = []
+	var anomaly_info_lines: Array[String] = []
 
 
 class BadgeModel extends RefCounted:
@@ -36,6 +39,7 @@ class CounterModel extends RefCounted:
 	var name: String = ""
 	var value: int = 0
 	var digits: int = 1
+	var visibility: String = "core"
 
 
 class StatusPanelStyle extends RefCounted:
@@ -107,12 +111,15 @@ var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
 var _last_panel_model: PanelModel = null
 var _last_active_panel_model: PanelModel = null
+var _last_active_panel_is_authoritative: bool = false
+var _last_active_snapshot_meta: Dictionary = {}
 var _last_authoritative_panel_model: PanelModel = null
 var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
 
 
 func _ready() -> void:
+	set_process(true)
 	_build_ui_if_needed()
 	_apply_panel_style(_resolve_style())
 	_connect_server()
@@ -120,6 +127,7 @@ func _ready() -> void:
 
 
 func _enter_tree() -> void:
+	set_process(true)
 	if is_node_ready():
 		_build_ui_if_needed()
 		_apply_panel_style(_resolve_style())
@@ -129,6 +137,22 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	_disconnect_server()
+
+
+func _process(_delta: float) -> void:
+	if _last_active_panel_model == null:
+		return
+	if _retained_subtrees.is_empty():
+		return
+	if not _expire_retained_subtrees_by_policy():
+		return
+	_last_panel_model = _compose_presented_panel_model(
+		_last_active_panel_model,
+		_last_active_panel_is_authoritative,
+		_last_active_snapshot_meta,
+		false
+	)
+	_render_panel_model(_last_panel_model)
 
 
 func force_refresh() -> void:
@@ -360,7 +384,7 @@ func _refresh_from_server() -> void:
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
-		_last_active_panel_model = no_server_panel
+		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -374,7 +398,7 @@ func _refresh_from_server() -> void:
 	if snapshot == null:
 		_last_snapshot_meta.clear()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
-		_last_active_panel_model = nil_panel
+		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -382,7 +406,7 @@ func _refresh_from_server() -> void:
 	if typeof(snapshot) != TYPE_DICTIONARY:
 		_last_snapshot_meta.clear()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
-		_last_active_panel_model = bad_type_panel
+		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -394,7 +418,7 @@ func _refresh_from_server() -> void:
 			compat.get("contract_gaps", []),
 			compat.get("projection_gaps", [])
 		)
-		_last_active_panel_model = compat_panel
+		_set_last_active_panel_state(compat_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(compat_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -404,31 +428,48 @@ func _refresh_from_server() -> void:
 	match category:
 		"none":
 			if _last_active_panel_model == null:
-				_last_active_panel_model = _project_snapshot_to_panel_model(snapshot, provider_mode)
+				_set_last_active_panel_state(
+					_project_snapshot_to_panel_model(snapshot, provider_mode),
+					true,
+					snapshot_meta
+				)
 			_last_panel_model = _compose_presented_panel_model(_last_active_panel_model, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 		"value_refresh":
 			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
 			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
-			_last_active_panel_model = value_panel
+			_set_last_active_panel_state(value_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(value_panel, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
-			_last_active_panel_model = full_panel
+			_set_last_active_panel_state(full_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(full_panel, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 
 
-func _compose_presented_panel_model(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> PanelModel:
-	_update_retained_lifecycle(active_panel, is_authoritative_snapshot, snapshot_meta)
+func _set_last_active_panel_state(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
+	_last_active_panel_model = active_panel
+	_last_active_panel_is_authoritative = is_authoritative_snapshot
+	_last_active_snapshot_meta = snapshot_meta.duplicate(true)
+
+
+func _compose_presented_panel_model(
+		active_panel: PanelModel,
+		is_authoritative_snapshot: bool,
+		snapshot_meta: Dictionary,
+		update_retained_lifecycle: bool = true
+	) -> PanelModel:
+	if update_retained_lifecycle:
+		_update_retained_lifecycle(active_panel, is_authoritative_snapshot, snapshot_meta)
 	_expire_retained_subtrees_by_policy()
 
 	var composed := _clone_panel_model(active_panel)
 	_append_retained_presentation_subtrees(composed)
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
+	_apply_detail_policy_to_panel(composed)
 	return composed
 
 
@@ -651,17 +692,19 @@ func _resolve_retained_provider_root(panel: PanelModel) -> Dictionary:
 	return {"provider_root_id": "", "root_status": "orphaned"}
 
 
-func _expire_retained_subtrees_by_policy() -> void:
+func _expire_retained_subtrees_by_policy() -> bool:
 	if _retained_subtrees.is_empty():
-		return
+		return false
 	if PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC < 0:
-		return
+		return false
 	var now_msec := Time.get_ticks_msec()
 	var kept: Array[RetainedSubtreeState] = []
 	for retained in _retained_subtrees:
 		if not _is_retained_subtree_expired(retained, now_msec):
 			kept.append(retained)
+	var changed := kept.size() != _retained_subtrees.size()
 	_retained_subtrees = kept
+	return changed
 
 
 func _is_retained_subtree_expired(retained: RetainedSubtreeState, now_msec: int) -> bool:
@@ -845,11 +888,11 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_badges.append(_badge(badge.role, badge.label))
 	var cloned_counters: Array[CounterModel] = []
 	for counter in source.counters:
-		cloned_counters.append(_counter(counter.name, counter.value, counter.digits))
+		cloned_counters.append(_counter(counter.name, counter.value, counter.digits, counter.visibility))
 	var cloned_info_lines: Array[String] = []
 	for line in source.info_lines:
 		cloned_info_lines.append(line)
-	return _entry(
+	var cloned := _entry(
 		source.id,
 		source.parent_id,
 		source.depth,
@@ -860,6 +903,10 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_counters,
 		cloned_info_lines
 	)
+	cloned.summary_info_lines = source.summary_info_lines.duplicate()
+	cloned.detail_info_lines = source.detail_info_lines.duplicate()
+	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
+	return cloned
 
 
 func _fetch_snapshot() -> Variant:
@@ -1799,7 +1846,12 @@ func _ensure_expandability(panel: PanelModel) -> void:
 			continue
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
-		e.can_expand = int(child_counts.get(e.id, 0)) > 0
+		var has_detail_payload := not e.detail_info_lines.is_empty()
+		for counter in e.counters:
+			if counter.visibility == "detail":
+				has_detail_payload = true
+				break
+		e.can_expand = int(child_counts.get(e.id, 0)) > 0 or has_detail_payload
 
 
 func _depth_for_parent(parent_id: String) -> int:
@@ -1992,12 +2044,108 @@ func _badge(role: String, label: String) -> BadgeModel:
 	return model
 
 
-func _counter(name: String, value: int, digits: int) -> CounterModel:
+func _counter(name: String, value: int, digits: int, visibility: String = "core") -> CounterModel:
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
 	model.digits = digits
+	model.visibility = visibility
 	return model
+
+
+func _apply_detail_policy_to_panel(panel: PanelModel) -> void:
+	if panel == null:
+		return
+	for entry in panel.entries:
+		_apply_detail_policy_to_entry(entry)
+	_ensure_expandability(panel)
+
+
+func _apply_detail_policy_to_entry(entry: StatusEntryModel) -> void:
+	if entry == null:
+		return
+
+	entry.summary_info_lines.clear()
+	entry.detail_info_lines.clear()
+	entry.anomaly_info_lines.clear()
+
+	for line in entry.info_lines:
+		if _is_anomaly_info_line(line):
+			entry.anomaly_info_lines.append(line)
+		elif _should_show_line_in_summary(entry, line):
+			entry.summary_info_lines.append(line)
+		else:
+			entry.detail_info_lines.append(line)
+
+	for counter in entry.counters:
+		counter.visibility = _counter_visibility_for_entry(entry, counter)
+
+
+func _is_anomaly_info_line(line: String) -> bool:
+	return (
+		line.begins_with("Contract gap:")
+		or line.begins_with("Contract ambiguity:")
+		or line.begins_with("Projection invariant:")
+		or line.begins_with("Projection gap:")
+		or line.begins_with("Runtime payload")
+		or line.find("contradiction") >= 0
+		or line.find("unsupported") >= 0
+		or line.find("malformed") >= 0
+	)
+
+
+func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool:
+	if entry == null:
+		return false
+	if _entry_kind(entry) == "retained":
+		return (
+			line.begins_with("Presentation continuity only.")
+			or line.begins_with("retained_age_msec=")
+			or line.begins_with("retained_expires_in_msec=")
+			or line.begins_with("retained_expiry=")
+		)
+	if entry.id == "server/main":
+		return true
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return false
+	return entry.summary_info_lines.is_empty()
+
+
+func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterModel) -> String:
+	if entry == null or counter == null:
+		return "core"
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return "core"
+	match counter.name:
+		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
+			return "core"
+		"fps_max", "native_all", "native_cur", "buffers", "source_version":
+			return "summary"
+		"frames", "bytes", "native_prev", "native_dead", "source_topology":
+			return "detail"
+		_:
+			return "summary"
+
+
+func _entry_kind(entry: StatusEntryModel) -> String:
+	if entry == null:
+		return "authoritative"
+	if _is_retained_projection_entry(entry.id) or _has_badge_label(entry, "retained"):
+		return "retained"
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return "contract_gap"
+	for line in entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return "contract_gap"
+	if (
+		entry.id.begins_with("native_object/")
+		or entry.id.begins_with("frameproducer/")
+		or entry.id.contains("orphaned_native_objects")
+		or _has_badge_label(entry, "detached")
+		or _has_badge_label(entry, "orphaned")
+	):
+		return "fallback"
+	return "authoritative"
 
 
 
