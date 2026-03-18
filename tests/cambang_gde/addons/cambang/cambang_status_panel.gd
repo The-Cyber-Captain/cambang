@@ -2116,6 +2116,22 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 		return "core"
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
 		return "core"
+	if _is_frameproducer_entry(entry):
+		match counter.name:
+			"buffers":
+				return "summary"
+			"bytes":
+				return "detail"
+			_:
+				return "summary"
+	if _is_native_object_entry(entry):
+		match counter.name:
+			"buffers":
+				return "summary"
+			"bytes":
+				return "detail"
+			_:
+				return "summary"
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
@@ -2125,6 +2141,18 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 			return "detail"
 		_:
 			return "summary"
+
+
+func _is_frameproducer_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.id.begins_with("frameproducer/") or entry.id.contains("/frameproducer/")
+
+
+func _is_native_object_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.id.begins_with("native_object/") or entry.id.contains("/native_object/")
 
 
 func _entry_kind(entry: StatusEntryModel) -> String:

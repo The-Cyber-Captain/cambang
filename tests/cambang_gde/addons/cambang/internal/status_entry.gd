@@ -66,6 +66,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 		model.anomaly_info_lines,
 		model.expanded
 	)
+	_apply_horizontal_layout_policy()
 	_apply_stable_row_metrics()
 
 
@@ -372,6 +373,26 @@ func _apply_stable_row_metrics() -> void:
 	_info_panel.custom_minimum_size = Vector2(_info_panel.custom_minimum_size.x, info_panel_height)
 	_state_segment.custom_minimum_size = Vector2(_state_segment.custom_minimum_size.x, info_content_height)
 	_counter_segment.custom_minimum_size = Vector2(_counter_segment.custom_minimum_size.x, info_content_height)
+
+
+func _apply_horizontal_layout_policy() -> void:
+	var label_width_budget := _protected_identity_label_width()
+	var disclosure_width := float(_style.disclosure_slot_width if _style != null else 28)
+	var identity_width_budget := disclosure_width + 6.0 + label_width_budget
+
+	_identity_segment.custom_minimum_size = Vector2(identity_width_budget, _identity_segment.custom_minimum_size.y)
+	_identity_segment.size_flags_stretch_ratio = 1.35
+	_name_label.custom_minimum_size = Vector2(label_width_budget, _name_label.custom_minimum_size.y)
+	_info_panel_inset.size_flags_stretch_ratio = 1.0
+
+
+func _protected_identity_label_width() -> float:
+	var font_height := _font_line_height(
+		(_style.identity_font if _style != null else null),
+		(_style.identity_font_size if _style != null else 13),
+		13.0
+	)
+	return max(140.0, font_height * 10.5)
 
 
 func _stable_row_height_budget() -> float:
