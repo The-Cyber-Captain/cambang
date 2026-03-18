@@ -463,6 +463,7 @@ func _compose_presented_panel_model(
 	) -> PanelModel:
 	if update_retained_lifecycle:
 		_update_retained_lifecycle(active_panel, is_authoritative_snapshot, snapshot_meta)
+	_reconcile_retained_subtrees(active_panel, is_authoritative_snapshot)
 	_expire_retained_subtrees_by_policy()
 
 	var composed := _clone_panel_model(active_panel)
@@ -636,6 +637,121 @@ func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Diction
 	retained.root_status = str(root_info.get("root_status", "orphaned"))
 	retained.panel_model = _extract_retained_panel_subtree(source_model, retained.provider_root_id, retained.root_status)
 	_retained_subtrees.insert(0, retained)
+	_reconcile_retained_subtrees_for_supersession()
+
+
+func _retained_root_strength(root_status: String) -> int:
+	match root_status:
+		"destroyed_provider":
+			return 3
+		"ambiguous_provider":
+			return 2
+		"orphaned":
+			return 1
+		_:
+			return 0
+
+
+func _reconcile_retained_subtrees(active_panel: PanelModel, is_authoritative_snapshot: bool) -> void:
+	var changed := _reconcile_retained_subtrees_for_supersession()
+	if is_authoritative_snapshot:
+		changed = _reconcile_retained_subtrees_against_authoritative_panel(active_panel) or changed
+	if changed:
+		_expire_retained_subtrees_by_policy()
+
+
+func _reconcile_retained_subtrees_for_supersession() -> bool:
+	if _retained_subtrees.size() <= 1:
+		return false
+
+	var kept: Array[RetainedSubtreeState] = []
+	var kept_index_by_gen := {}
+	for retained in _retained_subtrees:
+		if retained == null:
+			continue
+		var gen := retained.retained_from_gen
+		if not kept_index_by_gen.has(gen):
+			kept_index_by_gen[gen] = kept.size()
+			kept.append(retained)
+			continue
+
+		var existing_index := int(kept_index_by_gen[gen])
+		var existing: RetainedSubtreeState = kept[existing_index]
+		if _retained_root_strength(retained.root_status) > _retained_root_strength(existing.root_status):
+			kept[existing_index] = retained
+
+	var changed := kept.size() != _retained_subtrees.size()
+	if not changed:
+		for i in range(kept.size()):
+			if kept[i] != _retained_subtrees[i]:
+				changed = true
+				break
+	_retained_subtrees = kept
+	return changed
+
+
+func _reconcile_retained_subtrees_against_authoritative_panel(active_panel: PanelModel) -> bool:
+	if active_panel == null or _retained_subtrees.is_empty():
+		return false
+
+	var destroyed_provider_gens := _collect_authoritative_destroyed_provider_generations(active_panel)
+	if destroyed_provider_gens.is_empty():
+		return false
+
+	var kept: Array[RetainedSubtreeState] = []
+	var changed := false
+	for retained in _retained_subtrees:
+		if retained == null:
+			changed = true
+			continue
+		if destroyed_provider_gens.has(retained.retained_from_gen) and _retained_root_strength(retained.root_status) < _retained_root_strength("destroyed_provider"):
+			changed = true
+			continue
+		kept.append(retained)
+	_retained_subtrees = kept
+	return changed
+
+
+func _collect_authoritative_destroyed_provider_generations(panel: PanelModel) -> Dictionary:
+	var gens := {}
+	if panel == null:
+		return gens
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if not entry.parent_id.contains("/retained_prior_generation_native_objects"):
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if not _entry_has_destroyed_provider_badge(entry):
+			continue
+		var creation_gen := _extract_creation_gen_from_info_lines(entry.info_lines)
+		if creation_gen >= 0:
+			gens[creation_gen] = true
+	return gens
+
+
+func _entry_has_destroyed_provider_badge(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	for badge in entry.badges:
+		if badge.label == "phase=3" or badge.label == "native_phase=3":
+			return true
+	return false
+
+
+func _extract_creation_gen_from_info_lines(info_lines: Array[String]) -> int:
+	var prefix := "Retained record: creation_gen="
+	for line in info_lines:
+		if not line.begins_with(prefix):
+			continue
+		var suffix := line.substr(prefix.length())
+		var end_idx := suffix.find(",")
+		if end_idx >= 0:
+			suffix = suffix.substr(0, end_idx)
+		if suffix.is_valid_int():
+			return int(suffix)
+	return -1
 
 
 func _extract_retained_panel_subtree(source_model: PanelModel, provider_root_id: String, root_status: String) -> PanelModel:
