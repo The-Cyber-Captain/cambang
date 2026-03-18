@@ -66,6 +66,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 		model.anomaly_info_lines,
 		model.expanded
 	)
+	_apply_stable_row_metrics()
 
 
 func _apply_style() -> void:
@@ -355,6 +356,71 @@ func _counter_value_style() -> StyleBoxFlat:
 	style.border_width_bottom = (_style.counter_box_border_width if _style != null else 1)
 	style.border_color = (_style.counter_box_border if _style != null else Color(0.34, 0.38, 0.44, 0.85))
 	return style
+
+
+func _apply_stable_row_metrics() -> void:
+	var stable_row_height := _stable_row_height_budget()
+	var outer_vertical := _panel_outer_vertical_inset()
+	var inner_vertical := _panel_inner_vertical_padding()
+	var info_panel_height := max(0.0, stable_row_height - outer_vertical)
+	var info_content_height := max(0.0, info_panel_height - inner_vertical)
+
+	_row_content.custom_minimum_size = Vector2(_row_content.custom_minimum_size.x, stable_row_height)
+	_identity_segment.custom_minimum_size = Vector2(_identity_segment.custom_minimum_size.x, stable_row_height)
+	_info_panel_inset.custom_minimum_size = Vector2(_info_panel_inset.custom_minimum_size.x, stable_row_height)
+	_info_panel.custom_minimum_size = Vector2(_info_panel.custom_minimum_size.x, info_panel_height)
+	_state_segment.custom_minimum_size = Vector2(_state_segment.custom_minimum_size.x, info_content_height)
+	_counter_segment.custom_minimum_size = Vector2(_counter_segment.custom_minimum_size.x, info_content_height)
+
+
+func _stable_row_height_budget() -> float:
+	var identity_line_height := max(
+		_font_line_height(
+			(_style.identity_font if _style != null else null),
+			(_style.identity_font_size if _style != null else 13),
+			22.0
+		),
+		22.0
+	)
+	var badge_line_height := max(
+		_font_line_height(
+			(_style.info_font if _style != null else null),
+			(_style.state_font_size if _style != null else 11),
+			18.0
+		),
+		18.0
+	)
+	var counter_label_height := _font_line_height(
+		(_style.counter_font if _style != null else null),
+		(_style.counter_font_size if _style != null else 11),
+		12.0
+	)
+	var counter_value_height := _font_line_height(
+		(_style.counter_font if _style != null else null),
+		(_style.counter_font_size if _style != null else 11),
+		12.0
+	) + float((_style.counter_box_v_padding if _style != null else 2) * 2 + (_style.counter_box_border_width if _style != null else 1) * 2)
+	var counter_stack_height := counter_label_height + 1.0 + counter_value_height
+	var content_line_height := max(badge_line_height, counter_stack_height)
+	return max(identity_line_height, content_line_height + _panel_outer_vertical_inset() + _panel_inner_vertical_padding())
+
+
+func _panel_outer_vertical_inset() -> float:
+	if _style == null:
+		return 4.0
+	return _style.info_panel_outer_inset.y + _style.info_panel_outer_inset.w
+
+
+func _panel_inner_vertical_padding() -> float:
+	if _style == null:
+		return 4.0
+	return _style.info_panel_inner_padding.y + _style.info_panel_inner_padding.w
+
+
+func _font_line_height(font: Font, font_size: int, fallback: float) -> float:
+	if font == null:
+		return fallback
+	return max(float(font.get_height(font_size)), fallback)
 
 
 func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
