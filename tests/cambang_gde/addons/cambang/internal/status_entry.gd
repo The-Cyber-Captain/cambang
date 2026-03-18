@@ -28,6 +28,7 @@ var _accent_bar: ColorRect
 var _badge_pairs: Array[HBoxContainer] = []
 var _counter_widgets: Array[VBoxContainer] = []
 var _info_line_rows: Array[HBoxContainer] = []
+var _counter_detail_hint: Label
 
 
 func _ready() -> void:
@@ -55,6 +56,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_disclosure_placeholder.visible = not model.can_expand
 	_disclosure_button.button_pressed = model.expanded
 	_disclosure_indicator.set_expanded(model.expanded)
+	_disclosure_button.tooltip_text = _disclosure_tooltip_for_model(model)
 
 	_apply_row_palette(model)
 	_render_badges(_badges_for_render(model))
@@ -169,10 +171,12 @@ func _ensure_badge_pair(index: int) -> HBoxContainer:
 
 func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded: bool) -> void:
 	var visible_counters: Array[CamBANGStatusPanel.CounterModel] = []
+	var hidden_detail_count := 0
 	for counter in counters:
 		if counter == null:
 			continue
 		if counter.visibility == "detail" and not expanded:
+			hidden_detail_count += 1
 			continue
 		visible_counters.append(counter)
 
@@ -192,7 +196,15 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
 
-	_counter_segment.visible = not visible_counters.is_empty()
+	var detail_hint := _ensure_counter_detail_hint()
+	if not expanded and hidden_detail_count > 0:
+		detail_hint.visible = true
+		detail_hint.text = "EXPAND +%d" % hidden_detail_count
+		detail_hint.label_settings = _state_label_settings()
+	else:
+		detail_hint.visible = false
+
+	_counter_segment.visible = not visible_counters.is_empty() or detail_hint.visible
 
 
 func _ensure_counter_widget(index: int) -> VBoxContainer:
@@ -217,6 +229,19 @@ func _ensure_counter_widget(index: int) -> VBoxContainer:
 	_counter_segment.add_child(counter_widget)
 	_counter_widgets.append(counter_widget)
 	return counter_widget
+
+
+func _ensure_counter_detail_hint() -> Label:
+	if _counter_detail_hint != null:
+		return _counter_detail_hint
+
+	var hint := Label.new()
+	hint.visible = false
+	hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hint.label_settings = _state_label_settings()
+	_counter_segment.add_child(hint)
+	_counter_detail_hint = hint
+	return hint
 
 
 func _render_info_lines(
@@ -682,6 +707,25 @@ func _is_detail_line(line: String, detail_info_lines: Array[String]) -> bool:
 		if detail_line == line:
 			return true
 	return false
+
+
+func _disclosure_tooltip_for_model(model: CamBANGStatusPanel.StatusEntryModel) -> String:
+	if model == null or not model.can_expand:
+		return ""
+	var detail_counter_count := _count_detail_counters(model.counters)
+	if detail_counter_count <= 0:
+		return "Expand for more detail."
+	if model.expanded:
+		return "Collapse to summary counters."
+	return "Expand for %d more counter%s." % [detail_counter_count, ("" if detail_counter_count == 1 else "s")]
+
+
+func _count_detail_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> int:
+	var count := 0
+	for counter in counters:
+		if counter != null and counter.visibility == "detail":
+			count += 1
+	return count
 
 
 func _on_disclosure_pressed() -> void:
