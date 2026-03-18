@@ -469,6 +469,7 @@ func _compose_presented_panel_model(
 
 	var composed := _clone_panel_model(active_panel)
 	_append_retained_presentation_subtrees(composed)
+	_enforce_tree_integrity(composed)
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
 	_apply_detail_policy_to_panel(composed)
@@ -944,6 +945,371 @@ func _append_retained_presentation_subtrees(target_panel: PanelModel) -> void:
 		_append_single_retained_subtree(target_panel, _retained_subtrees[idx], idx)
 
 	_ensure_expandability(target_panel)
+
+
+func _enforce_tree_integrity(panel: PanelModel) -> void:
+	if panel == null:
+		return
+
+	var removal_notes: Array[String] = []
+	var changed := true
+	while changed:
+		changed = false
+		var ids_to_remove := _collect_weaker_visible_provider_roots(panel)
+		if not ids_to_remove.is_empty():
+			panel.entries = _remove_entries_and_descendants(panel.entries, ids_to_remove, removal_notes, "weaker-lineage-root")
+			changed = true
+			continue
+
+		var filtered := _rebuild_tree_with_valid_integrity(panel.entries, removal_notes)
+		if filtered.get("changed", false):
+			panel.entries = filtered.get("entries", [])
+			changed = true
+
+	if not removal_notes.is_empty():
+		print_debug(
+			"CamBANGStatusPanel integrity reconciled %d node removals: %s"
+			% [removal_notes.size(), "; ".join(removal_notes)]
+		)
+
+	_recompute_entry_depths(panel)
+	_ensure_expandability(panel)
+
+
+func _collect_weaker_visible_provider_roots(panel: PanelModel) -> Dictionary:
+	var grouped := {}
+	var order: Array[String] = []
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if entry.parent_id != "server/main":
+			continue
+		var lineage_key := _visible_provider_lineage_key(entry)
+		if lineage_key.is_empty():
+			continue
+		if not grouped.has(lineage_key):
+			grouped[lineage_key] = []
+			order.append(lineage_key)
+		grouped[lineage_key].append(entry)
+
+	var ids_to_remove := {}
+	for lineage_key in order:
+		var roots: Array = grouped.get(lineage_key, [])
+		if roots.size() <= 1:
+			continue
+		var best: StatusEntryModel = null
+		for root in roots:
+			if not (root is StatusEntryModel):
+				continue
+			var typed_root: StatusEntryModel = root
+			if best == null or _is_stronger_visible_provider_root(typed_root, best):
+				best = typed_root
+		for root in roots:
+			if not (root is StatusEntryModel):
+				continue
+			var typed_root: StatusEntryModel = root
+			if typed_root == best:
+				continue
+			ids_to_remove[typed_root.id] = true
+	return ids_to_remove
+
+
+func _visible_provider_lineage_key(entry: StatusEntryModel) -> String:
+	if entry == null:
+		return ""
+	var retained_from_gen := _extract_retained_from_gen_from_entry(entry)
+	if retained_from_gen < 0 and entry.label.begins_with("retained_orphan/gen_"):
+		retained_from_gen = _parse_orphan_retained_gen(entry.label)
+	if retained_from_gen < 0:
+		return ""
+
+	var family_key := _retained_family_key_for_gen(retained_from_gen)
+	var provider_identity := _visible_provider_identity_hint(entry)
+	if provider_identity.is_empty():
+		return family_key
+	return "%s|provider=%s" % [family_key, provider_identity]
+
+
+func _visible_provider_identity_hint(entry: StatusEntryModel) -> String:
+	if entry == null:
+		return ""
+	if entry.id.begins_with("provider/"):
+		return entry.id
+	var provider_idx := entry.id.rfind("/provider/")
+	if provider_idx >= 0:
+		return entry.id.substr(provider_idx + 1)
+	return ""
+
+
+func _extract_retained_from_gen_from_entry(entry: StatusEntryModel) -> int:
+	if entry == null:
+		return -1
+	var prefix := "retained_from_gen="
+	for line in entry.info_lines:
+		if not line.begins_with(prefix):
+			continue
+		var suffix := line.substr(prefix.length())
+		if suffix.is_valid_int():
+			return int(suffix)
+	return -1
+
+
+func _visible_provider_root_strength(entry: StatusEntryModel) -> int:
+	if entry == null:
+		return 0
+	if _entry_has_destroyed_provider_badge(entry):
+		return _retained_root_strength("destroyed_provider")
+	if _has_badge_label(entry, "orphaned"):
+		for line in entry.info_lines:
+			if line.find("multiple DESTROYED provider rows") >= 0:
+				return _retained_root_strength("ambiguous_provider")
+		return _retained_root_strength("orphaned")
+	if _has_badge_label(entry, "retained-root"):
+		return _retained_root_strength("ambiguous_provider")
+	return 0
+
+
+func _is_stronger_visible_provider_root(candidate: StatusEntryModel, incumbent: StatusEntryModel) -> bool:
+	if incumbent == null:
+		return true
+	if candidate == null:
+		return false
+
+	var candidate_strength := _visible_provider_root_strength(candidate)
+	var incumbent_strength := _visible_provider_root_strength(incumbent)
+	if candidate_strength != incumbent_strength:
+		return candidate_strength > incumbent_strength
+	return _extract_retained_from_gen_from_entry(candidate) > _extract_retained_from_gen_from_entry(incumbent)
+
+
+func _remove_entries_and_descendants(
+		entries: Array[StatusEntryModel],
+		root_ids_to_remove: Dictionary,
+		removal_notes: Array[String],
+		reason: String
+	) -> Array[StatusEntryModel]:
+	if root_ids_to_remove.is_empty():
+		return entries
+
+	var remove_ids := root_ids_to_remove.duplicate(true)
+	var changed := true
+	while changed:
+		changed = false
+		for entry in entries:
+			if entry == null:
+				continue
+			if remove_ids.has(entry.id):
+				continue
+			if entry.parent_id.is_empty():
+				continue
+			if remove_ids.has(entry.parent_id):
+				remove_ids[entry.id] = true
+				changed = true
+
+	var kept: Array[StatusEntryModel] = []
+	for entry in entries:
+		if entry == null:
+			continue
+		if remove_ids.has(entry.id):
+			removal_notes.append("%s (%s)" % [entry.id, reason])
+			continue
+		kept.append(entry)
+	return kept
+
+
+func _rebuild_tree_with_valid_integrity(
+		entries: Array[StatusEntryModel],
+		removal_notes: Array[String]
+	) -> Dictionary:
+	var id_to_entry := {}
+	for entry in entries:
+		if entry == null:
+			continue
+		id_to_entry[entry.id] = entry
+
+	var kept: Array[StatusEntryModel] = []
+	var changed := false
+	for entry in entries:
+		if entry == null:
+			changed = true
+			continue
+		var integrity := _resolve_tree_integrity_action(entry, id_to_entry)
+		var action := str(integrity.get("action", "keep"))
+		if action == "remove":
+			removal_notes.append("%s (%s)" % [entry.id, str(integrity.get("reason", "invalid"))])
+			changed = true
+			continue
+
+		var cloned := _clone_status_entry(entry)
+		var target_parent_id := str(integrity.get("parent_id", cloned.parent_id))
+		if target_parent_id != cloned.parent_id:
+			cloned.parent_id = target_parent_id
+			_strip_resolved_integrity_info_lines(cloned)
+			changed = true
+		kept.append(cloned)
+
+	return {
+		"entries": kept,
+		"changed": changed,
+	}
+
+
+func _resolve_tree_integrity_action(entry: StatusEntryModel, id_to_entry: Dictionary) -> Dictionary:
+	if entry.id == "server/main":
+		return {"action": "keep", "parent_id": ""}
+
+	var preferred_parent_id := _preferred_integrity_parent_id(entry, id_to_entry)
+	if not preferred_parent_id.is_empty():
+		return {"action": "keep", "parent_id": preferred_parent_id}
+
+	if entry.parent_id.is_empty():
+		return {"action": "remove", "reason": "missing-root-parent"}
+
+	var resolved_parent_id := entry.parent_id
+	if not id_to_entry.has(resolved_parent_id):
+		var fallback_parent_id := _fallback_integrity_parent_id(entry, id_to_entry)
+		if fallback_parent_id.is_empty():
+			return {"action": "remove", "reason": "missing-parent=%s" % entry.parent_id}
+		resolved_parent_id = fallback_parent_id
+
+	var parent_entry: StatusEntryModel = id_to_entry.get(resolved_parent_id, null)
+	if parent_entry == null and resolved_parent_id != "":
+		return {"action": "remove", "reason": "unresolved-parent=%s" % resolved_parent_id}
+
+	if _is_frameproducer_entry(entry):
+		if parent_entry == null or not _is_stream_like_entry(parent_entry):
+			return {"action": "remove", "reason": "frameproducer-without-stream"}
+	elif _is_stream_like_entry(entry):
+		if parent_entry == null or not _is_stream_parent_entry(parent_entry):
+			return {"action": "remove", "reason": "stream-without-device"}
+
+	return {"action": "keep", "parent_id": resolved_parent_id}
+
+
+func _preferred_integrity_parent_id(entry: StatusEntryModel, id_to_entry: Dictionary) -> String:
+	if entry == null:
+		return ""
+	if not _is_frameproducer_entry(entry):
+		return ""
+
+	var owner_stream_id := _extract_owner_stream_id_from_info_lines(entry.info_lines)
+	if owner_stream_id <= 0:
+		return ""
+
+	var canonical_stream_id := "stream/%d" % owner_stream_id
+	if _is_retained_projection_entry(entry.id):
+		var projected_stream_id := _projected_peer_id_in_same_retained_subtree(entry.id, canonical_stream_id)
+		if not projected_stream_id.is_empty() and id_to_entry.has(projected_stream_id):
+			return projected_stream_id
+	if id_to_entry.has(canonical_stream_id):
+		return canonical_stream_id
+	return ""
+
+
+func _fallback_integrity_parent_id(entry: StatusEntryModel, id_to_entry: Dictionary) -> String:
+	if entry == null:
+		return ""
+	var parent_id := entry.parent_id
+	if parent_id.ends_with("/retained_prior_generation_native_objects"):
+		var provider_parent := parent_id.substr(0, parent_id.length() - "/retained_prior_generation_native_objects".length())
+		if id_to_entry.has(provider_parent):
+			return provider_parent
+	if parent_id.ends_with("/orphaned_native_objects"):
+		var orphan_parent := parent_id.substr(0, parent_id.length() - "/orphaned_native_objects".length())
+		if id_to_entry.has(orphan_parent):
+			return orphan_parent
+	if parent_id == "server/main" and id_to_entry.has("server/main"):
+		return "server/main"
+	return ""
+
+
+func _strip_resolved_integrity_info_lines(entry: StatusEntryModel) -> void:
+	if entry == null:
+		return
+	var kept: Array[String] = []
+	for line in entry.info_lines:
+		if line == "Contract gap: owner stream not present in snapshot streams.":
+			continue
+		if line == "Contract gap: owner device not present in snapshot devices.":
+			continue
+		kept.append(line)
+	entry.info_lines = kept
+
+
+func _extract_owner_stream_id_from_info_lines(info_lines: Array[String]) -> int:
+	var prefix := "FrameProducer owner_stream_id="
+	for line in info_lines:
+		if not line.begins_with(prefix):
+			continue
+		var suffix := line.substr(prefix.length())
+		if suffix.ends_with("."):
+			suffix = suffix.substr(0, suffix.length() - 1)
+		if suffix.is_valid_int():
+			return int(suffix)
+	return -1
+
+
+func _projected_peer_id_in_same_retained_subtree(entry_id: String, canonical_id: String) -> String:
+	if not _is_retained_projection_entry(entry_id):
+		return canonical_id
+	var markers := [
+		"/provider/",
+		"/device/",
+		"/stream/",
+		"/frameproducer/",
+		"/native_object/",
+		"/rig/",
+	]
+	var marker_index := -1
+	for marker in markers:
+		var idx := entry_id.find(marker, RETAINED_PRESENTATION_ROOT_ID.length())
+		if idx >= 0 and (marker_index < 0 or idx < marker_index):
+			marker_index = idx
+	if marker_index < 0:
+		return ""
+	var subtree_prefix := entry_id.substr(0, marker_index)
+	return "%s/%s" % [subtree_prefix, canonical_id]
+
+
+func _is_stream_like_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.id.begins_with("stream/") or entry.id.contains("/stream/")
+
+
+func _is_stream_parent_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.id.begins_with("device/") or entry.id.contains("/device/")
+
+
+func _recompute_entry_depths(panel: PanelModel) -> void:
+	if panel == null:
+		return
+	var id_to_entry := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		id_to_entry[entry.id] = entry
+
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		entry.depth = _depth_for_entry(entry, id_to_entry)
+
+
+func _depth_for_entry(entry: StatusEntryModel, id_to_entry: Dictionary) -> int:
+	if entry == null or entry.parent_id.is_empty():
+		return 0
+	var depth := 1
+	var current_parent := entry.parent_id
+	while current_parent != "":
+		var parent_entry: StatusEntryModel = id_to_entry.get(current_parent, null)
+		if parent_entry == null:
+			break
+		depth += 1
+		current_parent = parent_entry.parent_id
+	return depth
 
 
 func _append_single_retained_subtree(target_panel: PanelModel, retained: RetainedSubtreeState, order_index: int) -> void:
