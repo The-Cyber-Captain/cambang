@@ -141,6 +141,8 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
+	if _reconcile_post_stop_nil_boundary():
+		return
 	if _last_active_panel_model == null:
 		return
 	if _retained_subtrees.is_empty():
@@ -154,6 +156,27 @@ func _process(_delta: float) -> void:
 		false
 	)
 	_render_panel_model(_last_panel_model)
+
+
+func _reconcile_post_stop_nil_boundary() -> bool:
+	if not _last_active_panel_is_authoritative:
+		return false
+	if _server == null:
+		_server = _get_server()
+	if _server == null:
+		return false
+
+	var snapshot := _fetch_snapshot()
+	if snapshot != null:
+		return false
+
+	_last_snapshot_meta.clear()
+	_apply_snapshot_read(_read_snapshot(null))
+	var nil_panel := _build_nil_panel_model("No published snapshot yet.")
+	_set_last_active_panel_state(nil_panel, false, {})
+	_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
+	_render_panel_model(_last_panel_model)
+	return true
 
 
 func force_refresh() -> void:
