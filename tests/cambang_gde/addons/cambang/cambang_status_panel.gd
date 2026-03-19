@@ -952,24 +952,35 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 	var subtree_prefix := "%s/subtree/%d/gen_%d" % [RETAINED_PRESENTATION_ROOT_ID, order_index, retained.retained_from_gen]
 	var retained_entries: Array[StatusEntryModel] = []
 	var retained_root_source_id := ""
+	var orphan_provider_root_ids: Array[String] = []
+	var primary_orphan_provider_root_id := ""
 	if retained.root_status == "destroyed_provider" and not retained.provider_root_id.is_empty():
 		retained_root_source_id = retained.provider_root_id
 		retained_entries = _collect_retained_entries_under_root(retained.panel_model, retained.provider_root_id)
 	else:
-		retained_root_source_id = "%s/orphan_root" % subtree_prefix
 		retained_entries = _collect_retained_orphan_entries(retained.panel_model)
+		orphan_provider_root_ids = _collect_retained_provider_root_ids(retained_entries)
+		if not orphan_provider_root_ids.is_empty():
+			primary_orphan_provider_root_id = orphan_provider_root_ids[0]
+			if not retained.provider_identity_hint.is_empty() and orphan_provider_root_ids.has(retained.provider_identity_hint):
+				primary_orphan_provider_root_id = retained.provider_identity_hint
+		else:
+			retained_root_source_id = "%s/orphan_root" % subtree_prefix
 
 	var included_ids := {}
 	for source_entry in retained_entries:
 		included_ids[source_entry.id] = true
 
 	var retained_root_projected_id := "%s/%s" % [subtree_prefix, retained_root_source_id]
-	if retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty():
+	var orphan_reason_line := ""
+	if retained.root_status == "ambiguous_provider":
+		orphan_reason_line = "Retained subtree is orphaned because multiple DESTROYED provider rows were present."
+	else:
+		orphan_reason_line = "Retained subtree is orphaned because no truthful DESTROYED provider root was available."
+
+	if (retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty()) and orphan_provider_root_ids.is_empty():
 		var orphan_info := _retained_metadata_info_lines(retained)
-		if retained.root_status == "ambiguous_provider":
-			orphan_info.append("Retained subtree is orphaned because multiple DESTROYED provider rows were present.")
-		else:
-			orphan_info.append("Retained subtree is orphaned because no truthful DESTROYED provider root was available.")
+		orphan_info.append(orphan_reason_line)
 		target_panel.entries.append(_entry(
 			retained_root_projected_id,
 			"server/main",
@@ -1000,6 +1011,19 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
+			cloned_entry.label = "%s [retained]" % source_entry.label
+		elif orphan_provider_root_ids.has(source_entry.id):
+			cloned_entry.parent_id = "server/main"
+			cloned_entry.depth = 1
+			cloned_entry.badges.append(_badge("warning", "retained"))
+			cloned_entry.badges.append(_badge("warning", "orphaned"))
+			if source_entry.id == primary_orphan_provider_root_id:
+				cloned_entry.badges.append(_badge("warning", "retained-root"))
+				cloned_entry.counters.append(_counter("retained_from_gen", retained.retained_from_gen, 1))
+				cloned_entry.counters.append(_counter("source_version", retained.source_snapshot_version, 1))
+				cloned_entry.counters.append(_counter("source_topology", retained.source_topology_version, 1))
+				cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
+				cloned_entry.info_lines.append(orphan_reason_line)
 			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
 			cloned_entry.parent_id = retained_root_projected_id
@@ -1073,11 +1097,59 @@ func _collect_retained_entries_under_root(panel: PanelModel, root_entry_id: Stri
 
 
 func _collect_retained_orphan_entries(panel: PanelModel) -> Array[StatusEntryModel]:
+	if panel == null:
+		return []
+	var provider_root_ids := _collect_retained_provider_root_ids(panel.entries)
+	if not provider_root_ids.is_empty():
+		return _collect_retained_entries_under_roots(panel, provider_root_ids)
+
 	var out: Array[StatusEntryModel] = []
 	for entry in panel.entries:
 		if entry.id == "server/main":
 			continue
 		out.append(entry)
+	return out
+
+
+func _collect_retained_provider_root_ids(entries: Array) -> Array[String]:
+	var provider_root_ids: Array[String] = []
+	var seen := {}
+	for entry in entries:
+		if not (entry is StatusEntryModel):
+			continue
+		var typed_entry: StatusEntryModel = entry
+		if not typed_entry.id.begins_with("provider/"):
+			continue
+		if not typed_entry.parent_id.is_empty() and typed_entry.parent_id != "server/main":
+			continue
+		if seen.has(typed_entry.id):
+			continue
+		seen[typed_entry.id] = true
+		provider_root_ids.append(typed_entry.id)
+	return provider_root_ids
+
+
+func _collect_retained_entries_under_roots(panel: PanelModel, root_entry_ids: Array[String]) -> Array[StatusEntryModel]:
+	var included_ids := {}
+	for root_entry_id in root_entry_ids:
+		if root_entry_id.is_empty():
+			continue
+		included_ids[root_entry_id] = true
+	var changed := true
+	while changed:
+		changed = false
+		for entry in panel.entries:
+			if included_ids.has(entry.id):
+				continue
+			if entry.parent_id.is_empty():
+				continue
+			if included_ids.has(entry.parent_id):
+				included_ids[entry.id] = true
+				changed = true
+	var out: Array[StatusEntryModel] = []
+	for entry in panel.entries:
+		if included_ids.has(entry.id):
+			out.append(entry)
 	return out
 
 
