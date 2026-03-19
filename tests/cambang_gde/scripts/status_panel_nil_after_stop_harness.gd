@@ -47,9 +47,7 @@ func _initialize() -> void:
 	panel.call("_disconnect_server")
 	panel.set("_server", server)
 
-	server.snapshot = _authoritative_snapshot()
-	panel.call("_refresh_from_server")
-	await process_frame
+	await _refresh_panel_with_snapshot(panel, server, _authoritative_snapshot(2, 100, 21, 1))
 
 	if not bool(panel.get("_last_active_panel_is_authoritative")):
 		_fail("panel failed to enter authoritative mode for initial snapshot")
@@ -85,16 +83,71 @@ func _initialize() -> void:
 		_fail("previous authoritative state was not preserved through retained continuity")
 		return
 
-	print("OK: status panel NIL-after-stop reconciliation PASS")
+	if _retained_generation_list(panel) != [2]:
+		_fail("expected exactly one retained generation [2] after authoritative→NIL transition")
+		return
+
+	await _refresh_panel_with_snapshot(panel, server, _authoritative_snapshot(3, 200, 31, 2))
+	if not bool(panel.get("_last_active_panel_is_authoritative")):
+		_fail("panel failed to re-enter authoritative mode for later snapshot B")
+		return
+
+	var row_ids_after_b := _collect_entry_ids(panel.get("_last_panel_model"))
+	if not row_ids_after_b.has("provider/200"):
+		_fail("current authoritative provider/200 missing after later authoritative refresh")
+		return
+	if row_ids_after_b.has("provider/100"):
+		_fail("authoritative provider/100 reappeared as current truth after later authoritative refresh")
+		return
+	if _retained_generation_list(panel) != [2]:
+		_fail("generation 2 was demoted more than once across NIL/non-authoritative transition")
+		return
+
+	await _refresh_panel_with_snapshot(panel, server, _authoritative_snapshot(4, 300, 41, 3))
+	var retained_generations_after_c := _retained_generation_list(panel)
+	if retained_generations_after_c != [3, 2]:
+		_fail("expected retained generations [3, 2] newest-first after authoritative A->B->C churn; got %s" % [retained_generations_after_c])
+		return
+
+	var retained_after_c: Array = panel.get("_retained_subtrees")
+	if retained_after_c.size() < 2:
+		_fail("expected two retained generations before TTL expiry check")
+		return
+	retained_after_c[1].retained_at_msec = Time.get_ticks_msec() - 5001
+	if not bool(panel.call("_expire_retained_subtrees_by_policy")):
+		_fail("expected retained TTL expiry to remove the aged retained generation")
+		return
+	if _retained_generation_list(panel) != [3]:
+		_fail("retained TTL expiry removed the wrong generation or left expired history visible")
+		return
+
+	print("OK: status panel retained lifecycle reconciliation PASS")
 	quit(0)
 
 
-func _authoritative_snapshot() -> Dictionary:
+func _refresh_panel_with_snapshot(panel: Variant, server: MockServer, snapshot: Variant) -> void:
+	server.snapshot = snapshot
+	panel.call("_refresh_from_server")
+	await process_frame
+	await process_frame
+
+
+func _retained_generation_list(panel: Variant) -> Array[int]:
+	var generations: Array[int] = []
+	var retained_states: Array = panel.get("_retained_subtrees")
+	for retained_state in retained_states:
+		if retained_state == null:
+			continue
+		generations.append(int(retained_state.get("retained_from_gen")))
+	return generations
+
+
+func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, topology_version: int) -> Dictionary:
 	return {
 		"schema_version": 1,
-		"gen": 2,
-		"version": 21,
-		"topology_version": 1,
+		"gen": gen,
+		"version": version,
+		"topology_version": topology_version,
 		"timestamp_ns": 40096504700,
 		"imaging_spec_version": 1,
 		"rigs": [],
@@ -121,17 +174,17 @@ func _authoritative_snapshot() -> Dictionary:
 		],
 		"native_objects": [
 			{
-				"native_id": 100,
+				"native_id": provider_native_id,
 				"type": "provider",
 				"phase": "LIVE",
-				"creation_gen": 2
+				"creation_gen": gen
 			},
 			{
 				"native_id": 101,
 				"type": "device",
 				"owner_device_instance_id": 1,
 				"phase": "LIVE",
-				"creation_gen": 2
+				"creation_gen": gen
 			},
 			{
 				"native_id": 102,
@@ -139,7 +192,7 @@ func _authoritative_snapshot() -> Dictionary:
 				"owner_device_instance_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
-				"creation_gen": 2
+				"creation_gen": gen
 			},
 			{
 				"native_id": 103,
@@ -147,7 +200,7 @@ func _authoritative_snapshot() -> Dictionary:
 				"owner_device_instance_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
-				"creation_gen": 2
+				"creation_gen": gen
 			}
 		],
 		"detached_root_ids": []

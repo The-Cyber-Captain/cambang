@@ -631,17 +631,24 @@ func _parse_orphan_retained_gen(label: String) -> int:
 
 func _update_retained_lifecycle(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
 	if not is_authoritative_snapshot:
-		if _last_authoritative_panel_model != null and not _last_authoritative_snapshot_meta.is_empty():
-			_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+		_consume_last_authoritative_into_retained()
 		return
 
 	var active_gen := int(snapshot_meta.get("gen", -1))
 	var last_gen := int(_last_authoritative_snapshot_meta.get("gen", -1))
 	if _last_authoritative_panel_model != null and last_gen >= 0 and active_gen >= 0 and active_gen != last_gen:
-		_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+		_consume_last_authoritative_into_retained()
 
 	_last_authoritative_panel_model = _clone_panel_model(active_panel)
 	_last_authoritative_snapshot_meta = snapshot_meta.duplicate(true)
+
+
+func _consume_last_authoritative_into_retained() -> void:
+	if _last_authoritative_panel_model == null or _last_authoritative_snapshot_meta.is_empty():
+		return
+	_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+	_last_authoritative_panel_model = null
+	_last_authoritative_snapshot_meta.clear()
 
 
 func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Dictionary) -> void:
