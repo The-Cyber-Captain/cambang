@@ -76,6 +76,14 @@ CamBANGServer::~CamBANGServer() {
 }
 
 void CamBANGServer::start() {
+  const CoreRuntimeState state = runtime_.state_copy();
+  if (state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE) {
+    // CoreRuntime::start() is already idempotent for active sessions. Mirror that
+    // at the Godot boundary so redundant start() calls do not clear the currently
+    // latched snapshot/counters before the no-op runtime call returns.
+    return;
+  }
+
   // New session starts with no Godot-latched snapshot until first publish.
   latest_.reset();
   latest_export_.clear();
