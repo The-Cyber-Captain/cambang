@@ -331,6 +331,70 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind) {
   ScenarioHarness h(provider_kind);
   std::string error;
 
+  auto settle_native_shape = [&](int step_index,
+                                 uint64_t want_gen,
+                                 size_t want_device_count,
+                                 size_t want_stream_count,
+                                 const char* wait_timeout_message,
+                                 const char* publish_message,
+                                 const std::function<bool(const CamBANGStateSnapshot&)>& pred) -> bool {
+    if (h.observed().raw && pred(*h.observed().raw)) {
+      return true;
+    }
+
+    const ObservedSnapshot before = h.observed();
+    if (!h.wait_for_core_snapshot(pred, error, 500, 5, wait_timeout_message)) {
+      cli::error("FAIL: ", error);
+      return false;
+    }
+    if (!h.tick()) {
+      fail_step(step_index, publish_message);
+      return false;
+    }
+    if (h.observed().is_nil || !h.observed().raw) {
+      fail_step(step_index, "expected non-NIL snapshot while settling native shape");
+      return false;
+    }
+    if (h.observed().gen != want_gen) {
+      fail_step(step_index, "native-shape settle changed generation unexpectedly");
+      return false;
+    }
+    if (h.observed().device_count != want_device_count || h.observed().stream_count != want_stream_count) {
+      fail_step(step_index, "native-shape settle changed public device/stream counts unexpectedly");
+      return false;
+    }
+    if (h.observed().version <= before.version) {
+      fail_step(step_index, "expected native-shape settle to advance observable version");
+      return false;
+    }
+    if (h.observed().topology_version < before.topology_version) {
+      fail_step(step_index, "native-shape settle regressed topology_version");
+      return false;
+    }
+    return pred(*h.observed().raw);
+  };
+
+  const auto is_device_realization_native_shape = [](const CamBANGStateSnapshot& s) {
+    return count_native_type(s, NativeObjectType::Provider) == 1 &&
+           count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::Stream) == 0 &&
+           count_native_type(s, NativeObjectType::FrameProducer) == 0;
+  };
+
+  const auto is_stream_realization_native_shape = [](const CamBANGStateSnapshot& s) {
+    return count_native_type(s, NativeObjectType::Provider) == 1 &&
+           count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::Stream) == 1 &&
+           count_native_type(s, NativeObjectType::FrameProducer) == 0;
+  };
+
+  const auto is_full_realization_native_shape = [](const CamBANGStateSnapshot& s) {
+    return count_native_type(s, NativeObjectType::Provider) == 1 &&
+           count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::Stream) == 1 &&
+           count_native_type(s, NativeObjectType::FrameProducer) == 1;
+  };
+
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
     return 1;
@@ -361,20 +425,39 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind) {
     return 1;
   }
   cli::line("step 1 detail OK");
+  uint64_t current_version = h.observed().version;
+  uint64_t current_topology_version = h.observed().topology_version;
 
   if (h.tick()) {
-    fail_step(2, "unexpected repeated provider-only publication without new runtime facts");
-    return 1;
-  }
-  if (!check_step(2,
-                  SnapshotExpectation{}
-                      .is_nil(false)
-                      .gen(0)
-                      .version(baseline_version)
-                      .topology_version(0)
-                      .device_count(0)
-                      .stream_count(0),
-                  h.observed())) {
+    if (!check_step(2,
+                    SnapshotExpectation{}
+                        .is_nil(false)
+                        .gen(0)
+                        .version(current_version + 1)
+                        .topology_version(current_topology_version)
+                        .device_count(0)
+                        .stream_count(0),
+                    h.observed())) {
+      return 1;
+    }
+    if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
+        count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+        count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
+        count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
+      log_restarted_baseline_diagnostic(2, h.observed());
+      fail_step(2, "repeated provider-only publication changed native shape unexpectedly");
+      return 1;
+    }
+    current_version = h.observed().version;
+  } else if (!check_step(2,
+                         SnapshotExpectation{}
+                             .is_nil(false)
+                             .gen(0)
+                             .version(current_version)
+                             .topology_version(current_topology_version)
+                             .device_count(0)
+                             .stream_count(0),
+                         h.observed())) {
     return 1;
   }
 
@@ -389,22 +472,27 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind) {
   if (!check_step(3,
                   SnapshotExpectation{}
                       .gen(0)
-                      .version(baseline_version + 1)
-                      .topology_version(1)
+                      .version(current_version + 1)
+                      .topology_version(current_topology_version + 1)
                       .device_count(1)
                       .stream_count(0),
                   h.observed())) {
     return 1;
   }
-  if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::Device) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
-      count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
+  if (!settle_native_shape(3,
+                           0,
+                           1,
+                           0,
+                           "timed out waiting for device-descendant native shape after device realization",
+                           "expected device-descendant native-object publish after device realization",
+                           is_device_realization_native_shape)) {
     log_restarted_baseline_diagnostic(3, h.observed());
     fail_step(3, "device realization native-object shape mismatch");
     return 1;
   }
   cli::line("step 3 detail OK");
+  current_version = h.observed().version;
+  current_topology_version = h.observed().topology_version;
 
   if (!h.create_stream(error)) {
     cli::error("FAIL: ", error);
@@ -417,22 +505,27 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind) {
   if (!check_step(4,
                   SnapshotExpectation{}
                       .gen(0)
-                      .version(baseline_version + 2)
-                      .topology_version(2)
+                      .version(current_version + 1)
+                      .topology_version(current_topology_version + 1)
                       .device_count(1)
                       .stream_count(1),
                   h.observed())) {
     return 1;
   }
-  if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::Device) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::Stream) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
+  if (!settle_native_shape(4,
+                           0,
+                           1,
+                           1,
+                           "timed out waiting for stream-descendant native shape after stream realization",
+                           "expected stream-descendant native-object publish after stream realization",
+                           is_stream_realization_native_shape)) {
     log_restarted_baseline_diagnostic(4, h.observed());
     fail_step(4, "stream realization native-object shape mismatch");
     return 1;
   }
   cli::line("step 4 detail OK");
+  current_version = h.observed().version;
+  current_topology_version = h.observed().topology_version;
 
   if (!h.start_stream(error)) {
     cli::error("FAIL: ", error);
@@ -445,17 +538,20 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind) {
   if (!check_step(5,
                   SnapshotExpectation{}
                       .gen(0)
-                      .version(baseline_version + 3)
-                      .topology_version(2)
+                      .version(current_version + 1)
+                      .topology_version(current_topology_version)
                       .device_count(1)
                       .stream_count(1),
                   h.observed())) {
     return 1;
   }
-  if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::Device) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::Stream) != 1 ||
-      count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 1) {
+  if (!settle_native_shape(5,
+                           0,
+                           1,
+                           1,
+                           "timed out waiting for frameproducer native shape after start_stream",
+                           "expected frameproducer native-object publish after start_stream",
+                           is_full_realization_native_shape)) {
     log_restarted_baseline_diagnostic(5, h.observed());
     fail_step(5, "full realization native-object shape mismatch");
     return 1;
