@@ -327,9 +327,13 @@ int provider_only_authoritative_baseline(ScenarioProviderKind provider_kind) {
   return 0;
 }
 
-int provider_only_to_realized(ScenarioProviderKind provider_kind) {
+int provider_only_to_realized(ScenarioProviderKind provider_kind, const RealizationProfilerOptions& profiler_options) {
+  RealizationProfiler profiler(profiler_options);
   ScenarioHarness h(provider_kind);
   std::string error;
+  if (profiler.enabled()) {
+    h.set_realization_profiler(&profiler);
+  }
 
   auto settle_native_shape = [&](int step_index,
                                  uint64_t want_gen,
@@ -557,6 +561,10 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind) {
     return 1;
   }
   cli::line("step 5 detail OK");
+
+  if (profiler.enabled()) {
+    profiler.emit_report();
+  }
 
   cli::line("Scenario PASSED");
   return 0;
@@ -1156,11 +1164,12 @@ int multi_device_topology_change(ScenarioProviderKind provider_kind) {
 
 } // namespace
 
-std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind) {
+std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind,
+                                               const RealizationProfilerOptions& profiler_options) {
   return {
       {"baseline_start", [provider_kind]() { return baseline_start(provider_kind); }},
       {"provider_only_authoritative_baseline", [provider_kind]() { return provider_only_authoritative_baseline(provider_kind); }},
-      {"provider_only_to_realized", [provider_kind]() { return provider_only_to_realized(provider_kind); }},
+      {"provider_only_to_realized", [provider_kind, profiler_options]() { return provider_only_to_realized(provider_kind, profiler_options); }},
       {"provider_only_then_stop", [provider_kind]() { return provider_only_then_stop(provider_kind); }},
       {"repeated_provider_only_across_generations", [provider_kind]() { return repeated_provider_only_across_generations(provider_kind); }},
       {"restart_nil_before_baseline", [provider_kind]() { return restart_nil_before_baseline(provider_kind); }},
