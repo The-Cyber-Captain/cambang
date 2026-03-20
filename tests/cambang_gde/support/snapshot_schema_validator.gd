@@ -92,7 +92,12 @@ const NATIVE_OBJECT_KEYS := {
 	"native_id": true,
 	"type": true,
 	"phase": true,
+	"root_id": true,
 	"creation_gen": true,
+	"created_ns": true,
+	"destroyed_ns": true,
+	"bytes_allocated": true,
+	"buffers_in_use": true,
 	"owner_provider_native_id": true,
 	"owner_rig_id": true,
 	"owner_device_instance_id": true,
@@ -206,6 +211,11 @@ static func _validate_native_object(obj: Variant, path: String, errors: Array[St
 	_require_enum(obj, "phase", VALID_PHASES, path, errors)
 	_require_int(obj, "creation_gen", path, errors)
 
+	_optional_int(obj, "root_id", path, errors)
+	_optional_int(obj, "created_ns", path, errors)
+	_optional_int(obj, "destroyed_ns", path, errors)
+	_optional_int(obj, "bytes_allocated", path, errors)
+	_optional_int(obj, "buffers_in_use", path, errors)
 	_optional_int(obj, "owner_provider_native_id", path, errors)
 	_optional_int(obj, "owner_rig_id", path, errors)
 	_optional_int(obj, "owner_device_instance_id", path, errors)
