@@ -479,6 +479,25 @@ func _set_last_active_panel_state(active_panel: PanelModel, is_authoritative_sna
 	_last_active_snapshot_meta = snapshot_meta.duplicate(true)
 
 
+func _is_provider_pending_panel(panel_model: PanelModel) -> bool:
+	if panel_model == null:
+		return false
+	var has_provider_pending := false
+	var has_provider_row := false
+	for entry in panel_model.entries:
+		if entry == null:
+			continue
+		if entry.id == "server/main/provider_pending":
+			has_provider_pending = true
+		elif entry.id.begins_with("provider/"):
+			has_provider_row = true
+	return has_provider_pending and not has_provider_row
+
+
+func _is_retained_eligible(panel_model: PanelModel) -> bool:
+	return not _is_provider_pending_panel(panel_model)
+
+
 func _compose_presented_panel_model(
 		active_panel: PanelModel,
 		is_authoritative_snapshot: bool,
@@ -639,8 +658,12 @@ func _update_retained_lifecycle(active_panel: PanelModel, is_authoritative_snaps
 	if _last_authoritative_panel_model != null and last_gen >= 0 and active_gen >= 0 and active_gen != last_gen:
 		_consume_last_authoritative_into_retained()
 
-	_last_authoritative_panel_model = _clone_panel_model(active_panel)
-	_last_authoritative_snapshot_meta = snapshot_meta.duplicate(true)
+	if _is_retained_eligible(active_panel):
+		_last_authoritative_panel_model = _clone_panel_model(active_panel)
+		_last_authoritative_snapshot_meta = snapshot_meta.duplicate(true)
+	else:
+		_last_authoritative_panel_model = null
+		_last_authoritative_snapshot_meta.clear()
 
 
 func _consume_last_authoritative_into_retained() -> void:

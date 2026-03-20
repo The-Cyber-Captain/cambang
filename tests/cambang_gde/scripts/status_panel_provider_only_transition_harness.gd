@@ -48,6 +48,15 @@ func _initialize() -> void:
 	panel.set("_server", server)
 
 	await _refresh_panel_with_snapshot(panel, server, _provider_pending_snapshot())
+	if panel.get("_last_authoritative_panel_model") != null:
+		_fail("provider_pending incorrectly seeded _last_authoritative_panel_model")
+		return
+	if not (panel.get("_last_authoritative_snapshot_meta") as Dictionary).is_empty():
+		_fail("provider_pending incorrectly seeded _last_authoritative_snapshot_meta")
+		return
+	if not (panel.get("_retained_subtrees") as Array).is_empty():
+		_fail("provider_pending incorrectly seeded retained history")
+		return
 	_assert_rows(
 		panel.get("_last_panel_model"),
 		["server/main", "server/main/provider_pending"],
@@ -61,6 +70,12 @@ func _initialize() -> void:
 	if not (panel.get("_retained_subtrees") as Array).is_empty():
 		_fail("provider-only authoritative snapshot incorrectly created retained history")
 		return
+	if panel.get("_last_authoritative_panel_model") == null:
+		_fail("provider-only authoritative snapshot failed to seed retained-eligible authoritative state")
+		return
+	if _model_contains_row_id(panel.get("_last_authoritative_panel_model"), "server/main/provider_pending"):
+		_fail("provider_pending poisoned retained-eligible authoritative cache")
+		return
 	_assert_rows(
 		panel.get("_last_panel_model"),
 		["server/main", "provider/500"],
@@ -73,23 +88,30 @@ func _initialize() -> void:
 		["server/main", "provider/500", "device/1", "stream/1", "frameproducer/103"],
 		["server/main/provider_pending"]
 	)
+	if _retained_generation_list(panel) != []:
+		_fail("provider-only -> realized transition unexpectedly demoted current-generation state into retained history")
+		return
 
-	await _refresh_panel_with_snapshot(panel, server, null)
-	if bool(panel.get("_last_active_panel_is_authoritative")):
-		_fail("panel remained authoritative after provider-only/realized sequence returned to NIL")
+	await _refresh_panel_with_snapshot(panel, server, _realized_snapshot(11, 600))
+	if _retained_generation_list(panel) != [10]:
+		_fail("realized -> next generation realized did not retain generation 10 subtree")
 		return
 	_assert_rows(
 		panel.get("_last_panel_model"),
-		["server/main"],
-		["provider/500", "device/1", "stream/1", "frameproducer/103", "server/main/provider_pending"]
+		["server/main", "provider/600", "device/1", "stream/1", "frameproducer/103"],
+		["server/main/provider_pending"]
 	)
+	if _retained_history_contains_provider_pending(panel):
+		_fail("provider_pending leaked into retained history after realized -> next generation realized transition")
+		return
 
-	await _refresh_panel_with_snapshot(panel, server, _provider_only_snapshot(11, 600))
-	_assert_rows(
-		panel.get("_last_panel_model"),
-		["server/main", "provider/600"],
-		["server/main/provider_pending", "provider/500", "device/1", "stream/1", "frameproducer/103"]
-	)
+	await _refresh_panel_with_snapshot(panel, server, null)
+	if bool(panel.get("_last_active_panel_is_authoritative")):
+		_fail("panel remained authoritative after realized sequence returned to NIL")
+		return
+	if _retained_history_contains_provider_pending(panel):
+		_fail("provider_pending leaked into retained history across NIL transition")
+		return
 
 	print("OK: status panel provider-only transition harness PASS")
 	quit(0)
@@ -112,6 +134,30 @@ func _assert_rows(model: Variant, required: Array[String], forbidden: Array[Stri
 		if row_ids.has(row_id):
 			_fail("unexpected row_id=%s; got=%s" % [row_id, row_ids])
 			return
+
+
+func _retained_generation_list(panel: Variant) -> Array[int]:
+	var generations: Array[int] = []
+	var retained_states: Array = panel.get("_retained_subtrees")
+	for retained_state in retained_states:
+		if retained_state == null:
+			continue
+		generations.append(int(retained_state.get("retained_from_gen")))
+	return generations
+
+
+func _retained_history_contains_provider_pending(panel: Variant) -> bool:
+	var retained_states: Array = panel.get("_retained_subtrees")
+	for retained_state in retained_states:
+		if retained_state == null:
+			continue
+		if _model_contains_row_id(retained_state.get("panel_model"), "server/main/provider_pending"):
+			return true
+	return false
+
+
+func _model_contains_row_id(model: Variant, row_id: String) -> bool:
+	return _collect_entry_ids(model).has(row_id)
 
 
 func _provider_pending_snapshot() -> Dictionary:
