@@ -143,6 +143,21 @@ the first published baseline may legitimately contain:
 This is a contract-valid transient of startup/restart truth, not an incomplete
 or fabricated snapshot.
 
+Its duration is intentionally **fact-driven**, not time-seeded:
+
+- it may remain the latest observable snapshot for multiple host ticks if no
+  device-open / stream-create / start-stream facts are published yet
+- it may transition directly to `NIL` on completed stop
+- it may repeat across later generations under restart churn
+
+In scenarios that explicitly realize descendants, the expected next observable
+transitions are:
+
+- provider-only → device realized (`version += 1`, `topology_version += 1`)
+- device realized → stream realized (`version += 1`, `topology_version += 1`)
+- stream realized → frameproducer realized (`version += 1`, `topology_version`
+  may remain unchanged if the observable topology signature does not change)
+
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
 `CamBANGServer.get_state_snapshot()` remains **parameter-less**.
