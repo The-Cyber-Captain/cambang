@@ -1,3 +1,4 @@
+#include <charconv>
 #include <iostream>
 #include <string>
 
@@ -16,18 +17,31 @@ bool starts_with(const std::string& s, const std::string& prefix) {
 }
 
 void usage(const char* argv0, const std::vector<cambang::ScenarioDefinition>& scenarios) {
-  std::cerr << "usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub]\n";
+  std::cerr << "usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub] [--repeat=N]\n";
   std::cerr << "default provider: synthetic\n";
+  std::cerr << "default repeat: 1\n";
   std::cerr << "available scenarios:\n";
   for (const auto& scenario : scenarios) {
     std::cerr << "  " << scenario.name << "\n";
   }
 }
 
+bool parse_repeat_count(const std::string& value, uint64_t& repeat_count) {
+  if (value.empty()) {
+    return false;
+  }
+  const char* begin = value.data();
+  const char* end = value.data() + value.size();
+  const auto result = std::from_chars(begin, end, repeat_count);
+  return result.ec == std::errc{} && result.ptr == end && repeat_count > 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   cambang::ScenarioProviderKind provider_kind = cambang::ScenarioProviderKind::Synthetic;
+  uint64_t repeat_count = 1;
+  bool repeat_specified = false;
   std::string requested;
 
   for (int i = 1; i < argc; ++i) {
@@ -51,6 +65,17 @@ int main(int argc, char** argv) {
       }
       continue;
     }
+    if (starts_with(arg, "--repeat=")) {
+      const std::string value = arg.substr(std::string("--repeat=").size());
+      if (!parse_repeat_count(value, repeat_count)) {
+        const auto scenarios = cambang::scenario_catalog(provider_kind);
+        std::cerr << "invalid repeat count: " << value << "\n";
+        usage(argv[0], scenarios);
+        return 2;
+      }
+      repeat_specified = true;
+      continue;
+    }
     if (!requested.empty()) {
       const auto scenarios = cambang::scenario_catalog(provider_kind);
       std::cerr << "unexpected extra argument: " << arg << "\n";
@@ -70,7 +95,21 @@ int main(int argc, char** argv) {
     if (scenario.name == requested) {
       cli::line("scenario_runner ", scenario.name, " --provider=", cambang::scenario_provider_name(provider_kind));
       cli::blank();
-      return scenario.run();
+      if (!repeat_specified) {
+        return scenario.run();
+      }
+
+      for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
+        cli::line("[repeat] iteration ", iteration, "/", repeat_count);
+        const int rc = scenario.run();
+        if (rc != 0) {
+          cli::error("[repeat] iteration ", iteration, "/", repeat_count, " FAILED");
+          return rc;
+        }
+      }
+
+      cli::line("Scenario PASSED (repeat=", repeat_count, ")");
+      return 0;
     }
   }
 
