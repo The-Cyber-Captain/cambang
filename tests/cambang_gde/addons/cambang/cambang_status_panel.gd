@@ -7,7 +7,7 @@ const SUPPORTED_SCHEMA_VERSION := 1
 const STATUS_ENTRY_SCENE := preload("res://addons/cambang/internal/status_entry.tscn")
 const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll_container.gd")
 # PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
-const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := -1
+const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 
 
@@ -25,6 +25,9 @@ class StatusEntryModel extends RefCounted:
 	var badges: Array[BadgeModel] = []
 	var counters: Array[CounterModel] = []
 	var info_lines: Array[String] = []
+	var summary_info_lines: Array[String] = []
+	var detail_info_lines: Array[String] = []
+	var anomaly_info_lines: Array[String] = []
 
 
 class BadgeModel extends RefCounted:
@@ -36,6 +39,7 @@ class CounterModel extends RefCounted:
 	var name: String = ""
 	var value: int = 0
 	var digits: int = 1
+	var visibility: String = "core"
 
 
 class StatusPanelStyle extends RefCounted:
@@ -83,6 +87,7 @@ class RetainedSubtreeState extends RefCounted:
 	var source_topology_version: int = -1
 	var retained_at_msec: int = -1
 	var provider_root_id: String = ""
+	var provider_identity_hint: String = ""
 	var root_status: String = "orphaned"
 
 
@@ -107,12 +112,15 @@ var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
 var _last_panel_model: PanelModel = null
 var _last_active_panel_model: PanelModel = null
+var _last_active_panel_is_authoritative: bool = false
+var _last_active_snapshot_meta: Dictionary = {}
 var _last_authoritative_panel_model: PanelModel = null
 var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
 
 
 func _ready() -> void:
+	set_process(true)
 	_build_ui_if_needed()
 	_apply_panel_style(_resolve_style())
 	_connect_server()
@@ -120,6 +128,7 @@ func _ready() -> void:
 
 
 func _enter_tree() -> void:
+	set_process(true)
 	if is_node_ready():
 		_build_ui_if_needed()
 		_apply_panel_style(_resolve_style())
@@ -129,6 +138,45 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	_disconnect_server()
+
+
+func _process(_delta: float) -> void:
+	if _reconcile_post_stop_nil_boundary():
+		return
+	if _last_active_panel_model == null:
+		return
+	if _retained_subtrees.is_empty():
+		return
+	if not _expire_retained_subtrees_by_policy():
+		return
+	_last_panel_model = _compose_presented_panel_model(
+		_last_active_panel_model,
+		_last_active_panel_is_authoritative,
+		_last_active_snapshot_meta,
+		false
+	)
+	_render_panel_model(_last_panel_model)
+
+
+func _reconcile_post_stop_nil_boundary() -> bool:
+	if not _last_active_panel_is_authoritative:
+		return false
+	if _server == null:
+		_server = _get_server()
+	if _server == null:
+		return false
+
+	var snapshot := _fetch_snapshot()
+	if snapshot != null:
+		return false
+
+	_last_snapshot_meta.clear()
+	_apply_snapshot_read(_read_snapshot(null))
+	var nil_panel := _build_nil_panel_model("No published snapshot yet.")
+	_set_last_active_panel_state(nil_panel, false, {})
+	_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
+	_render_panel_model(_last_panel_model)
+	return true
 
 
 func force_refresh() -> void:
@@ -360,7 +408,7 @@ func _refresh_from_server() -> void:
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
-		_last_active_panel_model = no_server_panel
+		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -374,7 +422,7 @@ func _refresh_from_server() -> void:
 	if snapshot == null:
 		_last_snapshot_meta.clear()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
-		_last_active_panel_model = nil_panel
+		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -382,7 +430,7 @@ func _refresh_from_server() -> void:
 	if typeof(snapshot) != TYPE_DICTIONARY:
 		_last_snapshot_meta.clear()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
-		_last_active_panel_model = bad_type_panel
+		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -394,7 +442,7 @@ func _refresh_from_server() -> void:
 			compat.get("contract_gaps", []),
 			compat.get("projection_gaps", [])
 		)
-		_last_active_panel_model = compat_panel
+		_set_last_active_panel_state(compat_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(compat_panel, false, {})
 		_render_panel_model(_last_panel_model)
 		return
@@ -404,31 +452,68 @@ func _refresh_from_server() -> void:
 	match category:
 		"none":
 			if _last_active_panel_model == null:
-				_last_active_panel_model = _project_snapshot_to_panel_model(snapshot, provider_mode)
+				_set_last_active_panel_state(
+					_project_snapshot_to_panel_model(snapshot, provider_mode),
+					true,
+					snapshot_meta
+				)
 			_last_panel_model = _compose_presented_panel_model(_last_active_panel_model, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 		"value_refresh":
 			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
 			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
-			_last_active_panel_model = value_panel
+			_set_last_active_panel_state(value_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(value_panel, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
-			_last_active_panel_model = full_panel
+			_set_last_active_panel_state(full_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(full_panel, true, snapshot_meta)
 			_render_panel_model(_last_panel_model)
 
 
-func _compose_presented_panel_model(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> PanelModel:
-	_update_retained_lifecycle(active_panel, is_authoritative_snapshot, snapshot_meta)
+func _set_last_active_panel_state(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
+	_last_active_panel_model = active_panel
+	_last_active_panel_is_authoritative = is_authoritative_snapshot
+	_last_active_snapshot_meta = snapshot_meta.duplicate(true)
+
+
+func _is_provider_pending_panel(panel_model: PanelModel) -> bool:
+	if panel_model == null:
+		return false
+	var has_provider_pending := false
+	var has_provider_row := false
+	for entry in panel_model.entries:
+		if entry == null:
+			continue
+		if entry.id == "server/main/provider_pending":
+			has_provider_pending = true
+		elif entry.id.begins_with("provider/"):
+			has_provider_row = true
+	return has_provider_pending and not has_provider_row
+
+
+func _is_retained_eligible(panel_model: PanelModel) -> bool:
+	return not _is_provider_pending_panel(panel_model)
+
+
+func _compose_presented_panel_model(
+		active_panel: PanelModel,
+		is_authoritative_snapshot: bool,
+		snapshot_meta: Dictionary,
+		update_retained_lifecycle: bool = true
+	) -> PanelModel:
+	if update_retained_lifecycle:
+		_update_retained_lifecycle(active_panel, is_authoritative_snapshot, snapshot_meta)
+	_reconcile_retained_subtrees(active_panel, is_authoritative_snapshot)
 	_expire_retained_subtrees_by_policy()
 
 	var composed := _clone_panel_model(active_panel)
 	_append_retained_presentation_subtrees(composed)
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
+	_apply_detail_policy_to_panel(composed)
 	return composed
 
 
@@ -565,17 +650,28 @@ func _parse_orphan_retained_gen(label: String) -> int:
 
 func _update_retained_lifecycle(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
 	if not is_authoritative_snapshot:
-		if _last_authoritative_panel_model != null and not _last_authoritative_snapshot_meta.is_empty():
-			_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+		_consume_last_authoritative_into_retained()
 		return
 
 	var active_gen := int(snapshot_meta.get("gen", -1))
 	var last_gen := int(_last_authoritative_snapshot_meta.get("gen", -1))
 	if _last_authoritative_panel_model != null and last_gen >= 0 and active_gen >= 0 and active_gen != last_gen:
-		_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+		_consume_last_authoritative_into_retained()
 
-	_last_authoritative_panel_model = _clone_panel_model(active_panel)
-	_last_authoritative_snapshot_meta = snapshot_meta.duplicate(true)
+	if _is_retained_eligible(active_panel):
+		_last_authoritative_panel_model = _clone_panel_model(active_panel)
+		_last_authoritative_snapshot_meta = snapshot_meta.duplicate(true)
+	else:
+		_last_authoritative_panel_model = null
+		_last_authoritative_snapshot_meta.clear()
+
+
+func _consume_last_authoritative_into_retained() -> void:
+	if _last_authoritative_panel_model == null or _last_authoritative_snapshot_meta.is_empty():
+		return
+	_add_retained_subtree_if_new(_last_authoritative_panel_model, _last_authoritative_snapshot_meta)
+	_last_authoritative_panel_model = null
+	_last_authoritative_snapshot_meta.clear()
 
 
 func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Dictionary) -> void:
@@ -594,7 +690,222 @@ func _add_retained_subtree_if_new(source_model: PanelModel, source_meta: Diction
 	retained.provider_root_id = str(root_info.get("provider_root_id", ""))
 	retained.root_status = str(root_info.get("root_status", "orphaned"))
 	retained.panel_model = _extract_retained_panel_subtree(source_model, retained.provider_root_id, retained.root_status)
+	retained.provider_identity_hint = _resolve_retained_provider_identity_hint(retained.panel_model, retained.provider_root_id)
 	_retained_subtrees.insert(0, retained)
+	_reconcile_retained_subtrees_for_supersession()
+
+
+func _retained_root_strength(root_status: String) -> int:
+	match root_status:
+		"destroyed_provider":
+			return 3
+		"ambiguous_provider":
+			return 2
+		"orphaned":
+			return 1
+		_:
+			return 0
+
+
+func _resolve_retained_provider_identity_hint(panel: PanelModel, provider_root_id: String) -> String:
+	if not provider_root_id.is_empty():
+		return provider_root_id
+	if panel == null:
+		return ""
+
+	var provider_ids: Array[String] = []
+	var seen := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if seen.has(entry.id):
+			continue
+		seen[entry.id] = true
+		provider_ids.append(entry.id)
+
+	if provider_ids.size() == 1:
+		return provider_ids[0]
+	return ""
+
+
+func _retained_family_key_for_gen(retained_from_gen: int) -> String:
+	return "gen=%d" % retained_from_gen
+
+
+func _retained_family_key(retained: RetainedSubtreeState) -> String:
+	if retained == null:
+		return _retained_family_key_for_gen(-1)
+	return _retained_family_key_for_gen(retained.retained_from_gen)
+
+
+func _retained_primary_key(retained: RetainedSubtreeState) -> String:
+	var family_key := _retained_family_key(retained)
+	if retained == null:
+		return family_key
+	var provider_hint := str(retained.provider_identity_hint)
+	if provider_hint.is_empty():
+		return family_key
+	return "%s|provider=%s" % [family_key, provider_hint]
+
+
+func _reconcile_retained_subtrees(active_panel: PanelModel, is_authoritative_snapshot: bool) -> void:
+	var authoritative_destroyed_provider_keys := {}
+	if is_authoritative_snapshot:
+		authoritative_destroyed_provider_keys = _collect_authoritative_destroyed_provider_reconciliation_keys(active_panel)
+	_replace_retained_subtrees_with_reconciled_keys(authoritative_destroyed_provider_keys)
+
+
+func _reconcile_retained_subtrees_for_supersession() -> bool:
+	return _replace_retained_subtrees_with_reconciled_keys({})
+
+
+func _replace_retained_subtrees_with_reconciled_keys(authoritative_destroyed_provider_keys: Dictionary) -> bool:
+	var reconciled := _build_reconciled_retained_subtrees(authoritative_destroyed_provider_keys)
+	var changed := reconciled.size() != _retained_subtrees.size()
+	if not changed:
+		for i in range(reconciled.size()):
+			if reconciled[i] != _retained_subtrees[i]:
+				changed = true
+				break
+	_retained_subtrees = reconciled
+	return changed
+
+
+func _build_reconciled_retained_subtrees(authoritative_destroyed_provider_keys: Dictionary) -> Array[RetainedSubtreeState]:
+	var groups_by_family := {}
+	var family_order: Array[String] = []
+	for retained in _retained_subtrees:
+		if retained == null:
+			continue
+		var family_key := _retained_family_key(retained)
+		if not groups_by_family.has(family_key):
+			groups_by_family[family_key] = []
+			family_order.append(family_key)
+		groups_by_family[family_key].append(retained)
+
+	var reconciled: Array[RetainedSubtreeState] = []
+	for family_key in family_order:
+		if authoritative_destroyed_provider_keys.has(family_key):
+			continue
+		var group := _typed_retained_subtree_group(groups_by_family.get(family_key, []))
+		var selected := _select_visible_retained_subtrees_for_family(
+			group,
+			authoritative_destroyed_provider_keys
+		)
+		for retained in selected:
+			reconciled.append(retained)
+	return reconciled
+
+
+func _typed_retained_subtree_group(group_value: Variant) -> Array[RetainedSubtreeState]:
+	var typed_group: Array[RetainedSubtreeState] = []
+	if typeof(group_value) != TYPE_ARRAY:
+		return typed_group
+	for item in group_value:
+		if item is RetainedSubtreeState:
+			typed_group.append(item)
+	return typed_group
+
+
+func _select_visible_retained_subtrees_for_family(
+		group: Array[RetainedSubtreeState],
+		authoritative_destroyed_provider_keys: Dictionary
+	) -> Array[RetainedSubtreeState]:
+	var best_by_primary := {}
+	var primary_order: Array[String] = []
+	var family_max_strength := 0
+	for retained in group:
+		if retained == null:
+			continue
+		var primary_key := _retained_primary_key(retained)
+		var required_strength := int(authoritative_destroyed_provider_keys.get(primary_key, 0))
+		var retained_strength := _retained_root_strength(retained.root_status)
+		if retained_strength < required_strength:
+			continue
+		var best: RetainedSubtreeState = best_by_primary.get(primary_key, null)
+		if best == null:
+			best_by_primary[primary_key] = retained
+			primary_order.append(primary_key)
+		elif _is_stronger_retained_subtree(retained, best):
+			best_by_primary[primary_key] = retained
+		family_max_strength = maxi(family_max_strength, retained_strength)
+
+	var selected: Array[RetainedSubtreeState] = []
+	for primary_key in primary_order:
+		var best: RetainedSubtreeState = best_by_primary.get(primary_key, null)
+		if best == null:
+			continue
+		var best_strength := _retained_root_strength(best.root_status)
+		if primary_key == _retained_family_key(best) and family_max_strength > best_strength:
+			continue
+		selected.append(best)
+	return selected
+
+
+func _is_stronger_retained_subtree(candidate: RetainedSubtreeState, incumbent: RetainedSubtreeState) -> bool:
+	if incumbent == null:
+		return true
+	if candidate == null:
+		return false
+
+	var candidate_strength := _retained_root_strength(candidate.root_status)
+	var incumbent_strength := _retained_root_strength(incumbent.root_status)
+	if candidate_strength != incumbent_strength:
+		return candidate_strength > incumbent_strength
+	if candidate.source_snapshot_version != incumbent.source_snapshot_version:
+		return candidate.source_snapshot_version > incumbent.source_snapshot_version
+	if candidate.source_topology_version != incumbent.source_topology_version:
+		return candidate.source_topology_version > incumbent.source_topology_version
+	if candidate.source_snapshot_timestamp_ns != incumbent.source_snapshot_timestamp_ns:
+		return candidate.source_snapshot_timestamp_ns > incumbent.source_snapshot_timestamp_ns
+	return candidate.retained_at_msec > incumbent.retained_at_msec
+
+
+func _collect_authoritative_destroyed_provider_reconciliation_keys(panel: PanelModel) -> Dictionary:
+	var keys := {}
+	if panel == null:
+		return keys
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if not entry.parent_id.contains("/retained_prior_generation_native_objects"):
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if not _entry_has_destroyed_provider_badge(entry):
+			continue
+		var creation_gen := _extract_creation_gen_from_info_lines(entry.info_lines)
+		if creation_gen < 0:
+			continue
+		var family_key := _retained_family_key_for_gen(creation_gen)
+		keys[family_key] = _retained_root_strength("destroyed_provider")
+		keys["%s|provider=%s" % [family_key, entry.id]] = _retained_root_strength("destroyed_provider")
+	return keys
+
+
+func _entry_has_destroyed_provider_badge(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	for badge in entry.badges:
+		if badge.label == "phase=3" or badge.label == "native_phase=3":
+			return true
+	return false
+
+
+func _extract_creation_gen_from_info_lines(info_lines: Array[String]) -> int:
+	var prefix := "Retained record: creation_gen="
+	for line in info_lines:
+		if not line.begins_with(prefix):
+			continue
+		var suffix := line.substr(prefix.length())
+		var end_idx := suffix.find(",")
+		if end_idx >= 0:
+			suffix = suffix.substr(0, end_idx)
+		if suffix.is_valid_int():
+			return int(suffix)
+	return -1
 
 
 func _extract_retained_panel_subtree(source_model: PanelModel, provider_root_id: String, root_status: String) -> PanelModel:
@@ -651,17 +962,19 @@ func _resolve_retained_provider_root(panel: PanelModel) -> Dictionary:
 	return {"provider_root_id": "", "root_status": "orphaned"}
 
 
-func _expire_retained_subtrees_by_policy() -> void:
+func _expire_retained_subtrees_by_policy() -> bool:
 	if _retained_subtrees.is_empty():
-		return
+		return false
 	if PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC < 0:
-		return
+		return false
 	var now_msec := Time.get_ticks_msec()
 	var kept: Array[RetainedSubtreeState] = []
 	for retained in _retained_subtrees:
 		if not _is_retained_subtree_expired(retained, now_msec):
 			kept.append(retained)
+	var changed := kept.size() != _retained_subtrees.size()
 	_retained_subtrees = kept
+	return changed
 
 
 func _is_retained_subtree_expired(retained: RetainedSubtreeState, now_msec: int) -> bool:
@@ -692,24 +1005,35 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 	var subtree_prefix := "%s/subtree/%d/gen_%d" % [RETAINED_PRESENTATION_ROOT_ID, order_index, retained.retained_from_gen]
 	var retained_entries: Array[StatusEntryModel] = []
 	var retained_root_source_id := ""
+	var orphan_provider_root_ids: Array[String] = []
+	var primary_orphan_provider_root_id := ""
 	if retained.root_status == "destroyed_provider" and not retained.provider_root_id.is_empty():
 		retained_root_source_id = retained.provider_root_id
 		retained_entries = _collect_retained_entries_under_root(retained.panel_model, retained.provider_root_id)
 	else:
-		retained_root_source_id = "%s/orphan_root" % subtree_prefix
 		retained_entries = _collect_retained_orphan_entries(retained.panel_model)
+		orphan_provider_root_ids = _collect_retained_provider_root_ids(retained_entries)
+		if not orphan_provider_root_ids.is_empty():
+			primary_orphan_provider_root_id = orphan_provider_root_ids[0]
+			if not retained.provider_identity_hint.is_empty() and orphan_provider_root_ids.has(retained.provider_identity_hint):
+				primary_orphan_provider_root_id = retained.provider_identity_hint
+		else:
+			retained_root_source_id = "%s/orphan_root" % subtree_prefix
 
 	var included_ids := {}
 	for source_entry in retained_entries:
 		included_ids[source_entry.id] = true
 
 	var retained_root_projected_id := "%s/%s" % [subtree_prefix, retained_root_source_id]
-	if retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty():
+	var orphan_reason_line := ""
+	if retained.root_status == "ambiguous_provider":
+		orphan_reason_line = "Retained subtree is orphaned because multiple DESTROYED provider rows were present."
+	else:
+		orphan_reason_line = "Retained subtree is orphaned because no truthful DESTROYED provider root was available."
+
+	if (retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty()) and orphan_provider_root_ids.is_empty():
 		var orphan_info := _retained_metadata_info_lines(retained)
-		if retained.root_status == "ambiguous_provider":
-			orphan_info.append("Retained subtree is orphaned because multiple DESTROYED provider rows were present.")
-		else:
-			orphan_info.append("Retained subtree is orphaned because no truthful DESTROYED provider root was available.")
+		orphan_info.append(orphan_reason_line)
 		target_panel.entries.append(_entry(
 			retained_root_projected_id,
 			"server/main",
@@ -740,6 +1064,19 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
+			cloned_entry.label = "%s [retained]" % source_entry.label
+		elif orphan_provider_root_ids.has(source_entry.id):
+			cloned_entry.parent_id = "server/main"
+			cloned_entry.depth = 1
+			cloned_entry.badges.append(_badge("warning", "retained"))
+			cloned_entry.badges.append(_badge("warning", "orphaned"))
+			if source_entry.id == primary_orphan_provider_root_id:
+				cloned_entry.badges.append(_badge("warning", "retained-root"))
+				cloned_entry.counters.append(_counter("retained_from_gen", retained.retained_from_gen, 1))
+				cloned_entry.counters.append(_counter("source_version", retained.source_snapshot_version, 1))
+				cloned_entry.counters.append(_counter("source_topology", retained.source_topology_version, 1))
+				cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
+				cloned_entry.info_lines.append(orphan_reason_line)
 			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
 			cloned_entry.parent_id = retained_root_projected_id
@@ -813,11 +1150,59 @@ func _collect_retained_entries_under_root(panel: PanelModel, root_entry_id: Stri
 
 
 func _collect_retained_orphan_entries(panel: PanelModel) -> Array[StatusEntryModel]:
+	if panel == null:
+		return []
+	var provider_root_ids := _collect_retained_provider_root_ids(panel.entries)
+	if not provider_root_ids.is_empty():
+		return _collect_retained_entries_under_roots(panel, provider_root_ids)
+
 	var out: Array[StatusEntryModel] = []
 	for entry in panel.entries:
 		if entry.id == "server/main":
 			continue
 		out.append(entry)
+	return out
+
+
+func _collect_retained_provider_root_ids(entries: Array) -> Array[String]:
+	var provider_root_ids: Array[String] = []
+	var seen := {}
+	for entry in entries:
+		if not (entry is StatusEntryModel):
+			continue
+		var typed_entry: StatusEntryModel = entry
+		if not typed_entry.id.begins_with("provider/"):
+			continue
+		if not typed_entry.parent_id.is_empty() and typed_entry.parent_id != "server/main":
+			continue
+		if seen.has(typed_entry.id):
+			continue
+		seen[typed_entry.id] = true
+		provider_root_ids.append(typed_entry.id)
+	return provider_root_ids
+
+
+func _collect_retained_entries_under_roots(panel: PanelModel, root_entry_ids: Array[String]) -> Array[StatusEntryModel]:
+	var included_ids := {}
+	for root_entry_id in root_entry_ids:
+		if root_entry_id.is_empty():
+			continue
+		included_ids[root_entry_id] = true
+	var changed := true
+	while changed:
+		changed = false
+		for entry in panel.entries:
+			if included_ids.has(entry.id):
+				continue
+			if entry.parent_id.is_empty():
+				continue
+			if included_ids.has(entry.parent_id):
+				included_ids[entry.id] = true
+				changed = true
+	var out: Array[StatusEntryModel] = []
+	for entry in panel.entries:
+		if included_ids.has(entry.id):
+			out.append(entry)
 	return out
 
 
@@ -845,11 +1230,11 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_badges.append(_badge(badge.role, badge.label))
 	var cloned_counters: Array[CounterModel] = []
 	for counter in source.counters:
-		cloned_counters.append(_counter(counter.name, counter.value, counter.digits))
+		cloned_counters.append(_counter(counter.name, counter.value, counter.digits, counter.visibility))
 	var cloned_info_lines: Array[String] = []
 	for line in source.info_lines:
 		cloned_info_lines.append(line)
-	return _entry(
+	var cloned := _entry(
 		source.id,
 		source.parent_id,
 		source.depth,
@@ -860,6 +1245,10 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_counters,
 		cloned_info_lines
 	)
+	cloned.summary_info_lines = source.summary_info_lines.duplicate()
+	cloned.detail_info_lines = source.detail_info_lines.duplicate()
+	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
+	return cloned
 
 
 func _fetch_snapshot() -> Variant:
@@ -1244,6 +1633,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			continue
 		if _native_object_is_provider(current_rec):
 			current_provider_native_objects.append(current_rec)
+
+	var snapshot_version := int(snapshot.get("version", -1))
+	var topology_version := int(snapshot.get("topology_version", -1))
+	if current_provider_native_objects.is_empty() and issues.is_empty() and snapshot_version == 0 and topology_version == 0:
+		panel.entries.append(_entry(
+			"server/main/provider_pending",
+			"server/main",
+			1,
+			"provider_pending",
+			true,
+			false,
+			[_badge("info", "startup")],
+			[_counter("providers", 0, 1)],
+			["Startup baseline published before any current-generation provider native object is visible."]
+		))
+		_ensure_expandability(panel)
+		return panel
 
 	if current_provider_native_objects.size() != 1:
 		issues.append(
@@ -1737,35 +2143,42 @@ func _build_native_object_entry(
 	var owner_stream_id := int(rec.get("owner_stream_id", 0))
 	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
 	var root_id := int(rec.get("root_id", 0))
+	var native_type_key := _native_object_type_key(rec)
+	# Preserve provider identity even when the record is retained from a prior generation.
+	# Destroyed providers must remain provider-root rows rather than degrading to generic native_object rows.
+	var is_provider_native := native_type_key == "provider"
 	var parent_id := provider_id
 	var info_lines: Array[String] = []
 
-	if owner_stream_id > 0:
-		parent_id = "stream/%d" % owner_stream_id
-		if not _entry_exists(existing_entries, parent_id):
-			info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
-	elif owner_device_instance_id > 0:
-		parent_id = "device/%d" % owner_device_instance_id
-		if not _entry_exists(existing_entries, parent_id):
-			info_lines.append("Contract gap: owner device not present in snapshot devices.")
-			parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+	if not is_provider_native:
+		if owner_stream_id > 0:
+			parent_id = "stream/%d" % owner_stream_id
+			if not _entry_exists(existing_entries, parent_id):
+				info_lines.append("Contract gap: owner stream not present in snapshot streams.")
+				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+		elif owner_device_instance_id > 0:
+			parent_id = "device/%d" % owner_device_instance_id
+			if not _entry_exists(existing_entries, parent_id):
+				info_lines.append("Contract gap: owner device not present in snapshot devices.")
+				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+			else:
+				var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
+				if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
+					info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
+		elif _contains_int(detached_root_ids, root_id):
+			parent_id = orphan_row_id
 		else:
-			var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
-			if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
-				info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
-	elif _contains_int(detached_root_ids, root_id):
-		parent_id = orphan_row_id
-	else:
-		info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
+			info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
 
-	var native_type_key := _native_object_type_key(rec)
 	var row_id := "native_object/%d" % native_id
 	var row_label := "native_object/%d" % native_id
-	if native_type_key == "frameproducer":
+	if is_provider_native:
+		row_id = "provider/%d" % native_id
+		row_label = "provider/%d" % native_id
+	elif native_type_key == "frameproducer":
 		row_id = "frameproducer/%d" % native_id
 		row_label = "frameproducer/%d" % native_id
 		if owner_stream_id > 0:
@@ -1799,7 +2212,12 @@ func _ensure_expandability(panel: PanelModel) -> void:
 			continue
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
-		e.can_expand = int(child_counts.get(e.id, 0)) > 0
+		var has_detail_payload := not e.detail_info_lines.is_empty()
+		for counter in e.counters:
+			if counter.visibility == "detail":
+				has_detail_payload = true
+				break
+		e.can_expand = int(child_counts.get(e.id, 0)) > 0 or has_detail_payload
 
 
 func _depth_for_parent(parent_id: String) -> int:
@@ -1992,12 +2410,136 @@ func _badge(role: String, label: String) -> BadgeModel:
 	return model
 
 
-func _counter(name: String, value: int, digits: int) -> CounterModel:
+func _counter(name: String, value: int, digits: int, visibility: String = "core") -> CounterModel:
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
 	model.digits = digits
+	model.visibility = visibility
 	return model
+
+
+func _apply_detail_policy_to_panel(panel: PanelModel) -> void:
+	if panel == null:
+		return
+	for entry in panel.entries:
+		_apply_detail_policy_to_entry(entry)
+	_ensure_expandability(panel)
+
+
+func _apply_detail_policy_to_entry(entry: StatusEntryModel) -> void:
+	if entry == null:
+		return
+
+	entry.summary_info_lines.clear()
+	entry.detail_info_lines.clear()
+	entry.anomaly_info_lines.clear()
+
+	for line in entry.info_lines:
+		if _is_anomaly_info_line(line):
+			entry.anomaly_info_lines.append(line)
+		elif _should_show_line_in_summary(entry, line):
+			entry.summary_info_lines.append(line)
+		else:
+			entry.detail_info_lines.append(line)
+
+	for counter in entry.counters:
+		counter.visibility = _counter_visibility_for_entry(entry, counter)
+
+
+func _is_anomaly_info_line(line: String) -> bool:
+	return (
+		line.begins_with("Contract gap:")
+		or line.begins_with("Contract ambiguity:")
+		or line.begins_with("Projection invariant:")
+		or line.begins_with("Projection gap:")
+		or line.begins_with("Runtime payload")
+		or line.find("contradiction") >= 0
+		or line.find("unsupported") >= 0
+		or line.find("malformed") >= 0
+	)
+
+
+func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool:
+	if entry == null:
+		return false
+	if _entry_kind(entry) == "retained":
+		return (
+			line.begins_with("Presentation continuity only.")
+			or line.begins_with("retained_age_msec=")
+			or line.begins_with("retained_expires_in_msec=")
+			or line.begins_with("retained_expiry=")
+		)
+	if entry.id == "server/main":
+		return true
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return false
+	return entry.summary_info_lines.is_empty()
+
+
+func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterModel) -> String:
+	if entry == null or counter == null:
+		return "core"
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return "core"
+	if _is_frameproducer_entry(entry):
+		match counter.name:
+			"buffers":
+				return "summary"
+			"bytes":
+				return "detail"
+			_:
+				return "summary"
+	if _is_native_object_entry(entry):
+		match counter.name:
+			"buffers":
+				return "summary"
+			"bytes":
+				return "detail"
+			_:
+				return "summary"
+	match counter.name:
+		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
+			return "core"
+		"fps_max", "native_all", "native_cur", "buffers", "source_version":
+			return "summary"
+		"frames", "bytes", "native_prev", "native_dead", "source_topology":
+			return "detail"
+		_:
+			return "summary"
+
+
+func _is_frameproducer_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.id.begins_with("frameproducer/") or entry.id.contains("/frameproducer/")
+
+
+func _is_native_object_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.id.begins_with("native_object/") or entry.id.contains("/native_object/")
+
+
+func _entry_kind(entry: StatusEntryModel) -> String:
+	if entry == null:
+		return "authoritative"
+	if _is_retained_projection_entry(entry.id) or _has_badge_label(entry, "retained"):
+		return "retained"
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return "contract_gap"
+	for line in entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return "contract_gap"
+	if (
+		entry.id.begins_with("native_object/")
+		or entry.id.begins_with("frameproducer/")
+		or entry.id.contains("orphaned_native_objects")
+		or _has_badge_label(entry, "detached")
+		or _has_badge_label(entry, "orphaned")
+	):
+		return "fallback"
+	return "authoritative"
 
 
 
