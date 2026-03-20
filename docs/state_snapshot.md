@@ -129,6 +129,20 @@ This remains true even if core publishes before the Godot tick node is active:
 the Godot boundary must latch the baseline snapshot and emit it on the first
 eligible tick.
 
+Authoritative baseline content is allowed to be **provider-only**.
+
+In particular, if the provider has already been attached/initialized for the new
+generation but no device has yet been opened and no stream has yet been created,
+the first published baseline may legitimately contain:
+
+- one current-generation provider native object
+- zero devices
+- zero streams
+- no frameproducer subtree
+
+This is a contract-valid transient of startup/restart truth, not an incomplete
+or fabricated snapshot.
+
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
 `CamBANGServer.get_state_snapshot()` remains **parameter-less**.

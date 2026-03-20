@@ -50,6 +50,95 @@ int baseline_start(ScenarioProviderKind provider_kind) {
   return 0;
 }
 
+int provider_only_authoritative_baseline(ScenarioProviderKind provider_kind) {
+  ScenarioHarness h(provider_kind);
+  std::string error;
+
+  auto check_provider_only_snapshot = [&](int step_index, uint64_t want_gen) -> bool {
+    const auto& observed = h.observed();
+    if (!check_step(step_index,
+                    SnapshotExpectation{}
+                        .is_nil(false)
+                        .gen(want_gen)
+                        .version(0)
+                        .topology_version(0)
+                        .device_count(0)
+                        .stream_count(0),
+                    observed)) {
+      return false;
+    }
+
+    if (!observed.raw) {
+      return fail_step(step_index, "expected raw snapshot");
+    }
+    if (!observed.raw->devices.empty()) {
+      return fail_step(step_index, "expected no devices in provider-only baseline");
+    }
+    if (!observed.raw->streams.empty()) {
+      return fail_step(step_index, "expected no streams in provider-only baseline");
+    }
+    if (observed.raw->native_objects.size() != 1) {
+      return fail_step(step_index, "expected exactly one native object in provider-only baseline");
+    }
+
+    const auto& provider_native = observed.raw->native_objects[0];
+    if (provider_native.type != static_cast<uint32_t>(NativeObjectType::Provider)) {
+      return fail_step(step_index, "expected sole native object to be Provider");
+    }
+    if (provider_native.phase != CBLifecyclePhase::LIVE) {
+      return fail_step(step_index, "expected provider native object to be LIVE");
+    }
+    if (provider_native.creation_gen != want_gen) {
+      return fail_step(step_index, "expected provider creation_gen to match snapshot gen");
+    }
+    if (!observed.raw->detached_root_ids.empty()) {
+      return fail_step(step_index, "expected no detached roots in provider-only baseline");
+    }
+    return true;
+  };
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(0, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  h.tick();
+  if (!check_provider_only_snapshot(1, 0)) {
+    return 1;
+  }
+  cli::line("step 1 detail OK");
+
+  h.stop_runtime();
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([](const CamBANGStateSnapshot& s) { return s.gen == 1; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(2, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  h.tick();
+  if (!check_provider_only_snapshot(3, 1)) {
+    return 1;
+  }
+  cli::line("step 3 detail OK");
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
 int restart_nil_before_baseline(ScenarioProviderKind provider_kind) {
   ScenarioHarness h(provider_kind);
   std::string error;
@@ -556,6 +645,7 @@ int multi_device_topology_change(ScenarioProviderKind provider_kind) {
 std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind) {
   return {
       {"baseline_start", [provider_kind]() { return baseline_start(provider_kind); }},
+      {"provider_only_authoritative_baseline", [provider_kind]() { return provider_only_authoritative_baseline(provider_kind); }},
       {"restart_nil_before_baseline", [provider_kind]() { return restart_nil_before_baseline(provider_kind); }},
       {"stream_lifecycle_versions", [provider_kind]() { return stream_lifecycle_versions(provider_kind); }},
       {"topology_change_versions", [provider_kind]() { return topology_change_versions(provider_kind); }},
