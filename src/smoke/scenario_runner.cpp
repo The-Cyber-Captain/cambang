@@ -134,8 +134,8 @@ bool starts_with(const std::string& s, const std::string& prefix) {
 }
 
 void usage(const char* argv0, const std::vector<cambang::ScenarioDefinition>& scenarios) {
-  std::cerr << "usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub] [--repeat=N]\n";
-  std::cerr << "   or: " << argv0 << " --run-all [--provider=synthetic|stub] [--repeat=N]\n";
+  std::cerr << "usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
+  std::cerr << "   or: " << argv0 << " --run-all [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
   std::cerr << "default provider: synthetic\n";
   std::cerr << "default repeat: 1\n";
   std::cerr << "available scenarios:\n";
@@ -152,6 +152,24 @@ bool parse_repeat_count(const std::string& value, uint64_t& repeat_count) {
   const char* end = value.data() + value.size();
   const auto result = std::from_chars(begin, end, repeat_count);
   return result.ec == std::errc{} && result.ptr == end && repeat_count > 0;
+}
+
+
+bool parse_trace_realization(const std::string& value, cambang::RealizationProfilerOptions& options) {
+  options.enabled = true;
+  if (value.empty() || value == "block") {
+    options.format = cambang::RealizationTraceFormat::Block;
+    return true;
+  }
+  if (value == "csv") {
+    options.format = cambang::RealizationTraceFormat::Csv;
+    return true;
+  }
+  if (value == "both") {
+    options.format = cambang::RealizationTraceFormat::Both;
+    return true;
+  }
+  return false;
 }
 
 BufferedRunResult run_buffered(const cambang::ScenarioDefinition& scenario) {
@@ -239,13 +257,35 @@ int main(int argc, char** argv) {
   bool repeat_specified = false;
   bool run_all = false;
   std::string requested;
+  cambang::RealizationProfilerOptions profiler_options{};
+  profiler_options.target_device_id = cambang::ScenarioHarness::kDeviceId;
+  profiler_options.target_stream_id = cambang::ScenarioHarness::kStreamId;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--help" || arg == "-h") {
-      const auto scenarios = cambang::scenario_catalog(provider_kind);
+      const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
       usage(argv[0], scenarios);
       return 0;
+    }
+    if (arg == "--trace-realization") {
+      if (!parse_trace_realization("block", profiler_options)) {
+        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+        std::cerr << "invalid trace-realization option\n";
+        usage(argv[0], scenarios);
+        return 2;
+      }
+      continue;
+    }
+    if (starts_with(arg, "--trace-realization=")) {
+      const std::string value = arg.substr(std::string("--trace-realization=").size());
+      if (!parse_trace_realization(value, profiler_options)) {
+        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+        std::cerr << "unknown trace-realization mode: " << value << "\n";
+        usage(argv[0], scenarios);
+        return 2;
+      }
+      continue;
     }
     if (starts_with(arg, "--provider=")) {
       const std::string value = arg.substr(std::string("--provider=").size());
@@ -254,7 +294,7 @@ int main(int argc, char** argv) {
       } else if (value == "stub") {
         provider_kind = cambang::ScenarioProviderKind::Stub;
       } else {
-        const auto scenarios = cambang::scenario_catalog(provider_kind);
+        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
         std::cerr << "unknown provider: " << value << "\n";
         usage(argv[0], scenarios);
         return 2;
@@ -264,7 +304,7 @@ int main(int argc, char** argv) {
     if (starts_with(arg, "--repeat=")) {
       const std::string value = arg.substr(std::string("--repeat=").size());
       if (!parse_repeat_count(value, repeat_count)) {
-        const auto scenarios = cambang::scenario_catalog(provider_kind);
+        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
         std::cerr << "invalid repeat count: " << value << "\n";
         usage(argv[0], scenarios);
         return 2;
@@ -277,7 +317,7 @@ int main(int argc, char** argv) {
       continue;
     }
     if (!requested.empty()) {
-      const auto scenarios = cambang::scenario_catalog(provider_kind);
+      const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
       std::cerr << "unexpected extra argument: " << arg << "\n";
       usage(argv[0], scenarios);
       return 2;
@@ -285,7 +325,7 @@ int main(int argc, char** argv) {
     requested = arg;
   }
 
-  const auto scenarios = cambang::scenario_catalog(provider_kind);
+  const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
   if (run_all) {
     if (!requested.empty()) {
       std::cerr << "cannot combine scenario name with --run-all\n";
