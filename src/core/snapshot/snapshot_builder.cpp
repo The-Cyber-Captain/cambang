@@ -17,6 +17,22 @@ namespace {
 constexpr uint64_t kFnvOffset = 1469598103934665603ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 
+CBVisibilityLastPath to_snapshot_visibility_path(CoreVisibilityPath path) {
+    switch (path) {
+        case CoreVisibilityPath::RGBA_DIRECT:
+            return CBVisibilityLastPath::RGBA_DIRECT;
+        case CoreVisibilityPath::BGRA_SWIZZLED:
+            return CBVisibilityLastPath::BGRA_SWIZZLED;
+        case CoreVisibilityPath::REJECTED_UNSUPPORTED:
+            return CBVisibilityLastPath::REJECTED_UNSUPPORTED;
+        case CoreVisibilityPath::REJECTED_INVALID:
+            return CBVisibilityLastPath::REJECTED_INVALID;
+        case CoreVisibilityPath::NONE:
+        default:
+            return CBVisibilityLastPath::NONE;
+    }
+}
+
 inline void fnv1a_u64(uint64_t& h, uint64_t v) {
     for (int i = 0; i < 8; ++i) {
         uint8_t b = static_cast<uint8_t>((v >> (i * 8)) & 0xFF);
@@ -178,6 +194,10 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.frames_dropped = rec.frames_dropped;
             s.queue_depth = in.ingress ? in.ingress->ingress_depth_for_stream(sid) : 0;
             s.last_frame_ts_ns = rec.last_frame_ts_ns;
+            s.visibility_frames_presented = rec.visibility_frames_presented;
+            s.visibility_frames_rejected_unsupported = rec.visibility_frames_rejected_unsupported;
+            s.visibility_frames_rejected_invalid = rec.visibility_frames_rejected_invalid;
+            s.visibility_last_path = to_snapshot_visibility_path(rec.visibility_last_path);
 
             snap.streams.push_back(std::move(s));
         }

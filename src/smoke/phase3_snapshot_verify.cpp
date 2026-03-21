@@ -22,6 +22,7 @@ is covered by dedicated Godot scene checks.
 #include <iostream>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "phase3_snapshot_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
@@ -29,10 +30,12 @@ is covered by dedicated Godot scene checks.
 
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
+#include "core/latest_frame_mailbox.h"
 #include "core/core_mailbox.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_runtime.h"
 #include "core/core_stream_registry.h"
+#include "core/snapshot/snapshot_builder.h"
 #include "core/snapshot/state_snapshot.h"
 #include "core/state_snapshot_buffer.h"
 
@@ -84,11 +87,204 @@ static bool has_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
   return false;
 }
 
-static bool wait_for_snapshot_with_version(StateSnapshotBuffer& buf, uint64_t min_version) {
-  return wait_until([&]() {
-    auto s = snapshot_copy(buf);
-    return s && s->version >= min_version;
+static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+  for (const auto& st : s.streams) {
+    if (st.stream_id == stream_id) {
+      return &st;
+    }
+  }
+  return nullptr;
+}
+
+class MailboxSink final : public ICoreFrameSink {
+public:
+  explicit MailboxSink(LatestFrameMailbox* mailbox) : mailbox_(mailbox) {}
+
+  CoreVisibilityPath on_frame(FrameView frame) override {
+    if (!mailbox_) {
+      frame.release_now();
+      return CoreVisibilityPath::NONE;
+    }
+    return mailbox_->write_from_core(std::move(frame));
+  }
+
+private:
+  LatestFrameMailbox* mailbox_ = nullptr;
+};
+
+struct OwnedFrame {
+  std::vector<uint8_t> bytes;
+  int releases = 0;
+
+  static void release_fn(void* user, const FrameView*) {
+    int* release_count = static_cast<int*>(user);
+    (*release_count)++;
+  }
+
+  FrameView view(uint64_t stream_id,
+                 uint64_t device_id,
+                 uint32_t width,
+                 uint32_t height,
+                 uint32_t format,
+                 size_t size_bytes,
+                 uint32_t stride_bytes = 0) {
+    FrameView frame{};
+    frame.stream_id = stream_id;
+    frame.device_instance_id = device_id;
+    frame.width = width;
+    frame.height = height;
+    frame.format_fourcc = format;
+    frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
+    frame.capture_timestamp.value = 123;
+    frame.capture_timestamp.tick_ns = 1;
+    frame.data = bytes.data();
+    frame.size_bytes = size_bytes;
+    frame.stride_bytes = stride_bytes;
+    frame.release = &OwnedFrame::release_fn;
+    frame.release_user = &releases;
+    return frame;
+  }
+};
+
+static int test_visibility_diagnostics_snapshot_truth() {
+  CoreDeviceRegistry devices;
+  CoreStreamRegistry streams;
+  CoreNativeObjectRegistry native_objects;
+  LatestFrameMailbox mailbox;
+  MailboxSink sink(&mailbox);
+  uint64_t gen = 0;
+  uint64_t now_ns = 1000;
+  CoreDispatcher dispatcher(&streams, &devices, &native_objects, &gen, [&now_ns]() {
+    return now_ns++;
   });
+  dispatcher.set_frame_sink(&sink);
+
+  StreamRequest req{};
+  req.stream_id = 77;
+  req.device_instance_id = 88;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile.width = 2;
+  req.profile.height = 1;
+  req.profile.format_fourcc = FOURCC_RGBA;
+  req.profile.target_fps_min = 30;
+  req.profile.target_fps_max = 30;
+  req.profile_version = 1;
+  if (!streams.declare_stream_effective(req) ||
+      !streams.on_stream_created(req.stream_id) ||
+      !streams.on_stream_started(req.stream_id)) {
+    std::cerr << "FAIL: visibility diagnostics setup failed\n";
+    return 1;
+  }
+
+  auto dispatch_frame = [&](FrameView frame) {
+    CoreCommand cmd{};
+    cmd.type = CoreCommandType::PROVIDER_FRAME;
+    cmd.payload = CmdProviderFrame{frame};
+    dispatcher.dispatch(std::move(cmd));
+  };
+
+  SnapshotBuilder builder;
+  SnapshotBuilder::Inputs in;
+  in.devices = &devices;
+  in.streams = &streams;
+  in.native_objects = &native_objects;
+
+  OwnedFrame rgba;
+  rgba.bytes = {
+      10, 20, 30, 40,
+      50, 60, 70, 80,
+  };
+  dispatch_frame(rgba.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, rgba.bytes.size()));
+  if (rgba.releases != 1) {
+    std::cerr << "FAIL: RGBA frame not released exactly once\n";
+    return 1;
+  }
+
+  auto rgba_snapshot = builder.build(in, 0, 0, 0, 10);
+  const auto* rgba_stream = find_stream(rgba_snapshot, req.stream_id);
+  if (!rgba_stream) {
+    std::cerr << "FAIL: RGBA snapshot missing stream\n";
+    return 1;
+  }
+  if (rgba_stream->visibility_frames_presented != 1 ||
+      rgba_stream->visibility_last_path != CBVisibilityLastPath::RGBA_DIRECT) {
+    std::cerr << "FAIL: RGBA visibility counters incorrect presented="
+              << rgba_stream->visibility_frames_presented
+              << " path=" << static_cast<int>(rgba_stream->visibility_last_path) << "\n";
+    return 1;
+  }
+  if (rgba_stream->frames_received != 1 || rgba_stream->frames_delivered != 1 ||
+      rgba_stream->frames_dropped != 0 || rgba_stream->last_frame_ts_ns != 123) {
+    std::cerr << "FAIL: RGBA existing counters changed semantics received="
+              << rgba_stream->frames_received
+              << " delivered=" << rgba_stream->frames_delivered
+              << " dropped=" << rgba_stream->frames_dropped
+              << " ts=" << rgba_stream->last_frame_ts_ns << "\n";
+    return 1;
+  }
+
+  OwnedFrame bgra;
+  bgra.bytes = {
+      1, 2, 3, 4,
+      5, 6, 7, 8,
+  };
+  dispatch_frame(bgra.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_BGRA, bgra.bytes.size()));
+  auto bgra_snapshot = builder.build(in, 0, 1, 0, 11);
+  const auto* bgra_stream = find_stream(bgra_snapshot, req.stream_id);
+  if (!bgra_stream ||
+      bgra_stream->visibility_frames_presented != 2 ||
+      bgra_stream->visibility_last_path != CBVisibilityLastPath::BGRA_SWIZZLED) {
+    std::cerr << "FAIL: BGRA visibility counters incorrect\n";
+    return 1;
+  }
+
+  OwnedFrame unsupported;
+  unsupported.bytes = {0, 1, 2, 3};
+  dispatch_frame(unsupported.view(req.stream_id,
+                                  req.device_instance_id,
+                                  1,
+                                  1,
+                                  make_fourcc('N', 'V', '1', '2'),
+                                  unsupported.bytes.size()));
+  auto unsupported_snapshot = builder.build(in, 0, 2, 0, 12);
+  const auto* unsupported_stream = find_stream(unsupported_snapshot, req.stream_id);
+  if (!unsupported_stream ||
+      unsupported_stream->visibility_frames_rejected_unsupported != 1 ||
+      unsupported_stream->visibility_last_path != CBVisibilityLastPath::REJECTED_UNSUPPORTED) {
+    std::cerr << "FAIL: unsupported visibility counters incorrect\n";
+    return 1;
+  }
+
+  OwnedFrame invalid;
+  invalid.bytes = {1, 2, 3};
+  dispatch_frame(invalid.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, invalid.bytes.size()));
+  auto invalid_snapshot = builder.build(in, 0, 3, 0, 13);
+  const auto* invalid_stream = find_stream(invalid_snapshot, req.stream_id);
+  if (!invalid_stream ||
+      invalid_stream->visibility_frames_rejected_invalid != 1 ||
+      invalid_stream->visibility_last_path != CBVisibilityLastPath::REJECTED_INVALID) {
+    std::cerr << "FAIL: invalid visibility counters incorrect\n";
+    return 1;
+  }
+
+  const uint64_t topo_before = builder.compute_topology_signature(in);
+  OwnedFrame extra_rgba;
+  extra_rgba.bytes = {
+      9, 9, 9, 9,
+      9, 9, 9, 9,
+  };
+  dispatch_frame(extra_rgba.view(req.stream_id, req.device_instance_id, 2, 1, FOURCC_RGBA, extra_rgba.bytes.size()));
+  const uint64_t topo_after = builder.compute_topology_signature(in);
+  if (topo_before != topo_after) {
+    std::cerr << "FAIL: visibility-only updates changed topology signature\n";
+    return 1;
+  }
+  if (!dispatcher.consume_relevant_state_changed()) {
+    std::cerr << "FAIL: visibility path did not mark dispatcher state dirty\n";
+    return 1;
+  }
+
+  return 0;
 }
 
 static int test_destroyed_retention_does_not_cross_generation_baseline() {
@@ -580,6 +776,7 @@ int main() {
   if (int r = test_live_session_retirement_expiry_publication()) return r;
   if (int r = test_timestamp_preservation_and_fallback()) return r;
   if (int r = test_no_sink_delivered_vs_dropped_accounting()) return r;
+  if (int r = test_visibility_diagnostics_snapshot_truth()) return r;
 
   std::cout << "OK: phase3_snapshot_verify passed\n";
   return 0;

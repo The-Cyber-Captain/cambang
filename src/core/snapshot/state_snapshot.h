@@ -45,6 +45,14 @@ enum class CBStreamStopReason : uint8_t {
     PROVIDER = 3,
 };
 
+enum class CBVisibilityLastPath : uint8_t {
+    NONE = 0,
+    RGBA_DIRECT = 1,
+    BGRA_SWIZZLED = 2,
+    REJECTED_UNSUPPORTED = 3,
+    REJECTED_INVALID = 4,
+};
+
 struct CamBANGRigState {
     uint64_t rig_id = 0;
     std::string name;
@@ -114,6 +122,10 @@ struct CamBANGStreamState {
     uint32_t queue_depth = 0;
 
     uint64_t last_frame_ts_ns = 0;
+    uint64_t visibility_frames_presented = 0;
+    uint64_t visibility_frames_rejected_unsupported = 0;
+    uint64_t visibility_frames_rejected_invalid = 0;
+    CBVisibilityLastPath visibility_last_path = CBVisibilityLastPath::NONE;
 };
 
 struct NativeObjectRecord {

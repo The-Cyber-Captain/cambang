@@ -421,6 +421,11 @@ CamBANGStreamState {
   queue_depth: uint32
 
   last_frame_ts_ns: uint64               // 0 if none
+  visibility_frames_presented: uint64
+  visibility_frames_rejected_unsupported: uint64
+  visibility_frames_rejected_invalid: uint64
+  visibility_last_path:
+    NONE | RGBA_DIRECT | BGRA_SWIZZLED | REJECTED_UNSUPPORTED | REJECTED_INVALID
 }
 ```
 **Field semantics (v1):**
@@ -431,6 +436,14 @@ CamBANGStreamState {
 - `frames_dropped` counts frames dropped due to queue pressure or shutdown gating.
 - `queue_depth` reflects provider → core ingress buffering depth as observed
   by core at publish time.
+- `visibility_frames_presented` counts frames accepted by the current visibility path
+  and retained for visibility/output.
+- `visibility_frames_rejected_unsupported` counts visibility-path rejections caused by
+  unsupported frame format for that path.
+- `visibility_frames_rejected_invalid` counts visibility-path rejections caused by
+  invalid payload/shape/metadata for presentation.
+- `visibility_last_path` records the most recent retained visibility-path disposition.
+  It remains `NONE` until authoritative visibility-path truth exists.
 
 **Invariant (v1):** - At most one stream per `device_instance_id` may be
 `phase=LIVE` and `mode != STOPPED`.

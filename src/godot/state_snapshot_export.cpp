@@ -74,6 +74,12 @@ static godot::Dictionary export_stream(const CamBANGStreamState& s) {
   d["frames_dropped"] = static_cast<uint64_t>(s.frames_dropped);
   d["queue_depth"] = static_cast<uint32_t>(s.queue_depth);
   d["last_frame_ts_ns"] = static_cast<uint64_t>(s.last_frame_ts_ns);
+  d["visibility_frames_presented"] = static_cast<uint64_t>(s.visibility_frames_presented);
+  d["visibility_frames_rejected_unsupported"] =
+      static_cast<uint64_t>(s.visibility_frames_rejected_unsupported);
+  d["visibility_frames_rejected_invalid"] =
+      static_cast<uint64_t>(s.visibility_frames_rejected_invalid);
+  d["visibility_last_path"] = static_cast<int>(s.visibility_last_path);
   return d;
 }
 

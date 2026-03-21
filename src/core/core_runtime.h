@@ -253,11 +253,12 @@ private:
   class LatestFrameMailboxSink final : public ICoreFrameSink {
   public:
     explicit LatestFrameMailboxSink(LatestFrameMailbox* mb) : mb_(mb) {}
-    void on_frame(FrameView frame) override {
+    CoreVisibilityPath on_frame(FrameView frame) override {
       if (mb_) {
-        mb_->write_from_core(std::move(frame));
+        return mb_->write_from_core(std::move(frame));
       } else {
         frame.release_now();
+        return CoreVisibilityPath::NONE;
       }
     }
   private:

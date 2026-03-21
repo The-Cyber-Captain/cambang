@@ -291,7 +291,11 @@
         "frames_delivered",
         "frames_dropped",
         "queue_depth",
-        "last_frame_ts_ns"
+        "last_frame_ts_ns",
+        "visibility_frames_presented",
+        "visibility_frames_rejected_unsupported",
+        "visibility_frames_rejected_invalid",
+        "visibility_last_path"
       ],
       "properties": {
         "stream_id": {
@@ -344,6 +348,18 @@
         },
         "last_frame_ts_ns": {
           "$ref": "#/$defs/uint64"
+        },
+        "visibility_frames_presented": {
+          "$ref": "#/$defs/uint64"
+        },
+        "visibility_frames_rejected_unsupported": {
+          "$ref": "#/$defs/uint64"
+        },
+        "visibility_frames_rejected_invalid": {
+          "$ref": "#/$defs/uint64"
+        },
+        "visibility_last_path": {
+          "$ref": "#/$defs/visibility_last_path"
         }
       }
     },
@@ -416,6 +432,17 @@
         "frameproducer"
       ],
       "description": "Canonical native object type tokens."
+    },
+    "visibility_last_path": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "RGBA_DIRECT",
+        "BGRA_SWIZZLED",
+        "REJECTED_UNSUPPORTED",
+        "REJECTED_INVALID"
+      ],
+      "description": "Canonical retained visibility-path disposition tokens."
     }
   }
 }
