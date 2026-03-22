@@ -336,6 +336,12 @@ deterministic baseline snapshot after `CamBANGServer.start()` completes.
 
 ## 6. Record schemas (v1)
 
+### 6.0 `profile_version` / `capture_profile_version`
+
+- Monotonic counter incremented when the applied capture profile changes.
+- Represents change lineage only.
+- Must not be used to infer configuration contents.
+
 ### 6.1 `CamBANGRigState`
 
 ``` text
@@ -350,7 +356,7 @@ CamBANGRigState {
 
   active_capture_id: uint64              // 0 if none
 
-  capture_profile_version: uint64        // rig still capture profile version
+  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
 
   captures_triggered: uint64
   captures_completed: uint64
@@ -379,7 +385,7 @@ CamBANGDeviceState {
   rig_id: uint64                         // 0 if not a rig member
 
   camera_spec_version: uint64            // effective CameraSpec version
-  capture_profile_version: uint64        // device still capture profile version
+  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming
@@ -406,7 +412,7 @@ CamBANGStreamState {
 
   stop_reason: NONE | USER | PREEMPTED | PROVIDER // meaningful when mode=STOPPED
 
-  profile_version: uint64                // stream capture profile version
+  profile_version: uint64                // monotonic change lineage for the applied stream capture profile
 
   width: uint32
   height: uint32
@@ -430,6 +436,10 @@ CamBANGStreamState {
 ```
 **Field semantics (v1):**
 
+- `width`, `height`, `format`, `target_fps_min`, and `target_fps_max` form part of
+  the applied capture profile for this stream.
+- `profile_version` is change lineage metadata for that applied profile and must
+  not be used to infer configuration contents.
 - `frames_received` counts frames reported by the provider and integrated by core.
 - `frames_delivered` counts frames successfully handed to the core frame sink
   (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.

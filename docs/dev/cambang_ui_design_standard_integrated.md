@@ -88,6 +88,12 @@ If a value cannot be truthfully derived from the snapshot, it must be surfaced a
 
 The UI must **never substitute a plausible guess**.
 
+## 2.4 Applied Profile Visibility
+
+- UI must rely solely on snapshot-visible applied profile truth.
+- UI must not reconstruct, infer, or query external configuration sources.
+- All capture configuration displayed must originate from snapshot data.
+
 ---
 
 # 3. UI Node Responsibilities
