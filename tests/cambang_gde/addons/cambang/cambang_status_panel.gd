@@ -2654,7 +2654,7 @@ func _fourcc_to_text(value: int) -> String:
 		return "0x00000000"
 	var chars: Array[String] = []
 	for shift in [0, 8, 16, 24]:
-		var code := (value >> shift) & 0xFF
+		var code: int = int((value >> shift) & 0xFF)
 		if code >= 32 and code <= 126:
 			chars.append(char(code))
 		else:
