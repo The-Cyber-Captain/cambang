@@ -111,6 +111,8 @@ func _initialize() -> void:
 
 	var row_ids := _collect_entry_ids(rendered_model)
 	print("HARNESS row_ids: %s" % [row_ids])
+	var visible_row_ids := _collect_visible_row_ids(panel)
+	print("HARNESS visible_row_ids: %s" % [visible_row_ids])
 
 	var rendered_contract_gap_rows := 0
 	for id in row_ids:
@@ -127,6 +129,7 @@ func _initialize() -> void:
 		contract_gaps,
 		projection_gaps,
 		row_ids,
+		visible_row_ids,
 		rendered_model
 	)
 	if not failures.is_empty():
@@ -333,6 +336,28 @@ func _find_entry(model: Variant, row_id: String) -> Variant:
 	return null
 
 
+func _collect_visible_row_ids(panel: Variant) -> Array[String]:
+	var visible_ids: Array[String] = []
+	if panel == null:
+		return visible_ids
+
+	var rows_container: Variant = panel.get("_status_rows")
+	if rows_container == null:
+		return visible_ids
+
+	for child in rows_container.get_children():
+		if child == null or not bool(child.visible):
+			continue
+		if child.has_method("get_entry_id"):
+			visible_ids.append(str(child.call("get_entry_id")))
+			continue
+		var fallback_id := str(child.get("_entry_id"))
+		if fallback_id != "":
+			visible_ids.append(fallback_id)
+
+	return visible_ids
+
+
 func _classify_observed_outcome(
 	contract_gaps: Array,
 	projection_gaps: Array,
@@ -356,6 +381,7 @@ func _evaluate_expectations(
 	contract_gaps: Array,
 	projection_gaps: Array,
 	row_ids: Array[String],
+	visible_row_ids: Array[String],
 	rendered_model: Variant
 ) -> Array[String]:
 	var failures: Array[String] = []
@@ -392,7 +418,7 @@ func _evaluate_expectations(
 
 		if rendered_contract_gap_rows != want_rendered:
 			failures.append(
-                "rendered_contract_gap_rows mismatch: got=%d want=%d"
+				"rendered_contract_gap_rows mismatch: got=%d want=%d"
 				% [rendered_contract_gap_rows, want_rendered]
 			)
 
@@ -407,6 +433,18 @@ func _evaluate_expectations(
 		var forbidden_id := str(raw_forbidden)
 		if row_ids.has(forbidden_id):
 			failures.append("forbidden row id present: %s" % forbidden_id)
+
+	var required_visible_row_ids: Array = expected_panel_outcome.get("required_visible_row_ids", [])
+	for raw_visible_id in required_visible_row_ids:
+		var visible_id := str(raw_visible_id)
+		if not visible_row_ids.has(visible_id):
+			failures.append("missing required visible row id: %s" % visible_id)
+
+	var forbidden_visible_row_ids: Array = expected_panel_outcome.get("forbidden_visible_row_ids", [])
+	for raw_forbidden_visible in forbidden_visible_row_ids:
+		var forbidden_visible_id := str(raw_forbidden_visible)
+		if visible_row_ids.has(forbidden_visible_id):
+			failures.append("forbidden visible row id present: %s" % forbidden_visible_id)
 
 	var required_counters_by_row: Dictionary = expected_panel_outcome.get("required_counters_by_row", {})
 	for row_id in required_counters_by_row.keys():

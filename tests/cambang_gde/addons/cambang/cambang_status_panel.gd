@@ -2277,7 +2277,18 @@ func _ensure_expandability(panel: PanelModel) -> void:
 			if counter.visibility == "detail":
 				has_detail_payload = true
 				break
-		e.can_expand = int(child_counts.get(e.id, 0)) > 0 or has_detail_payload
+		var child_count := int(child_counts.get(e.id, 0))
+		e.can_expand = child_count > 0 or has_detail_payload
+		if child_count > 0 and _should_default_expand_entry(e):
+			e.expanded = true
+
+
+func _should_default_expand_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	if entry.id.begins_with("stream/"):
+		return true
+	return false
 
 
 func _depth_for_parent(parent_id: String) -> int:

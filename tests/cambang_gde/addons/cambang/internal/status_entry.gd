@@ -72,6 +72,10 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_apply_stable_row_metrics()
 
 
+func get_entry_id() -> String:
+	return _entry_id
+
+
 func _apply_style() -> void:
 	if _style == null:
 		return

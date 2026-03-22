@@ -1,0 +1,99 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "server/main",
+      "provider/100",
+      "device/1",
+      "stream/1",
+      "frameproducer/103"
+    ],
+    "required_visible_row_ids": [
+      "server/main",
+      "provider/100",
+      "device/1",
+      "stream/1",
+      "frameproducer/103"
+    ],
+    "required_counter_values_by_row": {
+      "provider/100": {
+        "native_all": 4,
+        "native_cur": 4,
+        "native_prev": 0
+      }
+    },
+    "required_info_substrings_by_row": {
+      "frameproducer/103": [
+        "FrameProducer owner_stream_id=1.",
+        "FrameProducer creation_gen=2."
+      ]
+    }
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 2,
+    "version": 21,
+    "topology_version": 1,
+    "timestamp_ns": 40096504700,
+    "imaging_spec_version": 1,
+    "rigs": [],
+    "devices": [
+      {
+        "instance_id": 1,
+        "hardware_id": "synthetic:0",
+        "phase": "LIVE",
+        "mode": "STREAMING",
+        "errors_count": 0
+      }
+    ],
+    "streams": [
+      {
+        "stream_id": 1,
+        "device_instance_id": 1,
+        "phase": "LIVE",
+        "mode": "FLOWING",
+        "intent": "PREVIEW",
+        "stop_reason": "NONE",
+        "target_fps_max": 30,
+        "frames_received": 1024
+      }
+    ],
+    "native_objects": [
+      {
+        "native_id": 100,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 2
+      },
+      {
+        "native_id": 101,
+        "type": "device",
+        "owner_device_instance_id": 1,
+        "phase": "LIVE",
+        "creation_gen": 2
+      },
+      {
+        "native_id": 102,
+        "type": "stream",
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 1,
+        "phase": "LIVE",
+        "creation_gen": 2
+      },
+      {
+        "native_id": 103,
+        "type": "frameproducer",
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 1,
+        "phase": "LIVE",
+        "creation_gen": 2
+      }
+    ],
+    "detached_root_ids": []
+  }
+}
