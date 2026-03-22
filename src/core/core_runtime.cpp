@@ -113,6 +113,7 @@ bool CoreRuntime::start() {
   provider_banner_printed_ = false;
 
   // Reset core-thread-only pump state.
+  rigs_.clear();
   provider_facts_.clear();
   requests_.clear();
   shutdown_requested_ = false;
@@ -333,6 +334,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     publish_pending_.store(false, std::memory_order_release);
 
     SnapshotBuilder::Inputs in;
+    in.rigs = &rigs_;
     in.devices = &devices_;
     in.streams = &streams_;
     in.ingress = &ingress_;
@@ -592,6 +594,37 @@ void CoreRuntime::retain_camera_spec_version(const std::string& hardware_id, uin
         (void)devices_.set_camera_spec_version(device_instance_id, camera_spec_version);
       }
     }
+    request_publish_from_core_unchecked();
+  });
+}
+
+void CoreRuntime::retain_device_capture_profile(uint64_t device_instance_id,
+                                                uint32_t width,
+                                                uint32_t height,
+                                                uint32_t format,
+                                                uint64_t capture_profile_version) {
+  if (device_instance_id == 0) {
+    return;
+  }
+
+  (void)try_post([this, device_instance_id, width, height, format, capture_profile_version]() {
+    (void)devices_.retain_capture_profile(
+        device_instance_id, width, height, format, capture_profile_version);
+    request_publish_from_core_unchecked();
+  });
+}
+
+void CoreRuntime::retain_rig_capture_profile(uint64_t rig_id,
+                                             uint32_t width,
+                                             uint32_t height,
+                                             uint32_t format,
+                                             uint64_t capture_profile_version) {
+  if (rig_id == 0) {
+    return;
+  }
+
+  (void)try_post([this, rig_id, width, height, format, capture_profile_version]() {
+    (void)rigs_.retain_capture_profile(rig_id, width, height, format, capture_profile_version);
     request_publish_from_core_unchecked();
   });
 }

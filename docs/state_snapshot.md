@@ -344,6 +344,9 @@ deterministic baseline snapshot after `CamBANGServer.start()` completes.
 
 ### 6.1 `CamBANGRigState`
 
+`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+profile for this rig.
+
 ``` text
 CamBANGRigState {
   rig_id: uint64
@@ -357,6 +360,9 @@ CamBANGRigState {
   active_capture_id: uint64              // 0 if none
 
   capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
+  capture_width: uint32
+  capture_height: uint32
+  capture_format: uint32                 // FourCC-style CamBANG pixel format
 
   captures_triggered: uint64
   captures_completed: uint64
@@ -372,6 +378,9 @@ CamBANGRigState {
 
 ### 6.2 `CamBANGDeviceState`
 
+`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+profile for this device.
+
 ``` text
 CamBANGDeviceState {
   hardware_id: String
@@ -386,6 +395,9 @@ CamBANGDeviceState {
 
   camera_spec_version: uint64            // effective CameraSpec version
   capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
+  capture_width: uint32
+  capture_height: uint32
+  capture_format: uint32                 // FourCC-style CamBANG pixel format
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming

@@ -24,6 +24,9 @@ static godot::Dictionary export_rig(const CamBANGRigState& r) {
 
   d["active_capture_id"] = static_cast<uint64_t>(r.active_capture_id);
   d["capture_profile_version"] = static_cast<uint64_t>(r.capture_profile_version);
+  d["capture_width"] = static_cast<uint32_t>(r.capture_width);
+  d["capture_height"] = static_cast<uint32_t>(r.capture_height);
+  d["capture_format"] = static_cast<uint32_t>(r.capture_format);
 
   d["captures_triggered"] = static_cast<uint64_t>(r.captures_triggered);
   d["captures_completed"] = static_cast<uint64_t>(r.captures_completed);
@@ -47,6 +50,9 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   d["rig_id"] = static_cast<uint64_t>(s.rig_id);
   d["camera_spec_version"] = static_cast<uint64_t>(s.camera_spec_version);
   d["capture_profile_version"] = static_cast<uint64_t>(s.capture_profile_version);
+  d["capture_width"] = static_cast<uint32_t>(s.capture_width);
+  d["capture_height"] = static_cast<uint32_t>(s.capture_height);
+  d["capture_format"] = static_cast<uint32_t>(s.capture_format);
   d["warm_hold_ms"] = static_cast<uint32_t>(s.warm_hold_ms);
   d["warm_remaining_ms"] = static_cast<uint32_t>(s.warm_remaining_ms);
   d["rebuild_count"] = static_cast<uint64_t>(s.rebuild_count);

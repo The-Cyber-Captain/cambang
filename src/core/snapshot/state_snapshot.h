@@ -64,6 +64,9 @@ struct CamBANGRigState {
 
     uint64_t active_capture_id = 0;
     uint64_t capture_profile_version = 0;
+    uint32_t capture_width = 0;
+    uint32_t capture_height = 0;
+    uint32_t capture_format = 0;
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
@@ -88,6 +91,9 @@ struct CamBANGDeviceState {
 
     uint64_t camera_spec_version = 0;
     uint64_t capture_profile_version = 0;
+    uint32_t capture_width = 0;
+    uint32_t capture_height = 0;
+    uint32_t capture_format = 0;
 
     uint32_t warm_hold_ms = 0;
     uint32_t warm_remaining_ms = 0;

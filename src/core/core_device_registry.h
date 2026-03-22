@@ -21,6 +21,10 @@ public:
     uint64_t device_instance_id = 0;
     std::string hardware_id;
     uint64_t camera_spec_version = 0;
+    uint64_t capture_profile_version = 0;
+    uint32_t capture_width = 0;
+    uint32_t capture_height = 0;
+    uint32_t capture_format = 0;
     uint32_t warm_hold_ms = 0;
     bool warm_deadline_active = false;
     uint64_t warm_deadline_ns = 0;
@@ -33,6 +37,11 @@ public:
 
   bool note_device_identity(uint64_t device_instance_id, const std::string& hardware_id);
   bool set_camera_spec_version(uint64_t device_instance_id, uint64_t camera_spec_version);
+  bool retain_capture_profile(uint64_t device_instance_id,
+                              uint32_t width,
+                              uint32_t height,
+                              uint32_t format,
+                              uint64_t capture_profile_version);
   bool set_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
   bool arm_warm_deadline(uint64_t device_instance_id, uint64_t deadline_ns);
   bool clear_warm_deadline(uint64_t device_instance_id);

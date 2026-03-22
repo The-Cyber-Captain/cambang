@@ -5,9 +5,10 @@
 #include <set>
 
 #include "core/core_device_registry.h"
-#include "core/core_stream_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_rig_registry.h"
 #include "core/core_spec_state.h"
+#include "core/core_stream_registry.h"
 #include "core/provider_callback_ingress.h"
 
 namespace cambang {
@@ -119,6 +120,33 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
 
     snap.imaging_spec_version = in.spec_state ? in.spec_state->imaging_spec_version() : 0;
 
+    // Rigs
+    if (in.rigs) {
+        snap.rigs.reserve(in.rigs->all().size());
+        for (const auto& [rig_id, rec] : in.rigs->all()) {
+            (void)rig_id;
+            CamBANGRigState r;
+            r.rig_id = rec.rig_id;
+            r.name = rec.name;
+            r.phase = rec.live ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
+            r.mode = CBRigMode::OFF;
+            r.member_hardware_ids = rec.member_hardware_ids;
+            r.active_capture_id = rec.active_capture_id;
+            r.capture_profile_version = rec.capture_profile_version;
+            r.capture_width = rec.capture_width;
+            r.capture_height = rec.capture_height;
+            r.capture_format = rec.capture_format;
+            r.captures_triggered = rec.captures_triggered;
+            r.captures_completed = rec.captures_completed;
+            r.captures_failed = rec.captures_failed;
+            r.last_capture_id = rec.last_capture_id;
+            r.last_capture_latency_ns = rec.last_capture_latency_ns;
+            r.last_sync_skew_ns = rec.last_sync_skew_ns;
+            r.error_code = rec.error_code;
+            snap.rigs.push_back(std::move(r));
+        }
+    }
+
     // Devices
     if (in.devices) {
         snap.devices.reserve(in.devices->all().size());
@@ -127,6 +155,10 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             d.instance_id = id;
             d.hardware_id = rec.hardware_id;
             d.camera_spec_version = rec.camera_spec_version;
+            d.capture_profile_version = rec.capture_profile_version;
+            d.capture_width = rec.capture_width;
+            d.capture_height = rec.capture_height;
+            d.capture_format = rec.capture_format;
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
@@ -242,7 +274,6 @@ if (in.native_objects) {
     snap.detached_root_ids.assign(detached_roots.begin(), detached_roots.end());
 }
 
-// Rigs are not implemented in this scaffolding slice.
 return snap;
 }
 
@@ -253,6 +284,13 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         for (const auto& [id, rec] : in.devices->all()) {
             (void)rec;
             fnv1a_u64(h, id);
+        }
+    }
+    if (in.rigs) {
+        fnv1a_u64(h, static_cast<uint64_t>(in.rigs->all().size()));
+        for (const auto& [rig_id, rec] : in.rigs->all()) {
+            (void)rec;
+            fnv1a_u64(h, rig_id);
         }
     }
     if (in.streams) {

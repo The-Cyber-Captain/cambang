@@ -87,6 +87,24 @@ static bool has_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
   return false;
 }
 
+static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
+  for (const auto& d : s.devices) {
+    if (d.instance_id == device_id) {
+      return &d;
+    }
+  }
+  return nullptr;
+}
+
+static const CamBANGRigState* find_rig(const CamBANGStateSnapshot& s, uint64_t rig_id) {
+  for (const auto& r : s.rigs) {
+    if (r.rig_id == rig_id) {
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
 static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& s, uint64_t stream_id) {
   for (const auto& st : s.streams) {
     if (st.stream_id == stream_id) {
@@ -222,6 +240,15 @@ static int test_visibility_diagnostics_snapshot_truth() {
               << " ts=" << rgba_stream->last_frame_ts_ns << "\n";
     return 1;
   }
+  if (rgba_stream->profile_version != req.profile_version ||
+      rgba_stream->width != req.profile.width ||
+      rgba_stream->height != req.profile.height ||
+      rgba_stream->format != req.profile.format_fourcc ||
+      rgba_stream->target_fps_min != req.profile.target_fps_min ||
+      rgba_stream->target_fps_max != req.profile.target_fps_max) {
+    std::cerr << "FAIL: stream applied profile projection changed semantics\n";
+    return 1;
+  }
 
   OwnedFrame bgra;
   bgra.bytes = {
@@ -284,6 +311,150 @@ static int test_visibility_diagnostics_snapshot_truth() {
     return 1;
   }
 
+  return 0;
+}
+
+static int test_still_capture_profile_visibility_audit_truth() {
+  constexpr uint64_t kAuditDeviceId = 501;
+  constexpr uint64_t kAuditRigId = 701;
+  constexpr uint32_t kJpeg = make_fourcc('J', 'P', 'E', 'G');
+  constexpr uint32_t kRaw = make_fourcc('R', 'A', 'W', ' ');
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start (still profile audit)\n";
+    return 1;
+  }
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->version == 0 && s->topology_version == 0;
+      })) {
+    std::cerr << "FAIL: missing baseline snapshot for still profile audit\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.retain_device_identity(kAuditDeviceId, "audit-device");
+  rt.provider_callbacks()->on_device_opened(kAuditDeviceId);
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && find_device(*s, kAuditDeviceId) != nullptr;
+      })) {
+    std::cerr << "FAIL: device did not become snapshot-visible for still profile audit\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto device_base = snapshot_copy(buf);
+  if (!device_base) {
+    std::cerr << "FAIL: missing device baseline snapshot copy\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t topo_after_device = device_base->topology_version;
+  const uint64_t version_after_device = device_base->version;
+
+  rt.retain_device_capture_profile(kAuditDeviceId, 4032, 3024, kJpeg, 7);
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
+        return device && device->capture_profile_version == 7 &&
+               device->capture_width == 4032 &&
+               device->capture_height == 3024 &&
+               device->capture_format == kJpeg;
+      })) {
+    std::cerr << "FAIL: device still capture profile not snapshot-visible\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto device_profile = snapshot_copy(buf);
+  if (!device_profile) {
+    std::cerr << "FAIL: missing device profile snapshot copy\n";
+    rt.stop();
+    return 1;
+  }
+  if (device_profile->topology_version != topo_after_device ||
+      device_profile->version <= version_after_device) {
+    std::cerr << "FAIL: device still profile publish disturbed version/topology semantics\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.retain_device_capture_profile(kAuditDeviceId, 1920, 1080, kRaw, 8);
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
+        return device && device->capture_profile_version == 8 &&
+               device->capture_width == 1920 &&
+               device->capture_height == 1080 &&
+               device->capture_format == kRaw;
+      })) {
+    std::cerr << "FAIL: device still capture profile did not update\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto device_profile_update = snapshot_copy(buf);
+  if (!device_profile_update ||
+      device_profile_update->topology_version != topo_after_device ||
+      device_profile_update->version <= device_profile->version) {
+    std::cerr << "FAIL: device still profile update changed topology semantics\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.retain_rig_capture_profile(kAuditRigId, 6000, 4000, kJpeg, 3);
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        const auto* rig = s ? find_rig(*s, kAuditRigId) : nullptr;
+        return rig && rig->capture_profile_version == 3 &&
+               rig->capture_width == 6000 &&
+               rig->capture_height == 4000 &&
+               rig->capture_format == kJpeg;
+      })) {
+    std::cerr << "FAIL: rig still capture profile not snapshot-visible\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto rig_profile = snapshot_copy(buf);
+  if (!rig_profile || rig_profile->topology_version <= device_profile_update->topology_version) {
+    std::cerr << "FAIL: rig introduction did not change topology as expected\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t topo_after_rig = rig_profile->topology_version;
+
+  rt.retain_rig_capture_profile(kAuditRigId, 3000, 2000, kRaw, 4);
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        const auto* rig = s ? find_rig(*s, kAuditRigId) : nullptr;
+        return rig && rig->capture_profile_version == 4 &&
+               rig->capture_width == 3000 &&
+               rig->capture_height == 2000 &&
+               rig->capture_format == kRaw;
+      })) {
+    std::cerr << "FAIL: rig still capture profile did not update\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto rig_profile_update = snapshot_copy(buf);
+  if (!rig_profile_update ||
+      rig_profile_update->topology_version != topo_after_rig ||
+      rig_profile_update->version <= rig_profile->version) {
+    std::cerr << "FAIL: rig still profile update changed topology semantics\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
   return 0;
 }
 
@@ -777,6 +948,7 @@ int main() {
   if (int r = test_timestamp_preservation_and_fallback()) return r;
   if (int r = test_no_sink_delivered_vs_dropped_accounting()) return r;
   if (int r = test_visibility_diagnostics_snapshot_truth()) return r;
+  if (int r = test_still_capture_profile_visibility_audit_truth()) return r;
 
   std::cout << "OK: phase3_snapshot_verify passed\n";
   return 0;
