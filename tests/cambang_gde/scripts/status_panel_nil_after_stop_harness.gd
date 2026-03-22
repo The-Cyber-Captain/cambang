@@ -94,8 +94,14 @@ func _initialize() -> void:
 	if not _entry_has_badge(retained_provider_entry, "continuity-only"):
 		_fail("retained continuity provider row missing continuity-only badge")
 		return
-	if not _entry_info_contains(retained_provider_entry, "Panel-local continuity only. Not active snapshot truth."):
-		_fail("retained continuity provider row missing panel-local continuity truth note")
+	if not _entry_info_contains(retained_provider_entry, "continuity only"):
+		_fail("retained continuity provider row missing continuity-only wording")
+		return
+	if not _entry_info_contains(retained_provider_entry, "panel-local"):
+		_fail("retained continuity provider row missing panel-local wording")
+		return
+	if not _entry_info_contains(retained_provider_entry, "not active snapshot truth"):
+		_fail("retained continuity provider row missing not-active-snapshot-truth wording")
 		return
 
 	await _refresh_panel_with_snapshot(panel, server, _authoritative_snapshot(3, 200, 31, 2))

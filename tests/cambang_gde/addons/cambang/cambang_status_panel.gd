@@ -2180,7 +2180,7 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 	info_lines.append("truth: authoritative prior-generation snapshot truth.")
 	info_lines.append("Retained record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
 	if int(rec.get("phase", -1)) == 3:
-		info_lines.append("Retained DESTROYED record from prior generation.")
+		info_lines.append("destroyed: authoritative prior-generation snapshot truth.")
 
 
 func _build_native_object_entry(

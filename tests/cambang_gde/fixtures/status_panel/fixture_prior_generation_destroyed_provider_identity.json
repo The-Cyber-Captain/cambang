@@ -29,7 +29,9 @@
       ],
       "provider/100": [
         "authoritative prior-generation snapshot truth",
-        "Retained DESTROYED record from prior generation."
+        "creation_gen=",
+        "current snapshot.gen=",
+        "destroyed:"
       ]
     }
   },
