@@ -650,6 +650,10 @@ func _badge_display_label(raw_label: String) -> String:
 			return "RETAINED"
 		"retained-root":
 			return "RETAINED ROOT"
+		"prior-gen":
+			return "PRIOR GEN"
+		"continuity-only":
+			return "CONTINUITY ONLY"
 		"fallback":
 			return "FALLBACK"
 		"contract-gap":

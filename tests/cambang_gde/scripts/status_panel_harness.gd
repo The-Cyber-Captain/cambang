@@ -126,7 +126,8 @@ func _initialize() -> void:
 		snapshot_reading,
 		contract_gaps,
 		projection_gaps,
-		row_ids
+		row_ids,
+		rendered_model
 	)
 	if not failures.is_empty():
 		for failure in failures:
@@ -247,9 +248,18 @@ func _dump_rendered_entries(model: Variant) -> void:
 	for entry in entries:
 		var entry_id := _extract_entry_id(entry)
 		var label := _extract_entry_field(entry, "label")
-		var detail := _extract_entry_field(entry, "detail")
 		var parent_id := _extract_entry_field(entry, "parent_id")
-		print("  id=%s parent=%s label=%s detail=%s" % [entry_id, parent_id, label, detail])
+		var counters := _extract_entry_counters(entry)
+		var badges := _extract_entry_badges(entry)
+		var info_lines := _extract_entry_info_lines(entry)
+		print("  id=%s parent=%s label=%s counters=%s badges=%s info=%s" % [
+			entry_id,
+			parent_id,
+			label,
+			counters,
+			badges,
+			info_lines,
+		])
 
 
 func _extract_entry_field(entry: Variant, field_name: String) -> String:
@@ -266,6 +276,61 @@ func _extract_entry_field(entry: Variant, field_name: String) -> String:
 				return str(entry.get(field_name))
 
 	return ""
+
+
+func _extract_entry_counters(entry: Variant) -> Dictionary:
+	var counters: Dictionary = {}
+	var raw_counters: Array = _extract_array_field(entry, "counters")
+	for raw_counter in raw_counters:
+		var name := _extract_variant_field(raw_counter, "name")
+		if name == null:
+			continue
+		counters[str(name)] = int(_extract_variant_field(raw_counter, "value", 0))
+	return counters
+
+
+func _extract_entry_badges(entry: Variant) -> Array[String]:
+	var badges: Array[String] = []
+	var raw_badges: Array = _extract_array_field(entry, "badges")
+	for raw_badge in raw_badges:
+		var label := _extract_variant_field(raw_badge, "label")
+		if label == null:
+			continue
+		badges.append(str(label))
+	return badges
+
+
+func _extract_entry_info_lines(entry: Variant) -> Array[String]:
+	var lines: Array[String] = []
+	var raw_lines: Array = _extract_array_field(entry, "info_lines")
+	for raw_line in raw_lines:
+		lines.append(str(raw_line))
+	return lines
+
+
+func _extract_array_field(entry: Variant, field_name: String) -> Array:
+	var value := _extract_variant_field(entry, field_name, [])
+	return value if typeof(value) == TYPE_ARRAY else []
+
+
+func _extract_variant_field(entry: Variant, field_name: String, fallback: Variant = null) -> Variant:
+	if entry == null:
+		return fallback
+	if typeof(entry) == TYPE_DICTIONARY:
+		return entry.get(field_name, fallback)
+	if entry is Object:
+		var property_list: Array = entry.get_property_list()
+		for prop in property_list:
+			if str(prop.get("name", "")) == field_name:
+				return entry.get(field_name)
+	return fallback
+
+
+func _find_entry(model: Variant, row_id: String) -> Variant:
+	for entry in _extract_entries(model):
+		if _extract_entry_id(entry) == row_id:
+			return entry
+	return null
 
 
 func _classify_observed_outcome(
@@ -290,7 +355,8 @@ func _evaluate_expectations(
 	snapshot_reading: Dictionary,
 	contract_gaps: Array,
 	projection_gaps: Array,
-	row_ids: Array[String]
+	row_ids: Array[String],
+	rendered_model: Variant
 ) -> Array[String]:
 	var failures: Array[String] = []
 
@@ -341,6 +407,62 @@ func _evaluate_expectations(
 		var forbidden_id := str(raw_forbidden)
 		if row_ids.has(forbidden_id):
 			failures.append("forbidden row id present: %s" % forbidden_id)
+
+	var required_counters_by_row: Dictionary = expected_panel_outcome.get("required_counters_by_row", {})
+	for row_id in required_counters_by_row.keys():
+		var entry := _find_entry(rendered_model, str(row_id))
+		if entry == null:
+			failures.append("missing row for counter expectations: %s" % str(row_id))
+			continue
+		var counters := _extract_entry_counters(entry)
+		for raw_counter_name in required_counters_by_row[row_id]:
+			var counter_name := str(raw_counter_name)
+			if not counters.has(counter_name):
+				failures.append("row %s missing counter %s" % [str(row_id), counter_name])
+
+	var required_counter_values_by_row: Dictionary = expected_panel_outcome.get("required_counter_values_by_row", {})
+	for row_id in required_counter_values_by_row.keys():
+		var entry := _find_entry(rendered_model, str(row_id))
+		if entry == null:
+			failures.append("missing row for counter value expectations: %s" % str(row_id))
+			continue
+		var counters := _extract_entry_counters(entry)
+		var expected_values: Dictionary = required_counter_values_by_row[row_id]
+		for counter_name in expected_values.keys():
+			var counter_key := str(counter_name)
+			if not counters.has(counter_key):
+				failures.append("row %s missing counter %s" % [str(row_id), counter_key])
+				continue
+			if int(counters[counter_key]) != int(expected_values[counter_name]):
+				failures.append(
+					"row %s counter %s mismatch: got=%d want=%d"
+					% [str(row_id), counter_key, int(counters[counter_key]), int(expected_values[counter_name])]
+				)
+
+	var required_badges_by_row: Dictionary = expected_panel_outcome.get("required_badges_by_row", {})
+	for row_id in required_badges_by_row.keys():
+		var entry := _find_entry(rendered_model, str(row_id))
+		if entry == null:
+			failures.append("missing row for badge expectations: %s" % str(row_id))
+			continue
+		var badges := _extract_entry_badges(entry)
+		for raw_badge in required_badges_by_row[row_id]:
+			var badge := str(raw_badge)
+			if not badges.has(badge):
+				failures.append("row %s missing badge %s" % [str(row_id), badge])
+
+	var required_info_substrings_by_row: Dictionary = expected_panel_outcome.get("required_info_substrings_by_row", {})
+	for row_id in required_info_substrings_by_row.keys():
+		var entry := _find_entry(rendered_model, str(row_id))
+		if entry == null:
+			failures.append("missing row for info expectations: %s" % str(row_id))
+			continue
+		var info_lines := _extract_entry_info_lines(entry)
+		var info_blob := "\n".join(info_lines)
+		for raw_substring in required_info_substrings_by_row[row_id]:
+			var needle := str(raw_substring)
+			if info_blob.find(needle) == -1:
+				failures.append("row %s missing info substring %s" % [str(row_id), needle])
 
 	return failures
 

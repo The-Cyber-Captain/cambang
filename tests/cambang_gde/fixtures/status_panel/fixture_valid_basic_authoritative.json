@@ -10,8 +10,93 @@
       "server/main",
       "provider/100",
       "device/1",
-      "stream/1"
-    ]
+      "stream/1",
+      "rig/7",
+      "rig/7/device/synthetic:0"
+    ],
+    "required_counters_by_row": {
+      "device/1": [
+        "mode",
+        "errors",
+        "still_w",
+        "still_h"
+      ],
+      "stream/1": [
+        "mode",
+        "width",
+        "height",
+        "fps_min",
+        "fps_max",
+        "recv",
+        "deliv",
+        "drop",
+        "queue",
+        "shown",
+        "rej_fmt",
+        "rej_inv"
+      ],
+      "rig/7": [
+        "mode",
+        "members",
+        "still_w",
+        "still_h"
+      ]
+    },
+    "required_counter_values_by_row": {
+      "device/1": {
+        "still_w": 4032,
+        "still_h": 3024
+      },
+      "stream/1": {
+        "width": 1280,
+        "height": 720,
+        "fps_min": 24,
+        "fps_max": 60,
+        "recv": 1024,
+        "deliv": 1000,
+        "drop": 24,
+        "queue": 3,
+        "shown": 1000,
+        "rej_fmt": 5,
+        "rej_inv": 2
+      },
+      "rig/7": {
+        "still_w": 4096,
+        "still_h": 2160,
+        "members": 1
+      }
+    },
+    "required_info_substrings_by_row": {
+      "device/1": [
+        "capture_width=4032",
+        "capture_height=3024",
+        "capture_profile_version=11",
+        "capture_format='JPEG'"
+      ],
+      "stream/1": [
+        "width=1280",
+        "height=720",
+        "target_fps_min=24",
+        "target_fps_max=60",
+        "profile_version=77",
+        "frames_received=1024",
+        "frames_delivered=1000",
+        "frames_dropped=24",
+        "queue_depth=3",
+        "last_frame_ts_ns=40096501234",
+        "visibility_frames_presented=1000",
+        "visibility_frames_rejected_unsupported=5",
+        "visibility_frames_rejected_invalid=2",
+        "visibility_last_path=REJECTED_UNSUPPORTED (3)",
+        "format='RGBA'"
+      ],
+      "rig/7": [
+        "capture_width=4096",
+        "capture_height=2160",
+        "capture_profile_version=13",
+        "capture_format='RAW '"
+      ]
+    }
   },
   "payload": {
     "schema_version": 1,
@@ -20,19 +105,36 @@
     "topology_version": 1,
     "timestamp_ns": 40096504700,
     "imaging_spec_version": 1,
-
-    "rigs": [],
-
+    "rigs": [
+      {
+        "rig_id": 7,
+        "name": "rig-a",
+        "phase": "LIVE",
+        "mode": "ARMED",
+        "member_hardware_ids": [
+          "synthetic:0"
+        ],
+        "capture_profile_version": 13,
+        "capture_width": 4096,
+        "capture_height": 2160,
+        "capture_format": 542589266
+      }
+    ],
     "devices": [
       {
         "instance_id": 1,
         "hardware_id": "synthetic:0",
         "phase": "LIVE",
         "mode": "STREAMING",
-        "errors_count": 0
+        "errors_count": 0,
+        "engaged": true,
+        "rig_id": 7,
+        "capture_profile_version": 11,
+        "capture_width": 4032,
+        "capture_height": 3024,
+        "capture_format": 1195724874
       }
     ],
-
     "streams": [
       {
         "stream_id": 1,
@@ -41,11 +143,23 @@
         "mode": "FLOWING",
         "intent": "PREVIEW",
         "stop_reason": "NONE",
-        "target_fps_max": 30,
-        "frames_received": 1024
+        "target_fps_max": 60,
+        "frames_received": 1024,
+        "profile_version": 77,
+        "width": 1280,
+        "height": 720,
+        "format": 1094862674,
+        "target_fps_min": 24,
+        "frames_delivered": 1000,
+        "frames_dropped": 24,
+        "queue_depth": 3,
+        "last_frame_ts_ns": 40096501234,
+        "visibility_frames_presented": 1000,
+        "visibility_frames_rejected_unsupported": 5,
+        "visibility_frames_rejected_invalid": 2,
+        "visibility_last_path": 3
       }
     ],
-
     "native_objects": [
       {
         "native_id": 100,
@@ -77,7 +191,6 @@
         "creation_gen": 2
       }
     ],
-
     "detached_root_ids": []
   }
 }

@@ -1044,6 +1044,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			[
 				_badge("warning", "retained"),
 				_badge("warning", "retained-root"),
+				_badge("info", "continuity-only"),
 				_badge("warning", "orphaned"),
 			],
 			[
@@ -1064,11 +1065,13 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
+			cloned_entry.badges.append(_badge("info", "continuity-only"))
 			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif orphan_provider_root_ids.has(source_entry.id):
 			cloned_entry.parent_id = "server/main"
 			cloned_entry.depth = 1
 			cloned_entry.badges.append(_badge("warning", "retained"))
+			cloned_entry.badges.append(_badge("info", "continuity-only"))
 			cloned_entry.badges.append(_badge("warning", "orphaned"))
 			if source_entry.id == primary_orphan_provider_root_id:
 				cloned_entry.badges.append(_badge("warning", "retained-root"))
@@ -1089,7 +1092,8 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
 	var lines: Array[String] = [
-		"Presentation continuity only. Not active snapshot truth.",
+		"Panel-local continuity only. Not active snapshot truth.",
+		"continuity: retained presentation copied from a previously rendered authoritative panel.",
 		"retained_from_gen=%d" % retained.retained_from_gen,
 		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
 		"source version=%d, source topology=%d" % [retained.source_snapshot_version, retained.source_topology_version],
@@ -1767,7 +1771,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		provider_device_ids_by_instance[instance_id] = device_entry_id
 		var device_phase := int(rec.get("phase", -1))
 		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % device_phase)]
-		var device_info: Array[String] = []
+		var device_info: Array[String] = [
+			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
+				int(rec.get("capture_width", 0)),
+				int(rec.get("capture_height", 0)),
+				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
+				int(rec.get("capture_profile_version", 0)),
+			],
+		]
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
@@ -1791,6 +1802,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("errors", int(rec.get("errors_count", 0)), 1),
+				_counter("still_w", int(rec.get("capture_width", 0)), 4),
+				_counter("still_h", int(rec.get("capture_height", 0)), 4),
 			],
 			device_info
 		))
@@ -1832,7 +1845,29 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_id := int(rec.get("stream_id", 0))
 			var stream_phase := int(rec.get("phase", -1))
 			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % stream_phase)]
-			var stream_info: Array[String] = []
+			var stream_info: Array[String] = [
+				"profile: width=%d height=%d format=%s target_fps_min=%d target_fps_max=%d profile_version=%d" % [
+					int(rec.get("width", 0)),
+					int(rec.get("height", 0)),
+					_format_fourcc_with_raw(int(rec.get("format", 0))),
+					int(rec.get("target_fps_min", 0)),
+					int(rec.get("target_fps_max", 0)),
+					int(rec.get("profile_version", 0)),
+				],
+				"flow: frames_received=%d frames_delivered=%d frames_dropped=%d queue_depth=%d last_frame_ts_ns=%d" % [
+					int(rec.get("frames_received", 0)),
+					int(rec.get("frames_delivered", 0)),
+					int(rec.get("frames_dropped", 0)),
+					int(rec.get("queue_depth", 0)),
+					int(rec.get("last_frame_ts_ns", 0)),
+				],
+				"visibility: visibility_frames_presented=%d visibility_frames_rejected_unsupported=%d visibility_frames_rejected_invalid=%d visibility_last_path=%s" % [
+					int(rec.get("visibility_frames_presented", 0)),
+					int(rec.get("visibility_frames_rejected_unsupported", 0)),
+					int(rec.get("visibility_frames_rejected_invalid", 0)),
+					_visibility_path_display(int(rec.get("visibility_last_path", 0))),
+				],
+			]
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -1855,8 +1890,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				stream_badges,
 				[
 					_counter("mode", int(rec.get("mode", 0)), 1),
+					_counter("width", int(rec.get("width", 0)), 4),
+					_counter("height", int(rec.get("height", 0)), 4),
+					_counter("fps_min", int(rec.get("target_fps_min", 0)), 2),
 					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
-					_counter("frames", int(rec.get("frames_received", 0)), 3),
+					_counter("recv", int(rec.get("frames_received", 0)), 3),
+					_counter("deliv", int(rec.get("frames_delivered", 0)), 3),
+					_counter("drop", int(rec.get("frames_dropped", 0)), 3),
+					_counter("queue", int(rec.get("queue_depth", 0)), 2),
+					_counter("shown", int(rec.get("visibility_frames_presented", 0)), 3),
+					_counter("rej_fmt", int(rec.get("visibility_frames_rejected_unsupported", 0)), 2),
+					_counter("rej_inv", int(rec.get("visibility_frames_rejected_invalid", 0)), 2),
 				],
 				stream_info
 			))
@@ -1937,6 +1981,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues.append("Contract gap: rigs[%d] missing valid rig_id." % i)
 			continue
 		var rig_entry_id := "rig/%d" % rig_id
+		var rig_info: Array[String] = [
+			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
+				int(rec.get("capture_width", 0)),
+				int(rec.get("capture_height", 0)),
+				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
+				int(rec.get("capture_profile_version", 0)),
+			],
+		]
 		panel.entries.append(_entry(
 			rig_entry_id,
 			provider_id,
@@ -1948,8 +2000,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+				_counter("still_w", int(rec.get("capture_width", 0)), 4),
+				_counter("still_h", int(rec.get("capture_height", 0)), 4),
 			],
-			[]
+			rig_info
 		))
 
 		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
@@ -2024,9 +2078,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			"retained prior-generation native objects",
 			true,
 			true,
-			[_badge("warning", "retained")],
+			[
+				_badge("warning", "retained"),
+				_badge("info", "prior-gen"),
+			],
 			[_counter("count", prior_native_objects.size(), 1)],
-			[]
+			["truth: authoritative prior-generation snapshot truth retained in the current snapshot."]
 		))
 		for i in range(prior_native_objects.size()):
 			var rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
@@ -2120,6 +2177,7 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 	var creation_gen_text := "unknown"
 	if rec.has("creation_gen"):
 		creation_gen_text = str(rec.get("creation_gen"))
+	info_lines.append("truth: authoritative prior-generation snapshot truth.")
 	info_lines.append("Retained record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
 	if int(rec.get("phase", -1)) == 3:
 		info_lines.append("Retained DESTROYED record from prior generation.")
@@ -2188,6 +2246,8 @@ func _build_native_object_entry(
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	if is_prior_generation:
+		native_badges.append(_badge("info", "prior-gen"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
@@ -2465,11 +2525,20 @@ func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool
 		return false
 	if _entry_kind(entry) == "retained":
 		return (
-			line.begins_with("Presentation continuity only.")
+			line.begins_with("Panel-local continuity only.")
 			or line.begins_with("retained_age_msec=")
 			or line.begins_with("retained_expires_in_msec=")
 			or line.begins_with("retained_expiry=")
+			or line.begins_with("continuity:")
 		)
+	if (
+		line.begins_with("profile:")
+		or line.begins_with("flow:")
+		or line.begins_with("visibility:")
+		or line.begins_with("still:")
+		or line.begins_with("truth:")
+	):
+		return true
 	if entry.id == "server/main":
 		return true
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
@@ -2501,7 +2570,7 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"fps_max", "native_all", "native_cur", "buffers", "source_version":
+		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "still_w", "still_h", "native_all", "native_cur", "buffers", "source_version":
 			return "summary"
 		"frames", "bytes", "native_prev", "native_dead", "source_topology":
 			return "detail"
@@ -2573,3 +2642,37 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			_:
 				return ""
 	return ""
+
+
+func _format_fourcc_with_raw(value: int) -> String:
+	var raw := int(value)
+	return "%s (%d)" % [_fourcc_to_text(raw), raw]
+
+
+func _fourcc_to_text(value: int) -> String:
+	if value == 0:
+		return "0x00000000"
+	var chars: Array[String] = []
+	for shift in [0, 8, 16, 24]:
+		var code := (value >> shift) & 0xFF
+		if code >= 32 and code <= 126:
+			chars.append(char(code))
+		else:
+			chars.append(".")
+	return "'%s'" % "".join(chars)
+
+
+func _visibility_path_display(value: int) -> String:
+	match value:
+		0:
+			return "NONE (0)"
+		1:
+			return "RGBA_DIRECT (1)"
+		2:
+			return "BGRA_SWIZZLED (2)"
+		3:
+			return "REJECTED_UNSUPPORTED (3)"
+		4:
+			return "REJECTED_INVALID (4)"
+		_:
+			return "UNKNOWN (%d)" % value

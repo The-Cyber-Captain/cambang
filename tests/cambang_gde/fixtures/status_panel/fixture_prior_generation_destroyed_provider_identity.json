@@ -14,7 +14,24 @@
     ],
     "forbidden_row_ids": [
       "native_object/100"
-    ]
+    ],
+    "required_badges_by_row": {
+      "provider/200/retained_prior_generation_native_objects": [
+        "prior-gen"
+      ],
+      "provider/100": [
+        "prior-gen"
+      ]
+    },
+    "required_info_substrings_by_row": {
+      "provider/200/retained_prior_generation_native_objects": [
+        "authoritative prior-generation snapshot truth"
+      ],
+      "provider/100": [
+        "authoritative prior-generation snapshot truth",
+        "Retained DESTROYED record from prior generation."
+      ]
+    }
   },
   "payload": {
     "schema_version": 1,
