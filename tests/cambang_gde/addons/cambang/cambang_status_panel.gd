@@ -20,6 +20,7 @@ class StatusEntryModel extends RefCounted:
 	var parent_id: String = ""
 	var depth: int = 0
 	var label: String = ""
+	var materialized_native_id: int = 0
 	var expanded: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
@@ -1249,6 +1250,7 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_counters,
 		cloned_info_lines
 	)
+	cloned.materialized_native_id = source.materialized_native_id
 	cloned.summary_info_lines = source.summary_info_lines.duplicate()
 	cloned.detail_info_lines = source.detail_info_lines.duplicate()
 	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
@@ -1719,6 +1721,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		provider_counters,
 		provider_info_lines
 	)
+	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
 
 	var promoted_native_ids := {}
@@ -1786,13 +1789,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if device_native_phase != device_phase:
 				device_badges.append(_badge("neutral", "native_phase=%d" % device_native_phase))
 			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
-			device_info.append(_native_ref_info_line(int(device_native_rec.get("native_id", 0))))
 		elif device_matches.size() > 1:
 			device_info.append(
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
 				% device_matches.size()
 			)
-		panel.entries.append(_entry(
+		var device_entry := _entry(
 			device_entry_id,
 			provider_id,
 			2,
@@ -1807,7 +1809,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_counter("still_h", int(rec.get("capture_height", 0)), 4),
 			],
 			device_info
-		))
+		)
+		if device_matches.size() == 1:
+			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
+		panel.entries.append(device_entry)
 
 	var streams_by_device := {}
 	var seen_stream_ids := {}
@@ -1876,13 +1881,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				if stream_native_phase != stream_phase:
 					stream_badges.append(_badge("neutral", "native_phase=%d" % stream_native_phase))
 				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
-				stream_info.append(_native_ref_info_line(int(stream_native_rec.get("native_id", 0))))
 			elif stream_matches.size() > 1:
 				stream_info.append(
 					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
 					% stream_matches.size()
 				)
-			panel.entries.append(_entry(
+			var stream_entry := _entry(
 				"stream/%d" % stream_id,
 				parent_entry_id,
 				3,
@@ -1905,7 +1909,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_counter("rej_inv", int(rec.get("visibility_frames_rejected_invalid", 0)), 2),
 				],
 				stream_info
-			))
+			)
+			if stream_matches.size() == 1:
+				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
+			panel.entries.append(stream_entry)
 
 	var current_grounded_destroyed_device_row_id_by_instance := {}
 	for instance_key in current_non_live_device_native_matches_by_instance.keys():
@@ -1921,7 +1928,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				continue
 			current_grounded_destroyed_device_row_id_by_instance[int(instance_key)] = canonical_device_id
 			promoted_native_ids[destroyed_device_native_id] = true
-			panel.entries.append(_entry(
+			var destroyed_device_entry := _entry(
 				canonical_device_id,
 				provider_id,
 				2,
@@ -1932,8 +1939,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[_native_ref_info_line(destroyed_device_native_id)]
-			))
+				[]
+			)
+			destroyed_device_entry.materialized_native_id = destroyed_device_native_id
+			panel.entries.append(destroyed_device_entry)
 		else:
 			issues.append(
 				"Contract ambiguity: current-generation non-live device owner_instance_id=%d has %d matching Device native objects."
@@ -1956,7 +1965,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
 				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
 			promoted_native_ids[destroyed_stream_native_id] = true
-			panel.entries.append(_entry(
+			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
 				3 if destroyed_stream_parent_id != provider_id else 2,
@@ -1967,8 +1976,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[_native_ref_info_line(destroyed_stream_native_id)]
-			))
+				[]
+			)
+			destroyed_stream_entry.materialized_native_id = destroyed_stream_native_id
+			panel.entries.append(destroyed_stream_entry)
 		else:
 			issues.append(
 				"Contract ambiguity: current-generation non-live stream owner_stream_id=%d has %d matching Stream native objects."
@@ -2204,7 +2215,7 @@ func _compute_native_coverage(entries: Array[StatusEntryModel], native_objects: 
 
 	var projected_native_ids := {}
 	for entry in entries:
-		var projected_native_id := _native_id_referenced_by_entry(entry)
+		var projected_native_id := int(entry.materialized_native_id) if entry != null else 0
 		if projected_native_id <= 0:
 			continue
 		projected_native_ids[projected_native_id] = true
@@ -2241,40 +2252,6 @@ func _compute_native_coverage(entries: Array[StatusEntryModel], native_objects: 
 		"missing_destroyed": missing_destroyed,
 		"missing_non_destroyed": missing_non_destroyed,
 	}
-
-
-func _native_id_referenced_by_entry(entry: StatusEntryModel) -> int:
-	if entry == null:
-		return 0
-	var direct_native_id := _parse_terminal_native_id(entry.id)
-	if direct_native_id > 0:
-		return direct_native_id
-
-	var prefix := "projection: native_ref_id="
-	for line in entry.info_lines:
-		if not line.begins_with(prefix):
-			continue
-		var suffix := line.substr(prefix.length()).trim_suffix(".")
-		if suffix.is_valid_int():
-			return int(suffix)
-	return 0
-
-
-func _parse_terminal_native_id(entry_id: String) -> int:
-	if entry_id.is_empty():
-		return 0
-	var parts := entry_id.split("/")
-	if parts.size() != 2:
-		return 0
-	if not ["provider", "native_object", "frameproducer"].has(parts[0]):
-		return 0
-	return int(parts[1]) if parts[1].is_valid_int() else 0
-
-
-func _native_ref_info_line(native_id: int) -> String:
-	if native_id <= 0:
-		return ""
-	return "projection: native_ref_id=%d." % native_id
 
 
 func _find_panel_entry_by_id(panel: PanelModel, entry_id: String) -> StatusEntryModel:
@@ -2386,7 +2363,7 @@ func _build_native_object_entry(
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
 	]
-	return _entry(
+	var native_entry := _entry(
 		row_id,
 		parent_id,
 		target_depth,
@@ -2397,6 +2374,8 @@ func _build_native_object_entry(
 		native_counters,
 		info_lines
 	)
+	native_entry.materialized_native_id = native_id
+	return native_entry
 
 
 func _ensure_expandability(panel: PanelModel) -> void:
