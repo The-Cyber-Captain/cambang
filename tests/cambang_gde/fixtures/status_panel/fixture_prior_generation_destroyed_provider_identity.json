@@ -30,8 +30,7 @@
       "provider/100": [
         "authoritative prior-generation snapshot truth",
         "creation_gen=",
-        "current snapshot.gen=",
-        "destroyed:"
+        "current snapshot.gen="
       ]
     }
   },
