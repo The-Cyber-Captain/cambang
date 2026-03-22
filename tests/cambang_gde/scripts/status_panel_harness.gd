@@ -282,7 +282,7 @@ func _extract_entry_counters(entry: Variant) -> Dictionary:
 	var counters: Dictionary = {}
 	var raw_counters: Array = _extract_array_field(entry, "counters")
 	for raw_counter in raw_counters:
-		var name := _extract_variant_field(raw_counter, "name")
+		var name: Variant = _extract_variant_field(raw_counter, "name")
 		if name == null:
 			continue
 		counters[str(name)] = int(_extract_variant_field(raw_counter, "value", 0))
@@ -293,7 +293,7 @@ func _extract_entry_badges(entry: Variant) -> Array[String]:
 	var badges: Array[String] = []
 	var raw_badges: Array = _extract_array_field(entry, "badges")
 	for raw_badge in raw_badges:
-		var label := _extract_variant_field(raw_badge, "label")
+		var label: Variant = _extract_variant_field(raw_badge, "label")
 		if label == null:
 			continue
 		badges.append(str(label))
@@ -309,7 +309,7 @@ func _extract_entry_info_lines(entry: Variant) -> Array[String]:
 
 
 func _extract_array_field(entry: Variant, field_name: String) -> Array:
-	var value := _extract_variant_field(entry, field_name, [])
+	var value: Variant = _extract_variant_field(entry, field_name, [])
 	return value if typeof(value) == TYPE_ARRAY else []
 
 
@@ -410,24 +410,25 @@ func _evaluate_expectations(
 
 	var required_counters_by_row: Dictionary = expected_panel_outcome.get("required_counters_by_row", {})
 	for row_id in required_counters_by_row.keys():
-		var entry := _find_entry(rendered_model, str(row_id))
+		var entry: Variant = _find_entry(rendered_model, str(row_id))
 		if entry == null:
 			failures.append("missing row for counter expectations: %s" % str(row_id))
 			continue
-		var counters := _extract_entry_counters(entry)
-		for raw_counter_name in required_counters_by_row[row_id]:
+		var counters: Dictionary = _extract_entry_counters(entry)
+		var required_counter_names: Array = required_counters_by_row.get(row_id, []) as Array
+		for raw_counter_name in required_counter_names:
 			var counter_name := str(raw_counter_name)
 			if not counters.has(counter_name):
 				failures.append("row %s missing counter %s" % [str(row_id), counter_name])
 
 	var required_counter_values_by_row: Dictionary = expected_panel_outcome.get("required_counter_values_by_row", {})
 	for row_id in required_counter_values_by_row.keys():
-		var entry := _find_entry(rendered_model, str(row_id))
+		var entry: Variant = _find_entry(rendered_model, str(row_id))
 		if entry == null:
 			failures.append("missing row for counter value expectations: %s" % str(row_id))
 			continue
-		var counters := _extract_entry_counters(entry)
-		var expected_values: Dictionary = required_counter_values_by_row[row_id]
+		var counters: Dictionary = _extract_entry_counters(entry)
+		var expected_values: Dictionary = required_counter_values_by_row.get(row_id, {}) as Dictionary
 		for counter_name in expected_values.keys():
 			var counter_key := str(counter_name)
 			if not counters.has(counter_key):
@@ -441,25 +442,27 @@ func _evaluate_expectations(
 
 	var required_badges_by_row: Dictionary = expected_panel_outcome.get("required_badges_by_row", {})
 	for row_id in required_badges_by_row.keys():
-		var entry := _find_entry(rendered_model, str(row_id))
+		var entry: Variant = _find_entry(rendered_model, str(row_id))
 		if entry == null:
 			failures.append("missing row for badge expectations: %s" % str(row_id))
 			continue
-		var badges := _extract_entry_badges(entry)
-		for raw_badge in required_badges_by_row[row_id]:
+		var badges: Array[String] = _extract_entry_badges(entry)
+		var required_badges: Array = required_badges_by_row.get(row_id, []) as Array
+		for raw_badge in required_badges:
 			var badge := str(raw_badge)
 			if not badges.has(badge):
 				failures.append("row %s missing badge %s" % [str(row_id), badge])
 
 	var required_info_substrings_by_row: Dictionary = expected_panel_outcome.get("required_info_substrings_by_row", {})
 	for row_id in required_info_substrings_by_row.keys():
-		var entry := _find_entry(rendered_model, str(row_id))
+		var entry: Variant = _find_entry(rendered_model, str(row_id))
 		if entry == null:
 			failures.append("missing row for info expectations: %s" % str(row_id))
 			continue
-		var info_lines := _extract_entry_info_lines(entry)
-		var info_blob := "\n".join(info_lines)
-		for raw_substring in required_info_substrings_by_row[row_id]:
+		var info_lines: Array[String] = _extract_entry_info_lines(entry)
+		var info_blob: String = "\n".join(info_lines)
+		var required_substrings: Array = required_info_substrings_by_row.get(row_id, []) as Array
+		for raw_substring in required_substrings:
 			var needle := str(raw_substring)
 			if info_blob.find(needle) == -1:
 				failures.append("row %s missing info substring %s" % [str(row_id), needle])
