@@ -27,7 +27,15 @@
         "native_prev": 0
       }
     },
+    "required_badges_by_row": {
+      "provider/100": [
+        "NATIVE COVERAGE: OK"
+      ]
+    },
     "required_info_substrings_by_row": {
+      "provider/100": [
+        "native coverage: 4/4 projected."
+      ],
       "frameproducer/103": [
         "FrameProducer owner_stream_id=1.",
         "FrameProducer creation_gen=2."

@@ -1786,6 +1786,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if device_native_phase != device_phase:
 				device_badges.append(_badge("neutral", "native_phase=%d" % device_native_phase))
 			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
+			device_info.append(_native_ref_info_line(int(device_native_rec.get("native_id", 0))))
 		elif device_matches.size() > 1:
 			device_info.append(
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
@@ -1875,6 +1876,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				if stream_native_phase != stream_phase:
 					stream_badges.append(_badge("neutral", "native_phase=%d" % stream_native_phase))
 				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
+				stream_info.append(_native_ref_info_line(int(stream_native_rec.get("native_id", 0))))
 			elif stream_matches.size() > 1:
 				stream_info.append(
 					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
@@ -1930,7 +1932,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[]
+				[_native_ref_info_line(destroyed_device_native_id)]
 			))
 		else:
 			issues.append(
@@ -1965,7 +1967,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[]
+				[_native_ref_info_line(destroyed_stream_native_id)]
 			))
 		else:
 			issues.append(
@@ -2119,6 +2121,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues
 		))
 
+	_apply_native_coverage_summary(panel, provider_id, native_objects, snapshot_gen)
 	_ensure_expandability(panel)
 	return panel
 
@@ -2150,6 +2153,137 @@ func _partition_native_objects_by_generation(snapshot_gen: int, native_objects: 
 		else:
 			prior.append(rec)
 	return {"current": current, "prior": prior}
+
+
+func _apply_native_coverage_summary(
+		panel: PanelModel,
+		provider_id: String,
+		native_objects: Array,
+		snapshot_gen: int
+	) -> void:
+	if panel == null or provider_id.is_empty():
+		return
+	var provider_entry := _find_panel_entry_by_id(panel, provider_id)
+	if provider_entry == null:
+		return
+
+	var coverage := _compute_native_coverage(panel.entries, native_objects, snapshot_gen)
+	var total_native := int(coverage.get("total", 0))
+	var projected_native := int(coverage.get("projected", 0))
+	var missing_native := int(coverage.get("missing", 0))
+	if missing_native > 0:
+		provider_entry.badges.append(_badge("warning", "NATIVE COVERAGE: GAP"))
+		provider_entry.info_lines.append(
+			"Projection gap: native coverage %d/%d projected (missing=%d; current=%d; prior=%d; destroyed=%d; non-destroyed=%d)."
+			% [
+				projected_native,
+				total_native,
+				missing_native,
+				int(coverage.get("missing_current", 0)),
+				int(coverage.get("missing_prior", 0)),
+				int(coverage.get("missing_destroyed", 0)),
+				int(coverage.get("missing_non_destroyed", 0)),
+			]
+		)
+	else:
+		provider_entry.badges.append(_badge("success", "NATIVE COVERAGE: OK"))
+		provider_entry.info_lines.append("native coverage: %d/%d projected." % [projected_native, total_native])
+	provider_entry.badges = _normalize_badges(provider_entry.badges)
+
+
+func _compute_native_coverage(entries: Array[StatusEntryModel], native_objects: Array, snapshot_gen: int) -> Dictionary:
+	var snapshot_native_records := {}
+	for item in native_objects:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var rec := item as Dictionary
+		var native_id := int(rec.get("native_id", 0))
+		if native_id <= 0:
+			continue
+		snapshot_native_records[native_id] = rec
+
+	var projected_native_ids := {}
+	for entry in entries:
+		var projected_native_id := _native_id_referenced_by_entry(entry)
+		if projected_native_id <= 0:
+			continue
+		projected_native_ids[projected_native_id] = true
+
+	var projected_snapshot_native_count := 0
+	var missing_current := 0
+	var missing_prior := 0
+	var missing_destroyed := 0
+	var missing_non_destroyed := 0
+	for native_id in snapshot_native_records.keys():
+		if projected_native_ids.has(native_id):
+			projected_snapshot_native_count += 1
+			continue
+		var rec: Dictionary = snapshot_native_records[native_id]
+		var creation_gen := int(rec.get("creation_gen", snapshot_gen))
+		if creation_gen == snapshot_gen:
+			missing_current += 1
+		elif creation_gen < snapshot_gen:
+			missing_prior += 1
+		else:
+			missing_current += 1
+
+		if int(rec.get("phase", -1)) == 3:
+			missing_destroyed += 1
+		else:
+			missing_non_destroyed += 1
+
+	return {
+		"total": snapshot_native_records.size(),
+		"projected": projected_snapshot_native_count,
+		"missing": snapshot_native_records.size() - projected_snapshot_native_count,
+		"missing_current": missing_current,
+		"missing_prior": missing_prior,
+		"missing_destroyed": missing_destroyed,
+		"missing_non_destroyed": missing_non_destroyed,
+	}
+
+
+func _native_id_referenced_by_entry(entry: StatusEntryModel) -> int:
+	if entry == null:
+		return 0
+	var direct_native_id := _parse_terminal_native_id(entry.id)
+	if direct_native_id > 0:
+		return direct_native_id
+
+	var prefix := "projection: native_ref_id="
+	for line in entry.info_lines:
+		if not line.begins_with(prefix):
+			continue
+		var suffix := line.substr(prefix.length()).trim_suffix(".")
+		if suffix.is_valid_int():
+			return int(suffix)
+	return 0
+
+
+func _parse_terminal_native_id(entry_id: String) -> int:
+	if entry_id.is_empty():
+		return 0
+	var parts := entry_id.split("/")
+	if parts.size() != 2:
+		return 0
+	if not ["provider", "native_object", "frameproducer"].has(parts[0]):
+		return 0
+	return int(parts[1]) if parts[1].is_valid_int() else 0
+
+
+func _native_ref_info_line(native_id: int) -> String:
+	if native_id <= 0:
+		return ""
+	return "projection: native_ref_id=%d." % native_id
+
+
+func _find_panel_entry_by_id(panel: PanelModel, entry_id: String) -> StatusEntryModel:
+	if panel == null:
+		return null
+	for entry in panel.entries:
+		if entry != null and entry.id == entry_id:
+			return entry
+	return null
 
 
 func _native_object_is_current_gen(rec: Dictionary, snapshot_gen: int, issues: Array[String], path: String) -> bool:

@@ -76,6 +76,9 @@
       }
     },
     "required_info_substrings_by_row": {
+      "provider/100": [
+        "native coverage: 4/4 projected."
+      ],
       "device/1": [
         "capture_width=4032",
         "capture_height=3024",
@@ -108,6 +111,11 @@
         "capture_height=2160",
         "capture_profile_version=13",
         "capture_format='RAW '"
+      ]
+    },
+    "required_badges_by_row": {
+      "provider/100": [
+        "NATIVE COVERAGE: OK"
       ]
     }
   },

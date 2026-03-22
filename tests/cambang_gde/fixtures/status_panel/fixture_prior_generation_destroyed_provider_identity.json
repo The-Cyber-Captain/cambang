@@ -16,6 +16,9 @@
       "native_object/100"
     ],
     "required_badges_by_row": {
+      "provider/200": [
+        "NATIVE COVERAGE: OK"
+      ],
       "provider/200/retained_prior_generation_native_objects": [
         "prior-gen"
       ],
@@ -24,6 +27,9 @@
       ]
     },
     "required_info_substrings_by_row": {
+      "provider/200": [
+        "native coverage: 2/2 projected."
+      ],
       "provider/200/retained_prior_generation_native_objects": [
         "authoritative prior-generation snapshot truth"
       ],
