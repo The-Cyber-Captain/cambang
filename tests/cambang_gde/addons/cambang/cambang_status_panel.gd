@@ -11,6 +11,7 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
+const DEBUG_ROW_LIFECYCLE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_ROW_LIFECYCLE"
 
 
 class PanelModel extends RefCounted:
@@ -111,6 +112,7 @@ var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _expanded_by_row_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
+var _row_nodes_by_id: Dictionary = {}
 var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
 var _last_panel_model: PanelModel = null
@@ -463,12 +465,10 @@ func _refresh_from_server() -> void:
 			_last_panel_model = _compose_presented_panel_model(_last_active_panel_model, true, snapshot_meta)
 			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		"value_refresh":
-			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
-			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_set_last_active_panel_state(value_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(value_panel, true, snapshot_meta)
-			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot, "value_refresh")
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_set_last_active_panel_state(full_panel, true, snapshot_meta)
@@ -476,10 +476,14 @@ func _refresh_from_server() -> void:
 			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 
 
-func _render_panel_and_maybe_dump(model: PanelModel, snapshot: Variant) -> void:
-	_render_panel_model(model)
+func _render_panel_and_maybe_dump(
+		model: PanelModel,
+		snapshot: Variant,
+		update_category: String = "structural_rebuild"
+	) -> void:
+	_render_panel_model(model, update_category)
 	if _apply_render_native_coverage_summary(snapshot, model):
-		_render_panel_model(model)
+		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
 
 
@@ -2715,33 +2719,137 @@ func _find_device_by_hardware(devices: Array, hardware_id: String, issues: Array
 	return {}
 
 
-func _render_panel_model(model: PanelModel) -> void:
+func _render_panel_model(model: PanelModel, update_category: String = "structural_rebuild") -> void:
 	if model == null:
 		push_warning("CamBANGStatusPanel: null PanelModel render request ignored.")
 		return
 	if _status_rows == null:
 		return
 
-	for child in _status_rows.get_children():
-		child.queue_free()
-
 	var style := _resolve_style()
 	_dev_parent_by_id.clear()
 	for entry_model in model.entries:
 		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
 
+	if update_category == "value_refresh":
+		var mismatch_reason := _value_refresh_row_reconcile_mismatch(model)
+		if mismatch_reason != "":
+			_debug_log_row_reconcile_fallback(model, mismatch_reason)
+			_reconcile_row_nodes(model, style, true, "structural_rebuild")
+			return
+
+	_reconcile_row_nodes(model, style, update_category != "value_refresh", update_category)
+
+
+func _reconcile_row_nodes(
+		model: PanelModel,
+		style: StatusPanelStyle,
+		allow_create_remove: bool,
+		update_category: String
+	) -> void:
+	var desired_row_ids := {}
 	for entry_model in model.entries:
+		if entry_model == null:
+			continue
+		desired_row_ids[entry_model.id] = true
+
+	if allow_create_remove:
+		var stale_row_ids: Array[String] = []
+		for existing_row_id in _row_nodes_by_id.keys():
+			var row_id_text := str(existing_row_id)
+			if desired_row_ids.has(row_id_text):
+				continue
+			stale_row_ids.append(row_id_text)
+		for stale_row_id in stale_row_ids:
+			var stale_row = _row_nodes_by_id.get(stale_row_id, null)
+			if stale_row != null and is_instance_valid(stale_row):
+				if stale_row.get_parent() == _status_rows:
+					_status_rows.remove_child(stale_row)
+				stale_row.queue_free()
+			_row_nodes_by_id.erase(stale_row_id)
+
+	for index in range(model.entries.size()):
+		var entry_model: StatusEntryModel = model.entries[index]
+		if entry_model == null:
+			continue
 		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
 		var row_visible := _is_entry_visible(entry_model)
 		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
-		var entry := STATUS_ENTRY_SCENE.instantiate()
-		_status_rows.add_child(entry)
+		var row_id := entry_model.id
+		var entry = _row_nodes_by_id.get(row_id, null)
+		var created := false
+		if entry == null or not is_instance_valid(entry):
+			entry = STATUS_ENTRY_SCENE.instantiate()
+			_row_nodes_by_id[row_id] = entry
+			created = true
+			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
+				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+
+		var bound_row_id := entry.get_entry_id()
+		if bound_row_id != "" and bound_row_id != row_id:
+			if not allow_create_remove:
+				_debug_log_row_reconcile_fallback(
+					model,
+					"value_refresh row instance bound to wrong row_id: expected=%s actual=%s" % [row_id, bound_row_id]
+				)
+				_reconcile_row_nodes(model, style, true, "structural_rebuild")
+				return
+			_row_nodes_by_id.erase(row_id)
+			if bound_row_id != "":
+				_row_nodes_by_id.erase(bound_row_id)
+			if entry.get_parent() == _status_rows:
+				_status_rows.remove_child(entry)
+			entry.queue_free()
+			entry = STATUS_ENTRY_SCENE.instantiate()
+			_row_nodes_by_id[row_id] = entry
+			created = true
+			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
+				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+
+		if entry.get_parent() != _status_rows:
+			_status_rows.add_child(entry)
+		if _status_rows.get_child(index) != entry:
+			_status_rows.move_child(entry, index)
+
 		entry.set_style(style)
 		entry.set_model(entry_model)
 		entry.visible = row_visible
-		if entry.has_signal("disclosure_toggled"):
-			entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+		_debug_log_row_lifecycle(entry_model, entry, created, update_category)
+
+
+func _value_refresh_row_reconcile_mismatch(model: PanelModel) -> String:
+	if model == null:
+		return "panel model missing"
+	if _status_rows.get_child_count() != model.entries.size():
+		return "child count changed from %d to %d" % [_status_rows.get_child_count(), model.entries.size()]
+	if _row_nodes_by_id.size() != model.entries.size():
+		return "row node mapping count changed from %d to %d" % [_row_nodes_by_id.size(), model.entries.size()]
+
+	for index in range(model.entries.size()):
+		var entry_model: StatusEntryModel = model.entries[index]
+		if entry_model == null:
+			return "model.entries[%d] is null" % index
+		if not _row_nodes_by_id.has(entry_model.id):
+			return "missing persisted row node for row_id=%s" % entry_model.id
+		var mapped_entry = _row_nodes_by_id.get(entry_model.id, null)
+		if mapped_entry == null or not is_instance_valid(mapped_entry):
+			return "invalid persisted row node for row_id=%s" % entry_model.id
+		var mapped_entry_id := mapped_entry.get_entry_id()
+		if mapped_entry_id != "" and mapped_entry_id != entry_model.id:
+			return "persisted row node mismatch for row_id=%s actual=%s" % [entry_model.id, mapped_entry_id]
+		if mapped_entry.get_parent() != _status_rows:
+			return "persisted row node detached for row_id=%s" % entry_model.id
+
+	for existing_row_id in _row_nodes_by_id.keys():
+		var row_id_text := str(existing_row_id)
+		var mapped_entry = _row_nodes_by_id.get(row_id_text, null)
+		if mapped_entry == null or not is_instance_valid(mapped_entry):
+			return "invalid row node tracked for row_id=%s" % row_id_text
+		if not _entry_exists(model.entries, row_id_text):
+			return "tracked row_id missing from value refresh model: %s" % row_id_text
+
+	return ""
 
 
 func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
@@ -2848,6 +2956,55 @@ func _debug_disclosure_enabled() -> bool:
 		return false
 	var env_value := OS.get_environment(DEBUG_DISCLOSURE_ENV).strip_edges().to_lower()
 	return ["1", "true", "yes", "on"].has(env_value)
+
+
+func _debug_row_lifecycle_enabled() -> bool:
+	if not OS.has_environment(DEBUG_ROW_LIFECYCLE_ENV):
+		return false
+	var env_value := OS.get_environment(DEBUG_ROW_LIFECYCLE_ENV).strip_edges().to_lower()
+	return ["1", "true", "yes", "on"].has(env_value)
+
+
+func _debug_log_row_lifecycle(
+		entry_model: StatusEntryModel,
+		entry,
+		created: bool,
+		update_category: String
+	) -> void:
+	if not _debug_row_lifecycle_enabled():
+		return
+	if entry_model == null or entry == null:
+		return
+	print(
+		"[CAMBANG row lifecycle] row_id=%s instance_id=%s state=%s update=%s gen=%s version=%s topology_version=%s"
+		% [
+			entry_model.id,
+			str(entry.get_instance_id()),
+			("created" if created else "reused"),
+			update_category,
+			str(_last_snapshot_meta.get("gen", "?")),
+			str(_last_snapshot_meta.get("version", "?")),
+			str(_last_snapshot_meta.get("topology_version", "?")),
+		]
+	)
+
+
+func _debug_log_row_reconcile_fallback(model: PanelModel, reason: String) -> void:
+	if not _debug_row_lifecycle_enabled():
+		return
+	var row_count := 0
+	if model != null:
+		row_count = model.entries.size()
+	print(
+		"[CAMBANG row lifecycle fallback] reason=%s row_count=%d gen=%s version=%s topology_version=%s"
+		% [
+			reason,
+			row_count,
+			str(_last_snapshot_meta.get("gen", "?")),
+			str(_last_snapshot_meta.get("version", "?")),
+			str(_last_snapshot_meta.get("topology_version", "?")),
+		]
+	)
 
 
 func _entry(
