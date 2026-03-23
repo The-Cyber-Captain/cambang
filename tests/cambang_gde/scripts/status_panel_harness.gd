@@ -113,7 +113,7 @@ func _initialize() -> void:
 		rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
-	panel.call("_render_panel_model", rendered_model)
+	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
 
 	await process_frame
 	await process_frame
@@ -302,6 +302,14 @@ func _compute_runtime_compat(panel: Object, payload: Variant) -> Dictionary:
 			"projection_gaps": [],
 		}
 	return panel.call("_check_snapshot_runtime_compat", payload)
+
+
+func _resolve_render_snapshot(payload: Variant) -> Variant:
+	if payload == null:
+		return null
+	if typeof(payload) != TYPE_DICTIONARY:
+		return null
+	return payload
 
 
 func _validate_screenshot_mode() -> String:
