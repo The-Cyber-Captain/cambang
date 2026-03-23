@@ -334,13 +334,22 @@ void CamBANGDevNode::stop_provider_() {
         return;
     }
 
+    auto* server = CamBANGServer::get_singleton();
+    const bool provider_still_owned_by_server =
+        (server != nullptr) &&
+        (provider_ != nullptr) &&
+        (server->provider_broker_for_dev() == provider_);
+
     // Best-effort dev teardown; core shutdown remains deterministic.
     // Streams are core-owned; tear down via CoreRuntime to avoid split-brain state.
     (void)runtime_->try_stop_stream(stream_id_);
     (void)runtime_->try_destroy_stream(stream_id_);
 
-    // Device open/close is still provider-direct in this dev node (for now).
-    if (provider_) {
+    // Device open/close is still provider-direct in this dev node (for now),
+    // but only while the broker is still owned by CamBANGServer. External
+    // CamBANGServer.stop() destroys the broker before this dev node observes the
+    // runtime transition, so skip provider-direct teardown once ownership has moved.
+    if (provider_still_owned_by_server) {
         (void)provider_->close_device(device_instance_id_);
     }
 

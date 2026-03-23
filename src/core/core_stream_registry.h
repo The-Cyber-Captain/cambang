@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 
+#include "core/core_frame_sink.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
@@ -47,6 +48,11 @@ public:
     uint64_t frames_dropped = 0;
     uint64_t last_frame_ts_ns = 0;
 
+    uint64_t visibility_frames_presented = 0;
+    uint64_t visibility_frames_rejected_unsupported = 0;
+    uint64_t visibility_frames_rejected_invalid = 0;
+    CoreVisibilityPath visibility_last_path = CoreVisibilityPath::NONE;
+
     uint32_t last_error_code = 0;
   };
 
@@ -70,6 +76,7 @@ public:
   bool on_frame_received(uint64_t stream_id, uint64_t integrated_ts_ns);
   bool on_frame_released(uint64_t stream_id);
   bool on_frame_dropped(uint64_t stream_id);
+  bool on_visibility_path(uint64_t stream_id, CoreVisibilityPath path);
 
   // Mutable config updates (stream should exist).
   bool set_picture(uint64_t stream_id, const PictureConfig& picture);

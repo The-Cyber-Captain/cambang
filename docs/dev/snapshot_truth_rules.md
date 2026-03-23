@@ -76,6 +76,19 @@ stable.
 Each published snapshot must be internally consistent with the retained
 runtime state that authorized the publication.
 
+## Applied Configuration Rule
+
+Applied capture profile of a live runtime entity is part of runtime truth.
+The snapshot must expose a faithful, behaviourally complete projection of that applied profile.
+`profile_version` is a monotonic signal of change and must not be used as a substitute for the profile itself.
+
+- The applied capture profile of any live runtime entity is part of runtime truth.
+- Snapshot must expose a faithful, behaviourally complete projection of that applied profile.
+- `profile_version` is auxiliary metadata indicating that the applied profile changed.
+- `profile_version` must not be used to infer configuration contents.
+- Snapshot must not omit any applied profile field that affects observable runtime behaviour.
+- Snapshot must not fabricate or infer profile values.
+
 ## Invalid Patterns
 
 Examples of invalid snapshot behaviour include:

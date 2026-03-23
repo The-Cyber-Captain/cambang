@@ -129,6 +129,35 @@ This remains true even if core publishes before the Godot tick node is active:
 the Godot boundary must latch the baseline snapshot and emit it on the first
 eligible tick.
 
+Authoritative baseline content is allowed to be **provider-only**.
+
+In particular, if the provider has already been attached/initialized for the new
+generation but no device has yet been opened and no stream has yet been created,
+the first published baseline may legitimately contain:
+
+- one current-generation provider native object
+- zero devices
+- zero streams
+- no frameproducer subtree
+
+This is a contract-valid transient of startup/restart truth, not an incomplete
+or fabricated snapshot.
+
+Its duration is intentionally **fact-driven**, not time-seeded:
+
+- it may remain the latest observable snapshot for multiple host ticks if no
+  device-open / stream-create / start-stream facts are published yet
+- it may transition directly to `NIL` on completed stop
+- it may repeat across later generations under restart churn
+
+In scenarios that explicitly realize descendants, the expected next observable
+transitions are:
+
+- provider-only → device realized (`version += 1`, `topology_version += 1`)
+- device realized → stream realized (`version += 1`, `topology_version += 1`)
+- stream realized → frameproducer realized (`version += 1`, `topology_version`
+  may remain unchanged if the observable topology signature does not change)
+
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
 `CamBANGServer.get_state_snapshot()` remains **parameter-less**.
@@ -307,7 +336,16 @@ deterministic baseline snapshot after `CamBANGServer.start()` completes.
 
 ## 6. Record schemas (v1)
 
+### 6.0 `profile_version` / `capture_profile_version`
+
+- Monotonic counter incremented when the applied capture profile changes.
+- Represents change lineage only.
+- Must not be used to infer configuration contents.
+
 ### 6.1 `CamBANGRigState`
+
+`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+profile for this rig.
 
 ``` text
 CamBANGRigState {
@@ -321,7 +359,10 @@ CamBANGRigState {
 
   active_capture_id: uint64              // 0 if none
 
-  capture_profile_version: uint64        // rig still capture profile version
+  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
+  capture_width: uint32
+  capture_height: uint32
+  capture_format: uint32                 // FourCC-style CamBANG pixel format
 
   captures_triggered: uint64
   captures_completed: uint64
@@ -337,6 +378,9 @@ CamBANGRigState {
 
 ### 6.2 `CamBANGDeviceState`
 
+`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+profile for this device.
+
 ``` text
 CamBANGDeviceState {
   hardware_id: String
@@ -350,7 +394,10 @@ CamBANGDeviceState {
   rig_id: uint64                         // 0 if not a rig member
 
   camera_spec_version: uint64            // effective CameraSpec version
-  capture_profile_version: uint64        // device still capture profile version
+  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
+  capture_width: uint32
+  capture_height: uint32
+  capture_format: uint32                 // FourCC-style CamBANG pixel format
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming
@@ -377,7 +424,7 @@ CamBANGStreamState {
 
   stop_reason: NONE | USER | PREEMPTED | PROVIDER // meaningful when mode=STOPPED
 
-  profile_version: uint64                // stream capture profile version
+  profile_version: uint64                // monotonic change lineage for the applied stream capture profile
 
   width: uint32
   height: uint32
@@ -392,16 +439,33 @@ CamBANGStreamState {
   queue_depth: uint32
 
   last_frame_ts_ns: uint64               // 0 if none
+  visibility_frames_presented: uint64
+  visibility_frames_rejected_unsupported: uint64
+  visibility_frames_rejected_invalid: uint64
+  visibility_last_path:
+    NONE | RGBA_DIRECT | BGRA_SWIZZLED | REJECTED_UNSUPPORTED | REJECTED_INVALID
 }
 ```
 **Field semantics (v1):**
 
+- `width`, `height`, `format`, `target_fps_min`, and `target_fps_max` form part of
+  the applied capture profile for this stream.
+- `profile_version` is change lineage metadata for that applied profile and must
+  not be used to infer configuration contents.
 - `frames_received` counts frames reported by the provider and integrated by core.
 - `frames_delivered` counts frames successfully handed to the core frame sink
   (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.
 - `frames_dropped` counts frames dropped due to queue pressure or shutdown gating.
 - `queue_depth` reflects provider → core ingress buffering depth as observed
   by core at publish time.
+- `visibility_frames_presented` counts frames accepted by the current visibility path
+  and retained for visibility/output.
+- `visibility_frames_rejected_unsupported` counts visibility-path rejections caused by
+  unsupported frame format for that path.
+- `visibility_frames_rejected_invalid` counts visibility-path rejections caused by
+  invalid payload/shape/metadata for presentation.
+- `visibility_last_path` records the most recent retained visibility-path disposition.
+  It remains `NONE` until authoritative visibility-path truth exists.
 
 **Invariant (v1):** - At most one stream per `device_instance_id` may be
 `phase=LIVE` and `mode != STOPPED`.

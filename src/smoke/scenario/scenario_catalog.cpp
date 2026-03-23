@@ -3,9 +3,247 @@
 #include "dev/cli_log.h"
 
 #include <iostream>
+#include <string_view>
 
 namespace cambang {
 namespace {
+
+size_t count_native_type(const CamBANGStateSnapshot& snap, NativeObjectType type) {
+  const uint32_t want = static_cast<uint32_t>(type);
+  size_t count = 0;
+  for (const auto& rec : snap.native_objects) {
+    if (rec.type == want) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+bool check_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed);
+bool expect_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed);
+bool fail_step(int index, const std::string& message);
+
+const char* native_type_name(uint32_t type) {
+  switch (static_cast<NativeObjectType>(type)) {
+    case NativeObjectType::Provider: return "provider";
+    case NativeObjectType::Device: return "device";
+    case NativeObjectType::Stream: return "stream";
+    case NativeObjectType::FrameProducer: return "frameproducer";
+  }
+  return "unknown";
+}
+
+const char* phase_name(CBLifecyclePhase phase) {
+  switch (phase) {
+    case CBLifecyclePhase::CREATED: return "CREATED";
+    case CBLifecyclePhase::LIVE: return "LIVE";
+    case CBLifecyclePhase::TEARING_DOWN: return "TEARING_DOWN";
+    case CBLifecyclePhase::DESTROYED: return "DESTROYED";
+  }
+  return "UNKNOWN";
+}
+
+
+enum class RestartChurnCutPoint : uint8_t {
+  ProviderVisible = 0,
+  DeviceIdentity = 1,
+  DeviceNative = 2,
+  StreamVisible = 3,
+  Complete = 4,
+};
+
+const char* restart_churn_cut_point_name(RestartChurnCutPoint cut_point) {
+  switch (cut_point) {
+    case RestartChurnCutPoint::ProviderVisible: return "provider_visible";
+    case RestartChurnCutPoint::DeviceIdentity: return "device_identity";
+    case RestartChurnCutPoint::DeviceNative: return "device_native";
+    case RestartChurnCutPoint::StreamVisible: return "stream_visible";
+    case RestartChurnCutPoint::Complete: return "complete";
+  }
+  return "unknown";
+}
+
+RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& snap, uint64_t current_gen) {
+  const bool provider_visible = count_native_type(snap, NativeObjectType::Provider) >= 1;
+  const bool device_identity = !snap.devices.empty();
+
+  bool device_native = false;
+  bool frameproducer_visible = false;
+  for (const auto& rec : snap.native_objects) {
+    if (rec.creation_gen != current_gen) {
+      continue;
+    }
+    if (rec.type == static_cast<uint32_t>(NativeObjectType::Device) && rec.owner_device_instance_id == ScenarioHarness::kDeviceId) {
+      device_native = true;
+    }
+    if (rec.type == static_cast<uint32_t>(NativeObjectType::FrameProducer) &&
+        rec.owner_device_instance_id == ScenarioHarness::kDeviceId &&
+        rec.owner_stream_id == ScenarioHarness::kStreamId) {
+      frameproducer_visible = true;
+    }
+  }
+
+  if (frameproducer_visible) {
+    return RestartChurnCutPoint::Complete;
+  }
+  if (!snap.streams.empty()) {
+    return RestartChurnCutPoint::StreamVisible;
+  }
+  if (device_native) {
+    return RestartChurnCutPoint::DeviceNative;
+  }
+  if (device_identity) {
+    return RestartChurnCutPoint::DeviceIdentity;
+  }
+  if (provider_visible) {
+    return RestartChurnCutPoint::ProviderVisible;
+  }
+  return RestartChurnCutPoint::ProviderVisible;
+}
+
+struct NativeShapeSummary {
+  size_t current_generation_provider_count = 0;
+  size_t current_generation_device_count = 0;
+  size_t current_generation_stream_count = 0;
+  size_t current_generation_frameproducer_count = 0;
+  size_t stale_prior_generation_count = 0;
+};
+
+NativeShapeSummary summarize_native_shape(const CamBANGStateSnapshot& snap, uint64_t current_gen) {
+  NativeShapeSummary summary{};
+  for (const auto& rec : snap.native_objects) {
+    if (rec.creation_gen != current_gen) {
+      ++summary.stale_prior_generation_count;
+      continue;
+    }
+    switch (static_cast<NativeObjectType>(rec.type)) {
+      case NativeObjectType::Provider: ++summary.current_generation_provider_count; break;
+      case NativeObjectType::Device: ++summary.current_generation_device_count; break;
+      case NativeObjectType::Stream: ++summary.current_generation_stream_count; break;
+      case NativeObjectType::FrameProducer: ++summary.current_generation_frameproducer_count; break;
+    }
+  }
+  return summary;
+}
+
+void log_restarted_baseline_diagnostic(int step_index, const ObservedSnapshot& observed) {
+  cli::error("step ", step_index, " detail: gen=", observed.gen,
+             " version=", observed.version,
+             " topology_version=", observed.topology_version,
+             " devices=", observed.device_count,
+             " streams=", observed.stream_count,
+             " native_objects=", (observed.raw ? observed.raw->native_objects.size() : 0));
+
+  if (!observed.raw) {
+    cli::error("step ", step_index, " detail: raw snapshot missing");
+    return;
+  }
+
+  const NativeShapeSummary summary = summarize_native_shape(*observed.raw, observed.gen);
+  cli::error("step ", step_index, " detail: current_gen_provider_present=",
+             (summary.current_generation_provider_count > 0 ? "yes" : "no"),
+             " current_gen_device_descendants_present=",
+             (summary.current_generation_device_count > 0 ? "yes" : "no"),
+             " current_gen_stream_descendants_present=",
+             (summary.current_generation_stream_count > 0 ? "yes" : "no"),
+             " any_frameproducer_descendants_present=",
+             (summary.current_generation_frameproducer_count > 0 ? "yes" : "no"),
+             " stale_prior_generation_native_objects_present=",
+             (summary.stale_prior_generation_count > 0 ? "yes" : "no"));
+
+  for (const auto& rec : observed.raw->native_objects) {
+    cli::error("step ", step_index, " native_object native_id=", rec.native_id,
+               " type=", native_type_name(rec.type),
+               " phase=", phase_name(rec.phase),
+               " creation_gen=", rec.creation_gen,
+               " root_id=", rec.root_id,
+               " owner_provider_native_id=", rec.owner_provider_native_id,
+               " owner_rig_id=", rec.owner_rig_id,
+               " owner_device_instance_id=", rec.owner_device_instance_id,
+               " owner_stream_id=", rec.owner_stream_id);
+  }
+}
+
+bool is_provider_only_authoritative_snapshot(const CamBANGStateSnapshot& snap, uint64_t current_gen) {
+  const NativeShapeSummary summary = summarize_native_shape(snap, current_gen);
+  if (summary.stale_prior_generation_count != 0) {
+    return false;
+  }
+  if (summary.current_generation_provider_count != 1 ||
+      summary.current_generation_device_count != 0 ||
+      summary.current_generation_stream_count != 0 ||
+      summary.current_generation_frameproducer_count != 0) {
+    return false;
+  }
+  if (snap.native_objects.size() != 1) {
+    return false;
+  }
+
+  const auto& provider = snap.native_objects.front();
+  return provider.creation_gen == current_gen &&
+         provider.type == static_cast<uint32_t>(NativeObjectType::Provider) &&
+         provider.phase == CBLifecyclePhase::LIVE;
+}
+
+bool is_provider_pending_snapshot(const CamBANGStateSnapshot& snap, uint64_t current_gen) {
+  const NativeShapeSummary summary = summarize_native_shape(snap, current_gen);
+  return summary.current_generation_provider_count == 0 &&
+         summary.current_generation_device_count == 0 &&
+         summary.current_generation_stream_count == 0 &&
+         summary.current_generation_frameproducer_count == 0 &&
+         summary.stale_prior_generation_count == 0 &&
+         snap.native_objects.empty();
+}
+
+bool observe_provider_only_authoritative_start(ScenarioHarness& h,
+                                               std::string& error,
+                                               int step_index,
+                                               uint64_t want_gen,
+                                               uint64_t& settled_version,
+                                               const char* no_publish_message,
+                                               const char* not_provider_only_message) {
+  if (!h.tick()) {
+    fail_step(step_index, no_publish_message);
+    return false;
+  }
+  if (!check_step(step_index,
+                  SnapshotExpectation{}.gen(want_gen).version(0).topology_version(0).device_count(0).stream_count(0),
+                  h.observed())) {
+    return false;
+  }
+  if (!h.observed().raw) {
+    log_restarted_baseline_diagnostic(step_index, h.observed());
+    fail_step(step_index, "expected raw snapshot for startup baseline");
+    return false;
+  }
+
+  settled_version = 0;
+  if (is_provider_pending_snapshot(*h.observed().raw, want_gen)) {
+    if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+          return s.gen == want_gen && is_provider_only_authoritative_snapshot(s, want_gen);
+        }, error)) {
+      cli::error("FAIL: ", error);
+      return false;
+    }
+    if (!h.tick()) {
+      fail_step(step_index, "expected provider-only authoritative publish after provider_pending baseline");
+      return false;
+    }
+    if (!expect_step(step_index,
+                     SnapshotExpectation{}.gen(want_gen).version(1).topology_version(0).device_count(0).stream_count(0),
+                     h.observed())) {
+      return false;
+    }
+    settled_version = 1;
+  }
+
+  if (!h.observed().raw || !is_provider_only_authoritative_snapshot(*h.observed().raw, want_gen)) {
+    log_restarted_baseline_diagnostic(step_index, h.observed());
+    fail_step(step_index, not_provider_only_message);
+    return false;
+  }
+  return true;
+}
 
 bool check_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed) {
   std::string error;
@@ -14,6 +252,15 @@ bool check_step(int index, const SnapshotExpectation& exp, const ObservedSnapsho
     return false;
   }
   cli::line("step ", index, " OK");
+  return true;
+}
+
+bool expect_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed) {
+  std::string error;
+  if (!exp.matches(observed, error)) {
+    cli::error("step ", index, " FAIL (", error, ")");
+    return false;
+  }
   return true;
 }
 
@@ -48,6 +295,1222 @@ int baseline_start(ScenarioProviderKind provider_kind) {
 
   cli::line("Scenario PASSED");
   return 0;
+}
+
+int provider_only_authoritative_baseline(ScenarioProviderKind provider_kind) {
+  ScenarioHarness h(provider_kind);
+  std::string error;
+
+  auto check_provider_only_snapshot = [&](int step_index, uint64_t want_gen) -> bool {
+    uint64_t settled_version = 0;
+    if (!observe_provider_only_authoritative_start(h,
+                                                   error,
+                                                   step_index,
+                                                   want_gen,
+                                                   settled_version,
+                                                   "expected baseline publish for provider-only startup state",
+                                                   "startup state did not settle to provider-only authoritative truth")) {
+      return false;
+    }
+
+    const auto& observed = h.observed();
+    if (!observed.raw) {
+      return fail_step(step_index, "expected raw snapshot");
+    }
+    if (!observed.raw->devices.empty()) {
+      return fail_step(step_index, "expected no devices in provider-only baseline");
+    }
+    if (!observed.raw->streams.empty()) {
+      return fail_step(step_index, "expected no streams in provider-only baseline");
+    }
+    if (observed.raw->native_objects.size() != 1) {
+      return fail_step(step_index, "expected exactly one native object in provider-only baseline");
+    }
+
+    const auto& provider_native = observed.raw->native_objects[0];
+    if (provider_native.type != static_cast<uint32_t>(NativeObjectType::Provider)) {
+      return fail_step(step_index, "expected sole native object to be Provider");
+    }
+    if (provider_native.phase != CBLifecyclePhase::LIVE) {
+      return fail_step(step_index, "expected provider native object to be LIVE");
+    }
+    if (provider_native.creation_gen != want_gen) {
+      return fail_step(step_index, "expected provider creation_gen to match snapshot gen");
+    }
+    if (observed.version != settled_version) {
+      return fail_step(step_index, "expected observed version to match settled provider-only publication");
+    }
+    if (!observed.raw->detached_root_ids.empty()) {
+      return fail_step(step_index, "expected no detached roots in provider-only baseline");
+    }
+    return true;
+  };
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(0, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  if (!check_provider_only_snapshot(1, 0)) {
+    return 1;
+  }
+  cli::line("step 1 detail OK");
+
+  h.stop_runtime();
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([](const CamBANGStateSnapshot& s) { return s.gen == 1; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(2, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  if (!check_provider_only_snapshot(3, 1)) {
+    return 1;
+  }
+  cli::line("step 3 detail OK");
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int provider_only_to_realized(ScenarioProviderKind provider_kind, const RealizationProfilerOptions& profiler_options) {
+  RealizationProfiler profiler(profiler_options);
+  ScenarioHarness h(provider_kind);
+  std::string error;
+  if (profiler.enabled()) {
+    h.set_realization_profiler(&profiler);
+  }
+
+  auto settle_native_shape = [&](int step_index,
+                                 uint64_t want_gen,
+                                 size_t want_device_count,
+                                 size_t want_stream_count,
+                                 const char* wait_timeout_message,
+                                 const char* publish_message,
+                                 const std::function<bool(const CamBANGStateSnapshot&)>& pred) -> bool {
+    if (h.observed().raw && pred(*h.observed().raw)) {
+      return true;
+    }
+
+    const ObservedSnapshot before = h.observed();
+    if (!h.wait_for_core_snapshot(pred, error, 500, 5, wait_timeout_message)) {
+      cli::error("FAIL: ", error);
+      return false;
+    }
+    if (!h.tick()) {
+      fail_step(step_index, publish_message);
+      return false;
+    }
+    if (h.observed().is_nil || !h.observed().raw) {
+      fail_step(step_index, "expected non-NIL snapshot while settling native shape");
+      return false;
+    }
+    if (h.observed().gen != want_gen) {
+      fail_step(step_index, "native-shape settle changed generation unexpectedly");
+      return false;
+    }
+    if (h.observed().device_count != want_device_count || h.observed().stream_count != want_stream_count) {
+      fail_step(step_index, "native-shape settle changed public device/stream counts unexpectedly");
+      return false;
+    }
+    if (h.observed().version <= before.version) {
+      fail_step(step_index, "expected native-shape settle to advance observable version");
+      return false;
+    }
+    if (h.observed().topology_version < before.topology_version) {
+      fail_step(step_index, "native-shape settle regressed topology_version");
+      return false;
+    }
+    return pred(*h.observed().raw);
+  };
+
+  const auto is_device_realization_native_shape = [](const CamBANGStateSnapshot& s) {
+    return count_native_type(s, NativeObjectType::Provider) == 1 &&
+           count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::Stream) == 0 &&
+           count_native_type(s, NativeObjectType::FrameProducer) == 0;
+  };
+
+  const auto is_stream_realization_native_shape = [](const CamBANGStateSnapshot& s) {
+    return count_native_type(s, NativeObjectType::Provider) == 1 &&
+           count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::Stream) == 1 &&
+           count_native_type(s, NativeObjectType::FrameProducer) == 0;
+  };
+
+  const auto is_full_realization_native_shape = [](const CamBANGStateSnapshot& s) {
+    return count_native_type(s, NativeObjectType::Provider) == 1 &&
+           count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::Stream) == 1 &&
+           count_native_type(s, NativeObjectType::FrameProducer) == 1;
+  };
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(0, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  uint64_t baseline_version = 0;
+  if (!observe_provider_only_authoritative_start(h,
+                                                 error,
+                                                 1,
+                                                 0,
+                                                 baseline_version,
+                                                 "expected baseline publish on first boundary tick",
+                                                 "startup state did not settle to provider-only authoritative truth")) {
+    return 1;
+  }
+  if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
+      count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+      count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
+      count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
+    fail_step(1, "provider-only baseline native-object shape mismatch");
+    return 1;
+  }
+  cli::line("step 1 detail OK");
+  uint64_t current_version = h.observed().version;
+  uint64_t current_topology_version = h.observed().topology_version;
+
+  if (h.tick()) {
+    if (!check_step(2,
+                    SnapshotExpectation{}
+                        .is_nil(false)
+                        .gen(0)
+                        .version(current_version + 1)
+                        .topology_version(current_topology_version)
+                        .device_count(0)
+                        .stream_count(0),
+                    h.observed())) {
+      return 1;
+    }
+    if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
+        count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+        count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
+        count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
+      log_restarted_baseline_diagnostic(2, h.observed());
+      fail_step(2, "repeated provider-only publication changed native shape unexpectedly");
+      return 1;
+    }
+    current_version = h.observed().version;
+  } else if (!check_step(2,
+                         SnapshotExpectation{}
+                             .is_nil(false)
+                             .gen(0)
+                             .version(current_version)
+                             .topology_version(current_topology_version)
+                             .device_count(0)
+                             .stream_count(0),
+                         h.observed())) {
+    return 1;
+  }
+
+  if (!h.open_device(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.tick()) {
+    fail_step(3, "expected device realization publish after open_device");
+    return 1;
+  }
+  if (!check_step(3,
+                  SnapshotExpectation{}
+                      .gen(0)
+                      .version(current_version + 1)
+                      .topology_version(current_topology_version + 1)
+                      .device_count(1)
+                      .stream_count(0),
+                  h.observed())) {
+    return 1;
+  }
+  if (!settle_native_shape(3,
+                           0,
+                           1,
+                           0,
+                           "timed out waiting for device-descendant native shape after device realization",
+                           "expected device-descendant native-object publish after device realization",
+                           is_device_realization_native_shape)) {
+    log_restarted_baseline_diagnostic(3, h.observed());
+    fail_step(3, "device realization native-object shape mismatch");
+    return 1;
+  }
+  cli::line("step 3 detail OK");
+  current_version = h.observed().version;
+  current_topology_version = h.observed().topology_version;
+
+  if (!h.create_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.tick()) {
+    fail_step(4, "expected stream realization publish after create_stream");
+    return 1;
+  }
+  if (!check_step(4,
+                  SnapshotExpectation{}
+                      .gen(0)
+                      .version(current_version + 1)
+                      .topology_version(current_topology_version + 1)
+                      .device_count(1)
+                      .stream_count(1),
+                  h.observed())) {
+    return 1;
+  }
+  if (!settle_native_shape(4,
+                           0,
+                           1,
+                           1,
+                           "timed out waiting for stream-descendant native shape after stream realization",
+                           "expected stream-descendant native-object publish after stream realization",
+                           is_stream_realization_native_shape)) {
+    log_restarted_baseline_diagnostic(4, h.observed());
+    fail_step(4, "stream realization native-object shape mismatch");
+    return 1;
+  }
+  cli::line("step 4 detail OK");
+  current_version = h.observed().version;
+  current_topology_version = h.observed().topology_version;
+
+  if (!h.start_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.tick()) {
+    fail_step(5, "expected frameproducer realization publish after start_stream");
+    return 1;
+  }
+  if (!check_step(5,
+                  SnapshotExpectation{}
+                      .gen(0)
+                      .version(current_version + 1)
+                      .topology_version(current_topology_version)
+                      .device_count(1)
+                      .stream_count(1),
+                  h.observed())) {
+    return 1;
+  }
+  if (!settle_native_shape(5,
+                           0,
+                           1,
+                           1,
+                           "timed out waiting for frameproducer native shape after start_stream",
+                           "expected frameproducer native-object publish after start_stream",
+                           is_full_realization_native_shape)) {
+    log_restarted_baseline_diagnostic(5, h.observed());
+    fail_step(5, "full realization native-object shape mismatch");
+    return 1;
+  }
+  cli::line("step 5 detail OK");
+
+  if (profiler.enabled()) {
+    profiler.emit_report();
+  }
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int provider_only_then_stop(ScenarioProviderKind provider_kind) {
+  ScenarioHarness h(provider_kind);
+  std::string error;
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+
+  if (!check_step(0, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  uint64_t baseline_version = 0;
+  if (!observe_provider_only_authoritative_start(h,
+                                                 error,
+                                                 1,
+                                                 0,
+                                                 baseline_version,
+                                                 "expected provider-only baseline publish before stop",
+                                                 "startup state did not settle to provider-only authoritative truth before stop")) {
+    return 1;
+  }
+  if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
+      count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+      count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
+      count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
+    fail_step(1, "provider-only baseline native-object shape mismatch before stop");
+    return 1;
+  }
+
+  h.stop_runtime();
+
+  if (!check_step(2, SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+  if (!h.last_snapshot_before_stop_clear().is_nil) {
+    const auto* final_raw = h.last_snapshot_before_stop_clear().raw.get();
+    if (final_raw && (count_native_type(*final_raw, NativeObjectType::Device) != 0 ||
+                      count_native_type(*final_raw, NativeObjectType::Stream) != 0 ||
+                      count_native_type(*final_raw, NativeObjectType::FrameProducer) != 0)) {
+      fail_step(2, "stop boundary fabricated descendants before NIL clear");
+      return 1;
+    }
+  }
+  cli::line("step 2 detail OK");
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int repeated_provider_only_across_generations(ScenarioProviderKind provider_kind) {
+  ScenarioHarness h(provider_kind);
+  std::string error;
+
+  for (uint64_t gen = 0; gen < 3; ++gen) {
+    const int pre_baseline_step = static_cast<int>(gen * 2);
+    const int baseline_step = static_cast<int>(gen * 2 + 1);
+    if (!h.start_runtime(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) { return s.gen == gen; }, error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!check_step(pre_baseline_step, SnapshotExpectation{}.is_nil(true), h.observed())) {
+      return 1;
+    }
+    uint64_t settled_version = 0;
+    if (!observe_provider_only_authoritative_start(h,
+                                                   error,
+                                                   baseline_step,
+                                                   gen,
+                                                   settled_version,
+                                                   "expected baseline publish after restart churn",
+                                                   "restarted generation did not settle to provider-only authoritative truth")) {
+      return 1;
+    }
+
+    h.stop_runtime();
+  }
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int restart_churn_realization(ScenarioProviderKind provider_kind,
+                              const RealizationProfilerOptions& profiler_options) {
+  RealizationProfiler profiler(profiler_options);
+  ScenarioHarness h(provider_kind);
+  std::string error;
+  if (profiler.enabled()) {
+    h.set_realization_profiler(&profiler);
+  }
+
+  const std::vector<RestartChurnCutPoint> cut_points = {
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceIdentity,
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+      RestartChurnCutPoint::Complete,
+  };
+
+  auto require_boundary_tick = [&](const char* message) -> bool {
+    if (h.tick()) {
+      return true;
+    }
+    cli::error("FAIL: ", message);
+    return false;
+  };
+
+  auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
+    cli::line("[restart-churn] cycle=", cycle_index + 1,
+              " gen=", gen,
+              " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
+              " observed_stage=", restart_churn_cut_point_name(observed_restart_churn_stage(*h.observed().raw, gen)));
+    if (profiler.enabled()) {
+      profiler.emit_report();
+    }
+  };
+
+  for (size_t cycle_index = 0; cycle_index < cut_points.size(); ++cycle_index) {
+    const uint64_t want_gen = static_cast<uint64_t>(cycle_index);
+    const RestartChurnCutPoint planned_cut_point = cut_points[cycle_index];
+
+    cli::line("[restart-churn] cycle=", cycle_index + 1,
+              " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
+              " start_requested");
+
+    if (!h.start_runtime(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) { return s.gen == want_gen; }, error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!check_step(static_cast<int>(cycle_index * 10), SnapshotExpectation{}.is_nil(true), h.observed())) {
+      return 1;
+    }
+
+    uint64_t settled_version = 0;
+    if (!observe_provider_only_authoritative_start(h,
+                                                   error,
+                                                   static_cast<int>(cycle_index * 10 + 1),
+                                                   want_gen,
+                                                   settled_version,
+                                                   "expected provider-visible start during restart churn",
+                                                   "restart churn generation did not settle to provider-visible authoritative truth")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::ProviderVisible) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.open_device(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after open_device during restart churn")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (observed_restart_churn_stage(*h.observed().raw, want_gen) == RestartChurnCutPoint::DeviceIdentity) {
+      if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+            return static_cast<int>(observed_restart_churn_stage(s, want_gen)) >=
+                   static_cast<int>(RestartChurnCutPoint::DeviceNative);
+          }, error, 500, 5, "timed out waiting for device native during restart churn")) {
+        cli::error("FAIL: ", error);
+        return 1;
+      }
+      if (!require_boundary_tick("expected observable publish for device native during restart churn")) {
+        return 1;
+      }
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.create_stream(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after create_stream during restart churn")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::StreamVisible) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.start_stream(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after start_stream during restart churn")) {
+      return 1;
+    }
+
+    const auto is_complete = [&](const CamBANGStateSnapshot& s) {
+      return observed_restart_churn_stage(s, want_gen) == RestartChurnCutPoint::Complete;
+    };
+    if (!is_complete(*h.observed().raw)) {
+      if (!h.wait_for_core_snapshot(is_complete, error, 500, 5, "timed out waiting for completion during restart churn")) {
+        cli::error("FAIL: ", error);
+        return 1;
+      }
+      if (!require_boundary_tick("expected observable completion publish during restart churn")) {
+        return 1;
+      }
+    }
+
+    emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+    cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+    h.stop_runtime();
+  }
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int restart_churn_then_settle(ScenarioProviderKind provider_kind,
+                             const RealizationProfilerOptions& profiler_options) {
+  constexpr uint64_t kSettlePublishWindow = 12;
+  constexpr uint64_t kSettleTimeNs = 75'000'000ull;
+  constexpr uint64_t kProfilerPublishGap = 8;
+  constexpr uint64_t kProfilerTimeNs = 50'000'000ull;
+
+  struct FinalSettleState {
+    uint64_t provider_timestamp_ns = 0;
+    uint64_t first_descendant_timestamp_ns = 0;
+    uint64_t observed_publishes_since_provider = 0;
+    bool provider_visible = false;
+    bool device_identity = false;
+    bool device_native = false;
+    bool stream_visible = false;
+    bool frameproducer_visible = false;
+    bool progressed_after_churn = false;
+    RestartChurnCutPoint last_stage = RestartChurnCutPoint::ProviderVisible;
+  };
+
+  auto settle_stage_name = [](RestartChurnCutPoint stage) {
+    if (stage == RestartChurnCutPoint::Complete) {
+      return "frameproducer_visible";
+    }
+    return restart_churn_cut_point_name(stage);
+  };
+
+  auto classify_final_status = [&](const FinalSettleState& state, uint64_t latest_timestamp_ns) {
+    if (state.frameproducer_visible) {
+      return "COMPLETE";
+    }
+    const uint64_t publish_delta = state.observed_publishes_since_provider;
+    const uint64_t time_delta = latest_timestamp_ns - state.provider_timestamp_ns;
+    if (publish_delta > kProfilerPublishGap || time_delta > kProfilerTimeNs) {
+      return "INCOMPLETE";
+    }
+    return "PARTIAL";
+  };
+
+  RealizationProfiler profiler(profiler_options);
+  ScenarioHarness h(provider_kind);
+  std::string error;
+  if (profiler.enabled()) {
+    h.set_realization_profiler(&profiler);
+  }
+
+  const std::vector<RestartChurnCutPoint> cut_points = {
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceIdentity,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+  };
+
+  auto require_boundary_tick = [&](const char* message) -> bool {
+    if (h.tick()) {
+      return true;
+    }
+    cli::error("FAIL: ", message);
+    return false;
+  };
+
+  auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
+    cli::line("[restart-churn] cycle=", cycle_index + 1,
+              " gen=", gen,
+              " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
+              " observed_stage=", restart_churn_cut_point_name(observed_restart_churn_stage(*h.observed().raw, gen)));
+    if (profiler.enabled()) {
+      profiler.emit_report();
+    }
+  };
+
+  for (size_t cycle_index = 0; cycle_index < cut_points.size(); ++cycle_index) {
+    const uint64_t want_gen = static_cast<uint64_t>(cycle_index);
+    const RestartChurnCutPoint planned_cut_point = cut_points[cycle_index];
+
+    cli::line("[restart-churn] cycle=", cycle_index + 1,
+              " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
+              " start_requested");
+
+    if (!h.start_runtime(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) { return s.gen == want_gen; }, error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!check_step(static_cast<int>(cycle_index * 10), SnapshotExpectation{}.is_nil(true), h.observed())) {
+      return 1;
+    }
+
+    uint64_t settled_version = 0;
+    if (!observe_provider_only_authoritative_start(h,
+                                                   error,
+                                                   static_cast<int>(cycle_index * 10 + 1),
+                                                   want_gen,
+                                                   settled_version,
+                                                   "expected provider-visible start during restart churn settle prelude",
+                                                   "restart churn prelude generation did not settle to provider-visible authoritative truth")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::ProviderVisible) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.open_device(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after open_device during restart churn settle prelude")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (observed_restart_churn_stage(*h.observed().raw, want_gen) == RestartChurnCutPoint::DeviceIdentity) {
+      if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+            return static_cast<int>(observed_restart_churn_stage(s, want_gen)) >=
+                   static_cast<int>(RestartChurnCutPoint::DeviceNative);
+          }, error, 500, 5, "timed out waiting for device native during restart churn settle prelude")) {
+        cli::error("FAIL: ", error);
+        return 1;
+      }
+      if (!require_boundary_tick("expected observable publish for device native during restart churn settle prelude")) {
+        return 1;
+      }
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.create_stream(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after create_stream during restart churn settle prelude")) {
+      return 1;
+    }
+
+    emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+    cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+    h.stop_runtime();
+  }
+
+  const uint64_t final_gen = static_cast<uint64_t>(cut_points.size());
+  cli::line("[restart-churn] cycle=final planned_stop_after=none start_requested");
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) { return s.gen == final_gen; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(static_cast<int>(cut_points.size() * 10), SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  uint64_t settled_version = 0;
+  if (!observe_provider_only_authoritative_start(h,
+                                                 error,
+                                                 static_cast<int>(cut_points.size() * 10 + 1),
+                                                 final_gen,
+                                                 settled_version,
+                                                 "expected provider-visible start for restart_churn_then_settle final generation",
+                                                 "final generation did not settle to provider-visible authoritative truth")) {
+    return 1;
+  }
+
+  FinalSettleState settle_state{};
+  settle_state.provider_visible = true;
+  settle_state.provider_timestamp_ns = h.observed().raw->timestamp_ns;
+  settle_state.last_stage = RestartChurnCutPoint::ProviderVisible;
+  const uint64_t settle_begin_timestamp_ns = h.observed().raw->timestamp_ns;
+
+  auto record_settle_snapshot = [&]() {
+    const auto stage = observed_restart_churn_stage(*h.observed().raw, final_gen);
+    settle_state.last_stage = stage;
+    settle_state.observed_publishes_since_provider += 1;
+
+    if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::DeviceIdentity) && !settle_state.device_identity) {
+      settle_state.device_identity = true;
+      settle_state.progressed_after_churn = true;
+      if (settle_state.first_descendant_timestamp_ns == 0) {
+        settle_state.first_descendant_timestamp_ns = h.observed().raw->timestamp_ns;
+      }
+    }
+    if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::DeviceNative)) {
+      settle_state.device_native = true;
+    }
+    if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::StreamVisible)) {
+      settle_state.stream_visible = true;
+    }
+    if (stage == RestartChurnCutPoint::Complete) {
+      settle_state.frameproducer_visible = true;
+    }
+  };
+
+  if (!h.open_device(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!require_boundary_tick("expected observable publish after open_device during final settle generation")) {
+    return 1;
+  }
+  record_settle_snapshot();
+
+  if (!h.create_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!require_boundary_tick("expected observable publish after create_stream during final settle generation")) {
+    return 1;
+  }
+  record_settle_snapshot();
+
+  if (!h.start_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!require_boundary_tick("expected observable publish after start_stream during final settle generation")) {
+    return 1;
+  }
+  record_settle_snapshot();
+
+  while (!settle_state.frameproducer_visible) {
+    const uint64_t time_delta_ns = h.observed().raw->timestamp_ns - settle_begin_timestamp_ns;
+    if (settle_state.observed_publishes_since_provider >= kSettlePublishWindow || time_delta_ns >= kSettleTimeNs) {
+      break;
+    }
+    if (!h.request_publish_only(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish during final settle window")) {
+      return 1;
+    }
+    record_settle_snapshot();
+  }
+
+  cli::line("[restart-churn] cycle=final gen=", final_gen, " settle_complete");
+  if (profiler.enabled()) {
+    profiler.emit_report();
+  }
+
+  const char* final_status = classify_final_status(settle_state, h.observed().raw->timestamp_ns);
+  cli::line("[settle] gen=", final_gen);
+  cli::line("  progressed_after_churn = ", settle_state.progressed_after_churn ? "true" : "false");
+  cli::line("  final_status = ", final_status);
+  cli::line("  last_stage = ", settle_stage_name(settle_state.last_stage));
+  cli::line("  device_identity_appeared = ", settle_state.device_identity ? "true" : "false");
+  cli::line("  device_native_appeared = ", settle_state.device_native ? "true" : "false");
+  cli::line("  stream_visible_appeared = ", settle_state.stream_visible ? "true" : "false");
+  cli::line("  frameproducer_visible_appeared = ", settle_state.frameproducer_visible ? "true" : "false");
+  if (settle_state.first_descendant_timestamp_ns != 0) {
+    cli::line("  first_descendant_delta_ns = ", settle_state.first_descendant_timestamp_ns - settle_state.provider_timestamp_ns);
+  } else {
+    cli::line("  first_descendant_delta_ns = n/a");
+  }
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int restart_churn_then_settle_variant(const char* scenario_label,
+                                      ScenarioProviderKind provider_kind,
+                                      const RealizationProfilerOptions& profiler_options,
+                                      const std::vector<RestartChurnCutPoint>& cut_points,
+                                      uint64_t settle_publish_window,
+                                      uint64_t settle_time_ns) {
+  constexpr uint64_t kProfilerPublishGap = 8;
+  constexpr uint64_t kProfilerTimeNs = 50'000'000ull;
+
+  struct FinalSettleState {
+    uint64_t provider_timestamp_ns = 0;
+    uint64_t first_descendant_timestamp_ns = 0;
+    uint64_t publish_count_during_settle = 0;
+    bool provider_visible = false;
+    bool device_identity = false;
+    bool device_native = false;
+    bool stream_visible = false;
+    bool frameproducer_visible = false;
+    bool progressed_after_churn = false;
+    RestartChurnCutPoint last_stage = RestartChurnCutPoint::ProviderVisible;
+  };
+
+  auto settle_stage_name = [](RestartChurnCutPoint stage) {
+    if (stage == RestartChurnCutPoint::Complete) {
+      return "frameproducer_visible";
+    }
+    return restart_churn_cut_point_name(stage);
+  };
+
+  auto classify_final_status = [&](const FinalSettleState& state, uint64_t latest_timestamp_ns) {
+    if (state.frameproducer_visible) {
+      return "COMPLETE";
+    }
+    const uint64_t publish_delta = state.publish_count_during_settle;
+    const uint64_t time_delta = latest_timestamp_ns - state.provider_timestamp_ns;
+    if (publish_delta > kProfilerPublishGap || time_delta > kProfilerTimeNs) {
+      return "INCOMPLETE";
+    }
+    return "PARTIAL";
+  };
+
+  auto classify_health = [](const char* final_status, bool progressed_after_churn) {
+    if (std::string_view(final_status) == "COMPLETE") {
+      return "HEALTHY";
+    }
+    if (progressed_after_churn) {
+      return "DELAYED";
+    }
+    return "STRANDED_CANDIDATE";
+  };
+
+  RealizationProfiler profiler(profiler_options);
+  ScenarioHarness h(provider_kind);
+  std::string error;
+  if (profiler.enabled()) {
+    h.set_realization_profiler(&profiler);
+  }
+
+  auto require_boundary_tick = [&](const char* message) -> bool {
+    if (h.tick()) {
+      return true;
+    }
+    cli::error("FAIL: ", message);
+    return false;
+  };
+
+  auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
+    cli::line("[restart-churn] scenario=", scenario_label,
+              " cycle=", cycle_index + 1,
+              " gen=", gen,
+              " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
+              " observed_stage=", restart_churn_cut_point_name(observed_restart_churn_stage(*h.observed().raw, gen)));
+    if (profiler.enabled()) {
+      profiler.emit_report();
+    }
+  };
+
+  for (size_t cycle_index = 0; cycle_index < cut_points.size(); ++cycle_index) {
+    const uint64_t want_gen = static_cast<uint64_t>(cycle_index);
+    const RestartChurnCutPoint planned_cut_point = cut_points[cycle_index];
+
+    cli::line("[restart-churn] scenario=", scenario_label,
+              " cycle=", cycle_index + 1,
+              " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
+              " start_requested");
+
+    if (!h.start_runtime(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) { return s.gen == want_gen; }, error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!check_step(static_cast<int>(cycle_index * 10), SnapshotExpectation{}.is_nil(true), h.observed())) {
+      return 1;
+    }
+
+    uint64_t settled_version = 0;
+    if (!observe_provider_only_authoritative_start(h,
+                                                   error,
+                                                   static_cast<int>(cycle_index * 10 + 1),
+                                                   want_gen,
+                                                   settled_version,
+                                                   "expected provider-visible start during failure-seeking restart churn",
+                                                   "failure-seeking restart churn generation did not settle to provider-visible authoritative truth")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::ProviderVisible) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.open_device(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after open_device during failure-seeking restart churn")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (observed_restart_churn_stage(*h.observed().raw, want_gen) == RestartChurnCutPoint::DeviceIdentity) {
+      if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+            return static_cast<int>(observed_restart_churn_stage(s, want_gen)) >=
+                   static_cast<int>(RestartChurnCutPoint::DeviceNative);
+          }, error, 500, 5, "timed out waiting for device native during failure-seeking restart churn")) {
+        cli::error("FAIL: ", error);
+        return 1;
+      }
+      if (!require_boundary_tick("expected observable publish for device native during failure-seeking restart churn")) {
+        return 1;
+      }
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
+    if (!h.create_stream(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish after create_stream during failure-seeking restart churn")) {
+      return 1;
+    }
+
+    emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+    cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+    h.stop_runtime();
+  }
+
+  const uint64_t final_gen = static_cast<uint64_t>(cut_points.size());
+  cli::line("[restart-churn] scenario=", scenario_label, " cycle=final planned_stop_after=none start_requested");
+
+  if (!h.start_runtime(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) { return s.gen == final_gen; }, error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!check_step(static_cast<int>(cut_points.size() * 10), SnapshotExpectation{}.is_nil(true), h.observed())) {
+    return 1;
+  }
+
+  uint64_t settled_version = 0;
+  if (!observe_provider_only_authoritative_start(h,
+                                                 error,
+                                                 static_cast<int>(cut_points.size() * 10 + 1),
+                                                 final_gen,
+                                                 settled_version,
+                                                 "expected provider-visible start for failure-seeking settle final generation",
+                                                 "final failure-seeking generation did not settle to provider-visible authoritative truth")) {
+    return 1;
+  }
+
+  FinalSettleState settle_state{};
+  settle_state.provider_visible = true;
+  settle_state.provider_timestamp_ns = h.observed().raw->timestamp_ns;
+  settle_state.last_stage = RestartChurnCutPoint::ProviderVisible;
+  const uint64_t settle_begin_timestamp_ns = h.observed().raw->timestamp_ns;
+
+  auto record_settle_snapshot = [&]() {
+    const auto stage = observed_restart_churn_stage(*h.observed().raw, final_gen);
+    settle_state.last_stage = stage;
+    settle_state.publish_count_during_settle += 1;
+
+    if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::DeviceIdentity) && !settle_state.device_identity) {
+      settle_state.device_identity = true;
+      settle_state.progressed_after_churn = true;
+      if (settle_state.first_descendant_timestamp_ns == 0) {
+        settle_state.first_descendant_timestamp_ns = h.observed().raw->timestamp_ns;
+      }
+    }
+    if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::DeviceNative)) {
+      settle_state.device_native = true;
+    }
+    if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::StreamVisible)) {
+      settle_state.stream_visible = true;
+    }
+    if (stage == RestartChurnCutPoint::Complete) {
+      settle_state.frameproducer_visible = true;
+    }
+  };
+
+  if (!h.open_device(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!require_boundary_tick("expected observable publish after open_device during failure-seeking settle")) {
+    return 1;
+  }
+  record_settle_snapshot();
+
+  if (!h.create_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!require_boundary_tick("expected observable publish after create_stream during failure-seeking settle")) {
+    return 1;
+  }
+  record_settle_snapshot();
+
+  if (!h.start_stream(error)) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  if (!require_boundary_tick("expected observable publish after start_stream during failure-seeking settle")) {
+    return 1;
+  }
+  record_settle_snapshot();
+
+  while (!settle_state.frameproducer_visible) {
+    const uint64_t time_delta_ns = h.observed().raw->timestamp_ns - settle_begin_timestamp_ns;
+    if (settle_state.publish_count_during_settle >= settle_publish_window || time_delta_ns >= settle_time_ns) {
+      break;
+    }
+    if (!h.request_publish_only(error)) {
+      cli::error("FAIL: ", error);
+      return 1;
+    }
+    if (!require_boundary_tick("expected observable publish during failure-seeking settle window")) {
+      return 1;
+    }
+    record_settle_snapshot();
+  }
+
+  cli::line("[restart-churn] scenario=", scenario_label, " cycle=final gen=", final_gen, " settle_complete");
+  if (profiler.enabled()) {
+    profiler.emit_report();
+  }
+
+  const char* final_status = classify_final_status(settle_state, h.observed().raw->timestamp_ns);
+  const char* classification = classify_health(final_status, settle_state.progressed_after_churn);
+  cli::line("[settle] gen=", final_gen);
+  cli::line("  progressed_after_churn = ", settle_state.progressed_after_churn ? "true" : "false");
+  cli::line("  final_status = ", final_status);
+  cli::line("  last_stage = ", settle_stage_name(settle_state.last_stage));
+  cli::line("  device_identity_appeared = ", settle_state.device_identity ? "true" : "false");
+  cli::line("  device_native_appeared = ", settle_state.device_native ? "true" : "false");
+  cli::line("  stream_visible_appeared = ", settle_state.stream_visible ? "true" : "false");
+  cli::line("  frameproducer_visible_appeared = ", settle_state.frameproducer_visible ? "true" : "false");
+  if (settle_state.first_descendant_timestamp_ns != 0) {
+    cli::line("  first_descendant_delta_ns = ", settle_state.first_descendant_timestamp_ns - settle_state.provider_timestamp_ns);
+  } else {
+    cli::line("  first_descendant_delta_ns = none");
+  }
+  cli::line("  classification = ", classification);
+  cli::line("  publish_count_during_settle = ", settle_state.publish_count_during_settle);
+
+  cli::line("Scenario PASSED");
+  return 0;
+}
+
+int restart_churn_then_settle_deep(ScenarioProviderKind provider_kind,
+                                   const RealizationProfilerOptions& profiler_options) {
+  const std::vector<RestartChurnCutPoint> cut_points = {
+      RestartChurnCutPoint::DeviceIdentity,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+  };
+  return restart_churn_then_settle_variant("restart_churn_then_settle_deep",
+                                           provider_kind,
+                                           profiler_options,
+                                           cut_points,
+                                           12,
+                                           75'000'000ull);
+}
+
+int restart_churn_then_settle_burst(ScenarioProviderKind provider_kind,
+                                    const RealizationProfilerOptions& profiler_options) {
+  const std::vector<RestartChurnCutPoint> cut_points = {
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceIdentity,
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceIdentity,
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::StreamVisible,
+  };
+  return restart_churn_then_settle_variant("restart_churn_then_settle_burst",
+                                           provider_kind,
+                                           profiler_options,
+                                           cut_points,
+                                           12,
+                                           75'000'000ull);
+}
+
+int restart_churn_then_settle_stream_churn(ScenarioProviderKind provider_kind,
+                                           const RealizationProfilerOptions& profiler_options) {
+  const std::vector<RestartChurnCutPoint> cut_points = {
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+      RestartChurnCutPoint::StreamVisible,
+      RestartChurnCutPoint::StreamVisible,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+  };
+  return restart_churn_then_settle_variant("restart_churn_then_settle_stream_churn",
+                                           provider_kind,
+                                           profiler_options,
+                                           cut_points,
+                                           12,
+                                           75'000'000ull);
+}
+
+int restart_churn_then_settle_long(ScenarioProviderKind provider_kind,
+                                   const RealizationProfilerOptions& profiler_options) {
+  const std::vector<RestartChurnCutPoint> cut_points = {
+      RestartChurnCutPoint::ProviderVisible,
+      RestartChurnCutPoint::DeviceIdentity,
+      RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::StreamVisible,
+  };
+  return restart_churn_then_settle_variant("restart_churn_then_settle_long",
+                                           provider_kind,
+                                           profiler_options,
+                                           cut_points,
+                                           24,
+                                           150'000'000ull);
 }
 
 int restart_nil_before_baseline(ScenarioProviderKind provider_kind) {
@@ -553,9 +2016,20 @@ int multi_device_topology_change(ScenarioProviderKind provider_kind) {
 
 } // namespace
 
-std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind) {
+std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind,
+                                               const RealizationProfilerOptions& profiler_options) {
   return {
       {"baseline_start", [provider_kind]() { return baseline_start(provider_kind); }},
+      {"provider_only_authoritative_baseline", [provider_kind]() { return provider_only_authoritative_baseline(provider_kind); }},
+      {"provider_only_to_realized", [provider_kind, profiler_options]() { return provider_only_to_realized(provider_kind, profiler_options); }},
+      {"provider_only_then_stop", [provider_kind]() { return provider_only_then_stop(provider_kind); }},
+      {"repeated_provider_only_across_generations", [provider_kind]() { return repeated_provider_only_across_generations(provider_kind); }},
+      {"restart_churn_realization", [provider_kind, profiler_options]() { return restart_churn_realization(provider_kind, profiler_options); }},
+      {"restart_churn_then_settle", [provider_kind, profiler_options]() { return restart_churn_then_settle(provider_kind, profiler_options); }},
+      {"restart_churn_then_settle_deep", [provider_kind, profiler_options]() { return restart_churn_then_settle_deep(provider_kind, profiler_options); }},
+      {"restart_churn_then_settle_burst", [provider_kind, profiler_options]() { return restart_churn_then_settle_burst(provider_kind, profiler_options); }},
+      {"restart_churn_then_settle_stream_churn", [provider_kind, profiler_options]() { return restart_churn_then_settle_stream_churn(provider_kind, profiler_options); }},
+      {"restart_churn_then_settle_long", [provider_kind, profiler_options]() { return restart_churn_then_settle_long(provider_kind, profiler_options); }},
       {"restart_nil_before_baseline", [provider_kind]() { return restart_nil_before_baseline(provider_kind); }},
       {"stream_lifecycle_versions", [provider_kind]() { return stream_lifecycle_versions(provider_kind); }},
       {"topology_change_versions", [provider_kind]() { return topology_change_versions(provider_kind); }},

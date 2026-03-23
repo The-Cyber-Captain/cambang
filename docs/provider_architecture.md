@@ -212,6 +212,17 @@ configuration at the **request/template materialization** boundary.
 
 Providers must not add a second hidden layer of defaulting beneath that.
 
+### 6.4 Requested vs Applied Profile
+
+- A capture profile provided by the caller represents requested configuration.
+- Core validates, normalizes, and materializes this into an applied profile.
+- The applied profile is the configuration actually governing runtime behaviour.
+
+### 6.5 Snapshot Policy
+
+- Snapshot exposes the applied profile, not merely the requested profile or a version reference.
+- Snapshot-visible configuration must reflect the applied profile exactly (no transformation or inference).
+
 ---
 
 ## 7. Provider event classes and delivery guarantees

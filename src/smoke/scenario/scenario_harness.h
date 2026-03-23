@@ -1,8 +1,11 @@
 #pragma once
 
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -42,6 +45,409 @@ struct ObservedSnapshot {
   size_t device_count = 0;
   size_t stream_count = 0;
   std::shared_ptr<const CamBANGStateSnapshot> raw;
+};
+
+
+enum class RealizationTraceFormat : uint8_t {
+  Block = 0,
+  Csv = 1,
+  Both = 2,
+};
+
+struct RealizationProfilerOptions {
+  bool enabled = false;
+  RealizationTraceFormat format = RealizationTraceFormat::Block;
+  uint64_t target_device_id = 0;
+  uint64_t target_stream_id = 0;
+};
+
+class RealizationProfiler final {
+public:
+  // Profiles first-seen realization milestones at the observation boundary.
+  // This intentionally measures what becomes visible per boundary tick.
+  // Observable gaps can therefore represent coalescing, not necessarily the absence
+  // of intermediate internal core states. snapshot_version/snapshot_topology_version
+  // are recorded alongside boundary-visible counters to make that distinction explicit.
+  explicit RealizationProfiler(RealizationProfilerOptions options = {}) : options_(options) {}
+
+  bool enabled() const noexcept { return options_.enabled; }
+
+  void reset() {
+    observed_publish_ordinal_ = 0;
+    generations_.clear();
+  }
+
+  void observe(const ObservedSnapshot& observed, uint64_t published_seq_marker) {
+    if (!options_.enabled || observed.is_nil || !observed.raw) {
+      return;
+    }
+
+    GenerationProfile& gen = generations_[observed.gen];
+    gen.gen = observed.gen;
+
+    const SnapshotView view = snapshot_view_(observed, published_seq_marker);
+    maybe_record_(gen.provider_visible, view, milestone_matches_provider_(view), Stage::Provider, gen);
+    maybe_record_(gen.device_identity, view, milestone_matches_device_identity_(view), Stage::DeviceIdentity, gen);
+    maybe_record_(gen.device_native, view, milestone_matches_device_native_(view), Stage::DeviceNative, gen);
+    maybe_record_(gen.stream_visible, view, milestone_matches_stream_visible_(view), Stage::Stream, gen);
+    maybe_record_(gen.frameproducer_visible, view, milestone_matches_frameproducer_visible_(view), Stage::FrameProducer, gen);
+
+    if (gen.provider_visible.seen && gen.provider_publish == kInvalidMarker) {
+      gen.provider_publish = gen.provider_visible.observed_publish_ordinal;
+      gen.provider_timestamp_ns = gen.provider_visible.timestamp_ns;
+    }
+
+    gen.last_observed_publish = view.observed_publish_ordinal;
+    gen.last_observed_timestamp_ns = view.timestamp_ns;
+
+    if (gen.frameproducer_visible.seen) {
+      gen.completed = true;
+    }
+
+    if (!gen.completed && gen.provider_publish != kInvalidMarker) {
+      const uint64_t publish_delta = gen.last_observed_publish - gen.provider_publish;
+      const uint64_t time_delta = gen.last_observed_timestamp_ns - gen.provider_timestamp_ns;
+      if (publish_delta > kDefaultMaxPublishGap || time_delta > kDefaultMaxTimeNs) {
+        gen.incomplete = true;
+        if (gen.stalled_at == Stage::None) {
+          gen.stalled_at = gen.last_stage;
+        }
+      }
+    }
+
+    ++observed_publish_ordinal_;
+  }
+
+  void emit_report(FILE* out = stdout) const {
+    if (!options_.enabled || !out) {
+      return;
+    }
+
+    if (options_.format == RealizationTraceFormat::Csv || options_.format == RealizationTraceFormat::Both) {
+      std::fputs(
+          "gen,stage,observed_publish,observed_version,observed_topology_version,snapshot_version,"
+          "snapshot_topology_version,published_seq,t_ns,delta_publish,delta_ns\n",
+          out);
+      for (const auto& [gen_key, gen] : generations_) {
+        (void)gen_key;
+        emit_csv_line_(out, gen.gen, "provider_visible", gen.provider_visible, nullptr);
+        emit_csv_line_(out, gen.gen, "device_identity", gen.device_identity, &gen.provider_visible);
+        emit_csv_line_(out, gen.gen, "device_native", gen.device_native, &gen.device_identity);
+        emit_csv_line_(out, gen.gen, "stream_visible", gen.stream_visible, &gen.device_native);
+        emit_csv_line_(out, gen.gen, "frameproducer_visible", gen.frameproducer_visible, &gen.stream_visible);
+      }
+      std::fputs("gen,status,stalled_at,publish_delta,time_delta_ns\n", out);
+      for (const auto& [gen_key, gen] : generations_) {
+        (void)gen_key;
+        emit_csv_status_line_(out, gen);
+      }
+    }
+
+    if (options_.format == RealizationTraceFormat::Block || options_.format == RealizationTraceFormat::Both) {
+      for (const auto& [gen_key, gen] : generations_) {
+        (void)gen_key;
+        std::fprintf(out,
+                     "[realization] gen=%llu note=observable_versions_are_boundary_visible;"
+                     " snapshot_versions_are_core_publish_headers; coalesced observable stages may share a publish\n",
+                     static_cast<unsigned long long>(gen.gen));
+        emit_block_line_(out, "provider_visible", gen.provider_visible, nullptr);
+        emit_block_line_(out, "device_identity", gen.device_identity, &gen.provider_visible);
+        emit_block_line_(out, "device_native", gen.device_native, &gen.device_identity);
+        emit_block_line_(out, "stream_visible", gen.stream_visible, &gen.device_native);
+        emit_block_line_(out, "frameproducer_visible", gen.frameproducer_visible, &gen.stream_visible);
+        emit_block_status_(out, gen);
+      }
+    }
+
+    std::fflush(out);
+  }
+
+private:
+  static constexpr uint64_t kInvalidMarker = std::numeric_limits<uint64_t>::max();
+  static constexpr uint64_t kDefaultMaxPublishGap = 8;
+  static constexpr uint64_t kDefaultMaxTimeNs = 50'000'000ull;
+
+  enum class Stage : uint8_t {
+    None = 0,
+    Provider = 1,
+    DeviceIdentity = 2,
+    DeviceNative = 3,
+    Stream = 4,
+    FrameProducer = 5,
+  };
+  struct SnapshotView {
+    const CamBANGStateSnapshot* raw = nullptr;
+    uint64_t gen = 0;
+    uint64_t observed_publish_ordinal = 0;
+    uint64_t observed_version = 0;
+    uint64_t observed_topology_version = 0;
+    uint64_t snapshot_version = 0;
+    uint64_t snapshot_topology_version = 0;
+    uint64_t published_seq_marker = 0;
+    uint64_t timestamp_ns = 0;
+  };
+
+  struct MilestoneRecord {
+    bool seen = false;
+    uint64_t observed_publish_ordinal = 0;
+    uint64_t observed_version = 0;
+    uint64_t observed_topology_version = 0;
+    uint64_t snapshot_version = 0;
+    uint64_t snapshot_topology_version = 0;
+    uint64_t published_seq_marker = 0;
+    uint64_t timestamp_ns = 0;
+  };
+
+  struct GenerationProfile {
+    uint64_t gen = 0;
+    bool completed = false;
+    bool incomplete = false;
+    uint64_t provider_publish = kInvalidMarker;
+    uint64_t last_observed_publish = kInvalidMarker;
+    uint64_t provider_timestamp_ns = 0;
+    uint64_t last_observed_timestamp_ns = 0;
+    Stage last_stage = Stage::None;
+    Stage stalled_at = Stage::None;
+    MilestoneRecord provider_visible;
+    MilestoneRecord device_identity;
+    MilestoneRecord device_native;
+    MilestoneRecord stream_visible;
+    MilestoneRecord frameproducer_visible;
+  };
+
+  SnapshotView snapshot_view_(const ObservedSnapshot& observed, uint64_t published_seq_marker) const {
+    SnapshotView view;
+    view.raw = observed.raw.get();
+    view.gen = observed.gen;
+    view.observed_publish_ordinal = observed_publish_ordinal_;
+    view.observed_version = observed.version;
+    view.observed_topology_version = observed.topology_version;
+    view.snapshot_version = observed.raw->version;
+    view.snapshot_topology_version = observed.raw->topology_version;
+    view.published_seq_marker = published_seq_marker;
+    view.timestamp_ns = observed.raw->timestamp_ns;
+    return view;
+  }
+
+  static void maybe_record_(MilestoneRecord& record,
+                            const SnapshotView& view,
+                            bool matched,
+                            Stage stage,
+                            GenerationProfile& gen) {
+    if (record.seen || !matched) {
+      return;
+    }
+    record.seen = true;
+    record.observed_publish_ordinal = view.observed_publish_ordinal;
+    record.observed_version = view.observed_version;
+    record.observed_topology_version = view.observed_topology_version;
+    record.snapshot_version = view.snapshot_version;
+    record.snapshot_topology_version = view.snapshot_topology_version;
+    record.published_seq_marker = view.published_seq_marker;
+    record.timestamp_ns = view.timestamp_ns;
+    gen.last_stage = stage;
+  }
+
+  static bool native_exists_for_generation_(const CamBANGStateSnapshot& snap,
+                                            uint64_t current_gen,
+                                            NativeObjectType type,
+                                            uint64_t owner_device_instance_id,
+                                            uint64_t owner_stream_id) {
+    for (const auto& rec : snap.native_objects) {
+      if (rec.creation_gen != current_gen || rec.type != static_cast<uint32_t>(type)) {
+        continue;
+      }
+      if (owner_device_instance_id != 0 && rec.owner_device_instance_id != owner_device_instance_id) {
+        continue;
+      }
+      if (owner_stream_id != 0 && rec.owner_stream_id != owner_stream_id) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  static bool has_device_id_(const CamBANGStateSnapshot& snap, uint64_t device_id) {
+    for (const auto& device : snap.devices) {
+      if (device.instance_id == device_id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool has_stream_id_(const CamBANGStateSnapshot& snap, uint64_t stream_id) {
+    for (const auto& stream : snap.streams) {
+      if (stream.stream_id == stream_id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool milestone_matches_provider_(const SnapshotView& view) const {
+    return native_exists_for_generation_(*view.raw, view.gen, NativeObjectType::Provider, 0, 0);
+  }
+
+  bool milestone_matches_device_identity_(const SnapshotView& view) const {
+    return options_.target_device_id != 0 && has_device_id_(*view.raw, options_.target_device_id);
+  }
+
+  bool milestone_matches_device_native_(const SnapshotView& view) const {
+    return options_.target_device_id != 0 &&
+           native_exists_for_generation_(*view.raw, view.gen, NativeObjectType::Device, options_.target_device_id, 0);
+  }
+
+  bool milestone_matches_stream_visible_(const SnapshotView& view) const {
+    return options_.target_stream_id != 0 && has_stream_id_(*view.raw, options_.target_stream_id);
+  }
+
+  bool milestone_matches_frameproducer_visible_(const SnapshotView& view) const {
+    return options_.target_device_id != 0 && options_.target_stream_id != 0 &&
+           native_exists_for_generation_(
+               *view.raw, view.gen, NativeObjectType::FrameProducer, options_.target_device_id, options_.target_stream_id);
+  }
+
+  static void emit_delta_(FILE* out, const MilestoneRecord& current, const MilestoneRecord* previous) {
+    if (!previous || !previous->seen || !current.seen) {
+      return;
+    }
+    std::fprintf(out,
+                 " delta_publish=+%llu delta_ns=+%llu",
+                 static_cast<unsigned long long>(current.observed_publish_ordinal - previous->observed_publish_ordinal),
+                 static_cast<unsigned long long>(current.timestamp_ns - previous->timestamp_ns));
+  }
+
+  static void emit_block_line_(FILE* out,
+                               const char* stage,
+                               const MilestoneRecord& current,
+                               const MilestoneRecord* previous) {
+    std::fprintf(out, "  %-22s ", stage);
+    if (!current.seen) {
+      std::fputs("observed=no\n", out);
+      return;
+    }
+    std::fprintf(out,
+                 "observed=yes publish=%llu version=%llu topology=%llu snapshot_version=%llu"
+                 " snapshot_topology=%llu published_seq=%llu t_ns=%llu",
+                 static_cast<unsigned long long>(current.observed_publish_ordinal),
+                 static_cast<unsigned long long>(current.observed_version),
+                 static_cast<unsigned long long>(current.observed_topology_version),
+                 static_cast<unsigned long long>(current.snapshot_version),
+                 static_cast<unsigned long long>(current.snapshot_topology_version),
+                 static_cast<unsigned long long>(current.published_seq_marker),
+                 static_cast<unsigned long long>(current.timestamp_ns));
+    emit_delta_(out, current, previous);
+    std::fputc('\n', out);
+  }
+
+  static void emit_csv_line_(FILE* out,
+                             uint64_t gen,
+                             const char* stage,
+                             const MilestoneRecord& current,
+                             const MilestoneRecord* previous) {
+    if (!current.seen) {
+      std::fprintf(out, "%llu,%s,,,,,,,,,\n", static_cast<unsigned long long>(gen), stage);
+      return;
+    }
+
+    std::fprintf(out,
+                 "%llu,%s,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+                 static_cast<unsigned long long>(gen),
+                 stage,
+                 static_cast<unsigned long long>(current.observed_publish_ordinal),
+                 static_cast<unsigned long long>(current.observed_version),
+                 static_cast<unsigned long long>(current.observed_topology_version),
+                 static_cast<unsigned long long>(current.snapshot_version),
+                 static_cast<unsigned long long>(current.snapshot_topology_version),
+                 static_cast<unsigned long long>(current.published_seq_marker),
+                 static_cast<unsigned long long>(current.timestamp_ns));
+
+    if (previous && previous->seen) {
+      std::fprintf(out,
+                   ",%llu,%llu\n",
+                   static_cast<unsigned long long>(current.observed_publish_ordinal - previous->observed_publish_ordinal),
+                   static_cast<unsigned long long>(current.timestamp_ns - previous->timestamp_ns));
+      return;
+    }
+
+    std::fputs(",,\n", out);
+  }
+
+  static const char* stage_name_(Stage stage) {
+    switch (stage) {
+      case Stage::None: return "none";
+      case Stage::Provider: return "provider_visible";
+      case Stage::DeviceIdentity: return "device_identity";
+      case Stage::DeviceNative: return "device_native";
+      case Stage::Stream: return "stream_visible";
+      case Stage::FrameProducer: return "frameproducer_visible";
+    }
+    return "unknown";
+  }
+
+  static const char* final_status_name_(const GenerationProfile& gen) {
+    if (gen.completed) {
+      return "COMPLETE";
+    }
+    if (gen.incomplete) {
+      return "INCOMPLETE";
+    }
+    return "PARTIAL";
+  }
+
+  static uint64_t final_publish_delta_(const GenerationProfile& gen) {
+    if (gen.provider_publish == kInvalidMarker || gen.last_observed_publish == kInvalidMarker) {
+      return 0;
+    }
+    return gen.last_observed_publish - gen.provider_publish;
+  }
+
+  static uint64_t final_time_delta_ns_(const GenerationProfile& gen) {
+    if (gen.provider_publish == kInvalidMarker) {
+      return 0;
+    }
+    return gen.last_observed_timestamp_ns - gen.provider_timestamp_ns;
+  }
+
+  static void emit_block_status_(FILE* out, const GenerationProfile& gen) {
+    std::fprintf(out, "  status=%s\n", final_status_name_(gen));
+    if (gen.completed) {
+      return;
+    }
+    if (gen.incomplete) {
+      std::fprintf(out,
+                   "  stalled_at=%s\n"
+                   "  publish_delta=+%llu\n"
+                   "  time_delta_ns=%llu\n",
+                   stage_name_(gen.stalled_at),
+                   static_cast<unsigned long long>(final_publish_delta_(gen)),
+                   static_cast<unsigned long long>(final_time_delta_ns_(gen)));
+      return;
+    }
+    std::fprintf(out, "  last_stage=%s\n", stage_name_(gen.last_stage));
+  }
+
+  static void emit_csv_status_line_(FILE* out, const GenerationProfile& gen) {
+    if (gen.completed) {
+      std::fprintf(out, "%llu,%s,,,\n", static_cast<unsigned long long>(gen.gen), final_status_name_(gen));
+      return;
+    }
+
+    const char* stalled_or_last = gen.incomplete ? stage_name_(gen.stalled_at) : stage_name_(gen.last_stage);
+    std::fprintf(out,
+                 "%llu,%s,%s,%llu,%llu\n",
+                 static_cast<unsigned long long>(gen.gen),
+                 final_status_name_(gen),
+                 stalled_or_last,
+                 static_cast<unsigned long long>(final_publish_delta_(gen)),
+                 static_cast<unsigned long long>(final_time_delta_ns_(gen)));
+  }
+
+  RealizationProfilerOptions options_{};
+  uint64_t observed_publish_ordinal_ = 0;
+  std::map<uint64_t, GenerationProfile> generations_;
 };
 
 class SnapshotExpectation final {
@@ -199,6 +605,8 @@ public:
 
   ScenarioProviderKind provider_kind() const noexcept { return provider_kind_; }
 
+  void set_realization_profiler(RealizationProfiler* profiler) noexcept { realization_profiler_ = profiler; }
+
   bool start_runtime(std::string& error) {
     stop_runtime();
 
@@ -231,6 +639,9 @@ public:
     }
 
     boundary_.reset(runtime_.published_seq());
+    if (realization_profiler_) {
+      realization_profiler_->reset();
+    }
     return true;
   }
 
@@ -256,6 +667,9 @@ public:
     endpoint_hardware_ids_.clear();
     synthetic_frame_period_ns_ = 0;
     boundary_.reset(runtime_.published_seq());
+    if (realization_profiler_) {
+      realization_profiler_->reset();
+    }
   }
 
   bool wait_for_core_publish_count(uint64_t min_count,
@@ -486,7 +900,15 @@ public:
     return stop_stream(error);
   }
 
-  bool tick() { return boundary_.tick(runtime_, snapshot_buffer_); }
+  bool tick() {
+    // Observe at the publication boundary rather than inside core mutation paths so
+    // profiling reflects Godot-visible publication/coalescing behavior without changing runtime semantics.
+    const bool advanced = boundary_.tick(runtime_, snapshot_buffer_);
+    if (advanced && realization_profiler_) {
+      realization_profiler_->observe(boundary_.current(), runtime_.published_seq());
+    }
+    return advanced;
+  }
   const ObservedSnapshot& observed() const noexcept { return boundary_.current(); }
   const ObservedSnapshot& last_snapshot_before_stop_clear() const noexcept {
     return last_snapshot_before_stop_clear_;
@@ -593,6 +1015,7 @@ private:
   uint64_t synthetic_frame_period_ns_ = 0;
   ObservationBoundary boundary_;
   ObservedSnapshot last_snapshot_before_stop_clear_{};
+  RealizationProfiler* realization_profiler_ = nullptr;
 };
 
 } // namespace cambang

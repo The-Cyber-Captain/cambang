@@ -83,6 +83,29 @@ bool CoreStreamRegistry::on_frame_dropped(uint64_t stream_id) {
   return true;
 }
 
+bool CoreStreamRegistry::on_visibility_path(uint64_t stream_id, CoreVisibilityPath path) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+
+  switch (path) {
+    case CoreVisibilityPath::RGBA_DIRECT:
+    case CoreVisibilityPath::BGRA_SWIZZLED:
+      it->second.visibility_frames_presented++;
+      break;
+    case CoreVisibilityPath::REJECTED_UNSUPPORTED:
+      it->second.visibility_frames_rejected_unsupported++;
+      break;
+    case CoreVisibilityPath::REJECTED_INVALID:
+      it->second.visibility_frames_rejected_invalid++;
+      break;
+    case CoreVisibilityPath::NONE:
+      return false;
+  }
+
+  it->second.visibility_last_path = path;
+  return true;
+}
+
 bool CoreStreamRegistry::set_picture(uint64_t stream_id, const PictureConfig& picture) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;

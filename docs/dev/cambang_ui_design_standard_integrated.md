@@ -88,6 +88,12 @@ If a value cannot be truthfully derived from the snapshot, it must be surfaced a
 
 The UI must **never substitute a plausible guess**.
 
+## 2.4 Applied Profile Visibility
+
+- UI must rely solely on snapshot-visible applied profile truth.
+- UI must not reconstruct, infer, or query external configuration sources.
+- All capture configuration displayed must originate from snapshot data.
+
 ---
 
 # 3. UI Node Responsibilities
@@ -982,7 +988,25 @@ Beneath Server, the runtime loop is represented by **Provider nodes**.
 
 Each Provider row is **grounded in the provider `native_object` published in the snapshot**.
 
-Every snapshot is expected to contain a provider native object representing the currently active runtime provider.
+Normally an authoritative snapshot is expected to contain a provider native object
+representing the currently active runtime provider.
+
+However, a startup baseline `(version=0, topology_version=0)` may legitimately
+arrive before any current-generation provider native object is visible at the
+Godot boundary. In that narrow case the panel may render a `provider_pending`
+placeholder instead of a Provider row.
+
+That placeholder is only valid when the provider native object is absent.
+
+If an authoritative snapshot already contains a current-generation provider
+native object but still has:
+
+- zero devices
+- zero streams
+- no frameproducer subtree
+
+then the panel must render a normal Provider row with no descendants. That state
+is authoritative startup truth, not a `provider_pending` placeholder.
 
 The Provider row therefore serves two simultaneous roles:
 

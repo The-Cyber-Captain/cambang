@@ -6,6 +6,7 @@ const TOUCH_SLOP := 10.0
 var _touch_id := -1
 var _touch_start := Vector2.ZERO
 var _touch_armed := false
+var _touch_initial_pressed := false
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -26,7 +27,7 @@ func _handle_screen_touch(event: InputEventScreenTouch) -> void:
 		_touch_id = event.index
 		_touch_start = event.position
 		_touch_armed = true
-		button_pressed = true
+		_touch_initial_pressed = button_pressed
 		accept_event()
 		return
 
@@ -37,10 +38,10 @@ func _handle_screen_touch(event: InputEventScreenTouch) -> void:
 	_touch_id = -1
 	_touch_armed = false
 	if should_toggle:
-		button_pressed = not button_pressed
+		button_pressed = not _touch_initial_pressed
 		emit_signal("pressed")
 	else:
-		button_pressed = false
+		button_pressed = _touch_initial_pressed
 	accept_event()
 
 
@@ -49,5 +50,4 @@ func _handle_screen_drag(event: InputEventScreenDrag) -> void:
 		return
 	if event.position.distance_to(_touch_start) > TOUCH_SLOP:
 		_touch_armed = false
-	button_pressed = _touch_armed
 	accept_event()

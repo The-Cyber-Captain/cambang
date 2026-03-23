@@ -24,7 +24,7 @@ inline bool validate_frame_minimal(const FrameView& f, size_t row_bytes, size_t 
 
 } // namespace
 
-void LatestFrameMailbox::write_from_core(FrameView frame) {
+CoreVisibilityPath LatestFrameMailbox::write_from_core(FrameView frame) {
   // IMPORTANT: This mailbox is intentionally conservative.
   //
   // It exists to provide a stable, low-friction debug/display path.
@@ -49,17 +49,18 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
                                 : static_cast<size_t>(frame.stride_bytes);
 
   uint64_t new_seq = 0;
+  CoreVisibilityPath path = CoreVisibilityPath::NONE;
   {
     std::lock_guard<std::mutex> lock(m_);
     stats_.frames_received += 1;
 
     if (!supported) {
       stats_.frames_dropped_unsupported += 1;
-      return;
+      return CoreVisibilityPath::REJECTED_UNSUPPORTED;
     }
     if (!validate_frame_minimal(frame, row_bytes, src_stride)) {
       stats_.frames_dropped_invalid += 1;
-      return;
+      return CoreVisibilityPath::REJECTED_INVALID;
     }
 
     // Advance seq inside the lock.
@@ -107,7 +108,6 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
           const uint8_t b = s[0];
           const uint8_t g = s[1];
           const uint8_t r = s[2];
-          const uint8_t a = s[3];
           d[0] = r;
           d[1] = g;
           d[2] = b;
@@ -121,10 +121,12 @@ void LatestFrameMailbox::write_from_core(FrameView frame) {
     }
 
     stats_.frames_published += 1;
+    path = is_rgba ? CoreVisibilityPath::RGBA_DIRECT : CoreVisibilityPath::BGRA_SWIZZLED;
   }
 
   // Publish after releasing lock so readers can fast-path check.
   published_seq_.store(new_seq, std::memory_order_release);
+  return path;
 }
 
 bool LatestFrameMailbox::try_copy_if_new(uint64_t last_seq, RgbaFrame& out) const {

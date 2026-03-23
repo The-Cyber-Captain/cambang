@@ -1,0 +1,52 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "rendered_contract_gap_rows": 1,
+    "required_row_ids": [
+      "server/main",
+      "provider/100",
+      "device/1",
+      "provider/100/contract_gaps"
+    ]
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 2,
+    "version": 31,
+    "topology_version": 1,
+    "timestamp_ns": 50000000001,
+    "imaging_spec_version": 1,
+    "rigs": [],
+    "devices": [
+      {
+        "instance_id": 1,
+        "hardware_id": "synthetic:0",
+        "phase": "LIVE",
+        "mode": "STREAMING",
+        "errors_count": 0
+      },
+      {
+        "instance_id": 1,
+        "hardware_id": "synthetic:1",
+        "phase": "LIVE",
+        "mode": "STREAMING",
+        "errors_count": 0
+      }
+    ],
+    "streams": [],
+    "native_objects": [
+      {
+        "native_id": 100,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 2
+      }
+    ],
+    "detached_root_ids": []
+  }
+}

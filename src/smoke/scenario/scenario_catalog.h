@@ -13,6 +13,7 @@ struct ScenarioDefinition {
   std::function<int()> run;
 };
 
-std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind);
+std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind,
+                                               const RealizationProfilerOptions& profiler_options = {});
 
 } // namespace cambang
