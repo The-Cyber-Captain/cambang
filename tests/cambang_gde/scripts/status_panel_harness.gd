@@ -69,6 +69,7 @@ func _initialize() -> void:
 		return
 
 	panel.name = "CamBANGStatusPanel"
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	window.add_child(panel)
