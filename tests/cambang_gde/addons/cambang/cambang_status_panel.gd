@@ -2631,13 +2631,8 @@ func _ensure_expandability(panel: PanelModel) -> void:
 			continue
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
-		var has_detail_payload := not e.detail_info_lines.is_empty()
-		for counter in e.counters:
-			if counter.visibility == "detail":
-				has_detail_payload = true
-				break
 		var child_count := int(child_counts.get(e.id, 0))
-		e.can_expand = child_count > 0 or has_detail_payload
+		e.can_expand = child_count > 0
 		if child_count > 0 and _should_default_expand_entry(e):
 			e.expanded = true
 
