@@ -16,7 +16,7 @@
       "native_object/100"
     ],
     "required_badges_by_row": {
-      "provider/200": [
+      "server/main": [
         "NATIVE COVERAGE: OK"
       ],
       "provider/200/retained_prior_generation_native_objects": [
@@ -27,7 +27,7 @@
       ]
     },
     "required_info_substrings_by_row": {
-      "provider/200": [
+      "server/main": [
         "native coverage: 2/2 rendered."
       ],
       "provider/200/retained_prior_generation_native_objects": [

@@ -76,7 +76,7 @@
       }
     },
     "required_info_substrings_by_row": {
-      "provider/100": [
+      "server/main": [
         "native coverage: 4/4 rendered."
       ],
       "device/1": [
@@ -114,7 +114,7 @@
       ]
     },
     "required_badges_by_row": {
-      "provider/100": [
+      "server/main": [
         "NATIVE COVERAGE: OK"
       ]
     }

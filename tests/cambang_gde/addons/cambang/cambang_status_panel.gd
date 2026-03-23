@@ -573,52 +573,48 @@ func _collect_debug_visible_row_ids() -> Array[String]:
 
 
 func _apply_render_native_coverage_summary(snapshot: Variant, model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var server_entry := _find_panel_entry_by_id(model, "server/main")
+	if server_entry == null:
+		return false
+
+	var coverage := _compute_global_native_coverage(snapshot, model)
+	var next_badges := _badges_with_render_native_coverage(server_entry.badges, coverage)
+	var next_info_lines := _info_lines_with_render_native_coverage(server_entry.info_lines, coverage)
+
+	var next_badge_labels := _badge_labels(next_badges)
+	var current_badge_labels := _badge_labels(server_entry.badges)
+	var changed := next_badge_labels != current_badge_labels or next_info_lines != server_entry.info_lines
+	if not changed:
+		return false
+
+	server_entry.badges = next_badges
+	server_entry.info_lines = next_info_lines
+	_apply_detail_policy_to_entry(server_entry)
+	return true
+
+
+func _compute_global_native_coverage(snapshot: Variant, model: PanelModel) -> Dictionary:
 	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY or model == null:
-		return false
-	var provider_entry := _find_current_provider_entry(model)
-	if provider_entry == null:
-		return false
+		return {
+			"state": "UNKNOWN",
+			"role": "neutral",
+		}
 
 	var snapshot_dict := snapshot as Dictionary
 	var snapshot_gen := int(snapshot_dict.get("gen", -1))
 	var native_objects := snapshot_dict.get("native_objects", [])
 	if typeof(native_objects) != TYPE_ARRAY:
-		return false
-
+		return {
+			"state": "UNKNOWN",
+			"role": "neutral",
+		}
 	var rendered_native_ids := _collect_rendered_native_ids(model)
-	var coverage := _compute_native_coverage_from_ids(native_objects, rendered_native_ids, snapshot_gen)
-	var next_badges := _badges_with_render_native_coverage(provider_entry.badges, int(coverage.get("missing", 0)) == 0)
-	var next_info_lines := _info_lines_with_render_native_coverage(provider_entry.info_lines, coverage)
-
-	var next_badge_labels := _badge_labels(next_badges)
-	var current_badge_labels := _badge_labels(provider_entry.badges)
-	var changed := next_badge_labels != current_badge_labels or next_info_lines != provider_entry.info_lines
-	if not changed:
-		return false
-
-	provider_entry.badges = next_badges
-	provider_entry.info_lines = next_info_lines
-	_apply_detail_policy_to_entry(provider_entry)
-	return true
+	return _compute_native_coverage_from_ids(native_objects, rendered_native_ids, snapshot_gen)
 
 
-func _find_current_provider_entry(model: PanelModel) -> StatusEntryModel:
-	if model == null:
-		return null
-	for entry in model.entries:
-		if entry == null:
-			continue
-		if entry.parent_id != "server/main":
-			continue
-		if not entry.id.begins_with("provider/"):
-			continue
-		if _has_badge_label(entry, "retained-root"):
-			continue
-		return entry
-	return null
-
-
-func _badges_with_render_native_coverage(existing_badges: Array[BadgeModel], is_ok: bool) -> Array[BadgeModel]:
+func _badges_with_render_native_coverage(existing_badges: Array[BadgeModel], coverage: Dictionary) -> Array[BadgeModel]:
 	var next_badges: Array[BadgeModel] = []
 	for badge in existing_badges:
 		if badge == null:
@@ -626,7 +622,9 @@ func _badges_with_render_native_coverage(existing_badges: Array[BadgeModel], is_
 		if badge.label.begins_with("NATIVE COVERAGE:"):
 			continue
 		next_badges.append(_badge(badge.role, badge.label))
-	next_badges.append(_badge("success" if is_ok else "warning", "NATIVE COVERAGE: %s" % ("OK" if is_ok else "GAP")))
+	var state_label := str(coverage.get("state", "UNKNOWN"))
+	var state_role := str(coverage.get("role", "neutral"))
+	next_badges.append(_badge(state_role, "NATIVE COVERAGE: %s" % state_label))
 	return _normalize_badges(next_badges)
 
 
@@ -639,20 +637,23 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 			continue
 		next_info_lines.append(line)
 
+	var state := str(coverage.get("state", "UNKNOWN"))
+	if state == "UNKNOWN":
+		next_info_lines.append("native coverage: unknown.")
+		return next_info_lines
+
 	var total_native := int(coverage.get("total", 0))
 	var rendered_native := int(coverage.get("rendered", 0))
 	var missing_native := int(coverage.get("missing", 0))
-	if missing_native > 0:
+	var extra_native := int(coverage.get("extra", 0))
+	if missing_native > 0 or extra_native > 0:
 		next_info_lines.append(
-			"Projection gap: native coverage %d/%d rendered (missing=%d; current=%d; prior=%d; destroyed=%d; non-destroyed=%d)."
+			"Projection gap: native coverage %d/%d rendered (missing=%d; extra=%d)."
 			% [
 				rendered_native,
 				total_native,
 				missing_native,
-				int(coverage.get("missing_current", 0)),
-				int(coverage.get("missing_prior", 0)),
-				int(coverage.get("missing_destroyed", 0)),
-				int(coverage.get("missing_non_destroyed", 0)),
+				extra_native,
 			]
 		)
 	else:
@@ -2491,10 +2492,32 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 		else:
 			missing_non_destroyed += 1
 
+	var extra_count := 0
+	for native_id in observed_native_id_set.keys():
+		if snapshot_native_records.has(native_id):
+			continue
+		extra_count += 1
+
+	var missing_count := snapshot_native_records.size() - observed_snapshot_native_count
+	var coverage_state := "OK"
+	var coverage_role := "success"
+	if missing_count > 0 and extra_count > 0:
+		coverage_state = "MISMATCH"
+		coverage_role = "error"
+	elif missing_count > 0:
+		coverage_state = "MISSING"
+		coverage_role = "error"
+	elif extra_count > 0:
+		coverage_state = "EXTRA"
+		coverage_role = "error"
+
 	return {
+		"state": coverage_state,
+		"role": coverage_role,
 		"total": snapshot_native_records.size(),
 		"rendered": observed_snapshot_native_count,
-		"missing": snapshot_native_records.size() - observed_snapshot_native_count,
+		"missing": missing_count,
+		"extra": extra_count,
 		"missing_current": missing_current,
 		"missing_prior": missing_prior,
 		"missing_destroyed": missing_destroyed,
