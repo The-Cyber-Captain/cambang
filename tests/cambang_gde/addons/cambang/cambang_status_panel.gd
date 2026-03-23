@@ -9,6 +9,7 @@ const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll
 # PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
 const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
+const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 
 
 class PanelModel extends RefCounted:
@@ -176,7 +177,7 @@ func _reconcile_post_stop_nil_boundary() -> bool:
 	var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 	_set_last_active_panel_state(nil_panel, false, {})
 	_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
-	_render_panel_model(_last_panel_model)
+	_render_panel_and_maybe_dump(_last_panel_model, null)
 	return true
 
 
@@ -411,7 +412,7 @@ func _refresh_from_server() -> void:
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
 		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
 	var provider_mode := str(_server.get_provider_mode())
@@ -425,7 +426,7 @@ func _refresh_from_server() -> void:
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
 	if typeof(snapshot) != TYPE_DICTIONARY:
@@ -433,7 +434,7 @@ func _refresh_from_server() -> void:
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		return
 
 	var compat := _check_snapshot_runtime_compat(snapshot)
@@ -445,7 +446,7 @@ func _refresh_from_server() -> void:
 		)
 		_set_last_active_panel_state(compat_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(compat_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		return
 
 	var snapshot_meta := _extract_authoritative_snapshot_meta(snapshot)
@@ -459,19 +460,114 @@ func _refresh_from_server() -> void:
 					snapshot_meta
 				)
 			_last_panel_model = _compose_presented_panel_model(_last_active_panel_model, true, snapshot_meta)
-			_render_panel_model(_last_panel_model)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		"value_refresh":
 			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
 			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_set_last_active_panel_state(value_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(value_panel, true, snapshot_meta)
-			_render_panel_model(_last_panel_model)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_set_last_active_panel_state(full_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(full_panel, true, snapshot_meta)
-			_render_panel_model(_last_panel_model)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
+
+
+func _render_panel_and_maybe_dump(model: PanelModel, snapshot: Variant) -> void:
+	_render_panel_model(model)
+	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
+
+
+func _debug_dump_runtime_evidence_if_enabled(snapshot: Variant, model: PanelModel) -> void:
+	if not OS.has_environment(DEBUG_EVIDENCE_ENV):
+		return
+	var env_value := OS.get_environment(DEBUG_EVIDENCE_ENV).strip_edges().to_lower()
+	if not ["1", "true", "yes", "on"].has(env_value):
+		return
+	print(_build_debug_runtime_evidence_dump(snapshot, model))
+
+
+func _build_debug_runtime_evidence_dump(snapshot: Variant, model: PanelModel) -> String:
+	var lines: Array[String] = []
+	lines.append("=== CAMBANG STATUS PANEL DEBUG EVIDENCE BEGIN ===")
+	lines.append("SNAPSHOT_NATIVE_OBJECTS:")
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		lines.append("  <snapshot unavailable>")
+	else:
+		var snapshot_dict := snapshot as Dictionary
+		var native_objects := snapshot_dict.get("native_objects", [])
+		if typeof(native_objects) != TYPE_ARRAY or native_objects.is_empty():
+			lines.append("  <none>")
+		else:
+			for raw_rec in native_objects:
+				if typeof(raw_rec) != TYPE_DICTIONARY:
+					lines.append("  <non-dictionary native_object>")
+					continue
+				var rec := raw_rec as Dictionary
+				lines.append(
+					"  native_id=%d type=%s phase=%s creation_gen=%s owner_device_instance_id=%s owner_stream_id=%s owner_provider_native_id=%s root_id=%s"
+					% [
+						int(rec.get("native_id", 0)),
+						str(rec.get("type", "")),
+						str(rec.get("phase", "")),
+						str(rec.get("creation_gen", "")),
+						str(rec.get("owner_device_instance_id", "")),
+						str(rec.get("owner_stream_id", "")),
+						str(rec.get("owner_provider_native_id", "")),
+						str(rec.get("root_id", "")),
+					]
+				)
+	lines.append("PROJECTION_ROWS:")
+	if model == null:
+		lines.append("  <model unavailable>")
+	else:
+		for entry in model.entries:
+			if entry == null:
+				continue
+			lines.append(
+				"  row_id=%s parent_id=%s label=%s materialized_native_id=%d"
+				% [entry.id, entry.parent_id, entry.label, int(entry.materialized_native_id)]
+			)
+	lines.append("RENDERED_ROW_IDS: %s" % [_collect_debug_rendered_row_ids()])
+	lines.append("VISIBLE_ROW_IDS: %s" % [_collect_debug_visible_row_ids()])
+	lines.append("=== CAMBANG STATUS PANEL DEBUG EVIDENCE END ===")
+	return "\n".join(lines)
+
+
+func _collect_debug_rendered_row_ids() -> Array[String]:
+	var row_ids: Array[String] = []
+	if _status_rows == null:
+		return row_ids
+	for child in _status_rows.get_children():
+		if child == null:
+			continue
+		var entry_id := _extract_debug_row_entry_id(child)
+		if entry_id != "":
+			row_ids.append(entry_id)
+	return row_ids
+
+
+func _collect_debug_visible_row_ids() -> Array[String]:
+	var visible_ids: Array[String] = []
+	if _status_rows == null:
+		return visible_ids
+	for child in _status_rows.get_children():
+		if child == null or not bool(child.visible):
+			continue
+		var entry_id := _extract_debug_row_entry_id(child)
+		if entry_id != "":
+			visible_ids.append(entry_id)
+	return visible_ids
+
+
+func _extract_debug_row_entry_id(child: Variant) -> String:
+	if child == null:
+		return ""
+	if child.has_method("get_entry_id"):
+		return str(child.call("get_entry_id"))
+	return str(child.get("_entry_id"))
 
 
 func _set_last_active_panel_state(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
