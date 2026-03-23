@@ -7,11 +7,19 @@ func _initialize() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.size() < 1:
 		_printerr("usage: -- <fixture.json> [screenshot.png]")
+		_printerr("note: screenshot capture requires a headed/windowed run; semantic-only runs remain headless-compatible")
 		quit(2)
 		return
 
 	var fixture_path := args[0]
 	var screenshot_path := args[1] if args.size() >= 2 else ""
+
+	if screenshot_path != "":
+		var screenshot_preflight_error := _validate_screenshot_mode()
+		if screenshot_preflight_error != "":
+			_printerr(screenshot_preflight_error)
+			quit(2)
+			return
 
 	var fixture := _load_fixture(fixture_path)
 	if fixture.is_empty():
@@ -107,7 +115,11 @@ func _initialize() -> void:
 	await process_frame
 
 	if screenshot_path != "":
-		_capture_window_png(window, screenshot_path)
+		var capture_error := _capture_window_png(window, screenshot_path)
+		if capture_error != "":
+			_printerr(capture_error)
+			quit(2)
+			return
 
 	var row_ids := _collect_entry_ids(rendered_model)
 	print("HARNESS row_ids: %s" % [row_ids])
@@ -182,20 +194,26 @@ func _compute_runtime_compat(panel: Object, payload: Variant) -> Dictionary:
 	return panel.call("_check_snapshot_runtime_compat", payload)
 
 
-func _capture_window_png(window: Window, screenshot_path: String) -> void:
+func _validate_screenshot_mode() -> String:
+	var display_name := DisplayServer.get_name()
+	if display_name == "headless":
+		return "screenshot capture requires a headed/windowed run; current display server is headless, so window rendering/capture is unavailable. Rerun without --headless."
+	return ""
+
+
+func _capture_window_png(window: Window, screenshot_path: String) -> String:
 	var texture := window.get_texture()
 	if texture == null:
-		push_warning("screenshot skipped: window texture unavailable in current renderer/headless mode")
-		return
+		return "screenshot capture requires a headed/windowed run; window texture capture is unavailable in the current renderer/display server. Rerun without --headless using a real window/render path."
 
 	var image: Image = texture.get_image()
 	if image == null:
-		push_warning("screenshot skipped: failed to read image from window texture")
-		return
+		return "screenshot capture requires a headed/windowed run; failed to read pixels from the real window texture in the current renderer/display server. Rerun without --headless using a real window/render path."
 
 	var err := image.save_png(screenshot_path)
 	if err != OK:
-		_printerr("failed to save screenshot: %s (err=%d)" % [screenshot_path, err])
+		return "failed to save screenshot: %s (err=%d)" % [screenshot_path, err]
+	return ""
 
 
 func _collect_entry_ids(model: Variant) -> Array[String]:

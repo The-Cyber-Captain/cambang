@@ -59,3 +59,19 @@ The editor dock uses only the public singleton API:
 - `CamBANGServer.set_provider_mode()`
 - `CamBANGServer.get_provider_mode()`
 - `CamBANGServer.get_state_snapshot()`
+
+## Status panel harness
+
+`res://scripts/status_panel_harness.gd` keeps semantic fixture validation headless-friendly by default:
+
+```bash
+godot4 --headless --path . --script res://scripts/status_panel_harness.gd -- fixtures/status_panel/fixture_valid_basic_authoritative.json
+```
+
+If you request a screenshot output path, run the harness with a real window/render path instead of `--headless`:
+
+```bash
+godot4 --path . --script res://scripts/status_panel_harness.gd -- fixtures/status_panel/fixture_valid_basic_authoritative.json artifacts/status_panel.png
+```
+
+When a screenshot path is provided in headless mode, or when the active renderer/display server cannot expose the real window texture, the harness now fails explicitly instead of warning/skipping.
