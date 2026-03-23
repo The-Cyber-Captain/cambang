@@ -1,18 +1,21 @@
 extends SceneTree
 
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
+const DEFAULT_SCREENSHOT_VIEWPORT_SIZE := Vector2i(1400, 1600)
 const SnapshotValidator = preload("res://support/snapshot_schema_validator.gd")
 
 func _initialize() -> void:
-	var args := OS.get_cmdline_user_args()
-	if args.size() < 1:
-		_printerr("usage: -- <fixture.json> [screenshot.png]")
+	var parse_result := _parse_cli_args(OS.get_cmdline_user_args())
+	if not bool(parse_result.get("ok", false)):
+		_printerr(str(parse_result.get("error", "usage: -- <fixture.json> [screenshot.png] [--window-width <px>] [--window-height <px>]")))
+		_printerr("usage: -- <fixture.json> [screenshot.png] [--window-width <px>] [--window-height <px>]")
 		_printerr("note: screenshot capture requires a headed/windowed run; semantic-only runs remain headless-compatible")
 		quit(2)
 		return
 
-	var fixture_path := args[0]
-	var screenshot_path := args[1] if args.size() >= 2 else ""
+	var fixture_path := str(parse_result.get("fixture_path", ""))
+	var screenshot_path := str(parse_result.get("screenshot_path", ""))
+	var window_size := _resolve_window_size(parse_result, screenshot_path != "")
 
 	if screenshot_path != "":
 		var screenshot_preflight_error := _validate_screenshot_mode()
@@ -43,7 +46,7 @@ func _initialize() -> void:
 
 	var window := Window.new()
 	window.title = "status_panel_harness"
-	window.size = DEFAULT_VIEWPORT_SIZE
+	window.size = window_size
 	window.mode = Window.MODE_WINDOWED
 	window.visible = true
 	get_root().add_child(window)
@@ -158,6 +161,112 @@ func _initialize() -> void:
 		print("OK: expected-invalid fixture was rejected/handled as expected (%s): %s" % [observed_class, fixture_path])
 
 	quit(0)
+
+
+func _parse_cli_args(args: PackedStringArray) -> Dictionary:
+	var fixture_path := ""
+	var screenshot_path := ""
+	var window_width: Variant = null
+	var window_height: Variant = null
+	var index := 0
+
+	while index < args.size():
+		var arg := args[index]
+		match arg:
+			"--window-width":
+				index += 1
+				if index >= args.size():
+					return {
+						"ok": false,
+						"error": "missing value for --window-width",
+					}
+				var parsed_width := _parse_dimension_arg(args[index], "--window-width")
+				if not bool(parsed_width.get("ok", false)):
+					return parsed_width
+				window_width = parsed_width.get("value")
+			"--window-height":
+				index += 1
+				if index >= args.size():
+					return {
+						"ok": false,
+						"error": "missing value for --window-height",
+					}
+				var parsed_height := _parse_dimension_arg(args[index], "--window-height")
+				if not bool(parsed_height.get("ok", false)):
+					return parsed_height
+				window_height = parsed_height.get("value")
+			_:
+				if arg.begins_with("--"):
+					return {
+						"ok": false,
+						"error": "unknown option: %s" % arg,
+					}
+				if fixture_path == "":
+					fixture_path = arg
+				elif screenshot_path == "":
+					screenshot_path = arg
+				else:
+					return {
+						"ok": false,
+						"error": "unexpected extra positional argument: %s" % arg,
+					}
+		index += 1
+
+	if fixture_path == "":
+		return {
+			"ok": false,
+			"error": "missing fixture path",
+		}
+
+	return {
+		"ok": true,
+		"fixture_path": fixture_path,
+		"screenshot_path": screenshot_path,
+		"window_width": window_width,
+		"window_height": window_height,
+	}
+
+
+func _parse_dimension_arg(raw_value: String, option_name: String) -> Dictionary:
+	if raw_value == "":
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer" % option_name,
+		}
+
+	if not raw_value.is_valid_int():
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer; got %s" % [option_name, raw_value],
+		}
+
+	var value := int(raw_value)
+	if value <= 0:
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer; got %d" % [option_name, value],
+		}
+
+	return {
+		"ok": true,
+		"value": value,
+	}
+
+
+func _resolve_window_size(parse_result: Dictionary, is_screenshot_run: bool) -> Vector2i:
+	var has_explicit_width := parse_result.get("window_width", null) != null
+	var has_explicit_height := parse_result.get("window_height", null) != null
+
+	var window_size := DEFAULT_VIEWPORT_SIZE
+	if is_screenshot_run and not has_explicit_width and not has_explicit_height:
+		window_size = DEFAULT_SCREENSHOT_VIEWPORT_SIZE
+
+	if has_explicit_width:
+		window_size.x = int(parse_result.get("window_width"))
+	if has_explicit_height:
+		window_size.y = int(parse_result.get("window_height"))
+
+	return window_size
 
 
 func _load_fixture(path: String) -> Dictionary:

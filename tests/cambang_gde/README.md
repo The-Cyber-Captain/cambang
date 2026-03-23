@@ -68,10 +68,21 @@ The editor dock uses only the public singleton API:
 godot4 --headless --path . --script res://scripts/status_panel_harness.gd -- fixtures/status_panel/fixture_valid_basic_authoritative.json
 ```
 
-If you request a screenshot output path, run the harness with a real window/render path instead of `--headless`:
+You can also set an explicit harness window size with:
+
+- `--window-width <px>`
+- `--window-height <px>`
+
+If you request a screenshot output path, run the harness with a real window/render path instead of `--headless`. Screenshot runs default to a portrait harness window size of `1400x1600` when neither size flag is provided:
 
 ```bash
 godot4 --path . --script res://scripts/status_panel_harness.gd -- fixtures/status_panel/fixture_valid_basic_authoritative.json artifacts/status_panel.png
 ```
 
-When a screenshot path is provided in headless mode, or when the active renderer/display server cannot expose the real window texture, the harness now fails explicitly instead of warning/skipping.
+If you need a different real-window capture size, pass the flags explicitly:
+
+```bash
+godot4 --path . --script res://scripts/status_panel_harness.gd -- fixtures/status_panel/fixture_valid_basic_authoritative.json artifacts/status_panel.png --window-width 1200 --window-height 2200
+```
+
+When a screenshot path is provided in headless mode, or when the active renderer/display server cannot expose the real window texture, the harness fails explicitly instead of warning/skipping.
