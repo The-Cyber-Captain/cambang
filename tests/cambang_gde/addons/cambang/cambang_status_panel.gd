@@ -648,15 +648,13 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 	var total_native := int(coverage.get("total", 0))
 	var rendered_native := int(coverage.get("rendered", 0))
 	var missing_native := int(coverage.get("missing", 0))
-	var extra_native := int(coverage.get("extra", 0))
-	if missing_native > 0 or extra_native > 0:
+	if missing_native > 0:
 		next_info_lines.append(
-			"Projection gap: native coverage %d/%d rendered (missing=%d; extra=%d)."
+			"Projection gap: native coverage %d/%d rendered (missing=%d)."
 			% [
 				rendered_native,
 				total_native,
 				missing_native,
-				extra_native,
 			]
 		)
 	else:
@@ -2495,23 +2493,11 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 		else:
 			missing_non_destroyed += 1
 
-	var extra_count := 0
-	for native_id in observed_native_id_set.keys():
-		if snapshot_native_records.has(native_id):
-			continue
-		extra_count += 1
-
 	var missing_count := snapshot_native_records.size() - observed_snapshot_native_count
 	var coverage_state := "OK"
 	var coverage_role := "success"
-	if missing_count > 0 and extra_count > 0:
-		coverage_state = "MISMATCH"
-		coverage_role = "error"
-	elif missing_count > 0:
+	if missing_count > 0:
 		coverage_state = "MISSING"
-		coverage_role = "error"
-	elif extra_count > 0:
-		coverage_state = "EXTRA"
 		coverage_role = "error"
 
 	return {
@@ -2520,7 +2506,6 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 		"total": snapshot_native_records.size(),
 		"rendered": observed_snapshot_native_count,
 		"missing": missing_count,
-		"extra": extra_count,
 		"missing_current": missing_current,
 		"missing_prior": missing_prior,
 		"missing_destroyed": missing_destroyed,
