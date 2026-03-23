@@ -17,6 +17,7 @@ var _first_gen := -1
 func _ready() -> void:
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
+	print("RUN: godot public boundary verify")
 
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: snapshot must be NIL before start/baseline")

@@ -2,11 +2,13 @@ extends Node
 
 const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 7000
+const QUIET_SETTLE_MS := 250
 const MIN_UPDATES := 4
 
 var _done := false
 var _quit_requested := false
 var _timer: Timer
+var _settle_timer: Timer
 var _dev_node: CamBANGDevNode
 var _cached_snapshot: Dictionary
 var _cached_version := -1
@@ -17,6 +19,7 @@ var _publish_count := 0
 func _ready() -> void:
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
+	print("RUN: godot snapshot polling/immutability abuse")
 
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -24,6 +27,12 @@ func _ready() -> void:
 	add_child(_timer)
 	_timer.timeout.connect(_on_timeout)
 	_timer.start()
+
+	_settle_timer = Timer.new()
+	_settle_timer.one_shot = true
+	_settle_timer.wait_time = float(QUIET_SETTLE_MS) / 1000.0
+	add_child(_settle_timer)
+	_settle_timer.timeout.connect(_on_settle_timeout)
 
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
@@ -54,6 +63,12 @@ func _process(_delta: float) -> void:
 
 
 func _on_timeout() -> void:
+	_fail("FAIL: snapshot polling/immutability abuse timed out before reaching deterministic completion")
+
+
+func _on_settle_timeout() -> void:
+	if _done:
+		return
 	if _publish_count < MIN_UPDATES:
 		_fail("FAIL: insufficient publishes for polling/immutability abuse")
 		return
@@ -74,6 +89,19 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 		_cached_version = int(snapshot.get("version", -1))
 		var cached_streams: Array = snapshot.get("streams", [])
 		_cached_stream_count = cached_streams.size()
+
+	_arm_settle_timer_if_ready()
+
+
+func _arm_settle_timer_if_ready() -> void:
+	if _done:
+		return
+	if _publish_count < MIN_UPDATES:
+		return
+	if _settle_timer == null or not is_instance_valid(_settle_timer):
+		return
+	_settle_timer.stop()
+	_settle_timer.start()
 
 
 func _ok(msg: String) -> void:
@@ -96,6 +124,8 @@ func _fail(msg: String) -> void:
 func _cleanup_and_quit(code: int) -> void:
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
+	if _settle_timer != null and is_instance_valid(_settle_timer):
+		_settle_timer.stop()
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 	CamBANGServer.stop()
