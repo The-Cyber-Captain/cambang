@@ -159,7 +159,10 @@ func _process(_delta: float) -> void:
 		_last_active_snapshot_meta,
 		false
 	)
-	_render_panel_model(_last_panel_model)
+	var snapshot_for_render: Variant = null
+	if _last_active_panel_is_authoritative:
+		snapshot_for_render = _fetch_snapshot()
+	_render_panel_and_maybe_dump(_last_panel_model, snapshot_for_render)
 
 
 func _reconcile_post_stop_nil_boundary() -> bool:
