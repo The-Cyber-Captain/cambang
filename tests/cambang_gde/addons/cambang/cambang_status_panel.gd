@@ -2020,7 +2020,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		_counter("native_prev", prior_native_objects.size(), 1),
 		_counter("native_dead", native_dead_count, 1),
 	]
-	var provider_phase := provider_native_rec.get("phase", -1)
+	var provider_phase: Variant = provider_native_rec.get("phase", -1)
 	var provider_badges: Array[BadgeModel] = [
 		_badge("info", "published"),
 		_badge("neutral", "native_phase=%s" % _phase_display_label(provider_phase)),
@@ -2090,7 +2090,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
-		var device_phase := rec.get("phase", -1)
+		var device_phase: Variant = rec.get("phase", -1)
 		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(device_phase))]
 		if _phase_is_destroyed(device_phase):
 			device_badges.append(_badge("warning", "destroyed"))
@@ -2105,7 +2105,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
-			var device_native_phase := device_native_rec.get("phase", -1)
+			var device_native_phase: Variant = device_native_rec.get("phase", -1)
 			if _phase_display_label(device_native_phase) != _phase_display_label(device_phase):
 				device_badges.append(_badge("neutral", "native_phase=%s" % _phase_display_label(device_native_phase)))
 			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
@@ -2169,7 +2169,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
-			var stream_phase := rec.get("phase", -1)
+			var stream_phase: Variant = rec.get("phase", -1)
 			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(stream_phase))]
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
@@ -2199,7 +2199,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
-				var stream_native_phase := stream_native_rec.get("phase", -1)
+				var stream_native_phase: Variant = stream_native_rec.get("phase", -1)
 				if _phase_display_label(stream_native_phase) != _phase_display_label(stream_phase):
 					stream_badges.append(_badge("neutral", "native_phase=%s" % _phase_display_label(stream_native_phase)))
 				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
