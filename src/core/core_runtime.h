@@ -10,6 +10,7 @@
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_rig_registry.h"
 #include "core/core_runtime_state.h"
 #include "core/core_spec_state.h"
 #include "core/core_stream_registry.h"
@@ -195,6 +196,16 @@ enum class TryDestroyStreamStatus : uint8_t {
   // These are internal runtime surfaces used by orchestrators that issue provider calls.
   void retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id);
   void retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version);
+  void retain_device_capture_profile(uint64_t device_instance_id,
+                                     uint32_t width,
+                                     uint32_t height,
+                                     uint32_t format,
+                                     uint64_t capture_profile_version);
+  void retain_rig_capture_profile(uint64_t rig_id,
+                                  uint32_t width,
+                                  uint32_t height,
+                                  uint32_t format,
+                                  uint64_t capture_profile_version);
   void retain_imaging_spec_version(uint64_t imaging_spec_version);
 
   // Internal dev visibility: allow the Godot main thread to echo a core-thread
@@ -224,6 +235,7 @@ private:
 
 private:
   CoreThread core_thread_;
+  CoreRigRegistry rigs_;
   CoreDeviceRegistry devices_;
   CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
@@ -253,11 +265,12 @@ private:
   class LatestFrameMailboxSink final : public ICoreFrameSink {
   public:
     explicit LatestFrameMailboxSink(LatestFrameMailbox* mb) : mb_(mb) {}
-    void on_frame(FrameView frame) override {
+    CoreVisibilityPath on_frame(FrameView frame) override {
       if (mb_) {
-        mb_->write_from_core(std::move(frame));
+        return mb_->write_from_core(std::move(frame));
       } else {
         frame.release_now();
+        return CoreVisibilityPath::NONE;
       }
     }
   private:

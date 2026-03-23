@@ -144,3 +144,14 @@ Specifically:
 
 Counters are updated by core prior to sink invocation and remain part of
 the canonical snapshot model.
+
+Visibility-path diagnostics that are retained by core and exported through the
+snapshot are:
+
+- `visibility_frames_presented`
+- `visibility_frames_rejected_unsupported`
+- `visibility_frames_rejected_invalid`
+- `visibility_last_path`
+
+These are sink-neutral stream truth fields. They reflect the current retained
+visibility path disposition without exposing mailbox-local storage internals.

@@ -87,6 +87,23 @@ func _initialize() -> void:
 		_fail("expected exactly one retained generation [2] after authoritative→NIL transition")
 		return
 
+	var retained_provider_entry := _find_entry(rendered_model, "retained_presentation/subtree/0/gen_2/provider/100")
+	if retained_provider_entry == null:
+		_fail("expected retained continuity provider row after authoritative→NIL transition")
+		return
+	if not _entry_has_badge(retained_provider_entry, "continuity-only"):
+		_fail("retained continuity provider row missing continuity-only badge")
+		return
+	if not _entry_info_contains(retained_provider_entry, "continuity only"):
+		_fail("retained continuity provider row missing continuity-only wording")
+		return
+	if not _entry_info_contains(retained_provider_entry, "panel-local"):
+		_fail("retained continuity provider row missing panel-local wording")
+		return
+	if not _entry_info_contains(retained_provider_entry, "not active snapshot truth"):
+		_fail("retained continuity provider row missing not-active-snapshot-truth wording")
+		return
+
 	await _refresh_panel_with_snapshot(panel, server, _authoritative_snapshot(3, 200, 31, 2))
 	if not bool(panel.get("_last_active_panel_is_authoritative")):
 		_fail("panel failed to re-enter authoritative mode for later snapshot B")
@@ -217,6 +234,36 @@ func _collect_entry_ids(model: Variant) -> Array[String]:
 			continue
 		ids.append(str(entry.get("id")))
 	return ids
+
+
+func _find_entry(model: Variant, wanted_id: String) -> Variant:
+	if model == null:
+		return null
+	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
+	for entry in entries:
+		if entry == null:
+			continue
+		if str(entry.get("id")) == wanted_id:
+			return entry
+	return null
+
+
+func _entry_has_badge(entry: Variant, badge_label: String) -> bool:
+	if entry == null:
+		return false
+	for badge in entry.get("badges"):
+		if badge != null and str(badge.get("label")) == badge_label:
+			return true
+	return false
+
+
+func _entry_info_contains(entry: Variant, needle: String) -> bool:
+	if entry == null:
+		return false
+	for line in entry.get("info_lines"):
+		if str(line).find(needle) != -1:
+			return true
+	return false
 
 
 func _fail(message: String) -> void:

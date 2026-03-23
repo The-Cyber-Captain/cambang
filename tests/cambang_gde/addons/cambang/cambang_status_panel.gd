@@ -9,6 +9,8 @@ const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll
 # PROVISIONAL: placeholder until runtime exports authoritative retention-window policy.
 const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
+const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
+const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
 
 
 class PanelModel extends RefCounted:
@@ -20,6 +22,7 @@ class StatusEntryModel extends RefCounted:
 	var parent_id: String = ""
 	var depth: int = 0
 	var label: String = ""
+	var materialized_native_id: int = 0
 	var expanded: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
@@ -106,7 +109,7 @@ var _counts_value: Label
 var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
-var _dev_expanded_by_id: Dictionary = {}
+var _expanded_by_row_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
@@ -175,7 +178,7 @@ func _reconcile_post_stop_nil_boundary() -> bool:
 	var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 	_set_last_active_panel_state(nil_panel, false, {})
 	_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
-	_render_panel_model(_last_panel_model)
+	_render_panel_and_maybe_dump(_last_panel_model, null)
 	return true
 
 
@@ -410,7 +413,7 @@ func _refresh_from_server() -> void:
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
 		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
 	var provider_mode := str(_server.get_provider_mode())
@@ -424,7 +427,7 @@ func _refresh_from_server() -> void:
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
 	if typeof(snapshot) != TYPE_DICTIONARY:
@@ -432,7 +435,7 @@ func _refresh_from_server() -> void:
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		return
 
 	var compat := _check_snapshot_runtime_compat(snapshot)
@@ -444,7 +447,7 @@ func _refresh_from_server() -> void:
 		)
 		_set_last_active_panel_state(compat_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(compat_panel, false, {})
-		_render_panel_model(_last_panel_model)
+		_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		return
 
 	var snapshot_meta := _extract_authoritative_snapshot_meta(snapshot)
@@ -458,19 +461,300 @@ func _refresh_from_server() -> void:
 					snapshot_meta
 				)
 			_last_panel_model = _compose_presented_panel_model(_last_active_panel_model, true, snapshot_meta)
-			_render_panel_model(_last_panel_model)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		"value_refresh":
 			# Stage 1 keeps refresh behavior simple by rebuilding from snapshot,
 			# while preserving explicit category separation for later optimization.
 			var value_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_set_last_active_panel_state(value_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(value_panel, true, snapshot_meta)
-			_render_panel_model(_last_panel_model)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
 		_:
 			var full_panel := _project_snapshot_to_panel_model(snapshot, provider_mode)
 			_set_last_active_panel_state(full_panel, true, snapshot_meta)
 			_last_panel_model = _compose_presented_panel_model(full_panel, true, snapshot_meta)
-			_render_panel_model(_last_panel_model)
+			_render_panel_and_maybe_dump(_last_panel_model, snapshot)
+
+
+func _render_panel_and_maybe_dump(model: PanelModel, snapshot: Variant) -> void:
+	_render_panel_model(model)
+	if _apply_render_native_coverage_summary(snapshot, model):
+		_render_panel_model(model)
+	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
+
+
+func _debug_dump_runtime_evidence_if_enabled(snapshot: Variant, model: PanelModel) -> void:
+	if not OS.has_environment(DEBUG_EVIDENCE_ENV):
+		return
+	var env_value := OS.get_environment(DEBUG_EVIDENCE_ENV).strip_edges().to_lower()
+	if not ["1", "true", "yes", "on"].has(env_value):
+		return
+	print(_build_debug_runtime_evidence_dump(snapshot, model))
+
+
+func _build_debug_runtime_evidence_dump(snapshot: Variant, model: PanelModel) -> String:
+	var lines: Array[String] = []
+	lines.append("=== CAMBANG STATUS PANEL DEBUG EVIDENCE BEGIN ===")
+	lines.append("SNAPSHOT_NATIVE_OBJECTS:")
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		lines.append("  <snapshot unavailable>")
+	else:
+		var snapshot_dict := snapshot as Dictionary
+		var native_objects := snapshot_dict.get("native_objects", [])
+		if typeof(native_objects) != TYPE_ARRAY or native_objects.is_empty():
+			lines.append("  <none>")
+		else:
+			for raw_rec in native_objects:
+				if typeof(raw_rec) != TYPE_DICTIONARY:
+					lines.append("  <non-dictionary native_object>")
+					continue
+				var rec := raw_rec as Dictionary
+				lines.append(
+					"  native_id=%d type=%s phase=%s creation_gen=%s owner_device_instance_id=%s owner_stream_id=%s owner_provider_native_id=%s root_id=%s"
+					% [
+						int(rec.get("native_id", 0)),
+						str(rec.get("type", "")),
+						str(rec.get("phase", "")),
+						str(rec.get("creation_gen", "")),
+						str(rec.get("owner_device_instance_id", "")),
+						str(rec.get("owner_stream_id", "")),
+						str(rec.get("owner_provider_native_id", "")),
+						str(rec.get("root_id", "")),
+					]
+				)
+	lines.append("SNAPSHOT_NATIVE_IDS: %s" % [_sorted_int_keys(_snapshot_native_records(snapshot).keys())])
+	lines.append("PROJECTION_ROWS:")
+	if model == null:
+		lines.append("  <model unavailable>")
+	else:
+		for entry in model.entries:
+			if entry == null:
+				continue
+			lines.append(
+				"  row_id=%s parent_id=%s label=%s materialized_native_id=%d"
+				% [entry.id, entry.parent_id, entry.label, int(entry.materialized_native_id)]
+			)
+	lines.append("PROJECTED_NATIVE_IDS: %s" % [_collect_projected_native_ids(model)])
+	lines.append("RENDERED_NATIVE_IDS: %s" % [_collect_rendered_native_ids(model)])
+	lines.append("VISIBLE_NATIVE_IDS: %s" % [_collect_visible_native_ids(model)])
+	lines.append("RENDERED_ROW_IDS: %s" % [_collect_debug_rendered_row_ids()])
+	lines.append("VISIBLE_ROW_IDS: %s" % [_collect_debug_visible_row_ids()])
+	lines.append("=== CAMBANG STATUS PANEL DEBUG EVIDENCE END ===")
+	return "\n".join(lines)
+
+
+func _collect_debug_rendered_row_ids() -> Array[String]:
+	var row_ids: Array[String] = []
+	if _status_rows == null:
+		return row_ids
+	for child in _status_rows.get_children():
+		if child == null:
+			continue
+		var entry_id := _extract_debug_row_entry_id(child)
+		if entry_id != "":
+			row_ids.append(entry_id)
+	return row_ids
+
+
+func _collect_debug_visible_row_ids() -> Array[String]:
+	var visible_ids: Array[String] = []
+	if _status_rows == null:
+		return visible_ids
+	for child in _status_rows.get_children():
+		if child == null or not bool(child.visible):
+			continue
+		var entry_id := _extract_debug_row_entry_id(child)
+		if entry_id != "":
+			visible_ids.append(entry_id)
+	return visible_ids
+
+
+func _apply_render_native_coverage_summary(snapshot: Variant, model: PanelModel) -> bool:
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY or model == null:
+		return false
+	var provider_entry := _find_current_provider_entry(model)
+	if provider_entry == null:
+		return false
+
+	var snapshot_dict := snapshot as Dictionary
+	var snapshot_gen := int(snapshot_dict.get("gen", -1))
+	var native_objects := snapshot_dict.get("native_objects", [])
+	if typeof(native_objects) != TYPE_ARRAY:
+		return false
+
+	var rendered_native_ids := _collect_rendered_native_ids(model)
+	var coverage := _compute_native_coverage_from_ids(native_objects, rendered_native_ids, snapshot_gen)
+	var next_badges := _badges_with_render_native_coverage(provider_entry.badges, int(coverage.get("missing", 0)) == 0)
+	var next_info_lines := _info_lines_with_render_native_coverage(provider_entry.info_lines, coverage)
+
+	var next_badge_labels := _badge_labels(next_badges)
+	var current_badge_labels := _badge_labels(provider_entry.badges)
+	var changed := next_badge_labels != current_badge_labels or next_info_lines != provider_entry.info_lines
+	if not changed:
+		return false
+
+	provider_entry.badges = next_badges
+	provider_entry.info_lines = next_info_lines
+	_apply_detail_policy_to_entry(provider_entry)
+	return true
+
+
+func _find_current_provider_entry(model: PanelModel) -> StatusEntryModel:
+	if model == null:
+		return null
+	for entry in model.entries:
+		if entry == null:
+			continue
+		if entry.parent_id != "server/main":
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if _has_badge_label(entry, "retained-root"):
+			continue
+		return entry
+	return null
+
+
+func _badges_with_render_native_coverage(existing_badges: Array[BadgeModel], is_ok: bool) -> Array[BadgeModel]:
+	var next_badges: Array[BadgeModel] = []
+	for badge in existing_badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("NATIVE COVERAGE:"):
+			continue
+		next_badges.append(_badge(badge.role, badge.label))
+	next_badges.append(_badge("success" if is_ok else "warning", "NATIVE COVERAGE: %s" % ("OK" if is_ok else "GAP")))
+	return _normalize_badges(next_badges)
+
+
+func _info_lines_with_render_native_coverage(existing_info_lines: Array[String], coverage: Dictionary) -> Array[String]:
+	var next_info_lines: Array[String] = []
+	for line in existing_info_lines:
+		if line.begins_with("native coverage:"):
+			continue
+		if line.begins_with("Projection gap: native coverage"):
+			continue
+		next_info_lines.append(line)
+
+	var total_native := int(coverage.get("total", 0))
+	var rendered_native := int(coverage.get("rendered", 0))
+	var missing_native := int(coverage.get("missing", 0))
+	if missing_native > 0:
+		next_info_lines.append(
+			"Projection gap: native coverage %d/%d rendered (missing=%d; current=%d; prior=%d; destroyed=%d; non-destroyed=%d)."
+			% [
+				rendered_native,
+				total_native,
+				missing_native,
+				int(coverage.get("missing_current", 0)),
+				int(coverage.get("missing_prior", 0)),
+				int(coverage.get("missing_destroyed", 0)),
+				int(coverage.get("missing_non_destroyed", 0)),
+			]
+		)
+	else:
+		next_info_lines.append("native coverage: %d/%d rendered." % [rendered_native, total_native])
+	return next_info_lines
+
+
+func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
+	var labels: Array[String] = []
+	for badge in badges:
+		if badge == null:
+			continue
+		labels.append("%s|%s" % [badge.role, badge.label])
+	return labels
+
+
+func _snapshot_native_records(snapshot: Variant) -> Dictionary:
+	var records := {}
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		return records
+	var native_objects := (snapshot as Dictionary).get("native_objects", [])
+	if typeof(native_objects) != TYPE_ARRAY:
+		return records
+	for item in native_objects:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var rec := item as Dictionary
+		var native_id := int(rec.get("native_id", 0))
+		if native_id <= 0:
+			continue
+		records[native_id] = rec
+	return records
+
+
+func _collect_projected_native_ids(model: PanelModel) -> Array[int]:
+	var ids := {}
+	if model == null:
+		return []
+	for entry in model.entries:
+		if entry == null:
+			continue
+		var native_id := int(entry.materialized_native_id)
+		if native_id <= 0:
+			continue
+		ids[native_id] = true
+	return _sorted_int_keys(ids.keys())
+
+
+func _collect_rendered_native_ids(model: PanelModel) -> Array[int]:
+	var ids := {}
+	if model == null or _status_rows == null:
+		return []
+	var entries_by_id := _entries_by_id(model)
+	for row_id in _collect_debug_rendered_row_ids():
+		var entry: StatusEntryModel = entries_by_id.get(row_id, null)
+		if entry == null:
+			continue
+		var native_id := int(entry.materialized_native_id)
+		if native_id <= 0:
+			continue
+		ids[native_id] = true
+	return _sorted_int_keys(ids.keys())
+
+
+func _collect_visible_native_ids(model: PanelModel) -> Array[int]:
+	var ids := {}
+	if model == null or _status_rows == null:
+		return []
+	var entries_by_id := _entries_by_id(model)
+	for row_id in _collect_debug_visible_row_ids():
+		var entry: StatusEntryModel = entries_by_id.get(row_id, null)
+		if entry == null:
+			continue
+		var native_id := int(entry.materialized_native_id)
+		if native_id <= 0:
+			continue
+		ids[native_id] = true
+	return _sorted_int_keys(ids.keys())
+
+
+func _entries_by_id(model: PanelModel) -> Dictionary:
+	var by_id := {}
+	if model == null:
+		return by_id
+	for entry in model.entries:
+		if entry == null:
+			continue
+		by_id[entry.id] = entry
+	return by_id
+
+
+func _sorted_int_keys(raw_keys: Array) -> Array[int]:
+	var out: Array[int] = []
+	for raw_key in raw_keys:
+		out.append(int(raw_key))
+	out.sort()
+	return out
+
+
+func _extract_debug_row_entry_id(child: Variant) -> String:
+	if child == null:
+		return ""
+	if child.has_method("get_entry_id"):
+		return str(child.call("get_entry_id"))
+	return str(child.get("_entry_id"))
 
 
 func _set_last_active_panel_state(active_panel: PanelModel, is_authoritative_snapshot: bool, snapshot_meta: Dictionary) -> void:
@@ -1044,6 +1328,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			[
 				_badge("warning", "retained"),
 				_badge("warning", "retained-root"),
+				_badge("info", "continuity-only"),
 				_badge("warning", "orphaned"),
 			],
 			[
@@ -1064,11 +1349,13 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
+			cloned_entry.badges.append(_badge("info", "continuity-only"))
 			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif orphan_provider_root_ids.has(source_entry.id):
 			cloned_entry.parent_id = "server/main"
 			cloned_entry.depth = 1
 			cloned_entry.badges.append(_badge("warning", "retained"))
+			cloned_entry.badges.append(_badge("info", "continuity-only"))
 			cloned_entry.badges.append(_badge("warning", "orphaned"))
 			if source_entry.id == primary_orphan_provider_root_id:
 				cloned_entry.badges.append(_badge("warning", "retained-root"))
@@ -1089,7 +1376,8 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
 	var lines: Array[String] = [
-		"Presentation continuity only. Not active snapshot truth.",
+		"Panel-local continuity only. Not active snapshot truth.",
+		"continuity: retained presentation copied from a previously rendered authoritative panel.",
 		"retained_from_gen=%d" % retained.retained_from_gen,
 		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
 		"source version=%d, source topology=%d" % [retained.source_snapshot_version, retained.source_topology_version],
@@ -1245,6 +1533,7 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_counters,
 		cloned_info_lines
 	)
+	cloned.materialized_native_id = source.materialized_native_id
 	cloned.summary_info_lines = source.summary_info_lines.duplicate()
 	cloned.detail_info_lines = source.detail_info_lines.duplicate()
 	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
@@ -1715,6 +2004,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		provider_counters,
 		provider_info_lines
 	)
+	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
 
 	var promoted_native_ids := {}
@@ -1767,7 +2057,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		provider_device_ids_by_instance[instance_id] = device_entry_id
 		var device_phase := int(rec.get("phase", -1))
 		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % device_phase)]
-		var device_info: Array[String] = []
+		var device_info: Array[String] = [
+			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
+				int(rec.get("capture_width", 0)),
+				int(rec.get("capture_height", 0)),
+				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
+				int(rec.get("capture_profile_version", 0)),
+			],
+		]
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
@@ -1780,7 +2077,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
 				% device_matches.size()
 			)
-		panel.entries.append(_entry(
+		var device_entry := _entry(
 			device_entry_id,
 			provider_id,
 			2,
@@ -1791,9 +2088,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("errors", int(rec.get("errors_count", 0)), 1),
+				_counter("still_w", int(rec.get("capture_width", 0)), 4),
+				_counter("still_h", int(rec.get("capture_height", 0)), 4),
 			],
 			device_info
-		))
+		)
+		if device_matches.size() == 1:
+			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
+		panel.entries.append(device_entry)
 
 	var streams_by_device := {}
 	var seen_stream_ids := {}
@@ -1832,7 +2134,29 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_id := int(rec.get("stream_id", 0))
 			var stream_phase := int(rec.get("phase", -1))
 			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % stream_phase)]
-			var stream_info: Array[String] = []
+			var stream_info: Array[String] = [
+				"profile: width=%d height=%d format=%s target_fps_min=%d target_fps_max=%d profile_version=%d" % [
+					int(rec.get("width", 0)),
+					int(rec.get("height", 0)),
+					_format_fourcc_with_raw(int(rec.get("format", 0))),
+					int(rec.get("target_fps_min", 0)),
+					int(rec.get("target_fps_max", 0)),
+					int(rec.get("profile_version", 0)),
+				],
+				"flow: frames_received=%d frames_delivered=%d frames_dropped=%d queue_depth=%d last_frame_ts_ns=%d" % [
+					int(rec.get("frames_received", 0)),
+					int(rec.get("frames_delivered", 0)),
+					int(rec.get("frames_dropped", 0)),
+					int(rec.get("queue_depth", 0)),
+					int(rec.get("last_frame_ts_ns", 0)),
+				],
+				"visibility: visibility_frames_presented=%d visibility_frames_rejected_unsupported=%d visibility_frames_rejected_invalid=%d visibility_last_path=%s" % [
+					int(rec.get("visibility_frames_presented", 0)),
+					int(rec.get("visibility_frames_rejected_unsupported", 0)),
+					int(rec.get("visibility_frames_rejected_invalid", 0)),
+					_visibility_path_display(int(rec.get("visibility_last_path", 0))),
+				],
+			]
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -1845,7 +2169,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
 					% stream_matches.size()
 				)
-			panel.entries.append(_entry(
+			var stream_entry := _entry(
 				"stream/%d" % stream_id,
 				parent_entry_id,
 				3,
@@ -1855,11 +2179,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				stream_badges,
 				[
 					_counter("mode", int(rec.get("mode", 0)), 1),
+					_counter("width", int(rec.get("width", 0)), 4),
+					_counter("height", int(rec.get("height", 0)), 4),
+					_counter("fps_min", int(rec.get("target_fps_min", 0)), 2),
 					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
-					_counter("frames", int(rec.get("frames_received", 0)), 3),
+					_counter("recv", int(rec.get("frames_received", 0)), 3),
+					_counter("deliv", int(rec.get("frames_delivered", 0)), 3),
+					_counter("drop", int(rec.get("frames_dropped", 0)), 3),
+					_counter("queue", int(rec.get("queue_depth", 0)), 2),
+					_counter("shown", int(rec.get("visibility_frames_presented", 0)), 3),
+					_counter("rej_fmt", int(rec.get("visibility_frames_rejected_unsupported", 0)), 2),
+					_counter("rej_inv", int(rec.get("visibility_frames_rejected_invalid", 0)), 2),
 				],
 				stream_info
-			))
+			)
+			if stream_matches.size() == 1:
+				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
+			panel.entries.append(stream_entry)
 
 	var current_grounded_destroyed_device_row_id_by_instance := {}
 	for instance_key in current_non_live_device_native_matches_by_instance.keys():
@@ -1875,7 +2211,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				continue
 			current_grounded_destroyed_device_row_id_by_instance[int(instance_key)] = canonical_device_id
 			promoted_native_ids[destroyed_device_native_id] = true
-			panel.entries.append(_entry(
+			var destroyed_device_entry := _entry(
 				canonical_device_id,
 				provider_id,
 				2,
@@ -1887,7 +2223,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				],
 				[],
 				[]
-			))
+			)
+			destroyed_device_entry.materialized_native_id = destroyed_device_native_id
+			panel.entries.append(destroyed_device_entry)
 		else:
 			issues.append(
 				"Contract ambiguity: current-generation non-live device owner_instance_id=%d has %d matching Device native objects."
@@ -1910,7 +2248,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
 				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
 			promoted_native_ids[destroyed_stream_native_id] = true
-			panel.entries.append(_entry(
+			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
 				3 if destroyed_stream_parent_id != provider_id else 2,
@@ -1922,7 +2260,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				],
 				[],
 				[]
-			))
+			)
+			destroyed_stream_entry.materialized_native_id = destroyed_stream_native_id
+			panel.entries.append(destroyed_stream_entry)
 		else:
 			issues.append(
 				"Contract ambiguity: current-generation non-live stream owner_stream_id=%d has %d matching Stream native objects."
@@ -1937,6 +2277,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues.append("Contract gap: rigs[%d] missing valid rig_id." % i)
 			continue
 		var rig_entry_id := "rig/%d" % rig_id
+		var rig_info: Array[String] = [
+			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
+				int(rec.get("capture_width", 0)),
+				int(rec.get("capture_height", 0)),
+				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
+				int(rec.get("capture_profile_version", 0)),
+			],
+		]
 		panel.entries.append(_entry(
 			rig_entry_id,
 			provider_id,
@@ -1948,8 +2296,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+				_counter("still_w", int(rec.get("capture_width", 0)), 4),
+				_counter("still_h", int(rec.get("capture_height", 0)), 4),
 			],
-			[]
+			rig_info
 		))
 
 		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
@@ -2024,9 +2374,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			"retained prior-generation native objects",
 			true,
 			true,
-			[_badge("warning", "retained")],
+			[
+				_badge("warning", "retained"),
+				_badge("info", "prior-gen"),
+			],
 			[_counter("count", prior_native_objects.size(), 1)],
-			[]
+			["truth: authoritative prior-generation snapshot truth retained in the current snapshot."]
 		))
 		for i in range(prior_native_objects.size()):
 			var rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
@@ -2095,6 +2448,66 @@ func _partition_native_objects_by_generation(snapshot_gen: int, native_objects: 
 	return {"current": current, "prior": prior}
 
 
+func _compute_native_coverage_from_ids(native_objects: Array, observed_native_ids: Array[int], snapshot_gen: int) -> Dictionary:
+	var snapshot_native_records := {}
+	for item in native_objects:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var rec := item as Dictionary
+		var native_id := int(rec.get("native_id", 0))
+		if native_id <= 0:
+			continue
+		snapshot_native_records[native_id] = rec
+
+	var observed_native_id_set := {}
+	for native_id in observed_native_ids:
+		if int(native_id) <= 0:
+			continue
+		observed_native_id_set[int(native_id)] = true
+
+	var observed_snapshot_native_count := 0
+	var missing_current := 0
+	var missing_prior := 0
+	var missing_destroyed := 0
+	var missing_non_destroyed := 0
+	for native_id in snapshot_native_records.keys():
+		if observed_native_id_set.has(native_id):
+			observed_snapshot_native_count += 1
+			continue
+		var rec: Dictionary = snapshot_native_records[native_id]
+		var creation_gen := int(rec.get("creation_gen", snapshot_gen))
+		if creation_gen == snapshot_gen:
+			missing_current += 1
+		elif creation_gen < snapshot_gen:
+			missing_prior += 1
+		else:
+			missing_current += 1
+
+		if int(rec.get("phase", -1)) == 3:
+			missing_destroyed += 1
+		else:
+			missing_non_destroyed += 1
+
+	return {
+		"total": snapshot_native_records.size(),
+		"rendered": observed_snapshot_native_count,
+		"missing": snapshot_native_records.size() - observed_snapshot_native_count,
+		"missing_current": missing_current,
+		"missing_prior": missing_prior,
+		"missing_destroyed": missing_destroyed,
+		"missing_non_destroyed": missing_non_destroyed,
+	}
+
+
+func _find_panel_entry_by_id(panel: PanelModel, entry_id: String) -> StatusEntryModel:
+	if panel == null:
+		return null
+	for entry in panel.entries:
+		if entry != null and entry.id == entry_id:
+			return entry
+	return null
+
+
 func _native_object_is_current_gen(rec: Dictionary, snapshot_gen: int, issues: Array[String], path: String) -> bool:
 	if not rec.has("creation_gen"):
 		issues.append("Contract gap: %s missing creation_gen; treating as prior-generation retained record." % path)
@@ -2120,9 +2533,10 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 	var creation_gen_text := "unknown"
 	if rec.has("creation_gen"):
 		creation_gen_text = str(rec.get("creation_gen"))
+	info_lines.append("truth: authoritative prior-generation snapshot truth.")
 	info_lines.append("Retained record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
 	if int(rec.get("phase", -1)) == 3:
-		info_lines.append("Retained DESTROYED record from prior generation.")
+		info_lines.append("destroyed: authoritative prior-generation snapshot truth.")
 
 
 func _build_native_object_entry(
@@ -2188,11 +2602,13 @@ func _build_native_object_entry(
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	if is_prior_generation:
+		native_badges.append(_badge("info", "prior-gen"))
 	var native_counters: Array[CounterModel] = [
 		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
 		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
 	]
-	return _entry(
+	var native_entry := _entry(
 		row_id,
 		parent_id,
 		target_depth,
@@ -2203,6 +2619,8 @@ func _build_native_object_entry(
 		native_counters,
 		info_lines
 	)
+	native_entry.materialized_native_id = native_id
+	return native_entry
 
 
 func _ensure_expandability(panel: PanelModel) -> void:
@@ -2212,12 +2630,18 @@ func _ensure_expandability(panel: PanelModel) -> void:
 			continue
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
-		var has_detail_payload := not e.detail_info_lines.is_empty()
-		for counter in e.counters:
-			if counter.visibility == "detail":
-				has_detail_payload = true
-				break
-		e.can_expand = int(child_counts.get(e.id, 0)) > 0 or has_detail_payload
+		var child_count := int(child_counts.get(e.id, 0))
+		e.can_expand = child_count > 0
+		if child_count > 0 and _should_default_expand_entry(e):
+			e.expanded = true
+
+
+func _should_default_expand_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	if entry.id.begins_with("stream/"):
+		return true
+	return false
 
 
 func _depth_for_parent(parent_id: String) -> int:
@@ -2307,17 +2731,15 @@ func _render_panel_model(model: PanelModel) -> void:
 		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
 
 	for entry_model in model.entries:
-		if not _dev_expanded_by_id.has(entry_model.id):
-			_dev_expanded_by_id[entry_model.id] = entry_model.expanded
-		entry_model.expanded = bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded))
-
-		if not _is_entry_visible(entry_model):
-			continue
+		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
+		var row_visible := _is_entry_visible(entry_model)
+		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
 		var entry := STATUS_ENTRY_SCENE.instantiate()
 		_status_rows.add_child(entry)
 		entry.set_style(style)
 		entry.set_model(entry_model)
+		entry.visible = row_visible
 		if entry.has_signal("disclosure_toggled"):
 			entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
 
@@ -2328,7 +2750,7 @@ func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
 
 	var current_parent := entry_model.parent_id
 	while current_parent != "":
-		if not bool(_dev_expanded_by_id.get(current_parent, true)):
+		if not bool(_expanded_by_row_id.get(current_parent, true)):
 			return false
 		current_parent = _find_parent_id(current_parent)
 	return true
@@ -2338,12 +2760,94 @@ func _find_parent_id(entry_id: String) -> String:
 	return str(_dev_parent_by_id.get(entry_id, ""))
 
 
-func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
-	_dev_expanded_by_id[entry_id] = expanded
+func _on_entry_disclosure_toggled(entry_id: String, _expanded: bool) -> void:
+	var next_expanded := not _current_expanded_state_for_row(entry_id)
+	_debug_log_disclosure_click(entry_id, next_expanded)
+	_expanded_by_row_id[entry_id] = next_expanded
 	if _last_panel_model != null:
 		_render_panel_model(_last_panel_model)
 	else:
 		_render_panel_model(_build_fake_panel_model())
+
+
+func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
+	if entry_model == null:
+		return false
+	if not entry_model.can_expand:
+		return false
+	if _expanded_by_row_id.has(entry_model.id):
+		return bool(_expanded_by_row_id[entry_model.id])
+	return entry_model.expanded
+
+
+func _current_expanded_state_for_row(entry_id: String) -> bool:
+	if _expanded_by_row_id.has(entry_id):
+		return bool(_expanded_by_row_id[entry_id])
+	if _last_panel_model == null:
+		return false
+	for entry_model in _last_panel_model.entries:
+		if entry_model != null and entry_model.id == entry_id:
+			return _resolved_entry_expanded_state(entry_model)
+	return false
+
+
+func _debug_log_disclosure_click(entry_id: String, expanded: bool) -> void:
+	if not _debug_disclosure_enabled():
+		return
+	var previous_expanded := _current_expanded_state_for_row(entry_id)
+	print(
+		"[CAMBANG disclosure click] row_id=%s before=%s after=%s persisted_before=%s persisted_after=%s"
+		% [
+			entry_id,
+			previous_expanded,
+			expanded,
+			_expanded_by_row_id.has(entry_id),
+			true,
+		]
+	)
+
+
+func _debug_log_disclosure_render_state(entry_model: StatusEntryModel, row_visible: bool, model: PanelModel) -> void:
+	if not _debug_disclosure_enabled() or entry_model == null:
+		return
+	if not entry_model.id.begins_with("stream/"):
+		return
+	var hidden_child_ids: Array[String] = []
+	if not entry_model.expanded:
+		for child_entry in model.entries:
+			if child_entry == null:
+				continue
+			if child_entry.parent_id == entry_model.id:
+				hidden_child_ids.append(child_entry.id)
+	print(
+		"[CAMBANG disclosure render] row_id=%s model_expanded=%s persisted_expanded=%s persisted_override=%s row_visible=%s child_rows=%d hidden_child_rows=%s"
+		% [
+			entry_model.id,
+			entry_model.expanded,
+			bool(_expanded_by_row_id.get(entry_model.id, entry_model.expanded)),
+			_expanded_by_row_id.has(entry_model.id),
+			row_visible,
+			_count_direct_child_rows(model, entry_model.id),
+			hidden_child_ids,
+		]
+	)
+
+
+func _count_direct_child_rows(model: PanelModel, parent_id: String) -> int:
+	if model == null:
+		return 0
+	var count := 0
+	for entry in model.entries:
+		if entry != null and entry.parent_id == parent_id:
+			count += 1
+	return count
+
+
+func _debug_disclosure_enabled() -> bool:
+	if not OS.has_environment(DEBUG_DISCLOSURE_ENV):
+		return false
+	var env_value := OS.get_environment(DEBUG_DISCLOSURE_ENV).strip_edges().to_lower()
+	return ["1", "true", "yes", "on"].has(env_value)
 
 
 func _entry(
@@ -2465,11 +2969,20 @@ func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool
 		return false
 	if _entry_kind(entry) == "retained":
 		return (
-			line.begins_with("Presentation continuity only.")
+			line.begins_with("Panel-local continuity only.")
 			or line.begins_with("retained_age_msec=")
 			or line.begins_with("retained_expires_in_msec=")
 			or line.begins_with("retained_expiry=")
+			or line.begins_with("continuity:")
 		)
+	if (
+		line.begins_with("profile:")
+		or line.begins_with("flow:")
+		or line.begins_with("visibility:")
+		or line.begins_with("still:")
+		or line.begins_with("truth:")
+	):
+		return true
 	if entry.id == "server/main":
 		return true
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
@@ -2501,7 +3014,7 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"fps_max", "native_all", "native_cur", "buffers", "source_version":
+		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "still_w", "still_h", "native_all", "native_cur", "buffers", "source_version":
 			return "summary"
 		"frames", "bytes", "native_prev", "native_dead", "source_topology":
 			return "detail"
@@ -2573,3 +3086,37 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			_:
 				return ""
 	return ""
+
+
+func _format_fourcc_with_raw(value: int) -> String:
+	var raw := int(value)
+	return "%s (%d)" % [_fourcc_to_text(raw), raw]
+
+
+func _fourcc_to_text(value: int) -> String:
+	if value == 0:
+		return "0x00000000"
+	var chars: Array[String] = []
+	for shift in [0, 8, 16, 24]:
+		var code: int = int((value >> shift) & 0xFF)
+		if code >= 32 and code <= 126:
+			chars.append(char(code))
+		else:
+			chars.append(".")
+	return "'%s'" % "".join(chars)
+
+
+func _visibility_path_display(value: int) -> String:
+	match value:
+		0:
+			return "NONE (0)"
+		1:
+			return "RGBA_DIRECT (1)"
+		2:
+			return "BGRA_SWIZZLED (2)"
+		3:
+			return "REJECTED_UNSUPPORTED (3)"
+		4:
+			return "REJECTED_INVALID (4)"
+		_:
+			return "UNKNOWN (%d)" % value

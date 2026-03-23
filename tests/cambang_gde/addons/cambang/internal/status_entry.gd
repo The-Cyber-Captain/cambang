@@ -49,27 +49,35 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	visible = true
 
 	_entry_id = model.id
+	var is_expandable := model.can_expand
+	var effective_expanded := (model.expanded if is_expandable else true)
 	_indent_region.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
 	_name_label.text = model.label
 
-	_disclosure_button.visible = model.can_expand
-	_disclosure_placeholder.visible = not model.can_expand
-	_disclosure_button.button_pressed = model.expanded
-	_disclosure_indicator.set_expanded(model.expanded)
+	_disclosure_button.visible = is_expandable
+	_disclosure_button.disabled = not is_expandable
+	_disclosure_placeholder.visible = not is_expandable
+	_disclosure_indicator.visible = is_expandable
+	_disclosure_button.set_pressed_no_signal(model.expanded if is_expandable else false)
+	_disclosure_indicator.set_expanded(effective_expanded)
 	_disclosure_button.tooltip_text = _disclosure_tooltip_for_model(model)
 
 	_apply_row_palette(model)
 	_render_badges(_badges_for_render(model))
-	_render_counters(model.counters, model.expanded)
+	_render_counters(model.counters, effective_expanded)
 	_render_info_lines(
 		model.depth,
 		model.summary_info_lines,
 		model.detail_info_lines,
 		model.anomaly_info_lines,
-		model.expanded
+		effective_expanded
 	)
 	_apply_horizontal_layout_policy()
 	_apply_stable_row_metrics()
+
+
+func get_entry_id() -> String:
+	return _entry_id
 
 
 func _apply_style() -> void:
@@ -650,6 +658,10 @@ func _badge_display_label(raw_label: String) -> String:
 			return "RETAINED"
 		"retained-root":
 			return "RETAINED ROOT"
+		"prior-gen":
+			return "PRIOR GEN"
+		"continuity-only":
+			return "CONTINUITY ONLY"
 		"fallback":
 			return "FALLBACK"
 		"contract-gap":
@@ -729,6 +741,8 @@ func _count_detail_counters(counters: Array[CamBANGStatusPanel.CounterModel]) ->
 
 
 func _on_disclosure_pressed() -> void:
+	if _disclosure_button == null or _disclosure_button.disabled or not _disclosure_button.visible:
+		return
 	_disclosure_indicator.set_expanded(_disclosure_button.button_pressed)
 	disclosure_toggled.emit(_entry_id, _disclosure_button.button_pressed)
 

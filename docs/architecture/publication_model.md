@@ -241,6 +241,15 @@ Interpretation:
 
 `topology_version` never changes without `version` also changing.
 
+### 7.4 Configuration and Versioning
+
+- Changes to applied capture profile fields are ordinary runtime truth changes.
+- These changes participate in normal snapshot dirtying and publication.
+- They may advance `version` at the same cadence as other runtime metrics.
+- They must NOT increment `topology_version` unless structure changes.
+- There is no special publication mechanism for configuration changes.
+- Applied profile updates use the same dirty/publication path as all other snapshot state.
+
 ---
 
 ## 8. Consumer interpretation

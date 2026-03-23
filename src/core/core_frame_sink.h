@@ -9,6 +9,14 @@
 
 namespace cambang {
 
+enum class CoreVisibilityPath : uint8_t {
+  NONE = 0,
+  RGBA_DIRECT = 1,
+  BGRA_SWIZZLED = 2,
+  REJECTED_UNSUPPORTED = 3,
+  REJECTED_INVALID = 4,
+};
+
 // Core-thread frame sink hook.
 //
 // Called by CoreDispatcher on the core thread when consuming provider-frame commands.
@@ -19,7 +27,7 @@ namespace cambang {
 class ICoreFrameSink {
 public:
   virtual ~ICoreFrameSink() = default;
-  virtual void on_frame(FrameView frame) = 0;
+  virtual CoreVisibilityPath on_frame(FrameView frame) = 0;
 };
 
 } // namespace cambang

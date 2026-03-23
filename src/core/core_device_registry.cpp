@@ -26,6 +26,24 @@ bool CoreDeviceRegistry::set_camera_spec_version(uint64_t device_instance_id, ui
   return true;
 }
 
+bool CoreDeviceRegistry::retain_capture_profile(uint64_t device_instance_id,
+                                                uint32_t width,
+                                                uint32_t height,
+                                                uint32_t format,
+                                                uint64_t capture_profile_version) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  auto& rec = devices_[device_instance_id];
+  rec.device_instance_id = device_instance_id;
+  rec.capture_width = width;
+  rec.capture_height = height;
+  rec.capture_format = format;
+  rec.capture_profile_version = capture_profile_version;
+  return true;
+}
+
 bool CoreDeviceRegistry::set_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
   if (device_instance_id == 0) {
     return false;

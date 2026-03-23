@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 
+#include "core/core_frame_sink.h"
 #include "core/rgba_frame.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
@@ -55,7 +56,7 @@ public:
   // Core-thread write.
   // Copies bytes into an owned RGBA8 buffer, then releases the provider payload
   // immediately (deterministic release semantics).
-  void write_from_core(FrameView frame);
+  CoreVisibilityPath write_from_core(FrameView frame);
 
   // Read a coherent snapshot if there is a new frame since last_seq.
   // Returns true and populates out if changed.

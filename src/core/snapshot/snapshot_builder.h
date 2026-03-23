@@ -7,6 +7,7 @@
 namespace cambang {
 
 class CoreDeviceRegistry;
+class CoreRigRegistry;
 class CoreStreamRegistry;
 class ProviderCallbackIngress;
 class CoreNativeObjectRegistry;
@@ -19,6 +20,7 @@ class SnapshotBuilder final {
 public:
     struct Inputs {
         const CoreDeviceRegistry* devices = nullptr;
+        const CoreRigRegistry* rigs = nullptr;
         const CoreStreamRegistry* streams = nullptr;
         // Provider ingress stats may be used for queue_depth in future.
         const ProviderCallbackIngress* ingress = nullptr;
@@ -34,7 +36,7 @@ public:
 
     // Topology signature used to decide when topology_version increments.
     // This is deliberately simple in v1 scaffolding: it tracks existence of
-    // device instances and streams by ID.
+    // rigs, device instances, and streams by ID.
     uint64_t compute_topology_signature(const Inputs& in) const;
 };
 

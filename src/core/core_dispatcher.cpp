@@ -168,10 +168,13 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       FrameView frame = std::move(p.frame);
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
-      frame_sink_->on_frame(std::move(frame));
+      const CoreVisibilityPath visibility_path = frame_sink_->on_frame(std::move(frame));
       stats_.frames_released++;
       if (streams_) {
         streams_->on_frame_released(sid);
+        if (streams_->on_visibility_path(sid, visibility_path)) {
+          relevant_state_changed_ = true;
+        }
       }
     } else {
       // No sink configured: release-on-drop and count as dropped (not delivered).
