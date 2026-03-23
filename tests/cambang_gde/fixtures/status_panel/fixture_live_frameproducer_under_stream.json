@@ -34,7 +34,7 @@
     },
     "required_info_substrings_by_row": {
       "provider/100": [
-        "native coverage: 4/4 projected."
+        "native coverage: 4/4 rendered."
       ],
       "frameproducer/103": [
         "FrameProducer owner_stream_id=1.",

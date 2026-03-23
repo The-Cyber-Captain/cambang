@@ -477,6 +477,8 @@ func _refresh_from_server() -> void:
 
 func _render_panel_and_maybe_dump(model: PanelModel, snapshot: Variant) -> void:
 	_render_panel_model(model)
+	if _apply_render_native_coverage_summary(snapshot, model):
+		_render_panel_model(model)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
 
 
@@ -519,6 +521,7 @@ func _build_debug_runtime_evidence_dump(snapshot: Variant, model: PanelModel) ->
 						str(rec.get("root_id", "")),
 					]
 				)
+	lines.append("SNAPSHOT_NATIVE_IDS: %s" % [_sorted_int_keys(_snapshot_native_records(snapshot).keys())])
 	lines.append("PROJECTION_ROWS:")
 	if model == null:
 		lines.append("  <model unavailable>")
@@ -530,6 +533,9 @@ func _build_debug_runtime_evidence_dump(snapshot: Variant, model: PanelModel) ->
 				"  row_id=%s parent_id=%s label=%s materialized_native_id=%d"
 				% [entry.id, entry.parent_id, entry.label, int(entry.materialized_native_id)]
 			)
+	lines.append("PROJECTED_NATIVE_IDS: %s" % [_collect_projected_native_ids(model)])
+	lines.append("RENDERED_NATIVE_IDS: %s" % [_collect_rendered_native_ids(model)])
+	lines.append("VISIBLE_NATIVE_IDS: %s" % [_collect_visible_native_ids(model)])
 	lines.append("RENDERED_ROW_IDS: %s" % [_collect_debug_rendered_row_ids()])
 	lines.append("VISIBLE_ROW_IDS: %s" % [_collect_debug_visible_row_ids()])
 	lines.append("=== CAMBANG STATUS PANEL DEBUG EVIDENCE END ===")
@@ -560,6 +566,186 @@ func _collect_debug_visible_row_ids() -> Array[String]:
 		if entry_id != "":
 			visible_ids.append(entry_id)
 	return visible_ids
+
+
+func _apply_render_native_coverage_summary(snapshot: Variant, model: PanelModel) -> bool:
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY or model == null:
+		return false
+	var provider_entry := _find_current_provider_entry(model)
+	if provider_entry == null:
+		return false
+
+	var snapshot_dict := snapshot as Dictionary
+	var snapshot_gen := int(snapshot_dict.get("gen", -1))
+	var native_objects := snapshot_dict.get("native_objects", [])
+	if typeof(native_objects) != TYPE_ARRAY:
+		return false
+
+	var rendered_native_ids := _collect_rendered_native_ids(model)
+	var coverage := _compute_native_coverage_from_ids(native_objects, rendered_native_ids, snapshot_gen)
+	var next_badges := _badges_with_render_native_coverage(provider_entry.badges, int(coverage.get("missing", 0)) == 0)
+	var next_info_lines := _info_lines_with_render_native_coverage(provider_entry.info_lines, coverage)
+
+	var next_badge_labels := _badge_labels(next_badges)
+	var current_badge_labels := _badge_labels(provider_entry.badges)
+	var changed := next_badge_labels != current_badge_labels or next_info_lines != provider_entry.info_lines
+	if not changed:
+		return false
+
+	provider_entry.badges = next_badges
+	provider_entry.info_lines = next_info_lines
+	_apply_detail_policy_to_entry(provider_entry)
+	return true
+
+
+func _find_current_provider_entry(model: PanelModel) -> StatusEntryModel:
+	if model == null:
+		return null
+	for entry in model.entries:
+		if entry == null:
+			continue
+		if entry.parent_id != "server/main":
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if _has_badge_label(entry, "retained-root"):
+			continue
+		return entry
+	return null
+
+
+func _badges_with_render_native_coverage(existing_badges: Array[BadgeModel], is_ok: bool) -> Array[BadgeModel]:
+	var next_badges: Array[BadgeModel] = []
+	for badge in existing_badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("NATIVE COVERAGE:"):
+			continue
+		next_badges.append(_badge(badge.role, badge.label))
+	next_badges.append(_badge("success" if is_ok else "warning", "NATIVE COVERAGE: %s" % ("OK" if is_ok else "GAP")))
+	return _normalize_badges(next_badges)
+
+
+func _info_lines_with_render_native_coverage(existing_info_lines: Array[String], coverage: Dictionary) -> Array[String]:
+	var next_info_lines: Array[String] = []
+	for line in existing_info_lines:
+		if line.begins_with("native coverage:"):
+			continue
+		if line.begins_with("Projection gap: native coverage"):
+			continue
+		next_info_lines.append(line)
+
+	var total_native := int(coverage.get("total", 0))
+	var rendered_native := int(coverage.get("rendered", 0))
+	var missing_native := int(coverage.get("missing", 0))
+	if missing_native > 0:
+		next_info_lines.append(
+			"Projection gap: native coverage %d/%d rendered (missing=%d; current=%d; prior=%d; destroyed=%d; non-destroyed=%d)."
+			% [
+				rendered_native,
+				total_native,
+				missing_native,
+				int(coverage.get("missing_current", 0)),
+				int(coverage.get("missing_prior", 0)),
+				int(coverage.get("missing_destroyed", 0)),
+				int(coverage.get("missing_non_destroyed", 0)),
+			]
+		)
+	else:
+		next_info_lines.append("native coverage: %d/%d rendered." % [rendered_native, total_native])
+	return next_info_lines
+
+
+func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
+	var labels: Array[String] = []
+	for badge in badges:
+		if badge == null:
+			continue
+		labels.append("%s|%s" % [badge.role, badge.label])
+	return labels
+
+
+func _snapshot_native_records(snapshot: Variant) -> Dictionary:
+	var records := {}
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		return records
+	var native_objects := (snapshot as Dictionary).get("native_objects", [])
+	if typeof(native_objects) != TYPE_ARRAY:
+		return records
+	for item in native_objects:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var rec := item as Dictionary
+		var native_id := int(rec.get("native_id", 0))
+		if native_id <= 0:
+			continue
+		records[native_id] = rec
+	return records
+
+
+func _collect_projected_native_ids(model: PanelModel) -> Array[int]:
+	var ids := {}
+	if model == null:
+		return []
+	for entry in model.entries:
+		if entry == null:
+			continue
+		var native_id := int(entry.materialized_native_id)
+		if native_id <= 0:
+			continue
+		ids[native_id] = true
+	return _sorted_int_keys(ids.keys())
+
+
+func _collect_rendered_native_ids(model: PanelModel) -> Array[int]:
+	var ids := {}
+	if model == null or _status_rows == null:
+		return []
+	var entries_by_id := _entries_by_id(model)
+	for row_id in _collect_debug_rendered_row_ids():
+		var entry: StatusEntryModel = entries_by_id.get(row_id, null)
+		if entry == null:
+			continue
+		var native_id := int(entry.materialized_native_id)
+		if native_id <= 0:
+			continue
+		ids[native_id] = true
+	return _sorted_int_keys(ids.keys())
+
+
+func _collect_visible_native_ids(model: PanelModel) -> Array[int]:
+	var ids := {}
+	if model == null or _status_rows == null:
+		return []
+	var entries_by_id := _entries_by_id(model)
+	for row_id in _collect_debug_visible_row_ids():
+		var entry: StatusEntryModel = entries_by_id.get(row_id, null)
+		if entry == null:
+			continue
+		var native_id := int(entry.materialized_native_id)
+		if native_id <= 0:
+			continue
+		ids[native_id] = true
+	return _sorted_int_keys(ids.keys())
+
+
+func _entries_by_id(model: PanelModel) -> Dictionary:
+	var by_id := {}
+	if model == null:
+		return by_id
+	for entry in model.entries:
+		if entry == null:
+			continue
+		by_id[entry.id] = entry
+	return by_id
+
+
+func _sorted_int_keys(raw_keys: Array) -> Array[int]:
+	var out: Array[int] = []
+	for raw_key in raw_keys:
+		out.append(int(raw_key))
+	out.sort()
+	return out
 
 
 func _extract_debug_row_entry_id(child: Variant) -> String:
@@ -2228,7 +2414,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues
 		))
 
-	_apply_native_coverage_summary(panel, provider_id, native_objects, snapshot_gen)
 	_ensure_expandability(panel)
 	return panel
 
@@ -2262,43 +2447,7 @@ func _partition_native_objects_by_generation(snapshot_gen: int, native_objects: 
 	return {"current": current, "prior": prior}
 
 
-func _apply_native_coverage_summary(
-		panel: PanelModel,
-		provider_id: String,
-		native_objects: Array,
-		snapshot_gen: int
-	) -> void:
-	if panel == null or provider_id.is_empty():
-		return
-	var provider_entry := _find_panel_entry_by_id(panel, provider_id)
-	if provider_entry == null:
-		return
-
-	var coverage := _compute_native_coverage(panel.entries, native_objects, snapshot_gen)
-	var total_native := int(coverage.get("total", 0))
-	var projected_native := int(coverage.get("projected", 0))
-	var missing_native := int(coverage.get("missing", 0))
-	if missing_native > 0:
-		provider_entry.badges.append(_badge("warning", "NATIVE COVERAGE: GAP"))
-		provider_entry.info_lines.append(
-			"Projection gap: native coverage %d/%d projected (missing=%d; current=%d; prior=%d; destroyed=%d; non-destroyed=%d)."
-			% [
-				projected_native,
-				total_native,
-				missing_native,
-				int(coverage.get("missing_current", 0)),
-				int(coverage.get("missing_prior", 0)),
-				int(coverage.get("missing_destroyed", 0)),
-				int(coverage.get("missing_non_destroyed", 0)),
-			]
-		)
-	else:
-		provider_entry.badges.append(_badge("success", "NATIVE COVERAGE: OK"))
-		provider_entry.info_lines.append("native coverage: %d/%d projected." % [projected_native, total_native])
-	provider_entry.badges = _normalize_badges(provider_entry.badges)
-
-
-func _compute_native_coverage(entries: Array[StatusEntryModel], native_objects: Array, snapshot_gen: int) -> Dictionary:
+func _compute_native_coverage_from_ids(native_objects: Array, observed_native_ids: Array[int], snapshot_gen: int) -> Dictionary:
 	var snapshot_native_records := {}
 	for item in native_objects:
 		if typeof(item) != TYPE_DICTIONARY:
@@ -2309,21 +2458,20 @@ func _compute_native_coverage(entries: Array[StatusEntryModel], native_objects: 
 			continue
 		snapshot_native_records[native_id] = rec
 
-	var projected_native_ids := {}
-	for entry in entries:
-		var projected_native_id := int(entry.materialized_native_id) if entry != null else 0
-		if projected_native_id <= 0:
+	var observed_native_id_set := {}
+	for native_id in observed_native_ids:
+		if int(native_id) <= 0:
 			continue
-		projected_native_ids[projected_native_id] = true
+		observed_native_id_set[int(native_id)] = true
 
-	var projected_snapshot_native_count := 0
+	var observed_snapshot_native_count := 0
 	var missing_current := 0
 	var missing_prior := 0
 	var missing_destroyed := 0
 	var missing_non_destroyed := 0
 	for native_id in snapshot_native_records.keys():
-		if projected_native_ids.has(native_id):
-			projected_snapshot_native_count += 1
+		if observed_native_id_set.has(native_id):
+			observed_snapshot_native_count += 1
 			continue
 		var rec: Dictionary = snapshot_native_records[native_id]
 		var creation_gen := int(rec.get("creation_gen", snapshot_gen))
@@ -2341,8 +2489,8 @@ func _compute_native_coverage(entries: Array[StatusEntryModel], native_objects: 
 
 	return {
 		"total": snapshot_native_records.size(),
-		"projected": projected_snapshot_native_count,
-		"missing": snapshot_native_records.size() - projected_snapshot_native_count,
+		"rendered": observed_snapshot_native_count,
+		"missing": snapshot_native_records.size() - observed_snapshot_native_count,
 		"missing_current": missing_current,
 		"missing_prior": missing_prior,
 		"missing_destroyed": missing_destroyed,
@@ -2590,14 +2738,13 @@ func _render_panel_model(model: PanelModel) -> void:
 		if not _dev_expanded_by_id.has(entry_model.id):
 			_dev_expanded_by_id[entry_model.id] = entry_model.expanded
 		entry_model.expanded = bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded))
-
-		if not _is_entry_visible(entry_model):
-			continue
+		var row_visible := _is_entry_visible(entry_model)
 
 		var entry := STATUS_ENTRY_SCENE.instantiate()
 		_status_rows.add_child(entry)
 		entry.set_style(style)
 		entry.set_model(entry_model)
+		entry.visible = row_visible
 		if entry.has_signal("disclosure_toggled"):
 			entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
 
