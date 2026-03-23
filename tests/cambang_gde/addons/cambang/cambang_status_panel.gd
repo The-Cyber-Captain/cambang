@@ -11,7 +11,6 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
-const DEBUG_ROW_LIFECYCLE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_ROW_LIFECYCLE"
 
 
 class PanelModel extends RefCounted:
@@ -2786,7 +2785,7 @@ func _reconcile_row_nodes(
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
 
-		var bound_row_id := entry.get_entry_id()
+		var bound_row_id: String = str(entry.get_entry_id())
 		if bound_row_id != "" and bound_row_id != row_id:
 			if not allow_create_remove:
 				_debug_log_row_reconcile_fallback(
@@ -2835,7 +2834,7 @@ func _value_refresh_row_reconcile_mismatch(model: PanelModel) -> String:
 		var mapped_entry = _row_nodes_by_id.get(entry_model.id, null)
 		if mapped_entry == null or not is_instance_valid(mapped_entry):
 			return "invalid persisted row node for row_id=%s" % entry_model.id
-		var mapped_entry_id := mapped_entry.get_entry_id()
+		var mapped_entry_id: String = str(mapped_entry.get_entry_id())
 		if mapped_entry_id != "" and mapped_entry_id != entry_model.id:
 			return "persisted row node mismatch for row_id=%s actual=%s" % [entry_model.id, mapped_entry_id]
 		if mapped_entry.get_parent() != _status_rows:
@@ -2958,20 +2957,13 @@ func _debug_disclosure_enabled() -> bool:
 	return ["1", "true", "yes", "on"].has(env_value)
 
 
-func _debug_row_lifecycle_enabled() -> bool:
-	if not OS.has_environment(DEBUG_ROW_LIFECYCLE_ENV):
-		return false
-	var env_value := OS.get_environment(DEBUG_ROW_LIFECYCLE_ENV).strip_edges().to_lower()
-	return ["1", "true", "yes", "on"].has(env_value)
-
-
 func _debug_log_row_lifecycle(
 		entry_model: StatusEntryModel,
 		entry,
 		created: bool,
 		update_category: String
 	) -> void:
-	if not _debug_row_lifecycle_enabled():
+	if not _debug_disclosure_enabled():
 		return
 	if entry_model == null or entry == null:
 		return
@@ -2990,7 +2982,7 @@ func _debug_log_row_lifecycle(
 
 
 func _debug_log_row_reconcile_fallback(model: PanelModel, reason: String) -> void:
-	if not _debug_row_lifecycle_enabled():
+	if not _debug_disclosure_enabled():
 		return
 	var row_count := 0
 	if model != null:
