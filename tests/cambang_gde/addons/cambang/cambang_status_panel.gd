@@ -10,6 +10,7 @@ const TOUCH_SCROLL_SCRIPT := preload("res://addons/cambang/internal/touch_scroll
 const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
+const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
 
 
 class PanelModel extends RefCounted:
@@ -109,6 +110,7 @@ var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _dev_expanded_by_id: Dictionary = {}
+var _dev_disclosure_override_by_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
@@ -2735,10 +2737,13 @@ func _render_panel_model(model: PanelModel) -> void:
 		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
 
 	for entry_model in model.entries:
-		if not _dev_expanded_by_id.has(entry_model.id):
+		if _dev_disclosure_override_by_id.has(entry_model.id):
+			_dev_expanded_by_id[entry_model.id] = bool(_dev_disclosure_override_by_id[entry_model.id])
+		else:
 			_dev_expanded_by_id[entry_model.id] = entry_model.expanded
 		entry_model.expanded = bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded))
 		var row_visible := _is_entry_visible(entry_model)
+		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
 		var entry := STATUS_ENTRY_SCENE.instantiate()
 		_status_rows.add_child(entry)
@@ -2766,11 +2771,72 @@ func _find_parent_id(entry_id: String) -> String:
 
 
 func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
+	_debug_log_disclosure_click(entry_id, expanded)
+	_dev_disclosure_override_by_id[entry_id] = expanded
 	_dev_expanded_by_id[entry_id] = expanded
 	if _last_panel_model != null:
 		_render_panel_model(_last_panel_model)
 	else:
 		_render_panel_model(_build_fake_panel_model())
+
+
+func _debug_log_disclosure_click(entry_id: String, expanded: bool) -> void:
+	if not _debug_disclosure_enabled():
+		return
+	var previous_expanded := bool(_dev_expanded_by_id.get(entry_id, false))
+	print(
+		"[CAMBANG disclosure click] row_id=%s before=%s after=%s explicit_override_before=%s explicit_override_after=%s"
+		% [
+			entry_id,
+			previous_expanded,
+			expanded,
+			_dev_disclosure_override_by_id.has(entry_id),
+			true,
+		]
+	)
+
+
+func _debug_log_disclosure_render_state(entry_model: StatusEntryModel, row_visible: bool, model: PanelModel) -> void:
+	if not _debug_disclosure_enabled() or entry_model == null:
+		return
+	if not entry_model.id.begins_with("stream/"):
+		return
+	var hidden_child_ids: Array[String] = []
+	if not entry_model.expanded:
+		for child_entry in model.entries:
+			if child_entry == null:
+				continue
+			if child_entry.parent_id == entry_model.id:
+				hidden_child_ids.append(child_entry.id)
+	print(
+		"[CAMBANG disclosure render] row_id=%s model_expanded=%s stored_expanded=%s explicit_override=%s row_visible=%s child_rows=%d hidden_child_rows=%s"
+		% [
+			entry_model.id,
+			entry_model.expanded,
+			bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded)),
+			_dev_disclosure_override_by_id.has(entry_model.id),
+			row_visible,
+			_count_direct_child_rows(model, entry_model.id),
+			hidden_child_ids,
+		]
+	)
+
+
+func _count_direct_child_rows(model: PanelModel, parent_id: String) -> int:
+	if model == null:
+		return 0
+	var count := 0
+	for entry in model.entries:
+		if entry != null and entry.parent_id == parent_id:
+			count += 1
+	return count
+
+
+func _debug_disclosure_enabled() -> bool:
+	if not OS.has_environment(DEBUG_DISCLOSURE_ENV):
+		return false
+	var env_value := OS.get_environment(DEBUG_DISCLOSURE_ENV).strip_edges().to_lower()
+	return ["1", "true", "yes", "on"].has(env_value)
 
 
 func _entry(
