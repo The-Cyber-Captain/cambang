@@ -109,8 +109,7 @@ var _counts_value: Label
 var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
-var _dev_expanded_by_id: Dictionary = {}
-var _dev_disclosure_override_by_id: Dictionary = {}
+var _expanded_by_row_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _server: Object = null
 var _last_snapshot_meta: Dictionary = {}
@@ -2732,11 +2731,7 @@ func _render_panel_model(model: PanelModel) -> void:
 		_dev_parent_by_id[entry_model.id] = entry_model.parent_id
 
 	for entry_model in model.entries:
-		if _dev_disclosure_override_by_id.has(entry_model.id):
-			_dev_expanded_by_id[entry_model.id] = bool(_dev_disclosure_override_by_id[entry_model.id])
-		else:
-			_dev_expanded_by_id[entry_model.id] = entry_model.expanded
-		entry_model.expanded = bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded))
+		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
 		var row_visible := _is_entry_visible(entry_model)
 		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
@@ -2755,7 +2750,7 @@ func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
 
 	var current_parent := entry_model.parent_id
 	while current_parent != "":
-		if not bool(_dev_expanded_by_id.get(current_parent, true)):
+		if not bool(_expanded_by_row_id.get(current_parent, true)):
 			return false
 		current_parent = _find_parent_id(current_parent)
 	return true
@@ -2765,27 +2760,48 @@ func _find_parent_id(entry_id: String) -> String:
 	return str(_dev_parent_by_id.get(entry_id, ""))
 
 
-func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
-	_debug_log_disclosure_click(entry_id, expanded)
-	_dev_disclosure_override_by_id[entry_id] = expanded
-	_dev_expanded_by_id[entry_id] = expanded
+func _on_entry_disclosure_toggled(entry_id: String, _expanded: bool) -> void:
+	var next_expanded := not _current_expanded_state_for_row(entry_id)
+	_debug_log_disclosure_click(entry_id, next_expanded)
+	_expanded_by_row_id[entry_id] = next_expanded
 	if _last_panel_model != null:
 		_render_panel_model(_last_panel_model)
 	else:
 		_render_panel_model(_build_fake_panel_model())
 
 
+func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
+	if entry_model == null:
+		return false
+	if not entry_model.can_expand:
+		return false
+	if _expanded_by_row_id.has(entry_model.id):
+		return bool(_expanded_by_row_id[entry_model.id])
+	return entry_model.expanded
+
+
+func _current_expanded_state_for_row(entry_id: String) -> bool:
+	if _expanded_by_row_id.has(entry_id):
+		return bool(_expanded_by_row_id[entry_id])
+	if _last_panel_model == null:
+		return false
+	for entry_model in _last_panel_model.entries:
+		if entry_model != null and entry_model.id == entry_id:
+			return _resolved_entry_expanded_state(entry_model)
+	return false
+
+
 func _debug_log_disclosure_click(entry_id: String, expanded: bool) -> void:
 	if not _debug_disclosure_enabled():
 		return
-	var previous_expanded := bool(_dev_expanded_by_id.get(entry_id, false))
+	var previous_expanded := _current_expanded_state_for_row(entry_id)
 	print(
-		"[CAMBANG disclosure click] row_id=%s before=%s after=%s explicit_override_before=%s explicit_override_after=%s"
+		"[CAMBANG disclosure click] row_id=%s before=%s after=%s persisted_before=%s persisted_after=%s"
 		% [
 			entry_id,
 			previous_expanded,
 			expanded,
-			_dev_disclosure_override_by_id.has(entry_id),
+			_expanded_by_row_id.has(entry_id),
 			true,
 		]
 	)
@@ -2804,12 +2820,12 @@ func _debug_log_disclosure_render_state(entry_model: StatusEntryModel, row_visib
 			if child_entry.parent_id == entry_model.id:
 				hidden_child_ids.append(child_entry.id)
 	print(
-		"[CAMBANG disclosure render] row_id=%s model_expanded=%s stored_expanded=%s explicit_override=%s row_visible=%s child_rows=%d hidden_child_rows=%s"
+		"[CAMBANG disclosure render] row_id=%s model_expanded=%s persisted_expanded=%s persisted_override=%s row_visible=%s child_rows=%d hidden_child_rows=%s"
 		% [
 			entry_model.id,
 			entry_model.expanded,
-			bool(_dev_expanded_by_id.get(entry_model.id, entry_model.expanded)),
-			_dev_disclosure_override_by_id.has(entry_model.id),
+			bool(_expanded_by_row_id.get(entry_model.id, entry_model.expanded)),
+			_expanded_by_row_id.has(entry_model.id),
 			row_visible,
 			_count_direct_child_rows(model, entry_model.id),
 			hidden_child_ids,
