@@ -17,7 +17,6 @@ var _cached_version := -1
 var _cached_stream_count := -1
 var _publish_count := 0
 var _observation_started := false
-var _dev_node_state_logged_after_four := false
 
 
 func _ready() -> void:
@@ -51,10 +50,6 @@ func _ready() -> void:
 
 	CamBANGServer.start()
 	_dev_node = CamBANGDevNode.new()
-	if not _dev_node.tree_exiting.is_connected(_on_dev_node_tree_exiting):
-		_dev_node.tree_exiting.connect(_on_dev_node_tree_exiting)
-	if not _dev_node.tree_exited.is_connected(_on_dev_node_tree_exited):
-		_dev_node.tree_exited.connect(_on_dev_node_tree_exited)
 	add_child(_dev_node)
 	call_deferred("_start_scenario_after_ready")
 
@@ -113,13 +108,6 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 	if _done:
 		return
 	_publish_count += 1
-	print("INFO: publish_count=%d" % _publish_count)
-
-	if _publish_count == 4 and not _dev_node_state_logged_after_four:
-		_dev_node_state_logged_after_four = true
-		var valid := _dev_node != null and is_instance_valid(_dev_node)
-		var inside := valid and _dev_node.is_inside_tree()
-		print("INFO: publish_count reached 4; dev_node valid=%s inside_tree=%s" % [str(valid), str(inside)])
 
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
@@ -145,14 +133,6 @@ func _start_observation_window() -> void:
 	_observation_started = true
 	print("INFO: observation window started")
 	_observation_timer.start()
-
-
-func _on_dev_node_tree_exiting() -> void:
-	print("INFO: dev node tree_exiting observed")
-
-
-func _on_dev_node_tree_exited() -> void:
-	print("INFO: dev node tree_exited observed")
 
 
 func _ok(msg: String) -> void:
@@ -193,7 +173,3 @@ func _quit_next_frame(code: int) -> void:
 		await get_tree().process_frame
 	print("INFO: quit requested code=%d" % code)
 	get_tree().quit(code)
-
-
-func _exit_tree() -> void:
-	print("INFO: exit_tree reached")

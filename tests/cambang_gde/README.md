@@ -30,8 +30,8 @@ Run from this directory (`tests/cambang_gde`) using Godot headless:
 
 ```bash
 godot4 --headless --path . --scene res://scenes/60_restart_boundary_abuse.tscn --quit-after 10
-godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse.tscn --quit-after 10
-godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse.tscn --quit-after 1000
+godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 1000
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
 ```
@@ -42,8 +42,10 @@ Notes:
   `CamBANGDevNode.start_scenario(name)`.
 - `61` and `62` are bounded-observation verifiers: they watch a short internal observation window
   and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
+- For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
+  large value such as `--quit-after 1000`.
 - `60`, `61`, `62`, `63`, and `65` are intended to self-terminate with an explicit terminal `OK: ... PASS`
-  or `FAIL: ...` line; `--quit-after 10` is only a defensive outer guard for CLI runs.
+  or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
 
 ## Shared status panel and editor dock
 
