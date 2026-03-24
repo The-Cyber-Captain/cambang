@@ -101,9 +101,6 @@ class RetainedSubtreeState extends RefCounted:
 var _title_label: Label
 var _provider_mode_value: Label
 var _snapshot_state_value: Label
-var _gen_value: Label
-var _version_value: Label
-var _topology_version_value: Label
 var _schema_version_value: Label
 var _counts_value: Label
 var _timestamp_value: Label
@@ -219,9 +216,6 @@ func _build_ui_if_needed() -> void:
 
 	_provider_mode_value = _add_row(grid, "Provider Mode")
 	_snapshot_state_value = _add_row(grid, "Snapshot State")
-	_gen_value = _add_row(grid, "Generation")
-	_version_value = _add_row(grid, "Version")
-	_topology_version_value = _add_row(grid, "Topology Version")
 	_schema_version_value = _add_row(grid, "Schema Version")
 	_counts_value = _add_row(grid, "Entity Counts")
 	_timestamp_value = _add_row(grid, "timestamp_ns")
@@ -1747,9 +1741,6 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 
 func _apply_snapshot_read(reading: Dictionary) -> void:
 	_snapshot_state_value.text = str(reading.get("state", "No snapshot"))
-	_gen_value.text = str(reading.get("gen", "-"))
-	_version_value.text = str(reading.get("version", "-"))
-	_topology_version_value.text = str(reading.get("topology_version", "-"))
 	_schema_version_value.text = str(reading.get("schema_version", "-"))
 	_counts_value.text = str(reading.get("counts", "-"))
 	_timestamp_value.text = "%s (monotonic publish timestamp)" % str(reading.get("timestamp", "-"))
@@ -1913,7 +1904,11 @@ func _build_nil_panel_model(reason: String) -> PanelModel:
 		true,
 		true,
 		[_badge("warning", "snapshot-unavailable")],
-		[],
+		[
+			_counter("gen", -1, 3),
+			_counter("version", -1, 5),
+			_counter("topology", -1, 3),
+		],
 		[reason]
 	))
 	return panel

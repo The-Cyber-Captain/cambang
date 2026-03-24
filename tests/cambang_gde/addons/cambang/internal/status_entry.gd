@@ -351,6 +351,8 @@ func _counter_label_settings() -> LabelSettings:
 
 func _format_counter_value(value: int, digits: int) -> String:
 	var bounded_digits := maxi(digits, 1)
+	if value < 0:
+		return "-"
 	var raw := str(value)
 	if raw.length() <= bounded_digits:
 		return raw
