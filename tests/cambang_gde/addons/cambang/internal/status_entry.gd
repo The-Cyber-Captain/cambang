@@ -199,7 +199,15 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 		name_label.label_settings = _counter_label_settings()
 		value_label.text = _format_counter_value(visible_counters[i].value, visible_counters[i].digits)
 		value_label.label_settings = _counter_label_settings()
-		value_label.custom_minimum_size = Vector2(max(visible_counters[i].digits, 1) * 10.0 + 12.0, 0)
+		var counter_name: String = visible_counters[i].name
+		var counter_digits: int = max(visible_counters[i].digits, 1)
+		var minimum_digits: int = counter_digits
+		match counter_name:
+			"gen", "topology":
+				minimum_digits = max(minimum_digits, 3)
+			"version":
+				minimum_digits = max(minimum_digits, 5)
+		value_label.custom_minimum_size = Vector2(float(minimum_digits) * 10.0 + 12.0, 0)
 
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
@@ -651,13 +659,13 @@ func _badge_display_label(raw_label: String) -> String:
 		return _phase_display_label(int(raw_label.substr("native_phase=".length())), true)
 	match raw_label:
 		"snapshot":
-			return "AUTHORITATIVE"
+			return "SNAPSHOT"
 		"published":
 			return "PUBLISHED"
 		"retained":
-			return "RETAINED"
+			return "PRESERVED"
 		"retained-root":
-			return "RETAINED ROOT"
+			return "PRESERVED ROOT"
 		"prior-gen":
 			return "PRIOR GEN"
 		"continuity-only":
