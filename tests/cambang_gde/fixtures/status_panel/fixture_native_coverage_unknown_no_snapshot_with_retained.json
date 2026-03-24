@@ -32,7 +32,8 @@
     ],
     "required_badges_by_row": {
       "server/main": [
-        "NATIVE COVERAGE: UNKNOWN"
+        "NATIVE COVERAGE: UNKNOWN",
+        "NO SNAPSHOT"
       ]
     }
   },

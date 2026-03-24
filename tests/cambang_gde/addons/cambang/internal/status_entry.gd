@@ -174,7 +174,7 @@ func _server_badge_slot_min_width(raw_label: String) -> float:
 		return 0.0
 	if raw_label.begins_with("NATIVE COVERAGE:"):
 		return SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH
-	if raw_label == "snapshot" or raw_label == "snapshot-unavailable":
+	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT":
 		return SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH
 	return 0.0
 
@@ -764,7 +764,7 @@ func _badge_display_label(raw_label: String) -> String:
 			return "ORPHANED"
 		"detached":
 			return "DETACHED"
-		"snapshot-unavailable":
+		"NO SNAPSHOT":
 			return "NO SNAPSHOT"
 		"snapshot-incompatible":
 			return "SNAPSHOT INCOMPATIBLE"

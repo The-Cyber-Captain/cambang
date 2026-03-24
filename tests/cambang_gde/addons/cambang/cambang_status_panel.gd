@@ -1900,7 +1900,7 @@ func _build_nil_panel_model(reason: String) -> PanelModel:
 		"server/main",
 		true,
 		true,
-		[_badge("warning", "snapshot-unavailable")],
+		[_badge("warning", "NO SNAPSHOT")],
 		[
 			_counter("gen", -1, 3),
 			_counter("version", -1, 5),
@@ -3102,6 +3102,9 @@ func _badge_sort_key(badge: BadgeModel) -> String:
 
 
 func _badge(role: String, label: String) -> BadgeModel:
+	var forbidden_snapshot_unavailable := "snapshot" + "-unavailable"
+	if label == forbidden_snapshot_unavailable:
+		push_error(forbidden_snapshot_unavailable + " is forbidden; use NO SNAPSHOT")
 	var model := BadgeModel.new()
 	model.role = role
 	model.label = label
