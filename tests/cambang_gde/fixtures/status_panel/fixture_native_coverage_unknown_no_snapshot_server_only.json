@@ -1,10 +1,10 @@
 {
-  "fixture_kind": "authoritative_snapshot",
+  "fixture_kind": "continuity_no_snapshot",
   "provider_mode": "synthetic",
-  "expected_validity": "invalid",
-  "should_run_projector": false,
+  "expected_validity": "valid",
+  "should_run_projector": true,
   "expected_panel_outcome": {
-    "contract_gap_count": 1,
+    "contract_gap_count": 0,
     "projection_gap_count": 0,
     "required_row_ids": [
       "server/main"
@@ -13,7 +13,7 @@
       "server/main"
     ],
     "forbidden_visible_row_ids": [
-      "server/main/contract_gaps"
+      "retained_presentation/prior_authoritative/subtree/0/gen_55/provider/5501"
     ],
     "required_badges_by_row": {
       "server/main": [

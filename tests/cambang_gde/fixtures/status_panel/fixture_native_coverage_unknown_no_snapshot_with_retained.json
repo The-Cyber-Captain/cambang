@@ -1,14 +1,34 @@
 {
-  "fixture_kind": "authoritative_snapshot",
+  "fixture_kind": "continuity_no_snapshot",
   "provider_mode": "synthetic",
-  "expected_validity": "invalid",
-  "should_run_projector": false,
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "continuity_prelude_payload": {
+    "schema_version": 1,
+    "gen": 55,
+    "version": 0,
+    "topology_version": 0,
+    "timestamp_ns": 123456789,
+    "imaging_spec_version": 1,
+    "rigs": [],
+    "devices": [],
+    "streams": [],
+    "native_objects": [
+      {
+        "native_id": 5501,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 55
+      }
+    ],
+    "detached_root_ids": []
+  },
   "expected_panel_outcome": {
-    "contract_gap_count": 1,
+    "contract_gap_count": 0,
     "projection_gap_count": 0,
     "required_row_ids": [
       "server/main",
-      "server/main/contract_gaps"
+      "retained_presentation/prior_authoritative/subtree/0/gen_55/provider/5501"
     ],
     "required_badges_by_row": {
       "server/main": [

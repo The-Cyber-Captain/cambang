@@ -31,11 +31,13 @@ func _initialize() -> void:
 
 	var payload: Variant = fixture.get("payload", null)
 	var schema_errors: Array[String] = []
+	var fixture_kind := str(fixture.get("fixture_kind", "authoritative_snapshot"))
 
-	if typeof(payload) == TYPE_DICTIONARY:
-		schema_errors = SnapshotValidator.validate_snapshot(payload)
-	else:
-		schema_errors.append("payload must be Dictionary")
+	if fixture_kind == "authoritative_snapshot":
+		if typeof(payload) == TYPE_DICTIONARY:
+			schema_errors = SnapshotValidator.validate_snapshot(payload)
+		else:
+			schema_errors.append("payload must be Dictionary")
 
 	print("HARNESS schema_errors: %s" % [schema_errors])
 
@@ -78,11 +80,15 @@ func _initialize() -> void:
 	await process_frame
 	panel.call("_disconnect_server")
 
-	var compat: Dictionary = _compute_runtime_compat(panel, payload)
-	var contract_gaps: Array = compat.get("contract_gaps", [])
-	var projection_gaps: Array = compat.get("projection_gaps", [])
+	var contract_gaps: Array = []
+	var projection_gaps: Array = []
 	var is_schema_valid := schema_errors.is_empty()
-	var is_projection_compatible := projection_gaps.is_empty()
+	var is_projection_compatible := true
+	if fixture_kind == "authoritative_snapshot":
+		var compat: Dictionary = _compute_runtime_compat(panel, payload)
+		contract_gaps = compat.get("contract_gaps", [])
+		projection_gaps = compat.get("projection_gaps", [])
+		is_projection_compatible = projection_gaps.is_empty()
 
 	print("HARNESS contract_gaps: %s" % [contract_gaps])
 	print("HARNESS projection_gaps: %s" % [projection_gaps])
@@ -100,19 +106,30 @@ func _initialize() -> void:
 
 	var active_panel = null
 	var rendered_model = null
-	var snapshot_reading: Dictionary = panel.call("_read_snapshot", payload)
+	var snapshot_reading: Dictionary = {}
 
-	if not should_run_projector:
-		active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
-		rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
-	elif not is_schema_valid or not is_projection_compatible:
-		active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
-		rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
+	if fixture_kind == "continuity_no_snapshot":
+		var continuity_prelude_payload: Variant = fixture.get("continuity_prelude_payload", null)
+		var continuity_result := _build_continuity_no_snapshot_model(panel, continuity_prelude_payload, provider_mode)
+		if not bool(continuity_result.get("ok", false)):
+			_printerr(str(continuity_result.get("error", "continuity_no_snapshot setup failed")))
+			quit(1)
+			return
+		rendered_model = continuity_result.get("rendered_model", null)
+		snapshot_reading = continuity_result.get("snapshot_reading", {})
 	else:
-		active_panel = panel.call("_project_snapshot_to_panel_model", payload, provider_mode)
-		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", payload)
-		rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
-		rendered_model = _apply_adversarial_projection(rendered_model, adversarial_projection, panel)
+		snapshot_reading = panel.call("_read_snapshot", payload)
+		if not should_run_projector:
+			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
+			rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
+		elif not is_schema_valid or not is_projection_compatible:
+			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
+			rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
+		else:
+			active_panel = panel.call("_project_snapshot_to_panel_model", payload, provider_mode)
+			var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", payload)
+			rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+			rendered_model = _apply_adversarial_projection(rendered_model, adversarial_projection, panel)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
 	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
@@ -312,6 +329,46 @@ func _resolve_render_snapshot(payload: Variant) -> Variant:
 	if typeof(payload) != TYPE_DICTIONARY:
 		return null
 	return payload
+
+
+func _build_continuity_no_snapshot_model(panel: Object, continuity_prelude_payload: Variant, provider_mode: String) -> Dictionary:
+	if continuity_prelude_payload != null and typeof(continuity_prelude_payload) != TYPE_DICTIONARY:
+		return {
+			"ok": false,
+			"error": "continuity_prelude_payload must be Dictionary or null",
+		}
+
+	if typeof(continuity_prelude_payload) == TYPE_DICTIONARY:
+		var prelude_payload: Dictionary = continuity_prelude_payload
+		var prelude_schema_errors: Array[String] = SnapshotValidator.validate_snapshot(prelude_payload)
+		if not prelude_schema_errors.is_empty():
+			return {
+				"ok": false,
+				"error": "continuity_prelude_payload failed schema validation: %s" % [prelude_schema_errors],
+			}
+
+		var prelude_compat: Dictionary = panel.call("_check_snapshot_runtime_compat", prelude_payload)
+		if not bool(prelude_compat.get("ok", false)):
+			return {
+				"ok": false,
+				"error": "continuity_prelude_payload failed runtime compatibility: %s" % [prelude_compat],
+			}
+
+		var prelude_active_panel = panel.call("_project_snapshot_to_panel_model", prelude_payload, provider_mode)
+		var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_payload)
+		panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
+		panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+
+	var nil_panel = panel.call("_build_nil_panel_model", "No published snapshot yet.")
+	panel.call("_set_last_active_panel_state", nil_panel, false, {})
+	var rendered_model = panel.call("_compose_presented_panel_model", nil_panel, false, {})
+	var snapshot_reading: Dictionary = panel.call("_read_snapshot", null)
+
+	return {
+		"ok": true,
+		"rendered_model": rendered_model,
+		"snapshot_reading": snapshot_reading,
+	}
 
 
 func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, panel: Object) -> Variant:
