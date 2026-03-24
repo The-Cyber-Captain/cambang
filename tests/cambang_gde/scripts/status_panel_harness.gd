@@ -320,6 +320,9 @@ func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, 
 	if config.is_empty():
 		return rendered_model
 
+	if not rendered_model is Object:
+		return rendered_model
+
 	var strip_ids_variant: Variant = config.get("strip_materialized_native_ids", [])
 	if typeof(strip_ids_variant) != TYPE_ARRAY:
 		return rendered_model
@@ -335,48 +338,74 @@ func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, 
 	if strip_native_ids.is_empty():
 		return rendered_model
 
-	var source_entries: Array = _extract_entries(rendered_model)
+	var entries_variant: Variant = rendered_model.get("entries")
+	if typeof(entries_variant) != TYPE_ARRAY:
+		return rendered_model
+	var source_entries: Array = entries_variant
 	if source_entries.is_empty():
 		return rendered_model
 
+	print("HARNESS adversarial strip target_native_ids: %s" % [strip_native_ids.keys()])
+	print("HARNESS adversarial before rows: %s" % [_debug_materialized_rows(source_entries)])
+
 	var stripped_row_ids := {}
-	for entry in source_entries:
-		var materialized_native_id := int(_extract_variant_field(entry, "materialized_native_id", 0))
+	for raw_entry in source_entries:
+		if raw_entry == null:
+			continue
+		var materialized_native_id := int(raw_entry.materialized_native_id)
 		if strip_native_ids.has(materialized_native_id):
-			var entry_id := _extract_entry_id(entry)
+			var entry_id := str(raw_entry.id)
 			if entry_id != "":
 				stripped_row_ids[entry_id] = true
 
 	if stripped_row_ids.is_empty():
+		print("HARNESS adversarial stripped_row_ids: []")
 		return rendered_model
 
 	var changed := true
 	while changed:
 		changed = false
-		for entry in source_entries:
-			var entry_id := _extract_entry_id(entry)
+		for raw_entry in source_entries:
+			if raw_entry == null:
+				continue
+			var entry_id := str(raw_entry.id)
 			if entry_id == "" or stripped_row_ids.has(entry_id):
 				continue
-			var parent_id := _extract_entry_field(entry, "parent_id")
+			var parent_id := str(raw_entry.parent_id)
 			if parent_id != "" and stripped_row_ids.has(parent_id):
 				stripped_row_ids[entry_id] = true
 				changed = true
 
 	var filtered_entries: Array = []
-	for entry in source_entries:
-		var entry_id := _extract_entry_id(entry)
+	for raw_entry in source_entries:
+		if raw_entry == null:
+			continue
+		var entry_id := str(raw_entry.id)
 		if entry_id != "" and stripped_row_ids.has(entry_id):
 			continue
-		filtered_entries.append(entry)
+		filtered_entries.append(raw_entry)
 
-	if typeof(rendered_model) == TYPE_DICTIONARY:
-		var rendered_dict := rendered_model as Dictionary
-		rendered_dict["entries"] = filtered_entries
-	elif rendered_model is Object:
-		rendered_model.set("entries", filtered_entries)
-
+	print("HARNESS adversarial stripped_row_ids: %s" % [stripped_row_ids.keys()])
+	rendered_model.set("entries", filtered_entries)
 	panel.call("_ensure_expandability", rendered_model)
+	print("HARNESS adversarial after rows: %s" % [_debug_materialized_rows(filtered_entries)])
 	return rendered_model
+
+
+func _debug_materialized_rows(entries: Array) -> Array[String]:
+	var rows: Array[String] = []
+	for raw_entry in entries:
+		if raw_entry == null:
+			continue
+		rows.append(
+			"id=%s parent=%s materialized_native_id=%d"
+			% [
+				str(raw_entry.id),
+				str(raw_entry.parent_id),
+				int(raw_entry.materialized_native_id),
+			]
+		)
+	return rows
 
 
 func _validate_screenshot_mode() -> String:
