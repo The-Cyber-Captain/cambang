@@ -1,0 +1,20 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "invalid",
+  "should_run_projector": false,
+  "expected_panel_outcome": {
+    "contract_gap_count": 1,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "server/main",
+      "server/main/contract_gaps"
+    ],
+    "required_badges_by_row": {
+      "server/main": [
+        "NATIVE COVERAGE: UNKNOWN"
+      ]
+    }
+  },
+  "payload": null
+}
