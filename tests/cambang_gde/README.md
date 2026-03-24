@@ -40,6 +40,8 @@ Notes:
 - Scenes force provider mode to `synthetic` before `start()`.
 - `61` and `62` instantiate a dev node and trigger existing scenario names via
   `CamBANGDevNode.start_scenario(name)`.
+- `61` and `62` are bounded-observation verifiers: they watch a short internal observation window
+  and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
 - `60`, `61`, `62`, `63`, and `65` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after 10` is only a defensive outer guard for CLI runs.
 
