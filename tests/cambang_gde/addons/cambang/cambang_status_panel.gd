@@ -791,6 +791,7 @@ func _compose_presented_panel_model(
 	_append_retained_presentation_subtrees(composed)
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
+	_reorder_panel_entries_depth_first(composed)
 	_apply_detail_policy_to_panel(composed)
 	return composed
 
@@ -2682,6 +2683,60 @@ func _ensure_expandability(panel: PanelModel) -> void:
 		e.can_expand = child_count > 0
 		if child_count > 0 and _should_default_expand_entry(e):
 			e.expanded = true
+
+
+func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
+	if panel == null or panel.entries.size() <= 1:
+		return
+
+	var ids := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		ids[entry.id] = true
+
+	var roots: Array[StatusEntryModel] = []
+	var children_by_parent := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		var parent_id := str(entry.parent_id)
+		if parent_id.is_empty() or not ids.has(parent_id):
+			roots.append(entry)
+			continue
+		if not children_by_parent.has(parent_id):
+			children_by_parent[parent_id] = []
+		children_by_parent[parent_id].append(entry)
+
+	var ordered: Array[StatusEntryModel] = []
+	var visited := {}
+	for root_entry in roots:
+		_append_entry_subtree_depth_first(root_entry, children_by_parent, ordered, visited)
+
+	for entry in panel.entries:
+		if entry != null and not visited.has(entry.id):
+			ordered.append(entry)
+			visited[entry.id] = true
+
+	panel.entries = ordered
+
+
+func _append_entry_subtree_depth_first(
+		entry: StatusEntryModel,
+		children_by_parent: Dictionary,
+		ordered: Array[StatusEntryModel],
+		visited: Dictionary
+	) -> void:
+	if entry == null:
+		return
+	if visited.has(entry.id):
+		return
+	visited[entry.id] = true
+	ordered.append(entry)
+
+	var children: Array = children_by_parent.get(entry.id, [])
+	for child in children:
+		_append_entry_subtree_depth_first(child, children_by_parent, ordered, visited)
 
 
 func _should_default_expand_entry(entry: StatusEntryModel) -> bool:
