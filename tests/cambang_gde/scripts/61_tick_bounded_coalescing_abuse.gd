@@ -5,6 +5,8 @@ const TIMEOUT_MS := 7000
 const FIRST_PUBLISH_TIMEOUT_MS := 2000
 const OBSERVATION_WINDOW_MS := 1200
 const MIN_PUBLISHES := 3
+const HEARTBEAT_INTERVAL_SEC := 1.0
+const TRACE_PATH := "user://61_tick_bounded_coalescing_trace.log"
 
 var _done := false
 var _quit_requested := false
@@ -21,10 +23,13 @@ var _last_version := -1
 var _last_topology_version := -1
 var _last_topology_sig := ""
 var _observation_started := false
+var _heartbeat_elapsed := 0.0
 
 
 func _ready() -> void:
 	set_process(true)
+	_init_trace_file()
+	_trace("INFO: _ready reached (tick-bounded coalescing verifier)")
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot tick-bounded coalescing abuse")
@@ -62,6 +67,7 @@ func _ready() -> void:
 
 
 func _start_scenario_after_ready() -> void:
+	_trace("INFO: deferred scenario start invoked (tick-bounded coalescing verifier)")
 	if _done:
 		return
 	if _dev_node == null or not is_instance_valid(_dev_node):
@@ -74,6 +80,10 @@ func _start_scenario_after_ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	_heartbeat_elapsed += _delta
+	if _heartbeat_elapsed >= HEARTBEAT_INTERVAL_SEC:
+		_heartbeat_elapsed = 0.0
+		_trace("INFO: process heartbeat (tick-bounded coalescing verifier)")
 	if _frame_index == 0:
 		print("INFO: process loop active (tick-bounded coalescing verifier)")
 	if _signal_count_this_tick > 1:
@@ -101,6 +111,7 @@ func _on_first_publish_timeout() -> void:
 func _on_observation_timeout() -> void:
 	if _done:
 		return
+	_trace("INFO: observation-timeout fired (tick-bounded coalescing verifier)")
 	print("INFO: observation timeout fired with publish_count=%d (min=%d)" % [_publish_count, MIN_PUBLISHES])
 	if _publish_count < MIN_PUBLISHES:
 		print("INFO: observation timeout decision=FAIL (insufficient publishes)")
@@ -130,6 +141,7 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 	_signal_count_this_tick += 1
 	_publish_count += 1
+	_trace("INFO: publish_count=%d (tick-bounded coalescing verifier)" % _publish_count)
 	print("INFO: publish_count=%d (gen=%d version=%d topology_version=%d)" % [_publish_count, gen, version, topology_version])
 
 	var snapshot = CamBANGServer.get_state_snapshot()
@@ -139,6 +151,7 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 	if _last_gen == -1:
 		print("INFO: first publish observed in tick-bounded coalescing verifier")
+		_trace("INFO: first publish observed (tick-bounded coalescing verifier)")
 		_start_observation_window()
 		_last_gen = gen
 		_last_version = version
@@ -177,6 +190,7 @@ func _start_observation_window() -> void:
 	if _observation_timer == null or not is_instance_valid(_observation_timer):
 		return
 	_observation_started = true
+	_trace("INFO: observation window started (tick-bounded coalescing verifier)")
 	print("INFO: observation window started for tick-bounded coalescing verifier")
 	_observation_timer.start()
 
@@ -186,6 +200,7 @@ func _ok(msg: String) -> void:
 		return
 	_done = true
 	_finished = true
+	_trace("INFO: OK path reached (tick-bounded coalescing verifier)")
 	print(msg)
 	_cleanup_and_quit(0)
 
@@ -195,6 +210,7 @@ func _fail(msg: String) -> void:
 		return
 	_done = true
 	_finished = true
+	_trace("INFO: FAIL path reached (tick-bounded coalescing verifier)")
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
@@ -222,4 +238,29 @@ func _quit_next_frame(code: int) -> void:
 		return
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
+	_trace("INFO: quit requested code=%d (tick-bounded coalescing verifier)" % code)
+	print("INFO: quit requested code=%d (tick-bounded coalescing verifier)" % code)
 	get_tree().quit(code)
+
+
+func _exit_tree() -> void:
+	_trace("INFO: exit_tree reached (tick-bounded coalescing verifier)")
+	print("INFO: exit_tree reached (tick-bounded coalescing verifier)")
+
+
+func _init_trace_file() -> void:
+	var file := FileAccess.open(TRACE_PATH, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_line("=== tick-bounded coalescing trace start ===")
+	file.flush()
+
+
+func _trace(msg: String) -> void:
+	print(msg)
+	var file := FileAccess.open(TRACE_PATH, FileAccess.READ_WRITE)
+	if file == null:
+		return
+	file.seek_end()
+	file.store_line(msg)
+	file.flush()
