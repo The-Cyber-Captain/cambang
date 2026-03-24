@@ -25,6 +25,7 @@ func _ready() -> void:
 	print("RUN: godot snapshot polling/immutability abuse")
 
 	_timer = Timer.new()
+	_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_timer.one_shot = true
 	_timer.wait_time = float(TIMEOUT_MS) / 1000.0
 	add_child(_timer)
@@ -32,6 +33,7 @@ func _ready() -> void:
 	_timer.start()
 
 	_first_publish_timer = Timer.new()
+	_first_publish_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_first_publish_timer.one_shot = true
 	_first_publish_timer.wait_time = float(FIRST_PUBLISH_TIMEOUT_MS) / 1000.0
 	add_child(_first_publish_timer)
@@ -39,6 +41,7 @@ func _ready() -> void:
 	_first_publish_timer.start()
 
 	_observation_timer = Timer.new()
+	_observation_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_observation_timer.one_shot = true
 	_observation_timer.wait_time = float(OBSERVATION_WINDOW_MS) / 1000.0
 	add_child(_observation_timer)
@@ -81,23 +84,29 @@ func _process(_delta: float) -> void:
 
 
 func _on_timeout() -> void:
+	print("INFO: overall timeout fired (snapshot polling/immutability verifier)")
 	_fail("FAIL: snapshot polling/immutability abuse timed out before reaching deterministic completion")
 
 
 func _on_first_publish_timeout() -> void:
 	if _done:
 		return
+	print("INFO: first-publish timeout fired with publish_count=%d" % _publish_count)
 	if _publish_count > 0:
 		return
+	print("INFO: first-publish timeout decision=FAIL (no publishes observed)")
 	_fail("FAIL: no state_published callback observed during startup window")
 
 
 func _on_observation_timeout() -> void:
 	if _done:
 		return
+	print("INFO: observation timeout fired with publish_count=%d (min=%d)" % [_publish_count, MIN_UPDATES])
 	if _publish_count < MIN_UPDATES:
+		print("INFO: observation timeout decision=FAIL (insufficient publishes)")
 		_fail("FAIL: insufficient publishes for polling/immutability abuse")
 		return
+	print("INFO: observation timeout decision=PASS")
 	_ok("OK: godot snapshot polling/immutability abuse PASS")
 
 
@@ -105,6 +114,7 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 	if _done:
 		return
 	_publish_count += 1
+	print("INFO: publish_count=%d (snapshot polling/immutability verifier)" % _publish_count)
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
 		_fail("FAIL: NIL snapshot inside state_published during polling abuse")
@@ -149,6 +159,7 @@ func _fail(msg: String) -> void:
 
 
 func _cleanup_and_quit(code: int) -> void:
+	print("INFO: cleanup_and_quit called with code=%d" % code)
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):

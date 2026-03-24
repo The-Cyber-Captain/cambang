@@ -28,6 +28,7 @@ func _ready() -> void:
 	print("RUN: godot tick-bounded coalescing abuse")
 
 	_timer = Timer.new()
+	_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_timer.one_shot = true
 	_timer.wait_time = float(TIMEOUT_MS) / 1000.0
 	add_child(_timer)
@@ -35,6 +36,7 @@ func _ready() -> void:
 	_timer.start()
 
 	_first_publish_timer = Timer.new()
+	_first_publish_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_first_publish_timer.one_shot = true
 	_first_publish_timer.wait_time = float(FIRST_PUBLISH_TIMEOUT_MS) / 1000.0
 	add_child(_first_publish_timer)
@@ -42,6 +44,7 @@ func _ready() -> void:
 	_first_publish_timer.start()
 
 	_observation_timer = Timer.new()
+	_observation_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_observation_timer.one_shot = true
 	_observation_timer.wait_time = float(OBSERVATION_WINDOW_MS) / 1000.0
 	add_child(_observation_timer)
@@ -77,23 +80,29 @@ func _process(_delta: float) -> void:
 
 
 func _on_timeout() -> void:
+	print("INFO: overall timeout fired (tick-bounded coalescing verifier)")
 	_fail("FAIL: tick-bounded coalescing abuse timed out before reaching deterministic completion")
 
 
 func _on_first_publish_timeout() -> void:
 	if _done:
 		return
+	print("INFO: first-publish timeout fired with publish_count=%d" % _publish_count)
 	if _publish_count > 0:
 		return
+	print("INFO: first-publish timeout decision=FAIL (no publishes observed)")
 	_fail("FAIL: no state_published callback observed during startup window")
 
 
 func _on_observation_timeout() -> void:
 	if _done:
 		return
+	print("INFO: observation timeout fired with publish_count=%d (min=%d)" % [_publish_count, MIN_PUBLISHES])
 	if _publish_count < MIN_PUBLISHES:
+		print("INFO: observation timeout decision=FAIL (insufficient publishes)")
 		_fail("FAIL: insufficient publishes observed for coalescing checks")
 		return
+	print("INFO: observation timeout decision=PASS")
 	_ok("OK: godot tick-bounded coalescing abuse PASS")
 
 
@@ -117,6 +126,7 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 	_signal_count_this_tick += 1
 	_publish_count += 1
+	print("INFO: publish_count=%d (gen=%d version=%d topology_version=%d)" % [_publish_count, gen, version, topology_version])
 
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
@@ -185,6 +195,7 @@ func _fail(msg: String) -> void:
 
 
 func _cleanup_and_quit(code: int) -> void:
+	print("INFO: cleanup_and_quit called with code=%d" % code)
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):
