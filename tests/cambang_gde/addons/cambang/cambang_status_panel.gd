@@ -1375,8 +1375,8 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
 	var lines: Array[String] = [
-		"Panel-local continuity only. Not active snapshot truth.",
-		"continuity: preserved presentation copied from a previously rendered authoritative panel.",
+		"Continuity-only preserved view; not active snapshot truth.",
+		"continuity: copied from a previously rendered authoritative panel.",
 		"retained_from_gen=%d" % retained.retained_from_gen,
 		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
 		"source version=%d, source topology=%d" % [retained.source_snapshot_version, retained.source_topology_version],
