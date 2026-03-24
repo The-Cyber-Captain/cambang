@@ -18,14 +18,14 @@ var _cached_stream_count := -1
 var _publish_count := 0
 var _finished := false
 var _observation_started := false
+var _started := false
 
 
 func _ready() -> void:
-	await _run_verifier()
-
-
-func _run_verifier() -> void:
 	set_process(true)
+
+
+func _start_verifier() -> void:
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot snapshot polling/immutability abuse")
@@ -60,10 +60,6 @@ func _run_verifier() -> void:
 	_dev_node = CamBANGDevNode.new()
 	add_child(_dev_node)
 	call_deferred("_start_scenario_after_ready")
-	print("INFO: frame-lifetime loop entered (snapshot polling/immutability verifier)")
-	while not _finished:
-		await get_tree().process_frame
-	print("INFO: frame-lifetime loop exited (snapshot polling/immutability verifier)")
 
 
 func _start_scenario_after_ready() -> void:
@@ -79,6 +75,11 @@ func _start_scenario_after_ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	if not _started:
+		_started = true
+		_start_verifier()
+		if _done:
+			return
 	if _publish_count == 0:
 		# Keep at least one active process callback while waiting for first publish.
 		pass

@@ -24,16 +24,16 @@ var _last_topology_version := -1
 var _last_topology_sig := ""
 var _observation_started := false
 var _heartbeat_elapsed := 0.0
+var _started := false
 
 
 func _ready() -> void:
-	await _run_verifier()
-
-
-func _run_verifier() -> void:
 	set_process(true)
+
+
+func _start_verifier() -> void:
 	_init_trace_file()
-	_trace("INFO: _ready reached (tick-bounded coalescing verifier)")
+	_trace("INFO: verifier start reached (tick-bounded coalescing verifier)")
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot tick-bounded coalescing abuse")
@@ -68,10 +68,6 @@ func _run_verifier() -> void:
 	_dev_node = CamBANGDevNode.new()
 	add_child(_dev_node)
 	call_deferred("_start_scenario_after_ready")
-	_trace("INFO: frame-lifetime loop entered (tick-bounded coalescing verifier)")
-	while not _finished:
-		await get_tree().process_frame
-	_trace("INFO: frame-lifetime loop exited (tick-bounded coalescing verifier)")
 
 
 func _start_scenario_after_ready() -> void:
@@ -88,6 +84,11 @@ func _start_scenario_after_ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	if not _started:
+		_started = true
+		_start_verifier()
+		if _done:
+			return
 	_heartbeat_elapsed += _delta
 	if _heartbeat_elapsed >= HEARTBEAT_INTERVAL_SEC:
 		_heartbeat_elapsed = 0.0
