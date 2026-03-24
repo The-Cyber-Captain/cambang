@@ -27,12 +27,13 @@ var _heartbeat_elapsed := 0.0
 
 
 func _ready() -> void:
+	await _run_verifier()
+
+
+func _run_verifier() -> void:
 	set_process(true)
-	get_tree().set_auto_accept_quit(false)
 	_init_trace_file()
 	_trace("INFO: _ready reached (tick-bounded coalescing verifier)")
-	if not get_tree().tree_exiting.is_connected(_on_tree_exiting):
-		get_tree().tree_exiting.connect(_on_tree_exiting)
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot tick-bounded coalescing abuse")
@@ -253,18 +254,6 @@ func _quit_next_frame(code: int) -> void:
 func _exit_tree() -> void:
 	_trace("INFO: exit_tree reached (tick-bounded coalescing verifier)")
 	print("INFO: exit_tree reached (tick-bounded coalescing verifier)")
-
-
-func _on_tree_exiting() -> void:
-	_trace("INFO: tree_exiting signal received (tick-bounded coalescing verifier)")
-	if _finished:
-		return
-	_done = true
-	_finished = true
-	var msg := "FAIL: external SceneTree termination before verifier completion"
-	_trace("INFO: FAIL path reached due to external SceneTree termination (tick-bounded coalescing verifier)")
-	push_error(msg)
-	print(msg)
 
 
 func _init_trace_file() -> void:

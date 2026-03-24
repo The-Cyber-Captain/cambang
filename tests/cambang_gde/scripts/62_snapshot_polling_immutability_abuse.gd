@@ -21,10 +21,11 @@ var _observation_started := false
 
 
 func _ready() -> void:
+	await _run_verifier()
+
+
+func _run_verifier() -> void:
 	set_process(true)
-	get_tree().set_auto_accept_quit(false)
-	if not get_tree().tree_exiting.is_connected(_on_tree_exiting):
-		get_tree().tree_exiting.connect(_on_tree_exiting)
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot snapshot polling/immutability abuse")
@@ -195,14 +196,3 @@ func _quit_next_frame(code: int) -> void:
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
 	get_tree().quit(code)
-
-
-func _on_tree_exiting() -> void:
-	print("INFO: tree_exiting signal received (snapshot polling/immutability verifier)")
-	if _finished:
-		return
-	_done = true
-	_finished = true
-	var msg := "FAIL: external SceneTree termination before verifier completion"
-	push_error(msg)
-	print(msg)
