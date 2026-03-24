@@ -4,8 +4,8 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
-const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 176.0
-const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 112.0
+const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
+const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 128.0
 
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
@@ -147,7 +147,12 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		var display_label: String = _badge_display_label(raw_label)
 		var stabilized_width: float = _server_badge_slot_min_width(raw_label)
 		pair.custom_minimum_size = Vector2(stabilized_width, 18)
-		pair.alignment = BoxContainer.ALIGNMENT_CENTER
+		if stabilized_width > 0.0:
+			pair.alignment = BoxContainer.ALIGNMENT_BEGIN
+			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		else:
+			pair.alignment = BoxContainer.ALIGNMENT_CENTER
+			label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 		indicator.color = _badge_color_for_role(_badge_role_for_render(badges[i]))
 		var indicator_size := max((_style.badge_strip_width if _style != null else 7), 8)
 		indicator.custom_minimum_size = Vector2(indicator_size, indicator_size)
