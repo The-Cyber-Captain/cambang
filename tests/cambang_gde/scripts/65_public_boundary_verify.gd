@@ -19,7 +19,6 @@ func _ready() -> void:
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot public boundary verify")
-	_snapshot_diag("ready_before_first_baseline")
 
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: snapshot must be NIL before start/baseline")
@@ -36,7 +35,6 @@ func _ready() -> void:
 		CamBANGServer.state_published.connect(_on_state_published)
 
 	CamBANGServer.start()
-	_snapshot_diag("ready_after_start_before_first_publish")
 
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: snapshot must remain NIL after start() until first Godot-visible baseline publish")
@@ -50,7 +48,6 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 	if _done:
 		return
 
-	_snapshot_diag("on_state_published", gen, version, topology_version)
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
 		_fail("FAIL: get_state_snapshot() returned NIL inside state_published handler")
@@ -82,7 +79,6 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 		PHASE_RESTARTING:
 			# Ignore any in-flight publishes until restart assertions have completed.
-			_snapshot_diag("ignoring_publish_during_restart", gen, version, topology_version)
 			return
 
 		PHASE_WAIT_SECOND_BASELINE:
@@ -108,16 +104,12 @@ func _restart_and_assert_nil() -> void:
 	if _done:
 		return
 
-	_snapshot_diag("restart_before_stop")
 	CamBANGServer.stop()
-	_snapshot_diag("restart_after_stop")
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: get_state_snapshot() must be NIL after completed stop()")
 		return
 
-	_snapshot_diag("restart_before_start")
 	CamBANGServer.start()
-	_snapshot_diag("restart_after_start_before_first_publish")
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: stale prior-generation snapshot leaked before next generation baseline")
 		return
@@ -172,26 +164,3 @@ func _phase_name(p: int) -> String:
 			return "done"
 		_:
 			return "unknown"
-
-
-func _snapshot_diag(label: String, sig_gen: int = -999, sig_version: int = -999, sig_topology_version: int = -999) -> void:
-	var snap = CamBANGServer.get_state_snapshot()
-	var nil_snap := snap == null
-	var snap_gen := "nil"
-	var snap_version := "nil"
-	var snap_topology := "nil"
-	if not nil_snap and typeof(snap) == TYPE_DICTIONARY:
-		snap_gen = str(int(snap.get("gen", -1)))
-		snap_version = str(int(snap.get("version", -1)))
-		snap_topology = str(int(snap.get("topology_version", -1)))
-	print("INFO: boundary_diag step=%s phase=%s signal=(gen=%d version=%d topology_version=%d) snapshot_nil=%s snapshot=(gen=%s version=%s topology_version=%s)" % [
-		label,
-		_phase_name(_phase),
-		sig_gen,
-		sig_version,
-		sig_topology_version,
-		str(nil_snap),
-		snap_gen,
-		snap_version,
-		snap_topology
-	])

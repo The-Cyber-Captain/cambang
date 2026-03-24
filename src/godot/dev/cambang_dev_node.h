@@ -92,7 +92,6 @@ private:
     ActiveScenario pending_scenario_ = ActiveScenario::None;
     uint32_t scenario_tick_ = 0;
     uint32_t scenario_seed_ = 1;
-    bool scenario_idle_logged_ = false;
 
 
     void start_runtime_();

@@ -27,7 +27,6 @@ std::atomic<bool> CamBANGDevNode::s_live{false};
 CamBANGDevNode::CamBANGDevNode() = default;
 
 CamBANGDevNode::~CamBANGDevNode() {
-    UtilityFunctions::print("[CamBANGDevNode] exit_reason=", exit_reason_, " phase=destructor");
     stop_runtime_();
 }
 
@@ -90,7 +89,7 @@ void CamBANGDevNode::_enter_tree() {
     }
     if (s_live.exchange(true)) {
         mark_exit_reason_("duplicate_instance_guard");
-        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
+        UtilityFunctions::printerr("[CamBANGDevNode] duplicate instance; queue_free.");
         queue_free();
         return;
     }
@@ -103,11 +102,6 @@ void CamBANGDevNode::_exit_tree() {
     if (exit_reason_ == "none") {
         mark_exit_reason_("external_tree_teardown");
     }
-    UtilityFunctions::print(
-        "[CamBANGDevNode] exit_reason=", exit_reason_,
-        " phase=_exit_tree",
-        " active_scenario=", scenario_name_(active_scenario_),
-        " scenario_tick=", (int)scenario_tick_);
     if (godot::Engine::get_singleton()->is_editor_hint()) {
         set_process(false);
         return;
@@ -149,10 +143,6 @@ void CamBANGDevNode::_process(double delta) {
 
     if (bringup_state_ == BringUpState::Running) {
         tick_active_scenario_();
-        if (active_scenario_ == ActiveScenario::None && pending_scenario_ == ActiveScenario::None && !scenario_idle_logged_) {
-            scenario_idle_logged_ = true;
-            UtilityFunctions::print("[CamBANGDevNode] scenario runner idle: active=none pending=none runtime_running=true");
-        }
     }
 
 
@@ -198,7 +188,7 @@ void CamBANGDevNode::start_runtime_() {
     auto* server = CamBANGServer::get_singleton();
     if (!server) {
         mark_exit_reason_("startup_abort_no_singleton");
-        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
+        UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: no CamBANGServer singleton.");
         s_live.store(false);
         queue_free();
         return;
@@ -207,7 +197,7 @@ void CamBANGDevNode::start_runtime_() {
     runtime_ = server->runtime_for_dev();
     if (!runtime_) {
         mark_exit_reason_("startup_abort_runtime_unavailable");
-        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
+        UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: runtime unavailable.");
         s_live.store(false);
         queue_free();
         return;
@@ -223,7 +213,7 @@ void CamBANGDevNode::start_runtime_() {
 
     if (!runtime_->is_running()) {
         mark_exit_reason_("startup_abort_runtime_start_failed");
-        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
+        UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: runtime start failed.");
         s_live.store(false);
         queue_free();
         return;
@@ -236,7 +226,7 @@ void CamBANGDevNode::start_runtime_() {
     if (last_running_) {
         if (!start_provider_()) {
             mark_exit_reason_("startup_abort_provider_bringup_failed");
-            UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
+            UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: provider bring-up failed.");
             stop_runtime_();
             s_live.store(false);
             queue_free();
@@ -442,7 +432,6 @@ bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
     }
     active_scenario_ = scenario;
     scenario_tick_ = 0;
-    scenario_idle_logged_ = false;
     return true;
 }
 
@@ -479,7 +468,6 @@ void CamBANGDevNode::tick_active_scenario_() {
 
         scenario_seed_ += 3;
         if (scenario_tick_ >= 4u) {
-            UtilityFunctions::print("[CamBANGDevNode] scenario final tick reached: publication_coalescing tick=", (int)scenario_tick_);
             complete_active_scenario_();
         }
         return;
@@ -497,7 +485,6 @@ void CamBANGDevNode::tick_active_scenario_() {
             (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
         }
         if (scenario_tick_ >= 12u) {
-            UtilityFunctions::print("[CamBANGDevNode] scenario final tick reached: stream_lifecycle_versions tick=", (int)scenario_tick_);
             complete_active_scenario_();
         }
         return;
@@ -525,16 +512,8 @@ void CamBANGDevNode::complete_active_scenario_() {
     if (completed == ActiveScenario::None) {
         return;
     }
-    UtilityFunctions::print(
-        "[CamBANGDevNode] scenario transition: active->none name=",
-        scenario_name_(completed),
-        " scenario_tick=", (int)scenario_tick_);
     active_scenario_ = ActiveScenario::None;
     emit_signal("scenario_completed", scenario_name_(completed));
-    UtilityFunctions::print(
-        "[CamBANGDevNode] scenario completed emitted: ",
-        scenario_name_(completed),
-        " scenario_tick=", (int)scenario_tick_);
 }
 
 void CamBANGDevNode::stop_runtime_() {
