@@ -1703,10 +1703,16 @@ func _check_required_array_field(snapshot: Dictionary, key: String, gaps: Array[
 func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps: Array) -> PanelModel:
 	var panel := PanelModel.new()
 	var root_lines: Array[String] = []
+	var contract_gap_lines: Array[String] = []
+	var projection_gap_lines: Array[String] = []
+	for raw_gap in contract_gaps:
+		contract_gap_lines.append(str(raw_gap))
+	for raw_projection_gap in projection_gaps:
+		projection_gap_lines.append(str(raw_projection_gap))
 	root_lines.append("Runtime payload is unsupported or malformed; projection skipped safely.")
-	if not contract_gaps.is_empty():
+	if not contract_gap_lines.is_empty():
 		root_lines.append("See contract_gaps row for details.")
-	if not projection_gaps.is_empty():
+	if not projection_gap_lines.is_empty():
 		root_lines.append("See projection_gaps row for details.")
 
 	panel.entries.append(_entry(
@@ -1721,7 +1727,7 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 		root_lines
 	))
 
-	if not contract_gaps.is_empty():
+	if not contract_gap_lines.is_empty():
 		panel.entries.append(_entry(
 			"server/main/contract_gaps",
 			"server/main",
@@ -1730,11 +1736,11 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 			true,
 			false,
 			[_badge("warning", "schema")],
-			[_counter("count", contract_gaps.size(), 1)],
-			contract_gaps
+			[_counter("count", contract_gap_lines.size(), 1)],
+			contract_gap_lines
 		))
 
-	_append_projection_gaps_row(panel, projection_gaps)
+	_append_projection_gaps_row(panel, projection_gap_lines)
 	_ensure_expandability(panel)
 	return panel
 
