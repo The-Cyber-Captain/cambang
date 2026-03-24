@@ -16,10 +16,12 @@ var _cached_snapshot: Dictionary
 var _cached_version := -1
 var _cached_stream_count := -1
 var _publish_count := 0
+var _finished := false
 var _observation_started := false
 
 
 func _ready() -> void:
+	set_process(true)
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot snapshot polling/immutability abuse")
@@ -69,6 +71,9 @@ func _start_scenario_after_ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	if _publish_count == 0:
+		# Keep at least one active process callback while waiting for first publish.
+		pass
 	var polled = CamBANGServer.get_state_snapshot()
 	if polled == null:
 		return
@@ -145,6 +150,7 @@ func _ok(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_finished = true
 	print(msg)
 	_cleanup_and_quit(0)
 
@@ -153,6 +159,7 @@ func _fail(msg: String) -> void:
 	if _done:
 		return
 	_done = true
+	_finished = true
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
@@ -175,6 +182,9 @@ func _cleanup_and_quit(code: int) -> void:
 
 
 func _quit_next_frame(code: int) -> void:
+	if not _finished:
+		print("INFO: _quit_next_frame ignored because verifier is not finished")
+		return
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
 	get_tree().quit(code)
