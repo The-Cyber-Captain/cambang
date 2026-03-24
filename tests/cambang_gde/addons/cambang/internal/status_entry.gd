@@ -4,6 +4,8 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
+const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 176.0
+const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 112.0
 
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
@@ -141,12 +143,15 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		pair.visible = true
 		var indicator := pair.get_child(0) as ColorRect
 		var label := pair.get_child(1) as Label
-		pair.custom_minimum_size = Vector2(0, 18)
+		var raw_label: String = badges[i].label
+		var display_label: String = _badge_display_label(raw_label)
+		var stabilized_width: float = _server_badge_slot_min_width(raw_label)
+		pair.custom_minimum_size = Vector2(stabilized_width, 18)
 		pair.alignment = BoxContainer.ALIGNMENT_CENTER
 		indicator.color = _badge_color_for_role(_badge_role_for_render(badges[i]))
 		var indicator_size := max((_style.badge_strip_width if _style != null else 7), 8)
 		indicator.custom_minimum_size = Vector2(indicator_size, indicator_size)
-		label.text = _badge_display_label(badges[i].label)
+		label.text = display_label
 		label.label_settings = _state_label_settings()
 		label.autowrap_mode = TextServer.AUTOWRAP_OFF
 
@@ -154,6 +159,16 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		_badge_pairs[i].visible = false
 
 	_state_segment.visible = not badges.is_empty()
+
+
+func _server_badge_slot_min_width(raw_label: String) -> float:
+	if _entry_id != "server/main":
+		return 0.0
+	if raw_label.begins_with("NATIVE COVERAGE:"):
+		return SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH
+	if raw_label == "snapshot" or raw_label == "snapshot-unavailable":
+		return SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH
+	return 0.0
 
 
 func _ensure_badge_pair(index: int) -> HBoxContainer:
