@@ -2,12 +2,14 @@ extends Node
 
 const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 7000
+const FIRST_PUBLISH_TIMEOUT_MS := 2000
 const OBSERVATION_WINDOW_MS := 1800
 const MIN_UPDATES := 4
 
 var _done := false
 var _quit_requested := false
 var _timer: Timer
+var _first_publish_timer: Timer
 var _observation_timer: Timer
 var _dev_node: CamBANGDevNode
 var _cached_snapshot: Dictionary
@@ -29,6 +31,13 @@ func _ready() -> void:
 	_timer.timeout.connect(_on_timeout)
 	_timer.start()
 
+	_first_publish_timer = Timer.new()
+	_first_publish_timer.one_shot = true
+	_first_publish_timer.wait_time = float(FIRST_PUBLISH_TIMEOUT_MS) / 1000.0
+	add_child(_first_publish_timer)
+	_first_publish_timer.timeout.connect(_on_first_publish_timeout)
+	_first_publish_timer.start()
+
 	_observation_timer = Timer.new()
 	_observation_timer.one_shot = true
 	_observation_timer.wait_time = float(OBSERVATION_WINDOW_MS) / 1000.0
@@ -41,7 +50,15 @@ func _ready() -> void:
 	CamBANGServer.start()
 	_dev_node = CamBANGDevNode.new()
 	add_child(_dev_node)
+	call_deferred("_start_scenario_after_ready")
 
+
+func _start_scenario_after_ready() -> void:
+	if _done:
+		return
+	if _dev_node == null or not is_instance_valid(_dev_node):
+		_fail("FAIL: dev node unavailable before scenario start")
+		return
 	if not _dev_node.start_scenario("stream_lifecycle_versions"):
 		_fail("FAIL: unable to start stream_lifecycle_versions scenario")
 
@@ -67,6 +84,14 @@ func _on_timeout() -> void:
 	_fail("FAIL: snapshot polling/immutability abuse timed out before reaching deterministic completion")
 
 
+func _on_first_publish_timeout() -> void:
+	if _done:
+		return
+	if _publish_count > 0:
+		return
+	_fail("FAIL: no state_published callback observed during startup window")
+
+
 func _on_observation_timeout() -> void:
 	if _done:
 		return
@@ -86,6 +111,7 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 		return
 
 	if _cached_version == -1:
+		print("INFO: first publish observed in snapshot polling/immutability verifier")
 		_start_observation_window()
 		_cached_snapshot = snapshot
 		_cached_version = int(snapshot.get("version", -1))
@@ -101,6 +127,7 @@ func _start_observation_window() -> void:
 	if _observation_timer == null or not is_instance_valid(_observation_timer):
 		return
 	_observation_started = true
+	print("INFO: observation window started for snapshot polling/immutability verifier")
 	_observation_timer.start()
 
 
@@ -124,6 +151,8 @@ func _fail(msg: String) -> void:
 func _cleanup_and_quit(code: int) -> void:
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
+	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):
+		_first_publish_timer.stop()
 	if _observation_timer != null and is_instance_valid(_observation_timer):
 		_observation_timer.stop()
 	if CamBANGServer.state_published.is_connected(_on_state_published):
