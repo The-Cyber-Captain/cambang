@@ -19,6 +19,7 @@ func _ready() -> void:
 	add_child(_timer)
 	_timer.timeout.connect(_on_timeout)
 	_timer.start()
+	_log_timer_state("ready:hard_timeout_started", _timer)
 
 	if not CamBANGServer.state_published.is_connected(_on_initial_publish):
 		CamBANGServer.state_published.connect(_on_initial_publish)
@@ -27,6 +28,7 @@ func _ready() -> void:
 
 
 func _on_timeout() -> void:
+	_log_timer_state("timeout_fired:hard_timeout", _timer)
 	_fail("FAIL: restart_boundary_abuse timed out")
 
 
@@ -116,3 +118,34 @@ func _quit_next_frame(code: int) -> void:
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
 	get_tree().quit(code)
+
+
+func _log_timer_state(label: String, t: Timer) -> void:
+	var valid := t != null and is_instance_valid(t)
+	var inside := valid and t.is_inside_tree()
+	var parent_desc := "null"
+	if valid:
+		var p := t.get_parent()
+		if p != null and is_instance_valid(p):
+			if p.is_inside_tree():
+				parent_desc = "%s@%s" % [p.name, str(p.get_path())]
+			else:
+				parent_desc = "%s@<not_in_tree>" % str(p.name)
+		else:
+			parent_desc = "invalid_parent"
+	var stopped := "n/a"
+	var time_left := "n/a"
+	var process_mode := "n/a"
+	if valid:
+		stopped = str(t.is_stopped())
+		time_left = str(t.time_left)
+		process_mode = str(t.process_mode)
+	print("INFO: timer_state %s valid=%s inside_tree=%s parent=%s stopped=%s time_left=%s process_mode=%s" % [
+		label,
+		str(valid),
+		str(inside),
+		parent_desc,
+		stopped,
+		time_left,
+		process_mode
+	])

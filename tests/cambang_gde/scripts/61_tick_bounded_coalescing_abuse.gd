@@ -36,6 +36,7 @@ func _ready() -> void:
 	add_child(_timer)
 	_timer.timeout.connect(_on_timeout)
 	_timer.start()
+	_log_timer_state("ready:hard_timeout_started", _timer)
 
 	_first_publish_timer = Timer.new()
 	_first_publish_timer.one_shot = true
@@ -43,12 +44,14 @@ func _ready() -> void:
 	add_child(_first_publish_timer)
 	_first_publish_timer.timeout.connect(_on_first_publish_timeout)
 	_first_publish_timer.start()
+	_log_timer_state("ready:first_publish_timeout_started", _first_publish_timer)
 
 	_observation_timer = Timer.new()
 	_observation_timer.one_shot = true
 	_observation_timer.wait_time = float(OBSERVATION_WINDOW_MS) / 1000.0
 	add_child(_observation_timer)
 	_observation_timer.timeout.connect(_on_observation_timeout)
+	_log_timer_state("ready:observation_timer_created", _observation_timer)
 
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
@@ -135,6 +138,9 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 		var valid := _dev_node != null and is_instance_valid(_dev_node)
 		var inside := valid and _dev_node.is_inside_tree()
 		print("INFO: publish_count reached 4; dev_node valid=%s inside_tree=%s" % [str(valid), str(inside)])
+		_log_timer_state("publish_count_4:hard_timeout", _timer)
+		_log_timer_state("publish_count_4:first_publish_timeout", _first_publish_timer)
+		_log_timer_state("publish_count_4:observation", _observation_timer)
 
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
@@ -143,6 +149,9 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 	if _last_gen == -1:
 		print("INFO: first publish observed")
+		_log_timer_state("first_publish:hard_timeout", _timer)
+		_log_timer_state("first_publish:first_publish_timeout", _first_publish_timer)
+		_log_timer_state("first_publish:observation", _observation_timer)
 		_start_observation_window()
 		_last_gen = gen
 		_last_version = version
@@ -183,6 +192,9 @@ func _start_observation_window() -> void:
 	_observation_started = true
 	print("INFO: observation window started")
 	_observation_timer.start()
+	_log_timer_state("observation_started:hard_timeout", _timer)
+	_log_timer_state("observation_started:first_publish_timeout", _first_publish_timer)
+	_log_timer_state("observation_started:observation", _observation_timer)
 
 
 func _on_dev_node_tree_exiting() -> void:
@@ -280,6 +292,8 @@ func _node_ref_desc(n: Node) -> String:
 		return "null"
 	if not is_instance_valid(n):
 		return "invalid"
+	if not n.is_inside_tree():
+		return "%s@<not_in_tree>" % str(n.name)
 	return "%s@%s" % [n.name, str(n.get_path())]
 
 
@@ -291,3 +305,25 @@ func _node_path_desc(n: Node) -> String:
 	if not n.is_inside_tree():
 		return "<not_in_tree>"
 	return str(n.get_path())
+
+
+func _log_timer_state(label: String, t: Timer) -> void:
+	var valid := t != null and is_instance_valid(t)
+	var inside := valid and t.is_inside_tree()
+	var parent_desc := _node_ref_desc(t.get_parent() if valid else null)
+	var stopped := "n/a"
+	var time_left := "n/a"
+	var process_mode := "n/a"
+	if valid:
+		stopped = str(t.is_stopped())
+		time_left = str(t.time_left)
+		process_mode = str(t.process_mode)
+	print("INFO: timer_state %s valid=%s inside_tree=%s parent=%s stopped=%s time_left=%s process_mode=%s" % [
+		label,
+		str(valid),
+		str(inside),
+		parent_desc,
+		stopped,
+		time_left,
+		process_mode
+	])
