@@ -100,7 +100,6 @@ class RetainedSubtreeState extends RefCounted:
 
 var _title_label: Label
 var _provider_mode_value: Label
-var _snapshot_state_value: Label
 var _schema_version_value: Label
 var _counts_value: Label
 var _timestamp_value: Label
@@ -215,7 +214,6 @@ func _build_ui_if_needed() -> void:
 	root.add_child(grid)
 
 	_provider_mode_value = _add_row(grid, "Provider Mode")
-	_snapshot_state_value = _add_row(grid, "Snapshot State")
 	_schema_version_value = _add_row(grid, "Schema Version")
 	_counts_value = _add_row(grid, "Entity Counts")
 	_timestamp_value = _add_row(grid, "timestamp_ns")
@@ -636,7 +634,6 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 
 	var state := str(coverage.get("state", "UNKNOWN"))
 	if state == "UNKNOWN":
-		next_info_lines.append("native coverage: unknown.")
 		return next_info_lines
 
 	var total_native := int(coverage.get("total", 0))
@@ -651,8 +648,6 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 				missing_native,
 			]
 		)
-	else:
-		next_info_lines.append("native coverage: %d/%d rendered." % [rendered_native, total_native])
 	return next_info_lines
 
 
@@ -1740,7 +1735,6 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 
 
 func _apply_snapshot_read(reading: Dictionary) -> void:
-	_snapshot_state_value.text = str(reading.get("state", "No snapshot"))
 	_schema_version_value.text = str(reading.get("schema_version", "-"))
 	_counts_value.text = str(reading.get("counts", "-"))
 	_timestamp_value.text = "%s (monotonic publish timestamp)" % str(reading.get("timestamp", "-"))
