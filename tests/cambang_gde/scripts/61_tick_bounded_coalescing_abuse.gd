@@ -24,6 +24,8 @@ var _dev_node_state_logged_after_four := false
 
 func _ready() -> void:
 	set_process(true)
+	print("INFO: verifier node name=%s path=%s" % [name, str(get_path())])
+	print("INFO: verifier parent=%s owner=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner)])
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot tick-bounded coalescing abuse")
@@ -53,6 +55,7 @@ func _ready() -> void:
 
 	CamBANGServer.start()
 	_dev_node = CamBANGDevNode.new()
+	print("INFO: dev node allocated parent=%s owner=%s" % [_node_ref_desc(_dev_node.get_parent()), _node_ref_desc(_dev_node.owner)])
 	if not _dev_node.tree_exiting.is_connected(_on_dev_node_tree_exiting):
 		_dev_node.tree_exiting.connect(_on_dev_node_tree_exiting)
 	if not _dev_node.tree_exited.is_connected(_on_dev_node_tree_exited):
@@ -60,6 +63,7 @@ func _ready() -> void:
 	if _dev_node.has_signal("scenario_completed") and not _dev_node.scenario_completed.is_connected(_on_dev_node_scenario_completed):
 		_dev_node.scenario_completed.connect(_on_dev_node_scenario_completed)
 	add_child(_dev_node)
+	print("INFO: dev node after add_child parent=%s owner=%s path=%s" % [_node_ref_desc(_dev_node.get_parent()), _node_ref_desc(_dev_node.owner), _node_path_desc(_dev_node)])
 	call_deferred("_start_scenario_after_ready")
 
 
@@ -185,14 +189,24 @@ func _on_dev_node_tree_exiting() -> void:
 	var reason := "unknown"
 	if _dev_node != null and is_instance_valid(_dev_node) and _dev_node.has_method("get_exit_reason"):
 		reason = str(_dev_node.get_exit_reason())
-	print("INFO: dev node tree_exiting observed exit_reason=%s" % reason)
+	print("INFO: dev node tree_exiting observed exit_reason=%s parent=%s owner=%s path=%s" % [
+		reason,
+		_node_ref_desc(_dev_node.get_parent() if _dev_node != null and is_instance_valid(_dev_node) else null),
+		_node_ref_desc(_dev_node.owner if _dev_node != null and is_instance_valid(_dev_node) else null),
+		_node_path_desc(_dev_node)
+	])
 
 
 func _on_dev_node_tree_exited() -> void:
 	var reason := "unknown"
 	if _dev_node != null and is_instance_valid(_dev_node) and _dev_node.has_method("get_exit_reason"):
 		reason = str(_dev_node.get_exit_reason())
-	print("INFO: dev node tree_exited observed exit_reason=%s" % reason)
+	print("INFO: dev node tree_exited observed exit_reason=%s parent=%s owner=%s path=%s" % [
+		reason,
+		_node_ref_desc(_dev_node.get_parent() if _dev_node != null and is_instance_valid(_dev_node) else null),
+		_node_ref_desc(_dev_node.owner if _dev_node != null and is_instance_valid(_dev_node) else null),
+		_node_path_desc(_dev_node)
+	])
 
 
 func _on_dev_node_scenario_completed(name: String) -> void:
@@ -217,6 +231,14 @@ func _fail(msg: String) -> void:
 
 
 func _cleanup_and_quit(code: int) -> void:
+	print("INFO: cleanup_and_quit code=%d verifier_parent=%s dev_node_valid=%s dev_node_inside_tree=%s server_snapshot_nil=%s" % [
+		code,
+		_node_ref_desc(get_parent()),
+		str(_dev_node != null and is_instance_valid(_dev_node)),
+		str(_dev_node != null and is_instance_valid(_dev_node) and _dev_node.is_inside_tree()),
+		str(CamBANGServer.get_state_snapshot() == null)
+	])
+	print("INFO: server signal connected to verifier=%s" % str(CamBANGServer.state_published.is_connected(_on_state_published)))
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):
@@ -239,4 +261,33 @@ func _quit_next_frame(code: int) -> void:
 
 
 func _exit_tree() -> void:
-	print("INFO: exit_tree reached")
+	print("INFO: exit_tree reached parent=%s owner=%s path=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner), str(get_path())])
+	print("INFO: exit_tree server snapshot nil=%s signal connected=%s" % [
+		str(CamBANGServer.get_state_snapshot() == null),
+		str(CamBANGServer.state_published.is_connected(_on_state_published))
+	])
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_EXIT_TREE:
+		print("INFO: _notification NOTIFICATION_EXIT_TREE")
+	elif what == NOTIFICATION_PREDELETE:
+		print("INFO: _notification NOTIFICATION_PREDELETE")
+
+
+func _node_ref_desc(n: Node) -> String:
+	if n == null:
+		return "null"
+	if not is_instance_valid(n):
+		return "invalid"
+	return "%s@%s" % [n.name, str(n.get_path())]
+
+
+func _node_path_desc(n: Node) -> String:
+	if n == null:
+		return "null"
+	if not is_instance_valid(n):
+		return "invalid"
+	if not n.is_inside_tree():
+		return "<not_in_tree>"
+	return str(n.get_path())

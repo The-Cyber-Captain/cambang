@@ -103,7 +103,11 @@ void CamBANGDevNode::_exit_tree() {
     if (exit_reason_ == "none") {
         mark_exit_reason_("external_tree_teardown");
     }
-    UtilityFunctions::print("[CamBANGDevNode] exit_reason=", exit_reason_, " phase=_exit_tree");
+    UtilityFunctions::print(
+        "[CamBANGDevNode] exit_reason=", exit_reason_,
+        " phase=_exit_tree",
+        " active_scenario=", scenario_name_(active_scenario_),
+        " scenario_tick=", (int)scenario_tick_);
     if (godot::Engine::get_singleton()->is_editor_hint()) {
         set_process(false);
         return;
@@ -473,7 +477,10 @@ void CamBANGDevNode::tick_active_scenario_() {
             const ActiveScenario completed = active_scenario_;
             active_scenario_ = ActiveScenario::None;
             emit_signal("scenario_completed", scenario_name_(completed));
-            UtilityFunctions::print("[CamBANGDevNode] scenario completed: ", scenario_name_(completed));
+            UtilityFunctions::print(
+                "[CamBANGDevNode] scenario completed: ",
+                scenario_name_(completed),
+                " scenario_tick=", (int)scenario_tick_);
         }
         return;
     }
@@ -493,7 +500,10 @@ void CamBANGDevNode::tick_active_scenario_() {
             const ActiveScenario completed = active_scenario_;
             active_scenario_ = ActiveScenario::None;
             emit_signal("scenario_completed", scenario_name_(completed));
-            UtilityFunctions::print("[CamBANGDevNode] scenario completed: ", scenario_name_(completed));
+            UtilityFunctions::print(
+                "[CamBANGDevNode] scenario completed: ",
+                scenario_name_(completed),
+                " scenario_tick=", (int)scenario_tick_);
         }
         return;
     }
