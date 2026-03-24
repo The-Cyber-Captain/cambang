@@ -1900,7 +1900,7 @@ func _build_nil_panel_model(reason: String) -> PanelModel:
 		"server/main",
 		true,
 		true,
-		[_badge("warning", "snapshot-unavailable")],
+		[_badge("warning", "NO SNAPSHOT")],
 		[
 			_counter("gen", -1, 3),
 			_counter("version", -1, 5),
