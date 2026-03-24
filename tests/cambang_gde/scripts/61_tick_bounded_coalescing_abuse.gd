@@ -73,6 +73,7 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	# Frame driver: keep headless main loop actively ticking until verifier completion.
 	if _signal_count_this_tick > 1:
 		_fail("FAIL: more than one state_published emission observed in one Godot tick")
 		return
@@ -243,6 +244,7 @@ func _fail(msg: String) -> void:
 
 
 func _cleanup_and_quit(code: int) -> void:
+	set_process(false)
 	print("INFO: cleanup_and_quit code=%d verifier_parent=%s dev_node_valid=%s dev_node_inside_tree=%s server_snapshot_nil=%s" % [
 		code,
 		_node_ref_desc(get_parent()),

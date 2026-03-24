@@ -72,6 +72,7 @@ func _start_scenario_after_ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	# Frame driver: keep headless main loop actively ticking until verifier completion.
 	var polled = CamBANGServer.get_state_snapshot()
 	if polled == null:
 		return
@@ -172,6 +173,7 @@ func _fail(msg: String) -> void:
 
 
 func _cleanup_and_quit(code: int) -> void:
+	set_process(false)
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):
