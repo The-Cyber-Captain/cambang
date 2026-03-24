@@ -42,6 +42,7 @@ func _initialize() -> void:
 	var expected_validity := str(fixture.get("expected_validity", "valid"))
 	var should_run_projector := bool(fixture.get("should_run_projector", true))
 	var expected_panel_outcome: Dictionary = fixture.get("expected_panel_outcome", {})
+	var adversarial_projection: Dictionary = fixture.get("adversarial_projection", {})
 	var provider_mode := str(fixture.get("provider_mode", "fixture"))
 
 	var window := Window.new()
@@ -111,6 +112,7 @@ func _initialize() -> void:
 		active_panel = panel.call("_project_snapshot_to_panel_model", payload, provider_mode)
 		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", payload)
 		rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+		rendered_model = _apply_adversarial_projection(rendered_model, adversarial_projection, panel)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
 	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
@@ -310,6 +312,71 @@ func _resolve_render_snapshot(payload: Variant) -> Variant:
 	if typeof(payload) != TYPE_DICTIONARY:
 		return null
 	return payload
+
+
+func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, panel: Object) -> Variant:
+	if rendered_model == null:
+		return rendered_model
+	if config.is_empty():
+		return rendered_model
+
+	var strip_ids_variant: Variant = config.get("strip_materialized_native_ids", [])
+	if typeof(strip_ids_variant) != TYPE_ARRAY:
+		return rendered_model
+	var strip_ids_raw: Array = strip_ids_variant
+	if strip_ids_raw.is_empty():
+		return rendered_model
+
+	var strip_native_ids := {}
+	for raw_id in strip_ids_raw:
+		var native_id := int(raw_id)
+		if native_id > 0:
+			strip_native_ids[native_id] = true
+	if strip_native_ids.is_empty():
+		return rendered_model
+
+	var source_entries: Array = _extract_entries(rendered_model)
+	if source_entries.is_empty():
+		return rendered_model
+
+	var stripped_row_ids := {}
+	for entry in source_entries:
+		var materialized_native_id := int(_extract_variant_field(entry, "materialized_native_id", 0))
+		if strip_native_ids.has(materialized_native_id):
+			var entry_id := _extract_entry_id(entry)
+			if entry_id != "":
+				stripped_row_ids[entry_id] = true
+
+	if stripped_row_ids.is_empty():
+		return rendered_model
+
+	var changed := true
+	while changed:
+		changed = false
+		for entry in source_entries:
+			var entry_id := _extract_entry_id(entry)
+			if entry_id == "" or stripped_row_ids.has(entry_id):
+				continue
+			var parent_id := _extract_entry_field(entry, "parent_id")
+			if parent_id != "" and stripped_row_ids.has(parent_id):
+				stripped_row_ids[entry_id] = true
+				changed = true
+
+	var filtered_entries: Array = []
+	for entry in source_entries:
+		var entry_id := _extract_entry_id(entry)
+		if entry_id != "" and stripped_row_ids.has(entry_id):
+			continue
+		filtered_entries.append(entry)
+
+	if typeof(rendered_model) == TYPE_DICTIONARY:
+		var rendered_dict := rendered_model as Dictionary
+		rendered_dict["entries"] = filtered_entries
+	elif rendered_model is Object:
+		rendered_model.set("entries", filtered_entries)
+
+	panel.call("_ensure_expandability", rendered_model)
+	return rendered_model
 
 
 func _validate_screenshot_mode() -> String:
