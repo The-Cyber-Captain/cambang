@@ -115,10 +115,14 @@ func _initialize() -> void:
 		rendered_model = _apply_adversarial_projection(rendered_model, adversarial_projection, panel)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
+	_debug_checkpoint_entries("C pre_render", rendered_model)
 	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
+	_debug_checkpoint_entries("D post_render", rendered_model)
 
 	await process_frame
+	_debug_checkpoint_entries("E post_process_frame_1", rendered_model)
 	await process_frame
+	_debug_checkpoint_entries("F post_process_frame_2", rendered_model)
 
 	if screenshot_path != "":
 		var capture_error := _capture_window_png(window, screenshot_path)
@@ -127,6 +131,7 @@ func _initialize() -> void:
 			quit(2)
 			return
 
+	_debug_checkpoint_entries("G pre_collect_row_ids", rendered_model)
 	var row_ids := _collect_entry_ids(rendered_model)
 	print("HARNESS row_ids: %s" % [row_ids])
 	var visible_row_ids := _collect_visible_row_ids(panel)
@@ -345,6 +350,7 @@ func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, 
 	if source_entries.is_empty():
 		return rendered_model
 
+	_debug_checkpoint_entries("A pre_adversarial_strip", rendered_model)
 	print("HARNESS adversarial strip target_native_ids: %s" % [strip_native_ids.keys()])
 	print("HARNESS adversarial before rows: %s" % [_debug_materialized_rows(source_entries)])
 
@@ -386,9 +392,11 @@ func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, 
 		filtered_entries.append(raw_entry)
 
 	print("HARNESS adversarial stripped_row_ids: %s" % [stripped_row_ids.keys()])
-	rendered_model.set("entries", filtered_entries)
+	source_entries.clear()
+	for kept_entry in filtered_entries:
+		source_entries.append(kept_entry)
 	panel.call("_ensure_expandability", rendered_model)
-	print("HARNESS adversarial after rows: %s" % [_debug_materialized_rows(filtered_entries)])
+	_debug_checkpoint_entries("B post_adversarial_strip", rendered_model)
 	return rendered_model
 
 
@@ -406,6 +414,34 @@ func _debug_materialized_rows(entries: Array) -> Array[String]:
 			]
 		)
 	return rows
+
+
+func _debug_checkpoint_entries(label: String, rendered_model: Variant) -> void:
+	if rendered_model == null:
+		print("HARNESS %s model=<null>" % label)
+		return
+	if not rendered_model is Object:
+		print("HARNESS %s model=<non-object type=%d>" % [label, typeof(rendered_model)])
+		return
+
+	var entries_variant: Variant = rendered_model.get("entries")
+	if typeof(entries_variant) != TYPE_ARRAY:
+		print(
+			"HARNESS %s model_instance_id=%d entries=<non-array type=%d>"
+			% [label, rendered_model.get_instance_id(), typeof(entries_variant)]
+		)
+		return
+
+	var entries: Array = entries_variant
+	print(
+		"HARNESS %s model_instance_id=%d entries.size=%d rows=%s"
+		% [
+			label,
+			rendered_model.get_instance_id(),
+			entries.size(),
+			_debug_materialized_rows(entries),
+		]
+	)
 
 
 func _validate_screenshot_mode() -> String:
