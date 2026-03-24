@@ -56,6 +56,10 @@ func _ready() -> void:
 	_dev_node = CamBANGDevNode.new()
 	add_child(_dev_node)
 	call_deferred("_start_scenario_after_ready")
+	print("INFO: frame-lifetime loop entered (snapshot polling/immutability verifier)")
+	while not _finished:
+		await get_tree().process_frame
+	print("INFO: frame-lifetime loop exited (snapshot polling/immutability verifier)")
 
 
 func _start_scenario_after_ready() -> void:

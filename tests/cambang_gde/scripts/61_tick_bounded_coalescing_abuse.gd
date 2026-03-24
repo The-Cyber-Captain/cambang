@@ -64,6 +64,10 @@ func _ready() -> void:
 	_dev_node = CamBANGDevNode.new()
 	add_child(_dev_node)
 	call_deferred("_start_scenario_after_ready")
+	_trace("INFO: frame-lifetime loop entered (tick-bounded coalescing verifier)")
+	while not _finished:
+		await get_tree().process_frame
+	_trace("INFO: frame-lifetime loop exited (tick-bounded coalescing verifier)")
 
 
 func _start_scenario_after_ready() -> void:
