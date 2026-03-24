@@ -33,6 +33,7 @@ CamBANGDevNode::~CamBANGDevNode() {
 
 void CamBANGDevNode::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("start_scenario", "name"), &CamBANGDevNode::start_scenario);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_exit_reason"), &CamBANGDevNode::get_exit_reason);
     ADD_SIGNAL(godot::MethodInfo("scenario_completed", godot::PropertyInfo(godot::Variant::STRING, "name")));
 }
 
@@ -75,6 +76,10 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
 
     UtilityFunctions::print("[CamBANGDevNode] scenario started: ", normalized);
     return true;
+}
+
+godot::String CamBANGDevNode::get_exit_reason() const {
+    return exit_reason_;
 }
 
 void CamBANGDevNode::_enter_tree() {

@@ -60,9 +60,6 @@ func _ready() -> void:
 	if _dev_node.has_signal("scenario_completed") and not _dev_node.scenario_completed.is_connected(_on_dev_node_scenario_completed):
 		_dev_node.scenario_completed.connect(_on_dev_node_scenario_completed)
 	add_child(_dev_node)
-
-	if not get_tree().tree_exiting.is_connected(_on_tree_exiting):
-		get_tree().tree_exiting.connect(_on_tree_exiting)
 	call_deferred("_start_scenario_after_ready")
 
 
@@ -185,19 +182,21 @@ func _start_observation_window() -> void:
 
 
 func _on_dev_node_tree_exiting() -> void:
-	print("INFO: dev node tree_exiting observed")
+	var reason := "unknown"
+	if _dev_node != null and is_instance_valid(_dev_node) and _dev_node.has_method("get_exit_reason"):
+		reason = str(_dev_node.get_exit_reason())
+	print("INFO: dev node tree_exiting observed exit_reason=%s" % reason)
 
 
 func _on_dev_node_tree_exited() -> void:
-	print("INFO: dev node tree_exited observed")
+	var reason := "unknown"
+	if _dev_node != null and is_instance_valid(_dev_node) and _dev_node.has_method("get_exit_reason"):
+		reason = str(_dev_node.get_exit_reason())
+	print("INFO: dev node tree_exited observed exit_reason=%s" % reason)
 
 
 func _on_dev_node_scenario_completed(name: String) -> void:
 	print("INFO: dev node scenario_completed observed name=%s" % name)
-
-
-func _on_tree_exiting() -> void:
-	print("INFO: SceneTree tree_exiting observed")
 
 
 func _ok(msg: String) -> void:

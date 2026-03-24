@@ -35,6 +35,7 @@ public:
     // Dev-only scenario trigger.
     // Returns true when the named scenario trigger was accepted.
     bool start_scenario(const godot::String& name);
+    godot::String get_exit_reason() const;
 
 protected:
     static void _bind_methods();
