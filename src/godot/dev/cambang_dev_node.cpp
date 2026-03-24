@@ -149,6 +149,10 @@ void CamBANGDevNode::_process(double delta) {
 
     if (bringup_state_ == BringUpState::Running) {
         tick_active_scenario_();
+        if (active_scenario_ == ActiveScenario::None && pending_scenario_ == ActiveScenario::None && !scenario_idle_logged_) {
+            scenario_idle_logged_ = true;
+            UtilityFunctions::print("[CamBANGDevNode] scenario runner idle: active=none pending=none runtime_running=true");
+        }
     }
 
 
@@ -438,6 +442,7 @@ bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
     }
     active_scenario_ = scenario;
     scenario_tick_ = 0;
+    scenario_idle_logged_ = false;
     return true;
 }
 
@@ -474,13 +479,8 @@ void CamBANGDevNode::tick_active_scenario_() {
 
         scenario_seed_ += 3;
         if (scenario_tick_ >= 4u) {
-            const ActiveScenario completed = active_scenario_;
-            active_scenario_ = ActiveScenario::None;
-            emit_signal("scenario_completed", scenario_name_(completed));
-            UtilityFunctions::print(
-                "[CamBANGDevNode] scenario completed: ",
-                scenario_name_(completed),
-                " scenario_tick=", (int)scenario_tick_);
+            UtilityFunctions::print("[CamBANGDevNode] scenario final tick reached: publication_coalescing tick=", (int)scenario_tick_);
+            complete_active_scenario_();
         }
         return;
     }
@@ -497,13 +497,8 @@ void CamBANGDevNode::tick_active_scenario_() {
             (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
         }
         if (scenario_tick_ >= 12u) {
-            const ActiveScenario completed = active_scenario_;
-            active_scenario_ = ActiveScenario::None;
-            emit_signal("scenario_completed", scenario_name_(completed));
-            UtilityFunctions::print(
-                "[CamBANGDevNode] scenario completed: ",
-                scenario_name_(completed),
-                " scenario_tick=", (int)scenario_tick_);
+            UtilityFunctions::print("[CamBANGDevNode] scenario final tick reached: stream_lifecycle_versions tick=", (int)scenario_tick_);
+            complete_active_scenario_();
         }
         return;
     }
@@ -523,6 +518,23 @@ godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
 
 void CamBANGDevNode::mark_exit_reason_(const godot::String& reason) {
     exit_reason_ = reason;
+}
+
+void CamBANGDevNode::complete_active_scenario_() {
+    const ActiveScenario completed = active_scenario_;
+    if (completed == ActiveScenario::None) {
+        return;
+    }
+    UtilityFunctions::print(
+        "[CamBANGDevNode] scenario transition: active->none name=",
+        scenario_name_(completed),
+        " scenario_tick=", (int)scenario_tick_);
+    active_scenario_ = ActiveScenario::None;
+    emit_signal("scenario_completed", scenario_name_(completed));
+    UtilityFunctions::print(
+        "[CamBANGDevNode] scenario completed emitted: ",
+        scenario_name_(completed),
+        " scenario_tick=", (int)scenario_tick_);
 }
 
 void CamBANGDevNode::stop_runtime_() {

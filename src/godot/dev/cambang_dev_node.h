@@ -92,6 +92,7 @@ private:
     ActiveScenario pending_scenario_ = ActiveScenario::None;
     uint32_t scenario_tick_ = 0;
     uint32_t scenario_seed_ = 1;
+    bool scenario_idle_logged_ = false;
 
 
     void start_runtime_();
@@ -107,6 +108,7 @@ private:
     bool dispatch_scenario_now_(ActiveScenario scenario);
     static godot::String scenario_name_(ActiveScenario scenario);
     void mark_exit_reason_(const godot::String& reason);
+    void complete_active_scenario_();
 
     godot::String exit_reason_ = "none";
 };
