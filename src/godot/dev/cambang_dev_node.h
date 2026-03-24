@@ -35,6 +35,7 @@ public:
     // Dev-only scenario trigger.
     // Returns true when the named scenario trigger was accepted.
     bool start_scenario(const godot::String& name);
+    godot::String get_exit_reason() const;
 
 protected:
     static void _bind_methods();
@@ -104,6 +105,11 @@ private:
     void tick_bringup_();
     void tick_active_scenario_();
     bool dispatch_scenario_now_(ActiveScenario scenario);
+    static godot::String scenario_name_(ActiveScenario scenario);
+    void mark_exit_reason_(const godot::String& reason);
+    void complete_active_scenario_();
+
+    godot::String exit_reason_ = "none";
 };
 
 } // namespace cambang

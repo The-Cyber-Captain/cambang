@@ -1,17 +1,28 @@
 extends SceneTree
 
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
+const DEFAULT_SCREENSHOT_VIEWPORT_SIZE := Vector2i(1400, 1600)
 const SnapshotValidator = preload("res://support/snapshot_schema_validator.gd")
 
 func _initialize() -> void:
-	var args := OS.get_cmdline_user_args()
-	if args.size() < 1:
-		_printerr("usage: -- <fixture.json> [screenshot.png]")
+	var parse_result := _parse_cli_args(OS.get_cmdline_user_args())
+	if not bool(parse_result.get("ok", false)):
+		_printerr(str(parse_result.get("error", "usage: -- <fixture.json> [screenshot.png] [--window-width <px>] [--window-height <px>]")))
+		_printerr("usage: -- <fixture.json> [screenshot.png] [--window-width <px>] [--window-height <px>]")
+		_printerr("note: screenshot capture requires a headed/windowed run; semantic-only runs remain headless-compatible")
 		quit(2)
 		return
 
-	var fixture_path := args[0]
-	var screenshot_path := args[1] if args.size() >= 2 else ""
+	var fixture_path := str(parse_result.get("fixture_path", ""))
+	var screenshot_path := str(parse_result.get("screenshot_path", ""))
+	var window_size := _resolve_window_size(parse_result, screenshot_path != "")
+
+	if screenshot_path != "":
+		var screenshot_preflight_error := _validate_screenshot_mode()
+		if screenshot_preflight_error != "":
+			_printerr(screenshot_preflight_error)
+			quit(2)
+			return
 
 	var fixture := _load_fixture(fixture_path)
 	if fixture.is_empty():
@@ -35,7 +46,7 @@ func _initialize() -> void:
 
 	var window := Window.new()
 	window.title = "status_panel_harness"
-	window.size = DEFAULT_VIEWPORT_SIZE
+	window.size = window_size
 	window.mode = Window.MODE_WINDOWED
 	window.visible = true
 	get_root().add_child(window)
@@ -58,6 +69,7 @@ func _initialize() -> void:
 		return
 
 	panel.name = "CamBANGStatusPanel"
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	window.add_child(panel)
@@ -101,13 +113,17 @@ func _initialize() -> void:
 		rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
-	panel.call("_render_panel_model", rendered_model)
+	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
 
 	await process_frame
 	await process_frame
 
 	if screenshot_path != "":
-		_capture_window_png(window, screenshot_path)
+		var capture_error := _capture_window_png(window, screenshot_path)
+		if capture_error != "":
+			_printerr(capture_error)
+			quit(2)
+			return
 
 	var row_ids := _collect_entry_ids(rendered_model)
 	print("HARNESS row_ids: %s" % [row_ids])
@@ -148,6 +164,112 @@ func _initialize() -> void:
 	quit(0)
 
 
+func _parse_cli_args(args: PackedStringArray) -> Dictionary:
+	var fixture_path := ""
+	var screenshot_path := ""
+	var window_width: Variant = null
+	var window_height: Variant = null
+	var index := 0
+
+	while index < args.size():
+		var arg := args[index]
+		match arg:
+			"--window-width":
+				index += 1
+				if index >= args.size():
+					return {
+						"ok": false,
+						"error": "missing value for --window-width",
+					}
+				var parsed_width := _parse_dimension_arg(args[index], "--window-width")
+				if not bool(parsed_width.get("ok", false)):
+					return parsed_width
+				window_width = parsed_width.get("value")
+			"--window-height":
+				index += 1
+				if index >= args.size():
+					return {
+						"ok": false,
+						"error": "missing value for --window-height",
+					}
+				var parsed_height := _parse_dimension_arg(args[index], "--window-height")
+				if not bool(parsed_height.get("ok", false)):
+					return parsed_height
+				window_height = parsed_height.get("value")
+			_:
+				if arg.begins_with("--"):
+					return {
+						"ok": false,
+						"error": "unknown option: %s" % arg,
+					}
+				if fixture_path == "":
+					fixture_path = arg
+				elif screenshot_path == "":
+					screenshot_path = arg
+				else:
+					return {
+						"ok": false,
+						"error": "unexpected extra positional argument: %s" % arg,
+					}
+		index += 1
+
+	if fixture_path == "":
+		return {
+			"ok": false,
+			"error": "missing fixture path",
+		}
+
+	return {
+		"ok": true,
+		"fixture_path": fixture_path,
+		"screenshot_path": screenshot_path,
+		"window_width": window_width,
+		"window_height": window_height,
+	}
+
+
+func _parse_dimension_arg(raw_value: String, option_name: String) -> Dictionary:
+	if raw_value == "":
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer" % option_name,
+		}
+
+	if not raw_value.is_valid_int():
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer; got %s" % [option_name, raw_value],
+		}
+
+	var value := int(raw_value)
+	if value <= 0:
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer; got %d" % [option_name, value],
+		}
+
+	return {
+		"ok": true,
+		"value": value,
+	}
+
+
+func _resolve_window_size(parse_result: Dictionary, is_screenshot_run: bool) -> Vector2i:
+	var has_explicit_width := parse_result.get("window_width", null) != null
+	var has_explicit_height := parse_result.get("window_height", null) != null
+
+	var window_size := DEFAULT_VIEWPORT_SIZE
+	if is_screenshot_run and not has_explicit_width and not has_explicit_height:
+		window_size = DEFAULT_SCREENSHOT_VIEWPORT_SIZE
+
+	if has_explicit_width:
+		window_size.x = int(parse_result.get("window_width"))
+	if has_explicit_height:
+		window_size.y = int(parse_result.get("window_height"))
+
+	return window_size
+
+
 func _load_fixture(path: String) -> Dictionary:
 	var text := FileAccess.get_file_as_string(path)
 	if text == "":
@@ -182,20 +304,34 @@ func _compute_runtime_compat(panel: Object, payload: Variant) -> Dictionary:
 	return panel.call("_check_snapshot_runtime_compat", payload)
 
 
-func _capture_window_png(window: Window, screenshot_path: String) -> void:
+func _resolve_render_snapshot(payload: Variant) -> Variant:
+	if payload == null:
+		return null
+	if typeof(payload) != TYPE_DICTIONARY:
+		return null
+	return payload
+
+
+func _validate_screenshot_mode() -> String:
+	var display_name := DisplayServer.get_name()
+	if display_name == "headless":
+		return "screenshot capture requires a headed/windowed run; current display server is headless, so window rendering/capture is unavailable. Rerun without --headless."
+	return ""
+
+
+func _capture_window_png(window: Window, screenshot_path: String) -> String:
 	var texture := window.get_texture()
 	if texture == null:
-		push_warning("screenshot skipped: window texture unavailable in current renderer/headless mode")
-		return
+		return "screenshot capture requires a headed/windowed run; window texture capture is unavailable in the current renderer/display server. Rerun without --headless using a real window/render path."
 
 	var image: Image = texture.get_image()
 	if image == null:
-		push_warning("screenshot skipped: failed to read image from window texture")
-		return
+		return "screenshot capture requires a headed/windowed run; failed to read pixels from the real window texture in the current renderer/display server. Rerun without --headless using a real window/render path."
 
 	var err := image.save_png(screenshot_path)
 	if err != OK:
-		_printerr("failed to save screenshot: %s (err=%d)" % [screenshot_path, err])
+		return "failed to save screenshot: %s (err=%d)" % [screenshot_path, err]
+	return ""
 
 
 func _collect_entry_ids(model: Variant) -> Array[String]:

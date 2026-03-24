@@ -1870,6 +1870,33 @@ func _build_fake_panel_model() -> PanelModel:
 	return panel
 
 
+func _phase_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var text := str(value).strip_edges()
+		if not text.is_empty():
+			return text
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		return str(int(value))
+	return "unknown"
+
+
+func _phase_is_destroyed(value: Variant) -> bool:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		return str(value).strip_edges().to_upper() == "DESTROYED"
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		return int(value) == 3
+	return false
+
+
+func _phase_is_non_live(value: Variant) -> bool:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var text := str(value).strip_edges().to_upper()
+		return text == "TEARING_DOWN" or text == "DESTROYED"
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		return int(value) >= 2
+	return false
+
+
 func _build_nil_panel_model(reason: String) -> PanelModel:
 	var panel := PanelModel.new()
 	panel.entries.append(_entry(
@@ -1993,10 +2020,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		_counter("native_prev", prior_native_objects.size(), 1),
 		_counter("native_dead", native_dead_count, 1),
 	]
+	var provider_phase: Variant = provider_native_rec.get("phase", -1)
 	var provider_badges: Array[BadgeModel] = [
 		_badge("info", "published"),
-		_badge("neutral", "native_phase=%d" % int(provider_native_rec.get("phase", -1))),
+		_badge("neutral", "native_phase=%s" % _phase_display_label(provider_phase)),
 	]
+	if _phase_is_destroyed(provider_phase):
+		provider_badges.append(_badge("warning", "destroyed"))
 	var provider_info_lines: Array[String] = []
 	var provider_entry := _entry(
 		provider_id,
@@ -2028,7 +2058,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				if not current_device_native_matches_by_instance.has(owner_instance_id):
 					current_device_native_matches_by_instance[owner_instance_id] = []
 				current_device_native_matches_by_instance[owner_instance_id].append(native_rec)
-				if int(native_rec.get("phase", -1)) >= 2:
+				if _phase_is_non_live(native_rec.get("phase", -1)):
 					if not current_non_live_device_native_matches_by_instance.has(owner_instance_id):
 						current_non_live_device_native_matches_by_instance[owner_instance_id] = []
 					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
@@ -2038,7 +2068,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				if not current_stream_native_matches_by_stream_id.has(owner_stream_id):
 					current_stream_native_matches_by_stream_id[owner_stream_id] = []
 				current_stream_native_matches_by_stream_id[owner_stream_id].append(native_rec)
-				if int(native_rec.get("phase", -1)) >= 2:
+				if _phase_is_non_live(native_rec.get("phase", -1)):
 					if not current_non_live_stream_native_matches_by_stream_id.has(owner_stream_id):
 						current_non_live_stream_native_matches_by_stream_id[owner_stream_id] = []
 					current_non_live_stream_native_matches_by_stream_id[owner_stream_id].append(native_rec)
@@ -2060,8 +2090,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_label := "device/%s" % _safe_device_name(rec)
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
-		var device_phase := int(rec.get("phase", -1))
-		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % device_phase)]
+		var device_phase: Variant = rec.get("phase", -1)
+		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(device_phase))]
+		if _phase_is_destroyed(device_phase):
+			device_badges.append(_badge("warning", "destroyed"))
 		var device_info: Array[String] = [
 			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
 				int(rec.get("capture_width", 0)),
@@ -2073,9 +2105,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
-			var device_native_phase := int(device_native_rec.get("phase", -1))
-			if device_native_phase != device_phase:
-				device_badges.append(_badge("neutral", "native_phase=%d" % device_native_phase))
+			var device_native_phase: Variant = device_native_rec.get("phase", -1)
+			if _phase_display_label(device_native_phase) != _phase_display_label(device_phase):
+				device_badges.append(_badge("neutral", "native_phase=%s" % _phase_display_label(device_native_phase)))
 			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
 		elif device_matches.size() > 1:
 			device_info.append(
@@ -2137,8 +2169,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
-			var stream_phase := int(rec.get("phase", -1))
-			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % stream_phase)]
+			var stream_phase: Variant = rec.get("phase", -1)
+			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(stream_phase))]
+			if _phase_is_destroyed(stream_phase):
+				stream_badges.append(_badge("warning", "destroyed"))
 			var stream_info: Array[String] = [
 				"profile: width=%d height=%d format=%s target_fps_min=%d target_fps_max=%d profile_version=%d" % [
 					int(rec.get("width", 0)),
@@ -2165,9 +2199,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
-				var stream_native_phase := int(stream_native_rec.get("phase", -1))
-				if stream_native_phase != stream_phase:
-					stream_badges.append(_badge("neutral", "native_phase=%d" % stream_native_phase))
+				var stream_native_phase: Variant = stream_native_rec.get("phase", -1)
+				if _phase_display_label(stream_native_phase) != _phase_display_label(stream_phase):
+					stream_badges.append(_badge("neutral", "native_phase=%s" % _phase_display_label(stream_native_phase)))
 				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
 			elif stream_matches.size() > 1:
 				stream_info.append(
@@ -2297,7 +2331,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			"rig/%s" % _safe_rig_name(rec),
 			false,
 			true,
-			[_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))],
+			[_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))],
 			[
 				_counter("mode", int(rec.get("mode", 0)), 1),
 				_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
@@ -2488,7 +2522,7 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 		else:
 			missing_current += 1
 
-		if int(rec.get("phase", -1)) == 3:
+		if _phase_is_destroyed(rec.get("phase", -1)):
 			missing_destroyed += 1
 		else:
 			missing_non_destroyed += 1
@@ -2538,7 +2572,7 @@ func _count_native_destroyed(native_objects: Array) -> int:
 	for item in native_objects:
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
-		if int((item as Dictionary).get("phase", -1)) == 3:
+		if _phase_is_destroyed((item as Dictionary).get("phase", -1)):
 			count += 1
 	return count
 
@@ -2549,7 +2583,7 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 		creation_gen_text = str(rec.get("creation_gen"))
 	info_lines.append("truth: authoritative prior-generation snapshot truth.")
 	info_lines.append("Retained record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
-	if int(rec.get("phase", -1)) == 3:
+	if _phase_is_destroyed(rec.get("phase", -1)):
 		info_lines.append("destroyed: authoritative prior-generation snapshot truth.")
 
 
@@ -2615,7 +2649,9 @@ func _build_native_object_entry(
 			info_lines.append("FrameProducer creation_gen=%s." % str(rec.get("creation_gen")))
 
 	var target_depth := _depth_for_parent(parent_id)
-	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%d" % int(rec.get("phase", -1)))]
+	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))]
+	if _phase_is_destroyed(rec.get("phase", -1)):
+		native_badges.append(_badge("warning", "destroyed"))
 	if is_prior_generation:
 		native_badges.append(_badge("info", "prior-gen"))
 	var native_counters: Array[CounterModel] = [
