@@ -8,6 +8,7 @@ const MIN_UPDATES := 4
 
 var _done := false
 var _quit_requested := false
+var _keepalive_timer: Timer
 var _timer: Timer
 var _first_publish_timer: Timer
 var _observation_timer: Timer
@@ -23,6 +24,13 @@ var _started := false
 
 func _ready() -> void:
 	set_process(true)
+	_keepalive_timer = Timer.new()
+	_keepalive_timer.process_mode = Node.PROCESS_MODE_ALWAYS
+	_keepalive_timer.one_shot = false
+	_keepalive_timer.wait_time = 0.1
+	add_child(_keepalive_timer)
+	_keepalive_timer.timeout.connect(_on_keepalive_tick)
+	_keepalive_timer.start()
 
 
 func _start_verifier() -> void:
@@ -102,6 +110,11 @@ func _on_timeout() -> void:
 	_fail("FAIL: snapshot polling/immutability abuse timed out before reaching deterministic completion")
 
 
+func _on_keepalive_tick() -> void:
+	if _finished and _keepalive_timer != null and is_instance_valid(_keepalive_timer):
+		_keepalive_timer.stop()
+
+
 func _on_first_publish_timeout() -> void:
 	if _done:
 		return
@@ -176,6 +189,8 @@ func _fail(msg: String) -> void:
 
 func _cleanup_and_quit(code: int) -> void:
 	print("INFO: cleanup_and_quit called with code=%d" % code)
+	if _keepalive_timer != null and is_instance_valid(_keepalive_timer):
+		_keepalive_timer.stop()
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):
