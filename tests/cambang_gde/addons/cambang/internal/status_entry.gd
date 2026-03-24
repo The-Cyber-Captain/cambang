@@ -4,9 +4,12 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
+const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
+const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 128.0
 
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
+var _row_kind_for_render: String = "authoritative"
 
 var _indent_region: Control
 var _disclosure_slot: Control
@@ -49,6 +52,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	visible = true
 
 	_entry_id = model.id
+	_row_kind_for_render = _row_kind(model)
 	var is_expandable := model.can_expand
 	var effective_expanded := (model.expanded if is_expandable else true)
 	_indent_region.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
@@ -136,24 +140,84 @@ func _apply_style() -> void:
 
 
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
-	for i in range(badges.size()):
+	var badges_for_row: Array[CamBANGStatusPanel.BadgeModel] = _ordered_badges_for_row_kind(badges, _row_kind_for_render)
+	for i in range(badges_for_row.size()):
 		var pair := _ensure_badge_pair(i)
 		pair.visible = true
 		var indicator := pair.get_child(0) as ColorRect
 		var label := pair.get_child(1) as Label
-		pair.custom_minimum_size = Vector2(0, 18)
-		pair.alignment = BoxContainer.ALIGNMENT_CENTER
-		indicator.color = _badge_color_for_role(_badge_role_for_render(badges[i]))
+		var raw_label: String = badges_for_row[i].label
+		var display_label: String = _badge_display_label(raw_label)
+		var stabilized_width: float = _server_badge_slot_min_width(raw_label)
+		pair.custom_minimum_size = Vector2(stabilized_width, 18)
+		if stabilized_width > 0.0:
+			pair.alignment = BoxContainer.ALIGNMENT_BEGIN
+			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		else:
+			pair.alignment = BoxContainer.ALIGNMENT_CENTER
+			label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		indicator.color = _badge_color_for_role(_badge_role_for_render(badges_for_row[i], _row_kind_for_render))
 		var indicator_size := max((_style.badge_strip_width if _style != null else 7), 8)
 		indicator.custom_minimum_size = Vector2(indicator_size, indicator_size)
-		label.text = _badge_display_label(badges[i].label)
+		label.text = display_label
 		label.label_settings = _state_label_settings()
 		label.autowrap_mode = TextServer.AUTOWRAP_OFF
 
-	for i in range(badges.size(), _badge_pairs.size()):
+	for i in range(badges_for_row.size(), _badge_pairs.size()):
 		_badge_pairs[i].visible = false
 
 	_state_segment.visible = not badges.is_empty()
+
+
+func _server_badge_slot_min_width(raw_label: String) -> float:
+	if _entry_id != "server/main":
+		return 0.0
+	if raw_label.begins_with("NATIVE COVERAGE:"):
+		return SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH
+	if raw_label == "snapshot" or raw_label == "snapshot-unavailable":
+		return SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH
+	return 0.0
+
+
+func _ordered_badges_for_row_kind(
+		badges: Array[CamBANGStatusPanel.BadgeModel],
+		row_kind: String
+	) -> Array[CamBANGStatusPanel.BadgeModel]:
+	if row_kind != "retained":
+		return badges
+	var ordered: Array[CamBANGStatusPanel.BadgeModel] = []
+	var consumed: Dictionary = {}
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge != null and badge.label == "retained":
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge != null and badge.label == "continuity-only":
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge == null:
+			continue
+		if badge.label == "published" or badge.label == "retained-root" or badge.label == "orphaned" or badge.label == "prior-gen":
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge == null:
+			continue
+		if badge.label.begins_with("phase=") or badge.label.begins_with("native_phase="):
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		if consumed.has(i):
+			continue
+		var badge := badges[i]
+		if badge != null:
+			ordered.append(badge)
+	return ordered
 
 
 func _ensure_badge_pair(index: int) -> HBoxContainer:
@@ -199,7 +263,15 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 		name_label.label_settings = _counter_label_settings()
 		value_label.text = _format_counter_value(visible_counters[i].value, visible_counters[i].digits)
 		value_label.label_settings = _counter_label_settings()
-		value_label.custom_minimum_size = Vector2(max(visible_counters[i].digits, 1) * 10.0 + 12.0, 0)
+		var counter_name: String = visible_counters[i].name
+		var counter_digits: int = max(visible_counters[i].digits, 1)
+		var minimum_digits: int = counter_digits
+		match counter_name:
+			"gen", "topology":
+				minimum_digits = max(minimum_digits, 3)
+			"version":
+				minimum_digits = max(minimum_digits, 5)
+		value_label.custom_minimum_size = Vector2(float(minimum_digits) * 10.0 + 12.0, 0)
 
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
@@ -343,6 +415,8 @@ func _counter_label_settings() -> LabelSettings:
 
 func _format_counter_value(value: int, digits: int) -> String:
 	var bounded_digits := maxi(digits, 1)
+	if value < 0:
+		return "-"
 	var raw := str(value)
 	if raw.length() <= bounded_digits:
 		return raw
@@ -632,9 +706,23 @@ func _make_badge(role: String, label: String) -> CamBANGStatusPanel.BadgeModel:
 	return badge
 
 
-func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel) -> String:
+func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: String = "authoritative") -> String:
 	if badge == null:
 		return "neutral"
+	if row_kind == "retained":
+		if badge.label == "retained":
+			return "warning"
+		if badge.label == "continuity-only":
+			return "success"
+		if (
+			badge.label == "published"
+			or badge.label == "retained-root"
+			or badge.label == "orphaned"
+			or badge.label == "prior-gen"
+			or badge.label.begins_with("phase=")
+			or badge.label.begins_with("native_phase=")
+		):
+			return "info"
 	match badge.label:
 		"contract-gap", "schema", "projection":
 			return "error"
@@ -651,13 +739,13 @@ func _badge_display_label(raw_label: String) -> String:
 		return _phase_display_label(int(raw_label.substr("native_phase=".length())), true)
 	match raw_label:
 		"snapshot":
-			return "AUTHORITATIVE"
+			return "SNAPSHOT"
 		"published":
 			return "PUBLISHED"
 		"retained":
-			return "RETAINED"
+			return "PRESERVED"
 		"retained-root":
-			return "RETAINED ROOT"
+			return "PRESERVED ROOT"
 		"prior-gen":
 			return "PRIOR GEN"
 		"continuity-only":

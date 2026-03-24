@@ -100,10 +100,6 @@ class RetainedSubtreeState extends RefCounted:
 
 var _title_label: Label
 var _provider_mode_value: Label
-var _snapshot_state_value: Label
-var _gen_value: Label
-var _version_value: Label
-var _topology_version_value: Label
 var _schema_version_value: Label
 var _counts_value: Label
 var _timestamp_value: Label
@@ -218,10 +214,6 @@ func _build_ui_if_needed() -> void:
 	root.add_child(grid)
 
 	_provider_mode_value = _add_row(grid, "Provider Mode")
-	_snapshot_state_value = _add_row(grid, "Snapshot State")
-	_gen_value = _add_row(grid, "Generation")
-	_version_value = _add_row(grid, "Version")
-	_topology_version_value = _add_row(grid, "Topology Version")
 	_schema_version_value = _add_row(grid, "Schema Version")
 	_counts_value = _add_row(grid, "Entity Counts")
 	_timestamp_value = _add_row(grid, "timestamp_ns")
@@ -642,7 +634,6 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 
 	var state := str(coverage.get("state", "UNKNOWN"))
 	if state == "UNKNOWN":
-		next_info_lines.append("native coverage: unknown.")
 		return next_info_lines
 
 	var total_native := int(coverage.get("total", 0))
@@ -657,8 +648,6 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 				missing_native,
 			]
 		)
-	else:
-		next_info_lines.append("native coverage: %d/%d rendered." % [rendered_native, total_native])
 	return next_info_lines
 
 
@@ -1184,7 +1173,7 @@ func _entry_has_destroyed_provider_badge(entry: StatusEntryModel) -> bool:
 
 
 func _extract_creation_gen_from_info_lines(info_lines: Array[String]) -> int:
-	var prefix := "Retained record: creation_gen="
+	var prefix := "Preserved record: creation_gen="
 	for line in info_lines:
 		if not line.begins_with(prefix):
 			continue
@@ -1316,9 +1305,9 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 	var retained_root_projected_id := "%s/%s" % [subtree_prefix, retained_root_source_id]
 	var orphan_reason_line := ""
 	if retained.root_status == "ambiguous_provider":
-		orphan_reason_line = "Retained subtree is orphaned because multiple DESTROYED provider rows were present."
+		orphan_reason_line = "Preserved subtree is orphaned because multiple DESTROYED provider rows were present."
 	else:
-		orphan_reason_line = "Retained subtree is orphaned because no truthful DESTROYED provider root was available."
+		orphan_reason_line = "Preserved subtree is orphaned because no truthful DESTROYED provider root was available."
 
 	if (retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty()) and orphan_provider_root_ids.is_empty():
 		var orphan_info := _retained_metadata_info_lines(retained)
@@ -1355,7 +1344,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
 			cloned_entry.badges.append(_badge("info", "continuity-only"))
-			cloned_entry.label = "%s [retained]" % source_entry.label
+			cloned_entry.label = "%s [preserved]" % source_entry.label
 		elif orphan_provider_root_ids.has(source_entry.id):
 			cloned_entry.parent_id = "server/main"
 			cloned_entry.depth = 1
@@ -1369,7 +1358,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 				cloned_entry.counters.append(_counter("source_topology", retained.source_topology_version, 1))
 				cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 				cloned_entry.info_lines.append(orphan_reason_line)
-			cloned_entry.label = "%s [retained]" % source_entry.label
+			cloned_entry.label = "%s [preserved]" % source_entry.label
 		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
 			cloned_entry.parent_id = retained_root_projected_id
 			cloned_entry.depth = 2
@@ -1381,8 +1370,8 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
 	var lines: Array[String] = [
-		"Panel-local continuity only. Not active snapshot truth.",
-		"continuity: retained presentation copied from a previously rendered authoritative panel.",
+		"Continuity-only preserved view; not active snapshot truth.",
+		"continuity: copied from a previously rendered authoritative panel.",
 		"retained_from_gen=%d" % retained.retained_from_gen,
 		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
 		"source version=%d, source topology=%d" % [retained.source_snapshot_version, retained.source_topology_version],
@@ -1746,10 +1735,6 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 
 
 func _apply_snapshot_read(reading: Dictionary) -> void:
-	_snapshot_state_value.text = str(reading.get("state", "No snapshot"))
-	_gen_value.text = str(reading.get("gen", "-"))
-	_version_value.text = str(reading.get("version", "-"))
-	_topology_version_value.text = str(reading.get("topology_version", "-"))
 	_schema_version_value.text = str(reading.get("schema_version", "-"))
 	_counts_value.text = str(reading.get("counts", "-"))
 	_timestamp_value.text = "%s (monotonic publish timestamp)" % str(reading.get("timestamp", "-"))
@@ -1905,6 +1890,9 @@ func _phase_is_non_live(value: Variant) -> bool:
 
 func _build_nil_panel_model(reason: String) -> PanelModel:
 	var panel := PanelModel.new()
+	var info_lines: Array[String] = []
+	if reason != "No published snapshot yet.":
+		info_lines.append(reason)
 	panel.entries.append(_entry(
 		"server/main",
 		"",
@@ -1913,8 +1901,12 @@ func _build_nil_panel_model(reason: String) -> PanelModel:
 		true,
 		true,
 		[_badge("warning", "snapshot-unavailable")],
-		[],
-		[reason]
+		[
+			_counter("gen", -1, 3),
+			_counter("version", -1, 5),
+			_counter("topology", -1, 3),
+		],
+		info_lines
 	))
 	return panel
 
@@ -1925,9 +1917,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var server_badges: Array[BadgeModel] = [_badge("success", "snapshot")]
 	var server_counters: Array[CounterModel] = [
-		_counter("gen", int(snapshot.get("gen", 0)), 1),
-		_counter("version", int(snapshot.get("version", 0)), 1),
-		_counter("topology", int(snapshot.get("topology_version", 0)), 1),
+		_counter("gen", int(snapshot.get("gen", 0)), 3),
+		_counter("version", int(snapshot.get("version", 0)), 5),
+		_counter("topology", int(snapshot.get("topology_version", 0)), 3),
 	]
 	var server_info_lines: Array[String] = []
 	var server_entry := _entry(
@@ -2424,7 +2416,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_badge("info", "prior-gen"),
 			],
 			[_counter("count", prior_native_objects.size(), 1)],
-			["truth: authoritative prior-generation snapshot truth retained in the current snapshot."]
+			["truth: authoritative prior-generation snapshot truth preserved in the current snapshot."]
 		))
 		for i in range(prior_native_objects.size()):
 			var rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
@@ -2588,7 +2580,7 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 	if rec.has("creation_gen"):
 		creation_gen_text = str(rec.get("creation_gen"))
 	info_lines.append("truth: authoritative prior-generation snapshot truth.")
-	info_lines.append("Retained record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
+	info_lines.append("Preserved record: creation_gen=%s, current snapshot.gen=%d." % [creation_gen_text, snapshot_gen])
 	if _phase_is_destroyed(rec.get("phase", -1)):
 		info_lines.append("destroyed: authoritative prior-generation snapshot truth.")
 
