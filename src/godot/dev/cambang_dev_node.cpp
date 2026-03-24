@@ -32,6 +32,7 @@ CamBANGDevNode::~CamBANGDevNode() {
 
 void CamBANGDevNode::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("start_scenario", "name"), &CamBANGDevNode::start_scenario);
+    ADD_SIGNAL(godot::MethodInfo("scenario_completed", godot::PropertyInfo(godot::Variant::STRING, "name")));
 }
 
 bool CamBANGDevNode::start_scenario(const godot::String& name) {
@@ -454,7 +455,10 @@ void CamBANGDevNode::tick_active_scenario_() {
 
         scenario_seed_ += 3;
         if (scenario_tick_ >= 4u) {
+            const ActiveScenario completed = active_scenario_;
             active_scenario_ = ActiveScenario::None;
+            emit_signal("scenario_completed", scenario_name_(completed));
+            UtilityFunctions::print("[CamBANGDevNode] scenario completed: ", scenario_name_(completed));
         }
         return;
     }
@@ -471,9 +475,24 @@ void CamBANGDevNode::tick_active_scenario_() {
             (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
         }
         if (scenario_tick_ >= 12u) {
+            const ActiveScenario completed = active_scenario_;
             active_scenario_ = ActiveScenario::None;
+            emit_signal("scenario_completed", scenario_name_(completed));
+            UtilityFunctions::print("[CamBANGDevNode] scenario completed: ", scenario_name_(completed));
         }
         return;
+    }
+}
+
+godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
+    switch (scenario) {
+        case ActiveScenario::StreamLifecycleVersions:
+            return "stream_lifecycle_versions";
+        case ActiveScenario::PublicationCoalescing:
+            return "publication_coalescing";
+        case ActiveScenario::None:
+        default:
+            return "none";
     }
 }
 
