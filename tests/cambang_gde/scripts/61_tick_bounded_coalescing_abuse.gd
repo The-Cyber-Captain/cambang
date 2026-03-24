@@ -20,12 +20,15 @@ var _last_topology_version := -1
 var _last_topology_sig := ""
 var _observation_started := false
 var _dev_node_state_logged_after_four := false
+var _parent_for_child_exit_watch: Node
 
 
 func _ready() -> void:
 	set_process(true)
-	print("INFO: verifier node name=%s path=%s" % [name, str(get_path())])
+	print("INFO: verifier node name=%s path=%s" % [name, _self_path_desc()])
 	print("INFO: verifier parent=%s owner=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner)])
+	_connect_parent_child_exit_watch()
+	_log_current_scene_identity("ready")
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot tick-bounded coalescing abuse")
@@ -245,6 +248,11 @@ func _fail(msg: String) -> void:
 
 func _cleanup_and_quit(code: int) -> void:
 	set_process(false)
+	print("INFO: cleanup_and_quit pre-quit code=%d parent=%s current_scene=%s" % [
+		code,
+		_node_ref_desc(get_parent()),
+		_current_scene_desc()
+	])
 	print("INFO: cleanup_and_quit code=%d verifier_parent=%s dev_node_valid=%s dev_node_inside_tree=%s server_snapshot_nil=%s" % [
 		code,
 		_node_ref_desc(get_parent()),
@@ -275,7 +283,8 @@ func _quit_next_frame(code: int) -> void:
 
 
 func _exit_tree() -> void:
-	print("INFO: exit_tree reached parent=%s owner=%s path=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner), str(get_path())])
+	_log_current_scene_identity("exit_tree")
+	print("INFO: exit_tree reached parent=%s owner=%s path=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner), _self_path_desc()])
 	print("INFO: exit_tree server snapshot nil=%s signal connected=%s" % [
 		str(CamBANGServer.get_state_snapshot() == null),
 		str(CamBANGServer.state_published.is_connected(_on_state_published))
@@ -287,6 +296,52 @@ func _notification(what: int) -> void:
 		print("INFO: _notification NOTIFICATION_EXIT_TREE")
 	elif what == NOTIFICATION_PREDELETE:
 		print("INFO: _notification NOTIFICATION_PREDELETE")
+
+
+func _connect_parent_child_exit_watch() -> void:
+	var p := get_parent()
+	if p == null or not is_instance_valid(p):
+		print("INFO: parent child_exiting_tree watch not connected (no parent)")
+		return
+	_parent_for_child_exit_watch = p
+	if not p.child_exiting_tree.is_connected(_on_parent_child_exiting_tree):
+		p.child_exiting_tree.connect(_on_parent_child_exiting_tree)
+	print("INFO: parent child_exiting_tree watch connected parent=%s" % _node_ref_desc(p))
+
+
+func _on_parent_child_exiting_tree(child: Node) -> void:
+	print("INFO: parent child_exiting_tree parent=%s child=%s is_self=%s current_scene=%s" % [
+		_node_ref_desc(_parent_for_child_exit_watch),
+		_node_ref_desc(child),
+		str(child == self),
+		_current_scene_desc()
+	])
+
+
+func _log_current_scene_identity(label: String) -> void:
+	var tree := get_tree()
+	if tree == null:
+		print("INFO: current_scene %s tree=null" % label)
+		return
+	var cs := tree.current_scene
+	print("INFO: current_scene %s self_is_current=%s current=%s" % [
+		label,
+		str(cs == self),
+		_node_ref_desc(cs)
+	])
+
+
+func _current_scene_desc() -> String:
+	var tree := get_tree()
+	if tree == null:
+		return "tree=null"
+	return _node_ref_desc(tree.current_scene)
+
+
+func _self_path_desc() -> String:
+	if is_inside_tree():
+		return str(get_path())
+	return "<not_in_tree>"
 
 
 func _node_ref_desc(n: Node) -> String:
