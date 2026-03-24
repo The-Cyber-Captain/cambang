@@ -27,6 +27,7 @@ std::atomic<bool> CamBANGDevNode::s_live{false};
 CamBANGDevNode::CamBANGDevNode() = default;
 
 CamBANGDevNode::~CamBANGDevNode() {
+    UtilityFunctions::print("[CamBANGDevNode] exit_reason=", exit_reason_, " phase=destructor");
     stop_runtime_();
 }
 
@@ -83,7 +84,8 @@ void CamBANGDevNode::_enter_tree() {
         return;
     }
     if (s_live.exchange(true)) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Another instance already live; freeing this node.");
+        mark_exit_reason_("duplicate_instance_guard");
+        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
         queue_free();
         return;
     }
@@ -93,6 +95,10 @@ void CamBANGDevNode::_enter_tree() {
 }
 
 void CamBANGDevNode::_exit_tree() {
+    if (exit_reason_ == "none") {
+        mark_exit_reason_("external_tree_teardown");
+    }
+    UtilityFunctions::print("[CamBANGDevNode] exit_reason=", exit_reason_, " phase=_exit_tree");
     if (godot::Engine::get_singleton()->is_editor_hint()) {
         set_process(false);
         return;
@@ -178,7 +184,8 @@ void CamBANGDevNode::start_runtime_() {
 
     auto* server = CamBANGServer::get_singleton();
     if (!server) {
-        UtilityFunctions::printerr("[CamBANGDevNode] No CamBANGServer singleton found. Ensure the CamBANG GDExtension is loaded.");
+        mark_exit_reason_("startup_abort_no_singleton");
+        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
         s_live.store(false);
         queue_free();
         return;
@@ -186,7 +193,8 @@ void CamBANGDevNode::start_runtime_() {
 
     runtime_ = server->runtime_for_dev();
     if (!runtime_) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer runtime is unavailable.");
+        mark_exit_reason_("startup_abort_runtime_unavailable");
+        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
         s_live.store(false);
         queue_free();
         return;
@@ -201,7 +209,8 @@ void CamBANGDevNode::start_runtime_() {
     }
 
     if (!runtime_->is_running()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer failed to start runtime.");
+        mark_exit_reason_("startup_abort_runtime_start_failed");
+        UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
         s_live.store(false);
         queue_free();
         return;
@@ -213,7 +222,8 @@ void CamBANGDevNode::start_runtime_() {
     // Bring up provider for the initial running state.
     if (last_running_) {
         if (!start_provider_()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] Provider bring-up failed.");
+            mark_exit_reason_("startup_abort_provider_bringup_failed");
+            UtilityFunctions::printerr("[CamBANGDevNode] exit_reason=", exit_reason_, " action=queue_free");
             stop_runtime_();
             s_live.store(false);
             queue_free();
@@ -494,6 +504,10 @@ godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
         default:
             return "none";
     }
+}
+
+void CamBANGDevNode::mark_exit_reason_(const godot::String& reason) {
+    exit_reason_ = reason;
 }
 
 void CamBANGDevNode::stop_runtime_() {

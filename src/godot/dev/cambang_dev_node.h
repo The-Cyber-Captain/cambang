@@ -105,6 +105,9 @@ private:
     void tick_active_scenario_();
     bool dispatch_scenario_now_(ActiveScenario scenario);
     static godot::String scenario_name_(ActiveScenario scenario);
+    void mark_exit_reason_(const godot::String& reason);
+
+    godot::String exit_reason_ = "none";
 };
 
 } // namespace cambang

@@ -57,7 +57,12 @@ func _ready() -> void:
 		_dev_node.tree_exiting.connect(_on_dev_node_tree_exiting)
 	if not _dev_node.tree_exited.is_connected(_on_dev_node_tree_exited):
 		_dev_node.tree_exited.connect(_on_dev_node_tree_exited)
+	if _dev_node.has_signal("scenario_completed") and not _dev_node.scenario_completed.is_connected(_on_dev_node_scenario_completed):
+		_dev_node.scenario_completed.connect(_on_dev_node_scenario_completed)
 	add_child(_dev_node)
+
+	if not get_tree().tree_exiting.is_connected(_on_tree_exiting):
+		get_tree().tree_exiting.connect(_on_tree_exiting)
 	call_deferred("_start_scenario_after_ready")
 
 
@@ -185,6 +190,14 @@ func _on_dev_node_tree_exiting() -> void:
 
 func _on_dev_node_tree_exited() -> void:
 	print("INFO: dev node tree_exited observed")
+
+
+func _on_dev_node_scenario_completed(name: String) -> void:
+	print("INFO: dev node scenario_completed observed name=%s" % name)
+
+
+func _on_tree_exiting() -> void:
+	print("INFO: SceneTree tree_exiting observed")
 
 
 func _ok(msg: String) -> void:
