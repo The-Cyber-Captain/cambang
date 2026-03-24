@@ -21,9 +21,11 @@ var _last_topology_sig := ""
 var _observation_started := false
 var _dev_node_state_logged_after_four := false
 var _parent_for_child_exit_watch: Node
+var _ready_ticks_msec := 0
 
 
 func _ready() -> void:
+	_ready_ticks_msec = Time.get_ticks_msec()
 	set_process(true)
 	print("INFO: verifier node name=%s path=%s" % [name, _self_path_desc()])
 	print("INFO: verifier parent=%s owner=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner)])
@@ -32,6 +34,7 @@ func _ready() -> void:
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
 	print("RUN: godot tick-bounded coalescing abuse")
+	_log_runtime_checkpoint("ready_enter")
 
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -142,6 +145,7 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 		var valid := _dev_node != null and is_instance_valid(_dev_node)
 		var inside := valid and _dev_node.is_inside_tree()
 		print("INFO: publish_count reached 4; dev_node valid=%s inside_tree=%s" % [str(valid), str(inside)])
+		_log_runtime_checkpoint("publish_count_4")
 		_log_timer_state("publish_count_4:hard_timeout", _timer)
 		_log_timer_state("publish_count_4:first_publish_timeout", _first_publish_timer)
 		_log_timer_state("publish_count_4:observation", _observation_timer)
@@ -202,6 +206,7 @@ func _start_observation_window() -> void:
 
 
 func _on_dev_node_tree_exiting() -> void:
+	_log_runtime_checkpoint("dev_node_tree_exiting")
 	var reason := "unknown"
 	if _dev_node != null and is_instance_valid(_dev_node) and _dev_node.has_method("get_exit_reason"):
 		reason = str(_dev_node.get_exit_reason())
@@ -214,6 +219,7 @@ func _on_dev_node_tree_exiting() -> void:
 
 
 func _on_dev_node_tree_exited() -> void:
+	_log_runtime_checkpoint("dev_node_tree_exited")
 	var reason := "unknown"
 	if _dev_node != null and is_instance_valid(_dev_node) and _dev_node.has_method("get_exit_reason"):
 		reason = str(_dev_node.get_exit_reason())
@@ -248,6 +254,7 @@ func _fail(msg: String) -> void:
 
 func _cleanup_and_quit(code: int) -> void:
 	set_process(false)
+	_log_runtime_checkpoint("cleanup_and_quit")
 	print("INFO: cleanup_and_quit pre-quit code=%d parent=%s current_scene=%s" % [
 		code,
 		_node_ref_desc(get_parent()),
@@ -278,11 +285,13 @@ func _cleanup_and_quit(code: int) -> void:
 func _quit_next_frame(code: int) -> void:
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
+	_log_runtime_checkpoint("quit_next_frame")
 	print("INFO: quit requested code=%d" % code)
 	get_tree().quit(code)
 
 
 func _exit_tree() -> void:
+	_log_runtime_checkpoint("exit_tree")
 	_log_current_scene_identity("exit_tree")
 	print("INFO: exit_tree reached parent=%s owner=%s path=%s" % [_node_ref_desc(get_parent()), _node_ref_desc(owner), _self_path_desc()])
 	print("INFO: exit_tree server snapshot nil=%s signal connected=%s" % [
@@ -310,6 +319,7 @@ func _connect_parent_child_exit_watch() -> void:
 
 
 func _on_parent_child_exiting_tree(child: Node) -> void:
+	_log_runtime_checkpoint("parent_child_exiting_tree")
 	print("INFO: parent child_exiting_tree parent=%s child=%s is_self=%s current_scene=%s" % [
 		_node_ref_desc(_parent_for_child_exit_watch),
 		_node_ref_desc(child),
@@ -342,6 +352,27 @@ func _self_path_desc() -> String:
 	if is_inside_tree():
 		return str(get_path())
 	return "<not_in_tree>"
+
+
+func _elapsed_ms() -> int:
+	if _ready_ticks_msec <= 0:
+		return -1
+	return Time.get_ticks_msec() - _ready_ticks_msec
+
+
+func _log_runtime_checkpoint(label: String) -> void:
+	var tree := get_tree()
+	var frame := Engine.get_process_frames()
+	var paused := "tree=null"
+	if tree != null:
+		paused = str(tree.paused)
+	print("INFO: runtime_checkpoint %s elapsed_ms=%d frame=%d tree_paused=%s current_scene=%s" % [
+		label,
+		_elapsed_ms(),
+		frame,
+		paused,
+		_current_scene_desc()
+	])
 
 
 func _node_ref_desc(n: Node) -> String:
