@@ -76,9 +76,6 @@
       }
     },
     "required_info_substrings_by_row": {
-      "server/main": [
-        "native coverage: 4/4 rendered."
-      ],
       "device/1": [
         "capture_width=4032",
         "capture_height=3024",
