@@ -1890,6 +1890,9 @@ func _phase_is_non_live(value: Variant) -> bool:
 
 func _build_nil_panel_model(reason: String) -> PanelModel:
 	var panel := PanelModel.new()
+	var info_lines: Array[String] = []
+	if reason != "No published snapshot yet.":
+		info_lines.append(reason)
 	panel.entries.append(_entry(
 		"server/main",
 		"",
@@ -1903,7 +1906,7 @@ func _build_nil_panel_model(reason: String) -> PanelModel:
 			_counter("version", -1, 5),
 			_counter("topology", -1, 3),
 		],
-		[reason]
+		info_lines
 	))
 	return panel
 
