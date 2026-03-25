@@ -2422,7 +2422,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
 						resolved_parent_id = aliased_parent_id
 			orphan_entry.parent_id = resolved_parent_id
-			orphan_entry.depth = _depth_for_parent(resolved_parent_id)
+
+		_apply_detached_orphan_subtree_depths(orphan_rows, orphan_rows_by_id, orphan_row_id)
 
 		panel.entries.append(_entry(
 			orphan_row_id,
@@ -2721,6 +2722,45 @@ func _trailing_positive_int_from_row_id(row_id: String) -> int:
 		return -1
 	var parsed := int(tail)
 	return parsed if parsed > 0 else -1
+
+
+func _apply_detached_orphan_subtree_depths(
+		orphan_rows: Array[StatusEntryModel],
+		orphan_rows_by_id: Dictionary,
+		orphan_row_id: String
+	) -> void:
+	var children_by_parent := {}
+	for orphan_entry in orphan_rows:
+		if orphan_entry == null:
+			continue
+		var parent_id := str(orphan_entry.parent_id)
+		if not children_by_parent.has(parent_id):
+			children_by_parent[parent_id] = []
+		children_by_parent[parent_id].append(orphan_entry)
+
+	var orphan_roots: Array[StatusEntryModel] = []
+	for orphan_entry in orphan_rows:
+		if orphan_entry == null:
+			continue
+		var parent_id := str(orphan_entry.parent_id)
+		if parent_id == orphan_row_id or not orphan_rows_by_id.has(parent_id):
+			orphan_roots.append(orphan_entry)
+
+	for orphan_root in orphan_roots:
+		_assign_detached_orphan_depth(orphan_root, 3, children_by_parent)
+
+
+func _assign_detached_orphan_depth(
+		entry: StatusEntryModel,
+		depth: int,
+		children_by_parent: Dictionary
+	) -> void:
+	if entry == null:
+		return
+	entry.depth = depth
+	var children: Array = children_by_parent.get(entry.id, [])
+	for child in children:
+		_assign_detached_orphan_depth(child, depth + 1, children_by_parent)
 
 
 func _ensure_expandability(panel: PanelModel) -> void:
