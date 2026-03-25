@@ -137,6 +137,7 @@ func _apply_style() -> void:
 	shell_style.border_width_bottom = 1
 	shell_style.border_color = Color(1, 1, 1, 0.06)
 	_row_shell.add_theme_stylebox_override("panel", shell_style)
+	_row_shell.clip_contents = true
 
 
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:

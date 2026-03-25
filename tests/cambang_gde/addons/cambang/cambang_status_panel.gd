@@ -2131,12 +2131,15 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 			device_badges,
-			[
-				_counter("mode", int(rec.get("mode", 0)), 1),
-				_counter("errors", int(rec.get("errors_count", 0)), 1),
-				_counter("still_w", int(rec.get("capture_width", 0)), 4),
-				_counter("still_h", int(rec.get("capture_height", 0)), 4),
-			],
+			_counters_from_record(
+				rec,
+				[
+					["mode", "mode", 1],
+					["errors", "errors_count", 1],
+					["still_w", "capture_width", 4],
+					["still_h", "capture_height", 4],
+				]
+			),
 			device_info
 		)
 		if device_matches.size() == 1:
@@ -2225,20 +2228,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				false,
 				true,
 				stream_badges,
-				[
-					_counter("mode", int(rec.get("mode", 0)), 1),
-					_counter("width", int(rec.get("width", 0)), 4),
-					_counter("height", int(rec.get("height", 0)), 4),
-					_counter("fps_min", int(rec.get("target_fps_min", 0)), 2),
-					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
-					_counter("recv", int(rec.get("frames_received", 0)), 3),
-					_counter("deliv", int(rec.get("frames_delivered", 0)), 3),
-					_counter("drop", int(rec.get("frames_dropped", 0)), 3),
-					_counter("queue", int(rec.get("queue_depth", 0)), 2),
-					_counter("shown", int(rec.get("visibility_frames_presented", 0)), 3),
-					_counter("rej_fmt", int(rec.get("visibility_frames_rejected_unsupported", 0)), 2),
-					_counter("rej_inv", int(rec.get("visibility_frames_rejected_invalid", 0)), 2),
-				],
+				_counters_from_record(
+					rec,
+					[
+						["mode", "mode", 1],
+						["width", "width", 4],
+						["height", "height", 4],
+						["fps_min", "target_fps_min", 2],
+						["fps_max", "target_fps_max", 2],
+						["recv", "frames_received", 3],
+						["deliv", "frames_delivered", 3],
+						["drop", "frames_dropped", 3],
+						["queue", "queue_depth", 2],
+						["shown", "visibility_frames_presented", 3],
+						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
+						["rej_inv", "visibility_frames_rejected_invalid", 2],
+					]
+				),
 				stream_info
 			)
 			if stream_matches.size() == 1:
@@ -2341,12 +2347,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			false,
 			true,
 			[_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))],
-			[
-				_counter("mode", int(rec.get("mode", 0)), 1),
-				_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
-				_counter("still_w", int(rec.get("capture_width", 0)), 4),
-				_counter("still_h", int(rec.get("capture_height", 0)), 4),
-			],
+			_counters_from_record(
+				rec,
+				[
+					["mode", "mode", 1],
+					["still_w", "capture_width", 4],
+					["still_h", "capture_height", 4],
+				],
+				[
+					_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+				]
+			),
 			rig_info
 		))
 
@@ -2694,10 +2705,13 @@ func _build_native_object_entry(
 		native_badges.append(_badge("warning", "destroyed"))
 	if is_prior_generation:
 		native_badges.append(_badge("info", "prior-gen"))
-	var native_counters: Array[CounterModel] = [
-		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
-		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
-	]
+	var native_counters := _counters_from_record(
+		rec,
+		[
+			["bytes", "bytes_allocated", 3],
+			["buffers", "buffers_in_use", 2],
+		]
+	)
 	var native_entry := _entry(
 		row_id,
 		parent_id,
@@ -3285,6 +3299,27 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	model.digits = digits
 	model.visibility = visibility
 	return model
+
+
+func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[CounterModel] = []) -> Array[CounterModel]:
+	var counters: Array[CounterModel] = []
+	for existing_counter in always_include:
+		if existing_counter != null:
+			counters.append(existing_counter)
+	for raw_spec in specs:
+		if typeof(raw_spec) != TYPE_ARRAY:
+			continue
+		var spec: Array = raw_spec
+		if spec.size() < 3:
+			continue
+		var counter_name := str(spec[0])
+		var source_field := str(spec[1])
+		var digits := int(spec[2])
+		var visibility := str(spec[3]) if spec.size() > 3 else "core"
+		if not rec.has(source_field):
+			continue
+		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
+	return counters
 
 
 func _apply_detail_policy_to_panel(panel: PanelModel) -> void:
