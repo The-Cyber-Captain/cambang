@@ -25,12 +25,131 @@ static inline godot::String lifecycle_phase_token(CBLifecyclePhase phase) {
   }
 }
 
+static inline godot::String rig_mode_token(CBRigMode mode) {
+  switch (mode) {
+    case CBRigMode::OFF:
+      return "OFF";
+    case CBRigMode::ARMED:
+      return "ARMED";
+    case CBRigMode::TRIGGERING:
+      return "TRIGGERING";
+    case CBRigMode::COLLECTING:
+      return "COLLECTING";
+    case CBRigMode::ERROR:
+      return "ERROR";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown rig mode; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
+static inline godot::String device_mode_token(CBDeviceMode mode) {
+  switch (mode) {
+    case CBDeviceMode::IDLE:
+      return "IDLE";
+    case CBDeviceMode::STREAMING:
+      return "STREAMING";
+    case CBDeviceMode::CAPTURING:
+      return "CAPTURING";
+    case CBDeviceMode::ERROR:
+      return "ERROR";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown device mode; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
+static inline godot::String stream_mode_token(CBStreamMode mode) {
+  switch (mode) {
+    case CBStreamMode::STOPPED:
+      return "STOPPED";
+    case CBStreamMode::FLOWING:
+      return "FLOWING";
+    case CBStreamMode::STARVED:
+      return "STARVED";
+    case CBStreamMode::ERROR:
+      return "ERROR";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown stream mode; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
+static inline godot::String stream_intent_token(cambang::StreamIntent intent) {
+  switch (intent) {
+    case cambang::StreamIntent::PREVIEW:
+      return "PREVIEW";
+    case cambang::StreamIntent::VIEWFINDER:
+      return "VIEWFINDER";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown stream intent; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
+static inline godot::String stream_stop_reason_token(CBStreamStopReason reason) {
+  switch (reason) {
+    case CBStreamStopReason::NONE:
+      return "NONE";
+    case CBStreamStopReason::USER:
+      return "USER";
+    case CBStreamStopReason::PREEMPTED:
+      return "PREEMPTED";
+    case CBStreamStopReason::PROVIDER:
+      return "PROVIDER";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown stream stop reason; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
+static inline godot::String native_object_type_token(uint32_t raw_type) {
+  switch (static_cast<NativeObjectType>(raw_type)) {
+    case NativeObjectType::Provider:
+      return "provider";
+    case NativeObjectType::Device:
+      return "device";
+    case NativeObjectType::Stream:
+      return "stream";
+    case NativeObjectType::FrameProducer:
+      return "frameproducer";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown native object type; emitting unknown");
+      return "unknown";
+  }
+}
+
+static inline godot::String visibility_last_path_token(CBVisibilityLastPath path) {
+  switch (path) {
+    case CBVisibilityLastPath::NONE:
+      return "NONE";
+    case CBVisibilityLastPath::RGBA_DIRECT:
+      return "RGBA_DIRECT";
+    case CBVisibilityLastPath::BGRA_SWIZZLED:
+      return "BGRA_SWIZZLED";
+    case CBVisibilityLastPath::REJECTED_UNSUPPORTED:
+      return "REJECTED_UNSUPPORTED";
+    case CBVisibilityLastPath::REJECTED_INVALID:
+      return "REJECTED_INVALID";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown visibility path; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
 static godot::Dictionary export_rig(const CamBANGRigState& r) {
   godot::Dictionary d;
   d["rig_id"] = static_cast<uint64_t>(r.rig_id);
   d["name"] = gs(r.name);
   d["phase"] = lifecycle_phase_token(r.phase);
-  d["mode"] = static_cast<int>(r.mode);
+  d["mode"] = rig_mode_token(r.mode);
 
   godot::Array members;
   members.resize(static_cast<int>(r.member_hardware_ids.size()));
@@ -62,7 +181,7 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   d["hardware_id"] = gs(s.hardware_id);
   d["instance_id"] = static_cast<uint64_t>(s.instance_id);
   d["phase"] = lifecycle_phase_token(s.phase);
-  d["mode"] = static_cast<int>(s.mode);
+  d["mode"] = device_mode_token(s.mode);
   d["engaged"] = static_cast<bool>(s.engaged);
   d["rig_id"] = static_cast<uint64_t>(s.rig_id);
   d["camera_spec_version"] = static_cast<uint64_t>(s.camera_spec_version);
@@ -83,9 +202,9 @@ static godot::Dictionary export_stream(const CamBANGStreamState& s) {
   d["stream_id"] = static_cast<uint64_t>(s.stream_id);
   d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);
   d["phase"] = lifecycle_phase_token(s.phase);
-  d["intent"] = static_cast<int>(s.intent);
-  d["mode"] = static_cast<int>(s.mode);
-  d["stop_reason"] = static_cast<int>(s.stop_reason);
+  d["intent"] = stream_intent_token(s.intent);
+  d["mode"] = stream_mode_token(s.mode);
+  d["stop_reason"] = stream_stop_reason_token(s.stop_reason);
   d["profile_version"] = static_cast<uint64_t>(s.profile_version);
   d["width"] = static_cast<uint32_t>(s.width);
   d["height"] = static_cast<uint32_t>(s.height);
@@ -102,14 +221,14 @@ static godot::Dictionary export_stream(const CamBANGStreamState& s) {
       static_cast<uint64_t>(s.visibility_frames_rejected_unsupported);
   d["visibility_frames_rejected_invalid"] =
       static_cast<uint64_t>(s.visibility_frames_rejected_invalid);
-  d["visibility_last_path"] = static_cast<int>(s.visibility_last_path);
+  d["visibility_last_path"] = visibility_last_path_token(s.visibility_last_path);
   return d;
 }
 
 static godot::Dictionary export_native_object(const NativeObjectRecord& r) {
   godot::Dictionary d;
   d["native_id"] = static_cast<uint64_t>(r.native_id);
-  d["type"] = static_cast<uint32_t>(r.type);
+  d["type"] = native_object_type_token(r.type);
   d["phase"] = lifecycle_phase_token(r.phase);
   d["owner_device_instance_id"] = static_cast<uint64_t>(r.owner_device_instance_id);
   d["owner_stream_id"] = static_cast<uint64_t>(r.owner_stream_id);
