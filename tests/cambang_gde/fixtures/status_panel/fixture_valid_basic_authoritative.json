@@ -116,7 +116,7 @@
       {
         "rig_id": 7,
         "name": "rig-a",
-        "phase": 1,
+        "phase": "LIVE",
         "mode": "ARMED",
         "member_hardware_ids": [
           "synthetic:0"
@@ -131,7 +131,7 @@
       {
         "instance_id": 1,
         "hardware_id": "synthetic:0",
-        "phase": 1,
+        "phase": "LIVE",
         "mode": "STREAMING",
         "errors_count": 0,
         "engaged": true,
@@ -146,7 +146,7 @@
       {
         "stream_id": 1,
         "device_instance_id": 1,
-        "phase": 1,
+        "phase": "LIVE",
         "mode": "FLOWING",
         "intent": "PREVIEW",
         "stop_reason": "NONE",
@@ -171,14 +171,14 @@
       {
         "native_id": 100,
         "type": "provider",
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 2
       },
       {
         "native_id": 101,
         "type": "device",
         "owner_device_instance_id": 1,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 2
       },
       {
@@ -186,7 +186,7 @@
         "type": "stream",
         "owner_device_instance_id": 1,
         "owner_stream_id": 1,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 2
       },
       {
@@ -194,7 +194,7 @@
         "type": "frameproducer",
         "owner_device_instance_id": 1,
         "owner_stream_id": 1,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 2
       }
     ],

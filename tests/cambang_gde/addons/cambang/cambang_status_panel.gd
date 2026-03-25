@@ -1873,7 +1873,34 @@ func _build_fake_panel_model() -> PanelModel:
 
 
 func _phase_display_label(value: Variant) -> String:
+	# Canonical snapshot contract: lifecycle phase is a string enum token.
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	# Transitional runtime-boundary compatibility only:
+	# some runtime/dev paths may still surface integer phase values.
 	var phase_enum := _phase_enum_value(value)
+	return _phase_label_from_enum(phase_enum)
+
+
+func _phase_is_destroyed(value: Variant) -> bool:
+	return _phase_display_label(value) == "DESTROYED"
+
+
+func _phase_is_non_live(value: Variant) -> bool:
+	var canonical := _phase_display_label(value)
+	return canonical == "TEARING_DOWN" or canonical == "DESTROYED"
+
+
+func _phase_enum_value(value: Variant) -> int:
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		return int(value)
+	return -1
+
+
+func _phase_label_from_enum(phase_enum: int) -> String:
 	match phase_enum:
 		0:
 			return "CREATED"
@@ -1885,20 +1912,6 @@ func _phase_display_label(value: Variant) -> String:
 			return "DESTROYED"
 		_:
 			return "UNKNOWN"
-
-
-func _phase_is_destroyed(value: Variant) -> bool:
-	return _phase_enum_value(value) == 3
-
-
-func _phase_is_non_live(value: Variant) -> bool:
-	return _phase_enum_value(value) >= 2
-
-
-func _phase_enum_value(value: Variant) -> int:
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return int(value)
-	return -1
 
 
 func _badge_label_is_destroyed_phase(label: String) -> bool:

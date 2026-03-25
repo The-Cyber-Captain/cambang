@@ -50,13 +50,13 @@
       {
         "native_id": 5501,
         "type": "provider",
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 55
       },
       {
         "native_id": 5502,
         "type": "stream",
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 55,
         "owner_device_instance_id": 999,
         "owner_stream_id": 1

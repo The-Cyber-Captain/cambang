@@ -51,13 +51,13 @@
       {
         "native_id": 200,
         "type": "provider",
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 2
       },
       {
         "native_id": 100,
         "type": "provider",
-        "phase": 3,
+        "phase": "DESTROYED",
         "creation_gen": 1,
         "destroyed_ns": 222
       }

@@ -40,7 +40,7 @@
       {
         "instance_id": 1001,
         "hardware_id": "synthetic:review:0",
-        "phase": 1,
+        "phase": "LIVE",
         "mode": "STREAMING",
         "errors_count": 0
       }
@@ -49,7 +49,7 @@
       {
         "stream_id": 1101,
         "device_instance_id": 1001,
-        "phase": 1,
+        "phase": "LIVE",
         "mode": "FLOWING",
         "intent": "PREVIEW",
         "stop_reason": "NONE",
@@ -67,7 +67,7 @@
       {
         "stream_id": 1102,
         "device_instance_id": 1001,
-        "phase": 1,
+        "phase": "LIVE",
         "mode": "STOPPED",
         "intent": "VIEWFINDER",
         "stop_reason": "USER",
@@ -87,14 +87,14 @@
       {
         "native_id": 1000,
         "type": "provider",
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 40
       },
       {
         "native_id": 1001,
         "type": "device",
         "owner_device_instance_id": 1001,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 40
       },
       {
@@ -102,7 +102,7 @@
         "type": "stream",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1101,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 40
       },
       {
@@ -110,7 +110,7 @@
         "type": "stream",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1102,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 40
       },
       {
@@ -118,7 +118,7 @@
         "type": "frameproducer",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1101,
-        "phase": 1,
+        "phase": "LIVE",
         "creation_gen": 40
       }
     ],
