@@ -22,6 +22,7 @@ class StatusEntryModel extends RefCounted:
 	var parent_id: String = ""
 	var depth: int = 0
 	var label: String = ""
+	var visual_object_class: String = ""
 	var materialized_native_id: int = 0
 	var expanded: bool = false
 	var can_expand: bool = false
@@ -1534,7 +1535,8 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		source.can_expand,
 		cloned_badges,
 		cloned_counters,
-		cloned_info_lines
+		cloned_info_lines,
+		source.visual_object_class
 	)
 	cloned.materialized_native_id = source.materialized_native_id
 	cloned.summary_info_lines = source.summary_info_lines.duplicate()
@@ -2707,8 +2709,25 @@ func _build_native_object_entry(
 		native_counters,
 		info_lines
 	)
+	native_entry.visual_object_class = _visual_object_class_for_native_type(native_type_key)
 	native_entry.materialized_native_id = native_id
 	return native_entry
+
+
+func _visual_object_class_for_native_type(native_type_key: String) -> String:
+	match native_type_key:
+		"provider":
+			return "provider"
+		"device":
+			return "device"
+		"stream":
+			return "stream"
+		"rig":
+			return "rig"
+		"frameproducer":
+			return "native_object"
+		_:
+			return "native_object"
 
 
 func _trailing_positive_int_from_row_id(row_id: String) -> int:
@@ -3199,13 +3218,15 @@ func _entry(
 		can_expand: bool,
 		badges: Array[BadgeModel],
 		counters: Array[CounterModel],
-		info_lines: Array[String]
+		info_lines: Array[String],
+		visual_object_class: String = ""
 	) -> StatusEntryModel:
 	var model := StatusEntryModel.new()
 	model.id = id
 	model.parent_id = parent_id
 	model.depth = depth
 	model.label = label
+	model.visual_object_class = visual_object_class
 	model.expanded = expanded
 	model.can_expand = can_expand
 	model.badges = _normalize_badges(badges)

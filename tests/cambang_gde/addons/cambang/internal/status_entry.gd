@@ -617,6 +617,19 @@ func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if model == null:
 		return "generic"
+	var visual_object_class := str(model.visual_object_class)
+	if not visual_object_class.is_empty() and [
+		"server",
+		"provider",
+		"device",
+		"stream",
+		"rig",
+		"native_object",
+		"contract_gap",
+		"orphan",
+		"generic",
+	].has(visual_object_class):
+		return visual_object_class
 	if model.id == "server/main":
 		return "server"
 	if model.label == "contract_gaps" or model.label == "projection_gaps":
