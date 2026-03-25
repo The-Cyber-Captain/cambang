@@ -20,13 +20,11 @@
     ],
     "required_counters_by_row": {
       "device/1": [
-        "mode",
         "errors",
         "still_w",
         "still_h"
       ],
       "stream/1": [
-        "mode",
         "width",
         "height",
         "fps_min",
@@ -40,7 +38,6 @@
         "rej_inv"
       ],
       "rig/7": [
-        "mode",
         "members",
         "still_w",
         "still_h"
@@ -84,6 +81,12 @@
     "required_badges_by_row": {
       "server/main": [
         "NATIVE COVERAGE: OK"
+      ],
+      "device/1": [
+        "mode=STREAMING"
+      ],
+      "stream/1": [
+        "mode=FLOWING"
       ]
     }
   },
