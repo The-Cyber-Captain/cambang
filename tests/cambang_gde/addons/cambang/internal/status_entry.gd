@@ -262,10 +262,12 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 
 		name_label.text = visible_counters[i].name
 		name_label.label_settings = _counter_label_settings()
-		value_label.text = _format_counter_value(visible_counters[i].value, visible_counters[i].digits)
+		value_label.text = _format_counter_value(visible_counters[i])
 		value_label.label_settings = _counter_label_settings()
 		var counter_name: String = visible_counters[i].name
 		var counter_digits: int = max(visible_counters[i].digits, 1)
+		if not visible_counters[i].text_value.is_empty():
+			counter_digits = max(counter_digits, visible_counters[i].text_value.length())
 		var minimum_digits: int = counter_digits
 		match counter_name:
 			"gen", "topology":
@@ -414,7 +416,13 @@ func _counter_label_settings() -> LabelSettings:
 	return settings
 
 
-func _format_counter_value(value: int, digits: int) -> String:
+func _format_counter_value(counter: CamBANGStatusPanel.CounterModel) -> String:
+	if counter == null:
+		return "-"
+	if not counter.text_value.is_empty():
+		return counter.text_value
+	var value := counter.value
+	var digits := counter.digits
 	var bounded_digits := maxi(digits, 1)
 	if value < 0:
 		return "-"

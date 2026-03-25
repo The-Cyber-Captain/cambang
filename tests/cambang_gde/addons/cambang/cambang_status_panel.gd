@@ -42,6 +42,7 @@ class BadgeModel extends RefCounted:
 class CounterModel extends RefCounted:
 	var name: String = ""
 	var value: int = 0
+	var text_value: String = ""
 	var digits: int = 1
 	var visibility: String = "core"
 
@@ -2153,12 +2154,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			_counters_from_record(
 				rec,
 				[
-					["mode", "mode", 1],
 					["errors", "errors_count", 1],
 					["still_w", "capture_width", 4],
 					["still_h", "capture_height", 4],
 					["still_fmt", "capture_format", 4],
 					["still_prof", "capture_profile_version", 2],
+				],
+				[
+					_counter_text("mode", _device_mode_display_label(rec.get("mode", "UNKNOWN"))),
 				]
 			),
 			device_info
@@ -2233,7 +2236,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_counters_from_record(
 					rec,
 					[
-						["mode", "mode", 1],
 						["width", "width", 4],
 						["height", "height", 4],
 						["fmt", "format", 4],
@@ -2248,6 +2250,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["shown", "visibility_frames_presented", 3],
 						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
 						["rej_inv", "visibility_frames_rejected_invalid", 2],
+					],
+					[
+						_counter_text("mode", _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
 					]
 				),
 				stream_info
@@ -3299,7 +3304,18 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
+	model.text_value = ""
 	model.digits = digits
+	model.visibility = visibility
+	return model
+
+
+func _counter_text(name: String, text_value: String, visibility: String = "core") -> CounterModel:
+	var model := CounterModel.new()
+	model.name = name
+	model.value = -1
+	model.text_value = text_value
+	model.digits = max(text_value.length(), 1)
 	model.visibility = visibility
 	return model
 
@@ -3323,6 +3339,44 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 			continue
 		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
 	return counters
+
+
+func _device_mode_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["IDLE", "STREAMING", "CAPTURING", "ERROR"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		match int(value):
+			0:
+				return "IDLE"
+			1:
+				return "STREAMING"
+			2:
+				return "CAPTURING"
+			3:
+				return "ERROR"
+	return "UNKNOWN"
+
+
+func _stream_mode_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["STOPPED", "FLOWING", "STARVED", "ERROR"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		match int(value):
+			0:
+				return "STOPPED"
+			1:
+				return "FLOWING"
+			2:
+				return "STARVED"
+			3:
+				return "ERROR"
+	return "UNKNOWN"
 
 
 func _build_still_profile_info_line(rec: Dictionary) -> String:
