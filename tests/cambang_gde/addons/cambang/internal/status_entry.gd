@@ -793,11 +793,7 @@ func _phase_badge_display_label(raw_phase_suffix: String, is_native: bool) -> St
 	var phase_suffix := raw_phase_suffix.strip_edges()
 	if phase_suffix.is_empty():
 		return _phase_display_label(-1, is_native)
-	if phase_suffix == phase_suffix.to_upper():
-		return ("NATIVE %s" % phase_suffix) if is_native else phase_suffix
-	if phase_suffix.is_valid_int():
-		return _phase_display_label(int(phase_suffix), is_native)
-	var normalized := phase_suffix.replace("-", " ").replace("_", " ").to_upper()
+	var normalized := phase_suffix.strip_edges().to_upper()
 	return ("NATIVE %s" % normalized) if is_native else normalized
 
 
@@ -809,7 +805,7 @@ func _phase_display_label(phase_value: int, is_native: bool) -> String:
 		1:
 			phase_text = "LIVE"
 		2:
-			phase_text = "TEARING DOWN"
+			phase_text = "TEARING_DOWN"
 		3:
 			phase_text = "DESTROYED"
 	if is_native:

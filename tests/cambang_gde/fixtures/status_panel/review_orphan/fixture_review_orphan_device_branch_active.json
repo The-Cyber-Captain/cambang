@@ -49,14 +49,14 @@
       {
         "native_id": 4000,
         "type": "provider",
-        "phase": "LIVE",
+        "phase": 1,
         "creation_gen": 70
       },
       {
         "native_id": 4101,
         "type": "device",
         "owner_device_instance_id": 4101,
-        "phase": "LIVE",
+        "phase": 1,
         "root_id": 9301,
         "creation_gen": 70
       },
@@ -65,7 +65,7 @@
         "type": "stream",
         "owner_device_instance_id": 4101,
         "owner_stream_id": 4201,
-        "phase": "LIVE",
+        "phase": 1,
         "root_id": 9301,
         "creation_gen": 70
       },
@@ -73,7 +73,7 @@
         "native_id": 4301,
         "type": "frameproducer",
         "owner_stream_id": 4201,
-        "phase": "LIVE",
+        "phase": 1,
         "root_id": 9301,
         "creation_gen": 70
       }

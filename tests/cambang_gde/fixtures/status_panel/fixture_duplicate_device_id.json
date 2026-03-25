@@ -26,14 +26,14 @@
       {
         "instance_id": 1,
         "hardware_id": "synthetic:0",
-        "phase": "LIVE",
+        "phase": 1,
         "mode": "STREAMING",
         "errors_count": 0
       },
       {
         "instance_id": 1,
         "hardware_id": "synthetic:1",
-        "phase": "LIVE",
+        "phase": 1,
         "mode": "STREAMING",
         "errors_count": 0
       }
@@ -43,7 +43,7 @@
       {
         "native_id": 100,
         "type": "provider",
-        "phase": "LIVE",
+        "phase": 1,
         "creation_gen": 2
       }
     ],

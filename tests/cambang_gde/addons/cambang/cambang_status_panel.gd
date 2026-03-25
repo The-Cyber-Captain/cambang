@@ -1177,7 +1177,7 @@ func _entry_has_destroyed_provider_badge(entry: StatusEntryModel) -> bool:
 	if entry == null:
 		return false
 	for badge in entry.badges:
-		if badge.label == "phase=3" or badge.label == "native_phase=3":
+		if _badge_label_is_destroyed_phase(badge.label):
 			return true
 	return false
 
@@ -1240,7 +1240,7 @@ func _resolve_retained_provider_root(panel: PanelModel) -> Dictionary:
 		if not entry.id.begins_with("provider/"):
 			continue
 		for badge in entry.badges:
-			if badge.label == "phase=3" or badge.label == "native_phase=3":
+			if _badge_label_is_destroyed_phase(badge.label):
 				destroyed_provider_ids.append(entry.id)
 				break
 	if destroyed_provider_ids.size() == 1:
@@ -1873,29 +1873,39 @@ func _build_fake_panel_model() -> PanelModel:
 
 
 func _phase_display_label(value: Variant) -> String:
-	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
-		var text := str(value).strip_edges()
-		if not text.is_empty():
-			return text
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return str(int(value))
-	return "unknown"
+	var phase_enum := _phase_enum_value(value)
+	match phase_enum:
+		0:
+			return "CREATED"
+		1:
+			return "LIVE"
+		2:
+			return "TEARING_DOWN"
+		3:
+			return "DESTROYED"
+		_:
+			return "UNKNOWN"
 
 
 func _phase_is_destroyed(value: Variant) -> bool:
-	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
-		return str(value).strip_edges().to_upper() == "DESTROYED"
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return int(value) == 3
-	return false
+	return _phase_enum_value(value) == 3
 
 
 func _phase_is_non_live(value: Variant) -> bool:
-	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
-		var text := str(value).strip_edges().to_upper()
-		return text == "TEARING_DOWN" or text == "DESTROYED"
+	return _phase_enum_value(value) >= 2
+
+
+func _phase_enum_value(value: Variant) -> int:
 	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return int(value) >= 2
+		return int(value)
+	return -1
+
+
+func _badge_label_is_destroyed_phase(label: String) -> bool:
+	if label.begins_with("phase="):
+		return label.substr("phase=".length()) == "DESTROYED"
+	if label.begins_with("native_phase="):
+		return label.substr("native_phase=".length()) == "DESTROYED"
 	return false
 
 

@@ -30,7 +30,7 @@
       {
         "native_id": 5501,
         "type": "provider",
-        "phase": "LIVE",
+        "phase": 1,
         "creation_gen": 55
       }
     ],

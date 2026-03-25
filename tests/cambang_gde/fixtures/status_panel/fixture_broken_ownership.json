@@ -19,28 +19,25 @@
     "topology_version": 1,
     "timestamp_ns": 50000000000,
     "imaging_spec_version": 1,
-
     "rigs": [],
     "devices": [],
     "streams": [],
-
     "native_objects": [
       {
         "native_id": 100,
         "type": "provider",
-        "phase": "LIVE",
+        "phase": 1,
         "creation_gen": 2
       },
       {
         "native_id": 102,
         "type": "stream",
-        "phase": "LIVE",
+        "phase": 1,
         "creation_gen": 2,
         "owner_device_instance_id": 999,
         "owner_stream_id": 1
       }
     ],
-
     "detached_root_ids": []
   }
 }

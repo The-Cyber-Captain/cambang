@@ -25,7 +25,7 @@
       {
         "instance_id": 1,
         "hardware_id": "synthetic:0",
-        "phase": "DESTROYED",
+        "phase": 3,
         "mode": "IDLE",
         "errors_count": 0
       }
@@ -34,7 +34,7 @@
       {
         "stream_id": 1,
         "device_instance_id": 1,
-        "phase": "LIVE",
+        "phase": 1,
         "mode": "FLOWING",
         "intent": "PREVIEW",
         "stop_reason": "NONE",
@@ -51,7 +51,7 @@
       {
         "native_id": 100,
         "type": "provider",
-        "phase": "LIVE",
+        "phase": 1,
         "creation_gen": 2
       }
     ],
