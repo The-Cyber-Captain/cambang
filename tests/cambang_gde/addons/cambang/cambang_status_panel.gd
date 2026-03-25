@@ -2124,7 +2124,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
 		var device_phase: Variant = rec.get("phase", -1)
-		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(device_phase))]
+		var device_badges: Array[BadgeModel] = [
+			_badge("neutral", "phase=%s" % _phase_display_label(device_phase)),
+			_badge("neutral", "mode=%s" % _device_mode_display_label(rec.get("mode", "UNKNOWN"))),
+		]
 		if _phase_is_destroyed(device_phase):
 			device_badges.append(_badge("warning", "destroyed"))
 		var device_info: Array[String] = []
@@ -2159,9 +2162,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					["still_h", "capture_height", 4],
 					["still_fmt", "capture_format", 4],
 					["still_prof", "capture_profile_version", 2],
-				],
-				[
-					_counter_text("mode", _device_mode_display_label(rec.get("mode", "UNKNOWN"))),
 				]
 			),
 			device_info
@@ -2206,7 +2206,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
 			var stream_phase: Variant = rec.get("phase", -1)
-			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(stream_phase))]
+			var stream_badges: Array[BadgeModel] = [
+				_badge("neutral", "phase=%s" % _phase_display_label(stream_phase)),
+				_badge("neutral", "mode=%s" % _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
+			]
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
 			var stream_info: Array[String] = []
@@ -2250,9 +2253,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["shown", "visibility_frames_presented", 3],
 						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
 						["rej_inv", "visibility_frames_rejected_invalid", 2],
-					],
-					[
-						_counter_text("mode", _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
 					]
 				),
 				stream_info
@@ -2356,7 +2356,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			_counters_from_record(
 				rec,
 				[
-					["mode", "mode", 1],
 					["still_w", "capture_width", 4],
 					["still_h", "capture_height", 4],
 				],
@@ -3310,16 +3309,6 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	return model
 
 
-func _counter_text(name: String, text_value: String, visibility: String = "core") -> CounterModel:
-	var model := CounterModel.new()
-	model.name = name
-	model.value = -1
-	model.text_value = text_value
-	model.digits = max(text_value.length(), 1)
-	model.visibility = visibility
-	return model
-
-
 func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[CounterModel] = []) -> Array[CounterModel]:
 	var counters: Array[CounterModel] = []
 	for existing_counter in always_include:
@@ -3347,16 +3336,6 @@ func _device_mode_display_label(value: Variant) -> String:
 		if ["IDLE", "STREAMING", "CAPTURING", "ERROR"].has(canonical):
 			return canonical
 		return "UNKNOWN"
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		match int(value):
-			0:
-				return "IDLE"
-			1:
-				return "STREAMING"
-			2:
-				return "CAPTURING"
-			3:
-				return "ERROR"
 	return "UNKNOWN"
 
 
@@ -3366,16 +3345,6 @@ func _stream_mode_display_label(value: Variant) -> String:
 		if ["STOPPED", "FLOWING", "STARVED", "ERROR"].has(canonical):
 			return canonical
 		return "UNKNOWN"
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		match int(value):
-			0:
-				return "STOPPED"
-			1:
-				return "FLOWING"
-			2:
-				return "STARVED"
-			3:
-				return "ERROR"
 	return "UNKNOWN"
 
 
