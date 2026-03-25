@@ -2103,14 +2103,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(device_phase))]
 		if _phase_is_destroyed(device_phase):
 			device_badges.append(_badge("warning", "destroyed"))
-		var device_info: Array[String] = [
-			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
-				int(rec.get("capture_width", 0)),
-				int(rec.get("capture_height", 0)),
-				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
-				int(rec.get("capture_profile_version", 0)),
-			],
-		]
+		var device_info: Array[String] = []
+		var device_still_line := _build_still_profile_info_line(rec)
+		if not device_still_line.is_empty():
+			device_info.append(device_still_line)
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
@@ -2187,29 +2183,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(stream_phase))]
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
-			var stream_info: Array[String] = [
-				"profile: width=%d height=%d format=%s target_fps_min=%d target_fps_max=%d profile_version=%d" % [
-					int(rec.get("width", 0)),
-					int(rec.get("height", 0)),
-					_format_fourcc_with_raw(int(rec.get("format", 0))),
-					int(rec.get("target_fps_min", 0)),
-					int(rec.get("target_fps_max", 0)),
-					int(rec.get("profile_version", 0)),
-				],
-				"flow: frames_received=%d frames_delivered=%d frames_dropped=%d queue_depth=%d last_frame_ts_ns=%d" % [
-					int(rec.get("frames_received", 0)),
-					int(rec.get("frames_delivered", 0)),
-					int(rec.get("frames_dropped", 0)),
-					int(rec.get("queue_depth", 0)),
-					int(rec.get("last_frame_ts_ns", 0)),
-				],
-				"visibility: visibility_frames_presented=%d visibility_frames_rejected_unsupported=%d visibility_frames_rejected_invalid=%d visibility_last_path=%s" % [
-					int(rec.get("visibility_frames_presented", 0)),
-					int(rec.get("visibility_frames_rejected_unsupported", 0)),
-					int(rec.get("visibility_frames_rejected_invalid", 0)),
-					_visibility_path_display(int(rec.get("visibility_last_path", 0))),
-				],
-			]
+			var stream_info: Array[String] = []
+			var stream_profile_line := _build_stream_profile_info_line(rec)
+			if not stream_profile_line.is_empty():
+				stream_info.append(stream_profile_line)
+			var stream_flow_line := _build_stream_flow_info_line(rec)
+			if not stream_flow_line.is_empty():
+				stream_info.append(stream_flow_line)
+			var stream_visibility_line := _build_stream_visibility_info_line(rec)
+			if not stream_visibility_line.is_empty():
+				stream_info.append(stream_visibility_line)
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -2336,14 +2319,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues.append("Contract gap: rigs[%d] missing valid rig_id." % i)
 			continue
 		var rig_entry_id := "rig/%d" % rig_id
-		var rig_info: Array[String] = [
-			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
-				int(rec.get("capture_width", 0)),
-				int(rec.get("capture_height", 0)),
-				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
-				int(rec.get("capture_profile_version", 0)),
-			],
-		]
+		var rig_info: Array[String] = []
+		var rig_still_line := _build_still_profile_info_line(rec)
+		if not rig_still_line.is_empty():
+			rig_info.append(rig_still_line)
 		panel.entries.append(_entry(
 			rig_entry_id,
 			provider_id,
@@ -3325,6 +3304,90 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 			continue
 		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
 	return counters
+
+
+func _build_still_profile_info_line(rec: Dictionary) -> String:
+	return _build_info_line_from_parts(
+		rec,
+		"still",
+		[
+			["capture_width", "capture_width", "int"],
+			["capture_height", "capture_height", "int"],
+			["capture_format", "capture_format", "fourcc"],
+			["capture_profile_version", "capture_profile_version", "int"],
+		]
+	)
+
+
+func _build_stream_profile_info_line(rec: Dictionary) -> String:
+	return _build_info_line_from_parts(
+		rec,
+		"profile",
+		[
+			["width", "width", "int"],
+			["height", "height", "int"],
+			["format", "format", "fourcc"],
+			["target_fps_min", "target_fps_min", "int"],
+			["target_fps_max", "target_fps_max", "int"],
+			["profile_version", "profile_version", "int"],
+		]
+	)
+
+
+func _build_stream_flow_info_line(rec: Dictionary) -> String:
+	return _build_info_line_from_parts(
+		rec,
+		"flow",
+		[
+			["frames_received", "frames_received", "int"],
+			["frames_delivered", "frames_delivered", "int"],
+			["frames_dropped", "frames_dropped", "int"],
+			["queue_depth", "queue_depth", "int"],
+			["last_frame_ts_ns", "last_frame_ts_ns", "int"],
+		]
+	)
+
+
+func _build_stream_visibility_info_line(rec: Dictionary) -> String:
+	return _build_info_line_from_parts(
+		rec,
+		"visibility",
+		[
+			["visibility_frames_presented", "visibility_frames_presented", "int"],
+			["visibility_frames_rejected_unsupported", "visibility_frames_rejected_unsupported", "int"],
+			["visibility_frames_rejected_invalid", "visibility_frames_rejected_invalid", "int"],
+			["visibility_last_path", "visibility_last_path", "visibility_path"],
+		]
+	)
+
+
+func _build_info_line_from_parts(rec: Dictionary, prefix: String, specs: Array) -> String:
+	var parts: Array[String] = []
+	for raw_spec in specs:
+		if typeof(raw_spec) != TYPE_ARRAY:
+			continue
+		var spec: Array = raw_spec
+		if spec.size() < 2:
+			continue
+		var label := str(spec[0])
+		var field := str(spec[1])
+		var formatter := str(spec[2]) if spec.size() > 2 else "int"
+		if not rec.has(field):
+			continue
+		parts.append("%s=%s" % [label, _format_info_value(rec.get(field), formatter)])
+	if parts.is_empty():
+		return ""
+	return "%s: %s" % [prefix, " ".join(parts)]
+
+
+func _format_info_value(raw_value: Variant, formatter: String) -> String:
+	match formatter:
+		"fourcc":
+			return _format_fourcc_with_raw(int(raw_value))
+		"visibility_path":
+			return _visibility_path_display(int(raw_value))
+		_:
+			return str(int(raw_value))
 
 
 func _apply_detail_policy_to_panel(panel: PanelModel) -> void:
