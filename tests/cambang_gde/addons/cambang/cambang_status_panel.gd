@@ -2362,7 +2362,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var orphan_rows: Array[StatusEntryModel] = []
 	var orphan_rows_by_id := {}
-	var orphan_source_by_row_id := {}
 	for i in range(current_native_objects.size()):
 		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
 		if rec.is_empty():
@@ -2393,34 +2392,27 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if should_orphan:
 			orphan_rows.append(native_entry)
 			orphan_rows_by_id[native_entry.id] = native_entry
-			orphan_source_by_row_id[native_entry.id] = rec
 		else:
 			panel.entries.append(native_entry)
 
 	if orphan_rows.size() > 0:
-		var orphan_alias_to_row_id := {}
+		var orphan_row_id_by_native_id := {}
 		for orphan_entry in orphan_rows:
-			var source_rec: Dictionary = orphan_source_by_row_id.get(orphan_entry.id, {})
-			var alias_keys := _orphan_alias_parent_keys(orphan_entry, source_rec)
-			for alias_key in alias_keys:
-				var alias_text := str(alias_key)
-				if alias_text.is_empty():
-					continue
-				if not orphan_alias_to_row_id.has(alias_text):
-					orphan_alias_to_row_id[alias_text] = orphan_entry.id
+			var orphan_native_id := int(orphan_entry.materialized_native_id)
+			if orphan_native_id > 0 and not orphan_row_id_by_native_id.has(orphan_native_id):
+				orphan_row_id_by_native_id[orphan_native_id] = orphan_entry.id
 
 		for orphan_entry in orphan_rows:
-			var source_rec: Dictionary = orphan_source_by_row_id.get(orphan_entry.id, {})
 			var desired_parent_id := str(orphan_entry.parent_id)
 			var resolved_parent_id := orphan_row_id
 			if orphan_rows_by_id.has(desired_parent_id) and desired_parent_id != orphan_entry.id:
 				resolved_parent_id = desired_parent_id
-			elif orphan_alias_to_row_id.has(desired_parent_id):
-				var aliased_parent_id := str(orphan_alias_to_row_id.get(desired_parent_id, ""))
-				if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
-					resolved_parent_id = aliased_parent_id
-			elif _contains_int(detached_root_ids, int(source_rec.get("root_id", 0))):
-				resolved_parent_id = orphan_row_id
+			else:
+				var desired_parent_native_id := _trailing_positive_int_from_row_id(desired_parent_id)
+				if desired_parent_native_id > 0 and orphan_row_id_by_native_id.has(desired_parent_native_id):
+					var aliased_parent_id := str(orphan_row_id_by_native_id.get(desired_parent_native_id, ""))
+					if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
+						resolved_parent_id = aliased_parent_id
 			orphan_entry.parent_id = resolved_parent_id
 			orphan_entry.depth = _depth_for_parent(resolved_parent_id)
 
@@ -2710,27 +2702,17 @@ func _build_native_object_entry(
 	return native_entry
 
 
-func _orphan_alias_parent_keys(entry: StatusEntryModel, source_rec: Dictionary) -> Array[String]:
-	var aliases: Array[String] = []
-	if entry == null:
-		return aliases
-
-	aliases.append(entry.id)
-	var native_id := int(source_rec.get("native_id", 0))
-	var native_type_key := _native_object_type_key(source_rec)
-	if native_type_key == "device":
-		var owner_device_instance_id := int(source_rec.get("owner_device_instance_id", 0))
-		if owner_device_instance_id > 0:
-			aliases.append("device/%d" % owner_device_instance_id)
-		elif native_id > 0:
-			aliases.append("device/%d" % native_id)
-	elif native_type_key == "stream":
-		var owner_stream_id := int(source_rec.get("owner_stream_id", 0))
-		if owner_stream_id > 0:
-			aliases.append("stream/%d" % owner_stream_id)
-		elif native_id > 0:
-			aliases.append("stream/%d" % native_id)
-	return aliases
+func _trailing_positive_int_from_row_id(row_id: String) -> int:
+	if row_id.is_empty():
+		return -1
+	var parts := row_id.split("/")
+	if parts.is_empty():
+		return -1
+	var tail := str(parts[parts.size() - 1])
+	if tail.is_empty() or not tail.is_valid_int():
+		return -1
+	var parsed := int(tail)
+	return parsed if parsed > 0 else -1
 
 
 func _ensure_expandability(panel: PanelModel) -> void:
