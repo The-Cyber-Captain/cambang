@@ -611,14 +611,6 @@ func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	for line in model.anomaly_info_lines:
 		if _is_anomaly_line(line):
 			return "contract_gap"
-	if (
-		model.id.begins_with("native_object/")
-		or model.id.begins_with("frameproducer/")
-		or model.id.contains("orphaned_native_objects")
-		or _has_badge(model, "detached")
-		or _has_badge(model, "orphaned")
-	):
-		return "fallback"
 	return "authoritative"
 
 
@@ -698,15 +690,17 @@ func _has_badge(model: CamBANGStatusPanel.StatusEntryModel, label: String) -> bo
 
 
 func _badges_for_render(model: CamBANGStatusPanel.StatusEntryModel) -> Array[CamBANGStatusPanel.BadgeModel]:
+	# MODEL BADGES (authoritative projection truth):
+	# pass through exactly what projection emitted.
 	var rendered: Array[CamBANGStatusPanel.BadgeModel] = []
 	for badge in model.badges:
 		rendered.append(badge)
 
+	# RENDERER BADGES (presentation-layer augmentation):
+	# keep only explicit gap diagnostics; do not infer lifecycle/row-type badges.
 	var row_kind := _row_kind(model)
 	if row_kind == "contract_gap" and not _contains_badge_label(rendered, "contract-gap"):
 		rendered.append(_make_badge("error", "contract-gap"))
-	elif row_kind == "fallback" and not _contains_badge_label(rendered, "fallback"):
-		rendered.append(_make_badge("info", "fallback"))
 	elif row_kind == "retained" and not _contains_badge_label(rendered, "retained"):
 		rendered.append(_make_badge("warning", "retained"))
 
@@ -747,7 +741,7 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 	match badge.label:
 		"contract-gap", "schema", "projection":
 			return "error"
-		"retained", "retained-root", "orphaned", "detached", "fallback":
+		"retained", "retained-root", "orphaned", "detached":
 			return "warning"
 		_:
 			return badge.role
@@ -755,9 +749,9 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 
 func _badge_display_label(raw_label: String) -> String:
 	if raw_label.begins_with("phase="):
-		return _phase_display_label(int(raw_label.substr("phase=".length())), false)
+		return _phase_badge_display_label(raw_label.substr("phase=".length()), false)
 	if raw_label.begins_with("native_phase="):
-		return _phase_display_label(int(raw_label.substr("native_phase=".length())), true)
+		return _phase_badge_display_label(raw_label.substr("native_phase=".length()), true)
 	match raw_label:
 		"snapshot":
 			return "SNAPSHOT"
@@ -771,8 +765,6 @@ func _badge_display_label(raw_label: String) -> String:
 			return "PRIOR GEN"
 		"continuity-only":
 			return "CONTINUITY ONLY"
-		"fallback":
-			return "FALLBACK"
 		"contract-gap":
 			return "CONTRACT GAP"
 		"schema":
@@ -795,6 +787,18 @@ func _badge_display_label(raw_label: String) -> String:
 			return "INFO"
 		_:
 			return raw_label.replace("-", " ").replace("_", " ").to_upper()
+
+
+func _phase_badge_display_label(raw_phase_suffix: String, is_native: bool) -> String:
+	var phase_suffix := raw_phase_suffix.strip_edges()
+	if phase_suffix.is_empty():
+		return _phase_display_label(-1, is_native)
+	if phase_suffix == phase_suffix.to_upper():
+		return ("NATIVE %s" % phase_suffix) if is_native else phase_suffix
+	if phase_suffix.is_valid_int():
+		return _phase_display_label(int(phase_suffix), is_native)
+	var normalized := phase_suffix.replace("-", " ").replace("_", " ").to_upper()
+	return ("NATIVE %s" % normalized) if is_native else normalized
 
 
 func _phase_display_label(phase_value: int, is_native: bool) -> String:

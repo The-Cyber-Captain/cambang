@@ -3261,6 +3261,8 @@ func _badge_sort_key(badge: BadgeModel) -> String:
 
 
 func _badge(role: String, label: String) -> BadgeModel:
+	# MODEL BADGES (authoritative projection truth):
+	# projection emits only truth-carrying badges consumed by the renderer.
 	var forbidden_snapshot_unavailable := "snapshot" + "-unavailable"
 	if label == forbidden_snapshot_unavailable:
 		push_error(forbidden_snapshot_unavailable + " is forbidden; use NO SNAPSHOT")
