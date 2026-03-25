@@ -8,11 +8,28 @@ static inline godot::String gs(const std::string& s) {
   return godot::String(s.c_str());
 }
 
+static inline godot::String lifecycle_phase_token(CBLifecyclePhase phase) {
+  switch (phase) {
+    case CBLifecyclePhase::CREATED:
+      return "CREATED";
+    case CBLifecyclePhase::LIVE:
+      return "LIVE";
+    case CBLifecyclePhase::TEARING_DOWN:
+      return "TEARING_DOWN";
+    case CBLifecyclePhase::DESTROYED:
+      return "DESTROYED";
+    default:
+      godot::UtilityFunctions::push_warning(
+          "CamBANG export_snapshot_to_godot: unknown lifecycle phase; emitting UNKNOWN");
+      return "UNKNOWN";
+  }
+}
+
 static godot::Dictionary export_rig(const CamBANGRigState& r) {
   godot::Dictionary d;
   d["rig_id"] = static_cast<uint64_t>(r.rig_id);
   d["name"] = gs(r.name);
-  d["phase"] = static_cast<int>(r.phase);
+  d["phase"] = lifecycle_phase_token(r.phase);
   d["mode"] = static_cast<int>(r.mode);
 
   godot::Array members;
@@ -44,7 +61,7 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   godot::Dictionary d;
   d["hardware_id"] = gs(s.hardware_id);
   d["instance_id"] = static_cast<uint64_t>(s.instance_id);
-  d["phase"] = static_cast<int>(s.phase);
+  d["phase"] = lifecycle_phase_token(s.phase);
   d["mode"] = static_cast<int>(s.mode);
   d["engaged"] = static_cast<bool>(s.engaged);
   d["rig_id"] = static_cast<uint64_t>(s.rig_id);
@@ -65,7 +82,7 @@ static godot::Dictionary export_stream(const CamBANGStreamState& s) {
   godot::Dictionary d;
   d["stream_id"] = static_cast<uint64_t>(s.stream_id);
   d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);
-  d["phase"] = static_cast<int>(s.phase);
+  d["phase"] = lifecycle_phase_token(s.phase);
   d["intent"] = static_cast<int>(s.intent);
   d["mode"] = static_cast<int>(s.mode);
   d["stop_reason"] = static_cast<int>(s.stop_reason);
@@ -93,7 +110,7 @@ static godot::Dictionary export_native_object(const NativeObjectRecord& r) {
   godot::Dictionary d;
   d["native_id"] = static_cast<uint64_t>(r.native_id);
   d["type"] = static_cast<uint32_t>(r.type);
-  d["phase"] = static_cast<int>(r.phase);
+  d["phase"] = lifecycle_phase_token(r.phase);
   d["owner_device_instance_id"] = static_cast<uint64_t>(r.owner_device_instance_id);
   d["owner_stream_id"] = static_cast<uint64_t>(r.owner_stream_id);
   d["owner_provider_native_id"] = static_cast<uint64_t>(r.owner_provider_native_id);
