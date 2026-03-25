@@ -46,7 +46,18 @@
         "hardware_id": "synthetic:review-orphan:1",
         "phase": "LIVE",
         "mode": "STREAMING",
-        "errors_count": 0
+        "errors_count": 0,
+        "engaged": false,
+        "rig_id": 0,
+        "camera_spec_version": 0,
+        "capture_profile_version": 0,
+        "capture_width": 0,
+        "capture_height": 0,
+        "capture_format": 0,
+        "warm_hold_ms": 0,
+        "warm_remaining_ms": 0,
+        "rebuild_count": 0,
+        "last_error_code": 0
       }
     ],
     "streams": [
@@ -63,7 +74,15 @@
         "height": 720,
         "format": 1094862674,
         "target_fps_min": 24,
-        "profile_version": 77
+        "profile_version": 77,
+        "frames_delivered": 0,
+        "frames_dropped": 0,
+        "queue_depth": 0,
+        "last_frame_ts_ns": 0,
+        "visibility_frames_presented": 0,
+        "visibility_frames_rejected_unsupported": 0,
+        "visibility_frames_rejected_invalid": 0,
+        "visibility_last_path": "NONE"
       }
     ],
     "native_objects": [
@@ -71,14 +90,31 @@
         "native_id": 3000,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 60
+        "creation_gen": 60,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 3001,
         "type": "device",
         "owner_device_instance_id": 3001,
         "phase": "LIVE",
-        "creation_gen": 60
+        "creation_gen": 60,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 3100,
@@ -86,7 +122,14 @@
         "owner_device_instance_id": 3001,
         "owner_stream_id": 3100,
         "phase": "LIVE",
-        "creation_gen": 60
+        "creation_gen": 60,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 3201,
@@ -94,7 +137,14 @@
         "owner_stream_id": 3999,
         "phase": "LIVE",
         "root_id": 9201,
-        "creation_gen": 60
+        "creation_gen": 60,
+        "owner_device_instance_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       }
     ],
     "detached_root_ids": [

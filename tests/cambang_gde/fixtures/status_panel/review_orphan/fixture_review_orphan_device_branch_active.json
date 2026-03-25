@@ -50,7 +50,16 @@
         "native_id": 4000,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 70
+        "creation_gen": 70,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 4101,
@@ -58,7 +67,14 @@
         "owner_device_instance_id": 4101,
         "phase": "LIVE",
         "root_id": 9301,
-        "creation_gen": 70
+        "creation_gen": 70,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 4201,
@@ -67,7 +83,13 @@
         "owner_stream_id": 4201,
         "phase": "LIVE",
         "root_id": 9301,
-        "creation_gen": 70
+        "creation_gen": 70,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 4301,
@@ -75,7 +97,14 @@
         "owner_stream_id": 4201,
         "phase": "LIVE",
         "root_id": 9301,
-        "creation_gen": 70
+        "creation_gen": 70,
+        "owner_device_instance_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       }
     ],
     "detached_root_ids": [
