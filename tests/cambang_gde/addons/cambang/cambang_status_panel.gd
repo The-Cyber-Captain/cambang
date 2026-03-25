@@ -2361,6 +2361,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var orphan_rows: Array[StatusEntryModel] = []
+	var orphan_rows_by_id := {}
+	var orphan_source_by_row_id := {}
 	for i in range(current_native_objects.size()):
 		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
 		if rec.is_empty():
@@ -2383,12 +2385,45 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		)
 		if native_entry == null:
 			continue
-		if native_entry.parent_id == orphan_row_id:
+		var entry_parent_id := str(native_entry.parent_id)
+		var detached_root_id := int(rec.get("root_id", 0))
+		var should_orphan := entry_parent_id == orphan_row_id
+		if not should_orphan and not entry_parent_id.is_empty() and not _entry_exists(panel.entries, entry_parent_id):
+			should_orphan = _contains_int(detached_root_ids, detached_root_id)
+		if should_orphan:
 			orphan_rows.append(native_entry)
+			orphan_rows_by_id[native_entry.id] = native_entry
+			orphan_source_by_row_id[native_entry.id] = rec
 		else:
 			panel.entries.append(native_entry)
 
 	if orphan_rows.size() > 0:
+		var orphan_alias_to_row_id := {}
+		for orphan_entry in orphan_rows:
+			var source_rec: Dictionary = orphan_source_by_row_id.get(orphan_entry.id, {})
+			var alias_keys := _orphan_alias_parent_keys(orphan_entry, source_rec)
+			for alias_key in alias_keys:
+				var alias_text := str(alias_key)
+				if alias_text.is_empty():
+					continue
+				if not orphan_alias_to_row_id.has(alias_text):
+					orphan_alias_to_row_id[alias_text] = orphan_entry.id
+
+		for orphan_entry in orphan_rows:
+			var source_rec: Dictionary = orphan_source_by_row_id.get(orphan_entry.id, {})
+			var desired_parent_id := str(orphan_entry.parent_id)
+			var resolved_parent_id := orphan_row_id
+			if orphan_rows_by_id.has(desired_parent_id) and desired_parent_id != orphan_entry.id:
+				resolved_parent_id = desired_parent_id
+			elif orphan_alias_to_row_id.has(desired_parent_id):
+				var aliased_parent_id := str(orphan_alias_to_row_id.get(desired_parent_id, ""))
+				if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
+					resolved_parent_id = aliased_parent_id
+			elif _contains_int(detached_root_ids, int(source_rec.get("root_id", 0))):
+				resolved_parent_id = orphan_row_id
+			orphan_entry.parent_id = resolved_parent_id
+			orphan_entry.depth = _depth_for_parent(resolved_parent_id)
+
 		panel.entries.append(_entry(
 			orphan_row_id,
 			provider_id,
@@ -2612,16 +2647,19 @@ func _build_native_object_entry(
 	var info_lines: Array[String] = []
 
 	if not is_provider_native:
-		if owner_stream_id > 0:
+		var can_parent_to_stream := owner_stream_id > 0 and native_type_key != "stream"
+		if can_parent_to_stream:
 			parent_id = "stream/%d" % owner_stream_id
 			if not _entry_exists(existing_entries, parent_id):
 				info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+				if not _contains_int(detached_root_ids, root_id):
+					parent_id = provider_id
 		elif owner_device_instance_id > 0:
 			parent_id = "device/%d" % owner_device_instance_id
 			if not _entry_exists(existing_entries, parent_id):
 				info_lines.append("Contract gap: owner device not present in snapshot devices.")
-				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+				if not _contains_int(detached_root_ids, root_id):
+					parent_id = provider_id
 			else:
 				var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
 				if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
@@ -2670,6 +2708,29 @@ func _build_native_object_entry(
 	)
 	native_entry.materialized_native_id = native_id
 	return native_entry
+
+
+func _orphan_alias_parent_keys(entry: StatusEntryModel, source_rec: Dictionary) -> Array[String]:
+	var aliases: Array[String] = []
+	if entry == null:
+		return aliases
+
+	aliases.append(entry.id)
+	var native_id := int(source_rec.get("native_id", 0))
+	var native_type_key := _native_object_type_key(source_rec)
+	if native_type_key == "device":
+		var owner_device_instance_id := int(source_rec.get("owner_device_instance_id", 0))
+		if owner_device_instance_id > 0:
+			aliases.append("device/%d" % owner_device_instance_id)
+		elif native_id > 0:
+			aliases.append("device/%d" % native_id)
+	elif native_type_key == "stream":
+		var owner_stream_id := int(source_rec.get("owner_stream_id", 0))
+		if owner_stream_id > 0:
+			aliases.append("stream/%d" % owner_stream_id)
+		elif native_id > 0:
+			aliases.append("stream/%d" % native_id)
+	return aliases
 
 
 func _ensure_expandability(panel: PanelModel) -> void:
