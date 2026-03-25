@@ -26,7 +26,7 @@ var _info_panel_inset: MarginContainer
 var _info_margin: MarginContainer
 var _info_panel: PanelContainer
 var _row_shell: PanelContainer
-var _accent_bar: ColorRect
+var _accent_bar: PanelContainer
 
 var _badge_pairs: Array[HBoxContainer] = []
 var _counter_widgets: Array[VBoxContainer] = []
@@ -591,7 +591,13 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_info_panel.add_theme_stylebox_override("panel", info_style)
 
 	if _accent_bar != null:
-		_accent_bar.color = accent
+		var accent_style := StyleBoxFlat.new()
+		accent_style.bg_color = accent
+		accent_style.corner_radius_top_left = (_style.row_shell_radius if _style != null else 5)
+		accent_style.corner_radius_bottom_left = (_style.row_shell_radius if _style != null else 5)
+		accent_style.corner_radius_top_right = 0
+		accent_style.corner_radius_bottom_right = 0
+		_accent_bar.add_theme_stylebox_override("panel", accent_style)
 
 
 func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
