@@ -566,7 +566,7 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	shell_style.corner_radius_top_right = (_style.row_shell_radius if _style != null else 5)
 	shell_style.corner_radius_bottom_right = (_style.row_shell_radius if _style != null else 5)
 	shell_style.corner_radius_bottom_left = (_style.row_shell_radius if _style != null else 5)
-	shell_style.content_margin_left = (_style.row_shell_padding.x if _style != null else 3) + 2
+	shell_style.content_margin_left = (_style.row_shell_padding.x if _style != null else 3)
 	shell_style.content_margin_top = (_style.row_shell_padding.y if _style != null else 2)
 	shell_style.content_margin_right = (_style.row_shell_padding.z if _style != null else 3)
 	shell_style.content_margin_bottom = (_style.row_shell_padding.w if _style != null else 2)
@@ -593,10 +593,11 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	if _accent_bar != null:
 		var accent_style := StyleBoxFlat.new()
 		accent_style.bg_color = accent
-		accent_style.corner_radius_top_left = (_style.row_shell_radius if _style != null else 5)
-		accent_style.corner_radius_bottom_left = (_style.row_shell_radius if _style != null else 5)
-		accent_style.corner_radius_top_right = 0
-		accent_style.corner_radius_bottom_right = 0
+		var accent_radius := max((_style.row_shell_radius if _style != null else 5) - 1, 0)
+		accent_style.corner_radius_top_left = accent_radius
+		accent_style.corner_radius_top_right = accent_radius
+		accent_style.corner_radius_bottom_right = accent_radius
+		accent_style.corner_radius_bottom_left = accent_radius
 		_accent_bar.add_theme_stylebox_override("panel", accent_style)
 
 
