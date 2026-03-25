@@ -2131,9 +2131,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if _phase_is_destroyed(device_phase):
 			device_badges.append(_badge("warning", "destroyed"))
 		var device_info: Array[String] = []
-		var device_still_line := _build_still_profile_info_line(rec)
-		if not device_still_line.is_empty():
-			device_info.append(device_still_line)
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
@@ -2213,9 +2210,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
 			var stream_info: Array[String] = []
-			var stream_visibility_line := _build_stream_visibility_info_line(rec)
-			if not stream_visibility_line.is_empty():
-				stream_info.append(stream_visibility_line)
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -2342,9 +2336,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			continue
 		var rig_entry_id := "rig/%d" % rig_id
 		var rig_info: Array[String] = []
-		var rig_still_line := _build_still_profile_info_line(rec)
-		if not rig_still_line.is_empty():
-			rig_info.append(rig_still_line)
 		panel.entries.append(_entry(
 			rig_entry_id,
 			provider_id,
