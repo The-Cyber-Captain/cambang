@@ -159,7 +159,7 @@
         "visibility_frames_presented": 1000,
         "visibility_frames_rejected_unsupported": 5,
         "visibility_frames_rejected_invalid": 2,
-        "visibility_last_path": 3
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
