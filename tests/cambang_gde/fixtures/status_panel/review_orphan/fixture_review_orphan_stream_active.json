@@ -53,7 +53,12 @@
         "intent": "PREVIEW",
         "stop_reason": "NONE",
         "target_fps_max": 30,
-        "frames_received": 64
+        "frames_received": 64,
+        "width": 1280,
+        "height": 720,
+        "format": 1094862674,
+        "target_fps_min": 24,
+        "profile_version": 77
       }
     ],
     "native_objects": [

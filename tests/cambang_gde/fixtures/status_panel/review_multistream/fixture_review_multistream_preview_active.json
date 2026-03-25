@@ -57,7 +57,12 @@
         "frames_received": 400,
         "frames_delivered": 395,
         "frames_dropped": 5,
-        "queue_depth": 2
+        "queue_depth": 2,
+        "width": 1280,
+        "height": 720,
+        "format": 1094862674,
+        "target_fps_min": 24,
+        "profile_version": 77
       },
       {
         "stream_id": 1102,
@@ -70,7 +75,12 @@
         "frames_received": 0,
         "frames_delivered": 0,
         "frames_dropped": 0,
-        "queue_depth": 0
+        "queue_depth": 0,
+        "width": 1280,
+        "height": 720,
+        "format": 1094862674,
+        "target_fps_min": 24,
+        "profile_version": 77
       }
     ],
     "native_objects": [
