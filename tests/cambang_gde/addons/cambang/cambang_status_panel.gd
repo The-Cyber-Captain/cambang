@@ -42,6 +42,7 @@ class BadgeModel extends RefCounted:
 class CounterModel extends RefCounted:
 	var name: String = ""
 	var value: int = 0
+	var text_value: String = ""
 	var digits: int = 1
 	var visibility: String = "core"
 
@@ -1177,7 +1178,7 @@ func _entry_has_destroyed_provider_badge(entry: StatusEntryModel) -> bool:
 	if entry == null:
 		return false
 	for badge in entry.badges:
-		if badge.label == "phase=3" or badge.label == "native_phase=3":
+		if _badge_label_is_destroyed_phase(badge.label):
 			return true
 	return false
 
@@ -1240,7 +1241,7 @@ func _resolve_retained_provider_root(panel: PanelModel) -> Dictionary:
 		if not entry.id.begins_with("provider/"):
 			continue
 		for badge in entry.badges:
-			if badge.label == "phase=3" or badge.label == "native_phase=3":
+			if _badge_label_is_destroyed_phase(badge.label):
 				destroyed_provider_ids.append(entry.id)
 				break
 	if destroyed_provider_ids.size() == 1:
@@ -1873,29 +1874,52 @@ func _build_fake_panel_model() -> PanelModel:
 
 
 func _phase_display_label(value: Variant) -> String:
+	# Canonical snapshot contract: lifecycle phase is a string enum token.
 	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
-		var text := str(value).strip_edges()
-		if not text.is_empty():
-			return text
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return str(int(value))
-	return "unknown"
+		var canonical := str(value).strip_edges().to_upper()
+		if ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	# Transitional runtime-boundary compatibility only:
+	# some runtime/dev paths may still surface integer phase values.
+	var phase_enum := _phase_enum_value(value)
+	return _phase_label_from_enum(phase_enum)
 
 
 func _phase_is_destroyed(value: Variant) -> bool:
-	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
-		return str(value).strip_edges().to_upper() == "DESTROYED"
-	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return int(value) == 3
-	return false
+	return _phase_display_label(value) == "DESTROYED"
 
 
 func _phase_is_non_live(value: Variant) -> bool:
-	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
-		var text := str(value).strip_edges().to_upper()
-		return text == "TEARING_DOWN" or text == "DESTROYED"
+	var canonical := _phase_display_label(value)
+	return canonical == "TEARING_DOWN" or canonical == "DESTROYED"
+
+
+func _phase_enum_value(value: Variant) -> int:
 	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
-		return int(value) >= 2
+		return int(value)
+	return -1
+
+
+func _phase_label_from_enum(phase_enum: int) -> String:
+	match phase_enum:
+		0:
+			return "CREATED"
+		1:
+			return "LIVE"
+		2:
+			return "TEARING_DOWN"
+		3:
+			return "DESTROYED"
+		_:
+			return "UNKNOWN"
+
+
+func _badge_label_is_destroyed_phase(label: String) -> bool:
+	if label.begins_with("phase="):
+		return label.substr("phase=".length()) == "DESTROYED"
+	if label.begins_with("native_phase="):
+		return label.substr("native_phase=".length()) == "DESTROYED"
 	return false
 
 
@@ -2100,17 +2124,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var device_entry_id := "device/%d" % instance_id
 		provider_device_ids_by_instance[instance_id] = device_entry_id
 		var device_phase: Variant = rec.get("phase", -1)
-		var device_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(device_phase))]
+		var device_badges: Array[BadgeModel] = [
+			_badge("neutral", "phase=%s" % _phase_display_label(device_phase)),
+			_badge("neutral", "mode=%s" % _device_mode_display_label(rec.get("mode", "UNKNOWN"))),
+		]
 		if _phase_is_destroyed(device_phase):
 			device_badges.append(_badge("warning", "destroyed"))
-		var device_info: Array[String] = [
-			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
-				int(rec.get("capture_width", 0)),
-				int(rec.get("capture_height", 0)),
-				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
-				int(rec.get("capture_profile_version", 0)),
-			],
-		]
+		var device_info: Array[String] = []
+		var device_still_line := _build_still_profile_info_line(rec)
+		if not device_still_line.is_empty():
+			device_info.append(device_still_line)
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
@@ -2134,10 +2157,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			_counters_from_record(
 				rec,
 				[
-					["mode", "mode", 1],
 					["errors", "errors_count", 1],
 					["still_w", "capture_width", 4],
 					["still_h", "capture_height", 4],
+					["still_fmt", "capture_format", 4],
+					["still_prof", "capture_profile_version", 2],
 				]
 			),
 			device_info
@@ -2182,32 +2206,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
 			var stream_phase: Variant = rec.get("phase", -1)
-			var stream_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(stream_phase))]
+			var stream_badges: Array[BadgeModel] = [
+				_badge("neutral", "phase=%s" % _phase_display_label(stream_phase)),
+				_badge("neutral", "mode=%s" % _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
+			]
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
-			var stream_info: Array[String] = [
-				"profile: width=%d height=%d format=%s target_fps_min=%d target_fps_max=%d profile_version=%d" % [
-					int(rec.get("width", 0)),
-					int(rec.get("height", 0)),
-					_format_fourcc_with_raw(int(rec.get("format", 0))),
-					int(rec.get("target_fps_min", 0)),
-					int(rec.get("target_fps_max", 0)),
-					int(rec.get("profile_version", 0)),
-				],
-				"flow: frames_received=%d frames_delivered=%d frames_dropped=%d queue_depth=%d last_frame_ts_ns=%d" % [
-					int(rec.get("frames_received", 0)),
-					int(rec.get("frames_delivered", 0)),
-					int(rec.get("frames_dropped", 0)),
-					int(rec.get("queue_depth", 0)),
-					int(rec.get("last_frame_ts_ns", 0)),
-				],
-				"visibility: visibility_frames_presented=%d visibility_frames_rejected_unsupported=%d visibility_frames_rejected_invalid=%d visibility_last_path=%s" % [
-					int(rec.get("visibility_frames_presented", 0)),
-					int(rec.get("visibility_frames_rejected_unsupported", 0)),
-					int(rec.get("visibility_frames_rejected_invalid", 0)),
-					_visibility_path_display(int(rec.get("visibility_last_path", 0))),
-				],
-			]
+			var stream_info: Array[String] = []
+			var stream_visibility_line := _build_stream_visibility_info_line(rec)
+			if not stream_visibility_line.is_empty():
+				stream_info.append(stream_visibility_line)
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -2231,15 +2239,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_counters_from_record(
 					rec,
 					[
-						["mode", "mode", 1],
 						["width", "width", 4],
 						["height", "height", 4],
+						["fmt", "format", 4],
 						["fps_min", "target_fps_min", 2],
 						["fps_max", "target_fps_max", 2],
+						["prof", "profile_version", 2],
 						["recv", "frames_received", 3],
 						["deliv", "frames_delivered", 3],
 						["drop", "frames_dropped", 3],
 						["queue", "queue_depth", 2],
+						["last_ts", "last_frame_ts_ns", 5],
 						["shown", "visibility_frames_presented", 3],
 						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
 						["rej_inv", "visibility_frames_rejected_invalid", 2],
@@ -2331,14 +2341,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues.append("Contract gap: rigs[%d] missing valid rig_id." % i)
 			continue
 		var rig_entry_id := "rig/%d" % rig_id
-		var rig_info: Array[String] = [
-			"still: capture_width=%d capture_height=%d capture_format=%s capture_profile_version=%d" % [
-				int(rec.get("capture_width", 0)),
-				int(rec.get("capture_height", 0)),
-				_format_fourcc_with_raw(int(rec.get("capture_format", 0))),
-				int(rec.get("capture_profile_version", 0)),
-			],
-		]
+		var rig_info: Array[String] = []
+		var rig_still_line := _build_still_profile_info_line(rec)
+		if not rig_still_line.is_empty():
+			rig_info.append(rig_still_line)
 		panel.entries.append(_entry(
 			rig_entry_id,
 			provider_id,
@@ -2350,7 +2356,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			_counters_from_record(
 				rec,
 				[
-					["mode", "mode", 1],
 					["still_w", "capture_width", 4],
 					["still_h", "capture_height", 4],
 				],
@@ -3283,6 +3288,8 @@ func _badge_sort_key(badge: BadgeModel) -> String:
 
 
 func _badge(role: String, label: String) -> BadgeModel:
+	# MODEL BADGES (authoritative projection truth):
+	# projection emits only truth-carrying badges consumed by the renderer.
 	var forbidden_snapshot_unavailable := "snapshot" + "-unavailable"
 	if label == forbidden_snapshot_unavailable:
 		push_error(forbidden_snapshot_unavailable + " is forbidden; use NO SNAPSHOT")
@@ -3296,6 +3303,7 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
+	model.text_value = ""
 	model.digits = digits
 	model.visibility = visibility
 	return model
@@ -3320,6 +3328,79 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 			continue
 		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
 	return counters
+
+
+func _device_mode_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["IDLE", "STREAMING", "CAPTURING", "ERROR"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	return "UNKNOWN"
+
+
+func _stream_mode_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["STOPPED", "FLOWING", "STARVED", "ERROR"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	return "UNKNOWN"
+
+
+func _build_still_profile_info_line(rec: Dictionary) -> String:
+	return _build_info_line_from_parts(
+		rec,
+		"still",
+		[
+			["capture_width", "capture_width", "int"],
+			["capture_height", "capture_height", "int"],
+			["capture_format", "capture_format", "fourcc"],
+			["capture_profile_version", "capture_profile_version", "int"],
+		]
+	)
+
+
+func _build_stream_visibility_info_line(rec: Dictionary) -> String:
+	return _build_info_line_from_parts(
+		rec,
+		"visibility",
+		[
+			["visibility_frames_presented", "visibility_frames_presented", "int"],
+			["visibility_frames_rejected_unsupported", "visibility_frames_rejected_unsupported", "int"],
+			["visibility_frames_rejected_invalid", "visibility_frames_rejected_invalid", "int"],
+			["visibility_last_path", "visibility_last_path", "visibility_path"],
+		]
+	)
+
+
+func _build_info_line_from_parts(rec: Dictionary, prefix: String, specs: Array) -> String:
+	var parts: Array[String] = []
+	for raw_spec in specs:
+		if typeof(raw_spec) != TYPE_ARRAY:
+			continue
+		var spec: Array = raw_spec
+		if spec.size() < 2:
+			continue
+		var label := str(spec[0])
+		var field := str(spec[1])
+		var formatter := str(spec[2]) if spec.size() > 2 else "int"
+		if not rec.has(field):
+			continue
+		parts.append("%s=%s" % [label, _format_info_value(rec.get(field), formatter)])
+	if parts.is_empty():
+		return ""
+	return "%s: %s" % [prefix, " ".join(parts)]
+
+
+func _format_info_value(raw_value: Variant, formatter: String) -> String:
+	match formatter:
+		"fourcc":
+			return _format_fourcc_with_raw(int(raw_value))
+		"visibility_path":
+			return _visibility_path_display(int(raw_value))
+		_:
+			return str(int(raw_value))
 
 
 func _apply_detail_policy_to_panel(panel: PanelModel) -> void:

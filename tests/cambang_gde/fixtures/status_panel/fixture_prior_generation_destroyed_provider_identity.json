@@ -52,14 +52,31 @@
         "native_id": 200,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 2
+        "creation_gen": 2,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 100,
         "type": "provider",
         "phase": "DESTROYED",
         "creation_gen": 1,
-        "destroyed_ns": 222
+        "destroyed_ns": 222,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       }
     ],
     "detached_root_ids": []

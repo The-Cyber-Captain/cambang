@@ -1,380 +1,267 @@
 extends RefCounted
 
-const VALID_PHASES := {
-	"CREATED": true,
-	"LIVE": true,
-	"TEARING_DOWN": true,
-	"DESTROYED": true,
-}
+const CANONICAL_SCHEMA_PATH := "res://../../schema/state_snapshot/v1/state_snapshot_schema.json"
 
-const VALID_RIG_MODES := {
-	"OFF": true,
-	"ARMED": true,
-	"TRIGGERING": true,
-	"COLLECTING": true,
-	"ERROR": true,
-}
-
-const VALID_DEVICE_MODES := {
-	"IDLE": true,
-	"STREAMING": true,
-	"CAPTURING": true,
-	"ERROR": true,
-}
-
-const VALID_STREAM_MODES := {
-	"STOPPED": true,
-	"FLOWING": true,
-	"STARVED": true,
-	"ERROR": true,
-}
-
-const VALID_STREAM_INTENTS := {
-	"PREVIEW": true,
-	"VIEWFINDER": true,
-}
-
-const VALID_STREAM_STOP_REASONS := {
-	"NONE": true,
-	"USER": true,
-	"PREEMPTED": true,
-	"PROVIDER": true,
-}
-
-const VALID_NATIVE_OBJECT_TYPES := {
-	"provider": true,
-	"device": true,
-	"stream": true,
-	"frameproducer": true,
-}
-
-const TOP_LEVEL_KEYS := {
-	"schema_version": true,
-	"gen": true,
-	"version": true,
-	"topology_version": true,
-	"timestamp_ns": true,
-	"imaging_spec_version": true,
-	"rigs": true,
-	"devices": true,
-	"streams": true,
-	"native_objects": true,
-	"detached_root_ids": true,
-}
-
-const RIG_KEYS := {
-	"rig_id": true,
-	"name": true,
-	"phase": true,
-	"mode": true,
-	"member_hardware_ids": true,
-	"active_capture_id": true,
-	"capture_profile_version": true,
-	"capture_width": true,
-	"capture_height": true,
-	"capture_format": true,
-	"captures_triggered": true,
-	"captures_completed": true,
-	"captures_failed": true,
-	"last_capture_id": true,
-	"last_capture_latency_ns": true,
-	"last_sync_skew_ns": true,
-	"error_code": true,
-}
-
-const DEVICE_KEYS := {
-	"instance_id": true,
-	"hardware_id": true,
-	"phase": true,
-	"mode": true,
-	"engaged": true,
-	"rig_id": true,
-	"camera_spec_version": true,
-	"capture_profile_version": true,
-	"capture_width": true,
-	"capture_height": true,
-	"capture_format": true,
-	"warm_hold_ms": true,
-	"warm_remaining_ms": true,
-	"rebuild_count": true,
-	"errors_count": true,
-	"last_error_code": true,
-}
-
-const STREAM_KEYS := {
-	"stream_id": true,
-	"device_instance_id": true,
-	"phase": true,
-	"mode": true,
-	"intent": true,
-	"stop_reason": true,
-	"profile_version": true,
-	"width": true,
-	"height": true,
-	"format": true,
-	"target_fps_min": true,
-	"target_fps_max": true,
-	"frames_received": true,
-	"frames_delivered": true,
-	"frames_dropped": true,
-	"queue_depth": true,
-	"last_frame_ts_ns": true,
-	"visibility_frames_presented": true,
-	"visibility_frames_rejected_unsupported": true,
-	"visibility_frames_rejected_invalid": true,
-	"visibility_last_path": true,
-}
-
-const NATIVE_OBJECT_KEYS := {
-	"native_id": true,
-	"type": true,
-	"phase": true,
-	"root_id": true,
-	"creation_gen": true,
-	"created_ns": true,
-	"destroyed_ns": true,
-	"bytes_allocated": true,
-	"buffers_in_use": true,
-	"owner_provider_native_id": true,
-	"owner_rig_id": true,
-	"owner_device_instance_id": true,
-	"owner_stream_id": true,
-}
+static var _cached_schema: Dictionary = {}
+static var _cached_schema_load_error: String = ""
+static var _cached_numeric_bounds_by_ref: Dictionary = {}
 
 
 static func validate_snapshot(snapshot: Variant) -> Array[String]:
 	var errors: Array[String] = []
-
-	if typeof(snapshot) != TYPE_DICTIONARY:
-		errors.append("snapshot root must be Dictionary")
+	var schema := _load_canonical_schema(errors)
+	if schema.is_empty():
 		return errors
-
-	_validate_closed_object(snapshot, TOP_LEVEL_KEYS, "snapshot", errors)
-
-	_require_int(snapshot, "schema_version", "snapshot", errors)
-	_require_int(snapshot, "gen", "snapshot", errors)
-	_require_int(snapshot, "version", "snapshot", errors)
-	_require_int(snapshot, "topology_version", "snapshot", errors)
-	_require_int(snapshot, "timestamp_ns", "snapshot", errors)
-	_require_int(snapshot, "imaging_spec_version", "snapshot", errors)
-	_require_array(snapshot, "rigs", "snapshot", errors)
-	_require_array(snapshot, "devices", "snapshot", errors)
-	_require_array(snapshot, "streams", "snapshot", errors)
-	_require_array(snapshot, "native_objects", "snapshot", errors)
-	_require_array(snapshot, "detached_root_ids", "snapshot", errors)
-
-	if snapshot.has("schema_version"):
-		if not _is_json_int_like(snapshot["schema_version"]) or int(round(float(snapshot["schema_version"]))) != 1:
-			errors.append("snapshot.schema_version must equal 1")
-
-	var rigs: Array = snapshot.get("rigs", [])
-	for i in range(rigs.size()):
-		_validate_rig(rigs[i], "snapshot.rigs[%d]" % i, errors)
-
-	var devices: Array = snapshot.get("devices", [])
-	for i in range(devices.size()):
-		_validate_device(devices[i], "snapshot.devices[%d]" % i, errors)
-
-	var streams: Array = snapshot.get("streams", [])
-	for i in range(streams.size()):
-		_validate_stream(streams[i], "snapshot.streams[%d]" % i, errors)
-
-	var native_objects: Array = snapshot.get("native_objects", [])
-	for i in range(native_objects.size()):
-		_validate_native_object(native_objects[i], "snapshot.native_objects[%d]" % i, errors)
-
-	var detached_root_ids: Array = snapshot.get("detached_root_ids", [])
-	for i in range(detached_root_ids.size()):
-		if not _is_json_int_like(detached_root_ids[i]):
-			errors.append("snapshot.detached_root_ids[%d] must be int" % i)
-
+	_validate_against_schema(snapshot, schema, "$", schema, errors)
 	return errors
 
 
-static func _validate_rig(rig: Variant, path: String, errors: Array[String]) -> void:
-	if typeof(rig) != TYPE_DICTIONARY:
-		errors.append("%s must be Dictionary" % path)
+static func _load_canonical_schema(errors: Array[String]) -> Dictionary:
+	if not _cached_schema.is_empty():
+		return _cached_schema
+	if not _cached_schema_load_error.is_empty():
+		errors.append(_cached_schema_load_error)
+		return {}
+
+	var path := ProjectSettings.globalize_path(CANONICAL_SCHEMA_PATH)
+	var text := FileAccess.get_file_as_string(path)
+	if text.is_empty():
+		_cached_schema_load_error = "failed to read canonical snapshot schema: %s" % CANONICAL_SCHEMA_PATH
+		errors.append(_cached_schema_load_error)
+		return {}
+
+	var json := JSON.new()
+	var parse_err := json.parse(text)
+	if parse_err != OK or typeof(json.data) != TYPE_DICTIONARY:
+		_cached_schema_load_error = "failed to parse canonical snapshot schema: %s" % CANONICAL_SCHEMA_PATH
+		errors.append(_cached_schema_load_error)
+		return {}
+
+	_cached_schema = json.data
+	_cached_numeric_bounds_by_ref = _extract_numeric_bounds_by_ref(text)
+	return _cached_schema
+
+
+static func _validate_against_schema(
+		value: Variant,
+		schema_node: Dictionary,
+		path: String,
+		root_schema: Dictionary,
+		errors: Array[String]
+	) -> void:
+	var effective_schema := _resolve_schema_refs(schema_node, root_schema, errors)
+	if effective_schema.is_empty():
 		return
 
-	_validate_closed_object(rig, RIG_KEYS, path, errors)
-	_require_int(rig, "rig_id", path, errors)
-	_require_enum(rig, "phase", VALID_PHASES, path, errors)
-	_require_enum(rig, "mode", VALID_RIG_MODES, path, errors)
-	if rig.has("name"):
-		_require_string(rig, "name", path, errors)
-	if rig.has("member_hardware_ids"):
-		_require_array(rig, "member_hardware_ids", path, errors)
-		var members: Array = rig.get("member_hardware_ids", [])
-		for i in range(members.size()):
-			if typeof(members[i]) != TYPE_STRING:
-				errors.append("%s.member_hardware_ids[%d] must be string" % [path, i])
-	for key in [
-		"active_capture_id",
-		"capture_profile_version",
-		"capture_width",
-		"capture_height",
-		"capture_format",
-		"captures_triggered",
-		"captures_completed",
-		"captures_failed",
-		"last_capture_id",
-		"last_capture_latency_ns",
-		"last_sync_skew_ns",
-		"error_code",
-	]:
-		_optional_int(rig, key, path, errors)
+	if effective_schema.has("const"):
+		if value != effective_schema.get("const"):
+			errors.append("%s must equal %s" % [path, str(effective_schema.get("const"))])
+			return
 
+	if effective_schema.has("enum"):
+		var options: Array = effective_schema.get("enum", [])
+		if not options.has(value):
+			errors.append("%s must be one of %s" % [path, str(options)])
+			return
 
-static func _validate_device(device: Variant, path: String, errors: Array[String]) -> void:
-	if typeof(device) != TYPE_DICTIONARY:
-		errors.append("%s must be Dictionary" % path)
+	var type_name := str(effective_schema.get("type", ""))
+	if not type_name.is_empty() and not _matches_type(value, type_name):
+		errors.append("%s must be %s" % [path, type_name])
 		return
 
-	_validate_closed_object(device, DEVICE_KEYS, path, errors)
-	_require_int(device, "instance_id", path, errors)
-	_require_string(device, "hardware_id", path, errors)
-	_require_enum(device, "phase", VALID_PHASES, path, errors)
-	_require_enum(device, "mode", VALID_DEVICE_MODES, path, errors)
-	_require_int(device, "errors_count", path, errors)
-	_optional_bool(device, "engaged", path, errors)
-	for key in [
-		"rig_id",
-		"camera_spec_version",
-		"capture_profile_version",
-		"capture_width",
-		"capture_height",
-		"capture_format",
-		"warm_hold_ms",
-		"warm_remaining_ms",
-		"rebuild_count",
-		"last_error_code",
-	]:
-		_optional_int(device, key, path, errors)
-
-
-static func _validate_stream(stream: Variant, path: String, errors: Array[String]) -> void:
-	if typeof(stream) != TYPE_DICTIONARY:
-		errors.append("%s must be Dictionary" % path)
+	if type_name == "integer":
+		_validate_integer_bounds(value, effective_schema, path, errors)
 		return
 
-	_validate_closed_object(stream, STREAM_KEYS, path, errors)
-	_require_int(stream, "stream_id", path, errors)
-	_require_int(stream, "device_instance_id", path, errors)
-	_require_enum(stream, "phase", VALID_PHASES, path, errors)
-	_require_enum(stream, "mode", VALID_STREAM_MODES, path, errors)
-	_require_enum(stream, "intent", VALID_STREAM_INTENTS, path, errors)
-	_require_enum(stream, "stop_reason", VALID_STREAM_STOP_REASONS, path, errors)
-	_require_int(stream, "target_fps_max", path, errors)
-	_require_int(stream, "frames_received", path, errors)
-	for key in [
-		"profile_version",
-		"width",
-		"height",
-		"format",
-		"target_fps_min",
-		"frames_delivered",
-		"frames_dropped",
-		"queue_depth",
-		"last_frame_ts_ns",
-		"visibility_frames_presented",
-		"visibility_frames_rejected_unsupported",
-		"visibility_frames_rejected_invalid",
-		"visibility_last_path",
-	]:
-		_optional_int(stream, key, path, errors)
-
-
-static func _validate_native_object(obj: Variant, path: String, errors: Array[String]) -> void:
-	if typeof(obj) != TYPE_DICTIONARY:
-		errors.append("%s must be Dictionary" % path)
+	if type_name == "string" or type_name == "boolean":
 		return
 
-	_validate_closed_object(obj, NATIVE_OBJECT_KEYS, path, errors)
-	_require_int(obj, "native_id", path, errors)
-	_require_enum(obj, "type", VALID_NATIVE_OBJECT_TYPES, path, errors)
-	_require_enum(obj, "phase", VALID_PHASES, path, errors)
-	_require_int(obj, "creation_gen", path, errors)
-
-	_optional_int(obj, "root_id", path, errors)
-	_optional_int(obj, "created_ns", path, errors)
-	_optional_int(obj, "destroyed_ns", path, errors)
-	_optional_int(obj, "bytes_allocated", path, errors)
-	_optional_int(obj, "buffers_in_use", path, errors)
-	_optional_int(obj, "owner_provider_native_id", path, errors)
-	_optional_int(obj, "owner_rig_id", path, errors)
-	_optional_int(obj, "owner_device_instance_id", path, errors)
-	_optional_int(obj, "owner_stream_id", path, errors)
-
-
-static func _validate_closed_object(obj: Dictionary, allowed: Dictionary, path: String, errors: Array[String]) -> void:
-	for key in obj.keys():
-		var key_s := str(key)
-		if not allowed.has(key_s):
-			errors.append("%s has unknown field '%s'" % [path, key_s])
-
-
-static func _require_int(obj: Dictionary, key: String, path: String, errors: Array[String]) -> void:
-	if not obj.has(key):
-		errors.append("%s missing '%s'" % [path, key])
+	if type_name == "array":
+		var arr := value as Array
+		var item_schema: Dictionary = effective_schema.get("items", {})
+		for i in range(arr.size()):
+			_validate_against_schema(arr[i], item_schema, "%s[%d]" % [path, i], root_schema, errors)
 		return
 
-	if not _is_json_int_like(obj[key]):
-		errors.append("%s.%s must be int" % [path, key])
+	if type_name == "object":
+		_validate_object(value, effective_schema, path, root_schema, errors)
 
 
-static func _optional_int(obj: Dictionary, key: String, path: String, errors: Array[String]) -> void:
-	if not obj.has(key):
-		return
+static func _resolve_schema_refs(schema_node: Dictionary, root_schema: Dictionary, errors: Array[String]) -> Dictionary:
+	if not schema_node.has("$ref"):
+		return schema_node
+	var ref := str(schema_node.get("$ref", ""))
+	if not ref.begins_with("#/"):
+		errors.append("unsupported $ref in canonical schema: %s" % ref)
+		return {}
+	var parts := ref.substr(2).split("/")
+	var current: Variant = root_schema
+	for part in parts:
+		if typeof(current) != TYPE_DICTIONARY:
+			errors.append("invalid $ref target in canonical schema: %s" % ref)
+			return {}
+		var dict_current := current as Dictionary
+		if not dict_current.has(part):
+			errors.append("missing $ref target in canonical schema: %s" % ref)
+			return {}
+		current = dict_current.get(part)
+	if typeof(current) != TYPE_DICTIONARY:
+		errors.append("non-object $ref target in canonical schema: %s" % ref)
+		return {}
+	var resolved := (current as Dictionary).duplicate(true)
+	if ref.begins_with("#/$defs/"):
+		var def_name := ref.get_slice("/", 2)
+		if _cached_numeric_bounds_by_ref.has(def_name):
+			var bounds: Dictionary = _cached_numeric_bounds_by_ref[def_name]
+			if bounds.has("minimum"):
+				resolved["__minimum_text"] = str(bounds["minimum"])
+			if bounds.has("maximum"):
+				resolved["__maximum_text"] = str(bounds["maximum"])
+	return resolved
 
-	if not _is_json_int_like(obj[key]):
-		errors.append("%s.%s must be int when present" % [path, key])
+
+static func _matches_type(value: Variant, type_name: String) -> bool:
+	match type_name:
+		"object":
+			return typeof(value) == TYPE_DICTIONARY
+		"array":
+			return typeof(value) == TYPE_ARRAY
+		"string":
+			return typeof(value) == TYPE_STRING
+		"boolean":
+			return typeof(value) == TYPE_BOOL
+		"integer":
+			return _is_json_integer(value)
+		_:
+			return true
 
 
-static func _optional_bool(obj: Dictionary, key: String, path: String, errors: Array[String]) -> void:
-	if not obj.has(key):
-		return
-	if typeof(obj[key]) != TYPE_BOOL:
-		errors.append("%s.%s must be bool when present" % [path, key])
-
-
-static func _require_string(obj: Dictionary, key: String, path: String, errors: Array[String]) -> void:
-	if not obj.has(key):
-		errors.append("%s missing '%s'" % [path, key])
-		return
-
-	if typeof(obj[key]) != TYPE_STRING:
-		errors.append("%s.%s must be string" % [path, key])
-
-
-static func _require_array(obj: Dictionary, key: String, path: String, errors: Array[String]) -> void:
-	if not obj.has(key):
-		errors.append("%s missing '%s'" % [path, key])
-		return
-
-	if typeof(obj[key]) != TYPE_ARRAY:
-		errors.append("%s.%s must be array" % [path, key])
-
-
-static func _require_enum(obj: Dictionary, key: String, valid: Dictionary, path: String, errors: Array[String]) -> void:
-	if not obj.has(key):
-		errors.append("%s missing '%s'" % [path, key])
-		return
-
-	var value: Variant = obj[key]
-
-	if typeof(value) != TYPE_STRING:
-		errors.append("%s.%s must be string enum" % [path, key])
-		return
-
-	if not valid.has(value):
-		errors.append("%s.%s invalid '%s'" % [path, key, value])
-
-static func _is_json_int_like(value: Variant) -> bool:
+static func _is_json_integer(value: Variant) -> bool:
 	if typeof(value) == TYPE_INT:
 		return true
-
 	if typeof(value) == TYPE_FLOAT:
-		var f: float = value
-		return is_equal_approx(f, round(f))
-
+		var f := float(value)
+		return is_finite(f) and floor(f) == f
 	return false
+
+
+static func _validate_integer_bounds(value: Variant, schema_node: Dictionary, path: String, errors: Array[String]) -> void:
+	if not _is_json_integer(value):
+		return
+	if schema_node.has("minimum"):
+		var min_text := _integer_bound_text(schema_node, "minimum")
+		if _compare_integer_decimal_strings(_integer_value_text(value), min_text) < 0:
+			errors.append("%s must be >= %s" % [path, min_text])
+	if schema_node.has("maximum"):
+		var max_text := _integer_bound_text(schema_node, "maximum")
+		if _compare_integer_decimal_strings(_integer_value_text(value), max_text) > 0:
+			errors.append("%s must be <= %s" % [path, max_text])
+
+
+static func _validate_object(
+		value: Variant,
+		schema_node: Dictionary,
+		path: String,
+		root_schema: Dictionary,
+		errors: Array[String]
+	) -> void:
+	var dict_value := value as Dictionary
+	var required: Array = schema_node.get("required", [])
+	for raw_key in required:
+		var key := str(raw_key)
+		if not dict_value.has(key):
+			errors.append("%s missing required key '%s'" % [path, key])
+
+	var props: Dictionary = schema_node.get("properties", {})
+	var allow_additional := true
+	if schema_node.has("additionalProperties"):
+		allow_additional = bool(schema_node.get("additionalProperties"))
+
+	for key_variant in dict_value.keys():
+		var key := str(key_variant)
+		if not props.has(key):
+			if not allow_additional:
+				errors.append("%s has unsupported key '%s'" % [path, key])
+			continue
+		var prop_schema: Variant = props.get(key)
+		if typeof(prop_schema) != TYPE_DICTIONARY:
+			continue
+		_validate_against_schema(dict_value.get(key), prop_schema as Dictionary, "%s.%s" % [path, key], root_schema, errors)
+
+
+static func _extract_numeric_bounds_by_ref(schema_text: String) -> Dictionary:
+	var bounds_by_ref := {}
+	for def_name in ["uint32", "uint64", "int32"]:
+		var def_bounds: Dictionary = {}
+		var min_text := _extract_numeric_bound_text(schema_text, def_name, "minimum")
+		if not min_text.is_empty():
+			def_bounds["minimum"] = min_text
+		var max_text := _extract_numeric_bound_text(schema_text, def_name, "maximum")
+		if not max_text.is_empty():
+			def_bounds["maximum"] = max_text
+		if not def_bounds.is_empty():
+			bounds_by_ref[def_name] = def_bounds
+	return bounds_by_ref
+
+
+static func _extract_numeric_bound_text(schema_text: String, def_name: String, bound_name: String) -> String:
+	var regex := RegEx.new()
+	var pattern := "(?s)\"%s\"\\s*:\\s*\\{.*?\"%s\"\\s*:\\s*([-]?[0-9]+)" % [def_name, bound_name]
+	if regex.compile(pattern) != OK:
+		return ""
+	var match := regex.search(schema_text)
+	if match == null:
+		return ""
+	return match.get_string(1)
+
+
+static func _integer_bound_text(schema_node: Dictionary, bound_name: String) -> String:
+	var override_key := "__%s_text" % bound_name
+	if schema_node.has(override_key):
+		return str(schema_node.get(override_key))
+	return _integer_value_text(schema_node.get(bound_name))
+
+
+static func _integer_value_text(value: Variant) -> String:
+	if typeof(value) == TYPE_INT:
+		return str(value)
+	if typeof(value) == TYPE_FLOAT:
+		return str(int(value))
+	return str(value).strip_edges()
+
+
+static func _compare_integer_decimal_strings(a_raw: String, b_raw: String) -> int:
+	var a := _normalize_integer_text(a_raw)
+	var b := _normalize_integer_text(b_raw)
+	if a == b:
+		return 0
+	var a_neg := a.begins_with("-")
+	var b_neg := b.begins_with("-")
+	if a_neg != b_neg:
+		return -1 if a_neg else 1
+	var a_abs := a.substr(1) if a_neg else a
+	var b_abs := b.substr(1) if b_neg else b
+	if a_abs.length() != b_abs.length():
+		if a_neg:
+			return -1 if a_abs.length() > b_abs.length() else 1
+		return 1 if a_abs.length() > b_abs.length() else -1
+	if a_abs == b_abs:
+		return 0
+	if a_neg:
+		return -1 if a_abs > b_abs else 1
+	return 1 if a_abs > b_abs else -1
+
+
+static func _normalize_integer_text(raw: String) -> String:
+	var text := raw.strip_edges()
+	if text.is_empty():
+		return "0"
+	var negative := false
+	if text.begins_with("-"):
+		negative = true
+		text = text.substr(1)
+	while text.length() > 1 and text.begins_with("0"):
+		text = text.substr(1)
+	if text == "0":
+		negative = false
+	return ("-" + text) if negative else text

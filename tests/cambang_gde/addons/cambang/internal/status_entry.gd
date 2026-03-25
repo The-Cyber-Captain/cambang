@@ -262,10 +262,12 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 
 		name_label.text = visible_counters[i].name
 		name_label.label_settings = _counter_label_settings()
-		value_label.text = _format_counter_value(visible_counters[i].value, visible_counters[i].digits)
+		value_label.text = _format_counter_value(visible_counters[i])
 		value_label.label_settings = _counter_label_settings()
 		var counter_name: String = visible_counters[i].name
 		var counter_digits: int = max(visible_counters[i].digits, 1)
+		if not visible_counters[i].text_value.is_empty():
+			counter_digits = max(counter_digits, visible_counters[i].text_value.length())
 		var minimum_digits: int = counter_digits
 		match counter_name:
 			"gen", "topology":
@@ -414,7 +416,13 @@ func _counter_label_settings() -> LabelSettings:
 	return settings
 
 
-func _format_counter_value(value: int, digits: int) -> String:
+func _format_counter_value(counter: CamBANGStatusPanel.CounterModel) -> String:
+	if counter == null:
+		return "-"
+	if not counter.text_value.is_empty():
+		return counter.text_value
+	var value := counter.value
+	var digits := counter.digits
 	var bounded_digits := maxi(digits, 1)
 	if value < 0:
 		return "-"
@@ -611,14 +619,6 @@ func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	for line in model.anomaly_info_lines:
 		if _is_anomaly_line(line):
 			return "contract_gap"
-	if (
-		model.id.begins_with("native_object/")
-		or model.id.begins_with("frameproducer/")
-		or model.id.contains("orphaned_native_objects")
-		or _has_badge(model, "detached")
-		or _has_badge(model, "orphaned")
-	):
-		return "fallback"
 	return "authoritative"
 
 
@@ -698,15 +698,17 @@ func _has_badge(model: CamBANGStatusPanel.StatusEntryModel, label: String) -> bo
 
 
 func _badges_for_render(model: CamBANGStatusPanel.StatusEntryModel) -> Array[CamBANGStatusPanel.BadgeModel]:
+	# MODEL BADGES (authoritative projection truth):
+	# pass through exactly what projection emitted.
 	var rendered: Array[CamBANGStatusPanel.BadgeModel] = []
 	for badge in model.badges:
 		rendered.append(badge)
 
+	# RENDERER BADGES (presentation-layer augmentation):
+	# keep only explicit gap diagnostics; do not infer lifecycle/row-type badges.
 	var row_kind := _row_kind(model)
 	if row_kind == "contract_gap" and not _contains_badge_label(rendered, "contract-gap"):
 		rendered.append(_make_badge("error", "contract-gap"))
-	elif row_kind == "fallback" and not _contains_badge_label(rendered, "fallback"):
-		rendered.append(_make_badge("info", "fallback"))
 	elif row_kind == "retained" and not _contains_badge_label(rendered, "retained"):
 		rendered.append(_make_badge("warning", "retained"))
 
@@ -747,7 +749,7 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 	match badge.label:
 		"contract-gap", "schema", "projection":
 			return "error"
-		"retained", "retained-root", "orphaned", "detached", "fallback":
+		"retained", "retained-root", "orphaned", "detached":
 			return "warning"
 		_:
 			return badge.role
@@ -755,9 +757,9 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 
 func _badge_display_label(raw_label: String) -> String:
 	if raw_label.begins_with("phase="):
-		return _phase_display_label(int(raw_label.substr("phase=".length())), false)
+		return _phase_badge_display_label(raw_label.substr("phase=".length()), false)
 	if raw_label.begins_with("native_phase="):
-		return _phase_display_label(int(raw_label.substr("native_phase=".length())), true)
+		return _phase_badge_display_label(raw_label.substr("native_phase=".length()), true)
 	match raw_label:
 		"snapshot":
 			return "SNAPSHOT"
@@ -771,8 +773,6 @@ func _badge_display_label(raw_label: String) -> String:
 			return "PRIOR GEN"
 		"continuity-only":
 			return "CONTINUITY ONLY"
-		"fallback":
-			return "FALLBACK"
 		"contract-gap":
 			return "CONTRACT GAP"
 		"schema":
@@ -797,6 +797,14 @@ func _badge_display_label(raw_label: String) -> String:
 			return raw_label.replace("-", " ").replace("_", " ").to_upper()
 
 
+func _phase_badge_display_label(raw_phase_suffix: String, is_native: bool) -> String:
+	var phase_suffix := raw_phase_suffix.strip_edges()
+	if phase_suffix.is_empty():
+		return _phase_display_label(-1, is_native)
+	var normalized := phase_suffix.strip_edges().to_upper()
+	return ("NATIVE %s" % normalized) if is_native else normalized
+
+
 func _phase_display_label(phase_value: int, is_native: bool) -> String:
 	var phase_text := "UNKNOWN"
 	match phase_value:
@@ -805,7 +813,7 @@ func _phase_display_label(phase_value: int, is_native: bool) -> String:
 		1:
 			phase_text = "LIVE"
 		2:
-			phase_text = "TEARING DOWN"
+			phase_text = "TEARING_DOWN"
 		3:
 			phase_text = "DESTROYED"
 	if is_native:
