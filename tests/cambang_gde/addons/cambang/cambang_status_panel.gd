@@ -186,6 +186,14 @@ func force_refresh() -> void:
 	_refresh_from_server()
 
 
+func apply_fixture_expanded_rows(row_ids: Array) -> void:
+	for raw_row_id in row_ids:
+		var row_id := str(raw_row_id)
+		if row_id.is_empty():
+			continue
+		_expanded_by_row_id[row_id] = true
+
+
 func _build_ui_if_needed() -> void:
 	if _title_label != null:
 		return

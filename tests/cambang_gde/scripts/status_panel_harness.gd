@@ -46,6 +46,7 @@ func _initialize() -> void:
 	var expected_panel_outcome: Dictionary = fixture.get("expected_panel_outcome", {})
 	var adversarial_projection: Dictionary = fixture.get("adversarial_projection", {})
 	var provider_mode := str(fixture.get("provider_mode", "fixture"))
+	var initial_expanded_row_ids: Array = fixture.get("initial_expanded_row_ids", [])
 
 	var window := Window.new()
 	window.title = "status_panel_harness"
@@ -132,6 +133,9 @@ func _initialize() -> void:
 			rendered_model = _apply_adversarial_projection(rendered_model, adversarial_projection, panel)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
+	if not initial_expanded_row_ids.is_empty():
+		var expanded_with_ancestors := _expand_rows_with_ancestors(rendered_model, initial_expanded_row_ids)
+		panel.call("apply_fixture_expanded_rows", expanded_with_ancestors)
 	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
 
 	await process_frame
@@ -480,6 +484,35 @@ func _collect_entry_ids(model: Variant) -> Array[String]:
 			ids.append(entry_id)
 
 	return ids
+
+
+func _expand_rows_with_ancestors(model: Variant, requested_row_ids: Array) -> Array[String]:
+	var expanded_set := {}
+	var parent_by_id := {}
+	if model != null:
+		for raw_entry in model.entries:
+			if raw_entry == null:
+				continue
+			var entry_id := str(raw_entry.id)
+			if entry_id.is_empty():
+				continue
+			parent_by_id[entry_id] = str(raw_entry.parent_id)
+
+	for raw_row_id in requested_row_ids:
+		var row_id := str(raw_row_id)
+		if row_id.is_empty():
+			continue
+		var current_id := row_id
+		while current_id != "":
+			if expanded_set.has(current_id):
+				break
+			expanded_set[current_id] = true
+			current_id = str(parent_by_id.get(current_id, ""))
+
+	var expanded_rows: Array[String] = []
+	for row_id in expanded_set.keys():
+		expanded_rows.append(str(row_id))
+	return expanded_rows
 
 
 func _extract_entries(model: Variant) -> Array:

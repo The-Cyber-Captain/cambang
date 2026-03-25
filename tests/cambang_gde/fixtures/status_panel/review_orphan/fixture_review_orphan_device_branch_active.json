@@ -1,6 +1,11 @@
 {
   "fixture_kind": "authoritative_snapshot",
   "provider_mode": "synthetic",
+  "initial_expanded_row_ids": [
+    "provider/4000/orphaned_native_objects",
+    "native_object/4101",
+    "native_object/4201"
+  ],
   "expected_validity": "valid",
   "should_run_projector": true,
   "expected_panel_outcome": {
