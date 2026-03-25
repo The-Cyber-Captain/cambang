@@ -2184,12 +2184,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
 			var stream_info: Array[String] = []
-			var stream_profile_line := _build_stream_profile_info_line(rec)
-			if not stream_profile_line.is_empty():
-				stream_info.append(stream_profile_line)
-			var stream_flow_line := _build_stream_flow_info_line(rec)
-			if not stream_flow_line.is_empty():
-				stream_info.append(stream_flow_line)
 			var stream_visibility_line := _build_stream_visibility_info_line(rec)
 			if not stream_visibility_line.is_empty():
 				stream_info.append(stream_visibility_line)
@@ -3315,35 +3309,6 @@ func _build_still_profile_info_line(rec: Dictionary) -> String:
 			["capture_height", "capture_height", "int"],
 			["capture_format", "capture_format", "fourcc"],
 			["capture_profile_version", "capture_profile_version", "int"],
-		]
-	)
-
-
-func _build_stream_profile_info_line(rec: Dictionary) -> String:
-	return _build_info_line_from_parts(
-		rec,
-		"profile",
-		[
-			["width", "width", "int"],
-			["height", "height", "int"],
-			["format", "format", "fourcc"],
-			["target_fps_min", "target_fps_min", "int"],
-			["target_fps_max", "target_fps_max", "int"],
-			["profile_version", "profile_version", "int"],
-		]
-	)
-
-
-func _build_stream_flow_info_line(rec: Dictionary) -> String:
-	return _build_info_line_from_parts(
-		rec,
-		"flow",
-		[
-			["frames_received", "frames_received", "int"],
-			["frames_delivered", "frames_delivered", "int"],
-			["frames_dropped", "frames_dropped", "int"],
-			["queue_depth", "queue_depth", "int"],
-			["last_frame_ts_ns", "last_frame_ts_ns", "int"],
 		]
 	)
 

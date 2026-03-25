@@ -83,21 +83,10 @@
         "capture_format='JPEG'"
       ],
       "stream/1": [
-        "width=1280",
-        "height=720",
-        "target_fps_min=24",
-        "target_fps_max=60",
-        "profile_version=77",
-        "frames_received=1024",
-        "frames_delivered=1000",
-        "frames_dropped=24",
-        "queue_depth=3",
-        "last_frame_ts_ns=40096501234",
         "visibility_frames_presented=1000",
         "visibility_frames_rejected_unsupported=5",
         "visibility_frames_rejected_invalid=2",
-        "visibility_last_path=REJECTED_UNSUPPORTED (3)",
-        "format='RGBA'"
+        "visibility_last_path=REJECTED_UNSUPPORTED (3)"
       ],
       "frameproducer/103": [
         "FrameProducer owner_stream_id=1.",
