@@ -22,6 +22,7 @@ class StatusEntryModel extends RefCounted:
 	var parent_id: String = ""
 	var depth: int = 0
 	var label: String = ""
+	var visual_object_class: String = ""
 	var materialized_native_id: int = 0
 	var expanded: bool = false
 	var can_expand: bool = false
@@ -184,6 +185,14 @@ func _reconcile_post_stop_nil_boundary() -> bool:
 
 func force_refresh() -> void:
 	_refresh_from_server()
+
+
+func apply_fixture_expanded_rows(row_ids: Array) -> void:
+	for raw_row_id in row_ids:
+		var row_id := str(raw_row_id)
+		if row_id.is_empty():
+			continue
+		_expanded_by_row_id[row_id] = true
 
 
 func _build_ui_if_needed() -> void:
@@ -791,6 +800,7 @@ func _compose_presented_panel_model(
 	_append_retained_presentation_subtrees(composed)
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
+	_reorder_panel_entries_depth_first(composed)
 	_apply_detail_policy_to_panel(composed)
 	return composed
 
@@ -1525,7 +1535,8 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		source.can_expand,
 		cloned_badges,
 		cloned_counters,
-		cloned_info_lines
+		cloned_info_lines,
+		source.visual_object_class
 	)
 	cloned.materialized_native_id = source.materialized_native_id
 	cloned.summary_info_lines = source.summary_info_lines.duplicate()
@@ -2120,12 +2131,15 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 			device_badges,
-			[
-				_counter("mode", int(rec.get("mode", 0)), 1),
-				_counter("errors", int(rec.get("errors_count", 0)), 1),
-				_counter("still_w", int(rec.get("capture_width", 0)), 4),
-				_counter("still_h", int(rec.get("capture_height", 0)), 4),
-			],
+			_counters_from_record(
+				rec,
+				[
+					["mode", "mode", 1],
+					["errors", "errors_count", 1],
+					["still_w", "capture_width", 4],
+					["still_h", "capture_height", 4],
+				]
+			),
 			device_info
 		)
 		if device_matches.size() == 1:
@@ -2214,20 +2228,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				false,
 				true,
 				stream_badges,
-				[
-					_counter("mode", int(rec.get("mode", 0)), 1),
-					_counter("width", int(rec.get("width", 0)), 4),
-					_counter("height", int(rec.get("height", 0)), 4),
-					_counter("fps_min", int(rec.get("target_fps_min", 0)), 2),
-					_counter("fps_max", int(rec.get("target_fps_max", 0)), 2),
-					_counter("recv", int(rec.get("frames_received", 0)), 3),
-					_counter("deliv", int(rec.get("frames_delivered", 0)), 3),
-					_counter("drop", int(rec.get("frames_dropped", 0)), 3),
-					_counter("queue", int(rec.get("queue_depth", 0)), 2),
-					_counter("shown", int(rec.get("visibility_frames_presented", 0)), 3),
-					_counter("rej_fmt", int(rec.get("visibility_frames_rejected_unsupported", 0)), 2),
-					_counter("rej_inv", int(rec.get("visibility_frames_rejected_invalid", 0)), 2),
-				],
+				_counters_from_record(
+					rec,
+					[
+						["mode", "mode", 1],
+						["width", "width", 4],
+						["height", "height", 4],
+						["fps_min", "target_fps_min", 2],
+						["fps_max", "target_fps_max", 2],
+						["recv", "frames_received", 3],
+						["deliv", "frames_delivered", 3],
+						["drop", "frames_dropped", 3],
+						["queue", "queue_depth", 2],
+						["shown", "visibility_frames_presented", 3],
+						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
+						["rej_inv", "visibility_frames_rejected_invalid", 2],
+					]
+				),
 				stream_info
 			)
 			if stream_matches.size() == 1:
@@ -2330,12 +2347,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			false,
 			true,
 			[_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))],
-			[
-				_counter("mode", int(rec.get("mode", 0)), 1),
-				_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
-				_counter("still_w", int(rec.get("capture_width", 0)), 4),
-				_counter("still_h", int(rec.get("capture_height", 0)), 4),
-			],
+			_counters_from_record(
+				rec,
+				[
+					["mode", "mode", 1],
+					["still_w", "capture_width", 4],
+					["still_h", "capture_height", 4],
+				],
+				[
+					_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+				]
+			),
 			rig_info
 		))
 
@@ -2360,6 +2382,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var orphan_rows: Array[StatusEntryModel] = []
+	var orphan_rows_by_id := {}
 	for i in range(current_native_objects.size()):
 		var rec := _safe_dict(current_native_objects[i], issues, "native_objects[current][%d]" % i)
 		if rec.is_empty():
@@ -2382,12 +2405,39 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		)
 		if native_entry == null:
 			continue
-		if native_entry.parent_id == orphan_row_id:
+		var entry_parent_id := str(native_entry.parent_id)
+		var detached_root_id := int(rec.get("root_id", 0))
+		var should_orphan := entry_parent_id == orphan_row_id
+		if not should_orphan and not entry_parent_id.is_empty() and not _entry_exists(panel.entries, entry_parent_id):
+			should_orphan = _contains_int(detached_root_ids, detached_root_id)
+		if should_orphan:
 			orphan_rows.append(native_entry)
+			orphan_rows_by_id[native_entry.id] = native_entry
 		else:
 			panel.entries.append(native_entry)
 
 	if orphan_rows.size() > 0:
+		var orphan_row_id_by_native_id := {}
+		for orphan_entry in orphan_rows:
+			var orphan_native_id := int(orphan_entry.materialized_native_id)
+			if orphan_native_id > 0 and not orphan_row_id_by_native_id.has(orphan_native_id):
+				orphan_row_id_by_native_id[orphan_native_id] = orphan_entry.id
+
+		for orphan_entry in orphan_rows:
+			var desired_parent_id := str(orphan_entry.parent_id)
+			var resolved_parent_id := orphan_row_id
+			if orphan_rows_by_id.has(desired_parent_id) and desired_parent_id != orphan_entry.id:
+				resolved_parent_id = desired_parent_id
+			else:
+				var desired_parent_native_id := _trailing_positive_int_from_row_id(desired_parent_id)
+				if desired_parent_native_id > 0 and orphan_row_id_by_native_id.has(desired_parent_native_id):
+					var aliased_parent_id := str(orphan_row_id_by_native_id.get(desired_parent_native_id, ""))
+					if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
+						resolved_parent_id = aliased_parent_id
+			orphan_entry.parent_id = resolved_parent_id
+
+		_apply_detached_orphan_subtree_depths(orphan_rows, orphan_rows_by_id, orphan_row_id)
+
 		panel.entries.append(_entry(
 			orphan_row_id,
 			provider_id,
@@ -2611,16 +2661,19 @@ func _build_native_object_entry(
 	var info_lines: Array[String] = []
 
 	if not is_provider_native:
-		if owner_stream_id > 0:
+		var can_parent_to_stream := owner_stream_id > 0 and native_type_key != "stream"
+		if can_parent_to_stream:
 			parent_id = "stream/%d" % owner_stream_id
 			if not _entry_exists(existing_entries, parent_id):
 				info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+				if not _contains_int(detached_root_ids, root_id):
+					parent_id = provider_id
 		elif owner_device_instance_id > 0:
 			parent_id = "device/%d" % owner_device_instance_id
 			if not _entry_exists(existing_entries, parent_id):
 				info_lines.append("Contract gap: owner device not present in snapshot devices.")
-				parent_id = orphan_row_id if _contains_int(detached_root_ids, root_id) else provider_id
+				if not _contains_int(detached_root_ids, root_id):
+					parent_id = provider_id
 			else:
 				var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
 				if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
@@ -2652,10 +2705,13 @@ func _build_native_object_entry(
 		native_badges.append(_badge("warning", "destroyed"))
 	if is_prior_generation:
 		native_badges.append(_badge("info", "prior-gen"))
-	var native_counters: Array[CounterModel] = [
-		_counter("bytes", int(rec.get("bytes_allocated", 0)), 3),
-		_counter("buffers", int(rec.get("buffers_in_use", 0)), 2),
-	]
+	var native_counters := _counters_from_record(
+		rec,
+		[
+			["bytes", "bytes_allocated", 3],
+			["buffers", "buffers_in_use", 2],
+		]
+	)
 	var native_entry := _entry(
 		row_id,
 		parent_id,
@@ -2667,8 +2723,77 @@ func _build_native_object_entry(
 		native_counters,
 		info_lines
 	)
+	native_entry.visual_object_class = _visual_object_class_for_native_type(native_type_key)
 	native_entry.materialized_native_id = native_id
 	return native_entry
+
+
+func _visual_object_class_for_native_type(native_type_key: String) -> String:
+	match native_type_key:
+		"provider":
+			return "provider"
+		"device":
+			return "device"
+		"stream":
+			return "stream"
+		"rig":
+			return "rig"
+		"frameproducer":
+			return "native_object"
+		_:
+			return "native_object"
+
+
+func _trailing_positive_int_from_row_id(row_id: String) -> int:
+	if row_id.is_empty():
+		return -1
+	var parts := row_id.split("/")
+	if parts.is_empty():
+		return -1
+	var tail := str(parts[parts.size() - 1])
+	if tail.is_empty() or not tail.is_valid_int():
+		return -1
+	var parsed := int(tail)
+	return parsed if parsed > 0 else -1
+
+
+func _apply_detached_orphan_subtree_depths(
+		orphan_rows: Array[StatusEntryModel],
+		orphan_rows_by_id: Dictionary,
+		orphan_row_id: String
+	) -> void:
+	var children_by_parent := {}
+	for orphan_entry in orphan_rows:
+		if orphan_entry == null:
+			continue
+		var parent_id := str(orphan_entry.parent_id)
+		if not children_by_parent.has(parent_id):
+			children_by_parent[parent_id] = []
+		children_by_parent[parent_id].append(orphan_entry)
+
+	var orphan_roots: Array[StatusEntryModel] = []
+	for orphan_entry in orphan_rows:
+		if orphan_entry == null:
+			continue
+		var parent_id := str(orphan_entry.parent_id)
+		if parent_id == orphan_row_id or not orphan_rows_by_id.has(parent_id):
+			orphan_roots.append(orphan_entry)
+
+	for orphan_root in orphan_roots:
+		_assign_detached_orphan_depth(orphan_root, 3, children_by_parent)
+
+
+func _assign_detached_orphan_depth(
+		entry: StatusEntryModel,
+		depth: int,
+		children_by_parent: Dictionary
+	) -> void:
+	if entry == null:
+		return
+	entry.depth = depth
+	var children: Array = children_by_parent.get(entry.id, [])
+	for child in children:
+		_assign_detached_orphan_depth(child, depth + 1, children_by_parent)
 
 
 func _ensure_expandability(panel: PanelModel) -> void:
@@ -2682,6 +2807,60 @@ func _ensure_expandability(panel: PanelModel) -> void:
 		e.can_expand = child_count > 0
 		if child_count > 0 and _should_default_expand_entry(e):
 			e.expanded = true
+
+
+func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
+	if panel == null or panel.entries.size() <= 1:
+		return
+
+	var ids := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		ids[entry.id] = true
+
+	var roots: Array[StatusEntryModel] = []
+	var children_by_parent := {}
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		var parent_id := str(entry.parent_id)
+		if parent_id.is_empty() or not ids.has(parent_id):
+			roots.append(entry)
+			continue
+		if not children_by_parent.has(parent_id):
+			children_by_parent[parent_id] = []
+		children_by_parent[parent_id].append(entry)
+
+	var ordered: Array[StatusEntryModel] = []
+	var visited := {}
+	for root_entry in roots:
+		_append_entry_subtree_depth_first(root_entry, children_by_parent, ordered, visited)
+
+	for entry in panel.entries:
+		if entry != null and not visited.has(entry.id):
+			ordered.append(entry)
+			visited[entry.id] = true
+
+	panel.entries = ordered
+
+
+func _append_entry_subtree_depth_first(
+		entry: StatusEntryModel,
+		children_by_parent: Dictionary,
+		ordered: Array[StatusEntryModel],
+		visited: Dictionary
+	) -> void:
+	if entry == null:
+		return
+	if visited.has(entry.id):
+		return
+	visited[entry.id] = true
+	ordered.append(entry)
+
+	var children: Array = children_by_parent.get(entry.id, [])
+	for child in children:
+		_append_entry_subtree_depth_first(child, children_by_parent, ordered, visited)
 
 
 func _should_default_expand_entry(entry: StatusEntryModel) -> bool:
@@ -3053,13 +3232,15 @@ func _entry(
 		can_expand: bool,
 		badges: Array[BadgeModel],
 		counters: Array[CounterModel],
-		info_lines: Array[String]
+		info_lines: Array[String],
+		visual_object_class: String = ""
 	) -> StatusEntryModel:
 	var model := StatusEntryModel.new()
 	model.id = id
 	model.parent_id = parent_id
 	model.depth = depth
 	model.label = label
+	model.visual_object_class = visual_object_class
 	model.expanded = expanded
 	model.can_expand = can_expand
 	model.badges = _normalize_badges(badges)
@@ -3118,6 +3299,27 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	model.digits = digits
 	model.visibility = visibility
 	return model
+
+
+func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[CounterModel] = []) -> Array[CounterModel]:
+	var counters: Array[CounterModel] = []
+	for existing_counter in always_include:
+		if existing_counter != null:
+			counters.append(existing_counter)
+	for raw_spec in specs:
+		if typeof(raw_spec) != TYPE_ARRAY:
+			continue
+		var spec: Array = raw_spec
+		if spec.size() < 3:
+			continue
+		var counter_name := str(spec[0])
+		var source_field := str(spec[1])
+		var digits := int(spec[2])
+		var visibility := str(spec[3]) if spec.size() > 3 else "core"
+		if not rec.has(source_field):
+			continue
+		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
+	return counters
 
 
 func _apply_detail_policy_to_panel(panel: PanelModel) -> void:

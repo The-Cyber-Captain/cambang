@@ -1,0 +1,93 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "initial_expanded_row_ids": [
+    "provider/2000/orphaned_native_objects"
+  ],
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "server/main",
+      "provider/2000",
+      "device/2001",
+      "stream/2100",
+      "provider/2000/orphaned_native_objects",
+      "native_object/2101"
+    ],
+    "required_visible_row_ids": [
+      "provider/2000/orphaned_native_objects",
+      "native_object/2101"
+    ],
+    "required_badges_by_row": {
+      "server/main": [
+        "NATIVE COVERAGE: OK"
+      ]
+    }
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 50,
+    "version": 7,
+    "topology_version": 7,
+    "timestamp_ns": 50000000050,
+    "imaging_spec_version": 1,
+    "rigs": [],
+    "devices": [
+      {
+        "instance_id": 2001,
+        "hardware_id": "synthetic:review-orphan:0",
+        "phase": "LIVE",
+        "mode": "STREAMING",
+        "errors_count": 0
+      }
+    ],
+    "streams": [
+      {
+        "stream_id": 2100,
+        "device_instance_id": 2001,
+        "phase": "LIVE",
+        "mode": "FLOWING",
+        "intent": "PREVIEW",
+        "stop_reason": "NONE",
+        "target_fps_max": 30,
+        "frames_received": 64
+      }
+    ],
+    "native_objects": [
+      {
+        "native_id": 2000,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 50
+      },
+      {
+        "native_id": 2001,
+        "type": "device",
+        "owner_device_instance_id": 2001,
+        "phase": "LIVE",
+        "creation_gen": 50
+      },
+      {
+        "native_id": 2100,
+        "type": "stream",
+        "owner_device_instance_id": 2001,
+        "owner_stream_id": 2100,
+        "phase": "LIVE",
+        "creation_gen": 50
+      },
+      {
+        "native_id": 2101,
+        "type": "stream",
+        "phase": "LIVE",
+        "root_id": 9101,
+        "creation_gen": 50
+      }
+    ],
+    "detached_root_ids": [
+      9101
+    ]
+  }
+}

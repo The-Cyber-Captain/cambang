@@ -26,7 +26,7 @@ var _info_panel_inset: MarginContainer
 var _info_margin: MarginContainer
 var _info_panel: PanelContainer
 var _row_shell: PanelContainer
-var _accent_bar: ColorRect
+var _accent_bar: PanelContainer
 
 var _badge_pairs: Array[HBoxContainer] = []
 var _counter_widgets: Array[VBoxContainer] = []
@@ -137,6 +137,7 @@ func _apply_style() -> void:
 	shell_style.border_width_bottom = 1
 	shell_style.border_color = Color(1, 1, 1, 0.06)
 	_row_shell.add_theme_stylebox_override("panel", shell_style)
+	_row_shell.clip_contents = true
 
 
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
@@ -565,7 +566,7 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	shell_style.corner_radius_top_right = (_style.row_shell_radius if _style != null else 5)
 	shell_style.corner_radius_bottom_right = (_style.row_shell_radius if _style != null else 5)
 	shell_style.corner_radius_bottom_left = (_style.row_shell_radius if _style != null else 5)
-	shell_style.content_margin_left = (_style.row_shell_padding.x if _style != null else 3) + 2
+	shell_style.content_margin_left = (_style.row_shell_padding.x if _style != null else 3)
 	shell_style.content_margin_top = (_style.row_shell_padding.y if _style != null else 2)
 	shell_style.content_margin_right = (_style.row_shell_padding.z if _style != null else 3)
 	shell_style.content_margin_bottom = (_style.row_shell_padding.w if _style != null else 2)
@@ -590,7 +591,14 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_info_panel.add_theme_stylebox_override("panel", info_style)
 
 	if _accent_bar != null:
-		_accent_bar.color = accent
+		var accent_style := StyleBoxFlat.new()
+		accent_style.bg_color = accent
+		var accent_radius := max((_style.row_shell_radius if _style != null else 5) - 1, 0)
+		accent_style.corner_radius_top_left = accent_radius
+		accent_style.corner_radius_top_right = accent_radius
+		accent_style.corner_radius_bottom_right = accent_radius
+		accent_style.corner_radius_bottom_left = accent_radius
+		_accent_bar.add_theme_stylebox_override("panel", accent_style)
 
 
 func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
@@ -617,6 +625,19 @@ func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if model == null:
 		return "generic"
+	var visual_object_class := str(model.visual_object_class)
+	if not visual_object_class.is_empty() and [
+		"server",
+		"provider",
+		"device",
+		"stream",
+		"rig",
+		"native_object",
+		"contract_gap",
+		"orphan",
+		"generic",
+	].has(visual_object_class):
+		return visual_object_class
 	if model.id == "server/main":
 		return "server"
 	if model.label == "contract_gaps" or model.label == "projection_gaps":
