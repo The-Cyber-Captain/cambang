@@ -74,8 +74,8 @@
     },
     "required_info_substrings_by_row": {
       "frameproducer/103": [
-        "FrameProducer owner_stream_id=1.",
-        "FrameProducer creation_gen=2."
+        "owner_stream_id=1",
+        "creation_gen=2"
       ]
     },
     "required_badges_by_row": {

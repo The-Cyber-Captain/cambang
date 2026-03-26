@@ -1316,9 +1316,9 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 	var retained_root_projected_id := "%s/%s" % [subtree_prefix, retained_root_source_id]
 	var orphan_reason_line := ""
 	if retained.root_status == "ambiguous_provider":
-		orphan_reason_line = "Preserved subtree is orphaned because multiple DESTROYED provider rows were present."
+		orphan_reason_line = "Retained subtree is orphaned: multiple DESTROYED provider rows were present."
 	else:
-		orphan_reason_line = "Preserved subtree is orphaned because no truthful DESTROYED provider root was available."
+		orphan_reason_line = "Retained subtree is orphaned: no truthful DESTROYED provider root was available."
 
 	if (retained.root_status != "destroyed_provider" or retained.provider_root_id.is_empty()) and orphan_provider_root_ids.is_empty():
 		var orphan_info := _retained_metadata_info_lines(retained)
@@ -1355,7 +1355,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			cloned_entry.badges.append(_badge("warning", "retained"))
 			cloned_entry.badges.append(_badge("warning", "retained-root"))
 			cloned_entry.badges.append(_badge("info", "continuity-only"))
-			cloned_entry.label = "%s [preserved]" % source_entry.label
+			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif orphan_provider_root_ids.has(source_entry.id):
 			cloned_entry.parent_id = "server/main"
 			cloned_entry.depth = 1
@@ -1369,7 +1369,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 				cloned_entry.counters.append(_counter("source_topology", retained.source_topology_version, 1))
 				cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 				cloned_entry.info_lines.append(orphan_reason_line)
-			cloned_entry.label = "%s [preserved]" % source_entry.label
+			cloned_entry.label = "%s [retained]" % source_entry.label
 		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
 			cloned_entry.parent_id = retained_root_projected_id
 			cloned_entry.depth = 2
@@ -1381,7 +1381,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 func _retained_metadata_info_lines(retained: RetainedSubtreeState) -> Array[String]:
 	var lines: Array[String] = [
-		"Continuity-only preserved view; not active snapshot truth.",
+		"Continuity-only retained view; not active snapshot truth.",
 		"continuity: copied from a previously rendered authoritative panel.",
 		"retained_from_gen=%d" % retained.retained_from_gen,
 		"source timestamp_ns=%d" % retained.source_snapshot_timestamp_ns,
@@ -2366,6 +2366,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		for j in range(members.size()):
 			var hardware_id := str(members[j])
 			var member_device := _find_device_by_hardware(devices, hardware_id, issues)
+			var member_context_lines: Array[String] = ["context: rig member."]
 			var member_info: Array[String] = []
 			if member_device.is_empty():
 				member_info.append("Contract gap: rig member hardware_id not present in devices list.")
@@ -2376,9 +2377,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"device/%s" % _safe_label_component(hardware_id, "unknown"),
 				false,
 				false,
-				[_badge("info", "rig-context")],
 				[],
-				member_info
+				[],
+				_append_lines(member_context_lines, member_info)
 			))
 
 	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
@@ -2462,13 +2463,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			"retained prior-generation native objects",
 			true,
 			true,
-			[
-				_badge("warning", "retained"),
-				_badge("info", "prior-gen"),
-			],
-			[_counter("count", prior_native_objects.size(), 1)],
-			["truth: authoritative prior-generation snapshot truth preserved in the current snapshot."]
-		))
+				[
+					_badge("warning", "retained"),
+					_badge("info", "prior-gen"),
+				],
+				[_counter("count", prior_native_objects.size(), 1)],
+				["truth: authoritative prior-generation snapshot truth retained in current snapshot."]
+			))
 		for i in range(prior_native_objects.size()):
 			var rec := _safe_dict(prior_native_objects[i], issues, "native_objects[prior][%d]" % i)
 			if rec.is_empty():
@@ -2696,9 +2697,9 @@ func _build_native_object_entry(
 		row_id = "frameproducer/%d" % native_id
 		row_label = "frameproducer/%d" % native_id
 		if owner_stream_id > 0:
-			info_lines.append("FrameProducer owner_stream_id=%d." % owner_stream_id)
+			info_lines.append("owner_stream_id=%d" % owner_stream_id)
 		if rec.has("creation_gen"):
-			info_lines.append("FrameProducer creation_gen=%s." % str(rec.get("creation_gen")))
+			info_lines.append("creation_gen=%d" % int(rec.get("creation_gen", 0)))
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))]
@@ -3446,9 +3447,6 @@ func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool
 	if _entry_kind(entry) == "retained":
 		return (
 			line.begins_with("Panel-local continuity only.")
-			or line.begins_with("retained_age_msec=")
-			or line.begins_with("retained_expires_in_msec=")
-			or line.begins_with("retained_expiry=")
 			or line.begins_with("continuity:")
 		)
 	if (

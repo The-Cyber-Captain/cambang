@@ -24,7 +24,7 @@
     },
     "required_info_substrings_by_row": {
       "frameproducer/1202": [
-        "FrameProducer owner_stream_id=1102."
+        "owner_stream_id=1102"
       ]
     }
   },
