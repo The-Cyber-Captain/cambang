@@ -2336,6 +2336,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			continue
 		var rig_entry_id := "rig/%d" % rig_id
 		var rig_info: Array[String] = []
+		var rig_badges: Array[BadgeModel] = [
+			_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1))),
+		]
+		if rec.has("mode"):
+			rig_badges.append(_badge("neutral", "mode=%s" % str(rec.get("mode"))))
 		panel.entries.append(_entry(
 			rig_entry_id,
 			provider_id,
@@ -2343,7 +2348,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			"rig/%s" % _safe_rig_name(rec),
 			false,
 			true,
-			[_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))],
+			rig_badges,
 			_counters_from_record(
 				rec,
 				[
