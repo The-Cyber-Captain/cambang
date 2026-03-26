@@ -90,7 +90,72 @@ A field is traceably represented through one of:
 
 ---
 
-## 5) Current known gaps / ambiguities (current implementation)
+## 5) Tier 3 Presentation Rules
+
+### 5.1 Structural-first principle
+
+If Tier 3 truth is already clear via hierarchy/grouping/containment, textual repetition is optional, not mandatory.
+
+### 5.2 Reinforcement rule (controlled duplication)
+
+Tier 3 reinforcement is allowed only when it adds clarity.
+
+- Allowed example direction: FrameProducer ownership can be reinforced by structure plus a concise info line.
+- Not allowed: repeating the same fact in multiple text forms without added explanatory value.
+
+Rule: reinforcement must add clarity, not restate structure verbatim.
+
+### 5.3 Density control (summary vs detail)
+
+Two conceptual presentation levels:
+
+- **Summary (default):** minimal badges, minimal info, high-signal context only.
+- **Detail (expanded/diagnostic):** full lineage, explanatory metadata, reason text.
+
+Rule: verbose Tier 3 metadata should be eligible for detail-only display.
+
+### 5.4 Terminology normalization
+
+Use controlled vocabulary with one canonical term per concept family.
+
+Required distinctions:
+- root vs non-root
+- orphaned vs detached
+- continuity-only vs active
+
+Rule: no overlapping synonyms for the same concept.
+
+### 5.5 Badge vs label vs info rule
+
+- **Badges:** state classification.
+- **Labels:** identity/context.
+- **Info lines:** explanation/causality.
+
+Rule: do not encode the same concept across multiple surface types unless it satisfies the reinforcement rule.
+
+### 5.6 Essential vs optional Tier 3
+
+**Essential (always visible):**
+- orphan/detached grouping
+- contract/projection gaps
+- ownership when not obvious structurally
+
+**Optional / conditional:**
+- verbose lineage text
+- explanatory reason strings
+- redundant reinforcement
+
+---
+
+## 6) Known Tier 3 Issues
+
+- Terminology overlap across retained/preserved/orphaned continuity contexts still increases cognitive load.
+- Density is high in retained/orphan subtree diagnostics (multiple badges + counters + reason text at once).
+- Reinforcement boundaries are not fully standardized (when structure-only is enough vs when explicit line-level reinforcement is preferred).
+
+---
+
+## 7) Current known gaps / ambiguities (current implementation)
 
 - **Tier 1:** No confirmed missing Tier 1 direct surfaces for rows backed by canonical device/stream/rig snapshot records.
 - **Rig mode:** now surfaced as `mode=<VALUE>` badge when `rig.mode` exists (no longer a known gap).
@@ -99,7 +164,7 @@ A field is traceably represented through one of:
 
 ---
 
-## 6) Schema → UI surface audit (current renderer/harness, read-only)
+## 8) Schema → UI surface audit (current renderer/harness, read-only)
 
 Legend:
 - Surfaced?: `yes` / `traceable` / `no`
@@ -149,7 +214,7 @@ Legend:
 
 ---
 
-## 7) Audit summary
+## 9) Audit summary
 
 ### Tier 1
 - **Complete for core row entities** (provider/device/stream/rig/native/frameproducer lifecycle state surfaces).
@@ -169,7 +234,7 @@ Legend:
 
 ---
 
-## 8) Next actions (no implementation in this pass)
+## 10) Next actions (no implementation in this pass)
 
 1. Decide Tier 2 minimum direct-surface set for rig/device/stream fields currently marked missing.
 2. Decide explicit policy for `visibility_last_path` surfacing (counter vs info line) without reintroducing duplication.
