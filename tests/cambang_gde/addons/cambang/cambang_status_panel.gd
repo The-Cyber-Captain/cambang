@@ -37,6 +37,7 @@ class StatusEntryModel extends RefCounted:
 class BadgeModel extends RefCounted:
 	var role: String = "neutral"
 	var label: String = ""
+	var kind: String = ""
 
 
 class CounterModel extends RefCounted:
@@ -626,7 +627,7 @@ func _badges_with_render_native_coverage(existing_badges: Array[BadgeModel], cov
 			continue
 		if badge.label.begins_with("NATIVE COVERAGE:"):
 			continue
-		next_badges.append(_badge(badge.role, badge.label))
+		next_badges.append(_badge(badge.role, badge.label, badge.kind))
 	var state_label := str(coverage.get("state", "UNKNOWN"))
 	var state_role := str(coverage.get("role", "neutral"))
 	next_badges.append(_badge(state_role, "NATIVE COVERAGE: %s" % state_label))
@@ -1520,7 +1521,7 @@ func _clone_panel_model(source: PanelModel) -> PanelModel:
 func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 	var cloned_badges: Array[BadgeModel] = []
 	for badge in source.badges:
-		cloned_badges.append(_badge(badge.role, badge.label))
+		cloned_badges.append(_badge(badge.role, badge.label, badge.kind))
 	var cloned_counters: Array[CounterModel] = []
 	for counter in source.counters:
 		cloned_counters.append(_counter(counter.name, counter.value, counter.digits, counter.visibility))
@@ -3257,13 +3258,18 @@ func _normalize_badges(badges: Array[BadgeModel]) -> Array[BadgeModel]:
 	for badge in badges:
 		if badge == null:
 			continue
-		var key := "%s|%s" % [badge.role, badge.label]
+		if badge.kind == "health":
+			continue
+		var key := "%s|%s|%s" % [badge.role, badge.label, badge.kind]
 		if dedup.has(key):
 			continue
 		dedup[key] = true
-		normalized.append(_badge(badge.role, badge.label))
+		normalized.append(_badge(badge.role, badge.label, badge.kind))
 	normalized.sort_custom(_badge_less)
-	return normalized
+	var with_health: Array[BadgeModel] = [_health_badge()]
+	for badge in normalized:
+		with_health.append(badge)
+	return with_health
 
 
 func _badge_less(a: BadgeModel, b: BadgeModel) -> bool:
@@ -3284,7 +3290,7 @@ func _badge_sort_key(badge: BadgeModel) -> String:
 	return "%d|%s|%s" % [category, label, badge.role]
 
 
-func _badge(role: String, label: String) -> BadgeModel:
+func _badge(role: String, label: String, kind: String = "") -> BadgeModel:
 	# MODEL BADGES (authoritative projection truth):
 	# projection emits only truth-carrying badges consumed by the renderer.
 	var forbidden_snapshot_unavailable := "snapshot" + "-unavailable"
@@ -3293,9 +3299,14 @@ func _badge(role: String, label: String) -> BadgeModel:
 	var model := BadgeModel.new()
 	model.role = role
 	model.label = label
+	model.kind = kind
 	return model
 
 
+
+
+func _health_badge() -> BadgeModel:
+	return _badge("neutral", "UNKNOWN", "health")
 func _counter(name: String, value: int, digits: int, visibility: String = "core") -> CounterModel:
 	var model := CounterModel.new()
 	model.name = name

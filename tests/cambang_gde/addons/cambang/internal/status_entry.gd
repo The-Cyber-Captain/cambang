@@ -190,6 +190,11 @@ func _ordered_badges_for_row_kind(
 	var consumed: Dictionary = {}
 	for i in range(badges.size()):
 		var badge := badges[i]
+		if _is_health_badge(badge):
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
 		if badge != null and badge.label == "retained":
 			ordered.append(badge)
 			consumed[i] = true
@@ -219,6 +224,14 @@ func _ordered_badges_for_row_kind(
 		if badge != null:
 			ordered.append(badge)
 	return ordered
+
+
+func _is_health_badge(badge: CamBANGStatusPanel.BadgeModel) -> bool:
+	if badge == null:
+		return false
+	if badge.kind == "health":
+		return true
+	return badge.label == "UNKNOWN"
 
 
 func _ensure_badge_pair(index: int) -> HBoxContainer:
