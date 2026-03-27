@@ -147,6 +147,68 @@ Rule: do not encode the same concept across multiple surface types unless it sat
 
 ---
 
+
+## Health Summary Badge Semantics
+
+### Purpose
+
+The health summary badge is a **single leading badge per row** and must always appear first in row badge order.
+
+It is a **derived, row-type-specific, viewer-facing summary** that provides a fast attention cue for the row as presented. It must remain explainable from already-visible row truth.
+
+The health summary badge is additive and does not replace detailed badges, counters, or info lines. Detailed row truth remains authoritative; the health summary badge is only a summary layer above that truth.
+
+### Semantics
+
+The health summary badge is not a simple reduction of technical liveness or engineering purity.
+
+- Non-live does not automatically mean non-OK.
+- Preserved, retained, or destroyed rows may still be OK when coherent and expected in context.
+- Derivation must emphasize coherence, expectedness, and viewer concern/attention-worthiness rather than mere deviation from an ideal live state.
+
+### Canonical provisional label set
+
+The canonical provisional health-summary labels are:
+
+- `UNKNOWN`
+- `OK`
+- `ATTN`
+- `BAD`
+
+No additional health-summary labels are introduced in this policy pass.
+
+### Label meanings
+
+- `UNKNOWN`: The panel cannot yet make a confident viewer-facing judgment for the row.
+- `OK`: The row is coherent and acceptable as presented to the viewer, even if not actively live.
+- `ATTN`: The row is intelligible and not necessarily broken, but deserves notice or monitoring.
+- `BAD`: The row is broken, contradictory, or strongly concerning and should command viewer attention.
+
+### Derivation principles
+
+Health derivation must be:
+
+- deterministic
+- documented
+- row-type-specific
+- traceable to already-surfaced truth
+- conservative
+
+Additional constraints:
+
+- Until a row type has an explicitly documented health rule, its health should remain `UNKNOWN`.
+- Health must not invent new hidden semantics.
+- Health should never contradict the row's detailed visible truth.
+
+### Relationship to contract/projection gaps
+
+Unmapped or unexpected schema truth must surface as explicit contract/projection gap signals and must not be silently ignored.
+
+Contract/projection gaps are expected to be important inputs to health derivation; however, the health badge does not replace direct visibility of those gap signals.
+
+This preserves the existing principle: surface the gap, do not mask it.
+
+
 ## 6) Known Tier 3 Issues
 
 - Terminology overlap across retained/preserved/orphaned continuity contexts still increases cognitive load.
