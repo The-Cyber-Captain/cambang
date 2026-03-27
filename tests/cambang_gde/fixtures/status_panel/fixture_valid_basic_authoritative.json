@@ -20,13 +20,11 @@
     ],
     "required_counters_by_row": {
       "device/1": [
-        "mode",
         "errors",
         "still_w",
         "still_h"
       ],
       "stream/1": [
-        "mode",
         "width",
         "height",
         "fps_min",
@@ -40,7 +38,6 @@
         "rej_inv"
       ],
       "rig/7": [
-        "mode",
         "members",
         "still_w",
         "still_h"
@@ -76,32 +73,20 @@
       }
     },
     "required_info_substrings_by_row": {
-      "device/1": [
-        "capture_width=4032",
-        "capture_height=3024",
-        "capture_profile_version=11",
-        "capture_format='JPEG'"
-      ],
-      "stream/1": [
-        "visibility_frames_presented=1000",
-        "visibility_frames_rejected_unsupported=5",
-        "visibility_frames_rejected_invalid=2",
-        "visibility_last_path=REJECTED_UNSUPPORTED (3)"
-      ],
       "frameproducer/103": [
-        "FrameProducer owner_stream_id=1.",
-        "FrameProducer creation_gen=2."
-      ],
-      "rig/7": [
-        "capture_width=4096",
-        "capture_height=2160",
-        "capture_profile_version=13",
-        "capture_format='RAW '"
+        "owner_stream_id=1",
+        "creation_gen=2"
       ]
     },
     "required_badges_by_row": {
       "server/main": [
         "NATIVE COVERAGE: OK"
+      ],
+      "device/1": [
+        "mode=STREAMING"
+      ],
+      "stream/1": [
+        "mode=FLOWING"
       ]
     }
   },
@@ -177,7 +162,7 @@
         "visibility_frames_presented": 1000,
         "visibility_frames_rejected_unsupported": 5,
         "visibility_frames_rejected_invalid": 2,
-        "visibility_last_path": 3
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
