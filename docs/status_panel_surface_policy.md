@@ -209,6 +209,54 @@ Contract/projection gaps are expected to be important inputs to health derivatio
 This preserves the existing principle: surface the gap, do not mask it.
 
 
+## Health Summary Framework Rules
+
+These framework rules define how future health-summary derivation must be structured in panel presentation logic.
+
+### 1) Health scope is strictly row-local
+
+A row health summary must be derived only from that row's own:
+
+- payload truth
+- contract/projection truth
+- row-type-specific derived checks
+- prior observed values, when a row-local history/rate rule is explicitly defined
+
+Health must not be derived from descendant rows, subtree aggregate health, or bubbled-up child health states.
+
+Problems deeper in the tree must continue to surface via structure and explicit diagnostic/anomaly rows rather than by parent-row health aggregation.
+
+### 2) History basis is the Godot-visible observable series only
+
+Any health rule using deltas, growth, rate, or thresholded evolution over time must compare the row's current observed state against prior observed row state from previous visible panel updates.
+
+The basis is the Godot-visible publication sequence, not internal core/publication churn hidden within a tick.
+
+### 3) Threshold configuration is project-configurable and optional
+
+Optional thresholded health checks may be configured by the embedding project/application through panel-facing configuration rather than hardcoded per project.
+
+Constraints:
+
+- thresholded checks are row-type-specific
+- individual checks may be disabled by configuration
+- the conventional meaning of threshold value `0` is: disable that optional thresholded check
+
+### 4) Health evaluation uses a lightweight panel-owned rule registry
+
+Health-summary evaluation must use a panel-owned rule framework/registry rather than ad hoc per-row branching scattered across rendering paths.
+
+Required model:
+
+- one uniform mechanism
+- row-type-specific rule sets
+- priority-ordered evaluation
+- first applicable rule wins
+- otherwise fall back to default health (`UNKNOWN` until explicitly defined)
+
+This registry is presentation logic, not snapshot schema truth, and should remain lightweight (policy/rule definitions rather than a heavy class hierarchy).
+
+
 ## 6) Known Tier 3 Issues
 
 - Terminology overlap across retained/preserved/orphaned continuity contexts still increases cognitive load.
