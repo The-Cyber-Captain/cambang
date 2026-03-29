@@ -102,6 +102,8 @@ class RetainedSubtreeState extends RefCounted:
 @export var shared_style_overrides: Dictionary = {}
 @export var server_topology_growth_rate_attn_threshold_per_sec: float = 0.0
 
+const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
+
 var _title_label: Label
 var _provider_mode_value: Label
 var _schema_version_value: Label
@@ -121,7 +123,7 @@ var _last_active_snapshot_meta: Dictionary = {}
 var _last_authoritative_panel_model: PanelModel = null
 var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
-var _last_observed_server_health_state: Dictionary = {}
+var _observed_server_health_series: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -706,33 +708,22 @@ func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryMod
 	var native_coverage_state := _server_native_coverage_state(server_entry)
 
 	var version_delta := 0
-	var topology_growth_rate_per_sec := 0.0
-	var has_prior_observation := not _last_observed_server_health_state.is_empty()
-	if has_prior_observation:
-		var prior_version := int(_last_observed_server_health_state.get("version", -1))
-		var prior_topology := int(_last_observed_server_health_state.get("topology", -1))
-		var prior_observed_msec := int(_last_observed_server_health_state.get("observed_msec", -1))
-		var prior_timestamp_ns := int(_last_observed_server_health_state.get("timestamp_ns", -1))
+	var prior_observation := _latest_observed_server_health_state()
+	if not prior_observation.is_empty():
+		var prior_version := int(prior_observation.get("version", -1))
 		if current_version >= 0 and prior_version >= 0:
 			version_delta = current_version - prior_version
-		if current_topology >= 0 and prior_topology >= 0:
-			var topology_delta := current_topology - prior_topology
-			if topology_delta > 0:
-				var elapsed_seconds := _server_health_elapsed_seconds(
-					current_observed_msec,
-					prior_observed_msec,
-					current_timestamp_ns,
-					prior_timestamp_ns
-				)
-				if elapsed_seconds > 0.0:
-					topology_growth_rate_per_sec = float(topology_delta) / elapsed_seconds
 
 	return {
 		"contract_or_projection_failure": _server_has_contract_or_projection_failure(model, server_entry),
 		"has_no_snapshot": _server_has_badge_label(server_entry, "NO SNAPSHOT"),
 		"native_coverage_state": native_coverage_state,
 		"version_delta": version_delta,
-		"topology_growth_rate_per_sec": topology_growth_rate_per_sec,
+		"topology_growth_rate_per_sec": _server_topology_growth_rate_per_sec_over_window(
+			current_topology,
+			current_observed_msec,
+			current_timestamp_ns
+		),
 		"current_version": current_version,
 		"current_topology": current_topology,
 		"current_observed_msec": current_observed_msec,
@@ -779,12 +770,91 @@ func _server_health_is_attention(health_facts: Dictionary) -> bool:
 func _observe_server_health_state(health_facts: Dictionary) -> void:
 	# Temporal logic is intentionally implemented now, but static fixtures remain point-in-time only.
 	# Future scenario/boundary verification should exercise version delta and growth-rate transitions.
-	_last_observed_server_health_state = {
+	var next_observation := {
 		"version": int(health_facts.get("current_version", -1)),
 		"topology": int(health_facts.get("current_topology", -1)),
 		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
 		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
 	}
+	_observed_server_health_series.append(next_observation)
+	_prune_observed_server_health_series()
+
+
+func _latest_observed_server_health_state() -> Dictionary:
+	if _observed_server_health_series.is_empty():
+		return {}
+	return _observed_server_health_series[_observed_server_health_series.size() - 1]
+
+
+func _server_topology_growth_rate_per_sec_over_window(
+		current_topology: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if current_topology < 0:
+		return 0.0
+	var baseline := _find_server_observation_for_growth_window(
+		current_observed_msec,
+		current_timestamp_ns
+	)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_topology := int(baseline.get("topology", -1))
+	if baseline_topology < 0:
+		return 0.0
+	var topology_delta := current_topology - baseline_topology
+	if topology_delta <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	if elapsed_seconds <= 0.0:
+		return 0.0
+	return float(topology_delta) / elapsed_seconds
+
+
+func _find_server_observation_for_growth_window(
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	for index in range(_observed_server_health_series.size() - 1, -1, -1):
+		var candidate: Dictionary = _observed_server_health_series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds >= _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC:
+			return candidate
+	return {}
+
+
+func _prune_observed_server_health_series() -> void:
+	if _observed_server_health_series.is_empty():
+		return
+	var latest := _observed_server_health_series[_observed_server_health_series.size() - 1]
+	var current_observed_msec := int(latest.get("observed_msec", -1))
+	var current_timestamp_ns := int(latest.get("timestamp_ns", -1))
+	var keep_horizon_seconds := _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC * 2.0
+	var first_keep_index := 0
+	for index in range(_observed_server_health_series.size() - 1, -1, -1):
+		var candidate: Dictionary = _observed_server_health_series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= keep_horizon_seconds:
+			first_keep_index = index
+		else:
+			break
+	if first_keep_index > 0:
+		_observed_server_health_series = _observed_server_health_series.slice(first_keep_index)
 
 
 func _server_health_elapsed_seconds(
