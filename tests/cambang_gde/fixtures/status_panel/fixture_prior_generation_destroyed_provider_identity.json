@@ -17,7 +17,7 @@
     ],
     "required_badges_by_row": {
       "server/main": [
-        "UNKNOWN",
+        "OK",
         "NATIVE COVERAGE: OK"
       ],
       "provider/200/retained_prior_generation_native_objects": [

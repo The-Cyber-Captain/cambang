@@ -487,7 +487,12 @@ func _render_panel_and_maybe_dump(
 		update_category: String = "structural_rebuild"
 	) -> void:
 	_render_panel_model(model, update_category)
+	var model_changed := false
 	if _apply_render_native_coverage_summary(snapshot, model):
+		model_changed = true
+	if _apply_server_health_summary(model):
+		model_changed = true
+	if model_changed:
 		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
 
@@ -669,6 +674,98 @@ func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
 			continue
 		labels.append("%s|%s" % [badge.role, badge.label])
 	return labels
+
+
+func _apply_server_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var server_entry := _find_panel_entry_by_id(model, "server/main")
+	if server_entry == null:
+		return false
+	var next_health_label := _derive_server_health_label(model, server_entry)
+	var next_health_role := _health_role_for_label(next_health_label)
+	var next_badges := _with_health_badge(server_entry.badges, next_health_role, next_health_label)
+	var next_badge_labels := _badge_labels(next_badges)
+	var current_badge_labels := _badge_labels(server_entry.badges)
+	if next_badge_labels == current_badge_labels:
+		return false
+	server_entry.badges = next_badges
+	_apply_detail_policy_to_entry(server_entry)
+	return true
+
+
+func _derive_server_health_label(model: PanelModel, server_entry: StatusEntryModel) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _server_has_contract_or_projection_failure(model, server_entry):
+		return "BAD"
+	if _server_has_badge_label(server_entry, "NO SNAPSHOT"):
+		return "UNKNOWN"
+	var native_coverage_state := _server_native_coverage_state(server_entry)
+	if native_coverage_state == "OK":
+		return "OK"
+	if native_coverage_state == "UNKNOWN":
+		return "UNKNOWN"
+	if native_coverage_state != "":
+		return "ATTN"
+	return "UNKNOWN"
+
+
+func _server_has_contract_or_projection_failure(model: PanelModel, server_entry: StatusEntryModel) -> bool:
+	if _server_has_badge_label(server_entry, "contract-gap"):
+		return true
+	if _server_has_badge_label(server_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "server/main/contract_gaps"):
+		return true
+	if _entry_exists(model.entries, "server/main/projection_gaps"):
+		return true
+	return false
+
+
+func _server_native_coverage_state(server_entry: StatusEntryModel) -> String:
+	for badge in server_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("NATIVE COVERAGE:"):
+			continue
+		return badge.label.substr("NATIVE COVERAGE: ".length()).strip_edges()
+	return ""
+
+
+func _server_has_badge_label(server_entry: StatusEntryModel, label: String) -> bool:
+	for badge in server_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
+
+
+func _health_role_for_label(label: String) -> String:
+	match label:
+		"OK":
+			return "success"
+		"ATTN":
+			return "warning"
+		"BAD":
+			return "error"
+		_:
+			return "neutral"
+
+
+func _with_health_badge(
+		badges: Array[BadgeModel],
+		health_role: String,
+		health_label: String
+	) -> Array[BadgeModel]:
+	var next_badges: Array[BadgeModel] = [_badge(health_role, health_label, "health")]
+	for badge in badges:
+		if badge == null:
+			continue
+		if badge.kind == "health":
+			continue
+		next_badges.append(_badge(badge.role, badge.label, badge.kind))
+	return next_badges
 
 
 func _snapshot_native_records(snapshot: Variant) -> Dictionary:
