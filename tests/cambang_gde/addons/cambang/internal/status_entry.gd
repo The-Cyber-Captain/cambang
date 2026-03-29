@@ -6,6 +6,7 @@ signal disclosure_toggled(entry_id: String, expanded: bool)
 const INDENT_WIDTH := 14.0
 const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
 const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 128.0
+const SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH := 128.0
 
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
@@ -173,11 +174,17 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 func _server_badge_slot_min_width(raw_label: String) -> float:
 	if _entry_id != "server/main":
 		return 0.0
+	if _is_health_label(raw_label):
+		return SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH
 	if raw_label.begins_with("NATIVE COVERAGE:"):
 		return SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH
 	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT":
 		return SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH
 	return 0.0
+
+
+func _is_health_label(raw_label: String) -> bool:
+	return raw_label == "UNKNOWN" or raw_label == "OK" or raw_label == "ATTN" or raw_label == "BAD"
 
 
 func _ordered_badges_for_row_kind(
@@ -188,6 +195,11 @@ func _ordered_badges_for_row_kind(
 		return badges
 	var ordered: Array[CamBANGStatusPanel.BadgeModel] = []
 	var consumed: Dictionary = {}
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if _is_health_badge(badge):
+			ordered.append(badge)
+			consumed[i] = true
 	for i in range(badges.size()):
 		var badge := badges[i]
 		if badge != null and badge.label == "retained":
@@ -219,6 +231,14 @@ func _ordered_badges_for_row_kind(
 		if badge != null:
 			ordered.append(badge)
 	return ordered
+
+
+func _is_health_badge(badge: CamBANGStatusPanel.BadgeModel) -> bool:
+	if badge == null:
+		return false
+	if badge.kind == "health":
+		return true
+	return badge.label == "UNKNOWN"
 
 
 func _ensure_badge_pair(index: int) -> HBoxContainer:

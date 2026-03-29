@@ -23,6 +23,7 @@
     ],
     "required_badges_by_row": {
       "server/main": [
+        "OK",
         "NATIVE COVERAGE: OK"
       ]
     }

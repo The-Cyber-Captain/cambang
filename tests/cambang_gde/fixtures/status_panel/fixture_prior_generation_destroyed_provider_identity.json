@@ -17,12 +17,15 @@
     ],
     "required_badges_by_row": {
       "server/main": [
+        "OK",
         "NATIVE COVERAGE: OK"
       ],
       "provider/200/retained_prior_generation_native_objects": [
+        "UNKNOWN",
         "prior-gen"
       ],
       "provider/100": [
+        "UNKNOWN",
         "prior-gen"
       ]
     },

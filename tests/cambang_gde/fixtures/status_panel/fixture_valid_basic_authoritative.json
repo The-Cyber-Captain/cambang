@@ -80,12 +80,15 @@
     },
     "required_badges_by_row": {
       "server/main": [
+        "OK",
         "NATIVE COVERAGE: OK"
       ],
       "device/1": [
+        "UNKNOWN",
         "mode=STREAMING"
       ],
       "stream/1": [
+        "UNKNOWN",
         "mode=FLOWING"
       ]
     }

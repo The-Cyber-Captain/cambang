@@ -20,6 +20,7 @@
     ],
     "required_badges_by_row": {
       "server/main": [
+        "BAD",
         "NATIVE COVERAGE: MISSING"
       ]
     },
