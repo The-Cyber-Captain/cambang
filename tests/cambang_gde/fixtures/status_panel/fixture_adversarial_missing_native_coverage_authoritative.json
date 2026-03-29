@@ -20,7 +20,7 @@
     ],
     "required_badges_by_row": {
       "server/main": [
-        "ATTN",
+        "BAD",
         "NATIVE COVERAGE: MISSING"
       ]
     },

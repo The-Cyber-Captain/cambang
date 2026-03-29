@@ -711,7 +711,12 @@ func _derive_server_health_label(model: PanelModel, server_entry: StatusEntryMod
 
 
 func _server_has_contract_or_projection_failure(model: PanelModel, server_entry: StatusEntryModel) -> bool:
+	var native_coverage_state := _server_native_coverage_state(server_entry)
+	if native_coverage_state == "MISSING":
+		return true
 	if _server_has_badge_label(server_entry, "contract-gap"):
+		return true
+	if _server_has_badge_label(server_entry, "CONTRACT GAP"):
 		return true
 	if _server_has_badge_label(server_entry, "snapshot-incompatible"):
 		return true

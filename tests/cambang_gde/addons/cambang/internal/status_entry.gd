@@ -6,6 +6,7 @@ signal disclosure_toggled(entry_id: String, expanded: bool)
 const INDENT_WIDTH := 14.0
 const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
 const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 128.0
+const SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH := 128.0
 
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
@@ -173,11 +174,17 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 func _server_badge_slot_min_width(raw_label: String) -> float:
 	if _entry_id != "server/main":
 		return 0.0
+	if _is_health_label(raw_label):
+		return SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH
 	if raw_label.begins_with("NATIVE COVERAGE:"):
 		return SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH
 	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT":
 		return SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH
 	return 0.0
+
+
+func _is_health_label(raw_label: String) -> bool:
+	return raw_label == "UNKNOWN" or raw_label == "OK" or raw_label == "ATTN" or raw_label == "BAD"
 
 
 func _ordered_badges_for_row_kind(
