@@ -100,6 +100,7 @@ class RetainedSubtreeState extends RefCounted:
 
 @export var panel_style_overrides: Dictionary = {}
 @export var shared_style_overrides: Dictionary = {}
+@export var server_topology_growth_rate_attn_threshold_per_sec: float = 0.0
 
 var _title_label: Label
 var _provider_mode_value: Label
@@ -120,6 +121,7 @@ var _last_active_snapshot_meta: Dictionary = {}
 var _last_authoritative_panel_model: PanelModel = null
 var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
+var _last_observed_server_health_state: Dictionary = {}
 
 
 func _ready() -> void:
@@ -490,7 +492,7 @@ func _render_panel_and_maybe_dump(
 	var model_changed := false
 	if _apply_render_native_coverage_summary(snapshot, model):
 		model_changed = true
-	if _apply_server_health_summary(model):
+	if _apply_server_health_summary(model, snapshot):
 		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
@@ -676,17 +678,19 @@ func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
 	return labels
 
 
-func _apply_server_health_summary(model: PanelModel) -> bool:
+func _apply_server_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	if model == null:
 		return false
 	var server_entry := _find_panel_entry_by_id(model, "server/main")
 	if server_entry == null:
 		return false
-	var next_health_label := _derive_server_health_label(model, server_entry)
+	var health_facts := _derive_server_health_facts(model, server_entry, snapshot)
+	var next_health_label := _derive_server_health_label(health_facts)
 	var next_health_role := _health_role_for_label(next_health_label)
 	var next_badges := _with_health_badge(server_entry.badges, next_health_role, next_health_label)
 	var next_badge_labels := _badge_labels(next_badges)
 	var current_badge_labels := _badge_labels(server_entry.badges)
+	_observe_server_health_state(health_facts)
 	if next_badge_labels == current_badge_labels:
 		return false
 	server_entry.badges = next_badges
@@ -694,26 +698,129 @@ func _apply_server_health_summary(model: PanelModel) -> bool:
 	return true
 
 
-func _derive_server_health_label(model: PanelModel, server_entry: StatusEntryModel) -> String:
-	# Priority order: BAD > UNKNOWN > ATTN > OK
-	if _server_has_contract_or_projection_failure(model, server_entry):
-		return "BAD"
-	if _server_has_badge_label(server_entry, "NO SNAPSHOT"):
-		return "UNKNOWN"
+func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
+	var current_version := _counter_value_by_name(server_entry, "version", -1)
+	var current_topology := _counter_value_by_name(server_entry, "topology", -1)
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
 	var native_coverage_state := _server_native_coverage_state(server_entry)
-	if native_coverage_state == "OK":
-		return "OK"
-	if native_coverage_state == "UNKNOWN":
+
+	var version_delta := 0
+	var topology_growth_rate_per_sec := 0.0
+	var has_prior_observation := not _last_observed_server_health_state.is_empty()
+	if has_prior_observation:
+		var prior_version := int(_last_observed_server_health_state.get("version", -1))
+		var prior_topology := int(_last_observed_server_health_state.get("topology", -1))
+		var prior_observed_msec := int(_last_observed_server_health_state.get("observed_msec", -1))
+		var prior_timestamp_ns := int(_last_observed_server_health_state.get("timestamp_ns", -1))
+		if current_version >= 0 and prior_version >= 0:
+			version_delta = current_version - prior_version
+		if current_topology >= 0 and prior_topology >= 0:
+			var topology_delta := current_topology - prior_topology
+			if topology_delta > 0:
+				var elapsed_seconds := _server_health_elapsed_seconds(
+					current_observed_msec,
+					prior_observed_msec,
+					current_timestamp_ns,
+					prior_timestamp_ns
+				)
+				if elapsed_seconds > 0.0:
+					topology_growth_rate_per_sec = float(topology_delta) / elapsed_seconds
+
+	return {
+		"contract_or_projection_failure": _server_has_contract_or_projection_failure(model, server_entry),
+		"has_no_snapshot": _server_has_badge_label(server_entry, "NO SNAPSHOT"),
+		"native_coverage_state": native_coverage_state,
+		"version_delta": version_delta,
+		"topology_growth_rate_per_sec": topology_growth_rate_per_sec,
+		"current_version": current_version,
+		"current_topology": current_topology,
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
+
+
+func _derive_server_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _server_health_is_bad(health_facts):
+		return "BAD"
+	if _server_health_is_unknown(health_facts):
 		return "UNKNOWN"
-	if native_coverage_state != "":
+	if _server_health_is_attention(health_facts):
 		return "ATTN"
-	return "UNKNOWN"
+	return "OK"
+
+
+func _server_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("contract_or_projection_failure", false)):
+		return true
+	var native_coverage_state := str(health_facts.get("native_coverage_state", ""))
+	if native_coverage_state == "MISSING":
+		return true
+	if int(health_facts.get("version_delta", 0)) > 1:
+		return true
+	return false
+
+
+func _server_health_is_unknown(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_no_snapshot", false)):
+		return true
+	return str(health_facts.get("native_coverage_state", "")) == "UNKNOWN"
+
+
+func _server_health_is_attention(health_facts: Dictionary) -> bool:
+	var threshold := max(server_topology_growth_rate_attn_threshold_per_sec, 0.0)
+	if is_zero_approx(threshold):
+		return false
+	var growth_rate := float(health_facts.get("topology_growth_rate_per_sec", 0.0))
+	return growth_rate > threshold
+
+
+func _observe_server_health_state(health_facts: Dictionary) -> void:
+	# Temporal logic is intentionally implemented now, but static fixtures remain point-in-time only.
+	# Future scenario/boundary verification should exercise version delta and growth-rate transitions.
+	_last_observed_server_health_state = {
+		"version": int(health_facts.get("current_version", -1)),
+		"topology": int(health_facts.get("current_topology", -1)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+
+
+func _server_health_elapsed_seconds(
+		current_observed_msec: int,
+		prior_observed_msec: int,
+		current_timestamp_ns: int,
+		prior_timestamp_ns: int
+	) -> float:
+	if current_timestamp_ns >= 0 and prior_timestamp_ns >= 0:
+		var delta_ns := current_timestamp_ns - prior_timestamp_ns
+		if delta_ns > 0:
+			return float(delta_ns) / 1_000_000_000.0
+	var delta_msec := current_observed_msec - prior_observed_msec
+	if delta_msec <= 0:
+		return 0.0
+	return float(delta_msec) / 1000.0
+
+
+func _counter_value_by_name(entry: StatusEntryModel, counter_name: String, fallback: int = -1) -> int:
+	if entry == null:
+		return fallback
+	for counter in entry.counters:
+		if counter == null:
+			continue
+		if counter.name == counter_name:
+			return counter.value
+	return fallback
+
+
+func _snapshot_timestamp_ns(snapshot: Variant) -> int:
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		return -1
+	return int((snapshot as Dictionary).get("timestamp_ns", -1))
 
 
 func _server_has_contract_or_projection_failure(model: PanelModel, server_entry: StatusEntryModel) -> bool:
-	var native_coverage_state := _server_native_coverage_state(server_entry)
-	if native_coverage_state == "MISSING":
-		return true
 	if _server_has_badge_label(server_entry, "contract-gap"):
 		return true
 	if _server_has_badge_label(server_entry, "CONTRACT GAP"):
