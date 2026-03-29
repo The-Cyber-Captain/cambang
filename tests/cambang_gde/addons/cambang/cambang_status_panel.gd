@@ -103,6 +103,7 @@ class RetainedSubtreeState extends RefCounted:
 @export var server_topology_growth_rate_attn_threshold_per_sec: float = 0.0
 
 const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
+const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
 
 var _title_label: Label
 var _provider_mode_value: Label
@@ -811,6 +812,12 @@ func _server_topology_growth_rate_per_sec_over_window(
 		current_timestamp_ns,
 		int(baseline.get("timestamp_ns", -1))
 	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds:
+		return 0.0
 	if elapsed_seconds <= 0.0:
 		return 0.0
 	return float(topology_delta) / elapsed_seconds
@@ -820,7 +827,9 @@ func _find_server_observation_for_growth_window(
 		current_observed_msec: int,
 		current_timestamp_ns: int
 	) -> Dictionary:
-	for index in range(_observed_server_health_series.size() - 1, -1, -1):
+	var best_candidate: Dictionary = {}
+	var best_distance_to_target := INF
+	for index in range(0, _observed_server_health_series.size()):
 		var candidate: Dictionary = _observed_server_health_series[index]
 		var elapsed_seconds := _server_health_elapsed_seconds(
 			current_observed_msec,
@@ -828,9 +837,13 @@ func _find_server_observation_for_growth_window(
 			current_timestamp_ns,
 			int(candidate.get("timestamp_ns", -1))
 		)
-		if elapsed_seconds >= _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC:
-			return candidate
-	return {}
+		if elapsed_seconds <= 0.0:
+			continue
+		var distance_to_target := abs(elapsed_seconds - _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC)
+		if distance_to_target < best_distance_to_target:
+			best_distance_to_target = distance_to_target
+			best_candidate = candidate
+	return best_candidate
 
 
 func _prune_observed_server_health_series() -> void:
