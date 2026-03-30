@@ -508,6 +508,8 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_device_health_summary(model, snapshot):
 		model_changed = true
+	if _apply_stream_health_summary(model):
+		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
@@ -761,6 +763,29 @@ func _is_device_health_target_entry(entry: StatusEntryModel) -> bool:
 	return entry != null and entry.visual_object_class == "device"
 
 
+func _apply_stream_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if not _is_stream_health_target_entry(entry):
+			continue
+		var health_facts := _derive_stream_health_facts(model, entry)
+		var next_health_label := _derive_stream_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "stream"
+
+
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
 	var current_version := _counter_value_by_name(server_entry, "version", -1)
 	var current_topology := _counter_value_by_name(server_entry, "topology", -1)
@@ -818,6 +843,26 @@ func _derive_device_health_facts(
 	}
 
 
+func _derive_stream_health_facts(model: PanelModel, stream_entry: StatusEntryModel) -> Dictionary:
+	var drop_count := _counter_value_by_name(stream_entry, "drop", 0)
+	var reject_format_count := _counter_value_by_name(stream_entry, "rej_fmt", 0)
+	var reject_invalid_count := _counter_value_by_name(stream_entry, "rej_inv", 0)
+	var mode := _stream_mode_label(stream_entry)
+	var stop_reason := _stream_stop_reason_label(stream_entry)
+	return {
+		"has_contract_or_projection_failure": _stream_has_contract_or_projection_failure(model, stream_entry),
+		"has_lifecycle_contradiction": _stream_has_lifecycle_contradiction(stream_entry),
+		"has_insufficient_local_truth": _stream_has_insufficient_local_truth(stream_entry, mode),
+		"is_preserved": _stream_is_preserved(stream_entry),
+		"is_destroyed": _stream_is_destroyed(stream_entry),
+		"mode": mode,
+		"stop_reason": stop_reason,
+		"drop": drop_count,
+		"rej_fmt": reject_format_count,
+		"rej_inv": reject_invalid_count,
+	}
+
+
 func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntryModel) -> Dictionary:
 	var native_all := _counter_value_by_name(provider_entry, "native_all", -1)
 	var native_cur := _counter_value_by_name(provider_entry, "native_cur", -1)
@@ -866,6 +911,17 @@ func _derive_provider_health_label(health_facts: Dictionary) -> String:
 	return "OK"
 
 
+func _derive_stream_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _stream_health_is_bad(health_facts):
+		return "BAD"
+	if _stream_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _stream_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
 func _server_health_is_bad(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("contract_or_projection_failure", false)):
 		return true
@@ -901,6 +957,14 @@ func _provider_health_is_bad(health_facts: Dictionary) -> bool:
 	return false
 
 
+func _stream_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	return str(health_facts.get("mode", "")) == "ERROR"
+
+
 func _server_health_is_unknown(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("has_no_snapshot", false)):
 		return true
@@ -912,6 +976,10 @@ func _device_health_is_unknown(health_facts: Dictionary) -> bool:
 
 
 func _provider_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
+func _stream_health_is_unknown(health_facts: Dictionary) -> bool:
 	return bool(health_facts.get("has_insufficient_local_truth", false))
 
 
@@ -935,6 +1003,26 @@ func _provider_health_is_attention(health_facts: Dictionary) -> bool:
 	var is_preserved := bool(health_facts.get("is_preserved", false))
 	var is_destroyed := bool(health_facts.get("is_destroyed", false))
 	return is_preserved and not is_destroyed
+
+
+func _stream_health_is_attention(health_facts: Dictionary) -> bool:
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	if is_preserved and not is_destroyed:
+		return true
+	var mode := str(health_facts.get("mode", ""))
+	var stop_reason := str(health_facts.get("stop_reason", ""))
+	if mode == "STARVED":
+		return true
+	if mode == "STOPPED" and (stop_reason == "PREEMPTED" or stop_reason == "PROVIDER"):
+		return true
+	if int(health_facts.get("drop", 0)) > 0:
+		return true
+	if int(health_facts.get("rej_fmt", 0)) > 0:
+		return true
+	if int(health_facts.get("rej_inv", 0)) > 0:
+		return true
+	return false
 
 
 func _observe_server_health_state(health_facts: Dictionary) -> void:
@@ -1218,6 +1306,21 @@ func _device_has_contract_or_projection_failure(model: PanelModel, device_entry:
 	return false
 
 
+func _stream_has_contract_or_projection_failure(model: PanelModel, stream_entry: StatusEntryModel) -> bool:
+	if _stream_has_badge_label(stream_entry, "contract-gap"):
+		return true
+	if _stream_has_badge_label(stream_entry, "CONTRACT GAP"):
+		return true
+	if _stream_has_badge_label(stream_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % stream_entry.id):
+		return true
+	for line in stream_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
 func _device_has_counter_inconsistency(device_entry: StatusEntryModel, current_errors: int) -> bool:
 	if _device_is_preserved(device_entry):
 		return false
@@ -1233,10 +1336,27 @@ func _device_has_lifecycle_contradiction(device_entry: StatusEntryModel) -> bool
 	return phase_is_destroyed != has_destroyed_badge
 
 
+func _stream_has_lifecycle_contradiction(stream_entry: StatusEntryModel) -> bool:
+	var phase_label := _stream_phase_label(stream_entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	var has_destroyed_badge := _stream_has_badge_label(stream_entry, "destroyed")
+	return phase_is_destroyed != has_destroyed_badge
+
+
 func _device_has_insufficient_local_truth(device_entry: StatusEntryModel, current_errors: int) -> bool:
 	if _device_is_preserved(device_entry):
 		return false
 	return current_errors < 0
+
+
+func _stream_has_insufficient_local_truth(stream_entry: StatusEntryModel, mode: String) -> bool:
+	if _stream_is_preserved(stream_entry):
+		return false
+	if _stream_is_destroyed(stream_entry):
+		return false
+	return mode.is_empty()
 
 
 func _provider_has_counter_inconsistency(native_all: int, native_cur: int, native_prev: int, native_dead: int) -> bool:
@@ -1293,6 +1413,51 @@ func _device_is_destroyed(device_entry: StatusEntryModel) -> bool:
 	return _device_phase_label(device_entry).find("destroyed") >= 0
 
 
+func _stream_is_preserved(stream_entry: StatusEntryModel) -> bool:
+	return (
+		_is_retained_projection_entry(stream_entry.id)
+		or _stream_has_badge_label(stream_entry, "retained")
+		or _stream_has_badge_label(stream_entry, "continuity-only")
+	)
+
+
+func _stream_is_destroyed(stream_entry: StatusEntryModel) -> bool:
+	if _stream_has_badge_label(stream_entry, "destroyed"):
+		return true
+	return _stream_phase_label(stream_entry).find("destroyed") >= 0
+
+
+func _stream_mode_label(stream_entry: StatusEntryModel) -> String:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("mode="):
+			continue
+		return badge.label.substr("mode=".length()).strip_edges().to_upper()
+	return ""
+
+
+func _stream_stop_reason_label(stream_entry: StatusEntryModel) -> String:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("stop_reason="):
+			continue
+		return badge.label.substr("stop_reason=".length()).strip_edges().to_upper()
+	return "NONE"
+
+
+func _stream_phase_label(stream_entry: StatusEntryModel) -> String:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("native_phase="):
+			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		if badge.label.begins_with("phase="):
+			return badge.label.substr("phase=".length()).strip_edges().to_lower()
+	return ""
+
+
 func _device_phase_label(device_entry: StatusEntryModel) -> String:
 	for badge in device_entry.badges:
 		if badge == null:
@@ -1325,6 +1490,15 @@ func _provider_has_badge_label(provider_entry: StatusEntryModel, label: String) 
 
 func _device_has_badge_label(device_entry: StatusEntryModel, label: String) -> bool:
 	for badge in device_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
+
+
+func _stream_has_badge_label(stream_entry: StatusEntryModel, label: String) -> bool:
+	for badge in stream_entry.badges:
 		if badge == null:
 			continue
 		if badge.label == label:
@@ -2932,6 +3106,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_badges: Array[BadgeModel] = [
 				_badge("neutral", "phase=%s" % _phase_display_label(stream_phase)),
 				_badge("neutral", "mode=%s" % _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
+				_badge("neutral", "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE"))),
 			]
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
@@ -2975,7 +3150,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["rej_inv", "visibility_frames_rejected_invalid", 2],
 					]
 				),
-				stream_info
+				stream_info,
+				"stream"
 			)
 			if stream_matches.size() == 1:
 				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
@@ -3044,7 +3220,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[]
+				[],
+				"stream"
 			)
 			destroyed_stream_entry.materialized_native_id = destroyed_stream_native_id
 			panel.entries.append(destroyed_stream_entry)
@@ -4080,6 +4257,15 @@ func _stream_mode_display_label(value: Variant) -> String:
 			return canonical
 		return "UNKNOWN"
 	return "UNKNOWN"
+
+
+func _stream_stop_reason_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["NONE", "USER", "PREEMPTED", "PROVIDER"].has(canonical):
+			return canonical
+		return "NONE"
+	return "NONE"
 
 
 func _build_still_profile_info_line(rec: Dictionary) -> String:
