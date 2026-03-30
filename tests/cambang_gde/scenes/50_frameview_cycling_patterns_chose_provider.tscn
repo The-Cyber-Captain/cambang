@@ -91,4 +91,5 @@ grow_vertical = 2
 size_flags_horizontal = 3
 theme_override_styles/panel = SubResource("StyleBoxFlat_xdeou")
 script = ExtResource("1_xdeou")
+server_topology_growth_rate_attn_threshold_per_sec = 1.0
 metadata/_custom_type_script = "uid://djv2vyhmruoh2"
