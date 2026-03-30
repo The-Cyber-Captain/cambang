@@ -801,9 +801,11 @@ func _derive_device_health_facts(
 	var current_errors := _counter_value_by_name(device_entry, "errors", -1)
 	return {
 		"has_contract_or_projection_failure": _device_has_contract_or_projection_failure(model, device_entry),
-		"has_counter_inconsistency": _device_has_counter_inconsistency(current_errors),
+		"has_counter_inconsistency": _device_has_counter_inconsistency(device_entry, current_errors),
 		"has_lifecycle_contradiction": _device_has_lifecycle_contradiction(device_entry),
-		"has_insufficient_local_truth": _device_has_insufficient_local_truth(current_errors),
+		"has_insufficient_local_truth": _device_has_insufficient_local_truth(device_entry, current_errors),
+		"is_preserved": _device_is_preserved(device_entry),
+		"is_destroyed": _device_is_destroyed(device_entry),
 		"current_errors": current_errors,
 		"error_growth_rate_per_sec": _device_error_growth_rate_per_sec_over_window(
 			device_entry.id,
@@ -922,6 +924,10 @@ func _server_health_is_attention(health_facts: Dictionary) -> bool:
 
 
 func _device_health_is_attention(health_facts: Dictionary) -> bool:
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	if is_preserved:
+		return not is_destroyed
 	return int(health_facts.get("current_errors", 0)) > 0
 
 
@@ -1212,7 +1218,9 @@ func _device_has_contract_or_projection_failure(model: PanelModel, device_entry:
 	return false
 
 
-func _device_has_counter_inconsistency(current_errors: int) -> bool:
+func _device_has_counter_inconsistency(device_entry: StatusEntryModel, current_errors: int) -> bool:
+	if _device_is_preserved(device_entry):
+		return false
 	return current_errors < 0
 
 
@@ -1225,7 +1233,9 @@ func _device_has_lifecycle_contradiction(device_entry: StatusEntryModel) -> bool
 	return phase_is_destroyed != has_destroyed_badge
 
 
-func _device_has_insufficient_local_truth(current_errors: int) -> bool:
+func _device_has_insufficient_local_truth(device_entry: StatusEntryModel, current_errors: int) -> bool:
+	if _device_is_preserved(device_entry):
+		return false
 	return current_errors < 0
 
 
@@ -1267,6 +1277,20 @@ func _provider_is_destroyed(provider_entry: StatusEntryModel) -> bool:
 	if _provider_has_badge_label(provider_entry, "destroyed"):
 		return true
 	return _provider_native_phase_label(provider_entry).find("destroyed") >= 0
+
+
+func _device_is_preserved(device_entry: StatusEntryModel) -> bool:
+	return (
+		_is_retained_projection_entry(device_entry.id)
+		or _device_has_badge_label(device_entry, "retained")
+		or _device_has_badge_label(device_entry, "continuity-only")
+	)
+
+
+func _device_is_destroyed(device_entry: StatusEntryModel) -> bool:
+	if _device_has_badge_label(device_entry, "destroyed"):
+		return true
+	return _device_phase_label(device_entry).find("destroyed") >= 0
 
 
 func _device_phase_label(device_entry: StatusEntryModel) -> String:
