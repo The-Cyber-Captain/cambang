@@ -708,11 +708,7 @@ func _apply_provider_health_summary(model: PanelModel) -> bool:
 		return false
 	var changed := false
 	for entry in model.entries:
-		if entry == null:
-			continue
-		if not entry.id.begins_with("provider/"):
-			continue
-		if not entry.label.begins_with("provider/"):
+		if not _is_provider_health_target_entry(entry):
 			continue
 		var health_facts := _derive_provider_health_facts(model, entry)
 		var next_health_label := _derive_provider_health_label(health_facts)
@@ -724,6 +720,10 @@ func _apply_provider_health_summary(model: PanelModel) -> bool:
 		_apply_detail_policy_to_entry(entry)
 		changed = true
 	return changed
+
+
+func _is_provider_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "provider"
 
 
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
@@ -2492,7 +2492,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		true,
 		provider_badges,
 		provider_counters,
-		provider_info_lines
+		provider_info_lines,
+		"provider"
 	)
 	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
