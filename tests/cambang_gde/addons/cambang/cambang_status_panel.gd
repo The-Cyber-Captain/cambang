@@ -101,6 +101,7 @@ class RetainedSubtreeState extends RefCounted:
 @export var panel_style_overrides: Dictionary = {}
 @export var shared_style_overrides: Dictionary = {}
 @export var server_topology_growth_rate_attn_threshold_per_sec: float = 0.0
+@export var device_error_growth_rate_bad_threshold_per_sec: float = 0.0
 
 const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
 const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
@@ -125,6 +126,7 @@ var _last_authoritative_panel_model: PanelModel = null
 var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
 var _observed_server_health_series: Array[Dictionary] = []
+var _observed_device_health_series_by_id: Dictionary = {}
 
 
 func _ready() -> void:
@@ -499,6 +501,8 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_provider_health_summary(model):
 		model_changed = true
+	if _apply_device_health_summary(model, snapshot):
+		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
@@ -726,6 +730,32 @@ func _is_provider_health_target_entry(entry: StatusEntryModel) -> bool:
 	return entry != null and entry.visual_object_class == "provider"
 
 
+func _apply_device_health_summary(model: PanelModel, snapshot: Variant) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
+	for entry in model.entries:
+		if not _is_device_health_target_entry(entry):
+			continue
+		var health_facts := _derive_device_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
+		var next_health_label := _derive_device_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_observe_device_health_state(entry.id, health_facts)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_device_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "device"
+
+
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
 	var current_version := _counter_value_by_name(server_entry, "version", -1)
 	var current_topology := _counter_value_by_name(server_entry, "topology", -1)
@@ -757,6 +787,30 @@ func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryMod
 	}
 
 
+func _derive_device_health_facts(
+		model: PanelModel,
+		device_entry: StatusEntryModel,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var current_errors := _counter_value_by_name(device_entry, "errors", -1)
+	return {
+		"has_contract_or_projection_failure": _device_has_contract_or_projection_failure(model, device_entry),
+		"has_counter_inconsistency": _device_has_counter_inconsistency(current_errors),
+		"has_lifecycle_contradiction": _device_has_lifecycle_contradiction(device_entry),
+		"has_insufficient_local_truth": _device_has_insufficient_local_truth(current_errors),
+		"current_errors": current_errors,
+		"error_growth_rate_per_sec": _device_error_growth_rate_per_sec_over_window(
+			device_entry.id,
+			current_errors,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
+
+
 func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntryModel) -> Dictionary:
 	var native_all := _counter_value_by_name(provider_entry, "native_all", -1)
 	var native_cur := _counter_value_by_name(provider_entry, "native_cur", -1)
@@ -783,6 +837,17 @@ func _derive_server_health_label(health_facts: Dictionary) -> String:
 	return "OK"
 
 
+func _derive_device_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _device_health_is_bad(health_facts):
+		return "BAD"
+	if _device_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _device_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
 func _derive_provider_health_label(health_facts: Dictionary) -> String:
 	# Priority order: BAD > UNKNOWN > ATTN > OK
 	if _provider_health_is_bad(health_facts):
@@ -805,6 +870,20 @@ func _server_health_is_bad(health_facts: Dictionary) -> bool:
 	return false
 
 
+func _device_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_counter_inconsistency", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	var threshold := max(device_error_growth_rate_bad_threshold_per_sec, 0.0)
+	if is_zero_approx(threshold):
+		return false
+	var growth_rate := float(health_facts.get("error_growth_rate_per_sec", 0.0))
+	return growth_rate > threshold
+
+
 func _provider_health_is_bad(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("has_contract_or_projection_failure", false)):
 		return true
@@ -821,6 +900,10 @@ func _server_health_is_unknown(health_facts: Dictionary) -> bool:
 	return str(health_facts.get("native_coverage_state", "")) == "UNKNOWN"
 
 
+func _device_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
 func _provider_health_is_unknown(health_facts: Dictionary) -> bool:
 	return bool(health_facts.get("has_insufficient_local_truth", false))
 
@@ -831,6 +914,10 @@ func _server_health_is_attention(health_facts: Dictionary) -> bool:
 		return false
 	var growth_rate := float(health_facts.get("topology_growth_rate_per_sec", 0.0))
 	return growth_rate > threshold
+
+
+func _device_health_is_attention(health_facts: Dictionary) -> bool:
+	return int(health_facts.get("current_errors", 0)) > 0
 
 
 func _provider_health_is_attention(health_facts: Dictionary) -> bool:
@@ -850,6 +937,22 @@ func _observe_server_health_state(health_facts: Dictionary) -> void:
 	}
 	_observed_server_health_series.append(next_observation)
 	_prune_observed_server_health_series()
+
+
+func _observe_device_health_state(device_id: String, health_facts: Dictionary) -> void:
+	# Temporal Device error-growth rule is implemented, while static fixtures remain point-in-time only.
+	# Future scenario/boundary verification should exercise Device error-growth transitions.
+	if device_id.is_empty():
+		return
+	var next_observation := {
+		"errors": int(health_facts.get("current_errors", -1)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_device_health_series_by_id.get(device_id, []))
+	series.append(next_observation)
+	series = _prune_observed_device_health_series(series)
+	_observed_device_health_series_by_id[device_id] = series
 
 
 func _latest_observed_server_health_state() -> Dictionary:
@@ -915,6 +1018,102 @@ func _find_server_observation_for_growth_window(
 			best_distance_to_target = distance_to_target
 			best_candidate = candidate
 	return best_candidate
+
+
+func _device_error_growth_rate_per_sec_over_window(
+		device_id: String,
+		current_errors: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if device_id.is_empty() or current_errors < 0:
+		return 0.0
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_device_health_series_by_id.get(device_id, []))
+	if series.is_empty():
+		return 0.0
+	var baseline := _find_device_observation_for_growth_window(series, current_observed_msec, current_timestamp_ns)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_errors := int(baseline.get("errors", -1))
+	if baseline_errors < 0:
+		return 0.0
+	var errors_growth := maxi(0, current_errors - baseline_errors)
+	if errors_growth <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds:
+		return 0.0
+	if elapsed_seconds <= 0.0:
+		return 0.0
+	return float(errors_growth) / elapsed_seconds
+
+
+func _find_device_observation_for_growth_window(
+		series: Array[Dictionary],
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var best_candidate: Dictionary = {}
+	var best_distance_to_target := INF
+	for index in range(0, series.size()):
+		var candidate: Dictionary = series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= 0.0:
+			continue
+		var distance_to_target := abs(elapsed_seconds - _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC)
+		if distance_to_target < best_distance_to_target:
+			best_distance_to_target = distance_to_target
+			best_candidate = candidate
+	return best_candidate
+
+
+func _typed_observed_device_series(series_value: Variant) -> Array[Dictionary]:
+	var typed: Array[Dictionary] = []
+	if typeof(series_value) != TYPE_ARRAY:
+		return typed
+	for item in series_value:
+		if typeof(item) == TYPE_DICTIONARY:
+			typed.append(item as Dictionary)
+	return typed
+
+
+func _prune_observed_device_health_series(series: Array[Dictionary]) -> Array[Dictionary]:
+	if series.is_empty():
+		return series
+	var latest := series[series.size() - 1]
+	var current_observed_msec := int(latest.get("observed_msec", -1))
+	var current_timestamp_ns := int(latest.get("timestamp_ns", -1))
+	var keep_horizon_seconds := _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC * 2.0
+	var first_keep_index := 0
+	for index in range(series.size() - 1, -1, -1):
+		var candidate: Dictionary = series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= keep_horizon_seconds:
+			first_keep_index = index
+		else:
+			break
+	if first_keep_index <= 0:
+		return series
+	return series.slice(first_keep_index)
 
 
 func _prune_observed_server_health_series() -> void:
@@ -989,6 +1188,38 @@ func _provider_has_contract_or_projection_failure(model: PanelModel, provider_en
 	return false
 
 
+func _device_has_contract_or_projection_failure(model: PanelModel, device_entry: StatusEntryModel) -> bool:
+	if _device_has_badge_label(device_entry, "contract-gap"):
+		return true
+	if _device_has_badge_label(device_entry, "CONTRACT GAP"):
+		return true
+	if _device_has_badge_label(device_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % device_entry.id):
+		return true
+	for line in device_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _device_has_counter_inconsistency(current_errors: int) -> bool:
+	return current_errors < 0
+
+
+func _device_has_lifecycle_contradiction(device_entry: StatusEntryModel) -> bool:
+	var phase_label := _device_phase_label(device_entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	var has_destroyed_badge := _device_has_badge_label(device_entry, "destroyed")
+	return phase_is_destroyed != has_destroyed_badge
+
+
+func _device_has_insufficient_local_truth(current_errors: int) -> bool:
+	return current_errors < 0
+
+
 func _provider_has_counter_inconsistency(native_all: int, native_cur: int, native_prev: int, native_dead: int) -> bool:
 	if native_all < 0 or native_cur < 0 or native_prev < 0 or native_dead < 0:
 		return true
@@ -1029,6 +1260,17 @@ func _provider_is_destroyed(provider_entry: StatusEntryModel) -> bool:
 	return _provider_native_phase_label(provider_entry).find("destroyed") >= 0
 
 
+func _device_phase_label(device_entry: StatusEntryModel) -> String:
+	for badge in device_entry.badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("native_phase="):
+			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		if badge.label.begins_with("phase="):
+			return badge.label.substr("phase=".length()).strip_edges().to_lower()
+	return ""
+
+
 func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
 	for badge in provider_entry.badges:
 		if badge == null:
@@ -1041,6 +1283,15 @@ func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
 
 func _provider_has_badge_label(provider_entry: StatusEntryModel, label: String) -> bool:
 	for badge in provider_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
+
+
+func _device_has_badge_label(device_entry: StatusEntryModel, label: String) -> bool:
+	for badge in device_entry.badges:
 		if badge == null:
 			continue
 		if badge.label == label:
@@ -2600,7 +2851,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					["still_prof", "capture_profile_version", 2],
 				]
 			),
-			device_info
+			device_info,
+			"device"
 		)
 		if device_matches.size() == 1:
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
@@ -2719,7 +2971,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[]
+				[],
+				"device"
 			)
 			destroyed_device_entry.materialized_native_id = destroyed_device_native_id
 			panel.entries.append(destroyed_device_entry)
