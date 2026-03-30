@@ -102,6 +102,9 @@ class RetainedSubtreeState extends RefCounted:
 @export var shared_style_overrides: Dictionary = {}
 @export var server_topology_growth_rate_attn_threshold_per_sec: float = 0.0
 @export var device_error_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var stream_drop_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var stream_rej_fmt_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var stream_rej_inv_growth_rate_bad_threshold_per_sec: float = 0.0
 
 const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
 const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
@@ -127,6 +130,7 @@ var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
 var _observed_server_health_series: Array[Dictionary] = []
 var _observed_device_health_series_by_id: Dictionary = {}
+var _observed_stream_health_series_by_id: Dictionary = {}
 
 
 func _ready() -> void:
@@ -403,6 +407,7 @@ func _disconnect_server() -> void:
 		_server.state_published.disconnect(_on_state_published)
 	_server = null
 	_clear_observed_device_health_history()
+	_clear_observed_stream_health_history()
 
 
 func _get_server() -> Object:
@@ -426,6 +431,7 @@ func _refresh_from_server() -> void:
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
 		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
 		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
@@ -441,6 +447,7 @@ func _refresh_from_server() -> void:
 	if snapshot == null:
 		_last_snapshot_meta.clear()
 		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
@@ -450,6 +457,7 @@ func _refresh_from_server() -> void:
 	if typeof(snapshot) != TYPE_DICTIONARY:
 		_last_snapshot_meta.clear()
 		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
@@ -460,6 +468,7 @@ func _refresh_from_server() -> void:
 	if not bool(compat.get("ok", false)):
 		_last_snapshot_meta.clear()
 		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var compat_panel := _build_runtime_compat_fallback_panel(
 			compat.get("contract_gaps", []),
 			compat.get("projection_gaps", [])
@@ -508,7 +517,7 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_device_health_summary(model, snapshot):
 		model_changed = true
-	if _apply_stream_health_summary(model):
+	if _apply_stream_health_summary(model, snapshot):
 		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
@@ -763,17 +772,20 @@ func _is_device_health_target_entry(entry: StatusEntryModel) -> bool:
 	return entry != null and entry.visual_object_class == "device"
 
 
-func _apply_stream_health_summary(model: PanelModel) -> bool:
+func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	if model == null:
 		return false
 	var changed := false
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
 	for entry in model.entries:
 		if not _is_stream_health_target_entry(entry):
 			continue
-		var health_facts := _derive_stream_health_facts(model, entry)
+		var health_facts := _derive_stream_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
 		var next_health_label := _derive_stream_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_observe_stream_health_state(entry.id, health_facts)
 		if _badge_labels(next_badges) == _badge_labels(entry.badges):
 			continue
 		entry.badges = next_badges
@@ -843,7 +855,12 @@ func _derive_device_health_facts(
 	}
 
 
-func _derive_stream_health_facts(model: PanelModel, stream_entry: StatusEntryModel) -> Dictionary:
+func _derive_stream_health_facts(
+		model: PanelModel,
+		stream_entry: StatusEntryModel,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
 	var drop_count := _counter_value_by_name(stream_entry, "drop", 0)
 	var reject_format_count := _counter_value_by_name(stream_entry, "rej_fmt", 0)
 	var reject_invalid_count := _counter_value_by_name(stream_entry, "rej_inv", 0)
@@ -860,6 +877,29 @@ func _derive_stream_health_facts(model: PanelModel, stream_entry: StatusEntryMod
 		"drop": drop_count,
 		"rej_fmt": reject_format_count,
 		"rej_inv": reject_invalid_count,
+		"drop_growth_rate_per_sec": _stream_counter_growth_rate_per_sec_over_window(
+			stream_entry.id,
+			"drop",
+			drop_count,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"rej_fmt_growth_rate_per_sec": _stream_counter_growth_rate_per_sec_over_window(
+			stream_entry.id,
+			"rej_fmt",
+			reject_format_count,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"rej_inv_growth_rate_per_sec": _stream_counter_growth_rate_per_sec_over_window(
+			stream_entry.id,
+			"rej_inv",
+			reject_invalid_count,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
 	}
 
 
@@ -966,7 +1006,34 @@ func _stream_health_is_bad(health_facts: Dictionary) -> bool:
 		return true
 	if bool(health_facts.get("has_lifecycle_contradiction", false)):
 		return true
-	return str(health_facts.get("mode", "")) == "ERROR"
+	var mode := str(health_facts.get("mode", ""))
+	if mode == "ERROR":
+		return true
+	if mode != "FLOWING" and mode != "STARVED":
+		return false
+	if _stream_growth_rate_exceeds_threshold(
+		float(health_facts.get("drop_growth_rate_per_sec", 0.0)),
+		stream_drop_growth_rate_bad_threshold_per_sec
+	):
+		return true
+	if _stream_growth_rate_exceeds_threshold(
+		float(health_facts.get("rej_fmt_growth_rate_per_sec", 0.0)),
+		stream_rej_fmt_growth_rate_bad_threshold_per_sec
+	):
+		return true
+	if _stream_growth_rate_exceeds_threshold(
+		float(health_facts.get("rej_inv_growth_rate_per_sec", 0.0)),
+		stream_rej_inv_growth_rate_bad_threshold_per_sec
+	):
+		return true
+	return false
+
+
+func _stream_growth_rate_exceeds_threshold(growth_rate: float, threshold_setting: float) -> bool:
+	var threshold := max(threshold_setting, 0.0)
+	if is_zero_approx(threshold):
+		return false
+	return growth_rate > threshold
 
 
 func _server_health_is_unknown(health_facts: Dictionary) -> bool:
@@ -1057,6 +1124,24 @@ func _observe_device_health_state(device_id: String, health_facts: Dictionary) -
 	series.append(next_observation)
 	series = _prune_observed_device_health_series(series)
 	_observed_device_health_series_by_id[device_id] = series
+
+
+func _observe_stream_health_state(stream_id: String, health_facts: Dictionary) -> void:
+	# Temporal Stream rules are implemented, while static fixtures remain point-in-time only.
+	# Scenario-based verification for Stream temporal transitions is intentionally deferred.
+	if stream_id.is_empty():
+		return
+	var next_observation := {
+		"drop": int(health_facts.get("drop", 0)),
+		"rej_fmt": int(health_facts.get("rej_fmt", 0)),
+		"rej_inv": int(health_facts.get("rej_inv", 0)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	var series: Array[Dictionary] = _typed_observed_stream_series(_observed_stream_health_series_by_id.get(stream_id, []))
+	series.append(next_observation)
+	series = _prune_observed_stream_health_series(series)
+	_observed_stream_health_series_by_id[stream_id] = series
 
 
 func _latest_observed_server_health_state() -> Dictionary:
@@ -1195,8 +1280,24 @@ func _typed_observed_device_series(series_value: Variant) -> Array[Dictionary]:
 	return typed
 
 
+func _typed_observed_stream_series(series_value: Variant) -> Array[Dictionary]:
+	var typed: Array[Dictionary] = []
+	if typeof(series_value) != TYPE_ARRAY:
+		return typed
+	for item in series_value:
+		if typeof(item) == TYPE_DICTIONARY:
+			typed.append(item as Dictionary)
+	return typed
+
+
 func _clear_observed_device_health_history() -> void:
 	_observed_device_health_series_by_id.clear()
+
+
+func _clear_observed_stream_health_history() -> void:
+	# Keep Stream observed-history lifecycle boundaries aligned with Device
+	# to prevent cross-session/cross-generation temporal contamination.
+	_observed_stream_health_series_by_id.clear()
 
 
 func _prune_observed_device_health_series(series: Array[Dictionary]) -> Array[Dictionary]:
@@ -1222,6 +1323,69 @@ func _prune_observed_device_health_series(series: Array[Dictionary]) -> Array[Di
 	if first_keep_index <= 0:
 		return series
 	return series.slice(first_keep_index)
+
+
+func _prune_observed_stream_health_series(series: Array[Dictionary]) -> Array[Dictionary]:
+	if series.is_empty():
+		return series
+	var latest := series[series.size() - 1]
+	var current_observed_msec := int(latest.get("observed_msec", -1))
+	var current_timestamp_ns := int(latest.get("timestamp_ns", -1))
+	var keep_horizon_seconds := _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC * 2.0
+	var first_keep_index := 0
+	for index in range(series.size() - 1, -1, -1):
+		var candidate: Dictionary = series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= keep_horizon_seconds:
+			first_keep_index = index
+		else:
+			break
+	if first_keep_index <= 0:
+		return series
+	return series.slice(first_keep_index)
+
+
+func _stream_counter_growth_rate_per_sec_over_window(
+		stream_id: String,
+		counter_name: String,
+		current_value: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if stream_id.is_empty() or counter_name.is_empty() or current_value < 0:
+		return 0.0
+	var series: Array[Dictionary] = _typed_observed_stream_series(_observed_stream_health_series_by_id.get(stream_id, []))
+	if series.is_empty():
+		return 0.0
+	var baseline := _find_device_observation_for_growth_window(series, current_observed_msec, current_timestamp_ns)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_value := int(baseline.get(counter_name, -1))
+	if baseline_value < 0:
+		return 0.0
+	var counter_growth := maxi(0, current_value - baseline_value)
+	if counter_growth <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds:
+		return 0.0
+	if elapsed_seconds <= 0.0:
+		return 0.0
+	return float(counter_growth) / elapsed_seconds
 
 
 func _prune_observed_server_health_series() -> void:
@@ -2462,6 +2626,7 @@ func _categorize_snapshot_update(snapshot: Dictionary) -> String:
 
 	if _last_snapshot_meta.is_empty():
 		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		_last_snapshot_meta = {
 			"gen": gen,
 			"version": version,
@@ -2476,6 +2641,7 @@ func _categorize_snapshot_update(snapshot: Dictionary) -> String:
 	var category := "none"
 	if gen != last_gen:
 		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		category = "structural_rebuild"
 	elif topology_version != last_topology:
 		category = "structural_rebuild"
