@@ -402,6 +402,7 @@ func _disconnect_server() -> void:
 	if _server != null and _server.state_published.is_connected(_on_state_published):
 		_server.state_published.disconnect(_on_state_published)
 	_server = null
+	_clear_observed_device_health_history()
 
 
 func _get_server() -> Object:
@@ -424,6 +425,7 @@ func _refresh_from_server() -> void:
 		_provider_mode_value.text = "unavailable"
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
 		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
@@ -438,6 +440,7 @@ func _refresh_from_server() -> void:
 
 	if snapshot == null:
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
@@ -446,6 +449,7 @@ func _refresh_from_server() -> void:
 
 	if typeof(snapshot) != TYPE_DICTIONARY:
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
@@ -455,6 +459,7 @@ func _refresh_from_server() -> void:
 	var compat := _check_snapshot_runtime_compat(snapshot)
 	if not bool(compat.get("ok", false)):
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
 		var compat_panel := _build_runtime_compat_fallback_panel(
 			compat.get("contract_gaps", []),
 			compat.get("projection_gaps", [])
@@ -1089,6 +1094,10 @@ func _typed_observed_device_series(series_value: Variant) -> Array[Dictionary]:
 		if typeof(item) == TYPE_DICTIONARY:
 			typed.append(item as Dictionary)
 	return typed
+
+
+func _clear_observed_device_health_history() -> void:
+	_observed_device_health_series_by_id.clear()
 
 
 func _prune_observed_device_health_series(series: Array[Dictionary]) -> Array[Dictionary]:
@@ -2249,6 +2258,7 @@ func _categorize_snapshot_update(snapshot: Dictionary) -> String:
 	var topology_version := int(snapshot.get("topology_version", -1))
 
 	if _last_snapshot_meta.is_empty():
+		_clear_observed_device_health_history()
 		_last_snapshot_meta = {
 			"gen": gen,
 			"version": version,
@@ -2262,6 +2272,7 @@ func _categorize_snapshot_update(snapshot: Dictionary) -> String:
 
 	var category := "none"
 	if gen != last_gen:
+		_clear_observed_device_health_history()
 		category = "structural_rebuild"
 	elif topology_version != last_topology:
 		category = "structural_rebuild"
