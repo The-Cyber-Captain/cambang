@@ -767,7 +767,8 @@ func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntr
 		"has_counter_inconsistency": _provider_has_counter_inconsistency(native_all, native_cur, native_prev, native_dead),
 		"has_lifecycle_contradiction": _provider_has_lifecycle_contradiction(provider_entry),
 		"has_insufficient_local_truth": _provider_has_insufficient_local_truth(provider_entry),
-		"is_continuity_only_retained": _provider_has_badge_label(provider_entry, "continuity-only"),
+		"is_preserved": _provider_is_preserved(provider_entry),
+		"is_destroyed": _provider_is_destroyed(provider_entry),
 	}
 
 
@@ -833,7 +834,9 @@ func _server_health_is_attention(health_facts: Dictionary) -> bool:
 
 
 func _provider_health_is_attention(health_facts: Dictionary) -> bool:
-	return bool(health_facts.get("is_continuity_only_retained", false))
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	return is_preserved and not is_destroyed
 
 
 func _observe_server_health_state(health_facts: Dictionary) -> void:
@@ -1011,6 +1014,19 @@ func _provider_has_lifecycle_contradiction(provider_entry: StatusEntryModel) -> 
 
 func _provider_has_insufficient_local_truth(provider_entry: StatusEntryModel) -> bool:
 	return _provider_native_phase_label(provider_entry).is_empty()
+
+
+func _provider_is_preserved(provider_entry: StatusEntryModel) -> bool:
+	return (
+		_provider_has_badge_label(provider_entry, "retained")
+		or _provider_has_badge_label(provider_entry, "continuity-only")
+	)
+
+
+func _provider_is_destroyed(provider_entry: StatusEntryModel) -> bool:
+	if _provider_has_badge_label(provider_entry, "destroyed"):
+		return true
+	return _provider_native_phase_label(provider_entry).find("destroyed") >= 0
 
 
 func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
