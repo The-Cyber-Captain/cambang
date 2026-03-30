@@ -100,6 +100,14 @@ class RetainedSubtreeState extends RefCounted:
 
 @export var panel_style_overrides: Dictionary = {}
 @export var shared_style_overrides: Dictionary = {}
+@export var server_topology_growth_rate_attn_threshold_per_sec: float = 0.0
+@export var device_error_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var stream_drop_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var stream_rej_fmt_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var stream_rej_inv_growth_rate_bad_threshold_per_sec: float = 0.0
+
+const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
+const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
 
 var _title_label: Label
 var _provider_mode_value: Label
@@ -120,6 +128,9 @@ var _last_active_snapshot_meta: Dictionary = {}
 var _last_authoritative_panel_model: PanelModel = null
 var _last_authoritative_snapshot_meta: Dictionary = {}
 var _retained_subtrees: Array[RetainedSubtreeState] = []
+var _observed_server_health_series: Array[Dictionary] = []
+var _observed_device_health_series_by_id: Dictionary = {}
+var _observed_stream_health_series_by_id: Dictionary = {}
 
 
 func _ready() -> void:
@@ -395,6 +406,8 @@ func _disconnect_server() -> void:
 	if _server != null and _server.state_published.is_connected(_on_state_published):
 		_server.state_published.disconnect(_on_state_published)
 	_server = null
+	_clear_observed_device_health_history()
+	_clear_observed_stream_health_history()
 
 
 func _get_server() -> Object:
@@ -417,6 +430,8 @@ func _refresh_from_server() -> void:
 		_provider_mode_value.text = "unavailable"
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var no_server_panel := _build_nil_panel_model("No server singleton available.")
 		_set_last_active_panel_state(no_server_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
@@ -431,6 +446,8 @@ func _refresh_from_server() -> void:
 
 	if snapshot == null:
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var nil_panel := _build_nil_panel_model("No published snapshot yet.")
 		_set_last_active_panel_state(nil_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(nil_panel, false, {})
@@ -439,6 +456,8 @@ func _refresh_from_server() -> void:
 
 	if typeof(snapshot) != TYPE_DICTIONARY:
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var bad_type_panel := _build_nil_panel_model("Contract gap: snapshot must be Dictionary; got type=%d." % typeof(snapshot))
 		_set_last_active_panel_state(bad_type_panel, false, {})
 		_last_panel_model = _compose_presented_panel_model(bad_type_panel, false, {})
@@ -448,6 +467,8 @@ func _refresh_from_server() -> void:
 	var compat := _check_snapshot_runtime_compat(snapshot)
 	if not bool(compat.get("ok", false)):
 		_last_snapshot_meta.clear()
+		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		var compat_panel := _build_runtime_compat_fallback_panel(
 			compat.get("contract_gaps", []),
 			compat.get("projection_gaps", [])
@@ -490,7 +511,13 @@ func _render_panel_and_maybe_dump(
 	var model_changed := false
 	if _apply_render_native_coverage_summary(snapshot, model):
 		model_changed = true
-	if _apply_server_health_summary(model):
+	if _apply_server_health_summary(model, snapshot):
+		model_changed = true
+	if _apply_provider_health_summary(model):
+		model_changed = true
+	if _apply_device_health_summary(model, snapshot):
+		model_changed = true
+	if _apply_stream_health_summary(model, snapshot):
 		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
@@ -676,17 +703,19 @@ func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
 	return labels
 
 
-func _apply_server_health_summary(model: PanelModel) -> bool:
+func _apply_server_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	if model == null:
 		return false
 	var server_entry := _find_panel_entry_by_id(model, "server/main")
 	if server_entry == null:
 		return false
-	var next_health_label := _derive_server_health_label(model, server_entry)
+	var health_facts := _derive_server_health_facts(model, server_entry, snapshot)
+	var next_health_label := _derive_server_health_label(health_facts)
 	var next_health_role := _health_role_for_label(next_health_label)
 	var next_badges := _with_health_badge(server_entry.badges, next_health_role, next_health_label)
 	var next_badge_labels := _badge_labels(next_badges)
 	var current_badge_labels := _badge_labels(server_entry.badges)
+	_observe_server_health_state(health_facts)
 	if next_badge_labels == current_badge_labels:
 		return false
 	server_entry.badges = next_badges
@@ -694,26 +723,959 @@ func _apply_server_health_summary(model: PanelModel) -> bool:
 	return true
 
 
-func _derive_server_health_label(model: PanelModel, server_entry: StatusEntryModel) -> String:
-	# Priority order: BAD > UNKNOWN > ATTN > OK
-	if _server_has_contract_or_projection_failure(model, server_entry):
-		return "BAD"
-	if _server_has_badge_label(server_entry, "NO SNAPSHOT"):
-		return "UNKNOWN"
+func _apply_provider_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if not _is_provider_health_target_entry(entry):
+			continue
+		var health_facts := _derive_provider_health_facts(model, entry)
+		var next_health_label := _derive_provider_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_provider_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "provider"
+
+
+func _apply_device_health_summary(model: PanelModel, snapshot: Variant) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
+	for entry in model.entries:
+		if not _is_device_health_target_entry(entry):
+			continue
+		var health_facts := _derive_device_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
+		var next_health_label := _derive_device_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_observe_device_health_state(entry.id, health_facts)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_device_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "device"
+
+
+func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
+	for entry in model.entries:
+		if not _is_stream_health_target_entry(entry):
+			continue
+		var health_facts := _derive_stream_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
+		var next_health_label := _derive_stream_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_observe_stream_health_state(entry.id, health_facts)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "stream"
+
+
+func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
+	var current_version := _counter_value_by_name(server_entry, "version", -1)
+	var current_topology := _counter_value_by_name(server_entry, "topology", -1)
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
 	var native_coverage_state := _server_native_coverage_state(server_entry)
-	if native_coverage_state == "OK":
-		return "OK"
-	if native_coverage_state == "UNKNOWN":
+
+	var version_delta := 0
+	var prior_observation := _latest_observed_server_health_state()
+	if not prior_observation.is_empty():
+		var prior_version := int(prior_observation.get("version", -1))
+		if current_version >= 0 and prior_version >= 0:
+			version_delta = current_version - prior_version
+
+	return {
+		"contract_or_projection_failure": _server_has_contract_or_projection_failure(model, server_entry),
+		"has_no_snapshot": _server_has_badge_label(server_entry, "NO SNAPSHOT"),
+		"native_coverage_state": native_coverage_state,
+		"version_delta": version_delta,
+		"topology_growth_rate_per_sec": _server_topology_growth_rate_per_sec_over_window(
+			current_topology,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_version": current_version,
+		"current_topology": current_topology,
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
+
+
+func _derive_device_health_facts(
+		model: PanelModel,
+		device_entry: StatusEntryModel,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var current_errors := _counter_value_by_name(device_entry, "errors", -1)
+	return {
+		"has_contract_or_projection_failure": _device_has_contract_or_projection_failure(model, device_entry),
+		"has_counter_inconsistency": _device_has_counter_inconsistency(device_entry, current_errors),
+		"has_lifecycle_contradiction": _device_has_lifecycle_contradiction(device_entry),
+		"has_insufficient_local_truth": _device_has_insufficient_local_truth(device_entry, current_errors),
+		"is_preserved": _device_is_preserved(device_entry),
+		"is_destroyed": _device_is_destroyed(device_entry),
+		"current_errors": current_errors,
+		"error_growth_rate_per_sec": _device_error_growth_rate_per_sec_over_window(
+			device_entry.id,
+			current_errors,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
+
+
+func _derive_stream_health_facts(
+		model: PanelModel,
+		stream_entry: StatusEntryModel,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var drop_count := _counter_value_by_name(stream_entry, "drop", 0)
+	var reject_format_count := _counter_value_by_name(stream_entry, "rej_fmt", 0)
+	var reject_invalid_count := _counter_value_by_name(stream_entry, "rej_inv", 0)
+	var mode := _stream_mode_label(stream_entry)
+	var stop_reason := _stream_stop_reason_label(stream_entry)
+	return {
+		"has_contract_or_projection_failure": _stream_has_contract_or_projection_failure(model, stream_entry),
+		"has_lifecycle_contradiction": _stream_has_lifecycle_contradiction(stream_entry),
+		"has_insufficient_local_truth": _stream_has_insufficient_local_truth(stream_entry, mode),
+		"is_preserved": _stream_is_preserved(stream_entry),
+		"is_destroyed": _stream_is_destroyed(stream_entry),
+		"mode": mode,
+		"stop_reason": stop_reason,
+		"drop": drop_count,
+		"rej_fmt": reject_format_count,
+		"rej_inv": reject_invalid_count,
+		"drop_growth_rate_per_sec": _stream_counter_growth_rate_per_sec_over_window(
+			stream_entry.id,
+			"drop",
+			drop_count,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"rej_fmt_growth_rate_per_sec": _stream_counter_growth_rate_per_sec_over_window(
+			stream_entry.id,
+			"rej_fmt",
+			reject_format_count,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"rej_inv_growth_rate_per_sec": _stream_counter_growth_rate_per_sec_over_window(
+			stream_entry.id,
+			"rej_inv",
+			reject_invalid_count,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
+
+
+func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntryModel) -> Dictionary:
+	var native_all := _counter_value_by_name(provider_entry, "native_all", -1)
+	var native_cur := _counter_value_by_name(provider_entry, "native_cur", -1)
+	var native_prev := _counter_value_by_name(provider_entry, "native_prev", -1)
+	var native_dead := _counter_value_by_name(provider_entry, "native_dead", -1)
+	return {
+		"has_contract_or_projection_failure": _provider_has_contract_or_projection_failure(model, provider_entry),
+		"has_counter_inconsistency": _provider_has_counter_inconsistency(native_all, native_cur, native_prev, native_dead),
+		"has_lifecycle_contradiction": _provider_has_lifecycle_contradiction(provider_entry),
+		"has_insufficient_local_truth": _provider_has_insufficient_local_truth(provider_entry),
+		"is_preserved": _provider_is_preserved(provider_entry),
+		"is_destroyed": _provider_is_destroyed(provider_entry),
+	}
+
+
+func _derive_server_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _server_health_is_bad(health_facts):
+		return "BAD"
+	if _server_health_is_unknown(health_facts):
 		return "UNKNOWN"
-	if native_coverage_state != "":
+	if _server_health_is_attention(health_facts):
 		return "ATTN"
-	return "UNKNOWN"
+	return "OK"
+
+
+func _derive_device_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _device_health_is_bad(health_facts):
+		return "BAD"
+	if _device_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _device_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
+func _derive_provider_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _provider_health_is_bad(health_facts):
+		return "BAD"
+	if _provider_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _provider_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
+func _derive_stream_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _stream_health_is_bad(health_facts):
+		return "BAD"
+	if _stream_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	if is_preserved and is_destroyed:
+		return "OK"
+	if _stream_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
+func _server_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("contract_or_projection_failure", false)):
+		return true
+	var native_coverage_state := str(health_facts.get("native_coverage_state", ""))
+	if native_coverage_state == "MISSING":
+		return true
+	if int(health_facts.get("version_delta", 0)) > 1:
+		return true
+	return false
+
+
+func _device_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_counter_inconsistency", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	var threshold := max(device_error_growth_rate_bad_threshold_per_sec, 0.0)
+	if is_zero_approx(threshold):
+		return false
+	var growth_rate := float(health_facts.get("error_growth_rate_per_sec", 0.0))
+	return growth_rate > threshold
+
+
+func _provider_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_counter_inconsistency", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	return false
+
+
+func _stream_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	var mode := str(health_facts.get("mode", ""))
+	if mode == "ERROR":
+		return true
+	if mode != "FLOWING" and mode != "STARVED":
+		return false
+	if _stream_growth_rate_exceeds_threshold(
+		float(health_facts.get("drop_growth_rate_per_sec", 0.0)),
+		stream_drop_growth_rate_bad_threshold_per_sec
+	):
+		return true
+	if _stream_growth_rate_exceeds_threshold(
+		float(health_facts.get("rej_fmt_growth_rate_per_sec", 0.0)),
+		stream_rej_fmt_growth_rate_bad_threshold_per_sec
+	):
+		return true
+	if _stream_growth_rate_exceeds_threshold(
+		float(health_facts.get("rej_inv_growth_rate_per_sec", 0.0)),
+		stream_rej_inv_growth_rate_bad_threshold_per_sec
+	):
+		return true
+	return false
+
+
+func _stream_growth_rate_exceeds_threshold(growth_rate: float, threshold_setting: float) -> bool:
+	var threshold := max(threshold_setting, 0.0)
+	if is_zero_approx(threshold):
+		return false
+	return growth_rate > threshold
+
+
+func _server_health_is_unknown(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_no_snapshot", false)):
+		return true
+	return str(health_facts.get("native_coverage_state", "")) == "UNKNOWN"
+
+
+func _device_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
+func _provider_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
+func _stream_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
+func _server_health_is_attention(health_facts: Dictionary) -> bool:
+	var threshold := max(server_topology_growth_rate_attn_threshold_per_sec, 0.0)
+	if is_zero_approx(threshold):
+		return false
+	var growth_rate := float(health_facts.get("topology_growth_rate_per_sec", 0.0))
+	return growth_rate > threshold
+
+
+func _device_health_is_attention(health_facts: Dictionary) -> bool:
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	if is_preserved:
+		return not is_destroyed
+	return int(health_facts.get("current_errors", 0)) > 0
+
+
+func _provider_health_is_attention(health_facts: Dictionary) -> bool:
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	return is_preserved and not is_destroyed
+
+
+func _stream_health_is_attention(health_facts: Dictionary) -> bool:
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	if is_preserved and not is_destroyed:
+		return true
+	var mode := str(health_facts.get("mode", ""))
+	var stop_reason := str(health_facts.get("stop_reason", ""))
+	if mode == "STARVED":
+		return true
+	if mode == "STOPPED" and (stop_reason == "PREEMPTED" or stop_reason == "PROVIDER"):
+		return true
+	if mode == "FLOWING" or mode == "STARVED":
+		if int(health_facts.get("drop", 0)) > 0:
+			return true
+		if int(health_facts.get("rej_fmt", 0)) > 0:
+			return true
+		if int(health_facts.get("rej_inv", 0)) > 0:
+			return true
+	return false
+
+
+func _observe_server_health_state(health_facts: Dictionary) -> void:
+	# Temporal logic is intentionally implemented now, but static fixtures remain point-in-time only.
+	# Future scenario/boundary verification should exercise version delta and growth-rate transitions.
+	var next_observation := {
+		"version": int(health_facts.get("current_version", -1)),
+		"topology": int(health_facts.get("current_topology", -1)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	_observed_server_health_series.append(next_observation)
+	_prune_observed_server_health_series()
+
+
+func _observe_device_health_state(device_id: String, health_facts: Dictionary) -> void:
+	# Temporal Device error-growth rule is implemented, while static fixtures remain point-in-time only.
+	# Future scenario/boundary verification should exercise Device error-growth transitions.
+	if device_id.is_empty():
+		return
+	var next_observation := {
+		"errors": int(health_facts.get("current_errors", -1)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_device_health_series_by_id.get(device_id, []))
+	series.append(next_observation)
+	series = _prune_observed_device_health_series(series)
+	_observed_device_health_series_by_id[device_id] = series
+
+
+func _observe_stream_health_state(stream_id: String, health_facts: Dictionary) -> void:
+	# Temporal Stream rules are implemented, while static fixtures remain point-in-time only.
+	# Scenario-based verification for Stream temporal transitions is intentionally deferred.
+	if stream_id.is_empty():
+		return
+	var next_observation := {
+		"drop": int(health_facts.get("drop", 0)),
+		"rej_fmt": int(health_facts.get("rej_fmt", 0)),
+		"rej_inv": int(health_facts.get("rej_inv", 0)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	var series: Array[Dictionary] = _typed_observed_stream_series(_observed_stream_health_series_by_id.get(stream_id, []))
+	series.append(next_observation)
+	series = _prune_observed_stream_health_series(series)
+	_observed_stream_health_series_by_id[stream_id] = series
+
+
+func _latest_observed_server_health_state() -> Dictionary:
+	if _observed_server_health_series.is_empty():
+		return {}
+	return _observed_server_health_series[_observed_server_health_series.size() - 1]
+
+
+func _server_topology_growth_rate_per_sec_over_window(
+		current_topology: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if current_topology < 0:
+		return 0.0
+	var baseline := _find_server_observation_for_growth_window(
+		current_observed_msec,
+		current_timestamp_ns
+	)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_topology := int(baseline.get("topology", -1))
+	if baseline_topology < 0:
+		return 0.0
+	var topology_delta := current_topology - baseline_topology
+	if topology_delta <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds:
+		return 0.0
+	if elapsed_seconds <= 0.0:
+		return 0.0
+	return float(topology_delta) / elapsed_seconds
+
+
+func _find_server_observation_for_growth_window(
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var best_candidate: Dictionary = {}
+	var best_distance_to_target := INF
+	for index in range(0, _observed_server_health_series.size()):
+		var candidate: Dictionary = _observed_server_health_series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= 0.0:
+			continue
+		var distance_to_target := abs(elapsed_seconds - _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC)
+		if distance_to_target < best_distance_to_target:
+			best_distance_to_target = distance_to_target
+			best_candidate = candidate
+	return best_candidate
+
+
+func _device_error_growth_rate_per_sec_over_window(
+		device_id: String,
+		current_errors: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if device_id.is_empty() or current_errors < 0:
+		return 0.0
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_device_health_series_by_id.get(device_id, []))
+	if series.is_empty():
+		return 0.0
+	var baseline := _find_device_observation_for_growth_window(series, current_observed_msec, current_timestamp_ns)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_errors := int(baseline.get("errors", -1))
+	if baseline_errors < 0:
+		return 0.0
+	var errors_growth := maxi(0, current_errors - baseline_errors)
+	if errors_growth <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds:
+		return 0.0
+	if elapsed_seconds <= 0.0:
+		return 0.0
+	return float(errors_growth) / elapsed_seconds
+
+
+func _find_device_observation_for_growth_window(
+		series: Array[Dictionary],
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var best_candidate: Dictionary = {}
+	var best_distance_to_target := INF
+	for index in range(0, series.size()):
+		var candidate: Dictionary = series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= 0.0:
+			continue
+		var distance_to_target := abs(elapsed_seconds - _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC)
+		if distance_to_target < best_distance_to_target:
+			best_distance_to_target = distance_to_target
+			best_candidate = candidate
+	return best_candidate
+
+
+func _typed_observed_device_series(series_value: Variant) -> Array[Dictionary]:
+	var typed: Array[Dictionary] = []
+	if typeof(series_value) != TYPE_ARRAY:
+		return typed
+	for item in series_value:
+		if typeof(item) == TYPE_DICTIONARY:
+			typed.append(item as Dictionary)
+	return typed
+
+
+func _typed_observed_stream_series(series_value: Variant) -> Array[Dictionary]:
+	var typed: Array[Dictionary] = []
+	if typeof(series_value) != TYPE_ARRAY:
+		return typed
+	for item in series_value:
+		if typeof(item) == TYPE_DICTIONARY:
+			typed.append(item as Dictionary)
+	return typed
+
+
+func _clear_observed_device_health_history() -> void:
+	_observed_device_health_series_by_id.clear()
+
+
+func _clear_observed_stream_health_history() -> void:
+	# Keep Stream observed-history lifecycle boundaries aligned with Device
+	# to prevent cross-session/cross-generation temporal contamination.
+	_observed_stream_health_series_by_id.clear()
+
+
+func _prune_observed_device_health_series(series: Array[Dictionary]) -> Array[Dictionary]:
+	if series.is_empty():
+		return series
+	var latest := series[series.size() - 1]
+	var current_observed_msec := int(latest.get("observed_msec", -1))
+	var current_timestamp_ns := int(latest.get("timestamp_ns", -1))
+	var keep_horizon_seconds := _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC * 2.0
+	var first_keep_index := 0
+	for index in range(series.size() - 1, -1, -1):
+		var candidate: Dictionary = series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= keep_horizon_seconds:
+			first_keep_index = index
+		else:
+			break
+	if first_keep_index <= 0:
+		return series
+	return series.slice(first_keep_index)
+
+
+func _prune_observed_stream_health_series(series: Array[Dictionary]) -> Array[Dictionary]:
+	if series.is_empty():
+		return series
+	var latest := series[series.size() - 1]
+	var current_observed_msec := int(latest.get("observed_msec", -1))
+	var current_timestamp_ns := int(latest.get("timestamp_ns", -1))
+	var keep_horizon_seconds := _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC * 2.0
+	var first_keep_index := 0
+	for index in range(series.size() - 1, -1, -1):
+		var candidate: Dictionary = series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= keep_horizon_seconds:
+			first_keep_index = index
+		else:
+			break
+	if first_keep_index <= 0:
+		return series
+	return series.slice(first_keep_index)
+
+
+func _stream_counter_growth_rate_per_sec_over_window(
+		stream_id: String,
+		counter_name: String,
+		current_value: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if stream_id.is_empty() or counter_name.is_empty() or current_value < 0:
+		return 0.0
+	var series: Array[Dictionary] = _typed_observed_stream_series(_observed_stream_health_series_by_id.get(stream_id, []))
+	if series.is_empty():
+		return 0.0
+	var baseline := _find_device_observation_for_growth_window(series, current_observed_msec, current_timestamp_ns)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_value := int(baseline.get(counter_name, -1))
+	if baseline_value < 0:
+		return 0.0
+	var counter_growth := maxi(0, current_value - baseline_value)
+	if counter_growth <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds:
+		return 0.0
+	if elapsed_seconds <= 0.0:
+		return 0.0
+	return float(counter_growth) / elapsed_seconds
+
+
+func _prune_observed_server_health_series() -> void:
+	if _observed_server_health_series.is_empty():
+		return
+	var latest := _observed_server_health_series[_observed_server_health_series.size() - 1]
+	var current_observed_msec := int(latest.get("observed_msec", -1))
+	var current_timestamp_ns := int(latest.get("timestamp_ns", -1))
+	var keep_horizon_seconds := _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC * 2.0
+	var first_keep_index := 0
+	for index in range(_observed_server_health_series.size() - 1, -1, -1):
+		var candidate: Dictionary = _observed_server_health_series[index]
+		var elapsed_seconds := _server_health_elapsed_seconds(
+			current_observed_msec,
+			int(candidate.get("observed_msec", -1)),
+			current_timestamp_ns,
+			int(candidate.get("timestamp_ns", -1))
+		)
+		if elapsed_seconds <= keep_horizon_seconds:
+			first_keep_index = index
+		else:
+			break
+	if first_keep_index > 0:
+		_observed_server_health_series = _observed_server_health_series.slice(first_keep_index)
+
+
+func _server_health_elapsed_seconds(
+		current_observed_msec: int,
+		prior_observed_msec: int,
+		current_timestamp_ns: int,
+		prior_timestamp_ns: int
+	) -> float:
+	if current_timestamp_ns >= 0 and prior_timestamp_ns >= 0:
+		var delta_ns := current_timestamp_ns - prior_timestamp_ns
+		if delta_ns > 0:
+			return float(delta_ns) / 1_000_000_000.0
+	var delta_msec := current_observed_msec - prior_observed_msec
+	if delta_msec <= 0:
+		return 0.0
+	return float(delta_msec) / 1000.0
+
+
+func _counter_value_by_name(entry: StatusEntryModel, counter_name: String, fallback: int = -1) -> int:
+	if entry == null:
+		return fallback
+	for counter in entry.counters:
+		if counter == null:
+			continue
+		if counter.name == counter_name:
+			return counter.value
+	return fallback
+
+
+func _snapshot_timestamp_ns(snapshot: Variant) -> int:
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		return -1
+	return int((snapshot as Dictionary).get("timestamp_ns", -1))
+
+
+func _provider_has_contract_or_projection_failure(model: PanelModel, provider_entry: StatusEntryModel) -> bool:
+	if _provider_has_badge_label(provider_entry, "contract-gap"):
+		return true
+	if _provider_has_badge_label(provider_entry, "CONTRACT GAP"):
+		return true
+	if _provider_has_badge_label(provider_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % provider_entry.id):
+		return true
+	for line in provider_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _device_has_contract_or_projection_failure(model: PanelModel, device_entry: StatusEntryModel) -> bool:
+	if _device_has_badge_label(device_entry, "contract-gap"):
+		return true
+	if _device_has_badge_label(device_entry, "CONTRACT GAP"):
+		return true
+	if _device_has_badge_label(device_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % device_entry.id):
+		return true
+	for line in device_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _stream_has_contract_or_projection_failure(model: PanelModel, stream_entry: StatusEntryModel) -> bool:
+	if _stream_has_badge_label(stream_entry, "contract-gap"):
+		return true
+	if _stream_has_badge_label(stream_entry, "CONTRACT GAP"):
+		return true
+	if _stream_has_badge_label(stream_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % stream_entry.id):
+		return true
+	for line in stream_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _device_has_counter_inconsistency(device_entry: StatusEntryModel, current_errors: int) -> bool:
+	if _device_is_preserved(device_entry):
+		return false
+	return current_errors < 0
+
+
+func _device_has_lifecycle_contradiction(device_entry: StatusEntryModel) -> bool:
+	var phase_label := _device_phase_label(device_entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	var has_destroyed_badge := _device_has_badge_label(device_entry, "destroyed")
+	return phase_is_destroyed != has_destroyed_badge
+
+
+func _stream_has_lifecycle_contradiction(stream_entry: StatusEntryModel) -> bool:
+	var phase_label := _stream_phase_label(stream_entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	var has_destroyed_badge := _stream_has_badge_label(stream_entry, "destroyed")
+	return phase_is_destroyed != has_destroyed_badge
+
+
+func _device_has_insufficient_local_truth(device_entry: StatusEntryModel, current_errors: int) -> bool:
+	if _device_is_preserved(device_entry):
+		return false
+	return current_errors < 0
+
+
+func _stream_has_insufficient_local_truth(stream_entry: StatusEntryModel, mode: String) -> bool:
+	if _stream_is_preserved(stream_entry):
+		return false
+	if _stream_is_destroyed(stream_entry):
+		return false
+	return mode.is_empty()
+
+
+func _provider_has_counter_inconsistency(native_all: int, native_cur: int, native_prev: int, native_dead: int) -> bool:
+	if native_all < 0 or native_cur < 0 or native_prev < 0 or native_dead < 0:
+		return true
+	if native_cur > native_all:
+		return true
+	if native_prev > native_all:
+		return true
+	if native_dead > native_all:
+		return true
+	if (native_cur + native_prev) > native_all:
+		return true
+	return false
+
+
+func _provider_has_lifecycle_contradiction(provider_entry: StatusEntryModel) -> bool:
+	var phase_label := _provider_native_phase_label(provider_entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	var has_destroyed_badge := _provider_has_badge_label(provider_entry, "destroyed")
+	return phase_is_destroyed != has_destroyed_badge
+
+
+func _provider_has_insufficient_local_truth(provider_entry: StatusEntryModel) -> bool:
+	return _provider_native_phase_label(provider_entry).is_empty()
+
+
+func _provider_is_preserved(provider_entry: StatusEntryModel) -> bool:
+	return (
+		_provider_has_badge_label(provider_entry, "retained")
+		or _provider_has_badge_label(provider_entry, "continuity-only")
+	)
+
+
+func _provider_is_destroyed(provider_entry: StatusEntryModel) -> bool:
+	if _provider_has_badge_label(provider_entry, "destroyed"):
+		return true
+	return _provider_native_phase_label(provider_entry).find("destroyed") >= 0
+
+
+func _device_is_preserved(device_entry: StatusEntryModel) -> bool:
+	return (
+		_is_retained_projection_entry(device_entry.id)
+		or _device_has_badge_label(device_entry, "retained")
+		or _device_has_badge_label(device_entry, "continuity-only")
+	)
+
+
+func _device_is_destroyed(device_entry: StatusEntryModel) -> bool:
+	if _device_has_badge_label(device_entry, "destroyed"):
+		return true
+	return _device_phase_label(device_entry).find("destroyed") >= 0
+
+
+func _stream_is_preserved(stream_entry: StatusEntryModel) -> bool:
+	return (
+		_is_retained_projection_entry(stream_entry.id)
+		or _stream_has_badge_label(stream_entry, "retained")
+		or _stream_has_badge_label(stream_entry, "continuity-only")
+	)
+
+
+func _stream_is_destroyed(stream_entry: StatusEntryModel) -> bool:
+	if _stream_has_badge_label(stream_entry, "destroyed"):
+		return true
+	return _stream_phase_label(stream_entry).find("destroyed") >= 0
+
+
+func _stream_mode_label(stream_entry: StatusEntryModel) -> String:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("mode="):
+			continue
+		return badge.label.substr("mode=".length()).strip_edges().to_upper()
+	return ""
+
+
+func _stream_stop_reason_label(stream_entry: StatusEntryModel) -> String:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("stop_reason="):
+			continue
+		return badge.label.substr("stop_reason=".length()).strip_edges().to_upper()
+	return "NONE"
+
+
+func _stream_phase_label(stream_entry: StatusEntryModel) -> String:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("native_phase="):
+			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		if badge.label.begins_with("phase="):
+			return badge.label.substr("phase=".length()).strip_edges().to_lower()
+	return ""
+
+
+func _device_phase_label(device_entry: StatusEntryModel) -> String:
+	for badge in device_entry.badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("native_phase="):
+			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		if badge.label.begins_with("phase="):
+			return badge.label.substr("phase=".length()).strip_edges().to_lower()
+	return ""
+
+
+func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
+	for badge in provider_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("native_phase="):
+			continue
+		return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+	return ""
+
+
+func _provider_has_badge_label(provider_entry: StatusEntryModel, label: String) -> bool:
+	for badge in provider_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
+
+
+func _device_has_badge_label(device_entry: StatusEntryModel, label: String) -> bool:
+	for badge in device_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
+
+
+func _stream_has_badge_label(stream_entry: StatusEntryModel, label: String) -> bool:
+	for badge in stream_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
 
 
 func _server_has_contract_or_projection_failure(model: PanelModel, server_entry: StatusEntryModel) -> bool:
-	var native_coverage_state := _server_native_coverage_state(server_entry)
-	if native_coverage_state == "MISSING":
-		return true
 	if _server_has_badge_label(server_entry, "contract-gap"):
 		return true
 	if _server_has_badge_label(server_entry, "CONTRACT GAP"):
@@ -1663,6 +2625,8 @@ func _categorize_snapshot_update(snapshot: Dictionary) -> String:
 	var topology_version := int(snapshot.get("topology_version", -1))
 
 	if _last_snapshot_meta.is_empty():
+		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		_last_snapshot_meta = {
 			"gen": gen,
 			"version": version,
@@ -1676,6 +2640,8 @@ func _categorize_snapshot_update(snapshot: Dictionary) -> String:
 
 	var category := "none"
 	if gen != last_gen:
+		_clear_observed_device_health_history()
+		_clear_observed_stream_health_history()
 		category = "structural_rebuild"
 	elif topology_version != last_topology:
 		category = "structural_rebuild"
@@ -2173,7 +3139,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		true,
 		provider_badges,
 		provider_counters,
-		provider_info_lines
+		provider_info_lines,
+		"provider"
 	)
 	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
@@ -2264,7 +3231,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					["still_prof", "capture_profile_version", 2],
 				]
 			),
-			device_info
+			device_info,
+			"device"
 		)
 		if device_matches.size() == 1:
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
@@ -2309,6 +3277,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			var stream_badges: Array[BadgeModel] = [
 				_badge("neutral", "phase=%s" % _phase_display_label(stream_phase)),
 				_badge("neutral", "mode=%s" % _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
+				_badge("neutral", "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE"))),
 			]
 			if _phase_is_destroyed(stream_phase):
 				stream_badges.append(_badge("warning", "destroyed"))
@@ -2352,7 +3321,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["rej_inv", "visibility_frames_rejected_invalid", 2],
 					]
 				),
-				stream_info
+				stream_info,
+				"stream"
 			)
 			if stream_matches.size() == 1:
 				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
@@ -2383,7 +3353,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[]
+				[],
+				"device"
 			)
 			destroyed_device_entry.materialized_native_id = destroyed_device_native_id
 			panel.entries.append(destroyed_device_entry)
@@ -2420,7 +3391,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				[],
-				[]
+				[],
+				"stream"
 			)
 			destroyed_stream_entry.materialized_native_id = destroyed_stream_native_id
 			panel.entries.append(destroyed_stream_entry)
@@ -3456,6 +4428,15 @@ func _stream_mode_display_label(value: Variant) -> String:
 			return canonical
 		return "UNKNOWN"
 	return "UNKNOWN"
+
+
+func _stream_stop_reason_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["NONE", "USER", "PREEMPTED", "PROVIDER"].has(canonical):
+			return canonical
+		return "NONE"
+	return "NONE"
 
 
 func _build_still_profile_info_line(rec: Dictionary) -> String:
