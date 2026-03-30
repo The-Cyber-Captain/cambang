@@ -497,6 +497,8 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_server_health_summary(model, snapshot):
 		model_changed = true
+	if _apply_provider_health_summary(model):
+		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
@@ -701,6 +703,29 @@ func _apply_server_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	return true
 
 
+func _apply_provider_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if entry == null:
+			continue
+		if not entry.id.begins_with("provider/"):
+			continue
+		if not entry.label.begins_with("provider/"):
+			continue
+		var health_facts := _derive_provider_health_facts(model, entry)
+		var next_health_label := _derive_provider_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
 	var current_version := _counter_value_by_name(server_entry, "version", -1)
 	var current_topology := _counter_value_by_name(server_entry, "topology", -1)
@@ -732,6 +757,20 @@ func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryMod
 	}
 
 
+func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntryModel) -> Dictionary:
+	var native_all := _counter_value_by_name(provider_entry, "native_all", -1)
+	var native_cur := _counter_value_by_name(provider_entry, "native_cur", -1)
+	var native_prev := _counter_value_by_name(provider_entry, "native_prev", -1)
+	var native_dead := _counter_value_by_name(provider_entry, "native_dead", -1)
+	return {
+		"has_contract_or_projection_failure": _provider_has_contract_or_projection_failure(model, provider_entry),
+		"has_counter_inconsistency": _provider_has_counter_inconsistency(native_all, native_cur, native_prev, native_dead),
+		"has_lifecycle_contradiction": _provider_has_lifecycle_contradiction(provider_entry),
+		"has_insufficient_local_truth": _provider_has_insufficient_local_truth(provider_entry),
+		"is_continuity_only_retained": _provider_has_badge_label(provider_entry, "continuity-only"),
+	}
+
+
 func _derive_server_health_label(health_facts: Dictionary) -> String:
 	# Priority order: BAD > UNKNOWN > ATTN > OK
 	if _server_health_is_bad(health_facts):
@@ -739,6 +778,17 @@ func _derive_server_health_label(health_facts: Dictionary) -> String:
 	if _server_health_is_unknown(health_facts):
 		return "UNKNOWN"
 	if _server_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
+func _derive_provider_health_label(health_facts: Dictionary) -> String:
+	# Priority order: BAD > UNKNOWN > ATTN > OK
+	if _provider_health_is_bad(health_facts):
+		return "BAD"
+	if _provider_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _provider_health_is_attention(health_facts):
 		return "ATTN"
 	return "OK"
 
@@ -754,10 +804,24 @@ func _server_health_is_bad(health_facts: Dictionary) -> bool:
 	return false
 
 
+func _provider_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_counter_inconsistency", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	return false
+
+
 func _server_health_is_unknown(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("has_no_snapshot", false)):
 		return true
 	return str(health_facts.get("native_coverage_state", "")) == "UNKNOWN"
+
+
+func _provider_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
 
 
 func _server_health_is_attention(health_facts: Dictionary) -> bool:
@@ -766,6 +830,10 @@ func _server_health_is_attention(health_facts: Dictionary) -> bool:
 		return false
 	var growth_rate := float(health_facts.get("topology_growth_rate_per_sec", 0.0))
 	return growth_rate > threshold
+
+
+func _provider_health_is_attention(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("is_continuity_only_retained", false))
 
 
 func _observe_server_health_state(health_facts: Dictionary) -> void:
@@ -901,6 +969,67 @@ func _snapshot_timestamp_ns(snapshot: Variant) -> int:
 	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
 		return -1
 	return int((snapshot as Dictionary).get("timestamp_ns", -1))
+
+
+func _provider_has_contract_or_projection_failure(model: PanelModel, provider_entry: StatusEntryModel) -> bool:
+	if _provider_has_badge_label(provider_entry, "contract-gap"):
+		return true
+	if _provider_has_badge_label(provider_entry, "CONTRACT GAP"):
+		return true
+	if _provider_has_badge_label(provider_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % provider_entry.id):
+		return true
+	for line in provider_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _provider_has_counter_inconsistency(native_all: int, native_cur: int, native_prev: int, native_dead: int) -> bool:
+	if native_all < 0 or native_cur < 0 or native_prev < 0 or native_dead < 0:
+		return true
+	if native_cur > native_all:
+		return true
+	if native_prev > native_all:
+		return true
+	if native_dead > native_all:
+		return true
+	if (native_cur + native_prev) > native_all:
+		return true
+	return false
+
+
+func _provider_has_lifecycle_contradiction(provider_entry: StatusEntryModel) -> bool:
+	var phase_label := _provider_native_phase_label(provider_entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	var has_destroyed_badge := _provider_has_badge_label(provider_entry, "destroyed")
+	return phase_is_destroyed != has_destroyed_badge
+
+
+func _provider_has_insufficient_local_truth(provider_entry: StatusEntryModel) -> bool:
+	return _provider_native_phase_label(provider_entry).is_empty()
+
+
+func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
+	for badge in provider_entry.badges:
+		if badge == null:
+			continue
+		if not badge.label.begins_with("native_phase="):
+			continue
+		return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+	return ""
+
+
+func _provider_has_badge_label(provider_entry: StatusEntryModel, label: String) -> bool:
+	for badge in provider_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == label:
+			return true
+	return false
 
 
 func _server_has_contract_or_projection_failure(model: PanelModel, server_entry: StatusEntryModel) -> bool:
