@@ -917,6 +917,10 @@ func _derive_stream_health_label(health_facts: Dictionary) -> String:
 		return "BAD"
 	if _stream_health_is_unknown(health_facts):
 		return "UNKNOWN"
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	if is_preserved and is_destroyed:
+		return "OK"
 	if _stream_health_is_attention(health_facts):
 		return "ATTN"
 	return "OK"
@@ -1016,12 +1020,13 @@ func _stream_health_is_attention(health_facts: Dictionary) -> bool:
 		return true
 	if mode == "STOPPED" and (stop_reason == "PREEMPTED" or stop_reason == "PROVIDER"):
 		return true
-	if int(health_facts.get("drop", 0)) > 0:
-		return true
-	if int(health_facts.get("rej_fmt", 0)) > 0:
-		return true
-	if int(health_facts.get("rej_inv", 0)) > 0:
-		return true
+	if mode == "FLOWING" or mode == "STARVED":
+		if int(health_facts.get("drop", 0)) > 0:
+			return true
+		if int(health_facts.get("rej_fmt", 0)) > 0:
+			return true
+		if int(health_facts.get("rej_inv", 0)) > 0:
+			return true
 	return false
 
 
