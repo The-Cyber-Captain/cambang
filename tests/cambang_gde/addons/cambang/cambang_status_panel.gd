@@ -3362,13 +3362,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				continue
 			current_grounded_destroyed_device_row_id_by_instance[int(instance_key)] = canonical_device_id
 			promoted_native_ids[destroyed_device_native_id] = true
-			var destroyed_device_counters := _counters_from_record(
-				destroyed_device_native,
-				[
-					["buffers", "buffers_in_use", 2],
-					["bytes", "bytes_allocated", 3],
-				]
-			)
 			var destroyed_device_entry := _entry(
 				canonical_device_id,
 				provider_id,
@@ -3379,7 +3372,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[
 					_badge("warning", "destroyed"),
 				],
-				destroyed_device_counters,
+				[],
 				[],
 				"device"
 			)
@@ -3407,13 +3400,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
 				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
 			promoted_native_ids[destroyed_stream_native_id] = true
-			var destroyed_stream_counters := _counters_from_record(
-				destroyed_stream_native,
-				[
-					["buffers", "buffers_in_use", 2],
-					["bytes", "bytes_allocated", 3],
-				]
-			)
 			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
@@ -3424,7 +3410,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[
 					_badge("warning", "destroyed"),
 				],
-				destroyed_stream_counters,
+				[],
 				[],
 				"stream"
 			)
