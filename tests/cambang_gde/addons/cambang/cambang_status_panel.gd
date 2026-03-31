@@ -2593,22 +2593,7 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 	var cloned_badges: Array[BadgeModel] = []
 	for badge in source.badges:
 		cloned_badges.append(_badge(badge.role, badge.label, badge.kind))
-	var cloned_counters: Array[CounterModel] = []
-	for counter in source.counters:
-		cloned_counters.append(_counter(
-			counter.name,
-			counter.value,
-			counter.digits,
-			counter.visibility,
-			{
-				"row_kind": counter.row_kind,
-				"semantic_group": counter.semantic_group,
-				"truth_class": counter.truth_class,
-				"required": counter.required,
-				"source_field": counter.source_field,
-				"provenance_key": counter.provenance_key,
-			}
-		))
+	var cloned_counters := _clone_counter_models(source.counters)
 	var cloned_info_lines: Array[String] = []
 	for line in source.info_lines:
 		cloned_info_lines.append(line)
@@ -2629,6 +2614,57 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 	cloned.detail_info_lines = source.detail_info_lines.duplicate()
 	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
 	return cloned
+
+
+func _clone_counter_models(counters: Array) -> Array[CounterModel]:
+	var cloned_counters: Array[CounterModel] = []
+	for raw_counter in counters:
+		var counter: CounterModel = raw_counter
+		if counter == null:
+			continue
+		cloned_counters.append(_counter(
+			counter.name,
+			counter.value,
+			counter.digits,
+			counter.visibility,
+			{
+				"row_kind": counter.row_kind,
+				"semantic_group": counter.semantic_group,
+				"truth_class": counter.truth_class,
+				"required": counter.required,
+				"source_field": counter.source_field,
+				"provenance_key": counter.provenance_key,
+			}
+		))
+	return cloned_counters
+
+
+func _is_synthetic_destroyed_placeholder_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.label.find("[destroyed]") >= 0
+
+
+func _last_known_same_row_type_counters(row_id: String, row_kind: String) -> Array[CounterModel]:
+	if row_id.is_empty() or row_kind.is_empty():
+		return []
+	if _last_authoritative_panel_model == null:
+		return []
+	for entry in _last_authoritative_panel_model.entries:
+		if entry == null:
+			continue
+		if entry.id != row_id:
+			continue
+		if _is_retained_projection_entry(entry.id):
+			continue
+		if _is_synthetic_destroyed_placeholder_entry(entry):
+			continue
+		if entry.visual_object_class.strip_edges() != row_kind:
+			continue
+		if entry.counters.is_empty():
+			return []
+		return _clone_counter_models(entry.counters)
+	return []
 
 
 func _fetch_snapshot() -> Variant:
@@ -3362,6 +3398,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				continue
 			current_grounded_destroyed_device_row_id_by_instance[int(instance_key)] = canonical_device_id
 			promoted_native_ids[destroyed_device_native_id] = true
+			var destroyed_device_counters := _last_known_same_row_type_counters(canonical_device_id, "device")
 			var destroyed_device_entry := _entry(
 				canonical_device_id,
 				provider_id,
@@ -3372,7 +3409,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[
 					_badge("warning", "destroyed"),
 				],
-				[],
+				destroyed_device_counters,
 				[],
 				"device"
 			)
@@ -3400,6 +3437,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
 				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
 			promoted_native_ids[destroyed_stream_native_id] = true
+			var destroyed_stream_counters := _last_known_same_row_type_counters(canonical_stream_id, "stream")
 			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
@@ -3410,7 +3448,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[
 					_badge("warning", "destroyed"),
 				],
-				[],
+				destroyed_stream_counters,
 				[],
 				"stream"
 			)
