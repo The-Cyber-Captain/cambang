@@ -24,6 +24,10 @@ class StatusEntryModel extends RefCounted:
 	var label: String = ""
 	var visual_object_class: String = ""
 	var materialized_native_id: int = 0
+	var is_native_record: bool = false
+	var is_orphaned_native: bool = false
+	var is_in_orphan_native_branch: bool = false
+	var is_below_line: bool = false
 	var expanded: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
@@ -513,8 +517,9 @@ func _render_panel_and_maybe_dump(
 		snapshot: Variant,
 		update_category: String = "structural_rebuild"
 	) -> void:
+	var lifecycle_roles_changed := _apply_lifecycle_badge_roles(model)
 	_render_panel_model(model, update_category)
-	var model_changed := false
+	var model_changed := lifecycle_roles_changed
 	if _apply_render_native_coverage_summary(snapshot, model):
 		model_changed = true
 	if _apply_server_health_summary(model, snapshot):
@@ -522,6 +527,8 @@ func _render_panel_and_maybe_dump(
 	if _apply_provider_health_summary(model):
 		model_changed = true
 	if _apply_device_health_summary(model, snapshot):
+		model_changed = true
+	if _apply_native_health_summary(model):
 		model_changed = true
 	if _apply_stream_health_summary(model, snapshot):
 		model_changed = true
@@ -729,6 +736,97 @@ func _apply_server_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	return true
 
 
+func _apply_lifecycle_badge_roles(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if entry == null:
+			continue
+		var entry_changed := false
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			var next_role := _lifecycle_badge_role_for_entry(entry, badge)
+			if next_role.is_empty() or next_role == badge.role:
+				continue
+			badge.role = next_role
+			entry_changed = true
+		if entry_changed:
+			_apply_detail_policy_to_entry(entry)
+			changed = true
+	return changed
+
+
+func _lifecycle_badge_role_for_entry(entry: StatusEntryModel, badge: BadgeModel) -> String:
+	if entry == null or badge == null:
+		return ""
+	var normalized_phase := _phase_label_from_badge_label(badge.label)
+	if normalized_phase.is_empty():
+		return ""
+	if bool(entry.is_native_record):
+		if bool(entry.is_below_line) or bool(entry.is_in_orphan_native_branch):
+			match normalized_phase:
+				"CREATED":
+					return "warning"
+				"LIVE":
+					return "error"
+				"TEARING_DOWN":
+					return "warning"
+				"DESTROYED":
+					return "success"
+				_:
+					return ""
+		match normalized_phase:
+			"CREATED":
+				return "info"
+			"LIVE":
+				return "success"
+			"TEARING_DOWN":
+				return "warning"
+			"DESTROYED":
+				return "neutral"
+			_:
+				return ""
+	if entry.visual_object_class == "provider" and _provider_is_orphaned(entry):
+		match normalized_phase:
+			"CREATED":
+				return "warning"
+			"LIVE":
+				return "error"
+			"TEARING_DOWN":
+				return "warning"
+			"DESTROYED":
+				return "success"
+			_:
+				return ""
+	var row_kind := "retained" if _is_retained_projection_entry(entry.id) else "authoritative"
+	match normalized_phase:
+		"CREATED":
+			return "warning" if row_kind == "retained" else "info"
+		"LIVE":
+			return "success"
+		"TEARING_DOWN":
+			return "warning"
+		"DESTROYED":
+			return "success" if row_kind == "retained" else "neutral"
+		_:
+			return ""
+
+
+func _phase_label_from_badge_label(label: String) -> String:
+	if label == "destroyed":
+		return "DESTROYED"
+	if label.begins_with("phase="):
+		return label.substr("phase=".length()).strip_edges().to_upper()
+	if label.begins_with("native_phase="):
+		return label.substr("native_phase=".length()).strip_edges().to_upper()
+	var canonical := label.strip_edges().to_upper()
+	if ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"].has(canonical):
+		return canonical
+	return ""
+
+
 func _apply_provider_health_summary(model: PanelModel) -> bool:
 	if model == null:
 		return false
@@ -774,8 +872,34 @@ func _apply_device_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	return changed
 
 
+
+
+func _apply_native_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if not _is_native_health_target_entry(entry):
+			continue
+		var health_facts := _derive_native_health_facts(model, entry)
+		var next_health_label := _derive_native_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_native_health_target_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return bool(entry.is_native_record)
+
 func _is_device_health_target_entry(entry: StatusEntryModel) -> bool:
-	return entry != null and entry.visual_object_class == "device"
+	return entry != null and entry.visual_object_class == "device" and not _is_native_health_target_entry(entry)
 
 
 func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
@@ -801,7 +925,7 @@ func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 
 
 func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
-	return entry != null and entry.visual_object_class == "stream"
+	return entry != null and entry.visual_object_class == "stream" and not _is_native_health_target_entry(entry)
 
 
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
@@ -909,6 +1033,16 @@ func _derive_stream_health_facts(
 	}
 
 
+
+
+func _derive_native_health_facts(model: PanelModel, native_entry: StatusEntryModel) -> Dictionary:
+	return {
+		"has_contract_or_projection_failure": _native_has_contract_or_projection_failure(model, native_entry),
+		"is_below_line": bool(native_entry.is_below_line),
+		"is_orphaned": bool(native_entry.is_in_orphan_native_branch),
+		"phase": _native_phase_label(native_entry),
+	}
+
 func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntryModel) -> Dictionary:
 	var native_all := _counter_value_by_name(provider_entry, "native_all", -1)
 	var native_cur := _counter_value_by_name(provider_entry, "native_cur", -1)
@@ -921,6 +1055,8 @@ func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntr
 		"has_insufficient_local_truth": _provider_has_insufficient_local_truth(provider_entry),
 		"is_preserved": _provider_is_preserved(provider_entry),
 		"is_destroyed": _provider_is_destroyed(provider_entry),
+		"is_orphaned": _provider_is_orphaned(provider_entry),
+		"phase": _provider_native_phase_label(provider_entry).to_upper(),
 	}
 
 
@@ -945,6 +1081,17 @@ func _derive_device_health_label(health_facts: Dictionary) -> String:
 		return "ATTN"
 	return "OK"
 
+
+
+
+func _derive_native_health_label(health_facts: Dictionary) -> String:
+	if _native_health_is_bad(health_facts):
+		return "BAD"
+	if _native_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _native_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
 
 func _derive_provider_health_label(health_facts: Dictionary) -> String:
 	# Priority order: BAD > UNKNOWN > ATTN > OK
@@ -997,6 +1144,44 @@ func _device_health_is_bad(health_facts: Dictionary) -> bool:
 	return growth_rate > threshold
 
 
+
+
+func _native_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	var phase := str(health_facts.get("phase", "")).to_upper()
+	if phase.is_empty():
+		return false
+	var is_below_line := bool(health_facts.get("is_below_line", false))
+	var is_orphaned := bool(health_facts.get("is_orphaned", false))
+	if is_below_line or is_orphaned:
+		return phase == "LIVE"
+	return false
+
+
+func _native_health_is_unknown(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return false
+	var phase := str(health_facts.get("phase", "")).to_upper()
+	if phase.is_empty():
+		return true
+	var is_below_line := bool(health_facts.get("is_below_line", false))
+	var is_orphaned := bool(health_facts.get("is_orphaned", false))
+	if is_below_line or is_orphaned:
+		return false
+	return phase == "DESTROYED"
+
+
+func _native_health_is_attention(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return false
+	var phase := str(health_facts.get("phase", "")).to_upper()
+	var is_below_line := bool(health_facts.get("is_below_line", false))
+	var is_orphaned := bool(health_facts.get("is_orphaned", false))
+	if is_below_line or is_orphaned:
+		return phase == "CREATED" or phase == "TEARING_DOWN"
+	return phase == "TEARING_DOWN"
+
 func _provider_health_is_bad(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("has_contract_or_projection_failure", false)):
 		return true
@@ -1004,6 +1189,8 @@ func _provider_health_is_bad(health_facts: Dictionary) -> bool:
 		return true
 	if bool(health_facts.get("has_lifecycle_contradiction", false)):
 		return true
+	if bool(health_facts.get("is_orphaned", false)):
+		return str(health_facts.get("phase", "")).to_upper() == "LIVE"
 	return false
 
 
@@ -1077,6 +1264,9 @@ func _device_health_is_attention(health_facts: Dictionary) -> bool:
 
 
 func _provider_health_is_attention(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("is_orphaned", false)):
+		var phase := str(health_facts.get("phase", "")).to_upper()
+		return phase == "CREATED" or phase == "TEARING_DOWN"
 	var is_preserved := bool(health_facts.get("is_preserved", false))
 	var is_destroyed := bool(health_facts.get("is_destroyed", false))
 	return is_preserved and not is_destroyed
@@ -1451,6 +1641,47 @@ func _snapshot_timestamp_ns(snapshot: Variant) -> int:
 	return int((snapshot as Dictionary).get("timestamp_ns", -1))
 
 
+
+
+func _native_has_contract_or_projection_failure(model: PanelModel, native_entry: StatusEntryModel) -> bool:
+	if _has_badge_label(native_entry, "contract-gap"):
+		return true
+	if _has_badge_label(native_entry, "CONTRACT GAP"):
+		return true
+	if _has_badge_label(native_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % native_entry.id):
+		return true
+	for line in native_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _native_is_preserved(native_entry: StatusEntryModel) -> bool:
+	if native_entry == null:
+		return false
+	return bool(native_entry.is_below_line) or _has_badge_label(native_entry, "continuity-only")
+
+
+func _native_is_orphaned(native_entry: StatusEntryModel) -> bool:
+	if native_entry == null:
+		return false
+	return bool(native_entry.is_in_orphan_native_branch)
+
+
+func _native_phase_label(native_entry: StatusEntryModel) -> String:
+	for badge in native_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == "destroyed":
+			return "DESTROYED"
+		if badge.label.begins_with("phase="):
+			return badge.label.substr("phase=".length()).strip_edges().to_upper()
+		if badge.label.begins_with("native_phase="):
+			return badge.label.substr("native_phase=".length()).strip_edges().to_upper()
+	return ""
+
 func _provider_has_contract_or_projection_failure(model: PanelModel, provider_entry: StatusEntryModel) -> bool:
 	if _provider_has_badge_label(provider_entry, "contract-gap"):
 		return true
@@ -1574,6 +1805,10 @@ func _provider_is_destroyed(provider_entry: StatusEntryModel) -> bool:
 	return _provider_native_phase_label(provider_entry).find("destroyed") >= 0
 
 
+func _provider_is_orphaned(provider_entry: StatusEntryModel) -> bool:
+	return _provider_has_badge_label(provider_entry, "orphaned")
+
+
 func _device_is_preserved(device_entry: StatusEntryModel) -> bool:
 	return (
 		_is_retained_projection_entry(device_entry.id)
@@ -1624,10 +1859,9 @@ func _stream_phase_label(stream_entry: StatusEntryModel) -> String:
 	for badge in stream_entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("phase="):
-			return badge.label.substr("phase=".length()).strip_edges().to_lower()
-		if badge.label.begins_with("native_phase="):
-			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
 	return ""
 
 
@@ -1635,10 +1869,9 @@ func _device_phase_label(device_entry: StatusEntryModel) -> String:
 	for badge in device_entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("phase="):
-			return badge.label.substr("phase=".length()).strip_edges().to_lower()
-		if badge.label.begins_with("native_phase="):
-			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
 	return ""
 
 
@@ -1646,10 +1879,9 @@ func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
 	for badge in provider_entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("phase="):
-			return badge.label.substr("phase=".length()).strip_edges().to_lower()
-		if badge.label.begins_with("native_phase="):
-			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
 	return ""
 
 
@@ -2416,6 +2648,7 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 	for source_entry in retained_entries:
 		var cloned_entry := _clone_status_entry(source_entry)
+		cloned_entry.is_below_line = true
 		var projected_id := "%s/%s" % [subtree_prefix, source_entry.id]
 		cloned_entry.id = projected_id
 		if source_entry.id == retained.provider_root_id and retained.root_status == "destroyed_provider":
@@ -2606,6 +2839,10 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		source.visual_object_class
 	)
 	cloned.materialized_native_id = source.materialized_native_id
+	cloned.is_native_record = source.is_native_record
+	cloned.is_orphaned_native = source.is_orphaned_native
+	cloned.is_in_orphan_native_branch = source.is_in_orphan_native_branch
+	cloned.is_below_line = source.is_below_line
 	cloned.summary_info_lines = source.summary_info_lines.duplicate()
 	cloned.detail_info_lines = source.detail_info_lines.duplicate()
 	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
@@ -3574,8 +3811,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
 						resolved_parent_id = aliased_parent_id
 			orphan_entry.parent_id = resolved_parent_id
+			if not orphan_entry.anomaly_info_lines.has("Orphaned native branch."):
+				orphan_entry.anomaly_info_lines.append("Orphaned native branch.")
 
 		_apply_detached_orphan_subtree_depths(orphan_rows, orphan_rows_by_id, orphan_row_id)
+		_annotate_orphan_native_branch_context(orphan_rows, orphan_row_id)
 
 		panel.entries.append(_entry(
 			orphan_row_id,
@@ -3863,6 +4103,9 @@ func _build_native_object_entry(
 	)
 	native_entry.visual_object_class = _visual_object_class_for_native_type(native_type_key)
 	native_entry.materialized_native_id = native_id
+	native_entry.is_native_record = true
+	native_entry.is_orphaned_native = parent_id == orphan_row_id
+	native_entry.is_below_line = is_prior_generation
 	return native_entry
 
 
@@ -3919,6 +4162,35 @@ func _apply_detached_orphan_subtree_depths(
 
 	for orphan_root in orphan_roots:
 		_assign_detached_orphan_depth(orphan_root, 3, children_by_parent)
+
+
+
+func _annotate_orphan_native_branch_context(orphan_rows: Array[StatusEntryModel], orphan_row_id: String) -> void:
+	if orphan_rows.is_empty():
+		return
+	var rows_by_id := {}
+	for row in orphan_rows:
+		if row == null:
+			continue
+		rows_by_id[row.id] = row
+	for row in orphan_rows:
+		if row == null:
+			continue
+		row.is_in_orphan_native_branch = _row_is_in_orphan_native_branch(row, rows_by_id, orphan_row_id)
+
+
+func _row_is_in_orphan_native_branch(row: StatusEntryModel, rows_by_id: Dictionary, orphan_row_id: String) -> bool:
+	if row == null:
+		return false
+	var current_parent_id := str(row.parent_id)
+	while not current_parent_id.is_empty():
+		if current_parent_id == orphan_row_id:
+			return true
+		if not rows_by_id.has(current_parent_id):
+			return false
+		var parent_row: StatusEntryModel = rows_by_id[current_parent_id]
+		current_parent_id = str(parent_row.parent_id)
+	return false
 
 
 func _assign_detached_orphan_depth(

@@ -11,6 +11,11 @@ const SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH := 128.0
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
 var _row_kind_for_render: String = "authoritative"
+var _object_class_for_render: String = "generic"
+var _is_orphaned_for_render: bool = false
+var _is_native_lineage_for_render: bool = false
+var _is_below_line_for_render: bool = false
+var _is_in_orphan_native_branch_for_render: bool = false
 
 var _indent_region: Control
 var _disclosure_slot: Control
@@ -54,6 +59,11 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 
 	_entry_id = model.id
 	_row_kind_for_render = _row_kind(model)
+	_object_class_for_render = _object_class(model)
+	_is_orphaned_for_render = _is_orphaned_row(model)
+	_is_native_lineage_for_render = _is_native_lineage_row(model)
+	_is_below_line_for_render = bool(model.is_below_line)
+	_is_in_orphan_native_branch_for_render = bool(model.is_in_orphan_native_branch)
 	var is_expandable := model.can_expand
 	var effective_expanded := (model.expanded if is_expandable else true)
 	_indent_region.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
@@ -183,7 +193,7 @@ func _badge_slot_min_width(raw_label: String, display_label: String, label_node:
 	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT" or raw_label == "snapshot-incompatible":
 		return _measured_badge_slot_width("SNAPSHOT INCOMPATIBLE", label_node)
 	if raw_label.begins_with("NATIVE COVERAGE:"):
-		return _measured_badge_slot_width("NATIVE COVERAGE: OK", label_node)
+		return _measured_badge_slot_width("NATIVE COVERAGE: UNKNOWN", label_node)
 	if raw_label == "contract-gap" or raw_label == "schema" or raw_label == "projection":
 		return _measured_badge_slot_width("PROJECTION GAP", label_node)
 	if raw_label == "detached" or raw_label == "orphaned" or raw_label == "prior-gen":
@@ -654,7 +664,7 @@ func _font_line_height(font: Font, font_size: int, fallback: float) -> float:
 
 
 func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
-	var object_class := _object_class(model)
+	var object_class := _object_class_for_render
 	var accent := _class_color(object_class)
 	var shell_bg := (_style.row_shell_bg if _style != null else Color(0.16, 0.18, 0.22, 0.68))
 	var info_bg := (_style.info_panel_bg if _style != null else Color(0.10, 0.12, 0.15, 0.88))
@@ -712,6 +722,19 @@ func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		if _is_anomaly_line(line):
 			return "contract_gap"
 	return "authoritative"
+
+
+
+func _is_orphaned_row(model: CamBANGStatusPanel.StatusEntryModel) -> bool:
+	if model == null:
+		return false
+	return bool(model.is_in_orphan_native_branch)
+
+
+func _is_native_lineage_row(model: CamBANGStatusPanel.StatusEntryModel) -> bool:
+	if model == null:
+		return false
+	return bool(model.is_native_record)
 
 
 func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
@@ -826,9 +849,6 @@ func _make_badge(role: String, label: String) -> CamBANGStatusPanel.BadgeModel:
 func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: String = "authoritative") -> String:
 	if badge == null:
 		return "neutral"
-	var phase_role := _phase_badge_role_for_render(badge.label, row_kind)
-	if not phase_role.is_empty():
-		return phase_role
 	var mode_role := _mode_badge_role_for_render(badge.label)
 	if not mode_role.is_empty():
 		return mode_role
@@ -888,7 +908,14 @@ func _stop_reason_badge_role_for_render(raw_label: String) -> String:
 			return "info"
 
 
-func _phase_badge_role_for_render(raw_label: String, row_kind: String) -> String:
+func _phase_badge_role_for_render(
+		raw_label: String,
+		row_kind: String,
+		object_class: String,
+		is_orphaned: bool,
+		is_native_lineage: bool,
+		is_below_line: bool
+	) -> String:
 	var phase_label := ""
 	if raw_label == "destroyed":
 		phase_label = "DESTROYED"
@@ -896,9 +923,48 @@ func _phase_badge_role_for_render(raw_label: String, row_kind: String) -> String
 		phase_label = raw_label.substr("phase=".length())
 	elif raw_label.begins_with("native_phase="):
 		phase_label = raw_label.substr("native_phase=".length())
+	elif raw_label.strip_edges().to_upper() in ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"]:
+		phase_label = raw_label
 	else:
 		return ""
-	match phase_label:
+	var normalized_phase := phase_label.strip_edges().to_upper()
+	if is_native_lineage or object_class == "native_object":
+		if is_below_line:
+			match normalized_phase:
+				"CREATED":
+					return "warning"
+				"LIVE":
+					return "error"
+				"TEARING_DOWN":
+					return "warning"
+				"DESTROYED":
+					return "success"
+				_:
+					return ""
+		if is_orphaned:
+			match normalized_phase:
+				"CREATED":
+					return "warning"
+				"LIVE":
+					return "error"
+				"TEARING_DOWN":
+					return "warning"
+				"DESTROYED":
+					return "success"
+				_:
+					return ""
+		match normalized_phase:
+			"CREATED":
+				return "info"
+			"LIVE":
+				return "success"
+			"TEARING_DOWN":
+				return "warning"
+			"DESTROYED":
+				return "neutral"
+			_:
+				return ""
+	match normalized_phase:
 		"CREATED":
 			return "warning" if row_kind == "retained" else "info"
 		"LIVE":
