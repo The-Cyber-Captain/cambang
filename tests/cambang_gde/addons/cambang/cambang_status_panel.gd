@@ -3281,6 +3281,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					rec,
 					[
 						["errors", "errors_count", 1],
+						["camera_spec_version", "camera_spec_version", 2],
+						["last_error_code", "last_error_code", 2],
+						["rebuild_count", "rebuild_count", 2],
+						["warm_hold_ms", "warm_hold_ms", 3],
+						["warm_remaining_ms", "warm_remaining_ms", 3],
 						["still_w", "capture_width", 4],
 						["still_h", "capture_height", 4],
 						["still_fmt", "capture_format", 4],
@@ -4479,7 +4484,12 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 			}
 		"device":
 			return {
-				"errors": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": true},
+				"errors": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"camera_spec_version": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"last_error_code": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"rebuild_count": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"warm_hold_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"warm_remaining_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"still_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
