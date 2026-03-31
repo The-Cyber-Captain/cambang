@@ -24,6 +24,10 @@ class StatusEntryModel extends RefCounted:
 	var label: String = ""
 	var visual_object_class: String = ""
 	var materialized_native_id: int = 0
+	var is_native_record: bool = false
+	var is_orphaned_native: bool = false
+	var is_in_orphan_native_branch: bool = false
+	var is_below_line: bool = false
 	var expanded: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
@@ -46,6 +50,12 @@ class CounterModel extends RefCounted:
 	var text_value: String = ""
 	var digits: int = 1
 	var visibility: String = "core"
+	var row_kind: String = ""
+	var semantic_group: String = ""
+	var truth_class: String = ""
+	var required: bool = false
+	var source_field: String = ""
+	var provenance_key: String = ""
 
 
 class StatusPanelStyle extends RefCounted:
@@ -507,8 +517,9 @@ func _render_panel_and_maybe_dump(
 		snapshot: Variant,
 		update_category: String = "structural_rebuild"
 	) -> void:
+	var lifecycle_roles_changed := _apply_lifecycle_badge_roles(model)
 	_render_panel_model(model, update_category)
-	var model_changed := false
+	var model_changed := lifecycle_roles_changed
 	if _apply_render_native_coverage_summary(snapshot, model):
 		model_changed = true
 	if _apply_server_health_summary(model, snapshot):
@@ -516,6 +527,8 @@ func _render_panel_and_maybe_dump(
 	if _apply_provider_health_summary(model):
 		model_changed = true
 	if _apply_device_health_summary(model, snapshot):
+		model_changed = true
+	if _apply_native_health_summary(model):
 		model_changed = true
 	if _apply_stream_health_summary(model, snapshot):
 		model_changed = true
@@ -723,6 +736,97 @@ func _apply_server_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	return true
 
 
+func _apply_lifecycle_badge_roles(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if entry == null:
+			continue
+		var entry_changed := false
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			var next_role := _lifecycle_badge_role_for_entry(entry, badge)
+			if next_role.is_empty() or next_role == badge.role:
+				continue
+			badge.role = next_role
+			entry_changed = true
+		if entry_changed:
+			_apply_detail_policy_to_entry(entry)
+			changed = true
+	return changed
+
+
+func _lifecycle_badge_role_for_entry(entry: StatusEntryModel, badge: BadgeModel) -> String:
+	if entry == null or badge == null:
+		return ""
+	var normalized_phase := _phase_label_from_badge_label(badge.label)
+	if normalized_phase.is_empty():
+		return ""
+	if bool(entry.is_native_record):
+		if bool(entry.is_below_line) or bool(entry.is_in_orphan_native_branch):
+			match normalized_phase:
+				"CREATED":
+					return "warning"
+				"LIVE":
+					return "error"
+				"TEARING_DOWN":
+					return "warning"
+				"DESTROYED":
+					return "success"
+				_:
+					return ""
+		match normalized_phase:
+			"CREATED":
+				return "info"
+			"LIVE":
+				return "success"
+			"TEARING_DOWN":
+				return "warning"
+			"DESTROYED":
+				return "neutral"
+			_:
+				return ""
+	if entry.visual_object_class == "provider" and _provider_is_orphaned(entry):
+		match normalized_phase:
+			"CREATED":
+				return "warning"
+			"LIVE":
+				return "error"
+			"TEARING_DOWN":
+				return "warning"
+			"DESTROYED":
+				return "success"
+			_:
+				return ""
+	var row_kind := "retained" if _is_retained_projection_entry(entry.id) else "authoritative"
+	match normalized_phase:
+		"CREATED":
+			return "warning" if row_kind == "retained" else "info"
+		"LIVE":
+			return "success"
+		"TEARING_DOWN":
+			return "warning"
+		"DESTROYED":
+			return "success" if row_kind == "retained" else "neutral"
+		_:
+			return ""
+
+
+func _phase_label_from_badge_label(label: String) -> String:
+	if label == "destroyed":
+		return "DESTROYED"
+	if label.begins_with("phase="):
+		return label.substr("phase=".length()).strip_edges().to_upper()
+	if label.begins_with("native_phase="):
+		return label.substr("native_phase=".length()).strip_edges().to_upper()
+	var canonical := label.strip_edges().to_upper()
+	if ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"].has(canonical):
+		return canonical
+	return ""
+
+
 func _apply_provider_health_summary(model: PanelModel) -> bool:
 	if model == null:
 		return false
@@ -768,8 +872,34 @@ func _apply_device_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	return changed
 
 
+
+
+func _apply_native_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if not _is_native_health_target_entry(entry):
+			continue
+		var health_facts := _derive_native_health_facts(model, entry)
+		var next_health_label := _derive_native_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _is_native_health_target_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return bool(entry.is_native_record)
+
 func _is_device_health_target_entry(entry: StatusEntryModel) -> bool:
-	return entry != null and entry.visual_object_class == "device"
+	return entry != null and entry.visual_object_class == "device" and not _is_native_health_target_entry(entry)
 
 
 func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
@@ -795,7 +925,7 @@ func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 
 
 func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
-	return entry != null and entry.visual_object_class == "stream"
+	return entry != null and entry.visual_object_class == "stream" and not _is_native_health_target_entry(entry)
 
 
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
@@ -903,6 +1033,16 @@ func _derive_stream_health_facts(
 	}
 
 
+
+
+func _derive_native_health_facts(model: PanelModel, native_entry: StatusEntryModel) -> Dictionary:
+	return {
+		"has_contract_or_projection_failure": _native_has_contract_or_projection_failure(model, native_entry),
+		"is_below_line": bool(native_entry.is_below_line),
+		"is_orphaned": bool(native_entry.is_in_orphan_native_branch),
+		"phase": _native_phase_label(native_entry),
+	}
+
 func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntryModel) -> Dictionary:
 	var native_all := _counter_value_by_name(provider_entry, "native_all", -1)
 	var native_cur := _counter_value_by_name(provider_entry, "native_cur", -1)
@@ -915,6 +1055,8 @@ func _derive_provider_health_facts(model: PanelModel, provider_entry: StatusEntr
 		"has_insufficient_local_truth": _provider_has_insufficient_local_truth(provider_entry),
 		"is_preserved": _provider_is_preserved(provider_entry),
 		"is_destroyed": _provider_is_destroyed(provider_entry),
+		"is_orphaned": _provider_is_orphaned(provider_entry),
+		"phase": _provider_native_phase_label(provider_entry).to_upper(),
 	}
 
 
@@ -939,6 +1081,17 @@ func _derive_device_health_label(health_facts: Dictionary) -> String:
 		return "ATTN"
 	return "OK"
 
+
+
+
+func _derive_native_health_label(health_facts: Dictionary) -> String:
+	if _native_health_is_bad(health_facts):
+		return "BAD"
+	if _native_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _native_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
 
 func _derive_provider_health_label(health_facts: Dictionary) -> String:
 	# Priority order: BAD > UNKNOWN > ATTN > OK
@@ -991,6 +1144,44 @@ func _device_health_is_bad(health_facts: Dictionary) -> bool:
 	return growth_rate > threshold
 
 
+
+
+func _native_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	var phase := str(health_facts.get("phase", "")).to_upper()
+	if phase.is_empty():
+		return false
+	var is_below_line := bool(health_facts.get("is_below_line", false))
+	var is_orphaned := bool(health_facts.get("is_orphaned", false))
+	if is_below_line or is_orphaned:
+		return phase == "LIVE"
+	return false
+
+
+func _native_health_is_unknown(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return false
+	var phase := str(health_facts.get("phase", "")).to_upper()
+	if phase.is_empty():
+		return true
+	var is_below_line := bool(health_facts.get("is_below_line", false))
+	var is_orphaned := bool(health_facts.get("is_orphaned", false))
+	if is_below_line or is_orphaned:
+		return false
+	return phase == "DESTROYED"
+
+
+func _native_health_is_attention(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return false
+	var phase := str(health_facts.get("phase", "")).to_upper()
+	var is_below_line := bool(health_facts.get("is_below_line", false))
+	var is_orphaned := bool(health_facts.get("is_orphaned", false))
+	if is_below_line or is_orphaned:
+		return phase == "CREATED" or phase == "TEARING_DOWN"
+	return phase == "TEARING_DOWN"
+
 func _provider_health_is_bad(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("has_contract_or_projection_failure", false)):
 		return true
@@ -998,6 +1189,8 @@ func _provider_health_is_bad(health_facts: Dictionary) -> bool:
 		return true
 	if bool(health_facts.get("has_lifecycle_contradiction", false)):
 		return true
+	if bool(health_facts.get("is_orphaned", false)):
+		return str(health_facts.get("phase", "")).to_upper() == "LIVE"
 	return false
 
 
@@ -1071,6 +1264,9 @@ func _device_health_is_attention(health_facts: Dictionary) -> bool:
 
 
 func _provider_health_is_attention(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("is_orphaned", false)):
+		var phase := str(health_facts.get("phase", "")).to_upper()
+		return phase == "CREATED" or phase == "TEARING_DOWN"
 	var is_preserved := bool(health_facts.get("is_preserved", false))
 	var is_destroyed := bool(health_facts.get("is_destroyed", false))
 	return is_preserved and not is_destroyed
@@ -1445,6 +1641,47 @@ func _snapshot_timestamp_ns(snapshot: Variant) -> int:
 	return int((snapshot as Dictionary).get("timestamp_ns", -1))
 
 
+
+
+func _native_has_contract_or_projection_failure(model: PanelModel, native_entry: StatusEntryModel) -> bool:
+	if _has_badge_label(native_entry, "contract-gap"):
+		return true
+	if _has_badge_label(native_entry, "CONTRACT GAP"):
+		return true
+	if _has_badge_label(native_entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % native_entry.id):
+		return true
+	for line in native_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _native_is_preserved(native_entry: StatusEntryModel) -> bool:
+	if native_entry == null:
+		return false
+	return bool(native_entry.is_below_line) or _has_badge_label(native_entry, "continuity-only")
+
+
+func _native_is_orphaned(native_entry: StatusEntryModel) -> bool:
+	if native_entry == null:
+		return false
+	return bool(native_entry.is_in_orphan_native_branch)
+
+
+func _native_phase_label(native_entry: StatusEntryModel) -> String:
+	for badge in native_entry.badges:
+		if badge == null:
+			continue
+		if badge.label == "destroyed":
+			return "DESTROYED"
+		if badge.label.begins_with("phase="):
+			return badge.label.substr("phase=".length()).strip_edges().to_upper()
+		if badge.label.begins_with("native_phase="):
+			return badge.label.substr("native_phase=".length()).strip_edges().to_upper()
+	return ""
+
 func _provider_has_contract_or_projection_failure(model: PanelModel, provider_entry: StatusEntryModel) -> bool:
 	if _provider_has_badge_label(provider_entry, "contract-gap"):
 		return true
@@ -1501,8 +1738,8 @@ func _device_has_lifecycle_contradiction(device_entry: StatusEntryModel) -> bool
 	if phase_label.is_empty():
 		return false
 	var phase_is_destroyed := phase_label.find("destroyed") >= 0
-	var has_destroyed_badge := _device_has_badge_label(device_entry, "destroyed")
-	return phase_is_destroyed != has_destroyed_badge
+	var semantic_is_destroyed := _device_is_destroyed(device_entry)
+	return phase_is_destroyed != semantic_is_destroyed
 
 
 func _stream_has_lifecycle_contradiction(stream_entry: StatusEntryModel) -> bool:
@@ -1510,8 +1747,8 @@ func _stream_has_lifecycle_contradiction(stream_entry: StatusEntryModel) -> bool
 	if phase_label.is_empty():
 		return false
 	var phase_is_destroyed := phase_label.find("destroyed") >= 0
-	var has_destroyed_badge := _stream_has_badge_label(stream_entry, "destroyed")
-	return phase_is_destroyed != has_destroyed_badge
+	var semantic_is_destroyed := _stream_is_destroyed(stream_entry)
+	return phase_is_destroyed != semantic_is_destroyed
 
 
 func _device_has_insufficient_local_truth(device_entry: StatusEntryModel, current_errors: int) -> bool:
@@ -1547,8 +1784,8 @@ func _provider_has_lifecycle_contradiction(provider_entry: StatusEntryModel) -> 
 	if phase_label.is_empty():
 		return false
 	var phase_is_destroyed := phase_label.find("destroyed") >= 0
-	var has_destroyed_badge := _provider_has_badge_label(provider_entry, "destroyed")
-	return phase_is_destroyed != has_destroyed_badge
+	var semantic_is_destroyed := _provider_is_destroyed(provider_entry)
+	return phase_is_destroyed != semantic_is_destroyed
 
 
 func _provider_has_insufficient_local_truth(provider_entry: StatusEntryModel) -> bool:
@@ -1557,7 +1794,7 @@ func _provider_has_insufficient_local_truth(provider_entry: StatusEntryModel) ->
 
 func _provider_is_preserved(provider_entry: StatusEntryModel) -> bool:
 	return (
-		_provider_has_badge_label(provider_entry, "retained")
+		_is_retained_projection_entry(provider_entry.id)
 		or _provider_has_badge_label(provider_entry, "continuity-only")
 	)
 
@@ -1568,10 +1805,13 @@ func _provider_is_destroyed(provider_entry: StatusEntryModel) -> bool:
 	return _provider_native_phase_label(provider_entry).find("destroyed") >= 0
 
 
+func _provider_is_orphaned(provider_entry: StatusEntryModel) -> bool:
+	return _provider_has_badge_label(provider_entry, "orphaned")
+
+
 func _device_is_preserved(device_entry: StatusEntryModel) -> bool:
 	return (
 		_is_retained_projection_entry(device_entry.id)
-		or _device_has_badge_label(device_entry, "retained")
 		or _device_has_badge_label(device_entry, "continuity-only")
 	)
 
@@ -1585,7 +1825,6 @@ func _device_is_destroyed(device_entry: StatusEntryModel) -> bool:
 func _stream_is_preserved(stream_entry: StatusEntryModel) -> bool:
 	return (
 		_is_retained_projection_entry(stream_entry.id)
-		or _stream_has_badge_label(stream_entry, "retained")
 		or _stream_has_badge_label(stream_entry, "continuity-only")
 	)
 
@@ -1620,10 +1859,9 @@ func _stream_phase_label(stream_entry: StatusEntryModel) -> String:
 	for badge in stream_entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("native_phase="):
-			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
-		if badge.label.begins_with("phase="):
-			return badge.label.substr("phase=".length()).strip_edges().to_lower()
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
 	return ""
 
 
@@ -1631,10 +1869,9 @@ func _device_phase_label(device_entry: StatusEntryModel) -> String:
 	for badge in device_entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("native_phase="):
-			return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
-		if badge.label.begins_with("phase="):
-			return badge.label.substr("phase=".length()).strip_edges().to_lower()
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
 	return ""
 
 
@@ -1642,9 +1879,9 @@ func _provider_native_phase_label(provider_entry: StatusEntryModel) -> String:
 	for badge in provider_entry.badges:
 		if badge == null:
 			continue
-		if not badge.label.begins_with("native_phase="):
-			continue
-		return badge.label.substr("native_phase=".length()).strip_edges().to_lower()
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
 	return ""
 
 
@@ -1867,6 +2104,7 @@ func _compose_presented_panel_model(
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
 	_reorder_panel_entries_depth_first(composed)
+	_apply_counter_ordering_to_panel(composed)
 	_apply_detail_policy_to_panel(composed)
 	return composed
 
@@ -1900,7 +2138,7 @@ func _validate_projection_invariants(panel: PanelModel) -> Array[String]:
 
 	var retained_roots: Array[StatusEntryModel] = []
 	for entry in panel.entries:
-		if _has_badge_label(entry, "retained-root"):
+		if _has_badge_label(entry, "preserved-root"):
 			retained_roots.append(entry)
 			if entry.parent_id != "server/main":
 				issues.append("Projection invariant: retained root %s must be a direct child of server/main." % entry.id)
@@ -1918,7 +2156,7 @@ func _validate_projection_invariants(panel: PanelModel) -> Array[String]:
 
 	var active_provider_ids := {}
 	for entry in panel.entries:
-		if entry.parent_id == "server/main" and entry.id.begins_with("provider/") and not _has_badge_label(entry, "retained-root"):
+		if entry.parent_id == "server/main" and entry.id.begins_with("provider/") and not _has_badge_label(entry, "preserved-root"):
 			active_provider_ids[entry.id] = true
 
 	for entry in panel.entries:
@@ -1927,8 +2165,8 @@ func _validate_projection_invariants(panel: PanelModel) -> Array[String]:
 			var parent_entry: StatusEntryModel = id_to_entry.get(current_parent, null)
 			if parent_entry == null:
 				break
-			if _has_badge_label(parent_entry, "retained-root") and not _is_retained_projection_entry(entry.id) and entry.id != parent_entry.id:
-				issues.append("Projection invariant: active row %s appears under retained root %s." % [entry.id, parent_entry.id])
+			if _has_badge_label(parent_entry, "preserved-root") and not _is_retained_projection_entry(entry.id) and entry.id != parent_entry.id:
+				issues.append("Projection invariant: active row %s appears under preserved root %s." % [entry.id, parent_entry.id])
 				break
 			if active_provider_ids.has(parent_entry.id) and _is_retained_projection_entry(entry.id):
 				issues.append("Projection invariant: retained row %s appears inside active provider tree %s." % [entry.id, parent_entry.id])
@@ -1946,7 +2184,7 @@ func _validate_projection_invariants(panel: PanelModel) -> Array[String]:
 	for retained_entry in panel.entries:
 		if retained_entry.parent_id != "server/main":
 			continue
-		if not retained_entry.label.begins_with("retained_orphan/gen_"):
+		if not retained_entry.label.begins_with("preserved_orphan/gen_"):
 			continue
 		var orphan_gen := _parse_orphan_retained_gen(retained_entry.label)
 		if orphan_gen < 0:
@@ -1993,7 +2231,7 @@ func _is_retained_projection_entry(entry_id: String) -> bool:
 
 
 func _parse_orphan_retained_gen(label: String) -> int:
-	var prefix := "retained_orphan/gen_"
+	var prefix := "preserved_orphan/gen_"
 	if not label.begins_with(prefix):
 		return -1
 	var suffix := label.substr(prefix.length())
@@ -2392,13 +2630,12 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 			retained_root_projected_id,
 			"server/main",
 			1,
-			"retained_orphan/gen_%d" % retained.retained_from_gen,
+			"preserved_orphan/gen_%d" % retained.retained_from_gen,
 			false,
 			true,
 			[
-				_badge("warning", "retained"),
-				_badge("warning", "retained-root"),
-				_badge("info", "continuity-only"),
+				_badge("warning", "preserved-root", "hidden"),
+				_badge("info", "continuity-only", "hidden"),
 				_badge("warning", "orphaned"),
 			],
 			[
@@ -2411,30 +2648,29 @@ func _append_single_retained_subtree(target_panel: PanelModel, retained: Retaine
 
 	for source_entry in retained_entries:
 		var cloned_entry := _clone_status_entry(source_entry)
+		cloned_entry.is_below_line = true
 		var projected_id := "%s/%s" % [subtree_prefix, source_entry.id]
 		cloned_entry.id = projected_id
 		if source_entry.id == retained.provider_root_id and retained.root_status == "destroyed_provider":
 			cloned_entry.parent_id = "server/main"
 			cloned_entry.depth = 1
 			cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
-			cloned_entry.badges.append(_badge("warning", "retained"))
-			cloned_entry.badges.append(_badge("warning", "retained-root"))
-			cloned_entry.badges.append(_badge("info", "continuity-only"))
-			cloned_entry.label = "%s [retained]" % source_entry.label
+			cloned_entry.badges.append(_badge("warning", "preserved-root", "hidden"))
+			cloned_entry.badges.append(_badge("info", "continuity-only", "hidden"))
+			cloned_entry.label = "%s [preserved]" % source_entry.label
 		elif orphan_provider_root_ids.has(source_entry.id):
 			cloned_entry.parent_id = "server/main"
 			cloned_entry.depth = 1
-			cloned_entry.badges.append(_badge("warning", "retained"))
-			cloned_entry.badges.append(_badge("info", "continuity-only"))
+			cloned_entry.badges.append(_badge("info", "continuity-only", "hidden"))
 			cloned_entry.badges.append(_badge("warning", "orphaned"))
 			if source_entry.id == primary_orphan_provider_root_id:
-				cloned_entry.badges.append(_badge("warning", "retained-root"))
+				cloned_entry.badges.append(_badge("warning", "preserved-root", "hidden"))
 				cloned_entry.counters.append(_counter("retained_from_gen", retained.retained_from_gen, 1))
 				cloned_entry.counters.append(_counter("source_version", retained.source_snapshot_version, 1))
 				cloned_entry.counters.append(_counter("source_topology", retained.source_topology_version, 1))
 				cloned_entry.info_lines = _append_lines(cloned_entry.info_lines, _retained_metadata_info_lines(retained))
 				cloned_entry.info_lines.append(orphan_reason_line)
-			cloned_entry.label = "%s [retained]" % source_entry.label
+			cloned_entry.label = "%s [preserved]" % source_entry.label
 		elif source_entry.parent_id.is_empty() or not included_ids.has(source_entry.parent_id):
 			cloned_entry.parent_id = retained_root_projected_id
 			cloned_entry.depth = 2
@@ -2586,9 +2822,7 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 	var cloned_badges: Array[BadgeModel] = []
 	for badge in source.badges:
 		cloned_badges.append(_badge(badge.role, badge.label, badge.kind))
-	var cloned_counters: Array[CounterModel] = []
-	for counter in source.counters:
-		cloned_counters.append(_counter(counter.name, counter.value, counter.digits, counter.visibility))
+	var cloned_counters := _clone_counter_models(source.counters)
 	var cloned_info_lines: Array[String] = []
 	for line in source.info_lines:
 		cloned_info_lines.append(line)
@@ -2605,10 +2839,65 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		source.visual_object_class
 	)
 	cloned.materialized_native_id = source.materialized_native_id
+	cloned.is_native_record = source.is_native_record
+	cloned.is_orphaned_native = source.is_orphaned_native
+	cloned.is_in_orphan_native_branch = source.is_in_orphan_native_branch
+	cloned.is_below_line = source.is_below_line
 	cloned.summary_info_lines = source.summary_info_lines.duplicate()
 	cloned.detail_info_lines = source.detail_info_lines.duplicate()
 	cloned.anomaly_info_lines = source.anomaly_info_lines.duplicate()
 	return cloned
+
+
+func _clone_counter_models(counters: Array) -> Array[CounterModel]:
+	var cloned_counters: Array[CounterModel] = []
+	for raw_counter in counters:
+		var counter: CounterModel = raw_counter
+		if counter == null:
+			continue
+		cloned_counters.append(_counter(
+			counter.name,
+			counter.value,
+			counter.digits,
+			counter.visibility,
+			{
+				"row_kind": counter.row_kind,
+				"semantic_group": counter.semantic_group,
+				"truth_class": counter.truth_class,
+				"required": counter.required,
+				"source_field": counter.source_field,
+				"provenance_key": counter.provenance_key,
+			}
+		))
+	return cloned_counters
+
+
+func _is_synthetic_destroyed_placeholder_entry(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	return entry.label.find("[destroyed]") >= 0
+
+
+func _last_known_same_row_type_counters(row_id: String, row_kind: String) -> Array[CounterModel]:
+	if row_id.is_empty() or row_kind.is_empty():
+		return []
+	if _last_authoritative_panel_model == null:
+		return []
+	for entry in _last_authoritative_panel_model.entries:
+		if entry == null:
+			continue
+		if entry.id != row_id:
+			continue
+		if _is_retained_projection_entry(entry.id):
+			continue
+		if _is_synthetic_destroyed_placeholder_entry(entry):
+			continue
+		if entry.visual_object_class.strip_edges() != row_kind:
+			continue
+		if entry.counters.is_empty():
+			return []
+		return _clone_counter_models(entry.counters)
+	return []
 
 
 func _fetch_snapshot() -> Variant:
@@ -2831,7 +3120,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"server/main",
 		true,
 		true,
-		[_badge("success", "up")],
+		[],
 		[_counter("providers", 1, 1)],
 		[]
 	))
@@ -2842,7 +3131,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"provider/windows-mf",
 		true,
 		true,
-		[_badge("info", "windows-mf")],
+		[],
 		[_counter("devices", 1, 1)],
 		[]
 	))
@@ -2853,7 +3142,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"device/cam-front",
 		true,
 		true,
-		[_badge("success", "active")],
+		[],
 		[_counter("streams", 1, 1)],
 		[]
 	))
@@ -2864,7 +3153,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"stream/video0",
 		false,
 		false,
-		[_badge("neutral", "rgb8")],
+		[],
 		[_counter("fps", 60, 2)],
 		[]
 	))
@@ -2876,7 +3165,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"rig/stereo-a",
 		false,
 		true,
-		[_badge("neutral", "dual-device")],
+		[],
 		[_counter("devices", 2, 1)],
 		[]
 	))
@@ -2887,7 +3176,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"device/left-eye",
 		false,
 		false,
-		[_badge("success", "attached")],
+		[],
 		[_counter("streams", 1, 1)],
 		[]
 	))
@@ -2898,7 +3187,7 @@ func _build_fake_panel_model() -> PanelModel:
 		"device/right-eye",
 		false,
 		false,
-		[_badge("success", "attached")],
+		[],
 		[_counter("streams", 1, 1)],
 		[]
 	))
@@ -2911,8 +3200,7 @@ func _build_fake_panel_model() -> PanelModel:
 		true,
 		false,
 		[
-			_badge("warning", "orphan"),
-			_badge("error", "unbound"),
+			
 		],
 		[
 			_counter("refs", 15, 1),
@@ -3067,7 +3355,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			"provider_pending",
 			true,
 			false,
-			[_badge("info", "startup")],
+			[],
 			[_counter("providers", 0, 1)],
 			["Startup baseline published before any current-generation provider native object is visible."]
 		))
@@ -3124,11 +3412,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	]
 	var provider_phase: Variant = provider_native_rec.get("phase", -1)
 	var provider_badges: Array[BadgeModel] = [
-		_badge("info", "published"),
-		_badge("neutral", "native_phase=%s" % _phase_display_label(provider_phase)),
+				_badge("neutral", "phase=%s" % _phase_display_label(provider_phase)),
 	]
-	if _phase_is_destroyed(provider_phase):
-		provider_badges.append(_badge("warning", "destroyed"))
 	var provider_info_lines: Array[String] = []
 	var provider_entry := _entry(
 		provider_id,
@@ -3198,15 +3483,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			_badge("neutral", "phase=%s" % _phase_display_label(device_phase)),
 			_badge("neutral", "mode=%s" % _device_mode_display_label(rec.get("mode", "UNKNOWN"))),
 		]
-		if _phase_is_destroyed(device_phase):
-			device_badges.append(_badge("warning", "destroyed"))
 		var device_info: Array[String] = []
 		var device_matches: Array = current_device_native_matches_by_instance.get(instance_id, [])
 		if device_matches.size() == 1:
 			var device_native_rec: Dictionary = device_matches[0]
 			var device_native_phase: Variant = device_native_rec.get("phase", -1)
 			if _phase_display_label(device_native_phase) != _phase_display_label(device_phase):
-				device_badges.append(_badge("neutral", "native_phase=%s" % _phase_display_label(device_native_phase)))
+				device_info.append(
+					"Native phase differs: %s (row phase=%s)."
+					% [_phase_display_label(device_native_phase), _phase_display_label(device_phase)]
+				)
 			promoted_native_ids[int(device_native_rec.get("native_id", 0))] = true
 		elif device_matches.size() > 1:
 			device_info.append(
@@ -3221,16 +3507,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 			device_badges,
-			_counters_from_record(
-				rec,
-				[
-					["errors", "errors_count", 1],
-					["still_w", "capture_width", 4],
-					["still_h", "capture_height", 4],
-					["still_fmt", "capture_format", 4],
-					["still_prof", "capture_profile_version", 2],
-				]
-			),
+				_counters_from_record(
+					rec,
+					[
+						["errors", "errors_count", 1],
+						["camera_spec_version", "camera_spec_version", 2],
+						["last_error_code", "last_error_code", 2],
+						["rebuild_count", "rebuild_count", 2],
+						["warm_hold_ms", "warm_hold_ms", 3],
+						["warm_remaining_ms", "warm_remaining_ms", 3],
+						["still_w", "capture_width", 4],
+						["still_h", "capture_height", 4],
+						["still_fmt", "capture_format", 4],
+						["still_prof", "capture_profile_version", 2],
+					],
+					[],
+					"device"
+				),
 			device_info,
 			"device"
 		)
@@ -3279,15 +3572,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_badge("neutral", "mode=%s" % _stream_mode_display_label(rec.get("mode", "UNKNOWN"))),
 				_badge("neutral", "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE"))),
 			]
-			if _phase_is_destroyed(stream_phase):
-				stream_badges.append(_badge("warning", "destroyed"))
 			var stream_info: Array[String] = []
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
 				var stream_native_phase: Variant = stream_native_rec.get("phase", -1)
 				if _phase_display_label(stream_native_phase) != _phase_display_label(stream_phase):
-					stream_badges.append(_badge("neutral", "native_phase=%s" % _phase_display_label(stream_native_phase)))
+					stream_info.append(
+						"Native phase differs: %s (row phase=%s)."
+						% [_phase_display_label(stream_native_phase), _phase_display_label(stream_phase)]
+					)
 				promoted_native_ids[int(stream_native_rec.get("native_id", 0))] = true
 			elif stream_matches.size() > 1:
 				stream_info.append(
@@ -3302,9 +3596,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				false,
 				true,
 				stream_badges,
-				_counters_from_record(
-					rec,
-					[
+					_counters_from_record(
+						rec,
+						[
 						["width", "width", 4],
 						["height", "height", 4],
 						["fmt", "format", 4],
@@ -3316,11 +3610,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["drop", "frames_dropped", 3],
 						["queue", "queue_depth", 2],
 						["last_ts", "last_frame_ts_ns", 5],
-						["shown", "visibility_frames_presented", 3],
-						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
-						["rej_inv", "visibility_frames_rejected_invalid", 2],
-					]
-				),
+							["shown", "visibility_frames_presented", 3],
+							["rej_fmt", "visibility_frames_rejected_unsupported", 2],
+							["rej_inv", "visibility_frames_rejected_invalid", 2],
+						],
+						[],
+						"stream"
+					),
 				stream_info,
 				"stream"
 			)
@@ -3342,6 +3638,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				continue
 			current_grounded_destroyed_device_row_id_by_instance[int(instance_key)] = canonical_device_id
 			promoted_native_ids[destroyed_device_native_id] = true
+			var destroyed_device_counters := _last_known_same_row_type_counters(canonical_device_id, "device")
 			var destroyed_device_entry := _entry(
 				canonical_device_id,
 				provider_id,
@@ -3352,7 +3649,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[
 					_badge("warning", "destroyed"),
 				],
-				[],
+				destroyed_device_counters,
 				[],
 				"device"
 			)
@@ -3380,6 +3677,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
 				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
 			promoted_native_ids[destroyed_stream_native_id] = true
+			var destroyed_stream_counters := _last_known_same_row_type_counters(canonical_stream_id, "stream")
 			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
@@ -3390,7 +3688,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[
 					_badge("warning", "destroyed"),
 				],
-				[],
+				destroyed_stream_counters,
 				[],
 				"stream"
 			)
@@ -3424,16 +3722,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			false,
 			true,
 			rig_badges,
-			_counters_from_record(
-				rec,
-				[
-					["still_w", "capture_width", 4],
-					["still_h", "capture_height", 4],
-				],
-				[
-					_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
-				]
-			),
+				_counters_from_record(
+					rec,
+					[
+						["still_w", "capture_width", 4],
+						["still_h", "capture_height", 4],
+					],
+					[
+						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+					],
+					"rig"
+				),
 			rig_info
 		))
 
@@ -3512,8 +3811,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					if aliased_parent_id != "" and aliased_parent_id != orphan_entry.id and orphan_rows_by_id.has(aliased_parent_id):
 						resolved_parent_id = aliased_parent_id
 			orphan_entry.parent_id = resolved_parent_id
+			if not orphan_entry.anomaly_info_lines.has("Orphaned native branch."):
+				orphan_entry.anomaly_info_lines.append("Orphaned native branch.")
 
 		_apply_detached_orphan_subtree_depths(orphan_rows, orphan_rows_by_id, orphan_row_id)
+		_annotate_orphan_native_branch_context(orphan_rows, orphan_row_id)
 
 		panel.entries.append(_entry(
 			orphan_row_id,
@@ -3539,8 +3841,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 				[
-					_badge("warning", "retained"),
-					_badge("info", "prior-gen"),
+						_badge("info", "prior-gen"),
 				],
 				[_counter("count", prior_native_objects.size(), 1)],
 				["truth: authoritative prior-generation snapshot truth retained in current snapshot."]
@@ -3778,8 +4079,6 @@ func _build_native_object_entry(
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))]
-	if _phase_is_destroyed(rec.get("phase", -1)):
-		native_badges.append(_badge("warning", "destroyed"))
 	if is_prior_generation:
 		native_badges.append(_badge("info", "prior-gen"))
 	var native_counters := _counters_from_record(
@@ -3787,7 +4086,9 @@ func _build_native_object_entry(
 		[
 			["bytes", "bytes_allocated", 3],
 			["buffers", "buffers_in_use", 2],
-		]
+		],
+		[],
+		"native_object"
 	)
 	var native_entry := _entry(
 		row_id,
@@ -3802,6 +4103,9 @@ func _build_native_object_entry(
 	)
 	native_entry.visual_object_class = _visual_object_class_for_native_type(native_type_key)
 	native_entry.materialized_native_id = native_id
+	native_entry.is_native_record = true
+	native_entry.is_orphaned_native = parent_id == orphan_row_id
+	native_entry.is_below_line = is_prior_generation
 	return native_entry
 
 
@@ -3858,6 +4162,35 @@ func _apply_detached_orphan_subtree_depths(
 
 	for orphan_root in orphan_roots:
 		_assign_detached_orphan_depth(orphan_root, 3, children_by_parent)
+
+
+
+func _annotate_orphan_native_branch_context(orphan_rows: Array[StatusEntryModel], orphan_row_id: String) -> void:
+	if orphan_rows.is_empty():
+		return
+	var rows_by_id := {}
+	for row in orphan_rows:
+		if row == null:
+			continue
+		rows_by_id[row.id] = row
+	for row in orphan_rows:
+		if row == null:
+			continue
+		row.is_in_orphan_native_branch = _row_is_in_orphan_native_branch(row, rows_by_id, orphan_row_id)
+
+
+func _row_is_in_orphan_native_branch(row: StatusEntryModel, rows_by_id: Dictionary, orphan_row_id: String) -> bool:
+	if row == null:
+		return false
+	var current_parent_id := str(row.parent_id)
+	while not current_parent_id.is_empty():
+		if current_parent_id == orphan_row_id:
+			return true
+		if not rows_by_id.has(current_parent_id):
+			return false
+		var parent_row: StatusEntryModel = rows_by_id[current_parent_id]
+		current_parent_id = str(parent_row.parent_id)
+	return false
 
 
 func _assign_detached_orphan_depth(
@@ -4353,7 +4686,7 @@ func _badge_less(a: BadgeModel, b: BadgeModel) -> bool:
 func _badge_sort_key(badge: BadgeModel) -> String:
 	var label := badge.label
 	var category := 9
-	if label == "retained" or label == "retained-root" or label == "orphaned":
+	if label == "preserved" or label == "preserved-root" or label == "orphaned":
 		category = 0
 	elif label == "destroyed" or label.begins_with("phase=") or label.begins_with("native_phase="):
 		category = 1
@@ -4381,18 +4714,115 @@ func _badge(role: String, label: String, kind: String = "") -> BadgeModel:
 
 func _health_badge() -> BadgeModel:
 	return _badge("neutral", "UNKNOWN", "health")
-func _counter(name: String, value: int, digits: int, visibility: String = "core") -> CounterModel:
+
+
+func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
+	var global_registry := {
+		"count": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+		"retained_from_gen": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+		"source_version": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+		"source_topology": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+	}
+	match row_kind:
+		"server":
+			return {
+				"gen": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"version": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"topology": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"providers": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"count": global_registry["count"],
+			}
+		"provider":
+			return {
+				"rigs": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"devices": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"streams": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_all": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_cur": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_prev": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_dead": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"retained_from_gen": global_registry["retained_from_gen"],
+				"source_version": global_registry["source_version"],
+				"source_topology": global_registry["source_topology"],
+			}
+		"device":
+			return {
+				"errors": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"camera_spec_version": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"last_error_code": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"rebuild_count": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"warm_hold_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"warm_remaining_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+			}
+		"stream":
+			return {
+				"width": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"height": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"fps_min": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"fps_max": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"last_ts": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"queue": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": true},
+				"recv": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": true},
+				"deliv": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": true},
+				"shown": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"drop": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": true},
+				"rej_fmt": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"rej_inv": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+			}
+		"rig":
+			return {
+				"members": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+			}
+		"native_object":
+			return {
+				"buffers": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"bytes": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+			}
+		"fallback":
+			return {
+				"roots": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"count": global_registry["count"],
+			}
+		"contract_gap":
+			return {
+				"count": global_registry["count"],
+			}
+		_:
+			return global_registry
+
+
+func _counter(name: String, value: int, digits: int, visibility: String = "core", metadata: Dictionary = {}) -> CounterModel:
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
 	model.text_value = ""
 	model.digits = digits
 	model.visibility = visibility
+	model.row_kind = str(metadata.get("row_kind", ""))
+	model.semantic_group = str(metadata.get("semantic_group", ""))
+	model.truth_class = str(metadata.get("truth_class", ""))
+	model.required = bool(metadata.get("required", false))
+	model.source_field = str(metadata.get("source_field", ""))
+	model.provenance_key = str(metadata.get("provenance_key", model.name))
 	return model
 
 
-func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[CounterModel] = []) -> Array[CounterModel]:
+func _counters_from_record(
+	rec: Dictionary,
+	specs: Array,
+	always_include: Array[CounterModel] = [],
+	row_kind: String = ""
+) -> Array[CounterModel]:
 	var counters: Array[CounterModel] = []
+	var mapped_source_fields := {}
 	for existing_counter in always_include:
 		if existing_counter != null:
 			counters.append(existing_counter)
@@ -4406,10 +4836,255 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 		var source_field := str(spec[1])
 		var digits := int(spec[2])
 		var visibility := str(spec[3]) if spec.size() > 3 else "core"
+		mapped_source_fields[source_field] = true
 		if not rec.has(source_field):
 			continue
-		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
+		counters.append(_counter(
+			counter_name,
+			int(rec.get(source_field)),
+			digits,
+			visibility,
+			{
+				"truth_class": "snapshot_backed",
+				"source_field": source_field,
+				"provenance_key": source_field,
+			}
+		))
+	var fallback_source_fields := _unmapped_snapshot_fallback_fields(rec, mapped_source_fields)
+	for source_field in fallback_source_fields:
+		var fallback_value := rec.get(source_field)
+		if not _is_snapshot_counter_fallback_eligible(source_field, row_kind, fallback_value):
+			continue
+		counters.append(_counter(
+			source_field,
+			int(fallback_value),
+			1,
+			"core",
+			{
+				"row_kind": row_kind,
+				"semantic_group": "unclassified",
+				"truth_class": "snapshot_backed",
+				"required": false,
+				"source_field": source_field,
+				"provenance_key": source_field,
+			}
+		))
 	return counters
+
+
+func _unmapped_snapshot_fallback_fields(rec: Dictionary, mapped_source_fields: Dictionary) -> Array[String]:
+	var fields: Array[String] = []
+	for key_variant in rec.keys():
+		var source_field := str(key_variant)
+		if source_field.is_empty():
+			continue
+		if mapped_source_fields.has(source_field):
+			continue
+		fields.append(source_field)
+	fields.sort()
+	return fields
+
+
+func _is_snapshot_counter_fallback_value(value: Variant) -> bool:
+	return typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT
+
+
+func _is_snapshot_counter_fallback_eligible(source_field: String, row_kind: String, value: Variant) -> bool:
+	if not _is_snapshot_counter_fallback_value(value):
+		return false
+	var canonical := source_field.strip_edges().to_lower()
+	if canonical.is_empty():
+		return false
+
+	var excluded_exact := {
+		"schema_version": true,
+		"gen": true,
+		"version": true,
+		"topology_version": true,
+		"imaging_spec_version": true,
+		"timestamp_ns": true,
+		"phase": true,
+		"mode": true,
+		"intent": true,
+		"stop_reason": true,
+		"type": true,
+		"engaged": true,
+	}
+	if excluded_exact.has(canonical):
+		return false
+
+	if canonical == "id" or canonical.ends_with("_id") or canonical.ends_with("_ids"):
+		return false
+	if canonical.begins_with("owner_") or canonical.find("_owner_") >= 0:
+		return false
+	if canonical.begins_with("phase_") or canonical.ends_with("_phase"):
+		return false
+	if canonical.begins_with("mode_") or canonical.ends_with("_mode"):
+		return false
+	if canonical.ends_with("_intent") or canonical.begins_with("intent_"):
+		return false
+	if canonical.ends_with("_stop_reason") or canonical.begins_with("stop_reason_"):
+		return false
+	if canonical.ends_with("_ts") or canonical.ends_with("_ts_ns") or canonical.ends_with("_ns"):
+		return false
+	if canonical.find("timestamp") >= 0:
+		return false
+	if canonical.begins_with("creation_") or canonical.begins_with("created_") or canonical.begins_with("destroyed_"):
+		return false
+
+	if row_kind == "native_object" and (canonical == "root_id" or canonical == "owner_provider_native_id"):
+		return false
+
+	return true
+
+
+func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
+	if entry == null:
+		return "generic"
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return "contract_gap"
+	if entry.id.contains("orphaned_native_objects"):
+		return "fallback"
+	if entry.id == "server/main":
+		return "server"
+	var visual := entry.visual_object_class.strip_edges()
+	if visual == "provider":
+		return "provider"
+	if visual == "device":
+		return "device"
+	if visual == "stream":
+		return "stream"
+	if visual == "rig":
+		return "rig"
+	if _is_native_object_entry(entry) or _is_frameproducer_entry(entry):
+		return "native_object"
+	return "generic"
+
+
+func _group_rank_for_counter_order(semantic_group: String, is_snapshot_classified: bool) -> int:
+	if not is_snapshot_classified:
+		return 99
+	match semantic_group:
+		"configuration":
+			return 0
+		"activity":
+			return 1
+		"pressure_failure":
+			return 2
+		_:
+			return 99
+
+
+func _counter_preference_table() -> Dictionary:
+	return {
+		"server": {
+			"configuration": ["gen", "topology", "version"],
+		},
+		"provider": {
+			"derived_aggregate": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
+		},
+		"device": {
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt"],
+		},
+		"stream": {
+			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
+			"activity": ["recv", "deliv", "queue"],
+			"pressure_failure": ["drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
+		},
+		"rig": {
+			"configuration": ["still_w", "still_h"],
+			"derived_aggregate": ["members"],
+		},
+		"native_object": {
+			"activity": ["buffers", "bytes"],
+		},
+		"generic": {
+			"derived_aggregate": ["count", "retained_from_gen", "source_version", "source_topology", "roots"],
+		},
+	}
+
+
+func _counter_preference_rank(row_kind: String, semantic_group: String, counter_name: String, truth_class: String) -> int:
+	var by_row_kind: Dictionary = _counter_preference_table().get(row_kind, {})
+	var preferred_names: Array = by_row_kind.get(semantic_group, [])
+	for i in range(preferred_names.size()):
+		if str(preferred_names[i]) == counter_name:
+			return i
+	return 999
+
+
+func _counter_sort_key_for_entry(entry: StatusEntryModel, counter: CounterModel, ordinal: int) -> String:
+	if counter == null:
+		return "99|99|99|~|%05d" % ordinal
+
+	var row_kind := _row_kind_for_counter_ordering(entry)
+	var registry := _counter_registry_for_row_kind(row_kind)
+	var registry_meta: Dictionary = registry.get(counter.name, {})
+	var semantic_group := str(registry_meta.get("semantic_group", counter.semantic_group))
+	var truth_class := str(registry_meta.get("truth_class", counter.truth_class))
+	var required := bool(registry_meta.get("required", counter.required))
+	var is_classified := not registry_meta.is_empty()
+	if counter.truth_class == "snapshot_backed" and counter.semantic_group == "unclassified":
+		semantic_group = "unclassified"
+		required = false
+		is_classified = false
+
+	if counter.row_kind.is_empty():
+		counter.row_kind = row_kind
+	if counter.semantic_group.is_empty():
+		counter.semantic_group = semantic_group
+	if counter.truth_class.is_empty():
+		counter.truth_class = truth_class
+	if counter.provenance_key.is_empty():
+		counter.provenance_key = counter.source_field if not counter.source_field.is_empty() else counter.name
+	counter.required = required
+
+	var truth_bucket := 1
+	var group_rank := 99
+	var required_rank := 1
+	if truth_class == "derived":
+		truth_bucket = 3
+	elif truth_class == "snapshot_backed":
+		if is_classified and semantic_group != "derived_aggregate":
+			truth_bucket = 0
+			group_rank = _group_rank_for_counter_order(semantic_group, true)
+			required_rank = 0 if required else 1
+		else:
+			truth_bucket = 2
+	else:
+		truth_bucket = 2
+
+	var preference_rank := _counter_preference_rank(row_kind, semantic_group, counter.name, truth_class)
+	var stable_name := counter.provenance_key if not counter.provenance_key.is_empty() else counter.name
+	return "%02d|%02d|%02d|%03d|%s|%05d" % [truth_bucket, group_rank, required_rank, preference_rank, stable_name, ordinal]
+
+
+func _counter_order_item_less(a: Dictionary, b: Dictionary) -> bool:
+	return str(a.get("key", "")) < str(b.get("key", ""))
+
+
+func _apply_counter_ordering_to_panel(panel: PanelModel) -> void:
+	if panel == null:
+		return
+	for entry in panel.entries:
+		if entry == null or entry.counters.size() <= 1:
+			continue
+		var decorated: Array[Dictionary] = []
+		for i in range(entry.counters.size()):
+			var counter: CounterModel = entry.counters[i]
+			if counter == null:
+				continue
+			decorated.append({
+				"key": _counter_sort_key_for_entry(entry, counter, i),
+				"counter": counter,
+			})
+		decorated.sort_custom(_counter_order_item_less)
+		var ordered: Array[CounterModel] = []
+		for item in decorated:
+			var counter_value: CounterModel = item.get("counter", null)
+			if counter_value != null:
+				ordered.append(counter_value)
+		entry.counters = ordered
 
 
 func _device_mode_display_label(value: Variant) -> String:
@@ -4605,7 +5280,7 @@ func _is_native_object_entry(entry: StatusEntryModel) -> bool:
 func _entry_kind(entry: StatusEntryModel) -> String:
 	if entry == null:
 		return "authoritative"
-	if _is_retained_projection_entry(entry.id) or _has_badge_label(entry, "retained"):
+	if _is_retained_projection_entry(entry.id):
 		return "retained"
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
 		return "contract_gap"
