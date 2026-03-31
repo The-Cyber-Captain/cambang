@@ -101,7 +101,9 @@
       "provider/100": ["published"]
     },
     "required_counter_order_by_row": {
-      "stream/2": ["width", "height", "fmt", "fps_min", "fps_max", "prof", "recv", "deliv", "queue", "drop", "x_stream_extra_a", "x_stream_extra_b"],
+      "device/1": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_fmt", "still_h", "still_prof", "still_w"],
+      "device/2": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_fmt", "still_h", "still_prof", "still_w"],
+      "stream/2": ["width", "height", "fmt", "fps_min", "fps_max", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt", "x_stream_extra_a", "x_stream_extra_b"],
       "rig/7": ["still_w", "still_h", "x_rig_extra_a", "x_rig_extra_b", "members"],
       "provider/100": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"]
     }
