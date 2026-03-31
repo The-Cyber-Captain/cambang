@@ -168,7 +168,7 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 	for i in range(badges_for_row.size(), _badge_pairs.size()):
 		_badge_pairs[i].visible = false
 
-	_state_segment.visible = not badges.is_empty()
+	_state_segment.visible = not badges_for_row.is_empty()
 
 
 func _server_badge_slot_min_width(raw_label: String) -> float:
@@ -202,7 +202,7 @@ func _ordered_badges_for_row_kind(
 			consumed[i] = true
 	for i in range(badges.size()):
 		var badge := badges[i]
-		if badge != null and badge.label == "retained":
+		if badge != null and badge.label == "preserved":
 			ordered.append(badge)
 			consumed[i] = true
 	for i in range(badges.size()):
@@ -214,7 +214,7 @@ func _ordered_badges_for_row_kind(
 		var badge := badges[i]
 		if badge == null:
 			continue
-		if badge.label == "published" or badge.label == "retained-root" or badge.label == "orphaned" or badge.label == "prior-gen":
+		if badge.label == "published" or badge.label == "preserved-root" or badge.label == "orphaned" or badge.label == "prior-gen":
 			ordered.append(badge)
 			consumed[i] = true
 	for i in range(badges.size()):
@@ -632,7 +632,7 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if model == null:
 		return "authoritative"
-	if model.id.begins_with("retained_presentation/") or _has_badge(model, "retained"):
+	if model.id.begins_with("retained_presentation/"):
 		return "retained"
 	if model.label == "contract_gaps" or model.label == "projection_gaps":
 		return "contract_gap"
@@ -662,7 +662,7 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		return "server"
 	if model.label == "contract_gaps" or model.label == "projection_gaps":
 		return "contract_gap"
-	if model.id.contains("orphaned_native_objects") or model.label.begins_with("retained_orphan/"):
+	if model.id.contains("orphaned_native_objects") or model.label.begins_with("preserved_orphan/"):
 		return "orphan"
 	if model.id.begins_with("provider/") or model.id.contains("/provider/"):
 		return "provider"
@@ -722,6 +722,10 @@ func _badges_for_render(model: CamBANGStatusPanel.StatusEntryModel) -> Array[Cam
 	# pass through exactly what projection emitted.
 	var rendered: Array[CamBANGStatusPanel.BadgeModel] = []
 	for badge in model.badges:
+		if badge == null:
+			continue
+		if badge.kind == "hidden":
+			continue
 		rendered.append(badge)
 
 	# RENDERER BADGES (presentation-layer augmentation):
@@ -729,9 +733,7 @@ func _badges_for_render(model: CamBANGStatusPanel.StatusEntryModel) -> Array[Cam
 	var row_kind := _row_kind(model)
 	if row_kind == "contract_gap" and not _contains_badge_label(rendered, "contract-gap"):
 		rendered.append(_make_badge("error", "contract-gap"))
-	elif row_kind == "retained" and not _contains_badge_label(rendered, "retained"):
-		rendered.append(_make_badge("warning", "retained"))
-
+	
 	return rendered
 
 
@@ -752,27 +754,49 @@ func _make_badge(role: String, label: String) -> CamBANGStatusPanel.BadgeModel:
 func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: String = "authoritative") -> String:
 	if badge == null:
 		return "neutral"
+	var phase_role := _phase_badge_role_for_render(badge.label, row_kind)
+	if not phase_role.is_empty():
+		return phase_role
 	if row_kind == "retained":
-		if badge.label == "retained":
-			return "warning"
 		if badge.label == "continuity-only":
 			return "success"
 		if (
 			badge.label == "published"
-			or badge.label == "retained-root"
+			or badge.label == "preserved-root"
 			or badge.label == "orphaned"
 			or badge.label == "prior-gen"
-			or badge.label.begins_with("phase=")
-			or badge.label.begins_with("native_phase=")
 		):
 			return "info"
 	match badge.label:
 		"contract-gap", "schema", "projection":
 			return "error"
-		"retained", "retained-root", "orphaned", "detached":
+		"preserved-root", "orphaned", "detached":
 			return "warning"
 		_:
 			return badge.role
+
+
+func _phase_badge_role_for_render(raw_label: String, row_kind: String) -> String:
+	var phase_label := ""
+	if raw_label == "destroyed":
+		phase_label = "DESTROYED"
+	elif raw_label.begins_with("phase="):
+		phase_label = raw_label.substr("phase=".length())
+	elif raw_label.begins_with("native_phase="):
+		phase_label = raw_label.substr("native_phase=".length())
+	else:
+		return ""
+	match phase_label:
+		"CREATED":
+			return "warning" if row_kind == "retained" else "info"
+		"LIVE":
+			return "error" if row_kind == "retained" else "success"
+		"TEARING_DOWN":
+			return "warning"
+		"DESTROYED":
+			return "success" if row_kind == "retained" else "neutral"
+		_:
+			return ""
 
 
 func _badge_display_label(raw_label: String) -> String:
@@ -785,9 +809,9 @@ func _badge_display_label(raw_label: String) -> String:
 			return "SNAPSHOT"
 		"published":
 			return "PUBLISHED"
-		"retained":
+		"preserved":
 			return "PRESERVED"
-		"retained-root":
+		"preserved-root":
 			return "PRESERVED ROOT"
 		"prior-gen":
 			return "PRIOR GEN"
