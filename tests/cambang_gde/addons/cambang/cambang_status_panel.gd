@@ -4580,7 +4580,7 @@ func _counters_from_record(
 	var fallback_source_fields := _unmapped_snapshot_fallback_fields(rec, mapped_source_fields)
 	for source_field in fallback_source_fields:
 		var fallback_value := rec.get(source_field)
-		if not _is_snapshot_counter_fallback_value(fallback_value):
+		if not _is_snapshot_counter_fallback_eligible(source_field, row_kind, fallback_value):
 			continue
 		counters.append(_counter(
 			source_field,
@@ -4614,6 +4614,55 @@ func _unmapped_snapshot_fallback_fields(rec: Dictionary, mapped_source_fields: D
 
 func _is_snapshot_counter_fallback_value(value: Variant) -> bool:
 	return typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT
+
+
+func _is_snapshot_counter_fallback_eligible(source_field: String, row_kind: String, value: Variant) -> bool:
+	if not _is_snapshot_counter_fallback_value(value):
+		return false
+	var canonical := source_field.strip_edges().to_lower()
+	if canonical.is_empty():
+		return false
+
+	var excluded_exact := {
+		"schema_version": true,
+		"gen": true,
+		"version": true,
+		"topology_version": true,
+		"imaging_spec_version": true,
+		"timestamp_ns": true,
+		"phase": true,
+		"mode": true,
+		"intent": true,
+		"stop_reason": true,
+		"type": true,
+		"engaged": true,
+	}
+	if excluded_exact.has(canonical):
+		return false
+
+	if canonical == "id" or canonical.ends_with("_id") or canonical.ends_with("_ids"):
+		return false
+	if canonical.begins_with("owner_") or canonical.find("_owner_") >= 0:
+		return false
+	if canonical.begins_with("phase_") or canonical.ends_with("_phase"):
+		return false
+	if canonical.begins_with("mode_") or canonical.ends_with("_mode"):
+		return false
+	if canonical.ends_with("_intent") or canonical.begins_with("intent_"):
+		return false
+	if canonical.ends_with("_stop_reason") or canonical.begins_with("stop_reason_"):
+		return false
+	if canonical.ends_with("_ts") or canonical.ends_with("_ts_ns") or canonical.ends_with("_ns"):
+		return false
+	if canonical.find("timestamp") >= 0:
+		return false
+	if canonical.begins_with("creation_") or canonical.begins_with("created_") or canonical.begins_with("destroyed_"):
+		return false
+
+	if row_kind == "native_object" and (canonical == "root_id" or canonical == "owner_provider_native_id"):
+		return false
+
+	return true
 
 
 func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
