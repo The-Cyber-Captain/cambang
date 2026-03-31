@@ -4703,6 +4703,44 @@ func _group_rank_for_counter_order(semantic_group: String, is_snapshot_classifie
 			return 99
 
 
+func _counter_preference_table() -> Dictionary:
+	return {
+		"server": {
+			"configuration": ["gen", "topology", "version"],
+		},
+		"provider": {
+			"derived_aggregate": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
+		},
+		"device": {
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt"],
+		},
+		"stream": {
+			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
+			"activity": ["recv", "deliv", "queue"],
+			"pressure_failure": ["drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
+		},
+		"rig": {
+			"configuration": ["still_w", "still_h"],
+			"derived_aggregate": ["members"],
+		},
+		"native_object": {
+			"activity": ["buffers", "bytes"],
+		},
+		"generic": {
+			"derived_aggregate": ["count", "retained_from_gen", "source_version", "source_topology", "roots"],
+		},
+	}
+
+
+func _counter_preference_rank(row_kind: String, semantic_group: String, counter_name: String, truth_class: String) -> int:
+	var by_row_kind: Dictionary = _counter_preference_table().get(row_kind, {})
+	var preferred_names: Array = by_row_kind.get(semantic_group, [])
+	for i in range(preferred_names.size()):
+		if str(preferred_names[i]) == counter_name:
+			return i
+	return 999
+
+
 func _counter_sort_key_for_entry(entry: StatusEntryModel, counter: CounterModel, ordinal: int) -> String:
 	if counter == null:
 		return "99|99|99|~|%05d" % ordinal
@@ -4744,8 +4782,9 @@ func _counter_sort_key_for_entry(entry: StatusEntryModel, counter: CounterModel,
 	else:
 		truth_bucket = 2
 
+	var preference_rank := _counter_preference_rank(row_kind, semantic_group, counter.name, truth_class)
 	var stable_name := counter.provenance_key if not counter.provenance_key.is_empty() else counter.name
-	return "%02d|%02d|%02d|%s|%05d" % [truth_bucket, group_rank, required_rank, stable_name, ordinal]
+	return "%02d|%02d|%02d|%03d|%s|%05d" % [truth_bucket, group_rank, required_rank, preference_rank, stable_name, ordinal]
 
 
 func _counter_order_item_less(a: Dictionary, b: Dictionary) -> bool:

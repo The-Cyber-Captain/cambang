@@ -150,7 +150,7 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 		var label := pair.get_child(1) as Label
 		var raw_label: String = badges_for_row[i].label
 		var display_label: String = _badge_display_label(raw_label)
-		var stabilized_width: float = _server_badge_slot_min_width(raw_label)
+		var stabilized_width: float = _badge_slot_min_width(raw_label, display_label, label)
 		pair.custom_minimum_size = Vector2(stabilized_width, 18)
 		if stabilized_width > 0.0:
 			pair.alignment = BoxContainer.ALIGNMENT_BEGIN
@@ -171,16 +171,80 @@ func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
 	_state_segment.visible = not badges_for_row.is_empty()
 
 
-func _server_badge_slot_min_width(raw_label: String) -> float:
+func _badge_slot_min_width(raw_label: String, display_label: String, label_node: Label) -> float:
 	if _is_health_label(raw_label):
-		return SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH
-	if _entry_id != "server/main":
-		return 0.0
+		return _measured_badge_slot_width("UNKNOWN", label_node)
+	if raw_label == "destroyed" or raw_label.begins_with("phase=") or raw_label.begins_with("native_phase="):
+		return _measured_badge_slot_width(_phase_family_max_display_label(raw_label), label_node)
+	if raw_label.begins_with("mode="):
+		return _measured_badge_slot_width(_mode_family_max_display_label(raw_label), label_node)
+	if raw_label.begins_with("stop_reason="):
+		return _measured_badge_slot_width(_stop_reason_family_max_display_label(raw_label), label_node)
+	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT" or raw_label == "snapshot-incompatible":
+		return _measured_badge_slot_width("SNAPSHOT INCOMPATIBLE", label_node)
 	if raw_label.begins_with("NATIVE COVERAGE:"):
-		return SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH
-	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT":
-		return SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH
-	return 0.0
+		return _measured_badge_slot_width("NATIVE COVERAGE: OK", label_node)
+	if raw_label == "contract-gap" or raw_label == "schema" or raw_label == "projection":
+		return _measured_badge_slot_width("PROJECTION GAP", label_node)
+	if raw_label == "detached" or raw_label == "orphaned" or raw_label == "prior-gen":
+		return _measured_badge_slot_width("ORPHANED", label_node)
+	return _measured_badge_slot_width(display_label, label_node)
+
+
+func _phase_family_max_display_label(raw_label: String) -> String:
+	if raw_label.begins_with("native_phase="):
+		return "NATIVE TEARING_DOWN"
+	return "TEARING_DOWN"
+
+
+func _mode_family_max_display_label(raw_label: String) -> String:
+	var prefix := "MODE="
+	if raw_label.find("=") >= 0:
+		prefix = raw_label.substr(0, raw_label.find("=") + 1).to_upper()
+	var candidates := [
+		"UNKNOWN",
+		"STREAMING",
+		"CAPTURING",
+		"TRIGGERING",
+		"COLLECTING",
+		"TEARING_DOWN"
+	]
+	var longest: String = candidates[0]
+	for candidate in candidates:
+		if candidate.length() > longest.length():
+			longest = candidate
+	return prefix + longest
+
+
+func _stop_reason_family_max_display_label(raw_label: String) -> String:
+	var prefix := "STOP REASON="
+	if raw_label.find("=") >= 0:
+		prefix = raw_label.substr(0, raw_label.find("=") + 1).replace("_", " ").to_upper()
+	var candidates := ["NONE", "USER", "PREEMPTED", "PROVIDER"]
+	var longest: String = candidates[0]
+	for candidate in candidates:
+		if candidate.length() > longest.length():
+			longest = candidate
+	return prefix + longest
+
+
+func _measured_badge_slot_width(display_text: String, label_node: Label) -> float:
+	var font: Font = null
+	var font_size := 11
+	if _style != null:
+		font = _style.info_font
+		font_size = _style.state_font_size
+	if font == null and label_node != null:
+		font = label_node.get_theme_font("font")
+		font_size = label_node.get_theme_font_size("font_size")
+	if font == null:
+		return 0.0
+	var text_width := font.get_string_size(display_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	var outline_size := (_style.state_outline_size if _style != null else 0)
+	var indicator_width := max((_style.badge_strip_width if _style != null else 7), 8)
+	var separation := 4.0
+	var horizontal_padding := 10.0
+	return ceil(text_width + float(outline_size * 2) + indicator_width + separation + horizontal_padding)
 
 
 func _is_health_label(raw_label: String) -> bool:
@@ -280,7 +344,7 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 		var value_box := widget.get_child(1) as PanelContainer
 		var value_label := value_box.get_child(0) as Label
 
-		name_label.text = visible_counters[i].name
+		name_label.text = _format_counter_name(visible_counters[i])
 		name_label.label_settings = _counter_label_settings()
 		value_label.text = _format_counter_value(visible_counters[i])
 		value_label.label_settings = _counter_label_settings()
@@ -308,6 +372,14 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 		detail_hint.visible = false
 
 	_counter_segment.visible = not visible_counters.is_empty() or detail_hint.visible
+
+
+func _format_counter_name(counter: CamBANGStatusPanel.CounterModel) -> String:
+	if counter == null:
+		return ""
+	if counter.truth_class == "derived":
+		return "%s*" % counter.name
+	return counter.name
 
 
 func _ensure_counter_widget(index: int) -> VBoxContainer:
@@ -757,6 +829,12 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 	var phase_role := _phase_badge_role_for_render(badge.label, row_kind)
 	if not phase_role.is_empty():
 		return phase_role
+	var mode_role := _mode_badge_role_for_render(badge.label)
+	if not mode_role.is_empty():
+		return mode_role
+	var stop_reason_role := _stop_reason_badge_role_for_render(badge.label)
+	if not stop_reason_role.is_empty():
+		return stop_reason_role
 	if row_kind == "retained":
 		if badge.label == "continuity-only":
 			return "success"
@@ -774,6 +852,40 @@ func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: Stri
 			return "warning"
 		_:
 			return badge.role
+
+
+func _mode_badge_role_for_render(raw_label: String) -> String:
+	if not raw_label.begins_with("mode="):
+		return ""
+	var mode_label := raw_label.substr("mode=".length()).strip_edges().to_upper()
+	match mode_label:
+		"OFF", "IDLE", "STOPPED", "UNKNOWN":
+			return "neutral"
+		"LIVE", "BOUND", "OPEN", "STREAMING", "FLOWING", "ARMED":
+			return "success"
+		"TRIGGERING", "COLLECTING", "CAPTURING":
+			return "info"
+		"STARVED", "TEARING_DOWN":
+			return "warning"
+		"ERROR":
+			return "error"
+		_:
+			return "info"
+
+
+func _stop_reason_badge_role_for_render(raw_label: String) -> String:
+	if not raw_label.begins_with("stop_reason="):
+		return ""
+	var stop_reason_label := raw_label.substr("stop_reason=".length()).strip_edges().to_upper()
+	match stop_reason_label:
+		"NONE", "USER":
+			return "neutral"
+		"PREEMPTED":
+			return "warning"
+		"PROVIDER":
+			return "error"
+		_:
+			return "info"
 
 
 func _phase_badge_role_for_render(raw_label: String, row_kind: String) -> String:
