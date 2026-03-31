@@ -3277,16 +3277,18 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 			device_badges,
-			_counters_from_record(
-				rec,
-				[
-					["errors", "errors_count", 1],
-					["still_w", "capture_width", 4],
-					["still_h", "capture_height", 4],
-					["still_fmt", "capture_format", 4],
-					["still_prof", "capture_profile_version", 2],
-				]
-			),
+				_counters_from_record(
+					rec,
+					[
+						["errors", "errors_count", 1],
+						["still_w", "capture_width", 4],
+						["still_h", "capture_height", 4],
+						["still_fmt", "capture_format", 4],
+						["still_prof", "capture_profile_version", 2],
+					],
+					[],
+					"device"
+				),
 			device_info,
 			"device"
 		)
@@ -3358,9 +3360,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				false,
 				true,
 				stream_badges,
-				_counters_from_record(
-					rec,
-					[
+					_counters_from_record(
+						rec,
+						[
 						["width", "width", 4],
 						["height", "height", 4],
 						["fmt", "format", 4],
@@ -3372,11 +3374,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["drop", "frames_dropped", 3],
 						["queue", "queue_depth", 2],
 						["last_ts", "last_frame_ts_ns", 5],
-						["shown", "visibility_frames_presented", 3],
-						["rej_fmt", "visibility_frames_rejected_unsupported", 2],
-						["rej_inv", "visibility_frames_rejected_invalid", 2],
-					]
-				),
+							["shown", "visibility_frames_presented", 3],
+							["rej_fmt", "visibility_frames_rejected_unsupported", 2],
+							["rej_inv", "visibility_frames_rejected_invalid", 2],
+						],
+						[],
+						"stream"
+					),
 				stream_info,
 				"stream"
 			)
@@ -3482,16 +3486,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			false,
 			true,
 			rig_badges,
-			_counters_from_record(
-				rec,
-				[
-					["still_w", "capture_width", 4],
-					["still_h", "capture_height", 4],
-				],
-				[
-					_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
-				]
-			),
+				_counters_from_record(
+					rec,
+					[
+						["still_w", "capture_width", 4],
+						["still_h", "capture_height", 4],
+					],
+					[
+						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
+					],
+					"rig"
+				),
 			rig_info
 		))
 
@@ -3845,7 +3850,9 @@ func _build_native_object_entry(
 		[
 			["bytes", "bytes_allocated", 3],
 			["buffers", "buffers_in_use", 2],
-		]
+		],
+		[],
+		"native_object"
 	)
 	var native_entry := _entry(
 		row_id,
@@ -4535,8 +4542,14 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	return model
 
 
-func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[CounterModel] = []) -> Array[CounterModel]:
+func _counters_from_record(
+	rec: Dictionary,
+	specs: Array,
+	always_include: Array[CounterModel] = [],
+	row_kind: String = ""
+) -> Array[CounterModel]:
 	var counters: Array[CounterModel] = []
+	var mapped_source_fields := {}
 	for existing_counter in always_include:
 		if existing_counter != null:
 			counters.append(existing_counter)
@@ -4550,6 +4563,7 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 		var source_field := str(spec[1])
 		var digits := int(spec[2])
 		var visibility := str(spec[3]) if spec.size() > 3 else "core"
+		mapped_source_fields[source_field] = true
 		if not rec.has(source_field):
 			continue
 		counters.append(_counter(
@@ -4563,7 +4577,43 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 				"provenance_key": source_field,
 			}
 		))
+	var fallback_source_fields := _unmapped_snapshot_fallback_fields(rec, mapped_source_fields)
+	for source_field in fallback_source_fields:
+		var fallback_value := rec.get(source_field)
+		if not _is_snapshot_counter_fallback_value(fallback_value):
+			continue
+		counters.append(_counter(
+			source_field,
+			int(fallback_value),
+			1,
+			"core",
+			{
+				"row_kind": row_kind,
+				"semantic_group": "unclassified",
+				"truth_class": "snapshot_backed",
+				"required": false,
+				"source_field": source_field,
+				"provenance_key": source_field,
+			}
+		))
 	return counters
+
+
+func _unmapped_snapshot_fallback_fields(rec: Dictionary, mapped_source_fields: Dictionary) -> Array[String]:
+	var fields: Array[String] = []
+	for key_variant in rec.keys():
+		var source_field := str(key_variant)
+		if source_field.is_empty():
+			continue
+		if mapped_source_fields.has(source_field):
+			continue
+		fields.append(source_field)
+	fields.sort()
+	return fields
+
+
+func _is_snapshot_counter_fallback_value(value: Variant) -> bool:
+	return typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT
 
 
 func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
@@ -4614,6 +4664,10 @@ func _counter_sort_key_for_entry(entry: StatusEntryModel, counter: CounterModel,
 	var truth_class := str(registry_meta.get("truth_class", counter.truth_class))
 	var required := bool(registry_meta.get("required", counter.required))
 	var is_classified := not registry_meta.is_empty()
+	if counter.truth_class == "snapshot_backed" and counter.semantic_group == "unclassified":
+		semantic_group = "unclassified"
+		required = false
+		is_classified = false
 
 	if counter.row_kind.is_empty():
 		counter.row_kind = row_kind
