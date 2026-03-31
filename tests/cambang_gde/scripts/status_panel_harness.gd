@@ -108,6 +108,7 @@ func _initialize() -> void:
 	var active_panel = null
 	var rendered_model = null
 	var snapshot_reading: Dictionary = {}
+	var authoritative_prelude_payload: Variant = fixture.get("authoritative_prelude_payload", null)
 
 	if fixture_kind == "continuity_no_snapshot":
 		var continuity_prelude_payload: Variant = fixture.get("continuity_prelude_payload", null)
@@ -119,6 +120,12 @@ func _initialize() -> void:
 		rendered_model = continuity_result.get("rendered_model", null)
 		snapshot_reading = continuity_result.get("snapshot_reading", {})
 	else:
+		if authoritative_prelude_payload != null:
+			var prelude_error := _prime_authoritative_prelude(panel, authoritative_prelude_payload, provider_mode)
+			if prelude_error != "":
+				_printerr(prelude_error)
+				quit(1)
+				return
 		snapshot_reading = panel.call("_read_snapshot", payload)
 		if not should_run_projector:
 			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
@@ -375,6 +382,23 @@ func _build_continuity_no_snapshot_model(panel: Object, continuity_prelude_paylo
 	}
 
 
+func _prime_authoritative_prelude(panel: Object, prelude_payload: Variant, provider_mode: String) -> String:
+	if typeof(prelude_payload) != TYPE_DICTIONARY:
+		return "authoritative_prelude_payload must be Dictionary"
+	var prelude_snapshot: Dictionary = prelude_payload
+	var prelude_schema_errors: Array[String] = SnapshotValidator.validate_snapshot(prelude_snapshot)
+	if not prelude_schema_errors.is_empty():
+		return "authoritative_prelude_payload failed schema validation: %s" % [prelude_schema_errors]
+	var prelude_compat: Dictionary = panel.call("_check_snapshot_runtime_compat", prelude_snapshot)
+	if not bool(prelude_compat.get("ok", false)):
+		return "authoritative_prelude_payload failed runtime compatibility: %s" % [prelude_compat]
+	var prelude_active_panel = panel.call("_project_snapshot_to_panel_model", prelude_snapshot, provider_mode)
+	var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_snapshot)
+	panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
+	panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	return ""
+
+
 func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, panel: Object) -> Variant:
 	if rendered_model == null:
 		return rendered_model
@@ -594,6 +618,33 @@ func _extract_entry_counters(entry: Variant) -> Dictionary:
 	return counters
 
 
+func _extract_entry_counter_names(entry: Variant) -> Array[String]:
+	var names: Array[String] = []
+	var raw_counters: Array = _extract_array_field(entry, "counters")
+	for raw_counter in raw_counters:
+		var name: Variant = _extract_variant_field(raw_counter, "name")
+		if name == null:
+			continue
+		names.append(str(name))
+	return names
+
+
+func _contains_counter_subsequence(names: Array[String], expected_sequence: Array) -> bool:
+	var cursor := 0
+	for raw_expected in expected_sequence:
+		var expected_name := str(raw_expected)
+		var found := false
+		while cursor < names.size():
+			if names[cursor] == expected_name:
+				found = true
+				cursor += 1
+				break
+			cursor += 1
+		if not found:
+			return false
+	return true
+
+
 func _extract_entry_badges(entry: Variant) -> Array[String]:
 	var badges: Array[String] = []
 	var raw_badges: Array = _extract_array_field(entry, "badges")
@@ -778,7 +829,21 @@ func _evaluate_expectations(
 				failures.append(
 					"row %s counter %s mismatch: got=%d want=%d"
 					% [str(row_id), counter_key, int(counters[counter_key]), int(expected_values[counter_name])]
-				)
+					)
+
+	var required_counter_order_by_row: Dictionary = expected_panel_outcome.get("required_counter_order_by_row", {})
+	for row_id in required_counter_order_by_row.keys():
+		var entry: Variant = _find_entry(rendered_model, str(row_id))
+		if entry == null:
+			failures.append("missing row for counter order expectations: %s" % str(row_id))
+			continue
+		var actual_counter_names := _extract_entry_counter_names(entry)
+		var expected_sequence: Array = required_counter_order_by_row.get(row_id, []) as Array
+		if not _contains_counter_subsequence(actual_counter_names, expected_sequence):
+			failures.append(
+				"row %s counter order mismatch: expected subsequence=%s actual=%s"
+				% [str(row_id), expected_sequence, actual_counter_names]
+			)
 
 	var required_badges_by_row: Dictionary = expected_panel_outcome.get("required_badges_by_row", {})
 	for row_id in required_badges_by_row.keys():
