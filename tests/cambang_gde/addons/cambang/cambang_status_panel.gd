@@ -46,6 +46,12 @@ class CounterModel extends RefCounted:
 	var text_value: String = ""
 	var digits: int = 1
 	var visibility: String = "core"
+	var row_kind: String = ""
+	var semantic_group: String = ""
+	var truth_class: String = ""
+	var required: bool = false
+	var source_field: String = ""
+	var provenance_key: String = ""
 
 
 class StatusPanelStyle extends RefCounted:
@@ -1867,6 +1873,7 @@ func _compose_presented_panel_model(
 	var projection_issues := _validate_projection_invariants(composed)
 	_append_projection_gaps_row(composed, projection_issues)
 	_reorder_panel_entries_depth_first(composed)
+	_apply_counter_ordering_to_panel(composed)
 	_apply_detail_policy_to_panel(composed)
 	return composed
 
@@ -2588,7 +2595,20 @@ func _clone_status_entry(source: StatusEntryModel) -> StatusEntryModel:
 		cloned_badges.append(_badge(badge.role, badge.label, badge.kind))
 	var cloned_counters: Array[CounterModel] = []
 	for counter in source.counters:
-		cloned_counters.append(_counter(counter.name, counter.value, counter.digits, counter.visibility))
+		cloned_counters.append(_counter(
+			counter.name,
+			counter.value,
+			counter.digits,
+			counter.visibility,
+			{
+				"row_kind": counter.row_kind,
+				"semantic_group": counter.semantic_group,
+				"truth_class": counter.truth_class,
+				"required": counter.required,
+				"source_field": counter.source_field,
+				"provenance_key": counter.provenance_key,
+			}
+		))
 	var cloned_info_lines: Array[String] = []
 	for line in source.info_lines:
 		cloned_info_lines.append(line)
@@ -4381,13 +4401,99 @@ func _badge(role: String, label: String, kind: String = "") -> BadgeModel:
 
 func _health_badge() -> BadgeModel:
 	return _badge("neutral", "UNKNOWN", "health")
-func _counter(name: String, value: int, digits: int, visibility: String = "core") -> CounterModel:
+
+
+func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
+	var global_registry := {
+		"count": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+		"retained_from_gen": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+		"source_version": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+		"source_topology": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+	}
+	match row_kind:
+		"server":
+			return {
+				"gen": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"version": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"topology": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"providers": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"count": global_registry["count"],
+			}
+		"provider":
+			return {
+				"rigs": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"devices": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"streams": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_all": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_cur": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_prev": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"native_dead": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"retained_from_gen": global_registry["retained_from_gen"],
+				"source_version": global_registry["source_version"],
+				"source_topology": global_registry["source_topology"],
+			}
+		"device":
+			return {
+				"errors": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": true},
+				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+			}
+		"stream":
+			return {
+				"width": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"height": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"fps_min": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"fps_max": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
+				"last_ts": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"queue": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": true},
+				"recv": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": true},
+				"deliv": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": true},
+				"shown": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"drop": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": true},
+				"rej_fmt": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"rej_inv": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+			}
+		"rig":
+			return {
+				"members": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+			}
+		"native_object":
+			return {
+				"buffers": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"bytes": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+			}
+		"fallback":
+			return {
+				"roots": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"count": global_registry["count"],
+			}
+		"contract_gap":
+			return {
+				"count": global_registry["count"],
+			}
+		_:
+			return global_registry
+
+
+func _counter(name: String, value: int, digits: int, visibility: String = "core", metadata: Dictionary = {}) -> CounterModel:
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
 	model.text_value = ""
 	model.digits = digits
 	model.visibility = visibility
+	model.row_kind = str(metadata.get("row_kind", ""))
+	model.semantic_group = str(metadata.get("semantic_group", ""))
+	model.truth_class = str(metadata.get("truth_class", ""))
+	model.required = bool(metadata.get("required", false))
+	model.source_field = str(metadata.get("source_field", ""))
+	model.provenance_key = str(metadata.get("provenance_key", model.name))
 	return model
 
 
@@ -4408,8 +4514,124 @@ func _counters_from_record(rec: Dictionary, specs: Array, always_include: Array[
 		var visibility := str(spec[3]) if spec.size() > 3 else "core"
 		if not rec.has(source_field):
 			continue
-		counters.append(_counter(counter_name, int(rec.get(source_field)), digits, visibility))
+		counters.append(_counter(
+			counter_name,
+			int(rec.get(source_field)),
+			digits,
+			visibility,
+			{
+				"truth_class": "snapshot_backed",
+				"source_field": source_field,
+				"provenance_key": source_field,
+			}
+		))
 	return counters
+
+
+func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
+	if entry == null:
+		return "generic"
+	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
+		return "contract_gap"
+	if entry.id.contains("orphaned_native_objects"):
+		return "fallback"
+	if entry.id == "server/main":
+		return "server"
+	var visual := entry.visual_object_class.strip_edges()
+	if visual == "provider":
+		return "provider"
+	if visual == "device":
+		return "device"
+	if visual == "stream":
+		return "stream"
+	if visual == "rig":
+		return "rig"
+	if _is_native_object_entry(entry) or _is_frameproducer_entry(entry):
+		return "native_object"
+	return "generic"
+
+
+func _group_rank_for_counter_order(semantic_group: String, is_snapshot_classified: bool) -> int:
+	if not is_snapshot_classified:
+		return 99
+	match semantic_group:
+		"configuration":
+			return 0
+		"activity":
+			return 1
+		"pressure_failure":
+			return 2
+		_:
+			return 99
+
+
+func _counter_sort_key_for_entry(entry: StatusEntryModel, counter: CounterModel, ordinal: int) -> String:
+	if counter == null:
+		return "99|99|99|~|%05d" % ordinal
+
+	var row_kind := _row_kind_for_counter_ordering(entry)
+	var registry := _counter_registry_for_row_kind(row_kind)
+	var registry_meta: Dictionary = registry.get(counter.name, {})
+	var semantic_group := str(registry_meta.get("semantic_group", counter.semantic_group))
+	var truth_class := str(registry_meta.get("truth_class", counter.truth_class))
+	var required := bool(registry_meta.get("required", counter.required))
+	var is_classified := not registry_meta.is_empty()
+
+	if counter.row_kind.is_empty():
+		counter.row_kind = row_kind
+	if counter.semantic_group.is_empty():
+		counter.semantic_group = semantic_group
+	if counter.truth_class.is_empty():
+		counter.truth_class = truth_class
+	if counter.provenance_key.is_empty():
+		counter.provenance_key = counter.source_field if not counter.source_field.is_empty() else counter.name
+	counter.required = required
+
+	var truth_bucket := 1
+	var group_rank := 99
+	var required_rank := 1
+	if truth_class == "derived":
+		truth_bucket = 3
+	elif truth_class == "snapshot_backed":
+		if is_classified and semantic_group != "derived_aggregate":
+			truth_bucket = 0
+			group_rank = _group_rank_for_counter_order(semantic_group, true)
+			required_rank = 0 if required else 1
+		else:
+			truth_bucket = 2
+	else:
+		truth_bucket = 2
+
+	var stable_name := counter.provenance_key if not counter.provenance_key.is_empty() else counter.name
+	return "%02d|%02d|%02d|%s|%05d" % [truth_bucket, group_rank, required_rank, stable_name, ordinal]
+
+
+func _counter_order_item_less(a: Dictionary, b: Dictionary) -> bool:
+	return str(a.get("key", "")) < str(b.get("key", ""))
+
+
+func _apply_counter_ordering_to_panel(panel: PanelModel) -> void:
+	if panel == null:
+		return
+	for entry in panel.entries:
+		if entry == null or entry.counters.size() <= 1:
+			continue
+		var decorated: Array[Dictionary] = []
+		for i in range(entry.counters.size()):
+			var counter: CounterModel = entry.counters[i]
+			if counter == null:
+				continue
+			decorated.append({
+				"key": _counter_sort_key_for_entry(entry, counter, i),
+				"counter": counter,
+			})
+		decorated.sort_custom(_counter_order_item_less)
+		var ordered: Array[CounterModel] = []
+		for item in decorated:
+			var counter_value: CounterModel = item.get("counter", null)
+			if counter_value != null:
+				ordered.append(counter_value)
+		entry.counters = ordered
 
 
 func _device_mode_display_label(value: Variant) -> String:
