@@ -82,13 +82,15 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    // Backward-compatibility baseline for Timeline-role synthetic operation:
+    // advance(dt_ns) should pump timeline-driven emission immediately for
+    // verifier-owned flows (including direct open/create/start flows that do
+    // not stage host scenarios).
+    timeline_running_ = true;
+    timeline_paused_ = false;
     timeline_scenario_ = cfg_.timeline_scenario;
     if (!timeline_scenario_.events.empty()) {
-      // Backward-compatibility: config-seeded (provider-owned/verifier-owned)
-      // scenarios auto-run once initialized so advance(dt_ns) immediately pumps
-      // timeline execution as legacy smoke/verifier tools expect.
-      timeline_running_ = true;
-      timeline_paused_ = false;
+      // Config-seeded scenarios are provider-owned and auto-run at initialize.
       for (const auto& ev : timeline_scenario_.events) {
         timeline_schedule_(ev);
       }
