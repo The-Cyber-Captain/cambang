@@ -81,6 +81,12 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     std::fflush(stdout);
   }
 
+  if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    for (const auto& ev : cfg_.timeline_scenario.events) {
+      timeline_schedule_(ev);
+    }
+  }
+
   // Report provider native object (BOUND). Root/owners are 0 at provider scope.
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
   if (callbacks_) {
@@ -101,9 +107,14 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
 void SyntheticProvider::timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id) {
   SyntheticScheduledEvent ev{};
   ev.at_ns = at_ns;
-  ev.seq = ++timeline_seq_;
   ev.type = type;
   ev.stream_id = stream_id;
+  timeline_schedule_(ev);
+}
+
+void SyntheticProvider::timeline_schedule_(const SyntheticScheduledEvent& src) {
+  SyntheticScheduledEvent ev = src;
+  ev.seq = ++timeline_seq_;
   timeline_q_.push(ev);
 }
 
@@ -167,6 +178,50 @@ void SyntheticProvider::timeline_pump_() {
           break;
         }
         (void)stop_stream(ev.stream_id);
+        break;
+      }
+
+      case SyntheticEventType::OpenDevice: {
+        if (ev.device_instance_id == 0 || ev.root_id == 0) {
+          break;
+        }
+        const std::string hardware_id = std::string(kHardwareIdPrefix) + std::to_string(ev.endpoint_index);
+        (void)open_device(hardware_id, ev.device_instance_id, ev.root_id);
+        break;
+      }
+
+      case SyntheticEventType::CloseDevice: {
+        if (ev.device_instance_id == 0) {
+          break;
+        }
+        (void)close_device(ev.device_instance_id);
+        break;
+      }
+
+      case SyntheticEventType::CreateStream: {
+        if (ev.stream_id == 0 || ev.device_instance_id == 0) {
+          break;
+        }
+        StreamRequest req{};
+        req.stream_id = ev.stream_id;
+        req.device_instance_id = ev.device_instance_id;
+        req.intent = StreamIntent::PREVIEW;
+        req.profile.width = cfg_.nominal.width;
+        req.profile.height = cfg_.nominal.height;
+        req.profile.format_fourcc = cfg_.nominal.format_fourcc ? cfg_.nominal.format_fourcc : FOURCC_RGBA;
+        req.profile.target_fps_min =
+            cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
+        req.profile.target_fps_max = req.profile.target_fps_min;
+        req.picture = stream_template().picture;
+        (void)create_stream(req);
+        break;
+      }
+
+      case SyntheticEventType::DestroyStream: {
+        if (ev.stream_id == 0) {
+          break;
+        }
+        (void)destroy_stream(ev.stream_id);
         break;
       }
     }
