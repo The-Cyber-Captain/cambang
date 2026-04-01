@@ -77,11 +77,15 @@ In-scope representation characteristics:
 - deterministic intra-timestamp ordering (stable sequence/tie-breaker)
 - provider-owned execution against active stream/device state
 
+Tranche 1 persistence boundary:
+
+- execution support is in-memory authored data only
+- this is an implementation-slice constraint, not an architectural rejection of persisted/open forms
+
 Out of scope for this tranche:
 
-- file formats
-- JSON schema
-- persistence/recording formats
+- file formats and schemas
+- persistence/recording pipeline design
 
 ---
 
@@ -105,21 +109,36 @@ Godot must not:
 
 ---
 
-## 7. Initial event vocabulary (minimal)
+## 7. Initial event vocabulary and expansion boundary
 
-The first supported authored event vocabulary is intentionally minimal and aligned with current SyntheticProvider timeline shape:
+Tranche 1 executable vocabulary may begin with a small subset aligned with current timeline code shape:
 
-- `StartStream` — request start for an existing created stream
-- `StopStream` — request stop for a currently started stream
-- `EmitFrame` — emit a frame at an explicit synthetic timestamp via the existing provider frame path
+- `StartStream`
+- `StopStream`
+- `EmitFrame`
 
-This vocabulary is sufficient to replace current Godot micro-scenarios meaningfully (stream lifecycle activity + publish-visible frame behavior) without introducing broader timeline surface area.
+That subset is an implementation starting point, not the architectural ceiling.
 
-No additional event families are canonized in this tranche.
+Canonical scenario direction remains a self-contained authored/recorded timeline unit. The event model is therefore expected to expand with minimal lifecycle/realization events needed to author and replay scenarios without hidden host-side semantic reconstruction (for example, device/stream realization and create/destroy-style families).
+
+Tranche 1 intentionally does not freeze the complete long-term scenario event vocabulary.
 
 ---
 
-## 8. Relationship to verification cases
+## 8. Scenario source compatibility requirement
+
+Scenario architecture must remain compatible with all expected source families:
+
+- developer/maintainer authored scenarios
+- recorded behavior from real hardware-backed providers for later synthetic playback
+- user/integrator hand-authored open serialized forms (for example JSON-like formats)
+- future GUI authoring tools built as separate layers
+
+This is a design-compatibility requirement. It is not a Tranche 1 decision about serialization format, recording pipeline, or editor UX.
+
+---
+
+## 9. Relationship to verification cases
 
 Maintainer smoke/CLI verification cases are not scenarios.
 
@@ -133,13 +152,13 @@ But the scenario remains a SyntheticProvider timeline artifact, while the verifi
 
 ---
 
-## 9. Non-goals (explicit)
+## 10. Non-goals (explicit)
 
 This tranche explicitly excludes:
 
-- serialization format decisions
+- serialization format/schema decisions
+- recording pipeline/format design
 - editor/authoring UI tooling
-- recording format design
 - release UX design for scenario catalogs
 - redesign of smoke verification-case architecture
 - adversarial snapshot playback design
@@ -147,7 +166,7 @@ This tranche explicitly excludes:
 
 ---
 
-## 10. Immediate implementation implications
+## 11. Immediate implementation implications
 
 Next implementation tranche should:
 
