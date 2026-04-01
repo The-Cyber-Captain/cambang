@@ -141,7 +141,10 @@ void CamBANGDevNode::_process(double delta) {
     }
 
 
-    // Dev-only pattern cycling: stream-scoped PictureConfig updates.
+    // Dev-only manual pattern cycling helper.
+    // This is intentionally non-canonical and not part of scenario semantics.
+    // Canonical scenario-visible appearance changes should be authored via
+    // provider-owned timeline events (e.g. UpdateStreamPicture).
     if (pattern_cycle_enabled_ && runtime_ && bringup_state_ == BringUpState::Running) {
         pattern_cycle_accum_s_ += delta;
         if (pattern_cycle_accum_s_ >= pattern_cycle_period_s_) {
@@ -235,7 +238,8 @@ bool CamBANGDevNode::start_provider_() {
         return false;
     }
 
-    // Dev-only pattern cycling configuration (visual verification aid).
+    // Dev-only manual pattern cycling configuration (visual verification aid).
+    // Not part of canonical scenario semantics.
     pattern_cycle_enabled_ = false;
     pattern_cycle_logged_unsupported_ = false;
     pattern_cycle_accum_s_ = 0.0;
@@ -488,6 +492,18 @@ std::optional<SyntheticTimelineScenario> CamBANGDevNode::build_provider_scenario
         out.events.push_back(ev);
 
         ev = {};
+        ev.at_ns = 15'000'000;
+        ev.type = SyntheticEventType::UpdateStreamPicture;
+        ev.stream_id = alt_stream_id;
+        ev.has_picture = true;
+        ev.picture.preset = PatternPreset::Checker;
+        ev.picture.seed = 3;
+        ev.picture.overlay_frame_index_offsets = false;
+        ev.picture.overlay_moving_bar = true;
+        ev.picture.checker_size_px = 12;
+        out.events.push_back(ev);
+
+        ev = {};
         ev.at_ns = 60'000'000;
         ev.type = SyntheticEventType::StopStream;
         ev.stream_id = alt_stream_id;
@@ -529,6 +545,45 @@ std::optional<SyntheticTimelineScenario> CamBANGDevNode::build_provider_scenario
         out.events.push_back(ev);
 
         ev = {};
+        ev.at_ns = 10'000'000;
+        ev.type = SyntheticEventType::UpdateStreamPicture;
+        ev.stream_id = alt_stream_id;
+        ev.has_picture = true;
+        ev.picture.preset = PatternPreset::Solid;
+        ev.picture.overlay_frame_index_offsets = false;
+        ev.picture.overlay_moving_bar = false;
+        ev.picture.solid_r = 220;
+        ev.picture.solid_g = 40;
+        ev.picture.solid_b = 40;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 20'000'000;
+        ev.type = SyntheticEventType::UpdateStreamPicture;
+        ev.stream_id = alt_stream_id;
+        ev.has_picture = true;
+        ev.picture.preset = PatternPreset::Solid;
+        ev.picture.overlay_frame_index_offsets = false;
+        ev.picture.overlay_moving_bar = false;
+        ev.picture.solid_r = 40;
+        ev.picture.solid_g = 210;
+        ev.picture.solid_b = 60;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 30'000'000;
+        ev.type = SyntheticEventType::UpdateStreamPicture;
+        ev.stream_id = alt_stream_id;
+        ev.has_picture = true;
+        ev.picture.preset = PatternPreset::Solid;
+        ev.picture.overlay_frame_index_offsets = false;
+        ev.picture.overlay_moving_bar = false;
+        ev.picture.solid_r = 60;
+        ev.picture.solid_g = 80;
+        ev.picture.solid_b = 220;
+        out.events.push_back(ev);
+
+        ev = {};
         ev.at_ns = 200'000'000;
         ev.type = SyntheticEventType::StopStream;
         ev.stream_id = alt_stream_id;
@@ -567,6 +622,17 @@ std::optional<SyntheticTimelineScenario> CamBANGDevNode::build_provider_scenario
         ev.at_ns = 0;
         ev.type = SyntheticEventType::StartStream;
         ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 15'000'000;
+        ev.type = SyntheticEventType::UpdateStreamPicture;
+        ev.stream_id = alt_stream_id;
+        ev.has_picture = true;
+        ev.picture.preset = PatternPreset::NoiseAnimated;
+        ev.picture.seed = 99;
+        ev.picture.overlay_frame_index_offsets = true;
+        ev.picture.overlay_moving_bar = true;
         out.events.push_back(ev);
 
         ev = {};

@@ -104,6 +104,17 @@ This tranche explicitly excludes:
 
 ## 9. Immediate implementation implications
 
+Current Tranche 2.5 slice now includes:
+
+1. provider-owned scenario-authored stream-scoped appearance updates, persistent until changed
+2. canonical dev scenarios routing visual/source distinction through provider timeline appearance events
+3. host-side pattern cycling no longer acting as the canonical scenario mechanism
+
+Remaining immediate discipline:
+
+- keep Godot thin (select/start/stop/observe only)
+- keep host-side pattern cycling explicitly manual/debug-only
+- continue avoiding serialization/editor/recording scope expansion in this layer
 Next code tranche should:
 
 1. add minimal scenario-authored appearance update support in provider timeline execution (stream-scoped, persistent-until-changed)

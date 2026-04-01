@@ -111,6 +111,15 @@ Godot must not:
 
 ## 7. Initial event vocabulary and expansion boundary
 
+Current implemented executable slice includes:
+
+- stream flow events: `StartStream`, `StopStream`, `EmitFrame`
+- minimal realization/lifecycle events: `OpenDevice`, `CloseDevice`, `CreateStream`, `DestroyStream`
+- stream-scoped appearance update event: `UpdateStreamPicture` (maps through provider `PictureConfig` semantics)
+
+This implemented slice is still a starting boundary, not the architectural ceiling.
+
+Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue.
 Tranche 1 executable vocabulary may begin with a small subset aligned with current timeline code shape:
 
 - `StartStream`
