@@ -72,7 +72,8 @@
         "last_frame_ts_ns": 40000000001,
         "visibility_frames_presented": 95,
         "visibility_frames_rejected_unsupported": 1,
-        "visibility_frames_rejected_invalid": 1
+        "visibility_frames_rejected_invalid": 1,
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
@@ -87,24 +88,20 @@
     "projection_gap_count": 0,
     "required_row_ids": ["provider/100", "device/1", "device/2", "stream/2", "rig/7"],
     "required_counters_by_row": {
-      "stream/2": ["x_stream_extra_a", "x_stream_extra_b"],
-      "rig/7": ["x_rig_extra_a", "x_rig_extra_b", "members"],
+      "rig/7": ["members"],
       "device/1": ["errors", "still_w", "still_h", "still_fmt", "still_prof"]
     },
     "required_counter_values_by_row": {
-      "device/1": {"errors": 3, "still_w": 4032, "still_h": 3024},
-      "stream/2": {"x_stream_extra_a": 71, "x_stream_extra_b": 72},
-      "rig/7": {"x_rig_extra_a": 81, "x_rig_extra_b": 82}
+      "device/1": {"errors": 3, "still_w": 4032, "still_h": 3024}
     },
     "required_badges_by_row": {
-      "device/1": ["destroyed"],
-      "provider/100": ["published"]
+      "device/1": ["destroyed"]
     },
     "required_counter_order_by_row": {
-      "device/1": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_fmt", "still_h", "still_prof", "still_w"],
-      "device/2": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_fmt", "still_h", "still_prof", "still_w"],
-      "stream/2": ["width", "height", "fmt", "fps_min", "fps_max", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt", "x_stream_extra_a", "x_stream_extra_b"],
-      "rig/7": ["still_w", "still_h", "x_rig_extra_a", "x_rig_extra_b", "members"],
+      "device/1": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt", "still_prof"],
+      "device/2": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt", "still_prof"],
+      "stream/2": ["width", "height", "fps_min", "fps_max", "fmt", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
+      "rig/7": ["still_h", "still_w", "members"],
       "provider/100": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"]
     }
   },
@@ -133,9 +130,7 @@
         "last_capture_id": 2,
         "last_capture_latency_ns": 11,
         "last_sync_skew_ns": 1,
-        "error_code": 0,
-        "x_rig_extra_a": 81,
-        "x_rig_extra_b": 82
+        "error_code": 0
       }
     ],
     "devices": [
@@ -180,8 +175,7 @@
         "visibility_frames_presented": 190,
         "visibility_frames_rejected_unsupported": 3,
         "visibility_frames_rejected_invalid": 2,
-        "x_stream_extra_a": 71,
-        "x_stream_extra_b": 72
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
