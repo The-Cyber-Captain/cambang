@@ -4,8 +4,9 @@ const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 5000
 
 const PHASE_WAIT_FIRST_BASELINE := 0
-const PHASE_WAIT_SECOND_BASELINE := 1
-const PHASE_DONE := 2
+const PHASE_RESTARTING := 1
+const PHASE_WAIT_SECOND_BASELINE := 2
+const PHASE_DONE := 3
 
 var _done := false
 var _quit_requested := false
@@ -17,6 +18,7 @@ var _first_gen := -1
 func _ready() -> void:
 	CamBANGServer.stop()
 	CamBANGServer.set_provider_mode("synthetic")
+	print("RUN: godot public boundary verify")
 
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: snapshot must be NIL before start/baseline")
@@ -72,10 +74,19 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				return
 
 			_first_gen = gen
-			_phase = PHASE_WAIT_SECOND_BASELINE
+			_phase = PHASE_RESTARTING
 			call_deferred("_restart_and_assert_nil")
 
+		PHASE_RESTARTING:
+			# Ignore any in-flight publishes until restart assertions have completed.
+			return
+
 		PHASE_WAIT_SECOND_BASELINE:
+			print("INFO: restart_generation_check phase=%s expected=%d actual=%d condition=(actual == expected + 1)" % [
+				_phase_name(_phase),
+				_first_gen,
+				gen
+			])
 			if gen != _first_gen + 1:
 				_fail("FAIL: restart must advance generation exactly by one")
 				return
@@ -102,6 +113,7 @@ func _restart_and_assert_nil() -> void:
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: stale prior-generation snapshot leaked before next generation baseline")
 		return
+	_phase = PHASE_WAIT_SECOND_BASELINE
 
 
 func _ok(msg: String) -> void:
@@ -138,3 +150,17 @@ func _quit_next_frame(code: int) -> void:
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
 	get_tree().quit(code)
+
+
+func _phase_name(p: int) -> String:
+	match p:
+		PHASE_WAIT_FIRST_BASELINE:
+			return "wait_first_baseline"
+		PHASE_RESTARTING:
+			return "restarting"
+		PHASE_WAIT_SECOND_BASELINE:
+			return "wait_second_baseline"
+		PHASE_DONE:
+			return "done"
+		_:
+			return "unknown"

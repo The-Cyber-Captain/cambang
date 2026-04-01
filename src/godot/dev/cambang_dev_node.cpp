@@ -32,6 +32,8 @@ CamBANGDevNode::~CamBANGDevNode() {
 
 void CamBANGDevNode::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("start_scenario", "name"), &CamBANGDevNode::start_scenario);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_exit_reason"), &CamBANGDevNode::get_exit_reason);
+    ADD_SIGNAL(godot::MethodInfo("scenario_completed", godot::PropertyInfo(godot::Variant::STRING, "name")));
 }
 
 bool CamBANGDevNode::start_scenario(const godot::String& name) {
@@ -75,6 +77,10 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
     return true;
 }
 
+godot::String CamBANGDevNode::get_exit_reason() const {
+    return exit_reason_;
+}
+
 void CamBANGDevNode::_enter_tree() {
     if (godot::Engine::get_singleton()->is_editor_hint()) {
         // Don’t start runtime in the editor; avoids crashes when the editor auto-opens scenes.
@@ -82,7 +88,8 @@ void CamBANGDevNode::_enter_tree() {
         return;
     }
     if (s_live.exchange(true)) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Another instance already live; freeing this node.");
+        mark_exit_reason_("duplicate_instance_guard");
+        UtilityFunctions::printerr("[CamBANGDevNode] duplicate instance; queue_free.");
         queue_free();
         return;
     }
@@ -92,6 +99,9 @@ void CamBANGDevNode::_enter_tree() {
 }
 
 void CamBANGDevNode::_exit_tree() {
+    if (exit_reason_ == "none") {
+        mark_exit_reason_("external_tree_teardown");
+    }
     if (godot::Engine::get_singleton()->is_editor_hint()) {
         set_process(false);
         return;
@@ -177,7 +187,8 @@ void CamBANGDevNode::start_runtime_() {
 
     auto* server = CamBANGServer::get_singleton();
     if (!server) {
-        UtilityFunctions::printerr("[CamBANGDevNode] No CamBANGServer singleton found. Ensure the CamBANG GDExtension is loaded.");
+        mark_exit_reason_("startup_abort_no_singleton");
+        UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: no CamBANGServer singleton.");
         s_live.store(false);
         queue_free();
         return;
@@ -185,7 +196,8 @@ void CamBANGDevNode::start_runtime_() {
 
     runtime_ = server->runtime_for_dev();
     if (!runtime_) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer runtime is unavailable.");
+        mark_exit_reason_("startup_abort_runtime_unavailable");
+        UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: runtime unavailable.");
         s_live.store(false);
         queue_free();
         return;
@@ -200,7 +212,8 @@ void CamBANGDevNode::start_runtime_() {
     }
 
     if (!runtime_->is_running()) {
-        UtilityFunctions::printerr("[CamBANGDevNode] CamBANGServer failed to start runtime.");
+        mark_exit_reason_("startup_abort_runtime_start_failed");
+        UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: runtime start failed.");
         s_live.store(false);
         queue_free();
         return;
@@ -212,7 +225,8 @@ void CamBANGDevNode::start_runtime_() {
     // Bring up provider for the initial running state.
     if (last_running_) {
         if (!start_provider_()) {
-            UtilityFunctions::printerr("[CamBANGDevNode] Provider bring-up failed.");
+            mark_exit_reason_("startup_abort_provider_bringup_failed");
+            UtilityFunctions::printerr("[CamBANGDevNode] startup aborted: provider bring-up failed.");
             stop_runtime_();
             s_live.store(false);
             queue_free();
@@ -454,7 +468,7 @@ void CamBANGDevNode::tick_active_scenario_() {
 
         scenario_seed_ += 3;
         if (scenario_tick_ >= 4u) {
-            active_scenario_ = ActiveScenario::None;
+            complete_active_scenario_();
         }
         return;
     }
@@ -471,10 +485,35 @@ void CamBANGDevNode::tick_active_scenario_() {
             (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
         }
         if (scenario_tick_ >= 12u) {
-            active_scenario_ = ActiveScenario::None;
+            complete_active_scenario_();
         }
         return;
     }
+}
+
+godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
+    switch (scenario) {
+        case ActiveScenario::StreamLifecycleVersions:
+            return "stream_lifecycle_versions";
+        case ActiveScenario::PublicationCoalescing:
+            return "publication_coalescing";
+        case ActiveScenario::None:
+        default:
+            return "none";
+    }
+}
+
+void CamBANGDevNode::mark_exit_reason_(const godot::String& reason) {
+    exit_reason_ = reason;
+}
+
+void CamBANGDevNode::complete_active_scenario_() {
+    const ActiveScenario completed = active_scenario_;
+    if (completed == ActiveScenario::None) {
+        return;
+    }
+    active_scenario_ = ActiveScenario::None;
+    emit_signal("scenario_completed", scenario_name_(completed));
 }
 
 void CamBANGDevNode::stop_runtime_() {

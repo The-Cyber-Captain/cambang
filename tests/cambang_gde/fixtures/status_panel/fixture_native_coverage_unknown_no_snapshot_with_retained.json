@@ -1,22 +1,9 @@
 {
-  "fixture_kind": "authoritative_snapshot",
+  "fixture_kind": "continuity_no_snapshot",
   "provider_mode": "synthetic",
   "expected_validity": "valid",
   "should_run_projector": true,
-  "expected_panel_outcome": {
-    "contract_gap_count": 0,
-    "projection_gap_count": 0,
-    "rendered_contract_gap_rows": 0,
-    "required_row_ids": [
-      "server/main",
-      "provider/5501"
-    ],
-    "forbidden_row_ids": [
-      "server/main/provider_pending",
-      "server/main/contract_gaps"
-    ]
-  },
-  "payload": {
+  "continuity_prelude_payload": {
     "schema_version": 1,
     "gen": 55,
     "version": 0,
@@ -36,7 +23,7 @@
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
-        "root_id": 0,
+        "root_id": 5501,
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
@@ -44,5 +31,21 @@
       }
     ],
     "detached_root_ids": []
-  }
+  },
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "server/main",
+      "retained_presentation/prior_authoritative/subtree/0/gen_55/provider/5501"
+    ],
+    "required_badges_by_row": {
+      "server/main": [
+        "UNKNOWN",
+        "NATIVE COVERAGE: UNKNOWN",
+        "NO SNAPSHOT"
+      ]
+    }
+  },
+  "payload": null
 }

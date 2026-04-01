@@ -1,6 +1,9 @@
 {
   "fixture_kind": "authoritative_snapshot",
   "provider_mode": "synthetic",
+  "initial_expanded_row_ids": [
+    "provider/3000/orphaned_native_objects"
+  ],
   "expected_validity": "valid",
   "should_run_projector": true,
   "expected_panel_outcome": {
@@ -8,25 +11,16 @@
     "projection_gap_count": 0,
     "required_row_ids": [
       "server/main",
-      "provider/100",
-      "device/1",
-      "stream/1",
-      "frameproducer/103"
+      "provider/3000",
+      "device/3001",
+      "stream/3100",
+      "provider/3000/orphaned_native_objects",
+      "frameproducer/3201"
     ],
     "required_visible_row_ids": [
-      "server/main",
-      "provider/100",
-      "device/1",
-      "stream/1",
-      "frameproducer/103"
+      "provider/3000/orphaned_native_objects",
+      "frameproducer/3201"
     ],
-    "required_counter_values_by_row": {
-      "provider/100": {
-        "native_all": 4,
-        "native_cur": 4,
-        "native_prev": 0
-      }
-    },
     "required_badges_by_row": {
       "server/main": [
         "OK",
@@ -34,24 +28,23 @@
       ]
     },
     "required_info_substrings_by_row": {
-      "frameproducer/103": [
-        "owner_stream_id=1",
-        "creation_gen=2"
+      "frameproducer/3201": [
+        "owner_stream_id=3999"
       ]
     }
   },
   "payload": {
     "schema_version": 1,
-    "gen": 2,
-    "version": 21,
-    "topology_version": 1,
-    "timestamp_ns": 40096504700,
+    "gen": 60,
+    "version": 8,
+    "topology_version": 8,
+    "timestamp_ns": 60000000060,
     "imaging_spec_version": 1,
     "rigs": [],
     "devices": [
       {
-        "instance_id": 1,
-        "hardware_id": "synthetic:0",
+        "instance_id": 3001,
+        "hardware_id": "synthetic:review-orphan:1",
         "phase": "LIVE",
         "mode": "STREAMING",
         "errors_count": 0,
@@ -70,14 +63,14 @@
     ],
     "streams": [
       {
-        "stream_id": 1,
-        "device_instance_id": 1,
+        "stream_id": 3100,
+        "device_instance_id": 3001,
         "phase": "LIVE",
         "mode": "FLOWING",
         "intent": "PREVIEW",
         "stop_reason": "NONE",
-        "target_fps_max": 30,
-        "frames_received": 1024,
+        "target_fps_max": 60,
+        "frames_received": 120,
         "width": 1280,
         "height": 720,
         "format": 1094862674,
@@ -95,10 +88,10 @@
     ],
     "native_objects": [
       {
-        "native_id": 100,
+        "native_id": 3000,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 60,
         "owner_device_instance_id": 0,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
@@ -110,11 +103,11 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 101,
+        "native_id": 3001,
         "type": "device",
-        "owner_device_instance_id": 1,
+        "owner_device_instance_id": 3001,
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 60,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
@@ -125,12 +118,12 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 102,
+        "native_id": 3100,
         "type": "stream",
-        "owner_device_instance_id": 1,
-        "owner_stream_id": 1,
+        "owner_device_instance_id": 3001,
+        "owner_stream_id": 3100,
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 60,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
         "root_id": 0,
@@ -140,21 +133,23 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 103,
+        "native_id": 3201,
         "type": "frameproducer",
-        "owner_device_instance_id": 1,
-        "owner_stream_id": 1,
+        "owner_stream_id": 3999,
         "phase": "LIVE",
-        "creation_gen": 2,
+        "root_id": 9201,
+        "creation_gen": 60,
+        "owner_device_instance_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
-        "root_id": 0,
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
         "buffers_in_use": 0
       }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [
+      9201
+    ]
   }
 }

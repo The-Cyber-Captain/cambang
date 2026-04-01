@@ -4,9 +4,18 @@ extends MarginContainer
 signal disclosure_toggled(entry_id: String, expanded: bool)
 
 const INDENT_WIDTH := 14.0
+const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
+const SERVER_BADGE_SNAPSHOT_SLOT_MIN_WIDTH := 128.0
+const SERVER_BADGE_HEALTH_SLOT_MIN_WIDTH := 128.0
 
 var _entry_id: String = ""
 var _style: CamBANGStatusPanel.StatusPanelStyle
+var _row_kind_for_render: String = "authoritative"
+var _object_class_for_render: String = "generic"
+var _is_orphaned_for_render: bool = false
+var _is_native_lineage_for_render: bool = false
+var _is_below_line_for_render: bool = false
+var _is_in_orphan_native_branch_for_render: bool = false
 
 var _indent_region: Control
 var _disclosure_slot: Control
@@ -23,7 +32,7 @@ var _info_panel_inset: MarginContainer
 var _info_margin: MarginContainer
 var _info_panel: PanelContainer
 var _row_shell: PanelContainer
-var _accent_bar: ColorRect
+var _accent_bar: PanelContainer
 
 var _badge_pairs: Array[HBoxContainer] = []
 var _counter_widgets: Array[VBoxContainer] = []
@@ -49,6 +58,12 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	visible = true
 
 	_entry_id = model.id
+	_row_kind_for_render = _row_kind(model)
+	_object_class_for_render = _object_class(model)
+	_is_orphaned_for_render = _is_orphaned_row(model)
+	_is_native_lineage_for_render = _is_native_lineage_row(model)
+	_is_below_line_for_render = bool(model.is_below_line)
+	_is_in_orphan_native_branch_for_render = bool(model.is_in_orphan_native_branch)
 	var is_expandable := model.can_expand
 	var effective_expanded := (model.expanded if is_expandable else true)
 	_indent_region.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
@@ -133,27 +148,171 @@ func _apply_style() -> void:
 	shell_style.border_width_bottom = 1
 	shell_style.border_color = Color(1, 1, 1, 0.06)
 	_row_shell.add_theme_stylebox_override("panel", shell_style)
+	_row_shell.clip_contents = true
 
 
 func _render_badges(badges: Array[CamBANGStatusPanel.BadgeModel]) -> void:
-	for i in range(badges.size()):
+	var badges_for_row: Array[CamBANGStatusPanel.BadgeModel] = _ordered_badges_for_row_kind(badges, _row_kind_for_render)
+	for i in range(badges_for_row.size()):
 		var pair := _ensure_badge_pair(i)
 		pair.visible = true
 		var indicator := pair.get_child(0) as ColorRect
 		var label := pair.get_child(1) as Label
-		pair.custom_minimum_size = Vector2(0, 18)
-		pair.alignment = BoxContainer.ALIGNMENT_CENTER
-		indicator.color = _badge_color_for_role(_badge_role_for_render(badges[i]))
+		var raw_label: String = badges_for_row[i].label
+		var display_label: String = _badge_display_label(raw_label)
+		var stabilized_width: float = _badge_slot_min_width(raw_label, display_label, label)
+		pair.custom_minimum_size = Vector2(stabilized_width, 18)
+		if stabilized_width > 0.0:
+			pair.alignment = BoxContainer.ALIGNMENT_BEGIN
+			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		else:
+			pair.alignment = BoxContainer.ALIGNMENT_CENTER
+			label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		indicator.color = _badge_color_for_role(_badge_role_for_render(badges_for_row[i], _row_kind_for_render))
 		var indicator_size := max((_style.badge_strip_width if _style != null else 7), 8)
 		indicator.custom_minimum_size = Vector2(indicator_size, indicator_size)
-		label.text = _badge_display_label(badges[i].label)
+		label.text = display_label
 		label.label_settings = _state_label_settings()
 		label.autowrap_mode = TextServer.AUTOWRAP_OFF
 
-	for i in range(badges.size(), _badge_pairs.size()):
+	for i in range(badges_for_row.size(), _badge_pairs.size()):
 		_badge_pairs[i].visible = false
 
-	_state_segment.visible = not badges.is_empty()
+	_state_segment.visible = not badges_for_row.is_empty()
+
+
+func _badge_slot_min_width(raw_label: String, display_label: String, label_node: Label) -> float:
+	if _is_health_label(raw_label):
+		return _measured_badge_slot_width("UNKNOWN", label_node)
+	if raw_label == "destroyed" or raw_label.begins_with("phase=") or raw_label.begins_with("native_phase="):
+		return _measured_badge_slot_width(_phase_family_max_display_label(raw_label), label_node)
+	if raw_label.begins_with("mode="):
+		return _measured_badge_slot_width(_mode_family_max_display_label(raw_label), label_node)
+	if raw_label.begins_with("stop_reason="):
+		return _measured_badge_slot_width(_stop_reason_family_max_display_label(raw_label), label_node)
+	if raw_label == "snapshot" or raw_label == "NO SNAPSHOT" or raw_label == "snapshot-incompatible":
+		return _measured_badge_slot_width("SNAPSHOT INCOMPATIBLE", label_node)
+	if raw_label.begins_with("NATIVE COVERAGE:"):
+		return _measured_badge_slot_width("NATIVE COVERAGE: UNKNOWN", label_node)
+	if raw_label == "contract-gap" or raw_label == "schema" or raw_label == "projection":
+		return _measured_badge_slot_width("PROJECTION GAP", label_node)
+	if raw_label == "detached" or raw_label == "orphaned" or raw_label == "prior-gen":
+		return _measured_badge_slot_width("ORPHANED", label_node)
+	return _measured_badge_slot_width(display_label, label_node)
+
+
+func _phase_family_max_display_label(raw_label: String) -> String:
+	if raw_label.begins_with("native_phase="):
+		return "NATIVE TEARING_DOWN"
+	return "TEARING_DOWN"
+
+
+func _mode_family_max_display_label(raw_label: String) -> String:
+	var prefix := "MODE="
+	if raw_label.find("=") >= 0:
+		prefix = raw_label.substr(0, raw_label.find("=") + 1).to_upper()
+	var candidates := [
+		"UNKNOWN",
+		"STREAMING",
+		"CAPTURING",
+		"TRIGGERING",
+		"COLLECTING",
+		"TEARING_DOWN"
+	]
+	var longest: String = candidates[0]
+	for candidate in candidates:
+		if candidate.length() > longest.length():
+			longest = candidate
+	return prefix + longest
+
+
+func _stop_reason_family_max_display_label(raw_label: String) -> String:
+	var prefix := "STOP REASON="
+	if raw_label.find("=") >= 0:
+		prefix = raw_label.substr(0, raw_label.find("=") + 1).replace("_", " ").to_upper()
+	var candidates := ["NONE", "USER", "PREEMPTED", "PROVIDER"]
+	var longest: String = candidates[0]
+	for candidate in candidates:
+		if candidate.length() > longest.length():
+			longest = candidate
+	return prefix + longest
+
+
+func _measured_badge_slot_width(display_text: String, label_node: Label) -> float:
+	var font: Font = null
+	var font_size := 11
+	if _style != null:
+		font = _style.info_font
+		font_size = _style.state_font_size
+	if font == null and label_node != null:
+		font = label_node.get_theme_font("font")
+		font_size = label_node.get_theme_font_size("font_size")
+	if font == null:
+		return 0.0
+	var text_width := font.get_string_size(display_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	var outline_size := (_style.state_outline_size if _style != null else 0)
+	var indicator_width := max((_style.badge_strip_width if _style != null else 7), 8)
+	var separation := 4.0
+	var horizontal_padding := 10.0
+	return ceil(text_width + float(outline_size * 2) + indicator_width + separation + horizontal_padding)
+
+
+func _is_health_label(raw_label: String) -> bool:
+	return raw_label == "UNKNOWN" or raw_label == "OK" or raw_label == "ATTN" or raw_label == "BAD"
+
+
+func _ordered_badges_for_row_kind(
+		badges: Array[CamBANGStatusPanel.BadgeModel],
+		row_kind: String
+	) -> Array[CamBANGStatusPanel.BadgeModel]:
+	if row_kind != "retained":
+		return badges
+	var ordered: Array[CamBANGStatusPanel.BadgeModel] = []
+	var consumed: Dictionary = {}
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if _is_health_badge(badge):
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge != null and badge.label == "preserved":
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge != null and badge.label == "continuity-only":
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge == null:
+			continue
+		if badge.label == "published" or badge.label == "preserved-root" or badge.label == "orphaned" or badge.label == "prior-gen":
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		var badge := badges[i]
+		if badge == null:
+			continue
+		if badge.label.begins_with("phase=") or badge.label.begins_with("native_phase="):
+			ordered.append(badge)
+			consumed[i] = true
+	for i in range(badges.size()):
+		if consumed.has(i):
+			continue
+		var badge := badges[i]
+		if badge != null:
+			ordered.append(badge)
+	return ordered
+
+
+func _is_health_badge(badge: CamBANGStatusPanel.BadgeModel) -> bool:
+	if badge == null:
+		return false
+	if badge.kind == "health":
+		return true
+	return badge.label == "UNKNOWN"
 
 
 func _ensure_badge_pair(index: int) -> HBoxContainer:
@@ -195,11 +354,21 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 		var value_box := widget.get_child(1) as PanelContainer
 		var value_label := value_box.get_child(0) as Label
 
-		name_label.text = visible_counters[i].name
+		name_label.text = _format_counter_name(visible_counters[i])
 		name_label.label_settings = _counter_label_settings()
-		value_label.text = _format_counter_value(visible_counters[i].value, visible_counters[i].digits)
+		value_label.text = _format_counter_value(visible_counters[i])
 		value_label.label_settings = _counter_label_settings()
-		value_label.custom_minimum_size = Vector2(max(visible_counters[i].digits, 1) * 10.0 + 12.0, 0)
+		var counter_name: String = visible_counters[i].name
+		var counter_digits: int = max(visible_counters[i].digits, 1)
+		if not visible_counters[i].text_value.is_empty():
+			counter_digits = max(counter_digits, visible_counters[i].text_value.length())
+		var minimum_digits: int = counter_digits
+		match counter_name:
+			"gen", "topology":
+				minimum_digits = max(minimum_digits, 3)
+			"version":
+				minimum_digits = max(minimum_digits, 5)
+		value_label.custom_minimum_size = Vector2(float(minimum_digits) * 10.0 + 12.0, 0)
 
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
@@ -213,6 +382,14 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 		detail_hint.visible = false
 
 	_counter_segment.visible = not visible_counters.is_empty() or detail_hint.visible
+
+
+func _format_counter_name(counter: CamBANGStatusPanel.CounterModel) -> String:
+	if counter == null:
+		return ""
+	if counter.truth_class == "derived":
+		return "%s*" % counter.name
+	return counter.name
 
 
 func _ensure_counter_widget(index: int) -> VBoxContainer:
@@ -341,8 +518,16 @@ func _counter_label_settings() -> LabelSettings:
 	return settings
 
 
-func _format_counter_value(value: int, digits: int) -> String:
+func _format_counter_value(counter: CamBANGStatusPanel.CounterModel) -> String:
+	if counter == null:
+		return "-"
+	if not counter.text_value.is_empty():
+		return counter.text_value
+	var value := counter.value
+	var digits := counter.digits
 	var bounded_digits := maxi(digits, 1)
+	if value < 0:
+		return "-"
 	var raw := str(value)
 	if raw.length() <= bounded_digits:
 		return raw
@@ -479,7 +664,7 @@ func _font_line_height(font: Font, font_size: int, fallback: float) -> float:
 
 
 func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
-	var object_class := _object_class(model)
+	var object_class := _object_class_for_render
 	var accent := _class_color(object_class)
 	var shell_bg := (_style.row_shell_bg if _style != null else Color(0.16, 0.18, 0.22, 0.68))
 	var info_bg := (_style.info_panel_bg if _style != null else Color(0.10, 0.12, 0.15, 0.88))
@@ -491,7 +676,7 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	shell_style.corner_radius_top_right = (_style.row_shell_radius if _style != null else 5)
 	shell_style.corner_radius_bottom_right = (_style.row_shell_radius if _style != null else 5)
 	shell_style.corner_radius_bottom_left = (_style.row_shell_radius if _style != null else 5)
-	shell_style.content_margin_left = (_style.row_shell_padding.x if _style != null else 3) + 2
+	shell_style.content_margin_left = (_style.row_shell_padding.x if _style != null else 3)
 	shell_style.content_margin_top = (_style.row_shell_padding.y if _style != null else 2)
 	shell_style.content_margin_right = (_style.row_shell_padding.z if _style != null else 3)
 	shell_style.content_margin_bottom = (_style.row_shell_padding.w if _style != null else 2)
@@ -516,38 +701,63 @@ func _apply_row_palette(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_info_panel.add_theme_stylebox_override("panel", info_style)
 
 	if _accent_bar != null:
-		_accent_bar.color = accent
+		var accent_style := StyleBoxFlat.new()
+		accent_style.bg_color = accent
+		var accent_radius := max((_style.row_shell_radius if _style != null else 5) - 1, 0)
+		accent_style.corner_radius_top_left = accent_radius
+		accent_style.corner_radius_top_right = accent_radius
+		accent_style.corner_radius_bottom_right = accent_radius
+		accent_style.corner_radius_bottom_left = accent_radius
+		_accent_bar.add_theme_stylebox_override("panel", accent_style)
 
 
 func _row_kind(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if model == null:
 		return "authoritative"
-	if model.id.begins_with("retained_presentation/") or _has_badge(model, "retained"):
+	if model.id.begins_with("retained_presentation/"):
 		return "retained"
 	if model.label == "contract_gaps" or model.label == "projection_gaps":
 		return "contract_gap"
 	for line in model.anomaly_info_lines:
 		if _is_anomaly_line(line):
 			return "contract_gap"
-	if (
-		model.id.begins_with("native_object/")
-		or model.id.begins_with("frameproducer/")
-		or model.id.contains("orphaned_native_objects")
-		or _has_badge(model, "detached")
-		or _has_badge(model, "orphaned")
-	):
-		return "fallback"
 	return "authoritative"
+
+
+
+func _is_orphaned_row(model: CamBANGStatusPanel.StatusEntryModel) -> bool:
+	if model == null:
+		return false
+	return bool(model.is_in_orphan_native_branch)
+
+
+func _is_native_lineage_row(model: CamBANGStatusPanel.StatusEntryModel) -> bool:
+	if model == null:
+		return false
+	return bool(model.is_native_record)
 
 
 func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if model == null:
 		return "generic"
+	var visual_object_class := str(model.visual_object_class)
+	if not visual_object_class.is_empty() and [
+		"server",
+		"provider",
+		"device",
+		"stream",
+		"rig",
+		"native_object",
+		"contract_gap",
+		"orphan",
+		"generic",
+	].has(visual_object_class):
+		return visual_object_class
 	if model.id == "server/main":
 		return "server"
 	if model.label == "contract_gaps" or model.label == "projection_gaps":
 		return "contract_gap"
-	if model.id.contains("orphaned_native_objects") or model.label.begins_with("retained_orphan/"):
+	if model.id.contains("orphaned_native_objects") or model.label.begins_with("preserved_orphan/"):
 		return "orphan"
 	if model.id.begins_with("provider/") or model.id.contains("/provider/"):
 		return "provider"
@@ -603,18 +813,22 @@ func _has_badge(model: CamBANGStatusPanel.StatusEntryModel, label: String) -> bo
 
 
 func _badges_for_render(model: CamBANGStatusPanel.StatusEntryModel) -> Array[CamBANGStatusPanel.BadgeModel]:
+	# MODEL BADGES (authoritative projection truth):
+	# pass through exactly what projection emitted.
 	var rendered: Array[CamBANGStatusPanel.BadgeModel] = []
 	for badge in model.badges:
+		if badge == null:
+			continue
+		if badge.kind == "hidden":
+			continue
 		rendered.append(badge)
 
+	# RENDERER BADGES (presentation-layer augmentation):
+	# keep only explicit gap diagnostics; do not infer lifecycle/row-type badges.
 	var row_kind := _row_kind(model)
 	if row_kind == "contract_gap" and not _contains_badge_label(rendered, "contract-gap"):
 		rendered.append(_make_badge("error", "contract-gap"))
-	elif row_kind == "fallback" and not _contains_badge_label(rendered, "fallback"):
-		rendered.append(_make_badge("info", "fallback"))
-	elif row_kind == "retained" and not _contains_badge_label(rendered, "retained"):
-		rendered.append(_make_badge("warning", "retained"))
-
+	
 	return rendered
 
 
@@ -632,38 +846,155 @@ func _make_badge(role: String, label: String) -> CamBANGStatusPanel.BadgeModel:
 	return badge
 
 
-func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel) -> String:
+func _badge_role_for_render(badge: CamBANGStatusPanel.BadgeModel, row_kind: String = "authoritative") -> String:
 	if badge == null:
 		return "neutral"
+	var mode_role := _mode_badge_role_for_render(badge.label)
+	if not mode_role.is_empty():
+		return mode_role
+	var stop_reason_role := _stop_reason_badge_role_for_render(badge.label)
+	if not stop_reason_role.is_empty():
+		return stop_reason_role
+	if row_kind == "retained":
+		if badge.label == "continuity-only":
+			return "success"
+		if (
+			badge.label == "published"
+			or badge.label == "preserved-root"
+			or badge.label == "orphaned"
+			or badge.label == "prior-gen"
+		):
+			return "info"
 	match badge.label:
 		"contract-gap", "schema", "projection":
 			return "error"
-		"retained", "retained-root", "orphaned", "detached", "fallback":
+		"preserved-root", "orphaned", "detached":
 			return "warning"
 		_:
 			return badge.role
 
 
+func _mode_badge_role_for_render(raw_label: String) -> String:
+	if not raw_label.begins_with("mode="):
+		return ""
+	var mode_label := raw_label.substr("mode=".length()).strip_edges().to_upper()
+	match mode_label:
+		"OFF", "IDLE", "STOPPED", "UNKNOWN":
+			return "neutral"
+		"LIVE", "BOUND", "OPEN", "STREAMING", "FLOWING", "ARMED":
+			return "success"
+		"TRIGGERING", "COLLECTING", "CAPTURING":
+			return "info"
+		"STARVED", "TEARING_DOWN":
+			return "warning"
+		"ERROR":
+			return "error"
+		_:
+			return "info"
+
+
+func _stop_reason_badge_role_for_render(raw_label: String) -> String:
+	if not raw_label.begins_with("stop_reason="):
+		return ""
+	var stop_reason_label := raw_label.substr("stop_reason=".length()).strip_edges().to_upper()
+	match stop_reason_label:
+		"NONE", "USER":
+			return "neutral"
+		"PREEMPTED":
+			return "warning"
+		"PROVIDER":
+			return "error"
+		_:
+			return "info"
+
+
+func _phase_badge_role_for_render(
+		raw_label: String,
+		row_kind: String,
+		object_class: String,
+		is_orphaned: bool,
+		is_native_lineage: bool,
+		is_below_line: bool
+	) -> String:
+	var phase_label := ""
+	if raw_label == "destroyed":
+		phase_label = "DESTROYED"
+	elif raw_label.begins_with("phase="):
+		phase_label = raw_label.substr("phase=".length())
+	elif raw_label.begins_with("native_phase="):
+		phase_label = raw_label.substr("native_phase=".length())
+	elif raw_label.strip_edges().to_upper() in ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"]:
+		phase_label = raw_label
+	else:
+		return ""
+	var normalized_phase := phase_label.strip_edges().to_upper()
+	if is_native_lineage or object_class == "native_object":
+		if is_below_line:
+			match normalized_phase:
+				"CREATED":
+					return "warning"
+				"LIVE":
+					return "error"
+				"TEARING_DOWN":
+					return "warning"
+				"DESTROYED":
+					return "success"
+				_:
+					return ""
+		if is_orphaned:
+			match normalized_phase:
+				"CREATED":
+					return "warning"
+				"LIVE":
+					return "error"
+				"TEARING_DOWN":
+					return "warning"
+				"DESTROYED":
+					return "success"
+				_:
+					return ""
+		match normalized_phase:
+			"CREATED":
+				return "info"
+			"LIVE":
+				return "success"
+			"TEARING_DOWN":
+				return "warning"
+			"DESTROYED":
+				return "neutral"
+			_:
+				return ""
+	match normalized_phase:
+		"CREATED":
+			return "warning" if row_kind == "retained" else "info"
+		"LIVE":
+			return "error" if row_kind == "retained" else "success"
+		"TEARING_DOWN":
+			return "warning"
+		"DESTROYED":
+			return "success" if row_kind == "retained" else "neutral"
+		_:
+			return ""
+
+
 func _badge_display_label(raw_label: String) -> String:
 	if raw_label.begins_with("phase="):
-		return _phase_display_label(int(raw_label.substr("phase=".length())), false)
+		return _phase_badge_display_label(raw_label.substr("phase=".length()), false)
 	if raw_label.begins_with("native_phase="):
-		return _phase_display_label(int(raw_label.substr("native_phase=".length())), true)
+		return _phase_badge_display_label(raw_label.substr("native_phase=".length()), true)
 	match raw_label:
 		"snapshot":
-			return "AUTHORITATIVE"
+			return "SNAPSHOT"
 		"published":
 			return "PUBLISHED"
-		"retained":
-			return "RETAINED"
-		"retained-root":
-			return "RETAINED ROOT"
+		"preserved":
+			return "PRESERVED"
+		"preserved-root":
+			return "PRESERVED ROOT"
 		"prior-gen":
 			return "PRIOR GEN"
 		"continuity-only":
 			return "CONTINUITY ONLY"
-		"fallback":
-			return "FALLBACK"
 		"contract-gap":
 			return "CONTRACT GAP"
 		"schema":
@@ -676,7 +1007,7 @@ func _badge_display_label(raw_label: String) -> String:
 			return "ORPHANED"
 		"detached":
 			return "DETACHED"
-		"snapshot-unavailable":
+		"NO SNAPSHOT":
 			return "NO SNAPSHOT"
 		"snapshot-incompatible":
 			return "SNAPSHOT INCOMPATIBLE"
@@ -688,6 +1019,14 @@ func _badge_display_label(raw_label: String) -> String:
 			return raw_label.replace("-", " ").replace("_", " ").to_upper()
 
 
+func _phase_badge_display_label(raw_phase_suffix: String, is_native: bool) -> String:
+	var phase_suffix := raw_phase_suffix.strip_edges()
+	if phase_suffix.is_empty():
+		return _phase_display_label(-1, is_native)
+	var normalized := phase_suffix.strip_edges().to_upper()
+	return ("NATIVE %s" % normalized) if is_native else normalized
+
+
 func _phase_display_label(phase_value: int, is_native: bool) -> String:
 	var phase_text := "UNKNOWN"
 	match phase_value:
@@ -696,7 +1035,7 @@ func _phase_display_label(phase_value: int, is_native: bool) -> String:
 		1:
 			phase_text = "LIVE"
 		2:
-			phase_text = "TEARING DOWN"
+			phase_text = "TEARING_DOWN"
 		3:
 			phase_text = "DESTROYED"
 	if is_native:

@@ -3,31 +3,56 @@
   "provider_mode": "synthetic",
   "expected_validity": "valid",
   "should_run_projector": true,
+  "adversarial_projection": {
+    "strip_materialized_native_ids": [
+      5502
+    ]
+  },
   "expected_panel_outcome": {
     "contract_gap_count": 0,
     "projection_gap_count": 0,
     "required_row_ids": [
       "server/main",
-      "provider/100",
-      "native_object/102"
-    ]
+      "provider/5501"
+    ],
+    "forbidden_row_ids": [
+      "native_object/5502"
+    ],
+    "required_badges_by_row": {
+      "server/main": [
+        "BAD",
+        "NATIVE COVERAGE: MISSING"
+      ]
+    },
+    "required_info_substrings_by_row": {
+      "server/main": [
+        "Projection gap: native coverage 1/2 rendered (missing=1)."
+      ]
+    },
+    "required_counter_values_by_row": {
+      "provider/5501": {
+        "native_all": 2,
+        "native_cur": 2,
+        "native_prev": 0
+      }
+    }
   },
   "payload": {
     "schema_version": 1,
-    "gen": 2,
-    "version": 30,
+    "gen": 55,
+    "version": 1,
     "topology_version": 1,
-    "timestamp_ns": 50000000000,
+    "timestamp_ns": 123456790,
     "imaging_spec_version": 1,
     "rigs": [],
     "devices": [],
     "streams": [],
     "native_objects": [
       {
-        "native_id": 100,
+        "native_id": 5501,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 55,
         "owner_device_instance_id": 0,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
@@ -39,10 +64,10 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 102,
+        "native_id": 5502,
         "type": "stream",
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 55,
         "owner_device_instance_id": 999,
         "owner_stream_id": 1,
         "owner_provider_native_id": 0,

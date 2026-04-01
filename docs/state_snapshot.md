@@ -478,7 +478,7 @@ are tracked as registry records.
 ``` text
 NativeObjectRecord {
   native_id: uint64
-  type: uint32                           // CamBANG-defined enum
+  type: provider | device | stream | frameproducer
 
   phase: phase
 

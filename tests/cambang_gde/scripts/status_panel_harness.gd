@@ -1,17 +1,28 @@
 extends SceneTree
 
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
+const DEFAULT_SCREENSHOT_VIEWPORT_SIZE := Vector2i(1400, 1600)
 const SnapshotValidator = preload("res://support/snapshot_schema_validator.gd")
 
 func _initialize() -> void:
-	var args := OS.get_cmdline_user_args()
-	if args.size() < 1:
-		_printerr("usage: -- <fixture.json> [screenshot.png]")
+	var parse_result := _parse_cli_args(OS.get_cmdline_user_args())
+	if not bool(parse_result.get("ok", false)):
+		_printerr(str(parse_result.get("error", "usage: -- <fixture.json> [screenshot.png] [--window-width <px>] [--window-height <px>]")))
+		_printerr("usage: -- <fixture.json> [screenshot.png] [--window-width <px>] [--window-height <px>]")
+		_printerr("note: screenshot capture requires a headed/windowed run; semantic-only runs remain headless-compatible")
 		quit(2)
 		return
 
-	var fixture_path := args[0]
-	var screenshot_path := args[1] if args.size() >= 2 else ""
+	var fixture_path := str(parse_result.get("fixture_path", ""))
+	var screenshot_path := str(parse_result.get("screenshot_path", ""))
+	var window_size := _resolve_window_size(parse_result, screenshot_path != "")
+
+	if screenshot_path != "":
+		var screenshot_preflight_error := _validate_screenshot_mode()
+		if screenshot_preflight_error != "":
+			_printerr(screenshot_preflight_error)
+			quit(2)
+			return
 
 	var fixture := _load_fixture(fixture_path)
 	if fixture.is_empty():
@@ -20,22 +31,26 @@ func _initialize() -> void:
 
 	var payload: Variant = fixture.get("payload", null)
 	var schema_errors: Array[String] = []
+	var fixture_kind := str(fixture.get("fixture_kind", "authoritative_snapshot"))
 
-	if typeof(payload) == TYPE_DICTIONARY:
-		schema_errors = SnapshotValidator.validate_snapshot(payload)
-	else:
-		schema_errors.append("payload must be Dictionary")
+	if fixture_kind == "authoritative_snapshot":
+		if typeof(payload) == TYPE_DICTIONARY:
+			schema_errors = SnapshotValidator.validate_snapshot(payload)
+		else:
+			schema_errors.append("payload must be Dictionary")
 
 	print("HARNESS schema_errors: %s" % [schema_errors])
 
 	var expected_validity := str(fixture.get("expected_validity", "valid"))
 	var should_run_projector := bool(fixture.get("should_run_projector", true))
 	var expected_panel_outcome: Dictionary = fixture.get("expected_panel_outcome", {})
+	var adversarial_projection: Dictionary = fixture.get("adversarial_projection", {})
 	var provider_mode := str(fixture.get("provider_mode", "fixture"))
+	var initial_expanded_row_ids: Array = fixture.get("initial_expanded_row_ids", [])
 
 	var window := Window.new()
 	window.title = "status_panel_harness"
-	window.size = DEFAULT_VIEWPORT_SIZE
+	window.size = window_size
 	window.mode = Window.MODE_WINDOWED
 	window.visible = true
 	get_root().add_child(window)
@@ -58,6 +73,7 @@ func _initialize() -> void:
 		return
 
 	panel.name = "CamBANGStatusPanel"
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	window.add_child(panel)
@@ -65,11 +81,15 @@ func _initialize() -> void:
 	await process_frame
 	panel.call("_disconnect_server")
 
-	var compat: Dictionary = _compute_runtime_compat(panel, payload)
-	var contract_gaps: Array = compat.get("contract_gaps", [])
-	var projection_gaps: Array = compat.get("projection_gaps", [])
+	var contract_gaps: Array = []
+	var projection_gaps: Array = []
 	var is_schema_valid := schema_errors.is_empty()
-	var is_projection_compatible := projection_gaps.is_empty()
+	var is_projection_compatible := true
+	if fixture_kind == "authoritative_snapshot":
+		var compat: Dictionary = _compute_runtime_compat(panel, payload)
+		contract_gaps = compat.get("contract_gaps", [])
+		projection_gaps = compat.get("projection_gaps", [])
+		is_projection_compatible = projection_gaps.is_empty()
 
 	print("HARNESS contract_gaps: %s" % [contract_gaps])
 	print("HARNESS projection_gaps: %s" % [projection_gaps])
@@ -87,27 +107,53 @@ func _initialize() -> void:
 
 	var active_panel = null
 	var rendered_model = null
-	var snapshot_reading: Dictionary = panel.call("_read_snapshot", payload)
+	var snapshot_reading: Dictionary = {}
+	var authoritative_prelude_payload: Variant = fixture.get("authoritative_prelude_payload", null)
 
-	if not should_run_projector:
-		active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
-		rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
-	elif not is_schema_valid or not is_projection_compatible:
-		active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
-		rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
+	if fixture_kind == "continuity_no_snapshot":
+		var continuity_prelude_payload: Variant = fixture.get("continuity_prelude_payload", null)
+		var continuity_result := _build_continuity_no_snapshot_model(panel, continuity_prelude_payload, provider_mode)
+		if not bool(continuity_result.get("ok", false)):
+			_printerr(str(continuity_result.get("error", "continuity_no_snapshot setup failed")))
+			quit(1)
+			return
+		rendered_model = continuity_result.get("rendered_model", null)
+		snapshot_reading = continuity_result.get("snapshot_reading", {})
 	else:
-		active_panel = panel.call("_project_snapshot_to_panel_model", payload, provider_mode)
-		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", payload)
-		rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+		if authoritative_prelude_payload != null:
+			var prelude_error := _prime_authoritative_prelude(panel, authoritative_prelude_payload, provider_mode)
+			if prelude_error != "":
+				_printerr(prelude_error)
+				quit(1)
+				return
+		snapshot_reading = panel.call("_read_snapshot", payload)
+		if not should_run_projector:
+			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
+			rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
+		elif not is_schema_valid or not is_projection_compatible:
+			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
+			rendered_model = panel.call("_compose_presented_panel_model", active_panel, false, {})
+		else:
+			active_panel = panel.call("_project_snapshot_to_panel_model", payload, provider_mode)
+			var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", payload)
+			rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+			rendered_model = _apply_adversarial_projection(rendered_model, adversarial_projection, panel)
 
 	panel.call("_apply_snapshot_read", snapshot_reading)
-	panel.call("_render_panel_model", rendered_model)
+	if not initial_expanded_row_ids.is_empty():
+		var expanded_with_ancestors := _expand_rows_with_ancestors(rendered_model, initial_expanded_row_ids)
+		panel.call("apply_fixture_expanded_rows", expanded_with_ancestors)
+	panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(payload))
 
 	await process_frame
 	await process_frame
 
 	if screenshot_path != "":
-		_capture_window_png(window, screenshot_path)
+		var capture_error := _capture_window_png(window, screenshot_path)
+		if capture_error != "":
+			_printerr(capture_error)
+			quit(2)
+			return
 
 	var row_ids := _collect_entry_ids(rendered_model)
 	print("HARNESS row_ids: %s" % [row_ids])
@@ -148,6 +194,112 @@ func _initialize() -> void:
 	quit(0)
 
 
+func _parse_cli_args(args: PackedStringArray) -> Dictionary:
+	var fixture_path := ""
+	var screenshot_path := ""
+	var window_width: Variant = null
+	var window_height: Variant = null
+	var index := 0
+
+	while index < args.size():
+		var arg := args[index]
+		match arg:
+			"--window-width":
+				index += 1
+				if index >= args.size():
+					return {
+						"ok": false,
+						"error": "missing value for --window-width",
+					}
+				var parsed_width := _parse_dimension_arg(args[index], "--window-width")
+				if not bool(parsed_width.get("ok", false)):
+					return parsed_width
+				window_width = parsed_width.get("value")
+			"--window-height":
+				index += 1
+				if index >= args.size():
+					return {
+						"ok": false,
+						"error": "missing value for --window-height",
+					}
+				var parsed_height := _parse_dimension_arg(args[index], "--window-height")
+				if not bool(parsed_height.get("ok", false)):
+					return parsed_height
+				window_height = parsed_height.get("value")
+			_:
+				if arg.begins_with("--"):
+					return {
+						"ok": false,
+						"error": "unknown option: %s" % arg,
+					}
+				if fixture_path == "":
+					fixture_path = arg
+				elif screenshot_path == "":
+					screenshot_path = arg
+				else:
+					return {
+						"ok": false,
+						"error": "unexpected extra positional argument: %s" % arg,
+					}
+		index += 1
+
+	if fixture_path == "":
+		return {
+			"ok": false,
+			"error": "missing fixture path",
+		}
+
+	return {
+		"ok": true,
+		"fixture_path": fixture_path,
+		"screenshot_path": screenshot_path,
+		"window_width": window_width,
+		"window_height": window_height,
+	}
+
+
+func _parse_dimension_arg(raw_value: String, option_name: String) -> Dictionary:
+	if raw_value == "":
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer" % option_name,
+		}
+
+	if not raw_value.is_valid_int():
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer; got %s" % [option_name, raw_value],
+		}
+
+	var value := int(raw_value)
+	if value <= 0:
+		return {
+			"ok": false,
+			"error": "%s requires a positive integer; got %d" % [option_name, value],
+		}
+
+	return {
+		"ok": true,
+		"value": value,
+	}
+
+
+func _resolve_window_size(parse_result: Dictionary, is_screenshot_run: bool) -> Vector2i:
+	var has_explicit_width := parse_result.get("window_width", null) != null
+	var has_explicit_height := parse_result.get("window_height", null) != null
+
+	var window_size := DEFAULT_VIEWPORT_SIZE
+	if is_screenshot_run and not has_explicit_width and not has_explicit_height:
+		window_size = DEFAULT_SCREENSHOT_VIEWPORT_SIZE
+
+	if has_explicit_width:
+		window_size.x = int(parse_result.get("window_width"))
+	if has_explicit_height:
+		window_size.y = int(parse_result.get("window_height"))
+
+	return window_size
+
+
 func _load_fixture(path: String) -> Dictionary:
 	var text := FileAccess.get_file_as_string(path)
 	if text == "":
@@ -182,20 +334,165 @@ func _compute_runtime_compat(panel: Object, payload: Variant) -> Dictionary:
 	return panel.call("_check_snapshot_runtime_compat", payload)
 
 
-func _capture_window_png(window: Window, screenshot_path: String) -> void:
+func _resolve_render_snapshot(payload: Variant) -> Variant:
+	if payload == null:
+		return null
+	if typeof(payload) != TYPE_DICTIONARY:
+		return null
+	return payload
+
+
+func _build_continuity_no_snapshot_model(panel: Object, continuity_prelude_payload: Variant, provider_mode: String) -> Dictionary:
+	if continuity_prelude_payload != null and typeof(continuity_prelude_payload) != TYPE_DICTIONARY:
+		return {
+			"ok": false,
+			"error": "continuity_prelude_payload must be Dictionary or null",
+		}
+
+	if typeof(continuity_prelude_payload) == TYPE_DICTIONARY:
+		var prelude_payload: Dictionary = continuity_prelude_payload
+		var prelude_schema_errors: Array[String] = SnapshotValidator.validate_snapshot(prelude_payload)
+		if not prelude_schema_errors.is_empty():
+			return {
+				"ok": false,
+				"error": "continuity_prelude_payload failed schema validation: %s" % [prelude_schema_errors],
+			}
+
+		var prelude_compat: Dictionary = panel.call("_check_snapshot_runtime_compat", prelude_payload)
+		if not bool(prelude_compat.get("ok", false)):
+			return {
+				"ok": false,
+				"error": "continuity_prelude_payload failed runtime compatibility: %s" % [prelude_compat],
+			}
+
+		var prelude_active_panel = panel.call("_project_snapshot_to_panel_model", prelude_payload, provider_mode)
+		var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_payload)
+		panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
+		panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+
+	var nil_panel = panel.call("_build_nil_panel_model", "No published snapshot yet.")
+	panel.call("_set_last_active_panel_state", nil_panel, false, {})
+	var rendered_model = panel.call("_compose_presented_panel_model", nil_panel, false, {})
+	var snapshot_reading: Dictionary = panel.call("_read_snapshot", null)
+
+	return {
+		"ok": true,
+		"rendered_model": rendered_model,
+		"snapshot_reading": snapshot_reading,
+	}
+
+
+func _prime_authoritative_prelude(panel: Object, prelude_payload: Variant, provider_mode: String) -> String:
+	if typeof(prelude_payload) != TYPE_DICTIONARY:
+		return "authoritative_prelude_payload must be Dictionary"
+	var prelude_snapshot: Dictionary = prelude_payload
+	var prelude_schema_errors: Array[String] = SnapshotValidator.validate_snapshot(prelude_snapshot)
+	if not prelude_schema_errors.is_empty():
+		return "authoritative_prelude_payload failed schema validation: %s" % [prelude_schema_errors]
+	var prelude_compat: Dictionary = panel.call("_check_snapshot_runtime_compat", prelude_snapshot)
+	if not bool(prelude_compat.get("ok", false)):
+		return "authoritative_prelude_payload failed runtime compatibility: %s" % [prelude_compat]
+	var prelude_active_panel = panel.call("_project_snapshot_to_panel_model", prelude_snapshot, provider_mode)
+	var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_snapshot)
+	panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
+	panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	return ""
+
+
+func _apply_adversarial_projection(rendered_model: Variant, config: Dictionary, panel: Object) -> Variant:
+	if rendered_model == null:
+		return rendered_model
+	if config.is_empty():
+		return rendered_model
+
+	if not rendered_model is Object:
+		return rendered_model
+
+	var strip_ids_variant: Variant = config.get("strip_materialized_native_ids", [])
+	if typeof(strip_ids_variant) != TYPE_ARRAY:
+		return rendered_model
+	var strip_ids_raw: Array = strip_ids_variant
+	if strip_ids_raw.is_empty():
+		return rendered_model
+
+	var strip_native_ids := {}
+	for raw_id in strip_ids_raw:
+		var native_id := int(raw_id)
+		if native_id > 0:
+			strip_native_ids[native_id] = true
+	if strip_native_ids.is_empty():
+		return rendered_model
+
+	var entries_variant: Variant = rendered_model.get("entries")
+	if typeof(entries_variant) != TYPE_ARRAY:
+		return rendered_model
+	var source_entries: Array = entries_variant
+	if source_entries.is_empty():
+		return rendered_model
+
+	var stripped_row_ids := {}
+	for raw_entry in source_entries:
+		if raw_entry == null:
+			continue
+		var materialized_native_id := int(raw_entry.materialized_native_id)
+		if strip_native_ids.has(materialized_native_id):
+			var entry_id := str(raw_entry.id)
+			if entry_id != "":
+				stripped_row_ids[entry_id] = true
+
+	if stripped_row_ids.is_empty():
+		return rendered_model
+
+	var changed := true
+	while changed:
+		changed = false
+		for raw_entry in source_entries:
+			if raw_entry == null:
+				continue
+			var entry_id := str(raw_entry.id)
+			if entry_id == "" or stripped_row_ids.has(entry_id):
+				continue
+			var parent_id := str(raw_entry.parent_id)
+			if parent_id != "" and stripped_row_ids.has(parent_id):
+				stripped_row_ids[entry_id] = true
+				changed = true
+
+	var filtered_entries: Array = []
+	for raw_entry in source_entries:
+		if raw_entry == null:
+			continue
+		var entry_id := str(raw_entry.id)
+		if entry_id != "" and stripped_row_ids.has(entry_id):
+			continue
+		filtered_entries.append(raw_entry)
+
+	source_entries.clear()
+	for kept_entry in filtered_entries:
+		source_entries.append(kept_entry)
+	panel.call("_ensure_expandability", rendered_model)
+	return rendered_model
+
+
+func _validate_screenshot_mode() -> String:
+	var display_name := DisplayServer.get_name()
+	if display_name == "headless":
+		return "screenshot capture requires a headed/windowed run; current display server is headless, so window rendering/capture is unavailable. Rerun without --headless."
+	return ""
+
+
+func _capture_window_png(window: Window, screenshot_path: String) -> String:
 	var texture := window.get_texture()
 	if texture == null:
-		push_warning("screenshot skipped: window texture unavailable in current renderer/headless mode")
-		return
+		return "screenshot capture requires a headed/windowed run; window texture capture is unavailable in the current renderer/display server. Rerun without --headless using a real window/render path."
 
 	var image: Image = texture.get_image()
 	if image == null:
-		push_warning("screenshot skipped: failed to read image from window texture")
-		return
+		return "screenshot capture requires a headed/windowed run; failed to read pixels from the real window texture in the current renderer/display server. Rerun without --headless using a real window/render path."
 
 	var err := image.save_png(screenshot_path)
 	if err != OK:
-		_printerr("failed to save screenshot: %s (err=%d)" % [screenshot_path, err])
+		return "failed to save screenshot: %s (err=%d)" % [screenshot_path, err]
+	return ""
 
 
 func _collect_entry_ids(model: Variant) -> Array[String]:
@@ -211,6 +508,35 @@ func _collect_entry_ids(model: Variant) -> Array[String]:
 			ids.append(entry_id)
 
 	return ids
+
+
+func _expand_rows_with_ancestors(model: Variant, requested_row_ids: Array) -> Array[String]:
+	var expanded_set := {}
+	var parent_by_id := {}
+	if model != null:
+		for raw_entry in model.entries:
+			if raw_entry == null:
+				continue
+			var entry_id := str(raw_entry.id)
+			if entry_id.is_empty():
+				continue
+			parent_by_id[entry_id] = str(raw_entry.parent_id)
+
+	for raw_row_id in requested_row_ids:
+		var row_id := str(raw_row_id)
+		if row_id.is_empty():
+			continue
+		var current_id := row_id
+		while current_id != "":
+			if expanded_set.has(current_id):
+				break
+			expanded_set[current_id] = true
+			current_id = str(parent_by_id.get(current_id, ""))
+
+	var expanded_rows: Array[String] = []
+	for row_id in expanded_set.keys():
+		expanded_rows.append(str(row_id))
+	return expanded_rows
 
 
 func _extract_entries(model: Variant) -> Array:
@@ -290,6 +616,33 @@ func _extract_entry_counters(entry: Variant) -> Dictionary:
 			continue
 		counters[str(name)] = int(_extract_variant_field(raw_counter, "value", 0))
 	return counters
+
+
+func _extract_entry_counter_names(entry: Variant) -> Array[String]:
+	var names: Array[String] = []
+	var raw_counters: Array = _extract_array_field(entry, "counters")
+	for raw_counter in raw_counters:
+		var name: Variant = _extract_variant_field(raw_counter, "name")
+		if name == null:
+			continue
+		names.append(str(name))
+	return names
+
+
+func _contains_counter_subsequence(names: Array[String], expected_sequence: Array) -> bool:
+	var cursor := 0
+	for raw_expected in expected_sequence:
+		var expected_name := str(raw_expected)
+		var found := false
+		while cursor < names.size():
+			if names[cursor] == expected_name:
+				found = true
+				cursor += 1
+				break
+			cursor += 1
+		if not found:
+			return false
+	return true
 
 
 func _extract_entry_badges(entry: Variant) -> Array[String]:
@@ -476,7 +829,21 @@ func _evaluate_expectations(
 				failures.append(
 					"row %s counter %s mismatch: got=%d want=%d"
 					% [str(row_id), counter_key, int(counters[counter_key]), int(expected_values[counter_name])]
-				)
+					)
+
+	var required_counter_order_by_row: Dictionary = expected_panel_outcome.get("required_counter_order_by_row", {})
+	for row_id in required_counter_order_by_row.keys():
+		var entry: Variant = _find_entry(rendered_model, str(row_id))
+		if entry == null:
+			failures.append("missing row for counter order expectations: %s" % str(row_id))
+			continue
+		var actual_counter_names := _extract_entry_counter_names(entry)
+		var expected_sequence: Array = required_counter_order_by_row.get(row_id, []) as Array
+		if not _contains_counter_subsequence(actual_counter_names, expected_sequence):
+			failures.append(
+				"row %s counter order mismatch: expected subsequence=%s actual=%s"
+				% [str(row_id), expected_sequence, actual_counter_names]
+			)
 
 	var required_badges_by_row: Dictionary = expected_panel_outcome.get("required_badges_by_row", {})
 	for row_id in required_badges_by_row.keys():

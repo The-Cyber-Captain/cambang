@@ -8,25 +8,15 @@
     "projection_gap_count": 0,
     "required_row_ids": [
       "server/main",
-      "provider/100",
-      "device/1",
-      "stream/1",
-      "frameproducer/103"
+      "provider/1000",
+      "device/1001",
+      "stream/1101",
+      "stream/1102",
+      "frameproducer/1201"
     ],
     "required_visible_row_ids": [
-      "server/main",
-      "provider/100",
-      "device/1",
-      "stream/1",
-      "frameproducer/103"
+      "frameproducer/1201"
     ],
-    "required_counter_values_by_row": {
-      "provider/100": {
-        "native_all": 4,
-        "native_cur": 4,
-        "native_prev": 0
-      }
-    },
     "required_badges_by_row": {
       "server/main": [
         "OK",
@@ -34,24 +24,23 @@
       ]
     },
     "required_info_substrings_by_row": {
-      "frameproducer/103": [
-        "owner_stream_id=1",
-        "creation_gen=2"
+      "frameproducer/1201": [
+        "owner_stream_id=1101"
       ]
     }
   },
   "payload": {
     "schema_version": 1,
-    "gen": 2,
-    "version": 21,
-    "topology_version": 1,
-    "timestamp_ns": 40096504700,
+    "gen": 40,
+    "version": 4,
+    "topology_version": 4,
+    "timestamp_ns": 40000000040,
     "imaging_spec_version": 1,
     "rigs": [],
     "devices": [
       {
-        "instance_id": 1,
-        "hardware_id": "synthetic:0",
+        "instance_id": 1001,
+        "hardware_id": "synthetic:review:0",
         "phase": "LIVE",
         "mode": "STREAMING",
         "errors_count": 0,
@@ -70,22 +59,45 @@
     ],
     "streams": [
       {
-        "stream_id": 1,
-        "device_instance_id": 1,
+        "stream_id": 1101,
+        "device_instance_id": 1001,
         "phase": "LIVE",
         "mode": "FLOWING",
         "intent": "PREVIEW",
         "stop_reason": "NONE",
-        "target_fps_max": 30,
-        "frames_received": 1024,
+        "target_fps_max": 60,
+        "frames_received": 400,
+        "frames_delivered": 395,
+        "frames_dropped": 5,
+        "queue_depth": 2,
         "width": 1280,
         "height": 720,
         "format": 1094862674,
         "target_fps_min": 24,
         "profile_version": 77,
+        "last_frame_ts_ns": 0,
+        "visibility_frames_presented": 0,
+        "visibility_frames_rejected_unsupported": 0,
+        "visibility_frames_rejected_invalid": 0,
+        "visibility_last_path": "NONE"
+      },
+      {
+        "stream_id": 1102,
+        "device_instance_id": 1001,
+        "phase": "LIVE",
+        "mode": "STOPPED",
+        "intent": "VIEWFINDER",
+        "stop_reason": "USER",
+        "target_fps_max": 30,
+        "frames_received": 0,
         "frames_delivered": 0,
         "frames_dropped": 0,
         "queue_depth": 0,
+        "width": 1280,
+        "height": 720,
+        "format": 1094862674,
+        "target_fps_min": 24,
+        "profile_version": 77,
         "last_frame_ts_ns": 0,
         "visibility_frames_presented": 0,
         "visibility_frames_rejected_unsupported": 0,
@@ -95,10 +107,10 @@
     ],
     "native_objects": [
       {
-        "native_id": 100,
+        "native_id": 1000,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 40,
         "owner_device_instance_id": 0,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
@@ -110,11 +122,11 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 101,
+        "native_id": 1001,
         "type": "device",
-        "owner_device_instance_id": 1,
+        "owner_device_instance_id": 1001,
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 40,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
@@ -125,12 +137,12 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 102,
+        "native_id": 1101,
         "type": "stream",
-        "owner_device_instance_id": 1,
-        "owner_stream_id": 1,
+        "owner_device_instance_id": 1001,
+        "owner_stream_id": 1101,
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 40,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
         "root_id": 0,
@@ -140,12 +152,27 @@
         "buffers_in_use": 0
       },
       {
-        "native_id": 103,
-        "type": "frameproducer",
-        "owner_device_instance_id": 1,
-        "owner_stream_id": 1,
+        "native_id": 1102,
+        "type": "stream",
+        "owner_device_instance_id": 1001,
+        "owner_stream_id": 1102,
         "phase": "LIVE",
-        "creation_gen": 2,
+        "creation_gen": 40,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      },
+      {
+        "native_id": 1201,
+        "type": "frameproducer",
+        "owner_device_instance_id": 1001,
+        "owner_stream_id": 1101,
+        "phase": "LIVE",
+        "creation_gen": 40,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
         "root_id": 0,

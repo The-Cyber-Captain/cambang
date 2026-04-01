@@ -20,13 +20,11 @@
     ],
     "required_counters_by_row": {
       "device/1": [
-        "mode",
         "errors",
         "still_w",
         "still_h"
       ],
       "stream/1": [
-        "mode",
         "width",
         "height",
         "fps_min",
@@ -40,7 +38,6 @@
         "rej_inv"
       ],
       "rig/7": [
-        "mode",
         "members",
         "still_w",
         "still_h"
@@ -76,46 +73,23 @@
       }
     },
     "required_info_substrings_by_row": {
-      "provider/100": [
-        "native coverage: 4/4 rendered."
-      ],
-      "device/1": [
-        "capture_width=4032",
-        "capture_height=3024",
-        "capture_profile_version=11",
-        "capture_format='JPEG'"
-      ],
-      "stream/1": [
-        "width=1280",
-        "height=720",
-        "target_fps_min=24",
-        "target_fps_max=60",
-        "profile_version=77",
-        "frames_received=1024",
-        "frames_delivered=1000",
-        "frames_dropped=24",
-        "queue_depth=3",
-        "last_frame_ts_ns=40096501234",
-        "visibility_frames_presented=1000",
-        "visibility_frames_rejected_unsupported=5",
-        "visibility_frames_rejected_invalid=2",
-        "visibility_last_path=REJECTED_UNSUPPORTED (3)",
-        "format='RGBA'"
-      ],
       "frameproducer/103": [
-        "FrameProducer owner_stream_id=1.",
-        "FrameProducer creation_gen=2."
-      ],
-      "rig/7": [
-        "capture_width=4096",
-        "capture_height=2160",
-        "capture_profile_version=13",
-        "capture_format='RAW '"
+        "owner_stream_id=1",
+        "creation_gen=2"
       ]
     },
     "required_badges_by_row": {
-      "provider/100": [
+      "server/main": [
+        "OK",
         "NATIVE COVERAGE: OK"
+      ],
+      "device/1": [
+        "UNKNOWN",
+        "mode=STREAMING"
+      ],
+      "stream/1": [
+        "UNKNOWN",
+        "mode=FLOWING"
       ]
     }
   },
@@ -138,7 +112,15 @@
         "capture_profile_version": 13,
         "capture_width": 4096,
         "capture_height": 2160,
-        "capture_format": 542589266
+        "capture_format": 542589266,
+        "active_capture_id": 0,
+        "captures_triggered": 0,
+        "captures_completed": 0,
+        "captures_failed": 0,
+        "last_capture_id": 0,
+        "last_capture_latency_ns": 0,
+        "last_sync_skew_ns": 0,
+        "error_code": 0
       }
     ],
     "devices": [
@@ -153,7 +135,12 @@
         "capture_profile_version": 11,
         "capture_width": 4032,
         "capture_height": 3024,
-        "capture_format": 1195724874
+        "capture_format": 1195724874,
+        "camera_spec_version": 0,
+        "warm_hold_ms": 0,
+        "warm_remaining_ms": 0,
+        "rebuild_count": 0,
+        "last_error_code": 0
       }
     ],
     "streams": [
@@ -178,7 +165,7 @@
         "visibility_frames_presented": 1000,
         "visibility_frames_rejected_unsupported": 5,
         "visibility_frames_rejected_invalid": 2,
-        "visibility_last_path": 3
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
@@ -186,14 +173,31 @@
         "native_id": 100,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 2
+        "creation_gen": 2,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 101,
         "type": "device",
         "owner_device_instance_id": 1,
         "phase": "LIVE",
-        "creation_gen": 2
+        "creation_gen": 2,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 102,
@@ -201,7 +205,14 @@
         "owner_device_instance_id": 1,
         "owner_stream_id": 1,
         "phase": "LIVE",
-        "creation_gen": 2
+        "creation_gen": 2,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       },
       {
         "native_id": 103,
@@ -209,7 +220,14 @@
         "owner_device_instance_id": 1,
         "owner_stream_id": 1,
         "phase": "LIVE",
-        "creation_gen": 2
+        "creation_gen": 2,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
       }
     ],
     "detached_root_ids": []

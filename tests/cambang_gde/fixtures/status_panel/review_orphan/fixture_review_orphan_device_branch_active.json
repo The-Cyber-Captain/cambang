@@ -1,0 +1,115 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "initial_expanded_row_ids": [
+    "provider/4000/orphaned_native_objects",
+    "native_object/4101",
+    "native_object/4201"
+  ],
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "server/main",
+      "provider/4000",
+      "provider/4000/orphaned_native_objects",
+      "native_object/4101",
+      "native_object/4201",
+      "frameproducer/4301"
+    ],
+    "required_visible_row_ids": [
+      "provider/4000/orphaned_native_objects",
+      "native_object/4101",
+      "native_object/4201",
+      "frameproducer/4301"
+    ],
+    "required_badges_by_row": {
+      "server/main": [
+        "OK",
+        "NATIVE COVERAGE: OK"
+      ]
+    },
+    "forbidden_row_ids": [
+      "device/4101",
+      "stream/4201"
+    ]
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 70,
+    "version": 9,
+    "topology_version": 9,
+    "timestamp_ns": 70000000070,
+    "imaging_spec_version": 1,
+    "rigs": [],
+    "devices": [],
+    "streams": [],
+    "native_objects": [
+      {
+        "native_id": 4000,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 70,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      },
+      {
+        "native_id": 4101,
+        "type": "device",
+        "owner_device_instance_id": 4101,
+        "phase": "LIVE",
+        "root_id": 9301,
+        "creation_gen": 70,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      },
+      {
+        "native_id": 4201,
+        "type": "stream",
+        "owner_device_instance_id": 4101,
+        "owner_stream_id": 4201,
+        "phase": "LIVE",
+        "root_id": 9301,
+        "creation_gen": 70,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      },
+      {
+        "native_id": 4301,
+        "type": "frameproducer",
+        "owner_stream_id": 4201,
+        "phase": "LIVE",
+        "root_id": 9301,
+        "creation_gen": 70,
+        "owner_device_instance_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      }
+    ],
+    "detached_root_ids": [
+      9301
+    ]
+  }
+}
