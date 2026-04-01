@@ -232,6 +232,14 @@ void SyntheticProvider::timeline_pump_() {
         (void)destroy_stream(ev.stream_id);
         break;
       }
+
+      case SyntheticEventType::UpdateStreamPicture: {
+        if (ev.stream_id == 0 || !ev.has_picture) {
+          break;
+        }
+        (void)set_stream_picture_config(ev.stream_id, ev.picture);
+        break;
+      }
     }
   }
 }
