@@ -84,6 +84,9 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_scenario_ = cfg_.timeline_scenario;
     if (!timeline_scenario_.events.empty()) {
+      // Backward-compatibility: config-seeded (provider-owned/verifier-owned)
+      // scenarios auto-run once initialized so advance(dt_ns) immediately pumps
+      // timeline execution as legacy smoke/verifier tools expect.
       timeline_running_ = true;
       timeline_paused_ = false;
       for (const auto& ev : timeline_scenario_.events) {
@@ -712,9 +715,14 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   if (cfg_.synthetic_role != SyntheticRole::Timeline) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
-  if (timeline_running_) {
-    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  // Host-submitted scenarios are staged, not auto-started.
+  // This intentionally differs from config-seeded initialization semantics.
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
   }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
   timeline_scenario_ = scenario;
   return ProviderResult::success();
 }
