@@ -107,6 +107,26 @@ Godot must not:
 - reimplement timeline/event semantics in dev glue
 - define alternate meaning for event ordering or timing
 
+### 6.1 Execution arming compatibility rule (Timeline role)
+
+To preserve existing verifier behavior while keeping explicit host controls:
+
+- **config-seeded/provider-init-owned scenario path**
+  - when `SyntheticProvider` Timeline role initializes with a non-empty
+    config-seeded scenario event set, execution is armed as running/unpaused
+    at initialize and `advance(dt_ns)` pumps immediately
+  - purpose: preserve legacy verifier/direct-start compatibility without
+    requiring host start controls
+
+- **host-submitted scenario path**
+  - when a scenario is supplied later via host control entry points, it is
+    staged provider-side and remains not-running until explicit host start
+  - purpose: preserve thin-host explicit-control semantics for
+    Godot/dev-hosted scenarios
+
+This is a compatibility arming rule, not a semantic ownership split:
+both paths remain SyntheticProvider-owned timeline execution.
+
 ---
 
 ## 7. Initial event vocabulary and expansion boundary
