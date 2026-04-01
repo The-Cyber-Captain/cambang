@@ -84,11 +84,11 @@
         "NATIVE COVERAGE: OK"
       ],
       "device/1": [
-        "UNKNOWN",
+        "OK",
         "mode=STREAMING"
       ],
       "stream/1": [
-        "UNKNOWN",
+        "ATTN",
         "mode=FLOWING"
       ]
     }
