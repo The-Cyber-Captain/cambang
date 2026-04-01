@@ -6,7 +6,7 @@ Tool: synthetic_timeline_verify
 Purpose
 -------
 Deterministically verifies SyntheticProvider Timeline behaviour and Core registry
-truth using scheduled scenario events and virtual time.
+truth using scheduled verification-case events and virtual time.
 
 This utility validates lifecycle reporting, FrameProducer tracking, capture
 timestamp semantics, and event ordering. It is intended for maintainer
@@ -55,17 +55,18 @@ constexpr uint64_t kStreamId = 1;
 constexpr uint64_t kOneSecNs = 1'000'000'000ull;
 
 struct Options {
-  std::string scenario = "basic_lifecycle";
+  std::string verify_case = "basic_lifecycle";
   bool dump_snapshots = false;
 };
 
 static void usage(const char* argv0) {
   std::cerr
-      << "Usage: " << argv0 << " [--scenario=<name>] [--dump_snapshots]\n"
-      << "Scenarios:\n"
+      << "Usage: " << argv0 << " [--verify_case=<name>] [--dump_snapshots]\n"
+      << "Verification cases:\n"
       << "  basic_lifecycle\n"
       << "  invalid_sequence\n"
-      << "  catchup_stress\n";
+      << "  catchup_stress\n"
+      << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n";
 }
 
 static bool starts_with(const std::string& s, const std::string& prefix) {
@@ -83,8 +84,12 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       opt.dump_snapshots = true;
       continue;
     }
+    if (starts_with(a, "--verify_case=")) {
+      opt.verify_case = a.substr(std::string("--verify_case=").size());
+      continue;
+    }
     if (starts_with(a, "--scenario=")) {
-      opt.scenario = a.substr(std::string("--scenario=").size());
+      opt.verify_case = a.substr(std::string("--scenario=").size());
       continue;
     }
     std::cerr << "Unknown arg: " << a << "\n";
@@ -451,14 +456,14 @@ int main(int argc, char** argv) {
   }
 
   int r = 0;
-  if (opt.scenario == "basic_lifecycle") {
+  if (opt.verify_case == "basic_lifecycle") {
     r = run_basic_lifecycle(rt, buf, opt, period);
-  } else if (opt.scenario == "invalid_sequence") {
+  } else if (opt.verify_case == "invalid_sequence") {
     r = run_invalid_sequence(rt, buf, opt);
-  } else if (opt.scenario == "catchup_stress") {
+  } else if (opt.verify_case == "catchup_stress") {
     r = run_catchup_stress(rt, buf, opt, period);
   } else {
-    std::cerr << "Unknown scenario: " << opt.scenario << "\n";
+    std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
     usage(argv[0]);
     r = 2;
   }
@@ -471,7 +476,7 @@ int main(int argc, char** argv) {
   rt.stop();
 
   if (r == 0) {
-    std::cout << "OK: synthetic_timeline_verify passed (scenario=" << opt.scenario << ")\n";
+    std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";
   }
   return r;
 }
