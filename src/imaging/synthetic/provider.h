@@ -84,6 +84,7 @@ private:
   };
 
   void timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id);
+  void timeline_schedule_(const SyntheticScheduledEvent& ev);
   void timeline_pump_();
 
   struct DeviceState {

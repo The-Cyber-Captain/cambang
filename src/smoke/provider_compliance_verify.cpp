@@ -43,6 +43,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
     EventRec ev{"frame", 0};
     ev.ts = frame.capture_timestamp;
     events.push_back(ev);
+    if (frame.release) {
+      frame.release(frame.release_user, &frame);
+    }
   }
   void on_device_error(uint64_t id, ProviderError) override { events.push_back({"device_error", id}); }
   void on_stream_error(uint64_t id, ProviderError) override { events.push_back({"stream_error", id}); }
@@ -237,12 +240,112 @@ bool run_synthetic_check() {
   return assert_native_balance(cb.events, "synthetic");
 }
 
+bool run_synthetic_timeline_scenario_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+  cfg.nominal.start_stream_warmup_ns = 0;
+
+  const uint64_t device_id = 21;
+  const uint64_t root_id = 2201;
+  const uint64_t stream_id = 22;
+  const uint64_t period_ns = 1'000'000'000ull / 30ull;
+
+  SyntheticScheduledEvent ev{};
+  ev.at_ns = 0;
+  ev.type = SyntheticEventType::OpenDevice;
+  ev.endpoint_index = 0;
+  ev.device_instance_id = device_id;
+  ev.root_id = root_id;
+  cfg.timeline_scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = 0;
+  ev.type = SyntheticEventType::CreateStream;
+  ev.device_instance_id = device_id;
+  ev.stream_id = stream_id;
+  cfg.timeline_scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = 0;
+  ev.type = SyntheticEventType::StartStream;
+  ev.stream_id = stream_id;
+  cfg.timeline_scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = period_ns * 2;
+  ev.type = SyntheticEventType::StopStream;
+  ev.stream_id = stream_id;
+  cfg.timeline_scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = period_ns * 2 + 1;
+  ev.type = SyntheticEventType::DestroyStream;
+  ev.stream_id = stream_id;
+  cfg.timeline_scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = period_ns * 2 + 2;
+  ev.type = SyntheticEventType::CloseDevice;
+  ev.device_instance_id = device_id;
+  cfg.timeline_scenario.events.push_back(ev);
+
+  SyntheticProvider p(cfg);
+  if (!p.initialize(&cb).ok()) return false;
+
+  // Process t=0 events: open/create/start and initial emit.
+  p.advance(0);
+  // Drive the scheduled stop/destroy/close timeline.
+  p.advance(period_ns);
+  p.advance(period_ns);
+  p.advance(2);
+
+  if (find_index(cb.events, "device_opened", device_id) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not open device\n";
+    return false;
+  }
+  if (find_index(cb.events, "stream_created", stream_id) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not create stream\n";
+    return false;
+  }
+  if (find_index(cb.events, "stream_started", stream_id) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not start stream\n";
+    return false;
+  }
+  if (find_index(cb.events, "frame", 0) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not emit frame\n";
+    return false;
+  }
+  if (find_index(cb.events, "stream_stopped", stream_id) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not stop stream\n";
+    return false;
+  }
+  if (find_index(cb.events, "stream_destroyed", stream_id) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not destroy stream\n";
+    return false;
+  }
+  if (find_index(cb.events, "device_closed", device_id) < 0) {
+    std::cerr << "FAIL synthetic timeline scenario did not close device\n";
+    return false;
+  }
+
+  if (!p.shutdown().ok()) return false;
+  return assert_native_balance(cb.events, "synthetic_timeline_scenario");
+}
+
 
 } // namespace
 
 int main() {
   if (!run_stub_check()) return 1;
   if (!run_synthetic_check()) return 1;
+  if (!run_synthetic_timeline_scenario_check()) return 1;
   std::cout << "PASS provider_compliance_verify\n";
   return 0;
 }
