@@ -68,6 +68,17 @@ Verification tools should:
 - produce a clear pass / fail result
 - run quickly
 
+### Verification case terminology (maintainer tooling)
+
+For maintainer smoke/CLI tooling, authored validation inputs are called
+**verification cases**.
+
+- Use **verification case** in prose/help text for smoke/CLI selections.
+- Reserve **scenario** for the user-facing / Godot / SyntheticProvider
+  timeline meaning.
+- Keep **fixture** distinct: fixtures are input artifacts; verification
+  cases are authored validation procedures that may consume fixtures.
+
 ### Platform runtime validation
 
 A maintainer tool that validates a platform-backed provider against real

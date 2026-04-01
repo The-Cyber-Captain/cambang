@@ -4,7 +4,7 @@
   #error "restart_boundary_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
 #endif
 
-#include "smoke/scenario/scenario_harness.h"
+#include "smoke/verify_case/verify_case_harness.h"
 
 namespace cambang {
 namespace {
@@ -38,7 +38,7 @@ const NativeObjectRecord* find_native_of_type(const CamBANGStateSnapshot& s, Nat
 int main() {
   using namespace cambang;
 
-  ScenarioHarness h(ScenarioProviderKind::Synthetic);
+  VerifyCaseHarness h(VerifyCaseProviderKind::Synthetic);
   std::string error;
 
   if (!h.start_runtime(error)) {

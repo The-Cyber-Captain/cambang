@@ -158,6 +158,7 @@ introduced.
 3. dev notes must explicitly mark temporary code paths
 4. avoid duplicating architectural explanations across files
 5. if in doubt, update a canonical document rather than creating a parallel explanation
+6. maintain terminology discipline: use **verification case** for maintainer smoke/CLI authored validation inputs, and reserve **scenario** for user/Godot/SyntheticProvider timeline meaning
 
 ---
 

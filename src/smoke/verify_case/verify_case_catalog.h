@@ -4,16 +4,16 @@
 #include <string>
 #include <vector>
 
-#include "smoke/scenario/scenario_harness.h"
+#include "smoke/verify_case/verify_case_harness.h"
 
 namespace cambang {
 
-struct ScenarioDefinition {
+struct VerifyCaseDefinition {
   std::string name;
   std::function<int()> run;
 };
 
-std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind,
+std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind provider_kind,
                                                const RealizationProfilerOptions& profiler_options = {});
 
 } // namespace cambang

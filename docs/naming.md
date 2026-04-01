@@ -5,6 +5,23 @@ Godot-facing API, configuration concepts, and diagnostics/introspection.
 
 ------------------------------------------------------------------------
 
+## 0. Terminology guardrail: scenario vs verification case
+
+To prevent cross-layer ambiguity:
+
+- **Scenario** is reserved for the user-facing / Godot / SyntheticProvider
+  timeline concept (including timeline recording, storage, and execution
+  discussions).
+- **Verification case** is the canonical prose term for maintainer-authored
+  smoke/CLI validation inputs.
+- Code identifiers may use compact `verify_case` forms for smoke tooling, but
+  contributor-facing prose should prefer the full phrase **verification case**.
+- **Fixture** remains a separate concept: a prepared input artifact/dataset used
+  by tests or tooling. A fixture may be consumed by a verification case, but the
+  terms are not interchangeable.
+
+------------------------------------------------------------------------
+
 ## 1. Godot-facing API objects
 
 ### `CamBANGServer`
