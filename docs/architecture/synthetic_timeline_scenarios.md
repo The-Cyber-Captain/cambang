@@ -120,6 +120,17 @@ Current implemented executable slice includes:
 This implemented slice is still a starting boundary, not the architectural ceiling.
 
 Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue.
+Tranche 1 executable vocabulary may begin with a small subset aligned with current timeline code shape:
+
+- `StartStream`
+- `StopStream`
+- `EmitFrame`
+
+That subset is an implementation starting point, not the architectural ceiling.
+
+Canonical scenario direction remains a self-contained authored/recorded timeline unit. The event model is therefore expected to expand with minimal lifecycle/realization events needed to author and replay scenarios without hidden host-side semantic reconstruction (for example, device/stream realization and create/destroy-style families).
+
+Tranche 1 intentionally does not freeze the complete long-term scenario event vocabulary.
 
 ---
 

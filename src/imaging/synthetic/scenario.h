@@ -40,4 +40,8 @@ struct SyntheticTimelineScenario {
   std::vector<SyntheticScheduledEvent> events;
 };
 
+struct SyntheticTimelineScenario {
+  std::vector<SyntheticScheduledEvent> events;
+};
+
 } // namespace cambang

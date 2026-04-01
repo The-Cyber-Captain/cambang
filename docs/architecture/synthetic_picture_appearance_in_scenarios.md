@@ -115,3 +115,11 @@ Remaining immediate discipline:
 - keep Godot thin (select/start/stop/observe only)
 - keep host-side pattern cycling explicitly manual/debug-only
 - continue avoiding serialization/editor/recording scope expansion in this layer
+Next code tranche should:
+
+1. add minimal scenario-authored appearance update support in provider timeline execution (stream-scoped, persistent-until-changed)
+2. route dev scenario visual/source distinction through scenario-authored appearance updates
+3. reduce reliance on host-side pattern cycling for scenario semantics
+4. keep Godot thin: select/start/stop/observe; no appearance semantic reconstruction
+
+This enables canonical scenario-driven visual distinction for replay and authored timelines without broadening into serialization/editor work.
