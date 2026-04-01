@@ -82,10 +82,17 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    // Backward-compatibility baseline for Timeline-role synthetic operation:
+    // advance(dt_ns) should pump timeline-driven emission immediately for
+    // verifier-owned flows (including direct open/create/start flows that do
+    // not stage host scenarios).
+    // This is an execution-arming distinction only; scenario semantics remain
+    // provider-owned for both init-seeded and host-submitted paths.
+    timeline_running_ = true;
+    timeline_paused_ = false;
     timeline_scenario_ = cfg_.timeline_scenario;
     if (!timeline_scenario_.events.empty()) {
-      timeline_running_ = true;
-      timeline_paused_ = false;
+      // Config-seeded scenarios are provider-owned and auto-run at initialize.
       for (const auto& ev : timeline_scenario_.events) {
         timeline_schedule_(ev);
       }
@@ -712,9 +719,15 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   if (cfg_.synthetic_role != SyntheticRole::Timeline) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
-  if (timeline_running_) {
-    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  // Host-submitted scenarios are staged, not auto-started.
+  // This intentionally differs from config-seeded initialization semantics.
+  // Semantics remain provider-owned; only arming differs (stage until start).
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
   }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
   timeline_scenario_ = scenario;
   return ProviderResult::success();
 }
