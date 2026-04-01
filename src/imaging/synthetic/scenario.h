@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "imaging/api/provider_contract_datatypes.h"
+
 namespace cambang {
 
 // Phase 2 (Timeline foundation): minimal in-memory scheduled-event model.
@@ -19,6 +21,7 @@ enum class SyntheticEventType : std::uint32_t {
   CloseDevice = 4,
   CreateStream = 5,
   DestroyStream = 6,
+  UpdateStreamPicture = 7,
 };
 
 struct SyntheticScheduledEvent {
@@ -29,6 +32,12 @@ struct SyntheticScheduledEvent {
   std::uint64_t device_instance_id = 0;
   std::uint64_t root_id = 0;
   std::uint64_t stream_id = 0;
+  bool has_picture = false;
+  PictureConfig picture{};
+};
+
+struct SyntheticTimelineScenario {
+  std::vector<SyntheticScheduledEvent> events;
 };
 
 struct SyntheticTimelineScenario {

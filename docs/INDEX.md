@@ -72,6 +72,7 @@ redefine canonical rules.
 | publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`.                   |
 | frame_sinks.md                  | Describes frame sink types and responsibilities.                                          |
 | synthetic_timeline_scenarios.md | Fixes scenario terminology and ownership boundaries for SyntheticProvider timeline work.   |
+| synthetic_picture_appearance_in_scenarios.md | Defines scenario-authored synthetic appearance/state boundaries for timeline replay. |
 | maintainer_tools.md             | Defines the Godot runtime boundary and interaction contract, plus CLI verification tools. |
 | pattern_module.md               | Explains the deterministic pattern generator module used for testing and diagnostics.     |
 

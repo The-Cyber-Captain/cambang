@@ -82,8 +82,13 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   }
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
-    for (const auto& ev : cfg_.timeline_scenario.events) {
-      timeline_schedule_(ev);
+    timeline_scenario_ = cfg_.timeline_scenario;
+    if (!timeline_scenario_.events.empty()) {
+      timeline_running_ = true;
+      timeline_paused_ = false;
+      for (const auto& ev : timeline_scenario_.events) {
+        timeline_schedule_(ev);
+      }
     }
   }
 
@@ -119,6 +124,9 @@ void SyntheticProvider::timeline_schedule_(const SyntheticScheduledEvent& src) {
 }
 
 void SyntheticProvider::timeline_pump_() {
+  if (!timeline_running_ || timeline_paused_) {
+    return;
+  }
   const uint64_t now = clock_.now_ns();
   const uint64_t period = fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
   if (period == 0) {
@@ -222,6 +230,14 @@ void SyntheticProvider::timeline_pump_() {
           break;
         }
         (void)destroy_stream(ev.stream_id);
+        break;
+      }
+
+      case SyntheticEventType::UpdateStreamPicture: {
+        if (ev.stream_id == 0 || !ev.has_picture) {
+          break;
+        }
+        (void)set_stream_picture_config(ev.stream_id, ev.picture);
         break;
       }
     }
@@ -689,6 +705,69 @@ ProviderResult SyntheticProvider::fail_stream_for_test(uint64_t stream_id, Provi
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (timeline_running_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  timeline_scenario_ = scenario;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  for (const auto& ev : timeline_scenario_.events) {
+    timeline_schedule_(ev);
+  }
+  timeline_running_ = true;
+  timeline_paused_ = false;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::stop_timeline_scenario_for_host() {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_timeline_scenario_paused_for_host(bool paused) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (!timeline_running_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  timeline_paused_ = paused;
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::shutdown() {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -714,6 +793,8 @@ ProviderResult SyntheticProvider::shutdown() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
 
   // Provider native object (BOUND -> ABSENT).
   if (provider_native_id_ != 0) {

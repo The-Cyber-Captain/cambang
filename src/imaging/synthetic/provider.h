@@ -71,6 +71,10 @@ public:
   ProviderResult disconnect_device_for_test(uint64_t device_instance_id);
   ProviderResult force_close_device_for_test(uint64_t device_instance_id);
   ProviderResult fail_stream_for_test(uint64_t stream_id, ProviderError error);
+  ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
+  ProviderResult start_timeline_scenario_for_host();
+  ProviderResult stop_timeline_scenario_for_host();
+  ProviderResult set_timeline_scenario_paused_for_host(bool paused);
 
 private:
   CBProviderStrand strand_;
@@ -147,6 +151,9 @@ private:
   uint64_t provider_native_id_ = 0;
 
   uint64_t timeline_seq_ = 0;
+  SyntheticTimelineScenario timeline_scenario_{};
+  bool timeline_running_ = false;
+  bool timeline_paused_ = false;
   std::priority_queue<SyntheticScheduledEvent,
                       std::vector<SyntheticScheduledEvent>,
                       TimelineEventCompare>
