@@ -320,5 +320,59 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
   return false;
 }
 
+ProviderResult ProviderBroker::dev_set_timeline_scenario(const SyntheticTimelineScenario& scenario) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_timeline_scenario_for_host(scenario);
+  }
+#endif
+  (void)scenario;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::dev_start_timeline_scenario() {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->start_timeline_scenario_for_host();
+  }
+#endif
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::dev_stop_timeline_scenario() {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->stop_timeline_scenario_for_host();
+  }
+#endif
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::dev_set_timeline_scenario_paused(bool paused) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_timeline_scenario_paused_for_host(paused);
+  }
+#endif
+  (void)paused;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
 
 } // namespace cambang
