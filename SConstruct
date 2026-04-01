@@ -309,21 +309,21 @@ if env["smoke"]:
         source=restart_boundary_verify_sources,
     )
 
-    # Deterministic scenario playback harness.
-    scenario_runner_sources = []
-    scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
-    scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    scenario_runner_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
-    scenario_runner_sources += [
-        "src/smoke/scenario/scenario_catalog.cpp",
-        "src/smoke/scenario_runner.cpp",
+    # Deterministic verification-case playback harness.
+    verify_case_runner_sources = []
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    verify_case_runner_sources += [
+        "src/smoke/verify_case/verify_case_catalog.cpp",
+        "src/smoke/verify_case_runner.cpp",
     ]
-    scenario_runner_prog = smoke_env.Program(
-        target=os.path.join(out_dir, "scenario_runner"),
-        source=scenario_runner_sources,
+    verify_case_runner_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "verify_case_runner"),
+        source=verify_case_runner_sources,
     )
 
     # Provider compliance verification tool.
@@ -341,7 +341,7 @@ if env["smoke"]:
         source=provider_verify_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, scenario_runner_prog, provider_verify_prog, restart_boundary_verify_prog])
+    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, verify_case_runner_prog, provider_verify_prog, restart_boundary_verify_prog])
     AlwaysBuild(smoke_alias)
 else:
     smoke_alias = Alias("smoke", [])

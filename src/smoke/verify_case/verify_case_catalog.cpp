@@ -1,4 +1,4 @@
-#include "smoke/scenario/scenario_catalog.h"
+#include "smoke/verify_case/verify_case_catalog.h"
 
 #include "dev/cli_log.h"
 
@@ -73,12 +73,12 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
     if (rec.creation_gen != current_gen) {
       continue;
     }
-    if (rec.type == static_cast<uint32_t>(NativeObjectType::Device) && rec.owner_device_instance_id == ScenarioHarness::kDeviceId) {
+    if (rec.type == static_cast<uint32_t>(NativeObjectType::Device) && rec.owner_device_instance_id == VerifyCaseHarness::kDeviceId) {
       device_native = true;
     }
     if (rec.type == static_cast<uint32_t>(NativeObjectType::FrameProducer) &&
-        rec.owner_device_instance_id == ScenarioHarness::kDeviceId &&
-        rec.owner_stream_id == ScenarioHarness::kStreamId) {
+        rec.owner_device_instance_id == VerifyCaseHarness::kDeviceId &&
+        rec.owner_stream_id == VerifyCaseHarness::kStreamId) {
       frameproducer_visible = true;
     }
   }
@@ -195,7 +195,7 @@ bool is_provider_pending_snapshot(const CamBANGStateSnapshot& snap, uint64_t cur
          snap.native_objects.empty();
 }
 
-bool observe_provider_only_authoritative_start(ScenarioHarness& h,
+bool observe_provider_only_authoritative_start(VerifyCaseHarness& h,
                                                std::string& error,
                                                int step_index,
                                                uint64_t want_gen,
@@ -269,8 +269,8 @@ bool fail_step(int index, const std::string& message) {
   return false;
 }
 
-int baseline_start(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int baseline_start(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -293,12 +293,12 @@ int baseline_start(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int provider_only_authoritative_baseline(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int provider_only_authoritative_baseline(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
 
   auto check_provider_only_snapshot = [&](int step_index, uint64_t want_gen) -> bool {
@@ -382,13 +382,13 @@ int provider_only_authoritative_baseline(ScenarioProviderKind provider_kind) {
   }
   cli::line("step 3 detail OK");
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int provider_only_to_realized(ScenarioProviderKind provider_kind, const RealizationProfilerOptions& profiler_options) {
+int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const RealizationProfilerOptions& profiler_options) {
   RealizationProfiler profiler(profiler_options);
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (profiler.enabled()) {
     h.set_realization_profiler(&profiler);
@@ -625,12 +625,12 @@ int provider_only_to_realized(ScenarioProviderKind provider_kind, const Realizat
     profiler.emit_report();
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int provider_only_then_stop(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int provider_only_then_stop(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
 
   if (!h.start_runtime(error)) {
@@ -680,12 +680,12 @@ int provider_only_then_stop(ScenarioProviderKind provider_kind) {
   }
   cli::line("step 2 detail OK");
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int repeated_provider_only_across_generations(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int repeated_provider_only_across_generations(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
 
   for (uint64_t gen = 0; gen < 3; ++gen) {
@@ -716,14 +716,14 @@ int repeated_provider_only_across_generations(ScenarioProviderKind provider_kind
     h.stop_runtime();
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int restart_churn_realization(ScenarioProviderKind provider_kind,
+int restart_churn_realization(VerifyCaseProviderKind provider_kind,
                               const RealizationProfilerOptions& profiler_options) {
   RealizationProfiler profiler(profiler_options);
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (profiler.enabled()) {
     h.set_realization_profiler(&profiler);
@@ -870,11 +870,11 @@ int restart_churn_realization(ScenarioProviderKind provider_kind,
     h.stop_runtime();
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int restart_churn_then_settle(ScenarioProviderKind provider_kind,
+int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
                              const RealizationProfilerOptions& profiler_options) {
   constexpr uint64_t kSettlePublishWindow = 12;
   constexpr uint64_t kSettleTimeNs = 75'000'000ull;
@@ -914,7 +914,7 @@ int restart_churn_then_settle(ScenarioProviderKind provider_kind,
   };
 
   RealizationProfiler profiler(profiler_options);
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (profiler.enabled()) {
     h.set_realization_profiler(&profiler);
@@ -1148,12 +1148,12 @@ int restart_churn_then_settle(ScenarioProviderKind provider_kind,
     cli::line("  first_descendant_delta_ns = n/a");
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int restart_churn_then_settle_variant(const char* scenario_label,
-                                      ScenarioProviderKind provider_kind,
+int restart_churn_then_settle_variant(const char* verify_case_label,
+                                      VerifyCaseProviderKind provider_kind,
                                       const RealizationProfilerOptions& profiler_options,
                                       const std::vector<RestartChurnCutPoint>& cut_points,
                                       uint64_t settle_publish_window,
@@ -1204,7 +1204,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
   };
 
   RealizationProfiler profiler(profiler_options);
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (profiler.enabled()) {
     h.set_realization_profiler(&profiler);
@@ -1219,7 +1219,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
   };
 
   auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
-    cli::line("[restart-churn] scenario=", scenario_label,
+    cli::line("[restart-churn] verification_case=", verify_case_label,
               " cycle=", cycle_index + 1,
               " gen=", gen,
               " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
@@ -1233,7 +1233,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
     const uint64_t want_gen = static_cast<uint64_t>(cycle_index);
     const RestartChurnCutPoint planned_cut_point = cut_points[cycle_index];
 
-    cli::line("[restart-churn] scenario=", scenario_label,
+    cli::line("[restart-churn] verification_case=", verify_case_label,
               " cycle=", cycle_index + 1,
               " planned_stop_after=", restart_churn_cut_point_name(planned_cut_point),
               " start_requested");
@@ -1263,7 +1263,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
 
     if (planned_cut_point == RestartChurnCutPoint::ProviderVisible) {
       emit_cycle_report(cycle_index, want_gen, planned_cut_point);
-      cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+      cli::line("[restart-churn] verification_case=", verify_case_label, " cycle=", cycle_index + 1, " stop_requested");
       h.stop_runtime();
       continue;
     }
@@ -1278,7 +1278,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
       emit_cycle_report(cycle_index, want_gen, planned_cut_point);
-      cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+      cli::line("[restart-churn] verification_case=", verify_case_label, " cycle=", cycle_index + 1, " stop_requested");
       h.stop_runtime();
       continue;
     }
@@ -1298,7 +1298,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
       emit_cycle_report(cycle_index, want_gen, planned_cut_point);
-      cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+      cli::line("[restart-churn] verification_case=", verify_case_label, " cycle=", cycle_index + 1, " stop_requested");
       h.stop_runtime();
       continue;
     }
@@ -1312,12 +1312,12 @@ int restart_churn_then_settle_variant(const char* scenario_label,
     }
 
     emit_cycle_report(cycle_index, want_gen, planned_cut_point);
-    cli::line("[restart-churn] scenario=", scenario_label, " cycle=", cycle_index + 1, " stop_requested");
+    cli::line("[restart-churn] verification_case=", verify_case_label, " cycle=", cycle_index + 1, " stop_requested");
     h.stop_runtime();
   }
 
   const uint64_t final_gen = static_cast<uint64_t>(cut_points.size());
-  cli::line("[restart-churn] scenario=", scenario_label, " cycle=final planned_stop_after=none start_requested");
+  cli::line("[restart-churn] verification_case=", verify_case_label, " cycle=final planned_stop_after=none start_requested");
 
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -1413,7 +1413,7 @@ int restart_churn_then_settle_variant(const char* scenario_label,
     record_settle_snapshot();
   }
 
-  cli::line("[restart-churn] scenario=", scenario_label, " cycle=final gen=", final_gen, " settle_complete");
+  cli::line("[restart-churn] verification_case=", verify_case_label, " cycle=final gen=", final_gen, " settle_complete");
   if (profiler.enabled()) {
     profiler.emit_report();
   }
@@ -1436,11 +1436,11 @@ int restart_churn_then_settle_variant(const char* scenario_label,
   cli::line("  classification = ", classification);
   cli::line("  publish_count_during_settle = ", settle_state.publish_count_during_settle);
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int restart_churn_then_settle_deep(ScenarioProviderKind provider_kind,
+int restart_churn_then_settle_deep(VerifyCaseProviderKind provider_kind,
                                    const RealizationProfilerOptions& profiler_options) {
   const std::vector<RestartChurnCutPoint> cut_points = {
       RestartChurnCutPoint::DeviceIdentity,
@@ -1459,7 +1459,7 @@ int restart_churn_then_settle_deep(ScenarioProviderKind provider_kind,
                                            75'000'000ull);
 }
 
-int restart_churn_then_settle_burst(ScenarioProviderKind provider_kind,
+int restart_churn_then_settle_burst(VerifyCaseProviderKind provider_kind,
                                     const RealizationProfilerOptions& profiler_options) {
   const std::vector<RestartChurnCutPoint> cut_points = {
       RestartChurnCutPoint::ProviderVisible,
@@ -1479,7 +1479,7 @@ int restart_churn_then_settle_burst(ScenarioProviderKind provider_kind,
                                            75'000'000ull);
 }
 
-int restart_churn_then_settle_stream_churn(ScenarioProviderKind provider_kind,
+int restart_churn_then_settle_stream_churn(VerifyCaseProviderKind provider_kind,
                                            const RealizationProfilerOptions& profiler_options) {
   const std::vector<RestartChurnCutPoint> cut_points = {
       RestartChurnCutPoint::DeviceNative,
@@ -1497,7 +1497,7 @@ int restart_churn_then_settle_stream_churn(ScenarioProviderKind provider_kind,
                                            75'000'000ull);
 }
 
-int restart_churn_then_settle_long(ScenarioProviderKind provider_kind,
+int restart_churn_then_settle_long(VerifyCaseProviderKind provider_kind,
                                    const RealizationProfilerOptions& profiler_options) {
   const std::vector<RestartChurnCutPoint> cut_points = {
       RestartChurnCutPoint::ProviderVisible,
@@ -1513,8 +1513,8 @@ int restart_churn_then_settle_long(ScenarioProviderKind provider_kind,
                                            150'000'000ull);
 }
 
-int restart_nil_before_baseline(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int restart_nil_before_baseline(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -1541,12 +1541,12 @@ int restart_nil_before_baseline(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int stream_lifecycle_versions(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -1609,12 +1609,12 @@ int stream_lifecycle_versions(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int topology_change_versions(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int topology_change_versions(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -1666,12 +1666,12 @@ int topology_change_versions(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int publication_coalescing(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int publication_coalescing(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -1703,17 +1703,17 @@ int publication_coalescing(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int device_disconnect(ScenarioProviderKind provider_kind) {
-  if (provider_kind != ScenarioProviderKind::Synthetic) {
-    cli::line("SKIP: scenario 'device_disconnect' requires SyntheticProvider timeline support");
+int device_disconnect(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'device_disconnect' requires SyntheticProvider timeline support");
     return 0;
   }
 
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -1735,9 +1735,9 @@ int device_disconnect(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  if (!h.inject_provider_stream_stop(ScenarioHarness::kStreamId, ProviderError::ERR_PROVIDER_FAILED, error) ||
-      !h.inject_provider_stream_destroyed(ScenarioHarness::kStreamId, error) ||
-      !h.inject_provider_device_closed(ScenarioHarness::kDeviceId, error)) {
+  if (!h.inject_provider_stream_stop(VerifyCaseHarness::kStreamId, ProviderError::ERR_PROVIDER_FAILED, error) ||
+      !h.inject_provider_stream_destroyed(VerifyCaseHarness::kStreamId, error) ||
+      !h.inject_provider_device_closed(VerifyCaseHarness::kDeviceId, error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1746,12 +1746,12 @@ int device_disconnect(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int close_while_streaming(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int close_while_streaming(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -1773,7 +1773,7 @@ int close_while_streaming(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  const ProviderResult close_result = h.close_device_result(ScenarioHarness::kDeviceId);
+  const ProviderResult close_result = h.close_device_result(VerifyCaseHarness::kDeviceId);
   if (close_result.ok() || close_result.code != ProviderError::ERR_BAD_STATE) {
     fail_step(2, "close_device did not fail with live child stream");
     return 1;
@@ -1791,17 +1791,17 @@ int close_while_streaming(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int frame_starvation(ScenarioProviderKind provider_kind) {
-  if (provider_kind != ScenarioProviderKind::Synthetic) {
-    cli::line("SKIP: scenario 'frame_starvation' requires SyntheticProvider timeline support");
+int frame_starvation(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'frame_starvation' requires SyntheticProvider timeline support");
     return 0;
   }
 
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -1823,7 +1823,7 @@ int frame_starvation(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  const auto* flowing = ScenarioHarness::find_stream(*h.observed().raw, ScenarioHarness::kStreamId);
+  const auto* flowing = VerifyCaseHarness::find_stream(*h.observed().raw, VerifyCaseHarness::kStreamId);
   if (!flowing || flowing->mode != CBStreamMode::FLOWING) {
     fail_step(2, "stream not flowing before starvation window");
     return 1;
@@ -1838,7 +1838,7 @@ int frame_starvation(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  const auto* after = ScenarioHarness::find_stream(*h.observed().raw, ScenarioHarness::kStreamId);
+  const auto* after = VerifyCaseHarness::find_stream(*h.observed().raw, VerifyCaseHarness::kStreamId);
   if (!after) {
     fail_step(3, "stream missing after starvation window");
     return 1;
@@ -1853,17 +1853,17 @@ int frame_starvation(ScenarioProviderKind provider_kind) {
   }
   cli::line("step 3 OK");
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int provider_error_mid_stream(ScenarioProviderKind provider_kind) {
-  if (provider_kind != ScenarioProviderKind::Synthetic) {
-    cli::line("SKIP: scenario 'provider_error_mid_stream' requires SyntheticProvider timeline support");
+int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'provider_error_mid_stream' requires SyntheticProvider timeline support");
     return 0;
   }
 
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -1885,8 +1885,8 @@ int provider_error_mid_stream(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  h.inject_provider_stream_error(ScenarioHarness::kStreamId, ProviderError::ERR_BAD_STATE);
-  if (!h.inject_provider_stream_stop(ScenarioHarness::kStreamId, ProviderError::ERR_BAD_STATE, error)) {
+  h.inject_provider_stream_error(VerifyCaseHarness::kStreamId, ProviderError::ERR_BAD_STATE);
+  if (!h.inject_provider_stream_stop(VerifyCaseHarness::kStreamId, ProviderError::ERR_BAD_STATE, error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1895,19 +1895,19 @@ int provider_error_mid_stream(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  const auto* stream = h.runtime().stream_record(ScenarioHarness::kStreamId);
+  const auto* stream = h.runtime().stream_record(VerifyCaseHarness::kStreamId);
   if (!stream || stream->started || stream->last_error_code == 0) {
     fail_step(3, "provider error did not propagate to stream record");
     return 1;
   }
   cli::line("step 3 OK");
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int redundant_stop(ScenarioProviderKind provider_kind) {
-  ScenarioHarness h(provider_kind);
+int redundant_stop(VerifyCaseProviderKind provider_kind) {
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -1947,24 +1947,24 @@ int redundant_stop(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  const auto* stream = ScenarioHarness::find_stream(*h.observed().raw, ScenarioHarness::kStreamId);
+  const auto* stream = VerifyCaseHarness::find_stream(*h.observed().raw, VerifyCaseHarness::kStreamId);
   if (!stream || stream->mode != CBStreamMode::STOPPED) {
     fail_step(4, "stream not stable after redundant stop");
     return 1;
   }
   cli::line("step 4 OK");
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
-int multi_device_topology_change(ScenarioProviderKind provider_kind) {
-  if (provider_kind != ScenarioProviderKind::Synthetic) {
-    cli::line("SKIP: scenario 'multi_device_topology_change' requires SyntheticProvider timeline support");
+int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
+  if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+    cli::line("SKIP: verification case 'multi_device_topology_change' requires SyntheticProvider timeline support");
     return 0;
   }
 
-  ScenarioHarness h(provider_kind);
+  VerifyCaseHarness h(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -1977,12 +1977,12 @@ int multi_device_topology_change(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  if (!h.open_device_id(ScenarioHarness::kDeviceId, 0, ScenarioHarness::kRootId, error) ||
-      !h.open_device_id(ScenarioHarness::kDeviceBId, 1, ScenarioHarness::kRootBId, error) ||
-      !h.create_stream_id(ScenarioHarness::kStreamId, ScenarioHarness::kDeviceId, 1, error) ||
-      !h.create_stream_id(ScenarioHarness::kStreamBId, ScenarioHarness::kDeviceBId, 2, error) ||
-      !h.start_stream_id(ScenarioHarness::kStreamId, error) ||
-      !h.start_stream_id(ScenarioHarness::kStreamBId, error)) {
+  if (!h.open_device_id(VerifyCaseHarness::kDeviceId, 0, VerifyCaseHarness::kRootId, error) ||
+      !h.open_device_id(VerifyCaseHarness::kDeviceBId, 1, VerifyCaseHarness::kRootBId, error) ||
+      !h.create_stream_id(VerifyCaseHarness::kStreamId, VerifyCaseHarness::kDeviceId, 1, error) ||
+      !h.create_stream_id(VerifyCaseHarness::kStreamBId, VerifyCaseHarness::kDeviceBId, 2, error) ||
+      !h.start_stream_id(VerifyCaseHarness::kStreamId, error) ||
+      !h.start_stream_id(VerifyCaseHarness::kStreamBId, error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1991,9 +1991,9 @@ int multi_device_topology_change(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  if (!h.stop_stream_id(ScenarioHarness::kStreamId, error) ||
-      !h.destroy_stream_id(ScenarioHarness::kStreamId, error) ||
-      !h.close_device_id(ScenarioHarness::kDeviceId, error)) {
+  if (!h.stop_stream_id(VerifyCaseHarness::kStreamId, error) ||
+      !h.destroy_stream_id(VerifyCaseHarness::kStreamId, error) ||
+      !h.close_device_id(VerifyCaseHarness::kDeviceId, error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -2002,21 +2002,21 @@ int multi_device_topology_change(ScenarioProviderKind provider_kind) {
     return 1;
   }
 
-  const auto* remaining_stream = ScenarioHarness::find_stream(*h.observed().raw, ScenarioHarness::kStreamBId);
-  if (!remaining_stream || remaining_stream->device_instance_id != ScenarioHarness::kDeviceBId ||
+  const auto* remaining_stream = VerifyCaseHarness::find_stream(*h.observed().raw, VerifyCaseHarness::kStreamBId);
+  if (!remaining_stream || remaining_stream->device_instance_id != VerifyCaseHarness::kDeviceBId ||
       remaining_stream->mode != CBStreamMode::FLOWING) {
     fail_step(3, "remaining device/stream topology corrupted");
     return 1;
   }
   cli::line("step 3 OK");
 
-  cli::line("Scenario PASSED");
+  cli::line("Verification case PASSED");
   return 0;
 }
 
 } // namespace
 
-std::vector<ScenarioDefinition> scenario_catalog(ScenarioProviderKind provider_kind,
+std::vector<VerifyCaseDefinition> verify_case_catalog(VerifyCaseProviderKind provider_kind,
                                                const RealizationProfilerOptions& profiler_options) {
   return {
       {"baseline_start", [provider_kind]() { return baseline_start(provider_kind); }},
