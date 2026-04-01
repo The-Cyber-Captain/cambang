@@ -56,7 +56,7 @@ These checks improve UX/diagnostics but do not replace schema validation or
 runtime/harness verification.
 
 ### E. Harness validation (authoritative behavioral verification)
-Higher-confidence validation (integration/scenario harness) should verify:
+Higher-confidence validation (integration/verification-case harness) should verify:
 - boundary semantics (baseline publish, stop NIL window, restart generation)
 - tick-bounded coalescing behavior
 - semantic invariants that are cross-snapshot/cross-record

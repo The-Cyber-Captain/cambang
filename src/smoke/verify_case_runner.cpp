@@ -7,10 +7,10 @@
 #include "dev/cli_log.h"
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "scenario_runner: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "verify_case_runner: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
 #endif
 
-#include "smoke/scenario/scenario_catalog.h"
+#include "smoke/verify_case/verify_case_catalog.h"
 
 #if defined(_WIN32)
   #include <io.h>
@@ -133,14 +133,14 @@ bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
 }
 
-void usage(const char* argv0, const std::vector<cambang::ScenarioDefinition>& scenarios) {
-  std::cerr << "usage: " << argv0 << " <scenario_name> [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
+void usage(const char* argv0, const std::vector<cambang::VerifyCaseDefinition>& verify_cases) {
+  std::cerr << "usage: " << argv0 << " <verification_case_name> [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
   std::cerr << "   or: " << argv0 << " --run-all [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
   std::cerr << "default provider: synthetic\n";
   std::cerr << "default repeat: 1\n";
-  std::cerr << "available scenarios:\n";
-  for (const auto& scenario : scenarios) {
-    std::cerr << "  " << scenario.name << "\n";
+  std::cerr << "available verification cases:\n";
+  for (const auto& verify_case : verify_cases) {
+    std::cerr << "  " << verify_case.name << "\n";
   }
 }
 
@@ -172,21 +172,21 @@ bool parse_trace_realization(const std::string& value, cambang::RealizationProfi
   return false;
 }
 
-BufferedRunResult run_buffered(const cambang::ScenarioDefinition& scenario) {
+BufferedRunResult run_buffered(const cambang::VerifyCaseDefinition& verify_case) {
   ScopedStdCapture capture;
   if (!capture.begin()) {
-    return BufferedRunResult{scenario.run(), {}};
+    return BufferedRunResult{verify_case.run(), {}};
   }
 
-  const int rc = scenario.run();
+  const int rc = verify_case.run();
   return BufferedRunResult{rc, capture.end()};
 }
 
-void emit_buffered_failure_detail(std::string_view scenario_name,
+void emit_buffered_failure_detail(std::string_view verify_case_name,
                                   uint64_t iteration,
                                   uint64_t repeat_count,
                                   const std::string& detail) {
-  cli::line("[failure-detail] ", scenario_name, " iteration ", iteration, "/", repeat_count);
+  cli::line("[failure-detail] ", verify_case_name, " iteration ", iteration, "/", repeat_count);
   if (!detail.empty()) {
     std::fwrite(detail.data(), 1, detail.size(), stdout);
     if (detail.back() != '\n') {
@@ -196,52 +196,52 @@ void emit_buffered_failure_detail(std::string_view scenario_name,
   }
 }
 
-int run_single_scenario(const cambang::ScenarioDefinition& scenario,
-                        cambang::ScenarioProviderKind provider_kind,
+int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
+                        cambang::VerifyCaseProviderKind provider_kind,
                         uint64_t repeat_count,
                         bool repeat_specified) {
-  cli::line("scenario_runner ", scenario.name, " --provider=", cambang::scenario_provider_name(provider_kind));
+  cli::line("verify_case_runner ", verify_case.name, " --provider=", cambang::verify_case_provider_name(provider_kind));
   cli::blank();
   if (!repeat_specified) {
-    return scenario.run();
+    return verify_case.run();
   }
 
   for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
     cli::line("[repeat] iteration ", iteration, "/", repeat_count);
-    const int rc = scenario.run();
+    const int rc = verify_case.run();
     if (rc != 0) {
       cli::error("[repeat] iteration ", iteration, "/", repeat_count, " FAILED");
       return rc;
     }
   }
 
-  cli::line("Scenario PASSED (repeat=", repeat_count, ")");
+  cli::line("Verification case PASSED (repeat=", repeat_count, ")");
   return 0;
 }
 
-int run_all_scenarios(const std::vector<cambang::ScenarioDefinition>& scenarios, uint64_t repeat_count) {
+int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verify_cases, uint64_t repeat_count) {
   size_t passed = 0;
   size_t failed = 0;
 
-  for (const auto& scenario : scenarios) {
-    bool scenario_failed = false;
+  for (const auto& verify_case : verify_cases) {
+    bool verify_case_failed = false;
     uint64_t completed = 0;
 
     for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
-      const BufferedRunResult result = run_buffered(scenario);
+      const BufferedRunResult result = run_buffered(verify_case);
       if (result.rc != 0) {
-        cli::line("[FAIL] ", scenario.name, " (iteration ", iteration, "/", repeat_count, ")");
-        emit_buffered_failure_detail(scenario.name, iteration, repeat_count, result.output);
-        scenario_failed = true;
+        cli::line("[FAIL] ", verify_case.name, " (iteration ", iteration, "/", repeat_count, ")");
+        emit_buffered_failure_detail(verify_case.name, iteration, repeat_count, result.output);
+        verify_case_failed = true;
         ++failed;
         break;
       }
       completed = iteration;
     }
 
-    if (!scenario_failed) {
+    if (!verify_case_failed) {
       ++passed;
-      cli::line("[PASS] ", scenario.name, " (", completed, "/", repeat_count, ")");
+      cli::line("[PASS] ", verify_case.name, " (", completed, "/", repeat_count, ")");
     }
   }
 
@@ -252,27 +252,27 @@ int run_all_scenarios(const std::vector<cambang::ScenarioDefinition>& scenarios,
 } // namespace
 
 int main(int argc, char** argv) {
-  cambang::ScenarioProviderKind provider_kind = cambang::ScenarioProviderKind::Synthetic;
+  cambang::VerifyCaseProviderKind provider_kind = cambang::VerifyCaseProviderKind::Synthetic;
   uint64_t repeat_count = 1;
   bool repeat_specified = false;
   bool run_all = false;
   std::string requested;
   cambang::RealizationProfilerOptions profiler_options{};
-  profiler_options.target_device_id = cambang::ScenarioHarness::kDeviceId;
-  profiler_options.target_stream_id = cambang::ScenarioHarness::kStreamId;
+  profiler_options.target_device_id = cambang::VerifyCaseHarness::kDeviceId;
+  profiler_options.target_stream_id = cambang::VerifyCaseHarness::kStreamId;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--help" || arg == "-h") {
-      const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
-      usage(argv[0], scenarios);
+      const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
+      usage(argv[0], verify_cases);
       return 0;
     }
     if (arg == "--trace-realization") {
       if (!parse_trace_realization("block", profiler_options)) {
-        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+        const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
         std::cerr << "invalid trace-realization option\n";
-        usage(argv[0], scenarios);
+        usage(argv[0], verify_cases);
         return 2;
       }
       continue;
@@ -280,9 +280,9 @@ int main(int argc, char** argv) {
     if (starts_with(arg, "--trace-realization=")) {
       const std::string value = arg.substr(std::string("--trace-realization=").size());
       if (!parse_trace_realization(value, profiler_options)) {
-        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+        const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
         std::cerr << "unknown trace-realization mode: " << value << "\n";
-        usage(argv[0], scenarios);
+        usage(argv[0], verify_cases);
         return 2;
       }
       continue;
@@ -290,13 +290,13 @@ int main(int argc, char** argv) {
     if (starts_with(arg, "--provider=")) {
       const std::string value = arg.substr(std::string("--provider=").size());
       if (value == "synthetic") {
-        provider_kind = cambang::ScenarioProviderKind::Synthetic;
+        provider_kind = cambang::VerifyCaseProviderKind::Synthetic;
       } else if (value == "stub") {
-        provider_kind = cambang::ScenarioProviderKind::Stub;
+        provider_kind = cambang::VerifyCaseProviderKind::Stub;
       } else {
-        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+        const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
         std::cerr << "unknown provider: " << value << "\n";
-        usage(argv[0], scenarios);
+        usage(argv[0], verify_cases);
         return 2;
       }
       continue;
@@ -304,9 +304,9 @@ int main(int argc, char** argv) {
     if (starts_with(arg, "--repeat=")) {
       const std::string value = arg.substr(std::string("--repeat=").size());
       if (!parse_repeat_count(value, repeat_count)) {
-        const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+        const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
         std::cerr << "invalid repeat count: " << value << "\n";
-        usage(argv[0], scenarios);
+        usage(argv[0], verify_cases);
         return 2;
       }
       repeat_specified = true;
@@ -317,36 +317,36 @@ int main(int argc, char** argv) {
       continue;
     }
     if (!requested.empty()) {
-      const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+      const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
       std::cerr << "unexpected extra argument: " << arg << "\n";
-      usage(argv[0], scenarios);
+      usage(argv[0], verify_cases);
       return 2;
     }
     requested = arg;
   }
 
-  const auto scenarios = cambang::scenario_catalog(provider_kind, profiler_options);
+  const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
   if (run_all) {
     if (!requested.empty()) {
-      std::cerr << "cannot combine scenario name with --run-all\n";
-      usage(argv[0], scenarios);
+      std::cerr << "cannot combine verification case name with --run-all\n";
+      usage(argv[0], verify_cases);
       return 2;
     }
-    return run_all_scenarios(scenarios, repeat_count);
+    return run_all_verify_cases(verify_cases, repeat_count);
   }
 
   if (requested.empty()) {
-    usage(argv[0], scenarios);
+    usage(argv[0], verify_cases);
     return 2;
   }
 
-  for (const auto& scenario : scenarios) {
-    if (scenario.name == requested) {
-      return run_single_scenario(scenario, provider_kind, repeat_count, repeat_specified);
+  for (const auto& verify_case : verify_cases) {
+    if (verify_case.name == requested) {
+      return run_single_verify_case(verify_case, provider_kind, repeat_count, repeat_specified);
     }
   }
 
-  std::cerr << "unknown scenario: " << requested << "\n";
-  usage(argv[0], scenarios);
+  std::cerr << "unknown verification case: " << requested << "\n";
+  usage(argv[0], verify_cases);
   return 2;
 }

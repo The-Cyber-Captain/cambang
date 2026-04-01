@@ -24,15 +24,15 @@
 
 namespace cambang {
 
-enum class ScenarioProviderKind {
+enum class VerifyCaseProviderKind {
   Synthetic,
   Stub,
 };
 
-inline const char* scenario_provider_name(ScenarioProviderKind kind) noexcept {
+inline const char* verify_case_provider_name(VerifyCaseProviderKind kind) noexcept {
   switch (kind) {
-    case ScenarioProviderKind::Synthetic: return "synthetic";
-    case ScenarioProviderKind::Stub: return "stub";
+    case VerifyCaseProviderKind::Synthetic: return "synthetic";
+    case VerifyCaseProviderKind::Stub: return "stub";
   }
   return "unknown";
 }
@@ -587,7 +587,7 @@ private:
   uint64_t last_seen_published_seq_ = 0;
 };
 
-class ScenarioHarness final {
+class VerifyCaseHarness final {
 public:
   static constexpr uint64_t kDeviceId = 100;
   static constexpr uint64_t kStreamId = 200;
@@ -596,14 +596,14 @@ public:
   static constexpr uint64_t kStreamBId = 201;
   static constexpr uint64_t kRootBId = 901;
 
-  explicit ScenarioHarness(ScenarioProviderKind provider_kind = ScenarioProviderKind::Synthetic)
+  explicit VerifyCaseHarness(VerifyCaseProviderKind provider_kind = VerifyCaseProviderKind::Synthetic)
       : provider_kind_(provider_kind) {
     runtime_.set_snapshot_publisher(&snapshot_buffer_);
   }
 
-  ~ScenarioHarness() { stop_runtime(); }
+  ~VerifyCaseHarness() { stop_runtime(); }
 
-  ScenarioProviderKind provider_kind() const noexcept { return provider_kind_; }
+  VerifyCaseProviderKind provider_kind() const noexcept { return provider_kind_; }
 
   void set_realization_profiler(RealizationProfiler* profiler) noexcept { realization_profiler_ = profiler; }
 
@@ -623,7 +623,7 @@ public:
     }
 
     if (!provider_->initialize(runtime_.provider_callbacks()).ok()) {
-      error = std::string("provider initialize failed (") + scenario_provider_name(provider_kind_) + ")";
+      error = std::string("provider initialize failed (") + verify_case_provider_name(provider_kind_) + ")";
       provider_.reset();
       runtime_.stop();
       return false;
@@ -822,7 +822,7 @@ public:
     const uint64_t before = runtime_.published_seq();
 
     switch (provider_kind_) {
-      case ScenarioProviderKind::Synthetic: {
+      case VerifyCaseProviderKind::Synthetic: {
         auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get());
         if (!synthetic) {
           error = "synthetic provider cast failed";
@@ -831,7 +831,7 @@ public:
         synthetic->advance(synthetic_frame_period_ns_);
         break;
       }
-      case ScenarioProviderKind::Stub: {
+      case VerifyCaseProviderKind::Stub: {
         auto* stub = dynamic_cast<StubProvider*>(provider_.get());
         if (!stub) {
           error = "stub provider cast failed";
@@ -944,7 +944,7 @@ public:
 
 private:
   std::unique_ptr<ICameraProvider> make_provider_() {
-    if (provider_kind_ == ScenarioProviderKind::Stub) {
+    if (provider_kind_ == VerifyCaseProviderKind::Stub) {
       return std::make_unique<StubProvider>();
     }
 
@@ -974,7 +974,7 @@ private:
       endpoint_hardware_ids_.push_back(endpoint.hardware_id);
     }
 
-    if (provider_kind_ == ScenarioProviderKind::Synthetic) {
+    if (provider_kind_ == VerifyCaseProviderKind::Synthetic) {
       auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get());
       if (!synthetic) {
         error = "synthetic provider cast failed";
@@ -1007,7 +1007,7 @@ private:
     return false;
   }
 
-  ScenarioProviderKind provider_kind_ = ScenarioProviderKind::Synthetic;
+  VerifyCaseProviderKind provider_kind_ = VerifyCaseProviderKind::Synthetic;
   CoreRuntime runtime_;
   StateSnapshotBuffer snapshot_buffer_;
   std::unique_ptr<ICameraProvider> provider_;

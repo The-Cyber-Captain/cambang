@@ -493,7 +493,7 @@ coalesced by the tick-bounded observable model.
 
 This behaviour preserves two important guarantees:
 
-- **Virtual-time determinism** for testing and scenario replay.
+- **Virtual-time determinism** for testing and timeline-scenario replay.
 - **Real-time realism** for live cadence simulation, without requiring
   the host to tick continuously.
 
