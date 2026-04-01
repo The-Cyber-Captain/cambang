@@ -47,7 +47,7 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
     if (normalized == "stream_lifecycle_versions") {
         requested = ActiveScenario::StreamLifecycleVersions;
     } else if (normalized == "topology_change_versions") {
-        requested = ActiveScenario::None;
+        requested = ActiveScenario::TopologyChangeVersions;
     } else if (normalized == "publication_coalescing") {
         requested = ActiveScenario::PublicationCoalescing;
     } else {
@@ -55,15 +55,8 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
         return false;
     }
 
-    if (normalized == "topology_change_versions") {
-        // Existing scenario name accepted for dev glue completeness.
-        UtilityFunctions::print("[CamBANGDevNode] scenario started: topology_change_versions");
-        return true;
-    }
-
     if (bringup_state_ != BringUpState::Running) {
         pending_scenario_ = requested;
-        scenario_tick_ = 0;
         UtilityFunctions::print("[CamBANGDevNode] scenario queued: ", normalized, " (waiting for provider stream Running)");
         return true;
     }
@@ -142,7 +135,9 @@ void CamBANGDevNode::_process(double delta) {
     }
 
     if (bringup_state_ == BringUpState::Running) {
-        tick_active_scenario_();
+        if (active_scenario_ != ActiveScenario::None) {
+            complete_active_scenario_();
+        }
     }
 
 
@@ -364,6 +359,7 @@ void CamBANGDevNode::stop_provider_() {
     // CamBANGServer.stop() destroys the broker before this dev node observes the
     // runtime transition, so skip provider-direct teardown once ownership has moved.
     if (provider_still_owned_by_server) {
+        (void)provider_->dev_stop_timeline_scenario();
         (void)provider_->close_device(device_instance_id_);
     }
 
@@ -376,7 +372,6 @@ void CamBANGDevNode::stop_provider_() {
     bringup_ticks_ = 0;
     active_scenario_ = ActiveScenario::None;
     pending_scenario_ = ActiveScenario::None;
-    scenario_tick_ = 0;
 }
 
 void CamBANGDevNode::tick_bringup_() {
@@ -430,77 +425,184 @@ bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
     if (scenario == ActiveScenario::None) {
         return true;
     }
+    if (!provider_) {
+        return false;
+    }
+    auto scenario_def = build_provider_scenario_(scenario);
+    if (!scenario_def.has_value()) {
+        return false;
+    }
+    ProviderResult sr = provider_->dev_set_timeline_scenario(*scenario_def);
+    if (!sr.ok()) {
+        return false;
+    }
+    ProviderResult st = provider_->dev_start_timeline_scenario();
+    if (!st.ok()) {
+        return false;
+    }
     active_scenario_ = scenario;
-    scenario_tick_ = 0;
     return true;
-}
-
-void CamBANGDevNode::tick_active_scenario_() {
-    if (!runtime_) {
-        active_scenario_ = ActiveScenario::None;
-        return;
-    }
-
-    if (active_scenario_ == ActiveScenario::None) {
-        return;
-    }
-
-    ++scenario_tick_;
-
-    if (active_scenario_ == ActiveScenario::PublicationCoalescing) {
-        // Per-tick burst: multiple snapshot-affecting stream updates in one tick
-        // to exercise Godot-side coalescing without endpoint/device churn.
-        PictureConfig cfg_a{};
-        cfg_a.preset = PatternPreset::XyXor;
-        cfg_a.seed = scenario_seed_;
-        cfg_a.overlay_frame_index_offsets = false;
-        cfg_a.overlay_moving_bar = true;
-
-        PictureConfig cfg_b = cfg_a;
-        cfg_b.seed = scenario_seed_ + 1;
-
-        PictureConfig cfg_c = cfg_a;
-        cfg_c.seed = scenario_seed_ + 2;
-
-        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_a);
-        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_b);
-        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_c);
-
-        scenario_seed_ += 3;
-        if (scenario_tick_ >= 4u) {
-            complete_active_scenario_();
-        }
-        return;
-    }
-
-    if (active_scenario_ == ActiveScenario::StreamLifecycleVersions) {
-        // Emit deterministic publish activity over several ticks without touching
-        // endpoint enumeration/device opening.
-        if ((scenario_tick_ % 2u) == 0u) {
-            PictureConfig cfg{};
-            cfg.preset = PatternPreset::XyXor;
-            cfg.seed = scenario_seed_++;
-            cfg.overlay_frame_index_offsets = false;
-            cfg.overlay_moving_bar = true;
-            (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
-        }
-        if (scenario_tick_ >= 12u) {
-            complete_active_scenario_();
-        }
-        return;
-    }
 }
 
 godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
     switch (scenario) {
         case ActiveScenario::StreamLifecycleVersions:
             return "stream_lifecycle_versions";
+        case ActiveScenario::TopologyChangeVersions:
+            return "topology_change_versions";
         case ActiveScenario::PublicationCoalescing:
             return "publication_coalescing";
         case ActiveScenario::None:
         default:
             return "none";
     }
+}
+
+std::optional<SyntheticTimelineScenario> CamBANGDevNode::build_provider_scenario_(ActiveScenario scenario) const {
+    SyntheticTimelineScenario out{};
+    SyntheticScheduledEvent ev{};
+
+    const uint64_t alt_device_id = device_instance_id_ + 100;
+    const uint64_t alt_root_id = root_id_ + 100;
+    const uint64_t alt_stream_id = stream_id_ + 100;
+
+    if (scenario == ActiveScenario::StreamLifecycleVersions) {
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::OpenDevice;
+        ev.endpoint_index = 0;
+        ev.device_instance_id = alt_device_id;
+        ev.root_id = alt_root_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::CreateStream;
+        ev.device_instance_id = alt_device_id;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::StartStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 60'000'000;
+        ev.type = SyntheticEventType::StopStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 60'000'001;
+        ev.type = SyntheticEventType::DestroyStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 60'000'002;
+        ev.type = SyntheticEventType::CloseDevice;
+        ev.device_instance_id = alt_device_id;
+        out.events.push_back(ev);
+        return out;
+    }
+
+    if (scenario == ActiveScenario::PublicationCoalescing) {
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::OpenDevice;
+        ev.endpoint_index = 0;
+        ev.device_instance_id = alt_device_id;
+        ev.root_id = alt_root_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::CreateStream;
+        ev.device_instance_id = alt_device_id;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::StartStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 200'000'000;
+        ev.type = SyntheticEventType::StopStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 200'000'001;
+        ev.type = SyntheticEventType::DestroyStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 200'000'002;
+        ev.type = SyntheticEventType::CloseDevice;
+        ev.device_instance_id = alt_device_id;
+        out.events.push_back(ev);
+        return out;
+    }
+
+    if (scenario == ActiveScenario::TopologyChangeVersions) {
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::OpenDevice;
+        ev.endpoint_index = 0;
+        ev.device_instance_id = alt_device_id;
+        ev.root_id = alt_root_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::CreateStream;
+        ev.device_instance_id = alt_device_id;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 0;
+        ev.type = SyntheticEventType::StartStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 50'000'000;
+        ev.type = SyntheticEventType::CreateStream;
+        ev.device_instance_id = alt_device_id;
+        ev.stream_id = alt_stream_id + 1;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 50'000'001;
+        ev.type = SyntheticEventType::DestroyStream;
+        ev.stream_id = alt_stream_id + 1;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 100'000'000;
+        ev.type = SyntheticEventType::StopStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 100'000'001;
+        ev.type = SyntheticEventType::DestroyStream;
+        ev.stream_id = alt_stream_id;
+        out.events.push_back(ev);
+
+        ev = {};
+        ev.at_ns = 100'000'002;
+        ev.type = SyntheticEventType::CloseDevice;
+        ev.device_instance_id = alt_device_id;
+        out.events.push_back(ev);
+        return out;
+    }
+
+    return std::nullopt;
 }
 
 void CamBANGDevNode::mark_exit_reason_(const godot::String& reason) {
@@ -523,7 +625,6 @@ void CamBANGDevNode::stop_runtime_() {
         last_running_ = false;
         active_scenario_ = ActiveScenario::None;
         pending_scenario_ = ActiveScenario::None;
-        scenario_tick_ = 0;
         return;
     }
 
