@@ -607,7 +607,13 @@ bool run_synthetic_timeline_picture_appearance_check() {
   const uint64_t device_id = 51;
   const uint64_t root_id = 5201;
   const uint64_t stream_id = 52;
-  const uint64_t period_ns = 1'000'000'000ull / 30ull;
+  const StreamTemplate st = synthetic->stream_template();
+  const uint32_t fps_num = st.profile.target_fps_max != 0 ? st.profile.target_fps_max : st.profile.target_fps_min;
+  if (fps_num == 0) {
+    std::cerr << "FAIL synthetic timeline picture invalid synthetic fps\n";
+    return false;
+  }
+  const uint64_t period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps_num);
 
   SyntheticTimelineScenario scenario{};
   SyntheticScheduledEvent ev{};
@@ -668,9 +674,14 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
   if (!advance_and_expect_snapshot(harness, *synthetic, 0, [&](const CamBANGStateSnapshot& s) {
         const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
-        return stream && stream->mode == CBStreamMode::FLOWING && stream->frames_received >= 1;
-      }, error, "timed out waiting for first frame")) {
-    std::cerr << "FAIL synthetic timeline picture first frame missing\n";
+        return stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, "timed out waiting for picture stream start")) {
+    std::cerr << "FAIL synthetic timeline picture stream start missing\n";
+    return false;
+  }
+
+  if (!harness.emit_frame_for_stream(stream_id, error)) {
+    std::cerr << "FAIL synthetic timeline picture first frame missing: " << error << "\n";
     return false;
   }
   auto snap0 = harness.snapshot_buffer().snapshot_copy();
