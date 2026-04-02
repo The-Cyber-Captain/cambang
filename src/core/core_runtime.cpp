@@ -776,6 +776,50 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
                                                   : TryDestroyStreamStatus::Busy;
 }
 
+TryOpenDeviceStatus CoreRuntime::try_open_device(
+    const std::string& hardware_id,
+    uint64_t device_instance_id,
+    uint64_t root_id) noexcept {
+  if (hardware_id.empty() || device_instance_id == 0 || root_id == 0) {
+    return TryOpenDeviceStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryOpenDeviceStatus::Busy;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)devices_.note_device_identity(device_instance_id, hardware_id);
+    (void)p->open_device(hardware_id, device_instance_id, root_id);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryOpenDeviceStatus::OK
+                                                  : TryOpenDeviceStatus::Busy;
+}
+
+TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) noexcept {
+  if (device_instance_id == 0) {
+    return TryCloseDeviceStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryCloseDeviceStatus::Busy;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, device_instance_id]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)p->close_device(device_instance_id);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryCloseDeviceStatus::OK
+                                                  : TryCloseDeviceStatus::Busy;
+}
+
 TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
     uint64_t stream_id,
     const PictureConfig& picture) noexcept {

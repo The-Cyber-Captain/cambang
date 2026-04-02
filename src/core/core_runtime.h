@@ -63,6 +63,18 @@ enum class TryDestroyStreamStatus : uint8_t {
   InvalidArgument = 2,
 };
 
+enum class TryOpenDeviceStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
+enum class TryCloseDeviceStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
   class CoreRuntime final : private CoreThread::IHooks {
   private:
     enum class ShutdownPhase : uint8_t;  // forward declaration
@@ -127,6 +139,13 @@ enum class TryDestroyStreamStatus : uint8_t {
   TryStopStreamStatus try_stop_stream(uint64_t stream_id) noexcept;
 
   TryDestroyStreamStatus try_destroy_stream(uint64_t stream_id) noexcept;
+
+  TryOpenDeviceStatus try_open_device(
+      const std::string& hardware_id,
+      uint64_t device_instance_id,
+      uint64_t root_id) noexcept;
+
+  TryCloseDeviceStatus try_close_device(uint64_t device_instance_id) noexcept;
 
   // Stream-scoped picture update path.
   // Non-blocking: enqueues the provider call onto the core thread.
