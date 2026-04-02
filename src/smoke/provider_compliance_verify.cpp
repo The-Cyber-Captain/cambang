@@ -133,13 +133,24 @@ bool advance_and_expect_snapshot(VerifyCaseHarness& harness,
                                  const std::function<bool(const CamBANGStateSnapshot&)>& predicate,
                                  std::string& error,
                                  const char* timeout_message) {
-  const uint64_t before = harness.runtime().published_seq();
   synthetic.advance(dt_ns);
-  harness.runtime().request_publish();
-  if (!harness.wait_for_core_publish_count(before + 1, error, 500, 5)) {
-    return false;
+
+  // Request/observe in a bounded loop because request-like timeline actions
+  // are dispatched asynchronously through CoreRuntime and may require multiple
+  // publish turns before the target milestone is snapshot-visible.
+  constexpr int kMaxIters = 500;
+  constexpr int kSleepMs = 5;
+  for (int i = 0; i < kMaxIters; ++i) {
+    harness.runtime().request_publish();
+    auto snap = harness.snapshot_buffer().snapshot_copy();
+    if (snap && predicate(*snap)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
   }
-  return harness.wait_for_core_snapshot(predicate, error, 500, 5, timeout_message);
+
+  error = timeout_message;
+  return false;
 }
 
 bool run_stub_check() {
