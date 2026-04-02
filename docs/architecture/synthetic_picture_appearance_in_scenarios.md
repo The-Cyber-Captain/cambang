@@ -38,6 +38,12 @@ Scenarios may author synthetic picture appearance state for replayed/emitted fra
 
 This is a legitimate scenario capability, including replay of recorded platform timelines where visually distinct synthetic source rendering is needed for human interpretation.
 
+Terminology alignment:
+
+- current C++ authored scenarios live in the **built-in scenario library**
+- future file-backed collections belong to the **external scenario library**
+- serialized ingestion for external libraries belongs to **scenario loader**
+
 Godot/host layers may request scenario execution, but must not become the semantic owner of appearance-timeline meaning.
 
 ---
