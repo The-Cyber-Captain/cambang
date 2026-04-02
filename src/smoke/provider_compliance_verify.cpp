@@ -401,24 +401,28 @@ bool run_synthetic_timeline_invalid_order_check() {
 
   const uint64_t device_id = 31;
   const uint64_t root_id = 3201;
-  const uint64_t invalid_stream_id = 40;
   const uint64_t stream_id = 32;
 
   SyntheticScheduledEvent ev{};
   ev.at_ns = 0;
-  ev.type = SyntheticEventType::CreateStream;
+  ev.type = SyntheticEventType::StopStream; // invalid before stream exists
+  ev.stream_id = stream_id;
+  scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = 0;
+  ev.type = SyntheticEventType::DestroyStream; // invalid before stream exists
+  ev.stream_id = stream_id;
+  scenario.events.push_back(ev);
+
+  ev = {};
+  ev.at_ns = 0;
+  ev.type = SyntheticEventType::CloseDevice; // invalid before device exists
   ev.device_instance_id = device_id;
-  ev.stream_id = invalid_stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = 0;
-  ev.type = SyntheticEventType::StartStream;
-  ev.stream_id = invalid_stream_id;
-  scenario.events.push_back(ev);
-
-  ev = {};
-  ev.at_ns = 0;
+  ev.at_ns = 1;
   ev.type = SyntheticEventType::OpenDevice;
   ev.endpoint_index = 0;
   ev.device_instance_id = device_id;
@@ -426,44 +430,32 @@ bool run_synthetic_timeline_invalid_order_check() {
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = 0;
+  ev.at_ns = 2;
   ev.type = SyntheticEventType::CreateStream;
   ev.device_instance_id = device_id;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = 0;
+  ev.at_ns = 3;
   ev.type = SyntheticEventType::StartStream;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = 1;
-  ev.type = SyntheticEventType::DestroyStream; // invalid while started
-  ev.stream_id = stream_id;
-  scenario.events.push_back(ev);
-
-  ev = {};
-  ev.at_ns = 1;
-  ev.type = SyntheticEventType::CloseDevice; // invalid while child stream exists
-  ev.device_instance_id = device_id;
-  scenario.events.push_back(ev);
-
-  ev = {};
-  ev.at_ns = 2;
+  ev.at_ns = 4;
   ev.type = SyntheticEventType::StopStream;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = 3;
+  ev.at_ns = 5;
   ev.type = SyntheticEventType::DestroyStream;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = 4;
+  ev.at_ns = 6;
   ev.type = SyntheticEventType::CloseDevice;
   ev.device_instance_id = device_id;
   scenario.events.push_back(ev);
@@ -471,22 +463,38 @@ bool run_synthetic_timeline_invalid_order_check() {
   if (!synthetic->set_timeline_scenario_for_host(scenario).ok()) return false;
   if (!synthetic->start_timeline_scenario_for_host().ok()) return false;
 
+  // Phase 1: invalid operations only. They must be no-ops.
   if (!advance_and_expect_snapshot(harness, *synthetic, 0, [&](const CamBANGStateSnapshot& s) {
-        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return !VerifyCaseHarness::has_stream(s, stream_id) &&
+               !VerifyCaseHarness::has_device(s, device_id);
+      }, error, "timed out waiting for invalid-order no-op boundary")) {
+    std::cerr << "FAIL synthetic timeline invalid-order invalid actions had side effects: " << error << "\n";
+    return false;
+  }
+
+  // Phase 2: explicit valid lifecycle in order.
+  if (!advance_and_expect_snapshot(harness, *synthetic, 1, [&](const CamBANGStateSnapshot& s) {
         return VerifyCaseHarness::has_device(s, device_id) &&
-               stream && stream->mode == CBStreamMode::FLOWING &&
-               !VerifyCaseHarness::has_stream(s, invalid_stream_id);
-      }, error, "timed out waiting for invalid-order t=0")) {
-    std::cerr << "FAIL synthetic timeline invalid-order open/create/start boundary: " << error << "\n";
+               !VerifyCaseHarness::has_stream(s, stream_id);
+      }, error, "timed out waiting for invalid-order open")) {
+    std::cerr << "FAIL synthetic timeline invalid-order valid open missing\n";
     return false;
   }
 
   if (!advance_and_expect_snapshot(harness, *synthetic, 1, [&](const CamBANGStateSnapshot& s) {
         const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
         return VerifyCaseHarness::has_device(s, device_id) &&
-               stream && stream->mode == CBStreamMode::FLOWING;
-      }, error, "timed out waiting for invalid-order rejected destroy/close")) {
-    std::cerr << "FAIL synthetic timeline invalid-order invalid destroy/close self-healed\n";
+               stream && stream->mode == CBStreamMode::STOPPED;
+      }, error, "timed out waiting for invalid-order create")) {
+    std::cerr << "FAIL synthetic timeline invalid-order valid create missing\n";
+    return false;
+  }
+
+  if (!advance_and_expect_snapshot(harness, *synthetic, 1, [&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, "timed out waiting for invalid-order start")) {
+    std::cerr << "FAIL synthetic timeline invalid-order valid start missing\n";
     return false;
   }
 
@@ -494,7 +502,7 @@ bool run_synthetic_timeline_invalid_order_check() {
         const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
         return stream && stream->mode == CBStreamMode::STOPPED;
       }, error, "timed out waiting for invalid-order stop")) {
-    std::cerr << "FAIL synthetic timeline invalid-order stop missing\n";
+    std::cerr << "FAIL synthetic timeline invalid-order valid stop missing\n";
     return false;
   }
 
@@ -502,7 +510,7 @@ bool run_synthetic_timeline_invalid_order_check() {
         return !VerifyCaseHarness::has_stream(s, stream_id) &&
                VerifyCaseHarness::has_device(s, device_id);
       }, error, "timed out waiting for invalid-order destroy")) {
-    std::cerr << "FAIL synthetic timeline invalid-order destroy missing\n";
+    std::cerr << "FAIL synthetic timeline invalid-order valid destroy missing\n";
     return false;
   }
 
@@ -510,7 +518,7 @@ bool run_synthetic_timeline_invalid_order_check() {
         return !VerifyCaseHarness::has_stream(s, stream_id) &&
                !VerifyCaseHarness::has_device(s, device_id);
       }, error, "timed out waiting for invalid-order close")) {
-    std::cerr << "FAIL synthetic timeline invalid-order close missing\n";
+    std::cerr << "FAIL synthetic timeline invalid-order valid close missing\n";
     return false;
   }
 
