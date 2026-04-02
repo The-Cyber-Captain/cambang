@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "smoke/verify_case/verify_case_harness.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
 
@@ -68,32 +69,6 @@ struct RecorderCallbacks final : IProviderCallbacks {
 int find_index(const std::vector<EventRec>& events, const char* tag, uint64_t id) {
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i].tag == tag && events[i].id == id) return static_cast<int>(i);
-  }
-  return -1;
-}
-
-int find_index_tag(const std::vector<EventRec>& events, const char* tag) {
-  for (size_t i = 0; i < events.size(); ++i) {
-    if (events[i].tag == tag) return static_cast<int>(i);
-  }
-  return -1;
-}
-
-int count_events(const std::vector<EventRec>& events, const char* tag, uint64_t id) {
-  int n = 0;
-  for (const auto& ev : events) {
-    if (ev.tag == tag && ev.id == id) {
-      ++n;
-    }
-  }
-  return n;
-}
-
-int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) {
-  for (size_t i = 0; i < events.size(); ++i) {
-    if (events[i].tag == "frame" && events[i].ts.value == ts_ns) {
-      return static_cast<int>(i);
-    }
   }
   return -1;
 }
@@ -275,17 +250,20 @@ bool run_synthetic_check() {
 }
 
 bool run_synthetic_timeline_scenario_check() {
-  RecorderCallbacks cb;
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.endpoint_count = 1;
-  cfg.nominal.width = 64;
-  cfg.nominal.height = 64;
-  cfg.nominal.format_fourcc = FOURCC_RGBA;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
-  cfg.nominal.start_stream_warmup_ns = 0;
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic timeline scenario harness start: " << error << "\n";
+    return false;
+  }
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL synthetic timeline scenario provider cast failed\n";
+    harness.stop_runtime();
+    return false;
+  }
 
+  SyntheticTimelineScenario scenario{};
   const uint64_t device_id = 21;
   const uint64_t root_id = 2201;
   const uint64_t stream_id = 22;
@@ -297,115 +275,102 @@ bool run_synthetic_timeline_scenario_check() {
   ev.endpoint_index = 0;
   ev.device_instance_id = device_id;
   ev.root_id = root_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 0;
   ev.type = SyntheticEventType::CreateStream;
   ev.device_instance_id = device_id;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 0;
   ev.type = SyntheticEventType::StartStream;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = period_ns * 2;
   ev.type = SyntheticEventType::StopStream;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = period_ns * 2 + 1;
   ev.type = SyntheticEventType::DestroyStream;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = period_ns * 2 + 2;
   ev.type = SyntheticEventType::CloseDevice;
   ev.device_instance_id = device_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
-  SyntheticProvider p(cfg);
-  if (!p.initialize(&cb).ok()) return false;
+  if (!synthetic->set_timeline_scenario_for_host(scenario).ok()) return false;
+  if (!synthetic->start_timeline_scenario_for_host().ok()) return false;
 
-  // Process t=0 events: open/create/start and initial emit.
-  p.advance(0);
-  // Drive the scheduled stop/destroy/close timeline.
-  p.advance(period_ns);
-  p.advance(period_ns);
-  p.advance(2);
-
-  if (find_index(cb.events, "device_opened", device_id) < 0) {
-    std::cerr << "FAIL synthetic timeline scenario did not open device\n";
+  synthetic->advance(0);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return VerifyCaseHarness::has_device(s, device_id) &&
+               stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, 500, 5, "timed out waiting for timeline open/create/start")) {
+    std::cerr << "FAIL synthetic timeline scenario did not realize open/create/start: " << error << "\n";
     return false;
   }
-  if (find_index(cb.events, "stream_created", stream_id) < 0) {
-    std::cerr << "FAIL synthetic timeline scenario did not create stream\n";
-    return false;
-  }
-  if (find_index(cb.events, "stream_started", stream_id) < 0) {
-    std::cerr << "FAIL synthetic timeline scenario did not start stream\n";
-    return false;
-  }
-  if (find_index(cb.events, "frame", 0) < 0) {
+
+  synthetic->advance(period_ns);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->frames_received >= 1;
+      }, error, 500, 5, "timed out waiting for timeline frame")) {
     std::cerr << "FAIL synthetic timeline scenario did not emit frame\n";
     return false;
   }
-  if (find_index(cb.events, "stream_stopped", stream_id) < 0) {
+
+  synthetic->advance(period_ns);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->mode == CBStreamMode::STOPPED;
+      }, error, 500, 5, "timed out waiting for timeline stop")) {
     std::cerr << "FAIL synthetic timeline scenario did not stop stream\n";
     return false;
   }
-  if (find_index(cb.events, "stream_destroyed", stream_id) < 0) {
-    std::cerr << "FAIL synthetic timeline scenario did not destroy stream\n";
-    return false;
-  }
-  if (find_index(cb.events, "device_closed", device_id) < 0) {
-    std::cerr << "FAIL synthetic timeline scenario did not close device\n";
-    return false;
-  }
-  const int stream_created_idx = find_index(cb.events, "stream_created", stream_id);
-  const int stream_started_idx = find_index(cb.events, "stream_started", stream_id);
-  const int first_frame_idx = find_index_tag(cb.events, "frame");
-  const int stream_stopped_idx = find_index(cb.events, "stream_stopped", stream_id);
-  const int stream_destroyed_idx = find_index(cb.events, "stream_destroyed", stream_id);
-  const int device_closed_idx = find_index(cb.events, "device_closed", device_id);
-  if (!(stream_created_idx >= 0 && stream_started_idx > stream_created_idx)) {
-    std::cerr << "FAIL synthetic timeline scenario fabricated start before create\n";
-    return false;
-  }
-  if (!(first_frame_idx >= 0 && first_frame_idx > stream_started_idx)) {
-    std::cerr << "FAIL synthetic timeline scenario fabricated frame before start\n";
-    return false;
-  }
-  if (!(stream_stopped_idx >= 0 && stream_destroyed_idx > stream_stopped_idx)) {
-    std::cerr << "FAIL synthetic timeline scenario destroy ordering mismatch\n";
-    return false;
-  }
-  if (!(device_closed_idx > stream_destroyed_idx)) {
-    std::cerr << "FAIL synthetic timeline scenario close ordering mismatch\n";
+
+  synthetic->advance(2);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return !VerifyCaseHarness::has_stream(s, stream_id) &&
+               !VerifyCaseHarness::has_device(s, device_id);
+      }, error, 500, 5, "timed out waiting for timeline destroy/close")) {
+    std::cerr << "FAIL synthetic timeline scenario did not destroy/close: " << error << "\n";
     return false;
   }
 
-  if (!p.shutdown().ok()) return false;
-  return assert_native_balance(cb.events, "synthetic_timeline_scenario");
+  harness.stop_runtime();
+  return true;
 }
 
 bool run_synthetic_timeline_invalid_order_check() {
-  RecorderCallbacks cb;
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.endpoint_count = 1;
-  cfg.nominal.width = 64;
-  cfg.nominal.height = 64;
-  cfg.nominal.format_fourcc = FOURCC_RGBA;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
-  cfg.nominal.start_stream_warmup_ns = 0;
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic timeline invalid-order harness start: " << error << "\n";
+    return false;
+  }
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL synthetic timeline invalid-order provider cast failed\n";
+    harness.stop_runtime();
+    return false;
+  }
+
+  SyntheticTimelineScenario scenario{};
 
   const uint64_t device_id = 31;
   const uint64_t root_id = 3201;
@@ -417,13 +382,13 @@ bool run_synthetic_timeline_invalid_order_check() {
   ev.type = SyntheticEventType::CreateStream;
   ev.device_instance_id = device_id;
   ev.stream_id = invalid_stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 0;
   ev.type = SyntheticEventType::StartStream;
   ev.stream_id = invalid_stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 0;
@@ -431,104 +396,124 @@ bool run_synthetic_timeline_invalid_order_check() {
   ev.endpoint_index = 0;
   ev.device_instance_id = device_id;
   ev.root_id = root_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 0;
   ev.type = SyntheticEventType::CreateStream;
   ev.device_instance_id = device_id;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 0;
   ev.type = SyntheticEventType::StartStream;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 1;
   ev.type = SyntheticEventType::DestroyStream; // invalid while started
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 1;
   ev.type = SyntheticEventType::CloseDevice; // invalid while child stream exists
   ev.device_instance_id = device_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 2;
   ev.type = SyntheticEventType::StopStream;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 3;
   ev.type = SyntheticEventType::DestroyStream;
   ev.stream_id = stream_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = 4;
   ev.type = SyntheticEventType::CloseDevice;
   ev.device_instance_id = device_id;
-  cfg.timeline_scenario.events.push_back(ev);
+  scenario.events.push_back(ev);
 
-  SyntheticProvider p(cfg);
-  if (!p.initialize(&cb).ok()) return false;
-  p.advance(0);
-  p.advance(1);
-  p.advance(1);
-  p.advance(1);
-  p.advance(1);
+  if (!synthetic->set_timeline_scenario_for_host(scenario).ok()) return false;
+  if (!synthetic->start_timeline_scenario_for_host().ok()) return false;
 
-  // Invalid pre-open stream never self-heals into lifecycle truth.
-  if (count_events(cb.events, "stream_created", invalid_stream_id) != 0 ||
-      count_events(cb.events, "stream_started", invalid_stream_id) != 0) {
-    std::cerr << "FAIL synthetic timeline invalid-order create/start self-healed\n";
+  synthetic->advance(0);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return VerifyCaseHarness::has_device(s, device_id) &&
+               stream && stream->mode == CBStreamMode::FLOWING &&
+               !VerifyCaseHarness::has_stream(s, invalid_stream_id);
+      }, error, 500, 5, "timed out waiting for invalid-order t=0")) {
+    std::cerr << "FAIL synthetic timeline invalid-order open/create/start boundary: " << error << "\n";
     return false;
   }
 
-  // Stream truth still requires create->start; no fabricated start/frame before create.
-  const int created_idx = find_index(cb.events, "stream_created", stream_id);
-  const int started_idx = find_index(cb.events, "stream_started", stream_id);
-  const int first_frame_idx = find_index_tag(cb.events, "frame");
-  if (!(created_idx >= 0 && started_idx > created_idx && first_frame_idx > started_idx)) {
-    std::cerr << "FAIL synthetic timeline invalid-order fabricated pre-start truth\n";
+  synthetic->advance(1);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return VerifyCaseHarness::has_device(s, device_id) &&
+               stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, 500, 5, "timed out waiting for invalid-order rejected destroy/close")) {
+    std::cerr << "FAIL synthetic timeline invalid-order invalid destroy/close self-healed\n";
     return false;
   }
 
-  // Invalid destroy/close attempts did not auto-cascade success; only final legal operations succeeded.
-  if (count_events(cb.events, "stream_destroyed", stream_id) != 1) {
-    std::cerr << "FAIL synthetic timeline invalid-order destroy auto-healed\n";
-    return false;
-  }
-  if (count_events(cb.events, "device_closed", device_id) != 1) {
-    std::cerr << "FAIL synthetic timeline invalid-order close auto-healed\n";
-    return false;
-  }
-  const int stopped_idx = find_index(cb.events, "stream_stopped", stream_id);
-  const int destroyed_idx = find_index(cb.events, "stream_destroyed", stream_id);
-  const int device_closed_idx = find_index(cb.events, "device_closed", device_id);
-  if (!(stopped_idx >= 0 && destroyed_idx > stopped_idx && device_closed_idx > destroyed_idx)) {
-    std::cerr << "FAIL synthetic timeline invalid-order lifecycle ordering mismatch\n";
+  synthetic->advance(1);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->mode == CBStreamMode::STOPPED;
+      }, error, 500, 5, "timed out waiting for invalid-order stop")) {
+    std::cerr << "FAIL synthetic timeline invalid-order stop missing\n";
     return false;
   }
 
-  if (!p.shutdown().ok()) return false;
-  return assert_native_balance(cb.events, "synthetic_timeline_invalid_order");
+  synthetic->advance(1);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return !VerifyCaseHarness::has_stream(s, stream_id) &&
+               VerifyCaseHarness::has_device(s, device_id);
+      }, error, 500, 5, "timed out waiting for invalid-order destroy")) {
+    std::cerr << "FAIL synthetic timeline invalid-order destroy missing\n";
+    return false;
+  }
+
+  synthetic->advance(1);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return !VerifyCaseHarness::has_stream(s, stream_id) &&
+               !VerifyCaseHarness::has_device(s, device_id);
+      }, error, 500, 5, "timed out waiting for invalid-order close")) {
+    std::cerr << "FAIL synthetic timeline invalid-order close missing\n";
+    return false;
+  }
+
+  harness.stop_runtime();
+  return true;
 }
 
 bool run_synthetic_timeline_host_controls_check() {
-  RecorderCallbacks cb;
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.endpoint_count = 1;
-  cfg.nominal.format_fourcc = FOURCC_RGBA;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic timeline host-controls harness start: " << error << "\n";
+    return false;
+  }
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL synthetic timeline host-controls provider cast failed\n";
+    harness.stop_runtime();
+    return false;
+  }
 
   const uint64_t device_id = 41;
   const uint64_t root_id = 4201;
@@ -556,38 +541,47 @@ bool run_synthetic_timeline_host_controls_check() {
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
-  SyntheticProvider p(cfg);
-  if (!p.initialize(&cb).ok()) return false;
-  if (!p.set_timeline_scenario_for_host(scenario).ok()) return false;
-  if (!p.start_timeline_scenario_for_host().ok()) return false;
-  if (!p.set_timeline_scenario_paused_for_host(true).ok()) return false;
-  p.advance(0);
-  if (count_events(cb.events, "device_opened", device_id) != 0) {
+  if (!synthetic->set_timeline_scenario_for_host(scenario).ok()) return false;
+  if (!synthetic->start_timeline_scenario_for_host().ok()) return false;
+  if (!synthetic->set_timeline_scenario_paused_for_host(true).ok()) return false;
+  synthetic->advance(0);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return !VerifyCaseHarness::has_device(s, device_id);
+      }, error, 500, 5, "timed out waiting for paused scenario")) {
     std::cerr << "FAIL synthetic timeline host pause did not hold execution\n";
     return false;
   }
-  if (!p.set_timeline_scenario_paused_for_host(false).ok()) return false;
-  p.advance(0);
-  if (count_events(cb.events, "device_opened", device_id) != 1 ||
-      count_events(cb.events, "stream_created", stream_id) != 1 ||
-      count_events(cb.events, "stream_started", stream_id) != 1) {
+  if (!synthetic->set_timeline_scenario_paused_for_host(false).ok()) return false;
+  synthetic->advance(0);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return VerifyCaseHarness::has_device(s, device_id) &&
+               stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, 500, 5, "timed out waiting for unpaused scenario")) {
     std::cerr << "FAIL synthetic timeline host controls did not execute scenario\n";
     return false;
   }
-  if (!p.stop_timeline_scenario_for_host().ok()) return false;
-  if (!p.shutdown().ok()) return false;
-  return assert_native_balance(cb.events, "synthetic_timeline_host_controls");
+  if (!synthetic->stop_timeline_scenario_for_host().ok()) return false;
+
+  harness.stop_runtime();
+  return true;
 }
 
 bool run_synthetic_timeline_picture_appearance_check() {
-  RecorderCallbacks cb;
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.endpoint_count = 1;
-  cfg.nominal.format_fourcc = FOURCC_RGBA;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
-  cfg.nominal.start_stream_warmup_ns = 0;
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic timeline picture harness start: " << error << "\n";
+    return false;
+  }
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL synthetic timeline picture provider cast failed\n";
+    harness.stop_runtime();
+    return false;
+  }
 
   const uint64_t device_id = 51;
   const uint64_t root_id = 5201;
@@ -648,39 +642,62 @@ bool run_synthetic_timeline_picture_appearance_check() {
   ev.device_instance_id = device_id;
   scenario.events.push_back(ev);
 
-  SyntheticProvider p(cfg);
-  if (!p.initialize(&cb).ok()) return false;
-  if (!p.set_timeline_scenario_for_host(scenario).ok()) return false;
-  if (!p.start_timeline_scenario_for_host().ok()) return false;
+  if (!synthetic->set_timeline_scenario_for_host(scenario).ok()) return false;
+  if (!synthetic->start_timeline_scenario_for_host().ok()) return false;
 
-  p.advance(0);
-  p.advance(period_ns);
-  p.advance(period_ns);
-  p.advance(period_ns);
-  p.advance(2);
-
-  const int f0 = find_frame_index_by_ts(cb.events, 0);
-  const int f1 = find_frame_index_by_ts(cb.events, period_ns);
-  const int f2 = find_frame_index_by_ts(cb.events, period_ns * 2);
-  if (f0 < 0 || f1 < 0 || f2 < 0) {
-    std::cerr << "FAIL synthetic timeline picture appearance frames missing\n";
+  synthetic->advance(0);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->mode == CBStreamMode::FLOWING && stream->frames_received >= 1;
+      }, error, 500, 5, "timed out waiting for first frame")) {
+    std::cerr << "FAIL synthetic timeline picture first frame missing\n";
     return false;
   }
-  const uint32_t sig0 = cb.events[static_cast<size_t>(f0)].pixel_sig;
-  const uint32_t sig1 = cb.events[static_cast<size_t>(f1)].pixel_sig;
-  const uint32_t sig2 = cb.events[static_cast<size_t>(f2)].pixel_sig;
+  auto snap0 = harness.snapshot_buffer().snapshot_copy();
+  if (!snap0) return false;
+  const auto* stream0 = VerifyCaseHarness::find_stream(*snap0, stream_id);
+  if (!stream0) return false;
+  const uint64_t frames0 = stream0->frames_received;
 
-  if (sig0 == sig1) {
-    std::cerr << "FAIL synthetic timeline picture update did not change rendered appearance\n";
+  synthetic->advance(period_ns);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->frames_received > frames0;
+      }, error, 500, 5, "timed out waiting for post-picture-update frame")) {
+    std::cerr << "FAIL synthetic timeline picture update halted frame flow\n";
     return false;
   }
-  if (sig1 != sig2) {
-    std::cerr << "FAIL synthetic timeline picture state did not persist until changed\n";
+  auto snap1 = harness.snapshot_buffer().snapshot_copy();
+  if (!snap1) return false;
+  const auto* stream1 = VerifyCaseHarness::find_stream(*snap1, stream_id);
+  if (!stream1) return false;
+  const uint64_t frames1 = stream1->frames_received;
+
+  synthetic->advance(period_ns);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
+        return stream && stream->frames_received > frames1;
+      }, error, 500, 5, "timed out waiting for picture persistence frame")) {
+    std::cerr << "FAIL synthetic timeline picture state did not persist frame production\n";
     return false;
   }
 
-  if (!p.shutdown().ok()) return false;
-  return assert_native_balance(cb.events, "synthetic_timeline_picture_appearance");
+  synthetic->advance(period_ns);
+  synthetic->advance(2);
+  harness.runtime().request_publish();
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return !VerifyCaseHarness::has_stream(s, stream_id) &&
+               !VerifyCaseHarness::has_device(s, device_id);
+      }, error, 500, 5, "timed out waiting for picture scenario teardown")) {
+    std::cerr << "FAIL synthetic timeline picture scenario teardown missing\n";
+    return false;
+  }
+
+  harness.stop_runtime();
+  return true;
 }
 
 
