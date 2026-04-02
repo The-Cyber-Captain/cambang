@@ -630,7 +630,10 @@ public:
       runtime_.stop();
       return false;
     }
-    bind_synthetic_timeline_request_dispatch(*provider_, runtime_);
+    if (auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get())) {
+      synthetic->set_timeline_request_dispatch_hook_for_host(
+          make_synthetic_timeline_request_dispatch_hook(runtime_));
+    }
     runtime_.attach_provider(provider_.get());
 
     if (!provider_->initialize(runtime_.provider_callbacks()).ok()) {

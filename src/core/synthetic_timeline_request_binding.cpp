@@ -1,14 +1,8 @@
 #include "core/synthetic_timeline_request_binding.h"
 
 #include <string>
-#include <utility>
 
 #include "core/core_runtime.h"
-
-#if (defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC) || defined(CAMBANG_INTERNAL_SMOKE)
-  #define CAMBANG_BINDER_HAS_SYNTHETIC_PROVIDER 1
-  #include "imaging/synthetic/provider.h"
-#endif
 
 namespace cambang {
 
@@ -59,19 +53,6 @@ SyntheticTimelineRequestDispatchHook make_synthetic_timeline_request_dispatch_ho
   return [&runtime](const SyntheticScheduledEvent& ev) {
     dispatch_timeline_request_to_core(ev, runtime);
   };
-}
-
-void bind_synthetic_timeline_request_dispatch(ICameraProvider& provider, CoreRuntime& runtime) {
-  SyntheticTimelineRequestDispatchHook hook = make_synthetic_timeline_request_dispatch_hook(runtime);
-
-#if defined(CAMBANG_BINDER_HAS_SYNTHETIC_PROVIDER)
-  if (auto* synthetic = dynamic_cast<SyntheticProvider*>(&provider)) {
-    synthetic->set_timeline_request_dispatch_hook_for_host(std::move(hook));
-    return;
-  }
-#endif
-
-  // Non-synthetic providers do not expose a synthetic timeline request hook.
 }
 
 } // namespace cambang
