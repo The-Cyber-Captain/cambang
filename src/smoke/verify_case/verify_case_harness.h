@@ -971,6 +971,7 @@ private:
     cfg.nominal.height = 180;
     cfg.nominal.fps_num = 30;
     cfg.nominal.fps_den = 1;
+    cfg.nominal.start_stream_warmup_ns = 0;
     cfg.pattern.preset = PatternPreset::XyXor;
     cfg.pattern.seed = 1;
     return std::make_unique<SyntheticProvider>(cfg);
