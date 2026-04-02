@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <queue>
@@ -21,6 +22,8 @@ namespace cambang {
 
 class SyntheticProvider final : public ICameraProvider {
 public:
+  using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
+
   explicit SyntheticProvider(const SyntheticProviderConfig& cfg);
   ~SyntheticProvider() override = default;
 
@@ -75,6 +78,7 @@ public:
   ProviderResult start_timeline_scenario_for_host();
   ProviderResult stop_timeline_scenario_for_host();
   ProviderResult set_timeline_scenario_paused_for_host(bool paused);
+  void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
 
 private:
   CBProviderStrand strand_;
@@ -89,6 +93,7 @@ private:
 
   void timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id);
   void timeline_schedule_(const SyntheticScheduledEvent& ev);
+  void timeline_dispatch_request_(const SyntheticScheduledEvent& ev);
   void timeline_pump_();
 
   struct DeviceState {
@@ -158,6 +163,7 @@ private:
                       std::vector<SyntheticScheduledEvent>,
                       TimelineEventCompare>
       timeline_q_;
+  TimelineRequestDispatchHook timeline_request_dispatch_hook_{};
 
   std::atomic<uint64_t> invalid_preset_requests_{0};
 };
