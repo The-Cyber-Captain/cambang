@@ -13,6 +13,7 @@
 
 #include "imaging/api/icamera_provider.h"
 #include "imaging/broker/mode.h"
+#include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
 
 namespace cambang {
@@ -76,6 +77,7 @@ public:
   // virtual_time). Returns true if the active backend consumed the tick.
   bool try_tick_virtual_time(uint64_t dt_ns);
   ProviderResult dev_set_timeline_scenario(const SyntheticTimelineScenario& scenario);
+  ProviderResult dev_set_timeline_canonical_scenario(const SyntheticCanonicalScenario& scenario);
   ProviderResult dev_start_timeline_scenario();
   ProviderResult dev_stop_timeline_scenario();
   ProviderResult dev_set_timeline_scenario_paused(bool paused);

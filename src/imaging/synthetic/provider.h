@@ -13,6 +13,7 @@
 #include "imaging/api/provider_strand.h"
 
 #include "imaging/synthetic/config.h"
+#include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
 #include "imaging/synthetic/virtual_clock.h"
 
@@ -75,6 +76,7 @@ public:
   ProviderResult force_close_device_for_test(uint64_t device_instance_id);
   ProviderResult fail_stream_for_test(uint64_t stream_id, ProviderError error);
   ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
+  ProviderResult set_timeline_scenario_for_host(const SyntheticCanonicalScenario& scenario);
   ProviderResult start_timeline_scenario_for_host();
   ProviderResult stop_timeline_scenario_for_host();
   ProviderResult set_timeline_scenario_paused_for_host(bool paused);
@@ -95,6 +97,7 @@ private:
   void timeline_schedule_(const SyntheticScheduledEvent& ev);
   void timeline_dispatch_request_(const SyntheticScheduledEvent& ev);
   void timeline_pump_();
+  bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
 
   struct DeviceState {
     std::string hardware_id;
@@ -157,6 +160,8 @@ private:
 
   uint64_t timeline_seq_ = 0;
   SyntheticTimelineScenario timeline_scenario_{};
+  SyntheticCanonicalScenario timeline_canonical_scenario_{};
+  bool timeline_canonical_staged_ = false;
   bool timeline_running_ = false;
   bool timeline_paused_ = false;
   std::priority_queue<SyntheticScheduledEvent,

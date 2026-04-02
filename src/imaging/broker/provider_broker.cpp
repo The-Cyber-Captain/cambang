@@ -347,6 +347,20 @@ ProviderResult ProviderBroker::dev_set_timeline_scenario(const SyntheticTimeline
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
+ProviderResult ProviderBroker::dev_set_timeline_canonical_scenario(const SyntheticCanonicalScenario& scenario) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_timeline_scenario_for_host(scenario);
+  }
+#endif
+  (void)scenario;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
 ProviderResult ProviderBroker::dev_start_timeline_scenario() {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {

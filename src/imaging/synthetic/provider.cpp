@@ -1,5 +1,6 @@
 #include "imaging/synthetic/provider.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
@@ -135,6 +136,73 @@ void SyntheticProvider::timeline_dispatch_request_(const SyntheticScheduledEvent
   if (timeline_request_dispatch_hook_) {
     timeline_request_dispatch_hook_(ev);
   }
+}
+
+bool SyntheticProvider::materialize_staged_canonical_scenario_(
+    SyntheticTimelineScenario& out,
+    std::string& error) const {
+  out = {};
+  SyntheticScenarioMaterializationOptions opts{};
+  SyntheticScenarioMaterializationResult materialized{};
+  if (!materialize_synthetic_canonical_scenario(
+          timeline_canonical_scenario_,
+          opts,
+          materialized,
+          &error)) {
+    return false;
+  }
+
+  // Provider-owned projection boundary:
+  // canonical declarations are lowered to executable request-like timeline events.
+  // EmitFrame remains provider-internal and is not emitted here.
+  std::vector<SyntheticScheduledEvent> events;
+  events.reserve(
+      materialized.devices.size() +
+      materialized.streams.size() * 2 +
+      materialized.executable_schedule.events.size());
+
+  for (const auto& d : materialized.devices) {
+    SyntheticScheduledEvent ev{};
+    ev.at_ns = 0;
+    ev.type = SyntheticEventType::OpenDevice;
+    ev.endpoint_index = d.endpoint_index;
+    ev.device_instance_id = d.device_instance_id;
+    ev.root_id = d.root_id;
+    events.push_back(ev);
+  }
+  for (const auto& s : materialized.streams) {
+    if (s.realize_baseline_lifecycle) {
+      SyntheticScheduledEvent ev{};
+      ev.at_ns = 0;
+      ev.type = SyntheticEventType::CreateStream;
+      ev.device_instance_id = s.device_instance_id;
+      ev.stream_id = s.stream_id;
+      events.push_back(ev);
+    }
+    if (s.realize_baseline_lifecycle && s.has_baseline_picture) {
+      SyntheticScheduledEvent ev{};
+      ev.at_ns = 0;
+      ev.type = SyntheticEventType::UpdateStreamPicture;
+      ev.stream_id = s.stream_id;
+      ev.has_picture = true;
+      ev.picture = s.baseline_picture;
+      events.push_back(ev);
+    }
+  }
+
+  for (const auto& ev : materialized.executable_schedule.events) {
+    events.push_back(ev);
+  }
+
+  std::stable_sort(events.begin(), events.end(), [](const SyntheticScheduledEvent& a,
+                                                     const SyntheticScheduledEvent& b) {
+    return a.at_ns < b.at_ns;
+  });
+  for (size_t i = 0; i < events.size(); ++i) {
+    events[i].seq = static_cast<uint64_t>(i + 1);
+  }
+  out.events = std::move(events);
+  return true;
 }
 
 void SyntheticProvider::timeline_pump_() {
@@ -693,6 +761,28 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_running_ = false;
   timeline_paused_ = false;
   timeline_scenario_ = scenario;
+  timeline_canonical_scenario_ = {};
+  timeline_canonical_staged_ = false;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const SyntheticCanonicalScenario& scenario) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  // Host-submitted canonical scenarios are staged until explicit start.
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
+  timeline_scenario_ = {};
+  timeline_canonical_scenario_ = scenario;
+  timeline_canonical_staged_ = true;
   return ProviderResult::success();
 }
 
@@ -707,6 +797,12 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  if (timeline_canonical_staged_) {
+    std::string error;
+    if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT, std::move(error));
+    }
+  }
   for (const auto& ev : timeline_scenario_.events) {
     timeline_schedule_(ev);
   }
@@ -770,6 +866,9 @@ ProviderResult SyntheticProvider::shutdown() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_scenario_ = {};
+  timeline_canonical_scenario_ = {};
+  timeline_canonical_staged_ = false;
   timeline_running_ = false;
   timeline_paused_ = false;
 

@@ -12,6 +12,8 @@
 #include "smoke/verify_case/verify_case_harness.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
+#include "imaging/synthetic/scenario_catalog.h"
+#include "imaging/synthetic/scenario_model.h"
 
 using namespace cambang;
 
@@ -160,6 +162,213 @@ bool advance_and_expect_snapshot(VerifyCaseHarness& harness,
 
   error = timeout_message;
   return false;
+}
+
+
+bool run_synthetic_scenario_materialization_check() {
+  SyntheticCanonicalScenario canonical{};
+
+  SyntheticScenarioDeviceDeclaration d{};
+  d.key = "cam_a";
+  d.endpoint_index = 0;
+  canonical.devices.push_back(d);
+
+  SyntheticScenarioStreamDeclaration s0{};
+  s0.key = "preview_a";
+  s0.device_key = "cam_a";
+  s0.intent = StreamIntent::PREVIEW;
+  s0.baseline_capture_profile.width = 64;
+  s0.baseline_capture_profile.height = 64;
+  s0.baseline_capture_profile.format_fourcc = FOURCC_RGBA;
+  s0.baseline_capture_profile.target_fps_min = 30;
+  s0.baseline_capture_profile.target_fps_max = 30;
+  canonical.streams.push_back(s0);
+
+  SyntheticScenarioTimelineAction a{};
+  a.at_ns = 10;
+  a.type = SyntheticEventType::StartStream;
+  a.stream_key = "preview_a";
+  canonical.timeline.push_back(a);
+
+  a = {};
+  a.at_ns = 0;
+  a.type = SyntheticEventType::OpenDevice;
+  a.device_key = "cam_a";
+  canonical.timeline.push_back(a);
+
+  a = {};
+  a.at_ns = 0;
+  a.type = SyntheticEventType::CreateStream;
+  a.stream_key = "preview_a";
+  canonical.timeline.push_back(a);
+
+  a = {};
+  a.at_ns = 20;
+  a.type = SyntheticEventType::StopStream;
+  a.stream_key = "preview_a";
+  canonical.timeline.push_back(a);
+
+  SyntheticScenarioMaterializationOptions opts{};
+  opts.device_instance_id_base = 200;
+  opts.root_id_base = 400;
+  opts.stream_id_base = 600;
+
+  SyntheticScenarioMaterializationResult result{};
+  std::string error;
+  if (!materialize_synthetic_canonical_scenario(canonical, opts, result, &error)) {
+    std::cerr << "FAIL synthetic scenario materialization rejected valid canonical scenario: " << error << "\n";
+    return false;
+  }
+
+  if (result.devices.size() != 1 || result.streams.size() != 1 || result.executable_schedule.events.size() != 4) {
+    std::cerr << "FAIL synthetic scenario materialization unexpected output sizes\n";
+    return false;
+  }
+
+  if (result.devices[0].device_instance_id != 201 || result.devices[0].root_id != 401) {
+    std::cerr << "FAIL synthetic scenario materialization unexpected device id mapping\n";
+    return false;
+  }
+  if (result.streams[0].stream_id != 601 || result.streams[0].device_instance_id != 201) {
+    std::cerr << "FAIL synthetic scenario materialization unexpected stream id mapping\n";
+    return false;
+  }
+
+  const auto& events = result.executable_schedule.events;
+  if (events[0].type != SyntheticEventType::OpenDevice ||
+      events[1].type != SyntheticEventType::CreateStream ||
+      events[2].type != SyntheticEventType::StartStream ||
+      events[3].type != SyntheticEventType::StopStream) {
+    std::cerr << "FAIL synthetic scenario materialization did not stable-order by at_ns\n";
+    return false;
+  }
+  for (const auto& ev : events) {
+    if (ev.stream_id != 0 && ev.stream_id != 601) {
+      std::cerr << "FAIL synthetic scenario materialization produced unstable stream id\n";
+      return false;
+    }
+    if (ev.device_instance_id != 0 && ev.device_instance_id != 201) {
+      std::cerr << "FAIL synthetic scenario materialization produced unstable device id\n";
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool run_synthetic_scenario_catalog_build_check() {
+  CaptureProfile baseline_profile{};
+  baseline_profile.width = 64;
+  baseline_profile.height = 64;
+  baseline_profile.format_fourcc = FOURCC_RGBA;
+  baseline_profile.target_fps_min = 30;
+  baseline_profile.target_fps_max = 30;
+
+  PictureConfig baseline_picture{};
+  baseline_picture.preset = PatternPreset::NoiseAnimated;
+  baseline_picture.overlay_frame_index_offsets = true;
+  baseline_picture.overlay_moving_bar = true;
+
+  const SyntheticScenarioCatalogId ids[] = {
+      SyntheticScenarioCatalogId::StreamLifecycleVersions,
+      SyntheticScenarioCatalogId::TopologyChangeVersions,
+      SyntheticScenarioCatalogId::PublicationCoalescing,
+  };
+
+  for (SyntheticScenarioCatalogId id : ids) {
+    SyntheticCanonicalScenario canonical{};
+    std::string error;
+    if (!build_synthetic_catalog_canonical_scenario(
+            id,
+            baseline_profile,
+            baseline_picture,
+            canonical,
+            &error)) {
+      std::cerr << "FAIL synthetic scenario catalog build failed for "
+                << synthetic_scenario_catalog_name(id) << ": " << error << "\n";
+      return false;
+    }
+    if (canonical.devices.empty() || canonical.streams.empty() || canonical.timeline.empty()) {
+      std::cerr << "FAIL synthetic scenario catalog built empty scenario for "
+                << synthetic_scenario_catalog_name(id) << "\n";
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool run_synthetic_timeline_canonical_submission_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.timing_driver = TimingDriver::VirtualTime;
+  cfg.endpoint_count = 1;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+
+  SyntheticProvider synthetic(cfg);
+  if (!synthetic.initialize(&cb).ok()) return false;
+
+  std::vector<SyntheticEventType> dispatched;
+  synthetic.set_timeline_request_dispatch_hook_for_host(
+      [&dispatched](const SyntheticScheduledEvent& ev) {
+        dispatched.push_back(ev.type);
+      });
+
+  SyntheticCanonicalScenario canonical{};
+  SyntheticScenarioDeviceDeclaration d{};
+  d.key = "cam";
+  d.endpoint_index = 0;
+  canonical.devices.push_back(d);
+
+  SyntheticScenarioStreamDeclaration s{};
+  s.key = "preview";
+  s.device_key = "cam";
+  s.intent = StreamIntent::PREVIEW;
+  s.has_baseline_picture = true;
+  s.baseline_picture.preset = PatternPreset::Solid;
+  s.baseline_picture.overlay_frame_index_offsets = false;
+  s.baseline_picture.overlay_moving_bar = false;
+  s.baseline_picture.solid_r = 5;
+  s.baseline_picture.solid_g = 6;
+  s.baseline_picture.solid_b = 7;
+  canonical.streams.push_back(s);
+
+  SyntheticScenarioTimelineAction a{};
+  a.at_ns = 10;
+  a.type = SyntheticEventType::StartStream;
+  a.stream_key = "preview";
+  canonical.timeline.push_back(a);
+
+  a = {};
+  a.at_ns = 20;
+  a.type = SyntheticEventType::StopStream;
+  a.stream_key = "preview";
+  canonical.timeline.push_back(a);
+
+  if (!synthetic.set_timeline_scenario_for_host(canonical).ok()) return false;
+  if (!synthetic.start_timeline_scenario_for_host().ok()) return false;
+
+  synthetic.advance(0);
+  synthetic.advance(10);
+  synthetic.advance(10);
+
+  const std::vector<SyntheticEventType> expected{
+      SyntheticEventType::OpenDevice,
+      SyntheticEventType::CreateStream,
+      SyntheticEventType::UpdateStreamPicture,
+      SyntheticEventType::StartStream,
+      SyntheticEventType::StopStream,
+  };
+  if (dispatched != expected) {
+    std::cerr << "FAIL synthetic canonical host scenario submission did not emit expected baseline+authored actions\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+
+  if (!synthetic.shutdown().ok()) return false;
+  return true;
 }
 
 bool run_stub_check() {
@@ -703,6 +912,9 @@ bool run_synthetic_timeline_picture_appearance_check() {
 } // namespace
 
 int main() {
+  if (!run_synthetic_scenario_materialization_check()) return 1;
+  if (!run_synthetic_scenario_catalog_build_check()) return 1;
+  if (!run_synthetic_timeline_canonical_submission_check()) return 1;
   if (!run_stub_check()) return 1;
   if (!run_synthetic_check()) return 1;
   if (!run_synthetic_timeline_scenario_check()) return 1;
