@@ -52,7 +52,8 @@
         "last_frame_ts_ns": 50000000011,
         "visibility_frames_presented": 970,
         "visibility_frames_rejected_unsupported": 6,
-        "visibility_frames_rejected_invalid": 4
+        "visibility_frames_rejected_invalid": 4,
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
