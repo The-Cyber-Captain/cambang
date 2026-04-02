@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/core_runtime.h"
+#include "core/synthetic_timeline_request_binding.h"
 #include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
 #include "imaging/api/provider_contract_datatypes.h"
@@ -621,6 +622,7 @@ public:
       runtime_.stop();
       return false;
     }
+    bind_synthetic_timeline_request_dispatch(*provider_, runtime_);
 
     if (!provider_->initialize(runtime_.provider_callbacks()).ok()) {
       error = std::string("provider initialize failed (") + verify_case_provider_name(provider_kind_) + ")";
