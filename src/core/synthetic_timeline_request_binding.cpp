@@ -4,7 +4,6 @@
 #include <utility>
 
 #include "core/core_runtime.h"
-#include "imaging/broker/provider_broker.h"
 
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   #include "imaging/synthetic/provider.h"
@@ -55,15 +54,14 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
 
 } // namespace
 
-void bind_synthetic_timeline_request_dispatch(ICameraProvider& provider, CoreRuntime& runtime) {
-  auto hook = [&runtime](const SyntheticScheduledEvent& ev) {
+SyntheticTimelineRequestDispatchHook make_synthetic_timeline_request_dispatch_hook(CoreRuntime& runtime) {
+  return [&runtime](const SyntheticScheduledEvent& ev) {
     dispatch_timeline_request_to_core(ev, runtime);
   };
+}
 
-  if (auto* broker = dynamic_cast<ProviderBroker*>(&provider)) {
-    broker->set_synthetic_timeline_request_dispatch_hook(std::move(hook));
-    return;
-  }
+void bind_synthetic_timeline_request_dispatch(ICameraProvider& provider, CoreRuntime& runtime) {
+  SyntheticTimelineRequestDispatchHook hook = make_synthetic_timeline_request_dispatch_hook(runtime);
 
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* synthetic = dynamic_cast<SyntheticProvider*>(&provider)) {

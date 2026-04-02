@@ -348,7 +348,8 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
   // Fresh broker per start cycle (latched provider_mode).
   {
     auto broker = std::make_unique<ProviderBroker>();
-    bind_synthetic_timeline_request_dispatch(*broker, runtime_);
+    broker->set_synthetic_timeline_request_dispatch_hook(
+        make_synthetic_timeline_request_dispatch_hook(runtime_));
     ProviderResult sr = broker->set_runtime_mode_requested(provider_mode_requested_);
     if (!sr.ok()) {
       ERR_PRINT(godot::vformat(
