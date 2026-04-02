@@ -8,7 +8,7 @@
 #include <godot_cpp/variant/string.hpp>
 
 #include "imaging/api/provider_contract_datatypes.h"
-#include "imaging/synthetic/scenario_catalog.h"
+#include "imaging/synthetic/builtin_scenario_library.h"
 
 namespace cambang {
 

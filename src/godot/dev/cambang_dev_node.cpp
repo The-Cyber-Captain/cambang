@@ -463,16 +463,16 @@ godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
 }
 
 std::optional<SyntheticCanonicalScenario> CamBANGDevNode::build_provider_scenario_(ActiveScenario scenario) const {
-    SyntheticScenarioCatalogId catalog_id = SyntheticScenarioCatalogId::StreamLifecycleVersions;
+    SyntheticBuiltinScenarioLibraryId builtin_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
     switch (scenario) {
         case ActiveScenario::StreamLifecycleVersions:
-            catalog_id = SyntheticScenarioCatalogId::StreamLifecycleVersions;
+            builtin_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
             break;
         case ActiveScenario::TopologyChangeVersions:
-            catalog_id = SyntheticScenarioCatalogId::TopologyChangeVersions;
+            builtin_id = SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions;
             break;
         case ActiveScenario::PublicationCoalescing:
-            catalog_id = SyntheticScenarioCatalogId::PublicationCoalescing;
+            builtin_id = SyntheticBuiltinScenarioLibraryId::PublicationCoalescing;
             break;
         case ActiveScenario::None:
         default:
@@ -481,13 +481,13 @@ std::optional<SyntheticCanonicalScenario> CamBANGDevNode::build_provider_scenari
 
     SyntheticCanonicalScenario canonical{};
     std::string error;
-    if (!build_synthetic_catalog_canonical_scenario(
-            catalog_id,
+    if (!build_synthetic_builtin_scenario_library_canonical_scenario(
+            builtin_id,
             effective_profile_,
             effective_picture_,
             canonical,
             &error)) {
-        UtilityFunctions::printerr("[CamBANGDevNode] Failed to build canonical scenario from catalog: ", error.c_str());
+        UtilityFunctions::printerr("[CamBANGDevNode] Failed to build canonical scenario from builtin scenario library: ", error.c_str());
         return std::nullopt;
     }
     return canonical;

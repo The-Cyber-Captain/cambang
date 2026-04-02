@@ -12,7 +12,7 @@
 #include "smoke/verify_case/verify_case_harness.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
-#include "imaging/synthetic/scenario_catalog.h"
+#include "imaging/synthetic/builtin_scenario_library.h"
 #include "imaging/synthetic/scenario_model.h"
 
 using namespace cambang;
@@ -256,7 +256,7 @@ bool run_synthetic_scenario_materialization_check() {
   return true;
 }
 
-bool run_synthetic_scenario_catalog_build_check() {
+bool run_synthetic_builtin_scenario_library_build_check() {
   CaptureProfile baseline_profile{};
   baseline_profile.width = 64;
   baseline_profile.height = 64;
@@ -269,28 +269,28 @@ bool run_synthetic_scenario_catalog_build_check() {
   baseline_picture.overlay_frame_index_offsets = true;
   baseline_picture.overlay_moving_bar = true;
 
-  const SyntheticScenarioCatalogId ids[] = {
-      SyntheticScenarioCatalogId::StreamLifecycleVersions,
-      SyntheticScenarioCatalogId::TopologyChangeVersions,
-      SyntheticScenarioCatalogId::PublicationCoalescing,
+  const SyntheticBuiltinScenarioLibraryId ids[] = {
+      SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions,
+      SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions,
+      SyntheticBuiltinScenarioLibraryId::PublicationCoalescing,
   };
 
-  for (SyntheticScenarioCatalogId id : ids) {
+  for (SyntheticBuiltinScenarioLibraryId id : ids) {
     SyntheticCanonicalScenario canonical{};
     std::string error;
-    if (!build_synthetic_catalog_canonical_scenario(
+    if (!build_synthetic_builtin_scenario_library_canonical_scenario(
             id,
             baseline_profile,
             baseline_picture,
             canonical,
             &error)) {
-      std::cerr << "FAIL synthetic scenario catalog build failed for "
-                << synthetic_scenario_catalog_name(id) << ": " << error << "\n";
+      std::cerr << "FAIL synthetic builtin scenario library build failed for "
+                << synthetic_builtin_scenario_library_name(id) << ": " << error << "\n";
       return false;
     }
     if (canonical.devices.empty() || canonical.streams.empty() || canonical.timeline.empty()) {
-      std::cerr << "FAIL synthetic scenario catalog built empty scenario for "
-                << synthetic_scenario_catalog_name(id) << "\n";
+      std::cerr << "FAIL synthetic builtin scenario library built empty scenario for "
+                << synthetic_builtin_scenario_library_name(id) << "\n";
       return false;
     }
   }
@@ -913,7 +913,7 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
 int main() {
   if (!run_synthetic_scenario_materialization_check()) return 1;
-  if (!run_synthetic_scenario_catalog_build_check()) return 1;
+  if (!run_synthetic_builtin_scenario_library_build_check()) return 1;
   if (!run_synthetic_timeline_canonical_submission_check()) return 1;
   if (!run_stub_check()) return 1;
   if (!run_synthetic_check()) return 1;

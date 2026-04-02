@@ -1,12 +1,12 @@
-#include "imaging/synthetic/scenario_catalog.h"
+#include "imaging/synthetic/builtin_scenario_library.h"
 
 namespace cambang {
 
 namespace {
 
-constexpr const char* kDeviceKey = "catalog_device";
-constexpr const char* kMainStreamKey = "catalog_main_stream";
-constexpr const char* kProbeStreamKey = "catalog_probe_stream";
+constexpr const char* kDeviceKey = "builtin_device";
+constexpr const char* kMainStreamKey = "builtin_main_stream";
+constexpr const char* kProbeStreamKey = "builtin_probe_stream";
 
 void add_timeline_action(
     SyntheticCanonicalScenario& scenario,
@@ -28,20 +28,20 @@ void add_timeline_action(
 
 } // namespace
 
-const char* synthetic_scenario_catalog_name(SyntheticScenarioCatalogId id) noexcept {
+const char* synthetic_builtin_scenario_library_name(SyntheticBuiltinScenarioLibraryId id) noexcept {
   switch (id) {
-    case SyntheticScenarioCatalogId::StreamLifecycleVersions:
+    case SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions:
       return "stream_lifecycle_versions";
-    case SyntheticScenarioCatalogId::TopologyChangeVersions:
+    case SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions:
       return "topology_change_versions";
-    case SyntheticScenarioCatalogId::PublicationCoalescing:
+    case SyntheticBuiltinScenarioLibraryId::PublicationCoalescing:
       return "publication_coalescing";
   }
   return "unknown";
 }
 
-bool build_synthetic_catalog_canonical_scenario(
-    SyntheticScenarioCatalogId id,
+bool build_synthetic_builtin_scenario_library_canonical_scenario(
+    SyntheticBuiltinScenarioLibraryId id,
     const CaptureProfile& baseline_profile,
     const PictureConfig& baseline_picture,
     SyntheticCanonicalScenario& out,
@@ -64,7 +64,7 @@ bool build_synthetic_catalog_canonical_scenario(
 
   add_timeline_action(out, 0, SyntheticEventType::StartStream, nullptr, kMainStreamKey, false, PictureConfig{});
 
-  if (id == SyntheticScenarioCatalogId::StreamLifecycleVersions) {
+  if (id == SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions) {
     PictureConfig checker{};
     checker.preset = PatternPreset::Checker;
     checker.seed = 3;
@@ -78,7 +78,7 @@ bool build_synthetic_catalog_canonical_scenario(
     return true;
   }
 
-  if (id == SyntheticScenarioCatalogId::PublicationCoalescing) {
+  if (id == SyntheticBuiltinScenarioLibraryId::PublicationCoalescing) {
     PictureConfig p0{};
     p0.preset = PatternPreset::Solid;
     p0.overlay_frame_index_offsets = false;
@@ -112,7 +112,7 @@ bool build_synthetic_catalog_canonical_scenario(
     return true;
   }
 
-  if (id == SyntheticScenarioCatalogId::TopologyChangeVersions) {
+  if (id == SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions) {
     PictureConfig noise{};
     noise.preset = PatternPreset::NoiseAnimated;
     noise.seed = 99;
@@ -141,7 +141,7 @@ bool build_synthetic_catalog_canonical_scenario(
   }
 
   if (error) {
-    *error = "unknown synthetic scenario catalog id";
+    *error = "unknown synthetic builtin scenario library id";
   }
   return false;
 }
