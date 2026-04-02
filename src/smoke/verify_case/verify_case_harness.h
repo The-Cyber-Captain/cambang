@@ -623,15 +623,17 @@ public:
       return false;
     }
     bind_synthetic_timeline_request_dispatch(*provider_, runtime_);
+    runtime_.attach_provider(provider_.get());
 
     if (!provider_->initialize(runtime_.provider_callbacks()).ok()) {
       error = std::string("provider initialize failed (") + verify_case_provider_name(provider_kind_) + ")";
+      runtime_.attach_provider(nullptr);
+      (void)provider_->shutdown();
       provider_.reset();
       runtime_.stop();
       return false;
     }
 
-    runtime_.attach_provider(provider_.get());
     if (!select_endpoints_(error)) {
       runtime_.attach_provider(nullptr);
       (void)provider_->shutdown();
