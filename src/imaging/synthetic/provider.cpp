@@ -800,7 +800,10 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
   if (timeline_canonical_staged_) {
     std::string error;
     if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
-      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT, std::move(error));
+      if (!error.empty()) {
+        std::fprintf(stderr, "[Synthetic] canonical scenario materialization failed: %s\n", error.c_str());
+      }
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
   }
   for (const auto& ev : timeline_scenario_.events) {
@@ -902,7 +905,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   const uint32_t w = s.req.profile.width;
   const uint32_t h = s.req.profile.height;
   const uint32_t stride = w * 4u;
-  const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
 
   // Acquire a buffer slot.
   StreamState::BufferSlot* slot = nullptr;
