@@ -667,22 +667,36 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
 
   // Compute effective config (core owns defaulting).
   const StreamTemplate tmpl = prov->stream_template();
-  const uint64_t effective_profile_version =
-      (profile_version != 0)
-          ? profile_version
-          : create_stream_profile_version_seq_.fetch_add(1, std::memory_order_relaxed);
+  const bool has_request_profile = (request_profile != nullptr);
+  const bool has_request_picture = (request_picture != nullptr);
+  const CaptureProfile request_profile_copy = has_request_profile ? *request_profile : CaptureProfile{};
+  const PictureConfig request_picture_copy = has_request_picture ? *request_picture : PictureConfig{};
 
-  StreamRequest effective{};
-  effective.stream_id = stream_id;
-  effective.device_instance_id = device_instance_id;
-  effective.intent = intent;
-  effective.profile_version = effective_profile_version;
-  effective.profile = request_profile ? *request_profile : tmpl.profile;
-  effective.picture = request_picture ? *request_picture : tmpl.picture;
-
-  const CoreThread::PostResult pr = try_post([this, effective]() {
+  const CoreThread::PostResult pr = try_post([this,
+                                              stream_id,
+                                              device_instance_id,
+                                              intent,
+                                              profile_version,
+                                              tmpl,
+                                              has_request_profile,
+                                              request_profile_copy,
+                                              has_request_picture,
+                                              request_picture_copy]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
+
+    const uint64_t effective_profile_version =
+        (profile_version != 0)
+            ? profile_version
+            : create_stream_profile_version_seq_.fetch_add(1, std::memory_order_relaxed);
+
+    StreamRequest effective{};
+    effective.stream_id = stream_id;
+    effective.device_instance_id = device_instance_id;
+    effective.intent = intent;
+    effective.profile_version = effective_profile_version;
+    effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
+    effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
 
     // Declare before calling into the provider so any synchronous callbacks
     // can resolve the record deterministically.
