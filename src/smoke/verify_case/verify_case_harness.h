@@ -615,6 +615,14 @@ public:
       error = "runtime start failed";
       return false;
     }
+    if (!wait_until([&]() { return runtime_.state_copy() == CoreRuntimeState::LIVE; },
+                    error,
+                    500,
+                    5,
+                    "timed out waiting for runtime LIVE")) {
+      runtime_.stop();
+      return false;
+    }
 
     provider_ = make_provider_();
     if (!provider_) {
