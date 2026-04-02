@@ -46,6 +46,9 @@ bool build_synthetic_builtin_scenario_library_canonical_scenario(
     const PictureConfig& baseline_picture,
     SyntheticCanonicalScenario& out,
     std::string* error) {
+  // Current scope: built-in scenario library only (C++-authored scenarios).
+  // Future file-backed collections belong to external scenario library naming,
+  // with serialized ingestion living under scenario loader terminology.
   out = {};
 
   SyntheticScenarioDeviceDeclaration device_decl{};
