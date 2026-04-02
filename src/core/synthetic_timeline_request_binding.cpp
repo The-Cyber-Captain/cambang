@@ -5,7 +5,8 @@
 
 #include "core/core_runtime.h"
 
-#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+#if (defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC) || defined(CAMBANG_INTERNAL_SMOKE)
+  #define CAMBANG_BINDER_HAS_SYNTHETIC_PROVIDER 1
   #include "imaging/synthetic/provider.h"
 #endif
 
@@ -63,7 +64,7 @@ SyntheticTimelineRequestDispatchHook make_synthetic_timeline_request_dispatch_ho
 void bind_synthetic_timeline_request_dispatch(ICameraProvider& provider, CoreRuntime& runtime) {
   SyntheticTimelineRequestDispatchHook hook = make_synthetic_timeline_request_dispatch_hook(runtime);
 
-#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+#if defined(CAMBANG_BINDER_HAS_SYNTHETIC_PROVIDER)
   if (auto* synthetic = dynamic_cast<SyntheticProvider*>(&provider)) {
     synthetic->set_timeline_request_dispatch_hook_for_host(std::move(hook));
     return;
