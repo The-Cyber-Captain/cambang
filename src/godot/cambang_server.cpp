@@ -7,6 +7,7 @@
 
 #include <chrono>
 
+#include "core/synthetic_timeline_request_binding.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
 
@@ -348,44 +349,7 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
   {
     auto broker = std::make_unique<ProviderBroker>();
     broker->set_synthetic_timeline_request_dispatch_hook(
-        [this](const SyntheticScheduledEvent& ev) {
-          switch (ev.type) {
-            case SyntheticEventType::OpenDevice: {
-              const std::string hardware_id = std::string("synthetic:") + std::to_string(ev.endpoint_index);
-              (void)runtime_.try_open_device(hardware_id, ev.device_instance_id, ev.root_id);
-              break;
-            }
-            case SyntheticEventType::CloseDevice:
-              (void)runtime_.try_close_device(ev.device_instance_id);
-              break;
-            case SyntheticEventType::CreateStream:
-              (void)runtime_.try_create_stream(
-                  ev.stream_id,
-                  ev.device_instance_id,
-                  StreamIntent::PREVIEW,
-                  nullptr,
-                  nullptr,
-                  0);
-              break;
-            case SyntheticEventType::DestroyStream:
-              (void)runtime_.try_destroy_stream(ev.stream_id);
-              break;
-            case SyntheticEventType::StartStream:
-              (void)runtime_.try_start_stream(ev.stream_id);
-              break;
-            case SyntheticEventType::StopStream:
-              (void)runtime_.try_stop_stream(ev.stream_id);
-              break;
-            case SyntheticEventType::UpdateStreamPicture:
-              if (ev.has_picture) {
-                (void)runtime_.try_set_stream_picture_config(ev.stream_id, ev.picture);
-              }
-              break;
-            case SyntheticEventType::EmitFrame:
-              // Fact-like provider-originated event; remains provider-direct.
-              break;
-          }
-        });
+        make_synthetic_timeline_request_dispatch_hook(runtime_));
     ProviderResult sr = broker->set_runtime_mode_requested(provider_mode_requested_);
     if (!sr.ok()) {
       ERR_PRINT(godot::vformat(
