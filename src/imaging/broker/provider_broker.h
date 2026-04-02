@@ -8,6 +8,7 @@
 // - No ABI changes: ICameraProvider remains unchanged; broker implements it.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "imaging/api/icamera_provider.h"
@@ -78,6 +79,7 @@ public:
   ProviderResult dev_start_timeline_scenario();
   ProviderResult dev_stop_timeline_scenario();
   ProviderResult dev_set_timeline_scenario_paused(bool paused);
+  void set_synthetic_timeline_request_dispatch_hook(std::function<void(const SyntheticScheduledEvent&)> hook);
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
 
@@ -95,6 +97,7 @@ private:
 
   RuntimeMode mode_requested_ = RuntimeMode::platform_backed;
   RuntimeMode mode_latched_ = RuntimeMode::platform_backed;
+  std::function<void(const SyntheticScheduledEvent&)> synthetic_timeline_request_dispatch_hook_{};
 };
 
 } // namespace cambang

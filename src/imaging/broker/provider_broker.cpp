@@ -1,6 +1,7 @@
 #include "imaging/broker/provider_broker.h"
 
 #include <cstring>
+#include <utility>
 
 #include "imaging/api/provider_error_string.h"
 
@@ -99,6 +100,16 @@ ProviderResult ProviderBroker::set_runtime_mode_requested(RuntimeMode mode) noex
   return ProviderResult::success();
 }
 
+void ProviderBroker::set_synthetic_timeline_request_dispatch_hook(
+    std::function<void(const SyntheticScheduledEvent&)> hook) {
+  synthetic_timeline_request_dispatch_hook_ = std::move(hook);
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
+  }
+#endif
+}
+
 ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   if (initialized_) {
     return ProviderResult::success();
@@ -125,7 +136,9 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     // Defaults: nominal role, virtual_time driver (first landing).
     cfg.synthetic_role = SyntheticRole::Nominal;
     cfg.timing_driver = TimingDriver::VirtualTime;
-    active_ = std::make_unique<SyntheticProvider>(cfg);
+    auto syn = std::make_unique<SyntheticProvider>(cfg);
+    syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
+    active_ = std::move(syn);
 #endif
   }
 

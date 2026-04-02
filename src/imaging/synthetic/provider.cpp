@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <utility>
 
 #include "pixels/pattern/pattern_render_target.h"
 
@@ -130,6 +131,12 @@ void SyntheticProvider::timeline_schedule_(const SyntheticScheduledEvent& src) {
   timeline_q_.push(ev);
 }
 
+void SyntheticProvider::timeline_dispatch_request_(const SyntheticScheduledEvent& ev) {
+  if (timeline_request_dispatch_hook_) {
+    timeline_request_dispatch_hook_(ev);
+  }
+}
+
 void SyntheticProvider::timeline_pump_() {
   if (!timeline_running_ || timeline_paused_) {
     return;
@@ -167,88 +174,45 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::StartStream: {
-        // Scenario-driven start. This is primarily intended for Timeline-role
-        // regression tests and for future scenario execution features.
-        auto it = streams_.find(ev.stream_id);
-        if (it == streams_.end()) {
-          break;
-        }
-        StreamState& s = it->second;
-        if (!s.created || s.started) {
-          break;
-        }
-        // Reuse the normal core-requested start path.
-        (void)start_stream(ev.stream_id, s.req.profile, s.picture);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::StopStream: {
-        // Scenario-driven stop (e.g. simulating disconnect / unexpected stop).
-        auto it = streams_.find(ev.stream_id);
-        if (it == streams_.end()) {
-          break;
-        }
-        StreamState& s = it->second;
-        if (!s.created || !s.started) {
-          break;
-        }
-        (void)stop_stream(ev.stream_id);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::OpenDevice: {
-        if (ev.device_instance_id == 0 || ev.root_id == 0) {
-          break;
-        }
-        const std::string hardware_id = std::string(kHardwareIdPrefix) + std::to_string(ev.endpoint_index);
-        (void)open_device(hardware_id, ev.device_instance_id, ev.root_id);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::CloseDevice: {
-        if (ev.device_instance_id == 0) {
-          break;
-        }
-        (void)close_device(ev.device_instance_id);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::CreateStream: {
-        if (ev.stream_id == 0 || ev.device_instance_id == 0) {
-          break;
-        }
-        StreamRequest req{};
-        req.stream_id = ev.stream_id;
-        req.device_instance_id = ev.device_instance_id;
-        req.intent = StreamIntent::PREVIEW;
-        req.profile.width = cfg_.nominal.width;
-        req.profile.height = cfg_.nominal.height;
-        req.profile.format_fourcc = cfg_.nominal.format_fourcc ? cfg_.nominal.format_fourcc : FOURCC_RGBA;
-        req.profile.target_fps_min =
-            cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
-        req.profile.target_fps_max = req.profile.target_fps_min;
-        req.picture = stream_template().picture;
-        (void)create_stream(req);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::DestroyStream: {
-        if (ev.stream_id == 0) {
-          break;
-        }
-        (void)destroy_stream(ev.stream_id);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::UpdateStreamPicture: {
-        if (ev.stream_id == 0 || !ev.has_picture) {
-          break;
-        }
-        (void)set_stream_picture_config(ev.stream_id, ev.picture);
+        timeline_dispatch_request_(ev);
         break;
       }
     }
   }
+}
+
+void SyntheticProvider::set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook) {
+  timeline_request_dispatch_hook_ = std::move(hook);
 }
 
 ProviderResult SyntheticProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
