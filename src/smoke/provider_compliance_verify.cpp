@@ -74,6 +74,15 @@ int find_index(const std::vector<EventRec>& events, const char* tag, uint64_t id
   return -1;
 }
 
+int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) {
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (events[i].tag == "frame" && events[i].ts.value == ts_ns) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 int find_frameproducer_create(const std::vector<EventRec>& events, uint64_t stream_id) {
   const uint32_t fp_type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
   for (size_t i = 0; i < events.size(); ++i) {
@@ -591,152 +600,103 @@ bool run_synthetic_timeline_host_controls_check() {
 }
 
 bool run_synthetic_timeline_picture_appearance_check() {
-  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
-  std::string error;
-  if (!harness.start_runtime(error)) {
-    std::cerr << "FAIL synthetic timeline picture harness start: " << error << "\n";
-    return false;
-  }
-  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
-  if (!synthetic) {
-    std::cerr << "FAIL synthetic timeline picture provider cast failed\n";
-    harness.stop_runtime();
-    return false;
-  }
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.timing_driver = TimingDriver::VirtualTime;
+  cfg.endpoint_count = 1;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+  cfg.nominal.start_stream_warmup_ns = 0;
+
+  SyntheticProvider synthetic(cfg);
+  if (!synthetic.initialize(&cb).ok()) return false;
 
   const uint64_t device_id = 51;
   const uint64_t root_id = 5201;
   const uint64_t stream_id = 52;
-  const StreamTemplate st = synthetic->stream_template();
+  const StreamTemplate st = synthetic.stream_template();
   const uint32_t fps_num = st.profile.target_fps_max != 0 ? st.profile.target_fps_max : st.profile.target_fps_min;
   if (fps_num == 0) {
     std::cerr << "FAIL synthetic timeline picture invalid synthetic fps\n";
+    (void)synthetic.shutdown();
     return false;
   }
   const uint64_t period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps_num);
 
+  StreamRequest req{};
+  req.stream_id = stream_id;
+  req.device_instance_id = device_id;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile = st.profile;
+  req.picture = st.picture;
+
+  if (!synthetic.open_device("synthetic:0", device_id, root_id).ok()) return false;
+  if (!synthetic.create_stream(req).ok()) return false;
+  if (!synthetic.start_stream(stream_id, req.profile, req.picture).ok()) return false;
+
   SyntheticTimelineScenario scenario{};
   SyntheticScheduledEvent ev{};
   ev.at_ns = 0;
-  ev.type = SyntheticEventType::OpenDevice;
-  ev.endpoint_index = 0;
-  ev.device_instance_id = device_id;
-  ev.root_id = root_id;
-  scenario.events.push_back(ev);
-
-  ev = {};
-  ev.at_ns = 0;
-  ev.type = SyntheticEventType::CreateStream;
-  ev.device_instance_id = device_id;
-  ev.stream_id = stream_id;
-  scenario.events.push_back(ev);
-
-  ev = {};
-  ev.at_ns = 0;
-  ev.type = SyntheticEventType::StartStream;
+  ev.type = SyntheticEventType::EmitFrame;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
   ev.at_ns = period_ns;
-  ev.type = SyntheticEventType::UpdateStreamPicture;
-  ev.stream_id = stream_id;
-  ev.has_picture = true;
-  ev.picture.preset = PatternPreset::Solid;
-  ev.picture.overlay_frame_index_offsets = false;
-  ev.picture.overlay_moving_bar = false;
-  ev.picture.solid_r = 25;
-  ev.picture.solid_g = 200;
-  ev.picture.solid_b = 75;
-  ev.picture.solid_a = 255;
-  scenario.events.push_back(ev);
-
-  ev = {};
-  ev.at_ns = period_ns * 3;
-  ev.type = SyntheticEventType::StopStream;
+  ev.type = SyntheticEventType::EmitFrame;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
   ev = {};
-  ev.at_ns = period_ns * 3 + 1;
-  ev.type = SyntheticEventType::DestroyStream;
+  ev.at_ns = period_ns * 2;
+  ev.type = SyntheticEventType::EmitFrame;
   ev.stream_id = stream_id;
   scenario.events.push_back(ev);
 
-  ev = {};
-  ev.at_ns = period_ns * 3 + 2;
-  ev.type = SyntheticEventType::CloseDevice;
-  ev.device_instance_id = device_id;
-  scenario.events.push_back(ev);
+  if (!synthetic.set_timeline_scenario_for_host(scenario).ok()) return false;
+  if (!synthetic.start_timeline_scenario_for_host().ok()) return false;
 
-  if (!synthetic->set_timeline_scenario_for_host(scenario).ok()) return false;
-  if (!synthetic->start_timeline_scenario_for_host().ok()) return false;
+  synthetic.advance(0);
 
-  if (!advance_and_expect_snapshot(harness, *synthetic, 0, [&](const CamBANGStateSnapshot& s) {
-        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
-        return stream && stream->mode == CBStreamMode::FLOWING;
-      }, error, "timed out waiting for picture stream start")) {
-    std::cerr << "FAIL synthetic timeline picture stream start missing\n";
+  PictureConfig updated = req.picture;
+  updated.preset = PatternPreset::Solid;
+  updated.overlay_frame_index_offsets = false;
+  updated.overlay_moving_bar = false;
+  updated.solid_r = 25;
+  updated.solid_g = 200;
+  updated.solid_b = 75;
+  updated.solid_a = 255;
+  if (!synthetic.set_stream_picture_config(stream_id, updated).ok()) return false;
+
+  synthetic.advance(period_ns);
+  synthetic.advance(period_ns);
+
+  const int f0 = find_frame_index_by_ts(cb.events, 0);
+  const int f1 = find_frame_index_by_ts(cb.events, period_ns);
+  const int f2 = find_frame_index_by_ts(cb.events, period_ns * 2);
+  if (f0 < 0 || f1 < 0 || f2 < 0) {
+    std::cerr << "FAIL synthetic timeline picture appearance frames missing\n";
+    return false;
+  }
+  const uint32_t sig0 = cb.events[static_cast<size_t>(f0)].pixel_sig;
+  const uint32_t sig1 = cb.events[static_cast<size_t>(f1)].pixel_sig;
+  const uint32_t sig2 = cb.events[static_cast<size_t>(f2)].pixel_sig;
+  if (sig0 == sig1) {
+    std::cerr << "FAIL synthetic timeline picture update did not change rendered appearance\n";
+    return false;
+  }
+  if (sig1 != sig2) {
+    std::cerr << "FAIL synthetic timeline picture state did not persist until changed\n";
     return false;
   }
 
-  if (!harness.emit_frame_for_stream(stream_id, error)) {
-    std::cerr << "FAIL synthetic timeline picture first frame missing: " << error << "\n";
-    return false;
-  }
-  auto snap0 = harness.snapshot_buffer().snapshot_copy();
-  if (!snap0) return false;
-  const auto* stream0 = VerifyCaseHarness::find_stream(*snap0, stream_id);
-  if (!stream0) return false;
-  const uint64_t frames0 = stream0->frames_received;
-
-  if (!advance_and_expect_snapshot(harness, *synthetic, period_ns, [&](const CamBANGStateSnapshot& s) {
-        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
-        return stream && stream->frames_received > frames0;
-      }, error, "timed out waiting for post-picture-update frame")) {
-    std::cerr << "FAIL synthetic timeline picture update halted frame flow\n";
-    return false;
-  }
-  auto snap1 = harness.snapshot_buffer().snapshot_copy();
-  if (!snap1) return false;
-  const auto* stream1 = VerifyCaseHarness::find_stream(*snap1, stream_id);
-  if (!stream1) return false;
-  const uint64_t frames1 = stream1->frames_received;
-
-  if (!advance_and_expect_snapshot(harness, *synthetic, period_ns, [&](const CamBANGStateSnapshot& s) {
-        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
-        return stream && stream->frames_received > frames1;
-      }, error, "timed out waiting for picture persistence frame")) {
-    std::cerr << "FAIL synthetic timeline picture state did not persist frame production\n";
-    return false;
-  }
-
-  if (!advance_and_expect_snapshot(harness, *synthetic, period_ns, [&](const CamBANGStateSnapshot& s) {
-        const auto* stream = VerifyCaseHarness::find_stream(s, stream_id);
-        return stream && stream->mode == CBStreamMode::STOPPED;
-      }, error, "timed out waiting for picture scenario stop")) {
-    std::cerr << "FAIL synthetic timeline picture scenario stop missing\n";
-    return false;
-  }
-
-  if (!advance_and_expect_snapshot(harness, *synthetic, 1, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_stream(s, stream_id) &&
-               VerifyCaseHarness::has_device(s, device_id);
-      }, error, "timed out waiting for picture scenario destroy")) {
-    std::cerr << "FAIL synthetic timeline picture scenario destroy missing\n";
-    return false;
-  }
-
-  if (!advance_and_expect_snapshot(harness, *synthetic, 1, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_stream(s, stream_id) &&
-               !VerifyCaseHarness::has_device(s, device_id);
-      }, error, "timed out waiting for picture scenario close")) {
-    std::cerr << "FAIL synthetic timeline picture scenario close missing\n";
-    return false;
-  }
-
-  harness.stop_runtime();
-  return true;
+  if (!synthetic.stop_stream(stream_id).ok()) return false;
+  if (!synthetic.destroy_stream(stream_id).ok()) return false;
+  if (!synthetic.close_device(device_id).ok()) return false;
+  if (!synthetic.shutdown().ok()) return false;
+  return assert_native_balance(cb.events, "synthetic_timeline_picture_appearance");
 }
 
 
