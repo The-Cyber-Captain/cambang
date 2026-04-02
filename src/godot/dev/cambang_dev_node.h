@@ -8,7 +8,7 @@
 #include <godot_cpp/variant/string.hpp>
 
 #include "imaging/api/provider_contract_datatypes.h"
-#include "imaging/synthetic/scenario.h"
+#include "imaging/synthetic/builtin_scenario_library.h"
 
 namespace cambang {
 
@@ -106,7 +106,7 @@ private:
     void tick_bringup_();
     bool dispatch_scenario_now_(ActiveScenario scenario);
     static godot::String scenario_name_(ActiveScenario scenario);
-    std::optional<SyntheticTimelineScenario> build_provider_scenario_(ActiveScenario scenario) const;
+    std::optional<SyntheticCanonicalScenario> build_provider_scenario_(ActiveScenario scenario) const;
     void mark_exit_reason_(const godot::String& reason);
     void complete_active_scenario_();
 

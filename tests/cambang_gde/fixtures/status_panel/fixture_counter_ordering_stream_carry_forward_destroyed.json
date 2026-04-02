@@ -52,7 +52,8 @@
         "last_frame_ts_ns": 50000000011,
         "visibility_frames_presented": 970,
         "visibility_frames_rejected_unsupported": 6,
-        "visibility_frames_rejected_invalid": 4
+        "visibility_frames_rejected_invalid": 4,
+        "visibility_last_path": "RGBA_DIRECT"
       }
     ],
     "native_objects": [
@@ -70,7 +71,7 @@
       "stream/1": ["destroyed"]
     },
     "required_counters_by_row": {
-      "stream/1": ["width", "height", "fmt", "fps_min", "fps_max", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_fmt", "rej_inv"]
+      "stream/1": ["width", "height", "fps_min", "fps_max", "fmt", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"]
     },
     "required_counter_values_by_row": {
       "stream/1": {
@@ -88,7 +89,7 @@
       }
     },
     "required_counter_order_by_row": {
-      "stream/1": ["width", "height", "fmt", "fps_min", "fps_max", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"]
+      "stream/1": ["width", "height", "fps_min", "fps_max", "fmt", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"]
     }
   },
   "payload": {

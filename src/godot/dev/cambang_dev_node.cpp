@@ -436,7 +436,7 @@ bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
     if (!scenario_def.has_value()) {
         return false;
     }
-    ProviderResult sr = provider_->dev_set_timeline_scenario(*scenario_def);
+    ProviderResult sr = provider_->dev_set_timeline_canonical_scenario(*scenario_def);
     if (!sr.ok()) {
         return false;
     }
@@ -462,213 +462,35 @@ godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
     }
 }
 
-std::optional<SyntheticTimelineScenario> CamBANGDevNode::build_provider_scenario_(ActiveScenario scenario) const {
-    SyntheticTimelineScenario out{};
-    SyntheticScheduledEvent ev{};
-
-    const uint64_t alt_device_id = device_instance_id_ + 100;
-    const uint64_t alt_root_id = root_id_ + 100;
-    const uint64_t alt_stream_id = stream_id_ + 100;
-
-    if (scenario == ActiveScenario::StreamLifecycleVersions) {
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::OpenDevice;
-        ev.endpoint_index = 0;
-        ev.device_instance_id = alt_device_id;
-        ev.root_id = alt_root_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::CreateStream;
-        ev.device_instance_id = alt_device_id;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::StartStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 15'000'000;
-        ev.type = SyntheticEventType::UpdateStreamPicture;
-        ev.stream_id = alt_stream_id;
-        ev.has_picture = true;
-        ev.picture.preset = PatternPreset::Checker;
-        ev.picture.seed = 3;
-        ev.picture.overlay_frame_index_offsets = false;
-        ev.picture.overlay_moving_bar = true;
-        ev.picture.checker_size_px = 12;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 60'000'000;
-        ev.type = SyntheticEventType::StopStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 60'000'001;
-        ev.type = SyntheticEventType::DestroyStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 60'000'002;
-        ev.type = SyntheticEventType::CloseDevice;
-        ev.device_instance_id = alt_device_id;
-        out.events.push_back(ev);
-        return out;
+std::optional<SyntheticCanonicalScenario> CamBANGDevNode::build_provider_scenario_(ActiveScenario scenario) const {
+    SyntheticBuiltinScenarioLibraryId builtin_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
+    switch (scenario) {
+        case ActiveScenario::StreamLifecycleVersions:
+            builtin_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
+            break;
+        case ActiveScenario::TopologyChangeVersions:
+            builtin_id = SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions;
+            break;
+        case ActiveScenario::PublicationCoalescing:
+            builtin_id = SyntheticBuiltinScenarioLibraryId::PublicationCoalescing;
+            break;
+        case ActiveScenario::None:
+        default:
+            return std::nullopt;
     }
 
-    if (scenario == ActiveScenario::PublicationCoalescing) {
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::OpenDevice;
-        ev.endpoint_index = 0;
-        ev.device_instance_id = alt_device_id;
-        ev.root_id = alt_root_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::CreateStream;
-        ev.device_instance_id = alt_device_id;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::StartStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 10'000'000;
-        ev.type = SyntheticEventType::UpdateStreamPicture;
-        ev.stream_id = alt_stream_id;
-        ev.has_picture = true;
-        ev.picture.preset = PatternPreset::Solid;
-        ev.picture.overlay_frame_index_offsets = false;
-        ev.picture.overlay_moving_bar = false;
-        ev.picture.solid_r = 220;
-        ev.picture.solid_g = 40;
-        ev.picture.solid_b = 40;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 20'000'000;
-        ev.type = SyntheticEventType::UpdateStreamPicture;
-        ev.stream_id = alt_stream_id;
-        ev.has_picture = true;
-        ev.picture.preset = PatternPreset::Solid;
-        ev.picture.overlay_frame_index_offsets = false;
-        ev.picture.overlay_moving_bar = false;
-        ev.picture.solid_r = 40;
-        ev.picture.solid_g = 210;
-        ev.picture.solid_b = 60;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 30'000'000;
-        ev.type = SyntheticEventType::UpdateStreamPicture;
-        ev.stream_id = alt_stream_id;
-        ev.has_picture = true;
-        ev.picture.preset = PatternPreset::Solid;
-        ev.picture.overlay_frame_index_offsets = false;
-        ev.picture.overlay_moving_bar = false;
-        ev.picture.solid_r = 60;
-        ev.picture.solid_g = 80;
-        ev.picture.solid_b = 220;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 200'000'000;
-        ev.type = SyntheticEventType::StopStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 200'000'001;
-        ev.type = SyntheticEventType::DestroyStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 200'000'002;
-        ev.type = SyntheticEventType::CloseDevice;
-        ev.device_instance_id = alt_device_id;
-        out.events.push_back(ev);
-        return out;
+    SyntheticCanonicalScenario canonical{};
+    std::string error;
+    if (!build_synthetic_builtin_scenario_library_canonical_scenario(
+            builtin_id,
+            effective_profile_,
+            effective_picture_,
+            canonical,
+            &error)) {
+        UtilityFunctions::printerr("[CamBANGDevNode] Failed to build canonical scenario from builtin scenario library: ", error.c_str());
+        return std::nullopt;
     }
-
-    if (scenario == ActiveScenario::TopologyChangeVersions) {
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::OpenDevice;
-        ev.endpoint_index = 0;
-        ev.device_instance_id = alt_device_id;
-        ev.root_id = alt_root_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::CreateStream;
-        ev.device_instance_id = alt_device_id;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 0;
-        ev.type = SyntheticEventType::StartStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 15'000'000;
-        ev.type = SyntheticEventType::UpdateStreamPicture;
-        ev.stream_id = alt_stream_id;
-        ev.has_picture = true;
-        ev.picture.preset = PatternPreset::NoiseAnimated;
-        ev.picture.seed = 99;
-        ev.picture.overlay_frame_index_offsets = true;
-        ev.picture.overlay_moving_bar = true;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 50'000'000;
-        ev.type = SyntheticEventType::CreateStream;
-        ev.device_instance_id = alt_device_id;
-        ev.stream_id = alt_stream_id + 1;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 50'000'001;
-        ev.type = SyntheticEventType::DestroyStream;
-        ev.stream_id = alt_stream_id + 1;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 100'000'000;
-        ev.type = SyntheticEventType::StopStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 100'000'001;
-        ev.type = SyntheticEventType::DestroyStream;
-        ev.stream_id = alt_stream_id;
-        out.events.push_back(ev);
-
-        ev = {};
-        ev.at_ns = 100'000'002;
-        ev.type = SyntheticEventType::CloseDevice;
-        ev.device_instance_id = alt_device_id;
-        out.events.push_back(ev);
-        return out;
-    }
-
-    return std::nullopt;
+    return canonical;
 }
 
 void CamBANGDevNode::mark_exit_reason_(const godot::String& reason) {

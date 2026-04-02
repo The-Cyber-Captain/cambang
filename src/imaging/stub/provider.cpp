@@ -385,7 +385,6 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
   }
 
   const size_t row_bytes = static_cast<size_t>(w) * 4u;
-  const size_t total = row_bytes * static_cast<size_t>(h);
 
   for (uint32_t i = 0; i < count; ++i) {
     const uint64_t fi = st.frame_index++;

@@ -12,10 +12,16 @@ To prevent cross-layer ambiguity:
 - **Scenario** is reserved for the user-facing / Godot / SyntheticProvider
   timeline concept (including timeline recording, storage, and execution
   discussions).
+- **Scenario library** is the umbrella term for scenario collections.
+  - **Built-in scenario library**: current C++-authored scenario set.
+  - **External scenario library**: future file-backed/user-provided scenario collections.
+  - **Scenario loader**: future serialized ingestion path for external scenario libraries.
 - **Verification case** is the canonical prose term for maintainer-authored
   smoke/CLI validation inputs.
 - Code identifiers may use compact `verify_case` forms for smoke tooling, but
   contributor-facing prose should prefer the full phrase **verification case**.
+- **Verification case catalog** is the maintainer tooling term for verification-case
+  selection/listing surfaces (for example `verify_case_catalog`).
 - **Fixture** remains a separate concept: a prepared input artifact/dataset used
   by tests or tooling. A fixture may be consumed by a verification case, but the
   terms are not interchangeable.

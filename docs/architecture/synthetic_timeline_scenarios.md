@@ -30,7 +30,12 @@ Historically, dev-node micro-scenarios mixed “scenario” wording with Godot-s
 The following terms are distinct and must not be conflated:
 
 - **scenario**: user-facing / Godot / SyntheticProvider timeline recording-storage-execution concept
+- **scenario library**: umbrella term for collections of scenarios
+  - **built-in scenario library**: current C++-authored scenario collection
+  - **external scenario library**: future file-backed/user-provided scenario collections
+  - **scenario loader**: future serialized ingestion path used to load external scenario libraries
 - **verification case**: maintainer-authored smoke/CLI procedural validation input
+- **verification case catalog**: maintainer tooling selector/list for verification cases (`verify_case_catalog`)
 - **fixture**: static payload/data artifact, often consumed by tooling or UI/harness checks
 
 A verification case may exercise a scenario. A fixture may be used by either. None of these terms are interchangeable.
@@ -188,7 +193,7 @@ This tranche explicitly excludes:
 - serialization format/schema decisions
 - recording pipeline/format design
 - editor/authoring UI tooling
-- release UX design for scenario catalogs
+- release UX design for scenario libraries (built-in/external)
 - redesign of smoke verification-case architecture
 - adversarial snapshot playback design
 - unrelated core/provider runtime redesign

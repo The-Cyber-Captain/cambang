@@ -314,6 +314,7 @@ if env["smoke"]:
     verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
     verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
     verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "broker", "*.cpp"))
     verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
     verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
     verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
