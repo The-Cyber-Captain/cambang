@@ -125,6 +125,8 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   // Dev/internal stream lifecycle surfaces.
   // Defaulting is performed by core using provider->stream_template().
+  // profile_version ownership is core-authoritative for this ingress:
+  // pass profile_version=0 to request core-assigned lineage.
   // These are non-blocking and may return Busy if the core mailbox is full.
   TryCreateStreamStatus try_create_stream(
       uint64_t stream_id,
@@ -340,6 +342,7 @@ private:
   // Godot-facing tick-bounded truth model cheaply.
   std::atomic<uint64_t> published_seq_{0};
   std::atomic<uint64_t> published_topology_sig_{0};
+  std::atomic<uint64_t> create_stream_profile_version_seq_{1};
 
   std::atomic<uint64_t> publish_requests_coalesced_{0};
   std::atomic<uint64_t> publish_requests_dropped_full_{0};

@@ -656,7 +656,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     const CaptureProfile* request_profile,
     const PictureConfig* request_picture,
     uint64_t profile_version) noexcept {
-  if (stream_id == 0 || device_instance_id == 0 || profile_version == 0) {
+  if (stream_id == 0 || device_instance_id == 0) {
     return TryCreateStreamStatus::InvalidArgument;
   }
 
@@ -667,12 +667,16 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
 
   // Compute effective config (core owns defaulting).
   const StreamTemplate tmpl = prov->stream_template();
+  const uint64_t effective_profile_version =
+      (profile_version != 0)
+          ? profile_version
+          : create_stream_profile_version_seq_.fetch_add(1, std::memory_order_relaxed);
 
   StreamRequest effective{};
   effective.stream_id = stream_id;
   effective.device_instance_id = device_instance_id;
   effective.intent = intent;
-  effective.profile_version = profile_version;
+  effective.profile_version = effective_profile_version;
   effective.profile = request_profile ? *request_profile : tmpl.profile;
   effective.picture = request_picture ? *request_picture : tmpl.picture;
 

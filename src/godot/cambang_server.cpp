@@ -365,7 +365,7 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
                   StreamIntent::PREVIEW,
                   nullptr,
                   nullptr,
-                  1);
+                  0);
               break;
             case SyntheticEventType::DestroyStream:
               (void)runtime_.try_destroy_stream(ev.stream_id);
