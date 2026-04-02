@@ -43,7 +43,6 @@ const char* synthetic_builtin_scenario_library_name(SyntheticBuiltinScenarioLibr
 bool build_synthetic_builtin_scenario_library_canonical_scenario(
     SyntheticBuiltinScenarioLibraryId id,
     const CaptureProfile& baseline_profile,
-    const PictureConfig& baseline_picture,
     SyntheticCanonicalScenario& out,
     std::string* error) {
   // Current scope: built-in scenario library only (C++-authored scenarios).
@@ -61,10 +60,10 @@ bool build_synthetic_builtin_scenario_library_canonical_scenario(
   stream_decl.device_key = kDeviceKey;
   stream_decl.intent = StreamIntent::PREVIEW;
   stream_decl.baseline_capture_profile = baseline_profile;
-  stream_decl.has_baseline_picture = false;
-  stream_decl.baseline_picture = baseline_picture;
   out.streams.push_back(stream_decl);
 
+  add_timeline_action(out, 0, SyntheticEventType::OpenDevice, kDeviceKey, nullptr, false, PictureConfig{});
+  add_timeline_action(out, 0, SyntheticEventType::CreateStream, nullptr, kMainStreamKey, false, PictureConfig{});
   add_timeline_action(out, 0, SyntheticEventType::StartStream, nullptr, kMainStreamKey, false, PictureConfig{});
 
   if (id == SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions) {
@@ -128,11 +127,7 @@ bool build_synthetic_builtin_scenario_library_canonical_scenario(
     probe_decl.device_key = kDeviceKey;
     probe_decl.intent = StreamIntent::PREVIEW;
     probe_decl.baseline_capture_profile = baseline_profile;
-    // For this scenario, preserve the explicit create/destroy timing for the
-    // probe stream instead of synthesizing baseline create at t=0.
-    probe_decl.realize_baseline_lifecycle = false;
-    probe_decl.has_baseline_picture = false;
-    probe_decl.baseline_picture = baseline_picture;
+    // Preserve the explicit create/destroy timing for the probe stream.
     out.streams.push_back(probe_decl);
 
     add_timeline_action(out, 50'000'000, SyntheticEventType::CreateStream, nullptr, kProbeStreamKey, false, PictureConfig{});

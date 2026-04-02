@@ -484,7 +484,6 @@ std::optional<SyntheticCanonicalScenario> CamBANGDevNode::build_provider_scenari
     if (!build_synthetic_builtin_scenario_library_canonical_scenario(
             builtin_id,
             effective_profile_,
-            effective_picture_,
             canonical,
             &error)) {
         UtilityFunctions::printerr("[CamBANGDevNode] Failed to build canonical scenario from builtin scenario library: ", error.c_str());

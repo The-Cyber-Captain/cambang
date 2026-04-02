@@ -23,9 +23,6 @@ struct SyntheticScenarioStreamDeclaration {
   std::string device_key;
   StreamIntent intent = StreamIntent::PREVIEW;
   CaptureProfile baseline_capture_profile{};
-  bool realize_baseline_lifecycle = true;
-  bool has_baseline_picture = false;
-  PictureConfig baseline_picture{};
 };
 
 struct SyntheticScenarioTimelineAction {
@@ -64,9 +61,6 @@ struct SyntheticMaterializedStreamBinding {
   std::string device_key;
   StreamIntent intent = StreamIntent::PREVIEW;
   CaptureProfile baseline_capture_profile{};
-  bool realize_baseline_lifecycle = true;
-  bool has_baseline_picture = false;
-  PictureConfig baseline_picture{};
   std::uint64_t device_instance_id = 0;
   std::uint64_t stream_id = 0;
 };

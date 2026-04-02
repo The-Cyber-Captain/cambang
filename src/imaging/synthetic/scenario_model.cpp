@@ -76,9 +76,6 @@ bool materialize_synthetic_canonical_scenario(
     bound.device_key = declared.device_key;
     bound.intent = declared.intent;
     bound.baseline_capture_profile = declared.baseline_capture_profile;
-    bound.realize_baseline_lifecycle = declared.realize_baseline_lifecycle;
-    bound.has_baseline_picture = declared.has_baseline_picture;
-    bound.baseline_picture = declared.baseline_picture;
     bound.device_instance_id = dit->second.device_instance_id;
     bound.stream_id = options.stream_id_base + static_cast<uint64_t>(i + 1);
     out.streams.push_back(bound);
@@ -88,6 +85,8 @@ bool materialize_synthetic_canonical_scenario(
   std::vector<SyntheticScheduledEvent> indexed;
   indexed.reserve(canonical.timeline.size());
 
+  // Explicit-only semantics: executable behavior comes strictly from authored
+  // timeline actions after key->id binding. No lifecycle/picture synthesis.
   for (size_t i = 0; i < canonical.timeline.size(); ++i) {
     const auto& action = canonical.timeline[i];
     SyntheticScheduledEvent ev{};

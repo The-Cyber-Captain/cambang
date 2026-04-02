@@ -264,11 +264,6 @@ bool run_synthetic_builtin_scenario_library_build_check() {
   baseline_profile.target_fps_min = 30;
   baseline_profile.target_fps_max = 30;
 
-  PictureConfig baseline_picture{};
-  baseline_picture.preset = PatternPreset::NoiseAnimated;
-  baseline_picture.overlay_frame_index_offsets = true;
-  baseline_picture.overlay_moving_bar = true;
-
   const SyntheticBuiltinScenarioLibraryId ids[] = {
       SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions,
       SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions,
@@ -281,7 +276,6 @@ bool run_synthetic_builtin_scenario_library_build_check() {
     if (!build_synthetic_builtin_scenario_library_canonical_scenario(
             id,
             baseline_profile,
-            baseline_picture,
             canonical,
             &error)) {
       std::cerr << "FAIL synthetic builtin scenario library build failed for "
@@ -326,13 +320,6 @@ bool run_synthetic_timeline_canonical_submission_check() {
   s.key = "preview";
   s.device_key = "cam";
   s.intent = StreamIntent::PREVIEW;
-  s.has_baseline_picture = true;
-  s.baseline_picture.preset = PatternPreset::Solid;
-  s.baseline_picture.overlay_frame_index_offsets = false;
-  s.baseline_picture.overlay_moving_bar = false;
-  s.baseline_picture.solid_r = 5;
-  s.baseline_picture.solid_g = 6;
-  s.baseline_picture.solid_b = 7;
   canonical.streams.push_back(s);
 
   SyntheticScenarioTimelineAction a{};
@@ -355,14 +342,11 @@ bool run_synthetic_timeline_canonical_submission_check() {
   synthetic.advance(10);
 
   const std::vector<SyntheticEventType> expected{
-      SyntheticEventType::OpenDevice,
-      SyntheticEventType::CreateStream,
-      SyntheticEventType::UpdateStreamPicture,
       SyntheticEventType::StartStream,
       SyntheticEventType::StopStream,
   };
   if (dispatched != expected) {
-    std::cerr << "FAIL synthetic canonical host scenario submission did not emit expected baseline+authored actions\n";
+    std::cerr << "FAIL synthetic canonical host scenario submission did not emit expected authored actions\n";
     (void)synthetic.shutdown();
     return false;
   }
