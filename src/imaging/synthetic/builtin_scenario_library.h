@@ -22,7 +22,6 @@ const char* synthetic_builtin_scenario_library_name(SyntheticBuiltinScenarioLibr
 bool build_synthetic_builtin_scenario_library_canonical_scenario(
     SyntheticBuiltinScenarioLibraryId id,
     const CaptureProfile& baseline_profile,
-    const PictureConfig& baseline_picture,
     SyntheticCanonicalScenario& out,
     std::string* error = nullptr);
 

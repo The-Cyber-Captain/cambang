@@ -153,42 +153,11 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
   }
 
   // Provider-owned projection boundary:
-  // canonical declarations are lowered to executable request-like timeline events.
+  // canonical schedule is lowered to executable request-like timeline events.
+  // Lifecycle actions must be explicit in the canonical timed actions.
   // EmitFrame remains provider-internal and is not emitted here.
   std::vector<SyntheticScheduledEvent> events;
-  events.reserve(
-      materialized.devices.size() +
-      materialized.streams.size() * 2 +
-      materialized.executable_schedule.events.size());
-
-  for (const auto& d : materialized.devices) {
-    SyntheticScheduledEvent ev{};
-    ev.at_ns = 0;
-    ev.type = SyntheticEventType::OpenDevice;
-    ev.endpoint_index = d.endpoint_index;
-    ev.device_instance_id = d.device_instance_id;
-    ev.root_id = d.root_id;
-    events.push_back(ev);
-  }
-  for (const auto& s : materialized.streams) {
-    if (s.realize_baseline_lifecycle) {
-      SyntheticScheduledEvent ev{};
-      ev.at_ns = 0;
-      ev.type = SyntheticEventType::CreateStream;
-      ev.device_instance_id = s.device_instance_id;
-      ev.stream_id = s.stream_id;
-      events.push_back(ev);
-    }
-    if (s.realize_baseline_lifecycle && s.has_baseline_picture) {
-      SyntheticScheduledEvent ev{};
-      ev.at_ns = 0;
-      ev.type = SyntheticEventType::UpdateStreamPicture;
-      ev.stream_id = s.stream_id;
-      ev.has_picture = true;
-      ev.picture = s.baseline_picture;
-      events.push_back(ev);
-    }
-  }
+  events.reserve(materialized.executable_schedule.events.size());
 
   for (const auto& ev : materialized.executable_schedule.events) {
     events.push_back(ev);

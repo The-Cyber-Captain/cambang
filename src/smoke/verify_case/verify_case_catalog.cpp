@@ -1825,22 +1825,19 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     }, error, timeout_message);
   };
 
-  // ---- Variant A: baseline auto-realization ----
+  // ---- Explicit lifecycle canonical timeline realization ----
   dispatched.clear();
-  SyntheticCanonicalScenario auto_scenario{};
+  SyntheticCanonicalScenario scenario{};
   SyntheticScenarioDeviceDeclaration d0{};
   d0.key = "cam0";
   d0.endpoint_index = 0;
-  auto_scenario.devices.push_back(d0);
+  scenario.devices.push_back(d0);
   SyntheticScenarioStreamDeclaration s0{};
   s0.key = "preview0";
   s0.device_key = "cam0";
   s0.intent = StreamIntent::PREVIEW;
   s0.baseline_capture_profile = st.profile;
-  s0.realize_baseline_lifecycle = true;
-  s0.has_baseline_picture = true;
-  s0.baseline_picture = st.picture;
-  auto_scenario.streams.push_back(s0);
+  scenario.streams.push_back(s0);
 
   PictureConfig updated = st.picture;
   updated.preset = PatternPreset::Solid;
@@ -1851,20 +1848,21 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   updated.solid_b = 75;
   updated.solid_a = 255;
 
-  auto_scenario.timeline.push_back({0, SyntheticEventType::StartStream, "", "preview0", false, {}});
-  auto_scenario.timeline.push_back({period_ns, SyntheticEventType::EmitFrame, "", "preview0", false, {}});
-  auto_scenario.timeline.push_back({period_ns * 2, SyntheticEventType::UpdateStreamPicture, "", "preview0", true, updated});
-  auto_scenario.timeline.push_back({period_ns * 3, SyntheticEventType::EmitFrame, "", "preview0", false, {}});
-  auto_scenario.timeline.push_back({period_ns * 4, SyntheticEventType::StopStream, "", "preview0", false, {}});
-  auto_scenario.timeline.push_back({period_ns * 4 + 1, SyntheticEventType::DestroyStream, "", "preview0", false, {}});
-  auto_scenario.timeline.push_back({period_ns * 4 + 2, SyntheticEventType::CloseDevice, "cam0", "", false, {}});
+  scenario.timeline.push_back({0, SyntheticEventType::OpenDevice, "cam0", "", false, {}});
+  scenario.timeline.push_back({0, SyntheticEventType::CreateStream, "", "preview0", false, {}});
+  scenario.timeline.push_back({0, SyntheticEventType::StartStream, "", "preview0", false, {}});
+  scenario.timeline.push_back({period_ns, SyntheticEventType::EmitFrame, "", "preview0", false, {}});
+  scenario.timeline.push_back({period_ns * 2, SyntheticEventType::UpdateStreamPicture, "", "preview0", true, updated});
+  scenario.timeline.push_back({period_ns * 4, SyntheticEventType::StopStream, "", "preview0", false, {}});
+  scenario.timeline.push_back({period_ns * 4 + 1, SyntheticEventType::DestroyStream, "", "preview0", false, {}});
+  scenario.timeline.push_back({period_ns * 4 + 2, SyntheticEventType::CloseDevice, "cam0", "", false, {}});
 
-  if (!broker.dev_set_timeline_canonical_scenario(auto_scenario).ok()) {
-    cli::error("FAIL: canonical auto-baseline submission rejected");
+  if (!broker.dev_set_timeline_canonical_scenario(scenario).ok()) {
+    cli::error("FAIL: canonical explicit-lifecycle submission rejected");
     return 1;
   }
   if (!broker.dev_start_timeline_scenario().ok()) {
-    cli::error("FAIL: canonical auto-baseline start rejected");
+    cli::error("FAIL: canonical explicit-lifecycle start rejected");
     return 1;
   }
 
@@ -1881,17 +1879,16 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   if (!advance_and_snapshot(0, [&](const CamBANGStateSnapshot& s) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return VerifyCaseHarness::has_device(s, 10001) && stream && stream->mode == CBStreamMode::FLOWING;
-      }, "timed out waiting for auto baseline open/create/start")) {
+      }, "timed out waiting for explicit lifecycle open/create/start")) {
     cli::error("FAIL: ", error);
     return 1;
   }
 
-  if (dispatched.size() < 4 ||
+  if (dispatched.size() < 3 ||
       dispatched[0].type != SyntheticEventType::OpenDevice ||
       dispatched[1].type != SyntheticEventType::CreateStream ||
-      dispatched[2].type != SyntheticEventType::UpdateStreamPicture ||
-      dispatched[3].type != SyntheticEventType::StartStream) {
-    fail_step(1, "auto baseline ordering/path mismatch (expected Open/Create/BaselineUpdate before Start)");
+      dispatched[2].type != SyntheticEventType::StartStream) {
+    fail_step(1, "explicit lifecycle ordering/path mismatch (expected Open/Create before Start)");
     return 1;
   }
 
@@ -1972,73 +1969,6 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   }
   if (emitframe_dispatched != 0) {
     fail_step(4, "EmitFrame crossed Core request dispatch boundary");
-    return 1;
-  }
-
-  // ---- Variant B: explicit lifecycle; baseline lifecycle disabled ----
-  if (!broker.dev_stop_timeline_scenario().ok()) {
-    cli::error("FAIL: unable to stop timeline before explicit-lifecycle variant");
-    return 1;
-  }
-  dispatched.clear();
-
-  SyntheticCanonicalScenario explicit_scenario{};
-  SyntheticScenarioDeviceDeclaration d1{};
-  d1.key = "cam0";
-  d1.endpoint_index = 0;
-  explicit_scenario.devices.push_back(d1);
-  SyntheticScenarioStreamDeclaration s1{};
-  s1.key = "preview0";
-  s1.device_key = "cam0";
-  s1.intent = StreamIntent::PREVIEW;
-  s1.baseline_capture_profile = st.profile;
-  s1.realize_baseline_lifecycle = false;
-  s1.has_baseline_picture = true;
-  s1.baseline_picture = st.picture;
-  explicit_scenario.streams.push_back(s1);
-
-  explicit_scenario.timeline.push_back({0, SyntheticEventType::OpenDevice, "cam0", "", false, {}});
-  explicit_scenario.timeline.push_back({0, SyntheticEventType::CreateStream, "", "preview0", false, {}});
-  explicit_scenario.timeline.push_back({0, SyntheticEventType::StartStream, "", "preview0", false, {}});
-  explicit_scenario.timeline.push_back({period_ns, SyntheticEventType::EmitFrame, "", "preview0", false, {}});
-  explicit_scenario.timeline.push_back({period_ns * 2, SyntheticEventType::UpdateStreamPicture, "", "preview0", true, updated});
-  explicit_scenario.timeline.push_back({period_ns * 3, SyntheticEventType::StopStream, "", "preview0", false, {}});
-  explicit_scenario.timeline.push_back({period_ns * 3 + 1, SyntheticEventType::DestroyStream, "", "preview0", false, {}});
-  explicit_scenario.timeline.push_back({period_ns * 3 + 2, SyntheticEventType::CloseDevice, "cam0", "", false, {}});
-
-  if (!broker.dev_set_timeline_canonical_scenario(explicit_scenario).ok()) {
-    cli::error("FAIL: canonical explicit-lifecycle submission rejected");
-    return 1;
-  }
-  if (!broker.dev_start_timeline_scenario().ok()) {
-    cli::error("FAIL: canonical explicit-lifecycle start rejected");
-    return 1;
-  }
-  if (!advance_and_snapshot(0, [&](const CamBANGStateSnapshot& s) {
-        const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
-        return VerifyCaseHarness::has_device(s, 10001) && stream && stream->mode == CBStreamMode::FLOWING;
-      }, "timed out waiting for explicit lifecycle open/create/start")) {
-    cli::error("FAIL: ", error);
-    return 1;
-  }
-
-  int open_count = 0;
-  int create_count = 0;
-  int baseline_update_count = 0;
-  for (const auto& ev : dispatched) {
-    if (ev.type == SyntheticEventType::OpenDevice) ++open_count;
-    if (ev.type == SyntheticEventType::CreateStream) ++create_count;
-    if (ev.type == SyntheticEventType::UpdateStreamPicture && ev.at_ns == 0) ++baseline_update_count;
-  }
-  if (open_count != 1 || create_count != 1 || baseline_update_count != 0) {
-    fail_step(5, "explicit lifecycle scenario had unexpected synthesized baseline lifecycle actions");
-    return 1;
-  }
-
-  if (!advance_and_snapshot(period_ns * 3 + 2, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_device(s, 10001) && !VerifyCaseHarness::has_stream(s, 30001);
-      }, "timed out waiting for explicit lifecycle teardown")) {
-    cli::error("FAIL: ", error);
     return 1;
   }
 
