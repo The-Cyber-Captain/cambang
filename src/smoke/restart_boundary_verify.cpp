@@ -76,7 +76,8 @@ int main() {
         return VerifyCaseHarness::has_device(s, VerifyCaseHarness::kDeviceId) &&
                provider_native != nullptr &&
                device_native != nullptr &&
-               device_native->owner_provider_native_id == provider_native->native_id;
+               device_native->owner_provider_native_id == provider_native->native_id &&
+               device_native->owner_rig_id == 0;
       }, error, 500, 5, "timed out waiting for device + native ownership visibility")) {
     cli::error("FAIL: ", error);
     return 1;
