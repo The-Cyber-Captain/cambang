@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <queue>
@@ -12,6 +13,7 @@
 #include "imaging/api/provider_strand.h"
 
 #include "imaging/synthetic/config.h"
+#include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
 #include "imaging/synthetic/virtual_clock.h"
 
@@ -21,6 +23,8 @@ namespace cambang {
 
 class SyntheticProvider final : public ICameraProvider {
 public:
+  using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
+
   explicit SyntheticProvider(const SyntheticProviderConfig& cfg);
   ~SyntheticProvider() override = default;
 
@@ -71,6 +75,12 @@ public:
   ProviderResult disconnect_device_for_test(uint64_t device_instance_id);
   ProviderResult force_close_device_for_test(uint64_t device_instance_id);
   ProviderResult fail_stream_for_test(uint64_t stream_id, ProviderError error);
+  ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
+  ProviderResult set_timeline_scenario_for_host(const SyntheticCanonicalScenario& scenario);
+  ProviderResult start_timeline_scenario_for_host();
+  ProviderResult stop_timeline_scenario_for_host();
+  ProviderResult set_timeline_scenario_paused_for_host(bool paused);
+  void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
 
 private:
   CBProviderStrand strand_;
@@ -84,7 +94,10 @@ private:
   };
 
   void timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id);
+  void timeline_schedule_(const SyntheticScheduledEvent& ev);
+  void timeline_dispatch_request_(const SyntheticScheduledEvent& ev);
   void timeline_pump_();
+  bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
 
   struct DeviceState {
     std::string hardware_id;
@@ -146,10 +159,16 @@ private:
   uint64_t provider_native_id_ = 0;
 
   uint64_t timeline_seq_ = 0;
+  SyntheticTimelineScenario timeline_scenario_{};
+  SyntheticCanonicalScenario timeline_canonical_scenario_{};
+  bool timeline_canonical_staged_ = false;
+  bool timeline_running_ = false;
+  bool timeline_paused_ = false;
   std::priority_queue<SyntheticScheduledEvent,
                       std::vector<SyntheticScheduledEvent>,
                       TimelineEventCompare>
       timeline_q_;
+  TimelineRequestDispatchHook timeline_request_dispatch_hook_{};
 
   std::atomic<uint64_t> invalid_preset_requests_{0};
 };

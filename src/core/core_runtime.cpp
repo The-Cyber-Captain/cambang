@@ -656,7 +656,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     const CaptureProfile* request_profile,
     const PictureConfig* request_picture,
     uint64_t profile_version) noexcept {
-  if (stream_id == 0 || device_instance_id == 0 || profile_version == 0) {
+  if (stream_id == 0 || device_instance_id == 0) {
     return TryCreateStreamStatus::InvalidArgument;
   }
 
@@ -667,18 +667,36 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
 
   // Compute effective config (core owns defaulting).
   const StreamTemplate tmpl = prov->stream_template();
+  const bool has_request_profile = (request_profile != nullptr);
+  const bool has_request_picture = (request_picture != nullptr);
+  const CaptureProfile request_profile_copy = has_request_profile ? *request_profile : CaptureProfile{};
+  const PictureConfig request_picture_copy = has_request_picture ? *request_picture : PictureConfig{};
 
-  StreamRequest effective{};
-  effective.stream_id = stream_id;
-  effective.device_instance_id = device_instance_id;
-  effective.intent = intent;
-  effective.profile_version = profile_version;
-  effective.profile = request_profile ? *request_profile : tmpl.profile;
-  effective.picture = request_picture ? *request_picture : tmpl.picture;
-
-  const CoreThread::PostResult pr = try_post([this, effective]() {
+  const CoreThread::PostResult pr = try_post([this,
+                                              stream_id,
+                                              device_instance_id,
+                                              intent,
+                                              profile_version,
+                                              tmpl,
+                                              has_request_profile,
+                                              request_profile_copy,
+                                              has_request_picture,
+                                              request_picture_copy]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
+
+    const uint64_t effective_profile_version =
+        (profile_version != 0)
+            ? profile_version
+            : create_stream_profile_version_seq_.fetch_add(1, std::memory_order_relaxed);
+
+    StreamRequest effective{};
+    effective.stream_id = stream_id;
+    effective.device_instance_id = device_instance_id;
+    effective.intent = intent;
+    effective.profile_version = effective_profile_version;
+    effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
+    effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
 
     // Declare before calling into the provider so any synchronous callbacks
     // can resolve the record deterministically.
@@ -774,6 +792,50 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK
                                                   : TryDestroyStreamStatus::Busy;
+}
+
+TryOpenDeviceStatus CoreRuntime::try_open_device(
+    const std::string& hardware_id,
+    uint64_t device_instance_id,
+    uint64_t root_id) noexcept {
+  if (hardware_id.empty() || device_instance_id == 0 || root_id == 0) {
+    return TryOpenDeviceStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryOpenDeviceStatus::Busy;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)devices_.note_device_identity(device_instance_id, hardware_id);
+    (void)p->open_device(hardware_id, device_instance_id, root_id);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryOpenDeviceStatus::OK
+                                                  : TryOpenDeviceStatus::Busy;
+}
+
+TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) noexcept {
+  if (device_instance_id == 0) {
+    return TryCloseDeviceStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryCloseDeviceStatus::Busy;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, device_instance_id]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    (void)p->close_device(device_instance_id);
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TryCloseDeviceStatus::OK
+                                                  : TryCloseDeviceStatus::Busy;
 }
 
 TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(

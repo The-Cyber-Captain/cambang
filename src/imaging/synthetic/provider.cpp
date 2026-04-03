@@ -1,9 +1,11 @@
 #include "imaging/synthetic/provider.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <utility>
 
 #include "pixels/pattern/pattern_render_target.h"
 
@@ -81,6 +83,24 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     std::fflush(stdout);
   }
 
+  if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    // Backward-compatibility baseline for Timeline-role synthetic operation:
+    // advance(dt_ns) should pump timeline-driven emission immediately for
+    // verifier-owned flows (including direct open/create/start flows that do
+    // not stage host scenarios).
+    // This is an execution-arming distinction only; scenario semantics remain
+    // provider-owned for both init-seeded and host-submitted paths.
+    timeline_running_ = true;
+    timeline_paused_ = false;
+    timeline_scenario_ = cfg_.timeline_scenario;
+    if (!timeline_scenario_.events.empty()) {
+      // Config-seeded scenarios are provider-owned and auto-run at initialize.
+      for (const auto& ev : timeline_scenario_.events) {
+        timeline_schedule_(ev);
+      }
+    }
+  }
+
   // Report provider native object (BOUND). Root/owners are 0 at provider scope.
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
   if (callbacks_) {
@@ -101,13 +121,63 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
 void SyntheticProvider::timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id) {
   SyntheticScheduledEvent ev{};
   ev.at_ns = at_ns;
-  ev.seq = ++timeline_seq_;
   ev.type = type;
   ev.stream_id = stream_id;
+  timeline_schedule_(ev);
+}
+
+void SyntheticProvider::timeline_schedule_(const SyntheticScheduledEvent& src) {
+  SyntheticScheduledEvent ev = src;
+  ev.seq = ++timeline_seq_;
   timeline_q_.push(ev);
 }
 
+void SyntheticProvider::timeline_dispatch_request_(const SyntheticScheduledEvent& ev) {
+  if (timeline_request_dispatch_hook_) {
+    timeline_request_dispatch_hook_(ev);
+  }
+}
+
+bool SyntheticProvider::materialize_staged_canonical_scenario_(
+    SyntheticTimelineScenario& out,
+    std::string& error) const {
+  out = {};
+  SyntheticScenarioMaterializationOptions opts{};
+  SyntheticScenarioMaterializationResult materialized{};
+  if (!materialize_synthetic_canonical_scenario(
+          timeline_canonical_scenario_,
+          opts,
+          materialized,
+          &error)) {
+    return false;
+  }
+
+  // Provider-owned projection boundary:
+  // canonical schedule is lowered to executable request-like timeline events.
+  // Lifecycle actions must be explicit in the canonical timed actions.
+  // EmitFrame remains provider-internal and is not emitted here.
+  std::vector<SyntheticScheduledEvent> events;
+  events.reserve(materialized.executable_schedule.events.size());
+
+  for (const auto& ev : materialized.executable_schedule.events) {
+    events.push_back(ev);
+  }
+
+  std::stable_sort(events.begin(), events.end(), [](const SyntheticScheduledEvent& a,
+                                                     const SyntheticScheduledEvent& b) {
+    return a.at_ns < b.at_ns;
+  });
+  for (size_t i = 0; i < events.size(); ++i) {
+    events[i].seq = static_cast<uint64_t>(i + 1);
+  }
+  out.events = std::move(events);
+  return true;
+}
+
 void SyntheticProvider::timeline_pump_() {
+  if (!timeline_running_ || timeline_paused_) {
+    return;
+  }
   const uint64_t now = clock_.now_ns();
   const uint64_t period = fps_period_ns(cfg_.nominal.fps_num, cfg_.nominal.fps_den);
   if (period == 0) {
@@ -141,36 +211,45 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::StartStream: {
-        // Scenario-driven start. This is primarily intended for Timeline-role
-        // regression tests and for future scenario execution features.
-        auto it = streams_.find(ev.stream_id);
-        if (it == streams_.end()) {
-          break;
-        }
-        StreamState& s = it->second;
-        if (!s.created || s.started) {
-          break;
-        }
-        // Reuse the normal core-requested start path.
-        (void)start_stream(ev.stream_id, s.req.profile, s.picture);
+        timeline_dispatch_request_(ev);
         break;
       }
 
       case SyntheticEventType::StopStream: {
-        // Scenario-driven stop (e.g. simulating disconnect / unexpected stop).
-        auto it = streams_.find(ev.stream_id);
-        if (it == streams_.end()) {
-          break;
-        }
-        StreamState& s = it->second;
-        if (!s.created || !s.started) {
-          break;
-        }
-        (void)stop_stream(ev.stream_id);
+        timeline_dispatch_request_(ev);
+        break;
+      }
+
+      case SyntheticEventType::OpenDevice: {
+        timeline_dispatch_request_(ev);
+        break;
+      }
+
+      case SyntheticEventType::CloseDevice: {
+        timeline_dispatch_request_(ev);
+        break;
+      }
+
+      case SyntheticEventType::CreateStream: {
+        timeline_dispatch_request_(ev);
+        break;
+      }
+
+      case SyntheticEventType::DestroyStream: {
+        timeline_dispatch_request_(ev);
+        break;
+      }
+
+      case SyntheticEventType::UpdateStreamPicture: {
+        timeline_dispatch_request_(ev);
         break;
       }
     }
   }
+}
+
+void SyntheticProvider::set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook) {
+  timeline_request_dispatch_hook_ = std::move(hook);
 }
 
 ProviderResult SyntheticProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
@@ -634,6 +713,106 @@ ProviderResult SyntheticProvider::fail_stream_for_test(uint64_t stream_id, Provi
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  // Host-submitted scenarios are staged, not auto-started.
+  // This intentionally differs from config-seeded initialization semantics.
+  // Semantics remain provider-owned; only arming differs (stage until start).
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
+  timeline_scenario_ = scenario;
+  timeline_canonical_scenario_ = {};
+  timeline_canonical_staged_ = false;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const SyntheticCanonicalScenario& scenario) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  // Host-submitted canonical scenarios are staged until explicit start.
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
+  timeline_scenario_ = {};
+  timeline_canonical_scenario_ = scenario;
+  timeline_canonical_staged_ = true;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  if (timeline_canonical_staged_) {
+    std::string error;
+    if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
+      if (!error.empty()) {
+        std::fprintf(stderr, "[Synthetic] canonical scenario materialization failed: %s\n", error.c_str());
+      }
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+  }
+  for (const auto& ev : timeline_scenario_.events) {
+    timeline_schedule_(ev);
+  }
+  timeline_running_ = true;
+  timeline_paused_ = false;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::stop_timeline_scenario_for_host() {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  while (!timeline_q_.empty()) {
+    timeline_q_.pop();
+  }
+  timeline_seq_ = 0;
+  timeline_running_ = false;
+  timeline_paused_ = false;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_timeline_scenario_paused_for_host(bool paused) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (!timeline_running_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  timeline_paused_ = paused;
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::shutdown() {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -659,6 +838,11 @@ ProviderResult SyntheticProvider::shutdown() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_scenario_ = {};
+  timeline_canonical_scenario_ = {};
+  timeline_canonical_staged_ = false;
+  timeline_running_ = false;
+  timeline_paused_ = false;
 
   // Provider native object (BOUND -> ABSENT).
   if (provider_native_id_ != 0) {
@@ -690,7 +874,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   const uint32_t w = s.req.profile.width;
   const uint32_t h = s.req.profile.height;
   const uint32_t stride = w * 4u;
-  const size_t size_bytes = static_cast<size_t>(stride) * static_cast<size_t>(h);
 
   // Acquire a buffer slot.
   StreamState::BufferSlot* slot = nullptr;

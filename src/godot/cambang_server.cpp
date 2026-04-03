@@ -7,6 +7,7 @@
 
 #include <chrono>
 
+#include "core/synthetic_timeline_request_binding.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
 
@@ -347,6 +348,8 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
   // Fresh broker per start cycle (latched provider_mode).
   {
     auto broker = std::make_unique<ProviderBroker>();
+    broker->set_synthetic_timeline_request_dispatch_hook(
+        make_synthetic_timeline_request_dispatch_hook(runtime_));
     ProviderResult sr = broker->set_runtime_mode_requested(provider_mode_requested_);
     if (!sr.ok()) {
       ERR_PRINT(godot::vformat(

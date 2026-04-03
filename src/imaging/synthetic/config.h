@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "imaging/synthetic/scenario.h"
 #include "pixels/pattern/pattern_registry.h"
 
 namespace cambang {
@@ -47,6 +48,7 @@ struct SyntheticProviderConfig {
 
   SyntheticNominalDefaults nominal{};
   SyntheticPatternDefaults pattern{};
+  SyntheticTimelineScenario timeline_scenario{};
 };
 
 } // namespace cambang

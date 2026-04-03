@@ -47,7 +47,7 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
     if (normalized == "stream_lifecycle_versions") {
         requested = ActiveScenario::StreamLifecycleVersions;
     } else if (normalized == "topology_change_versions") {
-        requested = ActiveScenario::None;
+        requested = ActiveScenario::TopologyChangeVersions;
     } else if (normalized == "publication_coalescing") {
         requested = ActiveScenario::PublicationCoalescing;
     } else {
@@ -55,15 +55,8 @@ bool CamBANGDevNode::start_scenario(const godot::String& name) {
         return false;
     }
 
-    if (normalized == "topology_change_versions") {
-        // Existing scenario name accepted for dev glue completeness.
-        UtilityFunctions::print("[CamBANGDevNode] scenario started: topology_change_versions");
-        return true;
-    }
-
     if (bringup_state_ != BringUpState::Running) {
         pending_scenario_ = requested;
-        scenario_tick_ = 0;
         UtilityFunctions::print("[CamBANGDevNode] scenario queued: ", normalized, " (waiting for provider stream Running)");
         return true;
     }
@@ -142,11 +135,16 @@ void CamBANGDevNode::_process(double delta) {
     }
 
     if (bringup_state_ == BringUpState::Running) {
-        tick_active_scenario_();
+        if (active_scenario_ != ActiveScenario::None) {
+            complete_active_scenario_();
+        }
     }
 
 
-    // Dev-only pattern cycling: stream-scoped PictureConfig updates.
+    // Dev-only manual pattern cycling helper.
+    // This is intentionally non-canonical and not part of scenario semantics.
+    // Canonical scenario-visible appearance changes should be authored via
+    // provider-owned timeline events (e.g. UpdateStreamPicture).
     if (pattern_cycle_enabled_ && runtime_ && bringup_state_ == BringUpState::Running) {
         pattern_cycle_accum_s_ += delta;
         if (pattern_cycle_accum_s_ >= pattern_cycle_period_s_) {
@@ -240,7 +238,8 @@ bool CamBANGDevNode::start_provider_() {
         return false;
     }
 
-    // Dev-only pattern cycling configuration (visual verification aid).
+    // Dev-only manual pattern cycling configuration (visual verification aid).
+    // Not part of canonical scenario semantics.
     pattern_cycle_enabled_ = false;
     pattern_cycle_logged_unsupported_ = false;
     pattern_cycle_accum_s_ = 0.0;
@@ -364,6 +363,7 @@ void CamBANGDevNode::stop_provider_() {
     // CamBANGServer.stop() destroys the broker before this dev node observes the
     // runtime transition, so skip provider-direct teardown once ownership has moved.
     if (provider_still_owned_by_server) {
+        (void)provider_->dev_stop_timeline_scenario();
         (void)provider_->close_device(device_instance_id_);
     }
 
@@ -376,7 +376,6 @@ void CamBANGDevNode::stop_provider_() {
     bringup_ticks_ = 0;
     active_scenario_ = ActiveScenario::None;
     pending_scenario_ = ActiveScenario::None;
-    scenario_tick_ = 0;
 }
 
 void CamBANGDevNode::tick_bringup_() {
@@ -430,77 +429,67 @@ bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
     if (scenario == ActiveScenario::None) {
         return true;
     }
+    if (!provider_) {
+        return false;
+    }
+    auto scenario_def = build_provider_scenario_(scenario);
+    if (!scenario_def.has_value()) {
+        return false;
+    }
+    ProviderResult sr = provider_->dev_set_timeline_canonical_scenario(*scenario_def);
+    if (!sr.ok()) {
+        return false;
+    }
+    ProviderResult st = provider_->dev_start_timeline_scenario();
+    if (!st.ok()) {
+        return false;
+    }
     active_scenario_ = scenario;
-    scenario_tick_ = 0;
     return true;
-}
-
-void CamBANGDevNode::tick_active_scenario_() {
-    if (!runtime_) {
-        active_scenario_ = ActiveScenario::None;
-        return;
-    }
-
-    if (active_scenario_ == ActiveScenario::None) {
-        return;
-    }
-
-    ++scenario_tick_;
-
-    if (active_scenario_ == ActiveScenario::PublicationCoalescing) {
-        // Per-tick burst: multiple snapshot-affecting stream updates in one tick
-        // to exercise Godot-side coalescing without endpoint/device churn.
-        PictureConfig cfg_a{};
-        cfg_a.preset = PatternPreset::XyXor;
-        cfg_a.seed = scenario_seed_;
-        cfg_a.overlay_frame_index_offsets = false;
-        cfg_a.overlay_moving_bar = true;
-
-        PictureConfig cfg_b = cfg_a;
-        cfg_b.seed = scenario_seed_ + 1;
-
-        PictureConfig cfg_c = cfg_a;
-        cfg_c.seed = scenario_seed_ + 2;
-
-        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_a);
-        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_b);
-        (void)runtime_->try_set_stream_picture_config(stream_id_, cfg_c);
-
-        scenario_seed_ += 3;
-        if (scenario_tick_ >= 4u) {
-            complete_active_scenario_();
-        }
-        return;
-    }
-
-    if (active_scenario_ == ActiveScenario::StreamLifecycleVersions) {
-        // Emit deterministic publish activity over several ticks without touching
-        // endpoint enumeration/device opening.
-        if ((scenario_tick_ % 2u) == 0u) {
-            PictureConfig cfg{};
-            cfg.preset = PatternPreset::XyXor;
-            cfg.seed = scenario_seed_++;
-            cfg.overlay_frame_index_offsets = false;
-            cfg.overlay_moving_bar = true;
-            (void)runtime_->try_set_stream_picture_config(stream_id_, cfg);
-        }
-        if (scenario_tick_ >= 12u) {
-            complete_active_scenario_();
-        }
-        return;
-    }
 }
 
 godot::String CamBANGDevNode::scenario_name_(ActiveScenario scenario) {
     switch (scenario) {
         case ActiveScenario::StreamLifecycleVersions:
             return "stream_lifecycle_versions";
+        case ActiveScenario::TopologyChangeVersions:
+            return "topology_change_versions";
         case ActiveScenario::PublicationCoalescing:
             return "publication_coalescing";
         case ActiveScenario::None:
         default:
             return "none";
     }
+}
+
+std::optional<SyntheticCanonicalScenario> CamBANGDevNode::build_provider_scenario_(ActiveScenario scenario) const {
+    SyntheticBuiltinScenarioLibraryId builtin_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
+    switch (scenario) {
+        case ActiveScenario::StreamLifecycleVersions:
+            builtin_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
+            break;
+        case ActiveScenario::TopologyChangeVersions:
+            builtin_id = SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions;
+            break;
+        case ActiveScenario::PublicationCoalescing:
+            builtin_id = SyntheticBuiltinScenarioLibraryId::PublicationCoalescing;
+            break;
+        case ActiveScenario::None:
+        default:
+            return std::nullopt;
+    }
+
+    SyntheticCanonicalScenario canonical{};
+    std::string error;
+    if (!build_synthetic_builtin_scenario_library_canonical_scenario(
+            builtin_id,
+            effective_profile_,
+            canonical,
+            &error)) {
+        UtilityFunctions::printerr("[CamBANGDevNode] Failed to build canonical scenario from builtin scenario library: ", error.c_str());
+        return std::nullopt;
+    }
+    return canonical;
 }
 
 void CamBANGDevNode::mark_exit_reason_(const godot::String& reason) {
@@ -523,7 +512,6 @@ void CamBANGDevNode::stop_runtime_() {
         last_running_ = false;
         active_scenario_ = ActiveScenario::None;
         pending_scenario_ = ActiveScenario::None;
-        scenario_tick_ = 0;
         return;
     }
 

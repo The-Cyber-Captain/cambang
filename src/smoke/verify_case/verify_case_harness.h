@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/core_runtime.h"
+#include "core/synthetic_timeline_request_binding.h"
 #include "core/state_snapshot_buffer.h"
 #include "core/snapshot/state_snapshot.h"
 #include "imaging/api/provider_contract_datatypes.h"
@@ -614,6 +615,14 @@ public:
       error = "runtime start failed";
       return false;
     }
+    if (!wait_until([&]() { return runtime_.state_copy() == CoreRuntimeState::LIVE; },
+                    error,
+                    500,
+                    5,
+                    "timed out waiting for runtime LIVE")) {
+      runtime_.stop();
+      return false;
+    }
 
     provider_ = make_provider_();
     if (!provider_) {
@@ -621,15 +630,21 @@ public:
       runtime_.stop();
       return false;
     }
+    if (auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get())) {
+      synthetic->set_timeline_request_dispatch_hook_for_host(
+          make_synthetic_timeline_request_dispatch_hook(runtime_));
+    }
+    runtime_.attach_provider(provider_.get());
 
     if (!provider_->initialize(runtime_.provider_callbacks()).ok()) {
       error = std::string("provider initialize failed (") + verify_case_provider_name(provider_kind_) + ")";
+      runtime_.attach_provider(nullptr);
+      (void)provider_->shutdown();
       provider_.reset();
       runtime_.stop();
       return false;
     }
 
-    runtime_.attach_provider(provider_.get());
     if (!select_endpoints_(error)) {
       runtime_.attach_provider(nullptr);
       (void)provider_->shutdown();
@@ -956,6 +971,7 @@ private:
     cfg.nominal.height = 180;
     cfg.nominal.fps_num = 30;
     cfg.nominal.fps_den = 1;
+    cfg.nominal.start_stream_warmup_ns = 0;
     cfg.pattern.preset = PatternPreset::XyXor;
     cfg.pattern.seed = 1;
     return std::make_unique<SyntheticProvider>(cfg);

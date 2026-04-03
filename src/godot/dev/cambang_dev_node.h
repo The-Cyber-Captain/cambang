@@ -2,11 +2,13 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/variant/string.hpp>
 
 #include "imaging/api/provider_contract_datatypes.h"
+#include "imaging/synthetic/builtin_scenario_library.h"
 
 namespace cambang {
 
@@ -86,12 +88,11 @@ private:
     enum class ActiveScenario {
         None,
         StreamLifecycleVersions,
+        TopologyChangeVersions,
         PublicationCoalescing,
     };
     ActiveScenario active_scenario_ = ActiveScenario::None;
     ActiveScenario pending_scenario_ = ActiveScenario::None;
-    uint32_t scenario_tick_ = 0;
-    uint32_t scenario_seed_ = 1;
 
 
     void start_runtime_();
@@ -103,9 +104,9 @@ private:
 
     // Bring-up continues asynchronously (core commands are non-blocking).
     void tick_bringup_();
-    void tick_active_scenario_();
     bool dispatch_scenario_now_(ActiveScenario scenario);
     static godot::String scenario_name_(ActiveScenario scenario);
+    std::optional<SyntheticCanonicalScenario> build_provider_scenario_(ActiveScenario scenario) const;
     void mark_exit_reason_(const godot::String& reason);
     void complete_active_scenario_();
 

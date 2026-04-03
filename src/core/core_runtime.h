@@ -63,6 +63,18 @@ enum class TryDestroyStreamStatus : uint8_t {
   InvalidArgument = 2,
 };
 
+enum class TryOpenDeviceStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
+enum class TryCloseDeviceStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
   class CoreRuntime final : private CoreThread::IHooks {
   private:
     enum class ShutdownPhase : uint8_t;  // forward declaration
@@ -113,6 +125,8 @@ enum class TryDestroyStreamStatus : uint8_t {
 
   // Dev/internal stream lifecycle surfaces.
   // Defaulting is performed by core using provider->stream_template().
+  // profile_version ownership is core-authoritative for this ingress:
+  // pass profile_version=0 to request core-assigned lineage.
   // These are non-blocking and may return Busy if the core mailbox is full.
   TryCreateStreamStatus try_create_stream(
       uint64_t stream_id,
@@ -127,6 +141,13 @@ enum class TryDestroyStreamStatus : uint8_t {
   TryStopStreamStatus try_stop_stream(uint64_t stream_id) noexcept;
 
   TryDestroyStreamStatus try_destroy_stream(uint64_t stream_id) noexcept;
+
+  TryOpenDeviceStatus try_open_device(
+      const std::string& hardware_id,
+      uint64_t device_instance_id,
+      uint64_t root_id) noexcept;
+
+  TryCloseDeviceStatus try_close_device(uint64_t device_instance_id) noexcept;
 
   // Stream-scoped picture update path.
   // Non-blocking: enqueues the provider call onto the core thread.
@@ -321,6 +342,7 @@ private:
   // Godot-facing tick-bounded truth model cheaply.
   std::atomic<uint64_t> published_seq_{0};
   std::atomic<uint64_t> published_topology_sig_{0};
+  std::atomic<uint64_t> create_stream_profile_version_seq_{1};
 
   std::atomic<uint64_t> publish_requests_coalesced_{0};
   std::atomic<uint64_t> publish_requests_dropped_full_{0};
