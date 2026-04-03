@@ -126,21 +126,30 @@ bool materialize_synthetic_canonical_scenario(
   });
 
   std::unordered_map<uint64_t, bool> device_open;
+  std::unordered_map<uint64_t, std::string> device_key_by_id;
   device_open.reserve(out.devices.size());
+  device_key_by_id.reserve(out.devices.size());
   for (const auto& d : out.devices) {
     device_open.emplace(d.device_instance_id, false);
+    device_key_by_id.emplace(d.device_instance_id, d.key);
   }
 
   std::unordered_map<uint64_t, bool> stream_created;
   std::unordered_map<uint64_t, bool> stream_started;
+  std::unordered_map<uint64_t, bool> stream_created_once;
   std::unordered_map<uint64_t, uint64_t> stream_device;
+  std::unordered_map<uint64_t, std::string> stream_key_by_id;
   stream_created.reserve(out.streams.size());
   stream_started.reserve(out.streams.size());
+  stream_created_once.reserve(out.streams.size());
   stream_device.reserve(out.streams.size());
+  stream_key_by_id.reserve(out.streams.size());
   for (const auto& s : out.streams) {
     stream_created.emplace(s.stream_id, false);
     stream_started.emplace(s.stream_id, false);
+    stream_created_once.emplace(s.stream_id, false);
     stream_device.emplace(s.stream_id, s.device_instance_id);
+    stream_key_by_id.emplace(s.stream_id, s.key);
   }
 
   for (const auto& ev : indexed) {
@@ -152,22 +161,39 @@ bool materialize_synthetic_canonical_scenario(
         break;
 
       case SyntheticEventType::CreateStream: {
+        if (stream_created[ev.stream_id]) {
+          set_error(error, "CreateStream duplicated for stream key: " + stream_key_by_id[ev.stream_id]);
+          return false;
+        }
+        if (stream_created_once[ev.stream_id]) {
+          set_error(error, "CreateStream after DestroyStream is not supported for stream key: " + stream_key_by_id[ev.stream_id]);
+          return false;
+        }
         const auto sd = stream_device.find(ev.stream_id);
         if (sd != stream_device.end()) {
           const auto dit = device_open.find(sd->second);
           if (dit == device_open.end() || !dit->second) {
-            set_error(error, "CreateStream requires prior OpenDevice for stream");
+            set_error(error, "CreateStream requires prior OpenDevice for stream key: " + stream_key_by_id[ev.stream_id]);
             return false;
           }
         }
         stream_created[ev.stream_id] = true;
+        stream_created_once[ev.stream_id] = true;
         stream_started[ev.stream_id] = false;
         break;
       }
 
       case SyntheticEventType::StartStream:
+        if (stream_created_once[ev.stream_id] && !stream_created[ev.stream_id]) {
+          set_error(error, "StartStream after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+          return false;
+        }
         if (!stream_created[ev.stream_id]) {
-          set_error(error, "StartStream requires prior CreateStream for stream");
+          set_error(error, "StartStream requires prior CreateStream for stream key: " + stream_key_by_id[ev.stream_id]);
+          return false;
+        }
+        if (stream_started[ev.stream_id]) {
+          set_error(error, "StartStream duplicated while already started for stream key: " + stream_key_by_id[ev.stream_id]);
           return false;
         }
         stream_started[ev.stream_id] = true;
@@ -175,7 +201,7 @@ bool materialize_synthetic_canonical_scenario(
 
       case SyntheticEventType::StopStream:
         if (!stream_started[ev.stream_id]) {
-          set_error(error, "StopStream requires prior StartStream for stream");
+          set_error(error, "StopStream requires stream to be started for stream key: " + stream_key_by_id[ev.stream_id]);
           return false;
         }
         stream_started[ev.stream_id] = false;
@@ -183,7 +209,11 @@ bool materialize_synthetic_canonical_scenario(
 
       case SyntheticEventType::DestroyStream:
         if (!stream_created[ev.stream_id]) {
-          set_error(error, "DestroyStream requires prior CreateStream for stream");
+          if (stream_created_once[ev.stream_id]) {
+            set_error(error, "DestroyStream duplicated for already destroyed stream key: " + stream_key_by_id[ev.stream_id]);
+          } else {
+            set_error(error, "DestroyStream requires prior CreateStream for stream key: " + stream_key_by_id[ev.stream_id]);
+          }
           return false;
         }
         stream_created[ev.stream_id] = false;
@@ -192,9 +222,14 @@ bool materialize_synthetic_canonical_scenario(
 
       case SyntheticEventType::CloseDevice:
         if (ev.device_instance_id != 0) {
+          const auto dit = device_open.find(ev.device_instance_id);
+          if (dit == device_open.end() || !dit->second) {
+            set_error(error, "CloseDevice requires prior OpenDevice for device key: " + device_key_by_id[ev.device_instance_id]);
+            return false;
+          }
           for (const auto& sd : stream_device) {
             if (sd.second == ev.device_instance_id && stream_created[sd.first]) {
-              set_error(error, "CloseDevice requires associated streams to be destroyed first");
+              set_error(error, "CloseDevice requires associated streams to be destroyed first for device key: " + device_key_by_id[ev.device_instance_id]);
               return false;
             }
           }
@@ -203,7 +238,16 @@ bool materialize_synthetic_canonical_scenario(
         break;
 
       case SyntheticEventType::UpdateStreamPicture:
+        if (stream_created_once[ev.stream_id] && !stream_created[ev.stream_id]) {
+          set_error(error, "UpdateStreamPicture after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+          return false;
+        }
+        break;
       case SyntheticEventType::EmitFrame:
+        if (stream_created_once[ev.stream_id] && !stream_created[ev.stream_id]) {
+          set_error(error, "EmitFrame after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+          return false;
+        }
         break;
     }
   }
