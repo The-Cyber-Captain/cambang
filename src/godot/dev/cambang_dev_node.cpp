@@ -363,7 +363,7 @@ void CamBANGDevNode::stop_provider_() {
     // CamBANGServer.stop() destroys the broker before this dev node observes the
     // runtime transition, so skip provider-direct teardown once ownership has moved.
     if (provider_still_owned_by_server) {
-        (void)provider_->dev_stop_timeline_scenario();
+        (void)provider_->stop_timeline_scenario_for_host();
         (void)provider_->close_device(device_instance_id_);
     }
 
@@ -436,11 +436,11 @@ bool CamBANGDevNode::dispatch_scenario_now_(ActiveScenario scenario) {
     if (!scenario_def.has_value()) {
         return false;
     }
-    ProviderResult sr = provider_->dev_set_timeline_canonical_scenario(*scenario_def);
+    ProviderResult sr = provider_->set_timeline_canonical_scenario_for_host(*scenario_def);
     if (!sr.ok()) {
         return false;
     }
-    ProviderResult st = provider_->dev_start_timeline_scenario();
+    ProviderResult st = provider_->start_timeline_scenario_for_host();
     if (!st.ok()) {
         return false;
     }
