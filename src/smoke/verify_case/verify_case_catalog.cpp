@@ -1857,11 +1857,11 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   scenario.timeline.push_back({period_ns * 4 + 1, SyntheticEventType::DestroyStream, "", "preview0", false, {}});
   scenario.timeline.push_back({period_ns * 4 + 2, SyntheticEventType::CloseDevice, "cam0", "", false, {}});
 
-  if (!broker.dev_set_timeline_canonical_scenario(scenario).ok()) {
+  if (!broker.set_timeline_canonical_scenario_for_host(scenario).ok()) {
     cli::error("FAIL: canonical explicit-lifecycle submission rejected");
     return 1;
   }
-  if (!broker.dev_start_timeline_scenario().ok()) {
+  if (!broker.start_timeline_scenario_for_host().ok()) {
     cli::error("FAIL: canonical explicit-lifecycle start rejected");
     return 1;
   }
