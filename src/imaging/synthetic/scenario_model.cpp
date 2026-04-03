@@ -152,10 +152,28 @@ bool materialize_synthetic_canonical_scenario(
     stream_key_by_id.emplace(s.stream_id, s.key);
   }
 
+  auto require_stream_device_open = [&](uint64_t stream_id, const char* action_name) -> bool {
+    const auto sd = stream_device.find(stream_id);
+    if (sd == stream_device.end()) {
+      set_error(error, std::string(action_name) + " requires declared stream key");
+      return false;
+    }
+    const auto dit = device_open.find(sd->second);
+    if (dit == device_open.end() || !dit->second) {
+      set_error(error, std::string(action_name) + " requires stream device to be open for stream key: " + stream_key_by_id[stream_id]);
+      return false;
+    }
+    return true;
+  };
+
   for (const auto& ev : indexed) {
     switch (ev.type) {
       case SyntheticEventType::OpenDevice:
         if (ev.device_instance_id != 0) {
+          if (device_open[ev.device_instance_id]) {
+            set_error(error, "OpenDevice duplicated while already open for device key: " + device_key_by_id[ev.device_instance_id]);
+            return false;
+          }
           device_open[ev.device_instance_id] = true;
         }
         break;
@@ -184,6 +202,9 @@ bool materialize_synthetic_canonical_scenario(
       }
 
       case SyntheticEventType::StartStream:
+        if (!require_stream_device_open(ev.stream_id, "StartStream")) {
+          return false;
+        }
         if (stream_created_once[ev.stream_id] && !stream_created[ev.stream_id]) {
           set_error(error, "StartStream after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
           return false;
@@ -200,6 +221,9 @@ bool materialize_synthetic_canonical_scenario(
         break;
 
       case SyntheticEventType::StopStream:
+        if (!require_stream_device_open(ev.stream_id, "StopStream")) {
+          return false;
+        }
         if (!stream_started[ev.stream_id]) {
           set_error(error, "StopStream requires stream to be started for stream key: " + stream_key_by_id[ev.stream_id]);
           return false;
@@ -208,6 +232,9 @@ bool materialize_synthetic_canonical_scenario(
         break;
 
       case SyntheticEventType::DestroyStream:
+        if (!require_stream_device_open(ev.stream_id, "DestroyStream")) {
+          return false;
+        }
         if (!stream_created[ev.stream_id]) {
           if (stream_created_once[ev.stream_id]) {
             set_error(error, "DestroyStream duplicated for already destroyed stream key: " + stream_key_by_id[ev.stream_id]);
@@ -238,14 +265,28 @@ bool materialize_synthetic_canonical_scenario(
         break;
 
       case SyntheticEventType::UpdateStreamPicture:
-        if (stream_created_once[ev.stream_id] && !stream_created[ev.stream_id]) {
-          set_error(error, "UpdateStreamPicture after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+        if (!require_stream_device_open(ev.stream_id, "UpdateStreamPicture")) {
+          return false;
+        }
+        if (!stream_created[ev.stream_id]) {
+          if (stream_created_once[ev.stream_id]) {
+            set_error(error, "UpdateStreamPicture after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+          } else {
+            set_error(error, "UpdateStreamPicture requires prior CreateStream for stream key: " + stream_key_by_id[ev.stream_id]);
+          }
           return false;
         }
         break;
       case SyntheticEventType::EmitFrame:
-        if (stream_created_once[ev.stream_id] && !stream_created[ev.stream_id]) {
-          set_error(error, "EmitFrame after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+        if (!require_stream_device_open(ev.stream_id, "EmitFrame")) {
+          return false;
+        }
+        if (!stream_created[ev.stream_id]) {
+          if (stream_created_once[ev.stream_id]) {
+            set_error(error, "EmitFrame after DestroyStream is invalid for stream key: " + stream_key_by_id[ev.stream_id]);
+          } else {
+            set_error(error, "EmitFrame requires prior CreateStream for stream key: " + stream_key_by_id[ev.stream_id]);
+          }
           return false;
         }
         break;
