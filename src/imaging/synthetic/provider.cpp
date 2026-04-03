@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <utility>
 
+#include "imaging/synthetic/scenario_loader.h"
 #include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
@@ -711,6 +712,54 @@ ProviderResult SyntheticProvider::fail_stream_for_test(uint64_t stream_id, Provi
   }
   it->second.started = false;
   return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::load_timeline_canonical_scenario_from_json_text_for_host(
+    const std::string& text,
+    std::string* error) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  SyntheticCanonicalScenario canonical{};
+  std::string load_error;
+  if (!load_synthetic_canonical_scenario_from_json_text(text, canonical, &load_error)) {
+    if (error) {
+      *error = load_error;
+    }
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (error) {
+    error->clear();
+  }
+  return set_timeline_scenario_for_host(canonical);
+}
+
+ProviderResult SyntheticProvider::load_timeline_canonical_scenario_from_json_file_for_host(
+    const std::string& path,
+    std::string* error) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  SyntheticCanonicalScenario canonical{};
+  std::string load_error;
+  if (!load_synthetic_canonical_scenario_from_json_file(path, canonical, &load_error)) {
+    if (error) {
+      *error = load_error;
+    }
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (error) {
+    error->clear();
+  }
+  return set_timeline_scenario_for_host(canonical);
 }
 
 ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario) {

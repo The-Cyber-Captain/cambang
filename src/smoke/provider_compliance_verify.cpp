@@ -13,11 +13,43 @@
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
+#include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/scenario_model.h"
 
 using namespace cambang;
 
 namespace {
+
+struct Options {
+  std::string external_scenario_file;
+};
+
+bool starts_with(const std::string& s, const std::string& prefix) {
+  return s.rfind(prefix, 0) == 0;
+}
+
+void usage(const char* argv0) {
+  std::cerr
+      << "Usage: " << argv0 << " [--external_scenario_file=<path>]\n";
+}
+
+bool parse_opts(int argc, char** argv, Options& opt) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string a = argv[i];
+    if (a == "--help" || a == "-h") {
+      usage(argv[0]);
+      return false;
+    }
+    if (starts_with(a, "--external_scenario_file=")) {
+      opt.external_scenario_file = a.substr(std::string("--external_scenario_file=").size());
+      continue;
+    }
+    std::cerr << "Unknown arg: " << a << "\n";
+    usage(argv[0]);
+    return false;
+  }
+  return true;
+}
 
 struct EventRec {
   std::string tag;
@@ -289,6 +321,393 @@ bool run_synthetic_builtin_scenario_library_build_check() {
     }
   }
 
+  return true;
+}
+
+bool run_synthetic_external_scenario_loader_check() {
+  CaptureProfile baseline_profile{};
+  baseline_profile.width = 64;
+  baseline_profile.height = 64;
+  baseline_profile.format_fourcc = FOURCC_RGBA;
+  baseline_profile.target_fps_min = 30;
+  baseline_profile.target_fps_max = 30;
+
+  SyntheticCanonicalScenario builtin{};
+  std::string error;
+  if (!build_synthetic_builtin_scenario_library_canonical_scenario(
+          SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions,
+          baseline_profile,
+          builtin,
+          &error)) {
+    std::cerr << "FAIL synthetic external loader builtin build failed: " << error << "\n";
+    return false;
+  }
+
+  const std::string json = R"JSON(
+{
+  "schema_version": 1,
+  "devices": [
+    { "key": "builtin_device", "endpoint_index": 0 }
+  ],
+  "streams": [
+    {
+      "key": "builtin_main_stream",
+      "device_key": "builtin_device",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 64,
+        "height": 64,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    }
+  ],
+  "timeline": [
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "builtin_device" },
+    { "at_ns": 0, "type": "CreateStream", "stream_key": "builtin_main_stream" },
+    { "at_ns": 0, "type": "StartStream", "stream_key": "builtin_main_stream" },
+    {
+      "at_ns": 15000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "builtin_main_stream",
+      "picture": {
+        "preset": "checker",
+        "seed": 3,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": true,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 12
+      }
+    },
+    { "at_ns": 60000000, "type": "StopStream", "stream_key": "builtin_main_stream" },
+    { "at_ns": 60000001, "type": "DestroyStream", "stream_key": "builtin_main_stream" },
+    { "at_ns": 60000002, "type": "CloseDevice", "device_key": "builtin_device" }
+  ]
+}
+)JSON";
+
+  SyntheticCanonicalScenario loaded{};
+  if (!load_synthetic_canonical_scenario_from_json_text(json, loaded, &error)) {
+    std::cerr << "FAIL synthetic external loader parse/validate/convert failed: " << error << "\n";
+    return false;
+  }
+
+  if (loaded.devices.size() != builtin.devices.size() ||
+      loaded.streams.size() != builtin.streams.size() ||
+      loaded.timeline.size() != builtin.timeline.size()) {
+    std::cerr << "FAIL synthetic external loader canonical shape mismatch against builtin\n";
+    return false;
+  }
+
+  for (size_t i = 0; i < loaded.devices.size(); ++i) {
+    if (loaded.devices[i].key != builtin.devices[i].key ||
+        loaded.devices[i].endpoint_index != builtin.devices[i].endpoint_index) {
+      std::cerr << "FAIL synthetic external loader device mismatch at index " << i << "\n";
+      return false;
+    }
+  }
+
+  for (size_t i = 0; i < loaded.streams.size(); ++i) {
+    if (loaded.streams[i].key != builtin.streams[i].key ||
+        loaded.streams[i].device_key != builtin.streams[i].device_key ||
+        loaded.streams[i].intent != builtin.streams[i].intent ||
+        loaded.streams[i].baseline_capture_profile.width != builtin.streams[i].baseline_capture_profile.width ||
+        loaded.streams[i].baseline_capture_profile.height != builtin.streams[i].baseline_capture_profile.height ||
+        loaded.streams[i].baseline_capture_profile.format_fourcc != builtin.streams[i].baseline_capture_profile.format_fourcc ||
+        loaded.streams[i].baseline_capture_profile.target_fps_min != builtin.streams[i].baseline_capture_profile.target_fps_min ||
+        loaded.streams[i].baseline_capture_profile.target_fps_max != builtin.streams[i].baseline_capture_profile.target_fps_max) {
+      std::cerr << "FAIL synthetic external loader stream mismatch at index " << i << "\n";
+      return false;
+    }
+  }
+
+  for (size_t i = 0; i < loaded.timeline.size(); ++i) {
+    const auto& a = loaded.timeline[i];
+    const auto& b = builtin.timeline[i];
+    if (a.at_ns != b.at_ns ||
+        a.type != b.type ||
+        a.device_key != b.device_key ||
+        a.stream_key != b.stream_key ||
+        a.has_picture != b.has_picture) {
+      std::cerr << "FAIL synthetic external loader timeline mismatch at index " << i << "\n";
+      return false;
+    }
+    if (a.has_picture) {
+      if (a.picture.preset != b.picture.preset ||
+          a.picture.seed != b.picture.seed ||
+          a.picture.overlay_frame_index_offsets != b.picture.overlay_frame_index_offsets ||
+          a.picture.overlay_moving_bar != b.picture.overlay_moving_bar ||
+          a.picture.solid_r != b.picture.solid_r ||
+          a.picture.solid_g != b.picture.solid_g ||
+          a.picture.solid_b != b.picture.solid_b ||
+          a.picture.solid_a != b.picture.solid_a ||
+          a.picture.checker_size_px != b.picture.checker_size_px) {
+        std::cerr << "FAIL synthetic external loader picture mismatch at timeline index " << i << "\n";
+        return false;
+      }
+    }
+  }
+
+  SyntheticScenarioMaterializationResult loaded_materialized{};
+  SyntheticScenarioMaterializationResult builtin_materialized{};
+  SyntheticScenarioMaterializationOptions opts{};
+  if (!materialize_synthetic_canonical_scenario(loaded, opts, loaded_materialized, &error)) {
+    std::cerr << "FAIL synthetic external loader materialization failed: " << error << "\n";
+    return false;
+  }
+  if (!materialize_synthetic_canonical_scenario(builtin, opts, builtin_materialized, &error)) {
+    std::cerr << "FAIL synthetic external loader builtin materialization failed: " << error << "\n";
+    return false;
+  }
+  if (loaded_materialized.executable_schedule.events.size() != builtin_materialized.executable_schedule.events.size()) {
+    std::cerr << "FAIL synthetic external loader materialized schedule size mismatch\n";
+    return false;
+  }
+  for (size_t i = 0; i < loaded_materialized.executable_schedule.events.size(); ++i) {
+    const auto& l = loaded_materialized.executable_schedule.events[i];
+    const auto& r = builtin_materialized.executable_schedule.events[i];
+    if (l.at_ns != r.at_ns ||
+        l.seq != r.seq ||
+        l.type != r.type ||
+        l.endpoint_index != r.endpoint_index ||
+        l.device_instance_id != r.device_instance_id ||
+        l.root_id != r.root_id ||
+        l.stream_id != r.stream_id ||
+        l.has_picture != r.has_picture) {
+      std::cerr << "FAIL synthetic external loader materialized event mismatch at index " << i << "\n";
+      return false;
+    }
+  }
+
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.timing_driver = TimingDriver::VirtualTime;
+  cfg.endpoint_count = 1;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+
+  SyntheticProvider synthetic(cfg);
+  if (!synthetic.initialize(&cb).ok()) return false;
+
+  std::vector<SyntheticEventType> dispatched;
+  synthetic.set_timeline_request_dispatch_hook_for_host(
+      [&dispatched](const SyntheticScheduledEvent& ev) {
+        dispatched.push_back(ev.type);
+      });
+
+  if (!synthetic.load_timeline_canonical_scenario_from_json_text_for_host(json, &error).ok()) {
+    std::cerr << "FAIL synthetic external loader provider-facing load+stage failed: " << error << "\n";
+    return false;
+  }
+  if (!synthetic.start_timeline_scenario_for_host().ok()) return false;
+
+  synthetic.advance(0);
+  synthetic.advance(15'000'000);
+  synthetic.advance(45'000'000);
+  synthetic.advance(1);
+  synthetic.advance(1);
+
+  const std::vector<SyntheticEventType> expected{
+      SyntheticEventType::OpenDevice,
+      SyntheticEventType::CreateStream,
+      SyntheticEventType::StartStream,
+      SyntheticEventType::UpdateStreamPicture,
+      SyntheticEventType::StopStream,
+      SyntheticEventType::DestroyStream,
+      SyntheticEventType::CloseDevice,
+  };
+  if (dispatched != expected) {
+    std::cerr << "FAIL synthetic external loader authored/materialized/dispatched mismatch\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+
+  if (!synthetic.shutdown().ok()) return false;
+  return true;
+}
+
+bool run_synthetic_external_scenario_loader_negative_check() {
+  struct NegativeCase {
+    const char* name = nullptr;
+    const char* json = nullptr;
+    const char* error_hint = nullptr;
+  };
+
+  const std::vector<NegativeCase> cases{
+      {
+          "unknown_top_level_field",
+          R"JSON({"schema_version":1,"devices":[],"streams":[],"timeline":[],"extra":1})JSON",
+          "unknown field",
+      },
+      {
+          "missing_required_top_level_field",
+          R"JSON({"schema_version":1,"devices":[],"streams":[]})JSON",
+          "missing required field",
+      },
+      {
+          "wrong_type_required_field",
+          R"JSON({"schema_version":"1","devices":[],"streams":[],"timeline":[]})JSON",
+          "wrong type",
+      },
+      {
+          "unknown_action_type",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"DoThing","stream_key":"stream0"}]})JSON",
+          "type is unknown",
+      },
+      {
+          "emit_frame_rejected",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"EmitFrame","stream_key":"stream0"}]})JSON",
+          "EmitFrame",
+      },
+      {
+          "stream_device_key_unknown",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"missing_cam","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[]})JSON",
+          "unknown device key",
+      },
+      {
+          "timeline_unknown_stream_key",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"StartStream","stream_key":"missing_stream"}]})JSON",
+          "unknown stream key",
+      },
+      {
+          "device_action_with_stream_key",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"OpenDevice","device_key":"cam0","stream_key":"stream0"}]})JSON",
+          "must contain only device_key",
+      },
+      {
+          "stream_action_with_device_key",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"StartStream","stream_key":"stream0","device_key":"cam0"}]})JSON",
+          "must contain only stream_key",
+      },
+      {
+          "update_picture_missing_picture_payload",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"UpdateStreamPicture","stream_key":"stream0"}]})JSON",
+          "stream_key and picture only",
+      },
+      {
+          "non_picture_action_carries_picture",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"StopStream","stream_key":"stream0","picture":{"preset":"checker","seed":1,"overlay_frame_index_offsets":false,"overlay_moving_bar":true,"solid_r":0,"solid_g":0,"solid_b":0,"solid_a":255,"checker_size_px":8}}]})JSON",
+          "must contain only stream_key",
+      },
+      {
+          "invalid_picture_preset_token",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[{"at_ns":0,"type":"UpdateStreamPicture","stream_key":"stream0","picture":{"preset":"not_a_preset","seed":1,"overlay_frame_index_offsets":false,"overlay_moving_bar":true,"solid_r":0,"solid_g":0,"solid_b":0,"solid_a":255,"checker_size_px":8}}]})JSON",
+          "picture.preset",
+      },
+      {
+          "duplicate_device_key",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0},{"key":"cam0","endpoint_index":1}],"streams":[],"timeline":[]})JSON",
+          "duplicate device key",
+      },
+      {
+          "duplicate_stream_key",
+          R"JSON({"schema_version":1,"devices":[{"key":"cam0","endpoint_index":0}],"streams":[{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}},{"key":"stream0","device_key":"cam0","intent":"PREVIEW","capture_profile":{"width":64,"height":64,"format_fourcc":1094862674,"target_fps_min":30,"target_fps_max":30}}],"timeline":[]})JSON",
+          "duplicate stream key",
+      },
+      {
+          "schema_version_not_one",
+          R"JSON({"schema_version":2,"devices":[],"streams":[],"timeline":[]})JSON",
+          "schema_version",
+      },
+  };
+
+  for (const auto& c : cases) {
+    SyntheticCanonicalScenario out{};
+    std::string error;
+    if (load_synthetic_canonical_scenario_from_json_text(c.json, out, &error)) {
+      std::cerr << "FAIL synthetic external loader negative case unexpectedly succeeded: " << c.name << "\n";
+      return false;
+    }
+    if (error.empty()) {
+      std::cerr << "FAIL synthetic external loader negative case returned empty error: " << c.name << "\n";
+      return false;
+    }
+    if (error.find(c.error_hint) == std::string::npos) {
+      std::cerr << "FAIL synthetic external loader negative case error mismatch: " << c.name
+                << " error=" << error << " expected_hint=" << c.error_hint << "\n";
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool run_external_scenario_file_execution_check(const std::string& path) {
+  SyntheticCanonicalScenario canonical{};
+  std::string error;
+  if (!load_synthetic_canonical_scenario_from_json_file(path, canonical, &error)) {
+    std::cerr << "FAIL external scenario file pre-load failed: " << error << "\n";
+    return false;
+  }
+
+  SyntheticScenarioMaterializationResult materialized{};
+  SyntheticScenarioMaterializationOptions opts{};
+  if (!materialize_synthetic_canonical_scenario(canonical, opts, materialized, &error)) {
+    std::cerr << "FAIL external scenario file materialization failed: " << error << "\n";
+    return false;
+  }
+
+  std::vector<SyntheticEventType> expected_dispatch;
+  expected_dispatch.reserve(materialized.executable_schedule.events.size());
+  uint64_t max_at_ns = 0;
+  for (const auto& ev : materialized.executable_schedule.events) {
+    if (ev.at_ns > max_at_ns) {
+      max_at_ns = ev.at_ns;
+    }
+    if (ev.type == SyntheticEventType::EmitFrame) {
+      continue;
+    }
+    expected_dispatch.push_back(ev.type);
+  }
+
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.timing_driver = TimingDriver::VirtualTime;
+  cfg.endpoint_count = 1;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+
+  SyntheticProvider synthetic(cfg);
+  if (!synthetic.initialize(&cb).ok()) return false;
+
+  std::vector<SyntheticEventType> dispatched;
+  synthetic.set_timeline_request_dispatch_hook_for_host(
+      [&dispatched](const SyntheticScheduledEvent& ev) {
+        dispatched.push_back(ev.type);
+      });
+
+  if (!synthetic.load_timeline_canonical_scenario_from_json_file_for_host(path, &error).ok()) {
+    std::cerr << "FAIL external scenario file load+stage through provider failed: " << error << "\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+  if (!dispatched.empty()) {
+    std::cerr << "FAIL external scenario file load unexpectedly dispatched before explicit start\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+
+  if (!synthetic.start_timeline_scenario_for_host().ok()) {
+    std::cerr << "FAIL external scenario file explicit start failed\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+
+  synthetic.advance(max_at_ns + 1);
+
+  if (dispatched != expected_dispatch) {
+    std::cerr << "FAIL external scenario file dispatch/order mismatch\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+
+  if (!synthetic.shutdown().ok()) return false;
   return true;
 }
 
@@ -909,9 +1328,19 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  Options opt;
+  if (!parse_opts(argc, argv, opt)) {
+    return 2;
+  }
+
   if (!run_synthetic_scenario_materialization_check()) return 1;
   if (!run_synthetic_builtin_scenario_library_build_check()) return 1;
+  if (!run_synthetic_external_scenario_loader_check()) return 1;
+  if (!run_synthetic_external_scenario_loader_negative_check()) return 1;
+  if (!opt.external_scenario_file.empty()) {
+    if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
+  }
   if (!run_synthetic_timeline_canonical_submission_check()) return 1;
   if (!run_stub_check()) return 1;
   if (!run_synthetic_check()) return 1;

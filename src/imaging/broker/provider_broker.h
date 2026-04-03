@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include "imaging/api/icamera_provider.h"
 #include "imaging/broker/mode.h"
@@ -78,6 +79,8 @@ public:
   bool try_tick_virtual_time(uint64_t dt_ns);
   ProviderResult dev_set_timeline_scenario(const SyntheticTimelineScenario& scenario);
   ProviderResult dev_set_timeline_canonical_scenario(const SyntheticCanonicalScenario& scenario);
+  ProviderResult dev_load_timeline_canonical_scenario_from_json_text(const std::string& text, std::string* error = nullptr);
+  ProviderResult dev_load_timeline_canonical_scenario_from_json_file(const std::string& path, std::string* error = nullptr);
   ProviderResult dev_start_timeline_scenario();
   ProviderResult dev_stop_timeline_scenario();
   ProviderResult dev_set_timeline_scenario_paused(bool paused);
