@@ -333,7 +333,7 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
   return false;
 }
 
-ProviderResult ProviderBroker::dev_set_timeline_scenario(const SyntheticTimelineScenario& scenario) {
+ProviderResult ProviderBroker::set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -347,7 +347,7 @@ ProviderResult ProviderBroker::dev_set_timeline_scenario(const SyntheticTimeline
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult ProviderBroker::dev_set_timeline_canonical_scenario(const SyntheticCanonicalScenario& scenario) {
+ProviderResult ProviderBroker::set_timeline_canonical_scenario_for_host(const SyntheticCanonicalScenario& scenario) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -361,7 +361,45 @@ ProviderResult ProviderBroker::dev_set_timeline_canonical_scenario(const Synthet
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult ProviderBroker::dev_start_timeline_scenario() {
+ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_text_for_host(
+    const std::string& text,
+    std::string* error) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->load_timeline_canonical_scenario_from_json_text_for_host(text, error);
+  }
+#endif
+  (void)text;
+  if (error) {
+    *error = "active provider does not support synthetic timeline json loading";
+  }
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_file_for_host(
+    const std::string& path,
+    std::string* error) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->load_timeline_canonical_scenario_from_json_file_for_host(path, error);
+  }
+#endif
+  (void)path;
+  if (error) {
+    *error = "active provider does not support synthetic timeline json loading";
+  }
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::start_timeline_scenario_for_host() {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -374,7 +412,7 @@ ProviderResult ProviderBroker::dev_start_timeline_scenario() {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult ProviderBroker::dev_stop_timeline_scenario() {
+ProviderResult ProviderBroker::stop_timeline_scenario_for_host() {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -387,7 +425,7 @@ ProviderResult ProviderBroker::dev_stop_timeline_scenario() {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult ProviderBroker::dev_set_timeline_scenario_paused(bool paused) {
+ProviderResult ProviderBroker::set_timeline_scenario_paused_for_host(bool paused) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;

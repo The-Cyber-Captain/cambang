@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include "imaging/api/icamera_provider.h"
 #include "imaging/broker/mode.h"
@@ -76,11 +77,13 @@ public:
   // Drives virtual time for backends that require an external pump (stub, synthetic
   // virtual_time). Returns true if the active backend consumed the tick.
   bool try_tick_virtual_time(uint64_t dt_ns);
-  ProviderResult dev_set_timeline_scenario(const SyntheticTimelineScenario& scenario);
-  ProviderResult dev_set_timeline_canonical_scenario(const SyntheticCanonicalScenario& scenario);
-  ProviderResult dev_start_timeline_scenario();
-  ProviderResult dev_stop_timeline_scenario();
-  ProviderResult dev_set_timeline_scenario_paused(bool paused);
+  ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
+  ProviderResult set_timeline_canonical_scenario_for_host(const SyntheticCanonicalScenario& scenario);
+  ProviderResult load_timeline_canonical_scenario_from_json_text_for_host(const std::string& text, std::string* error = nullptr);
+  ProviderResult load_timeline_canonical_scenario_from_json_file_for_host(const std::string& path, std::string* error = nullptr);
+  ProviderResult start_timeline_scenario_for_host();
+  ProviderResult stop_timeline_scenario_for_host();
+  ProviderResult set_timeline_scenario_paused_for_host(bool paused);
   void set_synthetic_timeline_request_dispatch_hook(std::function<void(const SyntheticScheduledEvent&)> hook);
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }

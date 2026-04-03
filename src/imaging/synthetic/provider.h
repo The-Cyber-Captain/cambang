@@ -75,6 +75,12 @@ public:
   ProviderResult disconnect_device_for_test(uint64_t device_instance_id);
   ProviderResult force_close_device_for_test(uint64_t device_instance_id);
   ProviderResult fail_stream_for_test(uint64_t stream_id, ProviderError error);
+  ProviderResult load_timeline_canonical_scenario_from_json_text_for_host(
+      const std::string& text,
+      std::string* error = nullptr);
+  ProviderResult load_timeline_canonical_scenario_from_json_file_for_host(
+      const std::string& path,
+      std::string* error = nullptr);
   ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
   ProviderResult set_timeline_scenario_for_host(const SyntheticCanonicalScenario& scenario);
   ProviderResult start_timeline_scenario_for_host();
