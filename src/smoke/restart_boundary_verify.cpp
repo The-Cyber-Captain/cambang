@@ -70,6 +70,17 @@ int main() {
     cli::error("FAIL: ", error);
     return 1;
   }
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const NativeObjectRecord* provider_native = find_native_of_type(s, NativeObjectType::Provider);
+        const NativeObjectRecord* device_native = find_native_of_type(s, NativeObjectType::Device);
+        return VerifyCaseHarness::has_device(s, VerifyCaseHarness::kDeviceId) &&
+               provider_native != nullptr &&
+               device_native != nullptr &&
+               device_native->owner_provider_native_id == provider_native->native_id;
+      }, error, 500, 5, "timed out waiting for device + native ownership visibility")) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
   h.tick();
   if (!check(!h.observed().is_nil && h.observed().gen == 0 && h.observed().device_count > 0,
              "expected non-empty observable state before stop")) {
