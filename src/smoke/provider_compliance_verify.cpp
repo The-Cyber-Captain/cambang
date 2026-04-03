@@ -323,6 +323,18 @@ bool run_synthetic_timeline_canonical_submission_check() {
   canonical.streams.push_back(s);
 
   SyntheticScenarioTimelineAction a{};
+  a.at_ns = 0;
+  a.type = SyntheticEventType::OpenDevice;
+  a.device_key = "cam";
+  canonical.timeline.push_back(a);
+
+  a = {};
+  a.at_ns = 0;
+  a.type = SyntheticEventType::CreateStream;
+  a.stream_key = "preview";
+  canonical.timeline.push_back(a);
+
+  a = {};
   a.at_ns = 10;
   a.type = SyntheticEventType::StartStream;
   a.stream_key = "preview";
@@ -342,6 +354,8 @@ bool run_synthetic_timeline_canonical_submission_check() {
   synthetic.advance(10);
 
   const std::vector<SyntheticEventType> expected{
+      SyntheticEventType::OpenDevice,
+      SyntheticEventType::CreateStream,
       SyntheticEventType::StartStream,
       SyntheticEventType::StopStream,
   };

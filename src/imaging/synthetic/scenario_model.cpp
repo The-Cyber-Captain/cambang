@@ -125,6 +125,89 @@ bool materialize_synthetic_canonical_scenario(
     return a.at_ns < b.at_ns;
   });
 
+  std::unordered_map<uint64_t, bool> device_open;
+  device_open.reserve(out.devices.size());
+  for (const auto& d : out.devices) {
+    device_open.emplace(d.device_instance_id, false);
+  }
+
+  std::unordered_map<uint64_t, bool> stream_created;
+  std::unordered_map<uint64_t, bool> stream_started;
+  std::unordered_map<uint64_t, uint64_t> stream_device;
+  stream_created.reserve(out.streams.size());
+  stream_started.reserve(out.streams.size());
+  stream_device.reserve(out.streams.size());
+  for (const auto& s : out.streams) {
+    stream_created.emplace(s.stream_id, false);
+    stream_started.emplace(s.stream_id, false);
+    stream_device.emplace(s.stream_id, s.device_instance_id);
+  }
+
+  for (const auto& ev : indexed) {
+    switch (ev.type) {
+      case SyntheticEventType::OpenDevice:
+        if (ev.device_instance_id != 0) {
+          device_open[ev.device_instance_id] = true;
+        }
+        break;
+
+      case SyntheticEventType::CreateStream: {
+        const auto sd = stream_device.find(ev.stream_id);
+        if (sd != stream_device.end()) {
+          const auto dit = device_open.find(sd->second);
+          if (dit == device_open.end() || !dit->second) {
+            set_error(error, "CreateStream requires prior OpenDevice for stream");
+            return false;
+          }
+        }
+        stream_created[ev.stream_id] = true;
+        stream_started[ev.stream_id] = false;
+        break;
+      }
+
+      case SyntheticEventType::StartStream:
+        if (!stream_created[ev.stream_id]) {
+          set_error(error, "StartStream requires prior CreateStream for stream");
+          return false;
+        }
+        stream_started[ev.stream_id] = true;
+        break;
+
+      case SyntheticEventType::StopStream:
+        if (!stream_started[ev.stream_id]) {
+          set_error(error, "StopStream requires prior StartStream for stream");
+          return false;
+        }
+        stream_started[ev.stream_id] = false;
+        break;
+
+      case SyntheticEventType::DestroyStream:
+        if (!stream_created[ev.stream_id]) {
+          set_error(error, "DestroyStream requires prior CreateStream for stream");
+          return false;
+        }
+        stream_created[ev.stream_id] = false;
+        stream_started[ev.stream_id] = false;
+        break;
+
+      case SyntheticEventType::CloseDevice:
+        if (ev.device_instance_id != 0) {
+          for (const auto& sd : stream_device) {
+            if (sd.second == ev.device_instance_id && stream_created[sd.first]) {
+              set_error(error, "CloseDevice requires associated streams to be destroyed first");
+              return false;
+            }
+          }
+          device_open[ev.device_instance_id] = false;
+        }
+        break;
+
+      case SyntheticEventType::UpdateStreamPicture:
+      case SyntheticEventType::EmitFrame:
+        break;
+    }
+  }
+
   out.executable_schedule.events.reserve(indexed.size());
   for (size_t i = 0; i < indexed.size(); ++i) {
     indexed[i].seq = static_cast<uint64_t>(i + 1);
