@@ -5,7 +5,7 @@ func _ready() -> void:
 		push_warning("CamBANGServer singleton not available.")
 		return
 	CamBANGServer.stop()
-	CamBANGServer.set_provider_mode("synthetic")
+	CamBANGServer.set_synthetic_provider(CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	CamBANGServer.start()
 
 

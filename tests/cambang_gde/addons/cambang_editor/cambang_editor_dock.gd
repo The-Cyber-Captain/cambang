@@ -63,13 +63,13 @@ func _build_ui_if_needed() -> void:
 	controls.add_child(_stop_button)
 
 	var mode_label := Label.new()
-	mode_label.text = "Provider Mode"
+	mode_label.text = "Provider Config"
 	controls.add_child(mode_label)
 
 	_provider_mode_option = OptionButton.new()
 	_provider_mode_option.item_selected.connect(_on_provider_mode_selected)
 	_provider_mode_option.add_item("platform_backed")
-	_provider_mode_option.add_item("synthetic")
+	_provider_mode_option.add_item("synthetic_timeline_virtual_time")
 	controls.add_child(_provider_mode_option)
 
 	_message_label = Label.new()
@@ -185,12 +185,6 @@ func _refresh_from_server() -> void:
 			_provider_mode_option.disabled = false
 			_set_transition_polling(false)
 
-	var mode := str(server.get_provider_mode())
-	for index in range(_provider_mode_option.item_count):
-		if _provider_mode_option.get_item_text(index) == mode:
-			_provider_mode_option.select(index)
-			break
-
 	_message_label.text = _state_message(state)
 
 
@@ -212,15 +206,15 @@ func _derive_ui_state(has_snapshot: bool) -> String:
 func _state_message(state: String) -> String:
 	match state:
 		UI_STATE_STOPPED:
-			return "Stopped. Provider mode can be changed."
+			return "Stopped. Provider configuration can be changed."
 		UI_STATE_STARTING:
 			return "Starting… waiting for baseline snapshot."
 		UI_STATE_RUNNING:
-			return "Running. Provider mode is locked until stopped."
+			return "Running. Provider configuration is locked until stopped."
 		UI_STATE_STOPPING:
 			return "Stopping… waiting for snapshot to clear."
 		_:
-			return "Stopped. Provider mode can be changed."
+			return "Stopped. Provider configuration can be changed."
 
 
 func _on_start_pressed() -> void:
@@ -256,16 +250,23 @@ func _on_stop_pressed() -> void:
 func _on_provider_mode_selected(index: int) -> void:
 	var server := _get_server()
 	if server == null:
-		_message_label.text = "Cannot set provider mode: CamBANGServer singleton not available."
+		_message_label.text = "Cannot set provider configuration: CamBANGServer singleton not available."
 		return
 
 	if _provider_mode_option.disabled:
 		return
 
 	var selected_mode := _provider_mode_option.get_item_text(index)
-	var err: int = server.set_provider_mode(selected_mode)
+	var err: int = ERR_INVALID_PARAMETER
+	if selected_mode == "platform_backed":
+		err = server.set_platform_backed_provider()
+	elif selected_mode == "synthetic_timeline_virtual_time":
+		err = server.set_synthetic_provider(
+			server.SYNTHETIC_ROLE_TIMELINE,
+			server.TIMING_DRIVER_VIRTUAL_TIME
+		)
 	if err == OK:
-		_message_label.text = "Provider mode set via CamBANGServer.set_provider_mode('%s')." % selected_mode
+		_message_label.text = "Provider configuration set via CamBANGServer typed provider API."
 	else:
-		_message_label.text = "Provider mode change rejected with error %d. Stop the server before changing mode." % err
+		_message_label.text = "Provider configuration change rejected with error %d. Stop the server before changing provider configuration." % err
 	_refresh_from_server()

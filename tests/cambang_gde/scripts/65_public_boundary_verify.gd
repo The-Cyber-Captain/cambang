@@ -17,7 +17,41 @@ var _first_gen := -1
 
 func _ready() -> void:
 	CamBANGServer.stop()
-	CamBANGServer.set_provider_mode("synthetic")
+
+	if CamBANGServer.has_method("set_provider_mode") or CamBANGServer.has_method("get_provider_mode"):
+		_fail("FAIL: legacy string provider-mode API should not be present on CamBANGServer")
+		return
+	if not CamBANGServer.has_method("set_platform_backed_provider"):
+		_fail("FAIL: CamBANGServer.set_platform_backed_provider() missing")
+		return
+	if not CamBANGServer.has_method("set_synthetic_provider"):
+		_fail("FAIL: CamBANGServer.set_synthetic_provider() missing")
+		return
+
+	var invalid_role_err := CamBANGServer.set_synthetic_provider(
+		9999,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
+	if invalid_role_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: invalid synthetic role must return ERR_INVALID_PARAMETER")
+		return
+
+	var invalid_timing_err := CamBANGServer.set_synthetic_provider(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		9999
+	)
+	if invalid_timing_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: invalid timing driver must return ERR_INVALID_PARAMETER")
+		return
+
+	var set_synth_err := CamBANGServer.set_synthetic_provider(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
+	if set_synth_err != OK:
+		_fail("FAIL: set_synthetic_provider(TIMELINE, VIRTUAL_TIME) rejected while stopped")
+		return
+
 	print("RUN: godot public boundary verify")
 
 	if CamBANGServer.get_state_snapshot() != null:
@@ -35,6 +69,16 @@ func _ready() -> void:
 		CamBANGServer.state_published.connect(_on_state_published)
 
 	CamBANGServer.start()
+
+	var busy_reconfig_err := CamBANGServer.set_platform_backed_provider()
+	if busy_reconfig_err != ERR_BUSY:
+		_fail("FAIL: running reconfiguration must return ERR_BUSY")
+		return
+
+	var timeline_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
+	if timeline_stage_err != OK:
+		_fail("FAIL: timeline builtin staging should be available after Timeline-role synthetic configuration")
+		return
 
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: snapshot must remain NIL after start() until first Godot-visible baseline publish")

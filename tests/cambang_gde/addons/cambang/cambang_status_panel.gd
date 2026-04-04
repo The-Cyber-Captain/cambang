@@ -448,7 +448,7 @@ func _refresh_from_server() -> void:
 		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
-	var provider_mode := str(_server.get_provider_mode())
+	var provider_mode := "unknown"
 	_provider_mode_value.text = provider_mode
 	var snapshot := _fetch_snapshot()
 	var reading := _read_snapshot(snapshot)

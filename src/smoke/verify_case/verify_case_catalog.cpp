@@ -1763,6 +1763,16 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: provider broker synthetic mode request failed");
     return 1;
   }
+  if (!broker.set_synthetic_role_requested(SyntheticRole::Timeline).ok()) {
+    runtime.stop();
+    cli::error("FAIL: provider broker synthetic role request failed");
+    return 1;
+  }
+  if (!broker.set_synthetic_timing_driver_requested(TimingDriver::VirtualTime).ok()) {
+    runtime.stop();
+    cli::error("FAIL: provider broker synthetic timing request failed");
+    return 1;
+  }
 
   std::vector<SyntheticScheduledEvent> dispatched;
   const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(runtime);

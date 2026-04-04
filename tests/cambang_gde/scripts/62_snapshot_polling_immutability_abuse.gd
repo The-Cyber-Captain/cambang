@@ -22,7 +22,7 @@ var _observation_started := false
 func _ready() -> void:
 	set_process(true)
 	CamBANGServer.stop()
-	CamBANGServer.set_provider_mode("synthetic")
+	CamBANGServer.set_synthetic_provider(CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	print("RUN: godot snapshot polling/immutability abuse")
 
 	_timer = Timer.new()

@@ -15,6 +15,7 @@
 #include "godot/state_snapshot_export.h"
 
 #include "imaging/broker/mode.h"
+#include "imaging/synthetic/config.h"
 
 // Provider lifecycle is owned by the server (Godot thread), but attached to the
 // core runtime (core thread) via CoreRuntime::attach_provider.
@@ -50,29 +51,20 @@ public:
   void start();
   void stop();
 
-  /**
-   * set_provider_mode(mode: String) -> Error
-   *
-   * Godot-facing runtime provider mode selection.
-   *
-   * Valid values:
-   *   - "platform_backed" (default; intended to be safe)
-   *   - "synthetic" (only if compiled in)
-   *
-   * Rules:
-   *   - Provider mode is latched per runtime session.
-   *   - This may ONLY be called while the server is STOPPED
-   *     (before start() or after stop()).
-   *   - If called while LIVE, ERR_BUSY is returned (and logged once).
-   *   - If the requested mode is not supported in this build,
-   *     ERR_UNAVAILABLE is returned.
-   *
-   * Changing provider_mode requires a stop() → set_provider_mode() → start() cycle.
-   */
-  godot::Error set_provider_mode(const godot::String& mode);
+  static constexpr int SYNTHETIC_ROLE_NOMINAL = static_cast<int>(SyntheticRole::Nominal);
+  static constexpr int SYNTHETIC_ROLE_TIMELINE = static_cast<int>(SyntheticRole::Timeline);
+  static constexpr int TIMING_DRIVER_REAL_TIME = static_cast<int>(TimingDriver::RealTime);
+  static constexpr int TIMING_DRIVER_VIRTUAL_TIME = static_cast<int>(TimingDriver::VirtualTime);
 
-  /// Returns the currently requested (latched-for-next-start) provider_mode string.
-  godot::String get_provider_mode() const;
+  godot::Error set_platform_backed_provider();
+  godot::Error set_synthetic_provider(int role, int timing_driver);
+
+  godot::Error select_builtin_scenario(const godot::String& scenario_name);
+  godot::Error load_external_scenario(const godot::String& json_text);
+  godot::Error start_timeline();
+  godot::Error stop_timeline();
+  godot::Error set_timeline_paused(bool paused);
+  godot::Error advance_timeline(uint64_t dt_ns);
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
@@ -146,6 +138,8 @@ private:
   uint64_t last_tick_time_ns_ = 0;
 
   RuntimeMode provider_mode_requested_ = RuntimeMode::platform_backed;
+  SyntheticRole synthetic_role_requested_ = SyntheticRole::Nominal;
+  TimingDriver timing_driver_requested_ = TimingDriver::VirtualTime;
   bool provider_mode_busy_logged_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
