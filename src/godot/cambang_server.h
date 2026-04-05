@@ -57,9 +57,9 @@ public:
 
   // User-facing control of core processing.
   godot::Error start(
-      int provider_kind = PROVIDER_KIND_PLATFORM_BACKED,
-      int role = SYNTHETIC_ROLE_NOMINAL,
-      int timing_driver = TIMING_DRIVER_VIRTUAL_TIME);
+      const godot::Variant& provider_kind = godot::Variant(),
+      const godot::Variant& role = godot::Variant(),
+      const godot::Variant& timing_driver = godot::Variant());
   void stop();
   bool is_running() const;
 

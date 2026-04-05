@@ -1,8 +1,6 @@
 #include <charconv>
-#include <cstdio>
 #include <iostream>
 #include <string>
-#include <string_view>
 
 #include "dev/cli_log.h"
 
@@ -12,122 +10,7 @@
 
 #include "smoke/verify_case/verify_case_catalog.h"
 
-#if defined(_WIN32)
-  #include <io.h>
-  #define CAMBANG_CLOSE _close
-  #define CAMBANG_DUP _dup
-  #define CAMBANG_DUP2 _dup2
-#else
-  #include <unistd.h>
-  #define CAMBANG_CLOSE close
-  #define CAMBANG_DUP dup
-  #define CAMBANG_DUP2 dup2
-#endif
-
 namespace {
-
-struct BufferedRunResult {
-  int rc = 0;
-  std::string output;
-};
-
-class ScopedStdCapture final {
-public:
-  bool begin() {
-    capture_ = std::tmpfile();
-    if (!capture_) {
-      return false;
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-
-    saved_stdout_fd_ = CAMBANG_DUP(fileno(stdout));
-    saved_stderr_fd_ = CAMBANG_DUP(fileno(stderr));
-    if (saved_stdout_fd_ < 0 || saved_stderr_fd_ < 0) {
-      cleanup_capture_();
-      return false;
-    }
-
-    const int capture_fd = fileno(capture_);
-    if (CAMBANG_DUP2(capture_fd, fileno(stdout)) < 0 ||
-        CAMBANG_DUP2(capture_fd, fileno(stderr)) < 0) {
-      restore();
-      cleanup_capture_();
-      return false;
-    }
-
-    active_ = true;
-    return true;
-  }
-
-  std::string end() {
-    if (!capture_) {
-      return {};
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-    restore();
-
-    std::rewind(capture_);
-    std::string data;
-    char buffer[4096];
-    while (const size_t n = std::fread(buffer, 1, sizeof(buffer), capture_)) {
-      data.append(buffer, n);
-    }
-
-    cleanup_capture_();
-    return data;
-  }
-
-  ~ScopedStdCapture() {
-    restore();
-    cleanup_capture_();
-  }
-
-private:
-  void restore_saved_fds_() {
-    if (saved_stdout_fd_ >= 0) {
-      CAMBANG_CLOSE(saved_stdout_fd_);
-      saved_stdout_fd_ = -1;
-    }
-    if (saved_stderr_fd_ >= 0) {
-      CAMBANG_CLOSE(saved_stderr_fd_);
-      saved_stderr_fd_ = -1;
-    }
-  }
-
-  void cleanup_capture_() {
-    if (capture_) {
-      std::fclose(capture_);
-      capture_ = nullptr;
-    }
-  }
-
-  void restore() {
-    if (!active_) {
-      restore_saved_fds_();
-      return;
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-    if (saved_stdout_fd_ >= 0) {
-      (void)CAMBANG_DUP2(saved_stdout_fd_, fileno(stdout));
-    }
-    if (saved_stderr_fd_ >= 0) {
-      (void)CAMBANG_DUP2(saved_stderr_fd_, fileno(stderr));
-    }
-    restore_saved_fds_();
-    active_ = false;
-  }
-
-  FILE* capture_ = nullptr;
-  int saved_stdout_fd_ = -1;
-  int saved_stderr_fd_ = -1;
-  bool active_ = false;
-};
 
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
@@ -172,30 +55,6 @@ bool parse_trace_realization(const std::string& value, cambang::RealizationProfi
   return false;
 }
 
-BufferedRunResult run_buffered(const cambang::VerifyCaseDefinition& verify_case) {
-  ScopedStdCapture capture;
-  if (!capture.begin()) {
-    return BufferedRunResult{verify_case.run(), {}};
-  }
-
-  const int rc = verify_case.run();
-  return BufferedRunResult{rc, capture.end()};
-}
-
-void emit_buffered_failure_detail(std::string_view verify_case_name,
-                                  uint64_t iteration,
-                                  uint64_t repeat_count,
-                                  const std::string& detail) {
-  cli::line("[failure-detail] ", verify_case_name, " iteration ", iteration, "/", repeat_count);
-  if (!detail.empty()) {
-    std::fwrite(detail.data(), 1, detail.size(), stdout);
-    if (detail.back() != '\n') {
-      std::fputc('\n', stdout);
-    }
-    std::fflush(stdout);
-  }
-}
-
 int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
                         cambang::VerifyCaseProviderKind provider_kind,
                         uint64_t repeat_count,
@@ -228,10 +87,9 @@ int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verif
     uint64_t completed = 0;
 
     for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
-      const BufferedRunResult result = run_buffered(verify_case);
-      if (result.rc != 0) {
+      const int rc = verify_case.run();
+      if (rc != 0) {
         cli::line("[FAIL] ", verify_case.name, " (iteration ", iteration, "/", repeat_count, ")");
-        emit_buffered_failure_detail(verify_case.name, iteration, repeat_count, result.output);
         verify_case_failed = true;
         ++failed;
         break;

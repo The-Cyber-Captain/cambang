@@ -98,8 +98,27 @@ CamBANGServer::~CamBANGServer() {
   }
 }
 
-godot::Error CamBANGServer::start(int provider_kind, int role, int timing_driver) {
+godot::Error CamBANGServer::start(const godot::Variant& provider_kind_arg,
+                                  const godot::Variant& role_arg,
+                                  const godot::Variant& timing_driver_arg) {
+  const bool has_provider_kind = !provider_kind_arg.is_nil();
+  const bool has_role = !role_arg.is_nil();
+  const bool has_timing_driver = !timing_driver_arg.is_nil();
+
+  int provider_kind = PROVIDER_KIND_PLATFORM_BACKED;
+  if (has_provider_kind) {
+    if (provider_kind_arg.get_type() != godot::Variant::INT) {
+      ERR_PRINT("CamBANGServer: start rejected; provider_kind must be an integer when supplied.");
+      return godot::ERR_INVALID_PARAMETER;
+    }
+    provider_kind = static_cast<int>(int64_t(provider_kind_arg));
+  }
+
   if (provider_kind == PROVIDER_KIND_PLATFORM_BACKED) {
+    if (has_role || has_timing_driver) {
+      ERR_PRINT("CamBANGServer: start rejected; platform-backed start does not accept synthetic role/timing arguments.");
+      return godot::ERR_INVALID_PARAMETER;
+    }
     return _start_with_provider_config(
         RuntimeMode::platform_backed,
         SyntheticRole::Nominal,
@@ -112,12 +131,30 @@ godot::Error CamBANGServer::start(int provider_kind, int role, int timing_driver
     return godot::ERR_INVALID_PARAMETER;
   }
 
+  int role = SYNTHETIC_ROLE_NOMINAL;
+  if (has_role) {
+    if (role_arg.get_type() != godot::Variant::INT) {
+      ERR_PRINT("CamBANGServer: start rejected; synthetic role must be an integer when supplied.");
+      return godot::ERR_INVALID_PARAMETER;
+    }
+    role = static_cast<int>(int64_t(role_arg));
+  }
+
   SyntheticRole parsed_role{};
   if (!parse_synthetic_role_int(role, parsed_role)) {
     ERR_PRINT(godot::vformat(
         "CamBANGServer: start rejected; unknown synthetic role value '%d'.",
         role));
     return godot::ERR_INVALID_PARAMETER;
+  }
+
+  int timing_driver = TIMING_DRIVER_VIRTUAL_TIME;
+  if (has_timing_driver) {
+    if (timing_driver_arg.get_type() != godot::Variant::INT) {
+      ERR_PRINT("CamBANGServer: start rejected; timing_driver must be an integer when supplied.");
+      return godot::ERR_INVALID_PARAMETER;
+    }
+    timing_driver = static_cast<int>(int64_t(timing_driver_arg));
   }
 
   TimingDriver parsed_timing_driver{};
@@ -488,10 +525,10 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized(
     return false;
   }
 
-  // Banner 1: Godot-facing provider selection (latched, effective).
+  // Banner 1: Godot-facing provider selection (effective runtime attachment).
   if (banners_enabled()) {
     const ProviderBannerInfo bi = describe_provider_for_banner(provider_.get());
-    godot::UtilityFunctions::print("[CamBANG] provider selected (latched): ", bi.provider_mode, " / ", bi.provider_name);
+    godot::UtilityFunctions::print("[CamBANG] provider selected: ", bi.provider_mode, " / ", bi.provider_name);
   }
 
   return true;
@@ -500,9 +537,9 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(
       godot::D_METHOD("start", "provider_kind", "role", "timing_driver"),
       &CamBANGServer::start,
-      DEFVAL(PROVIDER_KIND_PLATFORM_BACKED),
-      DEFVAL(SYNTHETIC_ROLE_NOMINAL),
-      DEFVAL(TIMING_DRIVER_VIRTUAL_TIME));
+      DEFVAL(godot::Variant()),
+      DEFVAL(godot::Variant()),
+      DEFVAL(godot::Variant()));
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGServer::stop);
   godot::ClassDB::bind_method(godot::D_METHOD("is_running"), &CamBANGServer::is_running);
   godot::ClassDB::bind_method(godot::D_METHOD("get_active_provider_config"), &CamBANGServer::get_active_provider_config);
