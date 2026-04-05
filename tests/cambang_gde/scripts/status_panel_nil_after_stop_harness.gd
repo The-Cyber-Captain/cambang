@@ -117,11 +117,11 @@ func _initialize() -> void:
 	if not _entry_has_badge(retained_provider_entry, "continuity-only"):
 		_fail("retained continuity provider row missing continuity-only badge")
 		return
-	if not _entry_info_contains(retained_provider_entry, "continuity only"):
+	if not _entry_info_contains(retained_provider_entry, "Continuity-only retained view"):
 		_fail("retained continuity provider row missing continuity-only wording")
 		return
-	if not _entry_info_contains(retained_provider_entry, "panel-local"):
-		_fail("retained continuity provider row missing panel-local wording")
+	if not _entry_info_contains(retained_provider_entry, "copied from a previously rendered authoritative panel"):
+		_fail("retained continuity provider row missing retained-provenance wording")
 		return
 	if not _entry_info_contains(retained_provider_entry, "not active snapshot truth"):
 		_fail("retained continuity provider row missing not-active-snapshot-truth wording")
