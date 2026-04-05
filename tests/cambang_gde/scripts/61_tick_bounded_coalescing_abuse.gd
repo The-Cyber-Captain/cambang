@@ -11,7 +11,6 @@ var _quit_requested := false
 var _timer: Timer
 var _first_publish_timer: Timer
 var _observation_timer: Timer
-var _dev_node: CamBANGDevNode
 var _signal_count_this_tick := 0
 var _publish_count := 0
 var _last_gen := -1
@@ -24,7 +23,18 @@ var _observation_started := false
 func _ready() -> void:
 	set_process(true)
 	CamBANGServer.stop()
-	CamBANGServer.set_provider_mode("synthetic")
+	var start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	if start_err != OK:
+		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
+		return
+	var stage_err := CamBANGServer.select_builtin_scenario("publication_coalescing")
+	if stage_err != OK:
+		_fail("FAIL: unable to stage publication_coalescing scenario")
+		return
+	var scenario_start_err := CamBANGServer.start_scenario()
+	if scenario_start_err != OK:
+		_fail("FAIL: unable to start publication_coalescing scenario")
+		return
 	print("RUN: godot tick-bounded coalescing abuse")
 
 	_timer = Timer.new()
@@ -50,12 +60,6 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
 
-	CamBANGServer.start()
-	_dev_node = CamBANGDevNode.new()
-	add_child(_dev_node)
-	call_deferred("_start_scenario_after_ready")
-
-
 func _process(_delta: float) -> void:
 	if _done:
 		return
@@ -64,17 +68,6 @@ func _process(_delta: float) -> void:
 		_fail("FAIL: more than one state_published emission observed in one Godot tick")
 		return
 	_signal_count_this_tick = 0
-
-
-func _start_scenario_after_ready() -> void:
-	if _done:
-		return
-	if _dev_node == null or not is_instance_valid(_dev_node):
-		_fail("FAIL: dev node unavailable before scenario start")
-		return
-	if not _dev_node.start_scenario("publication_coalescing"):
-		_fail("FAIL: unable to start publication_coalescing scenario")
-
 
 func _on_timeout() -> void:
 	_fail("FAIL: tick-bounded coalescing abuse timed out before reaching deterministic completion")

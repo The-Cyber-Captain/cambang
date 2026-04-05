@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "smoke/verify_case/verify_case_harness.h"
+#include "imaging/broker/provider_broker.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
@@ -1225,6 +1226,221 @@ bool run_synthetic_timeline_host_controls_check() {
   return true;
 }
 
+bool run_broker_timeline_host_surface_check() {
+  if (!ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic).ok()) {
+    std::cout << "SKIP broker timeline host surface: synthetic mode not built\n";
+    return true;
+  }
+
+  RecorderCallbacks cb;
+  ProviderBroker broker;
+  if (!broker.set_runtime_mode_requested(RuntimeMode::synthetic).ok()) {
+    std::cerr << "FAIL broker timeline host surface: synthetic mode request failed\n";
+    return false;
+  }
+  if (!broker.set_synthetic_role_requested(SyntheticRole::Timeline).ok()) {
+    std::cerr << "FAIL broker timeline host surface: synthetic role request failed\n";
+    return false;
+  }
+  if (!broker.set_synthetic_timing_driver_requested(TimingDriver::VirtualTime).ok()) {
+    std::cerr << "FAIL broker timeline host surface: synthetic timing driver request failed\n";
+    return false;
+  }
+  if (!broker.initialize(&cb).ok()) {
+    std::cerr << "FAIL broker timeline host surface: initialize failed\n";
+    return false;
+  }
+  if (broker.synthetic_role_latched() != SyntheticRole::Timeline ||
+      broker.synthetic_timing_driver_latched() != TimingDriver::VirtualTime) {
+    std::cerr << "FAIL broker timeline host surface: latched synthetic config mismatch\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  std::vector<SyntheticScheduledEvent> dispatched;
+  broker.set_synthetic_timeline_request_dispatch_hook(
+      [&](const SyntheticScheduledEvent& ev) { dispatched.push_back(ev); });
+
+  if (!broker.select_timeline_builtin_scenario_for_host("stream_lifecycle_versions").ok()) {
+    std::cerr << "FAIL broker timeline host surface: builtin scenario select failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  // Stage-only behavior: explicit start is still required.
+  if (!broker.advance_timeline_for_host(0).ok()) {
+    std::cerr << "FAIL broker timeline host surface: advance before start failed unexpectedly\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  if (!dispatched.empty()) {
+    std::cerr << "FAIL broker timeline host surface: staged builtin dispatched before explicit start\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  if (!broker.start_timeline_scenario_for_host().ok()) {
+    std::cerr << "FAIL broker timeline host surface: start failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  if (!broker.advance_timeline_for_host(0).ok()) {
+    std::cerr << "FAIL broker timeline host surface: advance after start failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  if (dispatched.size() < 3 ||
+      dispatched[0].type != SyntheticEventType::OpenDevice ||
+      dispatched[1].type != SyntheticEventType::CreateStream ||
+      dispatched[2].type != SyntheticEventType::StartStream) {
+    std::cerr << "FAIL broker timeline host surface: builtin dispatch order mismatch\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  const std::string valid_json = R"JSON(
+{
+  "schema_version": 1,
+  "devices": [{ "key": "cam0", "endpoint_index": 0 }],
+  "streams": [{
+    "key": "stream0",
+    "device_key": "cam0",
+    "intent": "PREVIEW",
+    "capture_profile": {
+      "width": 64,
+      "height": 64,
+      "format_fourcc": 1094862674,
+      "target_fps_min": 30,
+      "target_fps_max": 30
+    }
+  }],
+  "timeline": [
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "cam0" },
+    { "at_ns": 0, "type": "CreateStream", "stream_key": "stream0" },
+    { "at_ns": 0, "type": "StartStream", "stream_key": "stream0" }
+  ]
+}
+)JSON";
+
+  dispatched.clear();
+  if (!broker.load_timeline_canonical_scenario_from_json_text_for_host(valid_json, nullptr).ok()) {
+    std::cerr << "FAIL broker timeline host surface: valid external json load failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  if (!broker.advance_timeline_for_host(0).ok()) {
+    std::cerr << "FAIL broker timeline host surface: advance on staged external scenario failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  if (!dispatched.empty()) {
+    std::cerr << "FAIL broker timeline host surface: external scenario dispatched before explicit start\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  std::string load_error;
+  if (broker.load_timeline_canonical_scenario_from_json_text_for_host("{\"schema_version\":\"bad\"}", &load_error).ok()) {
+    std::cerr << "FAIL broker timeline host surface: strict loader accepted invalid json\n";
+    (void)broker.shutdown();
+    return false;
+  }
+
+  if (!broker.shutdown().ok()) {
+    std::cerr << "FAIL broker timeline host surface: shutdown failed\n";
+    return false;
+  }
+
+  {
+    RecorderCallbacks cb_nominal;
+    ProviderBroker nominal_broker;
+    if (!nominal_broker.set_runtime_mode_requested(RuntimeMode::synthetic).ok()) {
+      std::cerr << "FAIL broker timeline host surface: nominal mode request failed\n";
+      return false;
+    }
+    if (!nominal_broker.set_synthetic_role_requested(SyntheticRole::Nominal).ok()) {
+      std::cerr << "FAIL broker timeline host surface: nominal role request failed\n";
+      return false;
+    }
+    if (!nominal_broker.initialize(&cb_nominal).ok()) {
+      std::cerr << "FAIL broker timeline host surface: nominal broker initialize failed\n";
+      return false;
+    }
+    if (nominal_broker.start_timeline_scenario_for_host().code != ProviderError::ERR_NOT_SUPPORTED ||
+        nominal_broker.load_timeline_canonical_scenario_from_json_text_for_host(valid_json, nullptr).code != ProviderError::ERR_NOT_SUPPORTED) {
+      std::cerr << "FAIL broker timeline host surface: nominal synthetic role must reject timeline host operations\n";
+      (void)nominal_broker.shutdown();
+      return false;
+    }
+    if (!nominal_broker.shutdown().ok()) {
+      std::cerr << "FAIL broker timeline host surface: nominal shutdown failed\n";
+      return false;
+    }
+  }
+
+  {
+    RecorderCallbacks cb_realtime;
+    ProviderBroker realtime_broker;
+    if (!realtime_broker.set_runtime_mode_requested(RuntimeMode::synthetic).ok()) {
+      std::cerr << "FAIL broker timeline host surface: realtime mode request failed\n";
+      return false;
+    }
+    if (!realtime_broker.set_synthetic_role_requested(SyntheticRole::Timeline).ok()) {
+      std::cerr << "FAIL broker timeline host surface: realtime role request failed\n";
+      return false;
+    }
+    if (!realtime_broker.set_synthetic_timing_driver_requested(TimingDriver::RealTime).ok()) {
+      std::cerr << "FAIL broker timeline host surface: realtime timing request failed\n";
+      return false;
+    }
+    if (!realtime_broker.initialize(&cb_realtime).ok()) {
+      std::cerr << "FAIL broker timeline host surface: realtime broker initialize failed\n";
+      return false;
+    }
+    if (realtime_broker.advance_timeline_for_host(0).code != ProviderError::ERR_NOT_SUPPORTED) {
+      std::cerr << "FAIL broker timeline host surface: realtime timing should reject advance_timeline_for_host\n";
+      (void)realtime_broker.shutdown();
+      return false;
+    }
+    if (!realtime_broker.shutdown().ok()) {
+      std::cerr << "FAIL broker timeline host surface: realtime shutdown failed\n";
+      return false;
+    }
+  }
+
+  if (ProviderBroker::check_mode_supported_in_build(RuntimeMode::platform_backed).ok()) {
+    RecorderCallbacks cb_platform;
+    ProviderBroker platform_broker;
+    if (!platform_broker.set_runtime_mode_requested(RuntimeMode::platform_backed).ok()) {
+      std::cerr << "FAIL broker timeline host surface: platform mode request failed\n";
+      return false;
+    }
+    if (!platform_broker.initialize(&cb_platform).ok()) {
+      std::cerr << "FAIL broker timeline host surface: platform broker initialize failed\n";
+      return false;
+    }
+
+    const bool unsupported =
+        platform_broker.select_timeline_builtin_scenario_for_host("stream_lifecycle_versions").code == ProviderError::ERR_NOT_SUPPORTED &&
+        platform_broker.load_timeline_canonical_scenario_from_json_text_for_host(valid_json, nullptr).code == ProviderError::ERR_NOT_SUPPORTED &&
+        platform_broker.start_timeline_scenario_for_host().code == ProviderError::ERR_NOT_SUPPORTED &&
+        platform_broker.stop_timeline_scenario_for_host().code == ProviderError::ERR_NOT_SUPPORTED &&
+        platform_broker.set_timeline_scenario_paused_for_host(true).code == ProviderError::ERR_NOT_SUPPORTED &&
+        platform_broker.advance_timeline_for_host(0).code == ProviderError::ERR_NOT_SUPPORTED;
+    if (!unsupported) {
+      std::cerr << "FAIL broker timeline host surface: unsupported-mode behavior changed\n";
+      (void)platform_broker.shutdown();
+      return false;
+    }
+    if (!platform_broker.shutdown().ok()) {
+      std::cerr << "FAIL broker timeline host surface: platform shutdown failed\n";
+      return false;
+    }
+  }
+
+  return true;
+}
+
 bool run_synthetic_timeline_picture_appearance_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -1347,6 +1563,7 @@ int main(int argc, char** argv) {
   if (!run_synthetic_timeline_scenario_check()) return 1;
   if (!run_synthetic_timeline_invalid_order_check()) return 1;
   if (!run_synthetic_timeline_host_controls_check()) return 1;
+  if (!run_broker_timeline_host_surface_check()) return 1;
   if (!run_synthetic_timeline_picture_appearance_check()) return 1;
   std::cout << "PASS provider_compliance_verify\n";
   return 0;

@@ -14,6 +14,8 @@
 
 #include "imaging/api/icamera_provider.h"
 #include "imaging/broker/mode.h"
+#include "imaging/synthetic/config.h"
+#include "imaging/synthetic/builtin_scenario_library.h"
 #include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
 
@@ -32,6 +34,8 @@ public:
   // Set the requested runtime mode for the next initialize() call.
   // Must be called before initialize(); initialize() latches the mode.
   ProviderResult set_runtime_mode_requested(RuntimeMode mode) noexcept;
+  ProviderResult set_synthetic_role_requested(SyntheticRole role) noexcept;
+  ProviderResult set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept;
 
   const char* provider_name() const override;
 
@@ -79,14 +83,18 @@ public:
   bool try_tick_virtual_time(uint64_t dt_ns);
   ProviderResult set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario);
   ProviderResult set_timeline_canonical_scenario_for_host(const SyntheticCanonicalScenario& scenario);
+  ProviderResult select_timeline_builtin_scenario_for_host(const std::string& scenario_name);
   ProviderResult load_timeline_canonical_scenario_from_json_text_for_host(const std::string& text, std::string* error = nullptr);
   ProviderResult load_timeline_canonical_scenario_from_json_file_for_host(const std::string& path, std::string* error = nullptr);
   ProviderResult start_timeline_scenario_for_host();
   ProviderResult stop_timeline_scenario_for_host();
   ProviderResult set_timeline_scenario_paused_for_host(bool paused);
+  ProviderResult advance_timeline_for_host(uint64_t dt_ns);
   void set_synthetic_timeline_request_dispatch_hook(std::function<void(const SyntheticScheduledEvent&)> hook);
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
+  SyntheticRole synthetic_role_latched() const noexcept { return synthetic_role_latched_; }
+  TimingDriver synthetic_timing_driver_latched() const noexcept { return timing_driver_latched_; }
 
 private:
   ProviderBroker(const ProviderBroker&) = delete;
@@ -102,6 +110,10 @@ private:
 
   RuntimeMode mode_requested_ = RuntimeMode::platform_backed;
   RuntimeMode mode_latched_ = RuntimeMode::platform_backed;
+  SyntheticRole synthetic_role_requested_ = SyntheticRole::Nominal;
+  TimingDriver timing_driver_requested_ = TimingDriver::VirtualTime;
+  SyntheticRole synthetic_role_latched_ = SyntheticRole::Nominal;
+  TimingDriver timing_driver_latched_ = TimingDriver::VirtualTime;
   std::function<void(const SyntheticScheduledEvent&)> synthetic_timeline_request_dispatch_hook_{};
 };
 

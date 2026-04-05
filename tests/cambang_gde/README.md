@@ -37,9 +37,10 @@ godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn -
 ```
 
 Notes:
-- Scenes force provider mode to `synthetic` before `start()`.
-- `61` and `62` instantiate a dev node and trigger existing scenario names via
-  `CamBANGDevNode.start_scenario(name)`.
+- Scenes that need synthetic mode start directly with
+  `CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)`.
+- `61` and `62` stage/start scenarios via `CamBANGServer.select_builtin_scenario(...)`
+  and `CamBANGServer.start_scenario()`.
 - `61` and `62` are bounded-observation verifiers: they watch a short internal observation window
   and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
@@ -61,9 +62,10 @@ This branch now includes:
 The editor dock uses only the public singleton API:
 
 - `CamBANGServer.start()`
+- `CamBANGServer.start(provider_kind[, role[, timing_driver]])`
 - `CamBANGServer.stop()`
-- `CamBANGServer.set_provider_mode()`
-- `CamBANGServer.get_provider_mode()`
+- `CamBANGServer.is_running()`
+- `CamBANGServer.get_active_provider_config()`
 - `CamBANGServer.get_state_snapshot()`
 
 ## Status panel harness

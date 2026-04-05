@@ -225,8 +225,9 @@ if not os.path.isdir(out_dir):
     except OSError:
         pass
 
-# Separate object trees to avoid action collisions between smoke and gde builds.
+# Separate object trees to avoid action collisions between smoke, platform-validate, and gde builds.
 smoke_obj_dir = os.path.join(out_dir, "smoke_obj")
+platform_validate_obj_dir = os.path.join(out_dir, "platform_validate_obj")
 gde_obj_dir = os.path.join(out_dir, "gde_obj")
 
 # ---------------------------------------------------------------------------
@@ -235,6 +236,8 @@ gde_obj_dir = os.path.join(out_dir, "gde_obj")
 if env["smoke"]:
     smoke_env = env.Clone()
     smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
+    if env["synthetic"]:
+        smoke_env.Append(CPPDEFINES=["CAMBANG_ENABLE_SYNTHETIC=1"])
 
     # On MinGW Windows, force console subsystem to avoid WinMain entrypoint.
     if env["platform"] == "windows" and not is_msvc:
@@ -333,6 +336,7 @@ if env["smoke"]:
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
+    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "broker", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
     provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
@@ -358,16 +362,18 @@ if env["platform_validate"]:
     if env["platform"] == "windows" and not is_msvc:
         validate_env.Append(LINKFLAGS=["-mconsole"])
 
-    validate_env.VariantDir(smoke_obj_dir, "src", duplicate=0)
+    # Platform validation compiles many shared src/ files with a different flag set
+    # from smoke tools. Keep a dedicated object tree to avoid SCons action collisions.
+    validate_env.VariantDir(platform_validate_obj_dir, "src", duplicate=0)
 
     runtime_validate_progs = []
     if env["platform"] == "windows":
         windows_validate_sources = []
-        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "platform", "windows", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "core", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "core", "snapshot", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "imaging", "api", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "imaging", "platform", "windows", "*.cpp"))
+        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "pixels", "pattern", "*.cpp"))
         windows_validate_sources += ["src/smoke/windows_mf_runtime_validate.cpp"]
         validate_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
         runtime_validate_progs.append(validate_env.Program(

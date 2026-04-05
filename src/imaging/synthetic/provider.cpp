@@ -862,6 +862,20 @@ ProviderResult SyntheticProvider::set_timeline_scenario_paused_for_host(bool pau
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::advance_timeline_for_host(uint64_t dt_ns) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (cfg_.timing_driver != TimingDriver::VirtualTime) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  advance(dt_ns);
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::shutdown() {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);

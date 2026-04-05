@@ -100,6 +100,22 @@ ProviderResult ProviderBroker::set_runtime_mode_requested(RuntimeMode mode) noex
   return ProviderResult::success();
 }
 
+ProviderResult ProviderBroker::set_synthetic_role_requested(SyntheticRole role) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  synthetic_role_requested_ = role;
+  return ProviderResult::success();
+}
+
+ProviderResult ProviderBroker::set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  timing_driver_requested_ = timing_driver;
+  return ProviderResult::success();
+}
+
 void ProviderBroker::set_synthetic_timeline_request_dispatch_hook(
     std::function<void(const SyntheticScheduledEvent&)> hook) {
   synthetic_timeline_request_dispatch_hook_ = std::move(hook);
@@ -122,6 +138,8 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   // Mode selection is explicit and latched per runtime session.
   // (Server provides the requested mode; broker does not consult env/CLI.)
   mode_latched_ = mode_requested_;
+  synthetic_role_latched_ = synthetic_role_requested_;
+  timing_driver_latched_ = timing_driver_requested_;
 
   // Defensive: re-check build support (mirrors server-side validation).
   ProviderResult cap = check_mode_supported_in_build(mode_latched_);
@@ -133,9 +151,8 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   if (mode_latched_ == RuntimeMode::synthetic) {
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
     SyntheticProviderConfig cfg{};
-    // Defaults: nominal role, virtual_time driver (first landing).
-    cfg.synthetic_role = SyntheticRole::Nominal;
-    cfg.timing_driver = TimingDriver::VirtualTime;
+    cfg.synthetic_role = synthetic_role_latched_;
+    cfg.timing_driver = timing_driver_latched_;
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
     active_ = std::move(syn);
@@ -361,6 +378,42 @@ ProviderResult ProviderBroker::set_timeline_canonical_scenario_for_host(const Sy
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
+ProviderResult ProviderBroker::select_timeline_builtin_scenario_for_host(const std::string& scenario_name) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  SyntheticBuiltinScenarioLibraryId library_id{};
+  if (scenario_name == "stream_lifecycle_versions") {
+    library_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
+  } else if (scenario_name == "topology_change_versions") {
+    library_id = SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions;
+  } else if (scenario_name == "publication_coalescing") {
+    library_id = SyntheticBuiltinScenarioLibraryId::PublicationCoalescing;
+  } else {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  SyntheticCanonicalScenario canonical{};
+  std::string error;
+  if (!build_synthetic_builtin_scenario_library_canonical_scenario(
+          library_id,
+          stream_template().profile,
+          canonical,
+          &error)) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_timeline_scenario_for_host(canonical);
+  }
+#else
+  (void)scenario_name;
+#endif
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
 ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_text_for_host(
     const std::string& text,
     std::string* error) {
@@ -436,6 +489,20 @@ ProviderResult ProviderBroker::set_timeline_scenario_paused_for_host(bool paused
   }
 #endif
   (void)paused;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::advance_timeline_for_host(uint64_t dt_ns) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->advance_timeline_for_host(dt_ns);
+  }
+#endif
+  (void)dt_ns;
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
