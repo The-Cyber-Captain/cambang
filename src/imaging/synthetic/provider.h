@@ -29,6 +29,8 @@ public:
   ~SyntheticProvider() override = default;
 
   const char* provider_name() const override { return "SyntheticProvider"; }
+  ProviderKind provider_kind() const noexcept override { return ProviderKind::synthetic; }
+
 
   StreamTemplate stream_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }

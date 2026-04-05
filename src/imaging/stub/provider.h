@@ -20,6 +20,8 @@ public:
   ~StubProvider() override = default;
 
   const char* provider_name() const override;
+  ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
+
 
   StreamTemplate stream_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }

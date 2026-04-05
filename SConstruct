@@ -264,9 +264,12 @@ if env["smoke"]:
     smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "core")
     smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "core", "snapshot")
     smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "imaging", "api")
-    smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "imaging", "broker")
+    smoke_core_runtime_sources += [os.path.join(smoke_obj_dir, "imaging", "broker", "banner_info.cpp")]
     smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "pixels", "pattern")
     smoke_core_runtime_sources = _unique_sources(smoke_core_runtime_sources)
+
+    smoke_broker_sources = _glob_cpp(smoke_obj_dir, "imaging", "broker")
+    smoke_broker_sources = [s for s in smoke_broker_sources if not str(s).endswith("banner_info.cpp")]
 
     smoke_stub_sources = _glob_cpp(smoke_obj_dir, "imaging", "stub")
     smoke_synthetic_sources = _glob_cpp(smoke_obj_dir, "imaging", "synthetic")
@@ -330,6 +333,7 @@ if env["smoke"]:
     # Deterministic verification-case playback harness.
     verify_case_runner_sources = []
     verify_case_runner_sources += smoke_core_runtime_sources
+    verify_case_runner_sources += smoke_broker_sources
     verify_case_runner_sources += smoke_stub_sources
     verify_case_runner_sources += smoke_synthetic_sources
     verify_case_runner_sources += [
@@ -345,6 +349,7 @@ if env["smoke"]:
     # Provider compliance verification tool.
     provider_verify_sources = []
     provider_verify_sources += smoke_core_runtime_sources
+    provider_verify_sources += smoke_broker_sources
     provider_verify_sources += smoke_stub_sources
     provider_verify_sources += smoke_synthetic_sources
     provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
