@@ -60,6 +60,15 @@ public:
   virtual void on_native_object_destroyed(const NativeObjectDestroyInfo& info) = 0;
 };
 
+
+// Runtime kind exposed for lightweight diagnostics (e.g. banners).
+// This reflects the provider's active runtime truth without exposing broker internals.
+enum class ProviderKind : uint8_t {
+  unknown = 0,
+  platform_backed = 1,
+  synthetic = 2,
+};
+
 // Core-facing provider interface (platform backends implement this).
 class ICameraProvider {
 public:
@@ -67,6 +76,9 @@ public:
 
   // Provider identity (for logs / diagnostics).
   virtual const char* provider_name() const = 0;
+
+  // Provider active kind (for logs / diagnostics).
+  virtual ProviderKind provider_kind() const noexcept = 0;
 
   // Provider default stream template (profile + picture). Core uses this for
   // stream creation-time defaulting.

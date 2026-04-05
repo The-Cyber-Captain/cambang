@@ -54,6 +54,8 @@ public:
   ~WindowsProvider() override;
 
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }
+  ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
+
 
   StreamTemplate stream_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return false; }

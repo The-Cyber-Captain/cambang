@@ -38,6 +38,8 @@ public:
   ProviderResult set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept;
 
   const char* provider_name() const override;
+  ProviderKind provider_kind() const noexcept override;
+
 
   StreamTemplate stream_template() const override;
   bool supports_stream_picture_updates() const noexcept override;

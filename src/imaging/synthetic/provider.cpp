@@ -25,20 +25,6 @@ uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   return (one_sec * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
 }
 
-static bool banners_enabled() noexcept {
-  const char* v = std::getenv("CAMBANG_BANNERS");
-  // Spec: CAMBANG_BANNERS=0 disables banners.
-  return !(v && v[0] == '0' && v[1] == '\0');
-}
-
-static const char* role_to_string(SyntheticRole r) noexcept {
-  switch (r) {
-    case SyntheticRole::Nominal: return "nominal";
-    case SyntheticRole::Timeline: return "timeline";
-  }
-  return "unknown";
-}
-
 } // namespace
 
 SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(cfg) {
@@ -78,11 +64,6 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
-
-  if (banners_enabled()) {
-    std::fprintf(stdout, "[Synthetic] role=%s\n", role_to_string(cfg_.synthetic_role));
-    std::fflush(stdout);
-  }
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Backward-compatibility baseline for Timeline-role synthetic operation:

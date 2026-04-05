@@ -54,6 +54,11 @@ const char* ProviderBroker::provider_name() const {
   return "broker(uninitialized)";
 }
 
+ProviderKind ProviderBroker::provider_kind() const noexcept {
+  return mode_latched_ == RuntimeMode::synthetic ? ProviderKind::synthetic
+                                                  : ProviderKind::platform_backed;
+}
+
 StreamTemplate ProviderBroker::stream_template() const {
   if (active_) {
     return active_->stream_template();

@@ -11,10 +11,13 @@ uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
   if (ts.tick_ns == 0) {
     return 0;
   }
-  if (ts.domain != CaptureTimestampDomain::CORE_MONOTONIC) {
-    return 0;
+  switch (ts.domain) {
+    case CaptureTimestampDomain::CORE_MONOTONIC:
+    case CaptureTimestampDomain::PROVIDER_MONOTONIC:
+      return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
+    default:
+      return 0;
   }
-  return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
 }
 } // namespace
 
