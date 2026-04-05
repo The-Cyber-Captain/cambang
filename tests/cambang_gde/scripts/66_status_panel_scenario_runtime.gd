@@ -9,6 +9,8 @@ func _ready() -> void:
 	if not Engine.has_singleton("CamBANGServer"):
 		push_warning("CamBANGServer singleton not available.")
 		return
+		
+	await get_tree().create_timer(10.0).timeout
 
 	CamBANGServer.stop()
 
