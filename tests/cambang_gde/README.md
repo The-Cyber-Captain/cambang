@@ -23,6 +23,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
     synchronous handler/snapshot consistency, NIL-after-stop, and no stale generation leakage.
   - Expected pass string: `OK: godot public boundary verify PASS`
+- `scenes/66_status_panel_scenario_runtime.tscn`
+  - Server-driven status panel integration proof: starts synthetic timeline mode,
+    selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
+    `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
 
 ## Running
 
@@ -34,6 +38,7 @@ godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse
 godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 1000
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/66_status_panel_scenario_runtime.tscn --quit-after 10
 ```
 
 Notes:
@@ -47,6 +52,9 @@ Notes:
   large value such as `--quit-after 1000`.
 - `60`, `61`, `62`, `63`, and `65` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
+- `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
+  builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
+  for bounded CLI execution.
 
 ## Shared status panel and editor dock
 
