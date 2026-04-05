@@ -107,7 +107,10 @@ func _initialize() -> void:
 		_fail("expected exactly one retained generation [2] after authoritative→NIL transition")
 		return
 
-	var retained_provider_entry: Variant = _find_entry(rendered_model, "retained_presentation/subtree/0/gen_2/provider/100")
+	var retained_provider_entry: Variant = _find_entry(
+		rendered_model,
+		"retained_presentation/prior_authoritative/subtree/0/gen_2/provider/100"
+	)
 	if retained_provider_entry == null:
 		_fail("expected retained continuity provider row after authoritative→NIL transition")
 		return
