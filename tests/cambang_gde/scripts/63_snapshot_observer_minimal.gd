@@ -10,7 +10,10 @@ var _timer: Timer
 
 func _ready() -> void:
 	CamBANGServer.stop()
-	CamBANGServer.set_synthetic_provider(CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	CamBANGServer.start_synthetic_with_role_and_timing(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
 
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -21,7 +24,6 @@ func _ready() -> void:
 
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
-	CamBANGServer.start()
 
 
 func _exit_tree() -> void:

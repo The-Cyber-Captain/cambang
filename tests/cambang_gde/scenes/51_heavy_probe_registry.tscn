@@ -105,15 +105,15 @@ func _print_changed(label: String, keys: Array, prev: Dictionary, curr: Dictiona
 		print(\"    ... (%d more)\" % (keys.size() - limit))
 
 func _input(event):
-	var selection : String = \"\"
 	if event.is_action_pressed(\"request_synthetic_provider\"):
-		selection = \"synthetic\"
+		CamBANGServer.stop()
+		CamBANGServer.start_synthetic_with_role_and_timing(
+			CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+			CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+		)
 	if event.is_action_pressed(\"request_hardware_backed_provider\"):
-		selection = \"platform_backed\"
-		
-	if selection:
-		CamBANGServer.set_provider_mode(selection)
-		#print(\"selection made: %s\" % [selection])
+		CamBANGServer.stop()
+		CamBANGServer.start_platform_backed()
 	if event.is_action_pressed(\"request_server_start\"):
 		CamBANGServer.start()
 		

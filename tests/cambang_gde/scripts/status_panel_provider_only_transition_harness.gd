@@ -7,13 +7,17 @@ class MockServer:
 	signal state_published(gen, version, topology_version)
 
 	var snapshot: Variant = null
-	var provider_mode := "synthetic"
+	var active_provider_config: Variant = {
+		"provider_kind": 1,
+		"synthetic_role": 1,
+		"timing_driver": 1
+	}
 
 	func get_state_snapshot() -> Variant:
 		return snapshot
 
-	func get_provider_mode() -> String:
-		return provider_mode
+	func get_active_provider_config() -> Variant:
+		return active_provider_config
 
 
 func _initialize() -> void:

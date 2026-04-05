@@ -48,21 +48,28 @@ public:
   ~CamBANGServer() override;
 
   // User-facing control of core processing.
-  void start();
+  godot::Error start();
+  godot::Error start_platform_backed();
+  godot::Error start_synthetic();
+  godot::Error start_synthetic_with_role(int role);
+  godot::Error start_synthetic_with_role_and_timing(int role, int timing_driver);
   void stop();
+  bool is_running() const;
 
-  static constexpr int SYNTHETIC_ROLE_NOMINAL = static_cast<int>(SyntheticRole::Nominal);
-  static constexpr int SYNTHETIC_ROLE_TIMELINE = static_cast<int>(SyntheticRole::Timeline);
-  static constexpr int TIMING_DRIVER_REAL_TIME = static_cast<int>(TimingDriver::RealTime);
-  static constexpr int TIMING_DRIVER_VIRTUAL_TIME = static_cast<int>(TimingDriver::VirtualTime);
+  static constexpr int PROVIDER_KIND_PLATFORM_BACKED = 0;
+  static constexpr int PROVIDER_KIND_SYNTHETIC = 1;
 
-  godot::Error set_platform_backed_provider();
-  godot::Error set_synthetic_provider(int role, int timing_driver);
+  static constexpr int SYNTHETIC_ROLE_NOMINAL = 0;
+  static constexpr int SYNTHETIC_ROLE_TIMELINE = 1;
+  static constexpr int TIMING_DRIVER_REAL_TIME = 0;
+  static constexpr int TIMING_DRIVER_VIRTUAL_TIME = 1;
+
+  godot::Variant get_active_provider_config() const;
 
   godot::Error select_builtin_scenario(const godot::String& scenario_name);
   godot::Error load_external_scenario(const godot::String& json_text);
-  godot::Error start_timeline();
-  godot::Error stop_timeline();
+  godot::Error start_scenario();
+  godot::Error stop_scenario();
   godot::Error set_timeline_paused(bool paused);
   godot::Error advance_timeline(uint64_t dt_ns);
 
@@ -131,16 +138,18 @@ private:
   uint64_t accepted_min_gen_ = 0;
 
   void _ensure_tick_connected();
-  bool _ensure_provider_attached_and_initialized();
+  godot::Error _start_with_provider_config(
+      RuntimeMode mode,
+      SyntheticRole synthetic_role,
+      TimingDriver timing_driver);
+  bool _ensure_provider_attached_and_initialized(
+      RuntimeMode mode,
+      SyntheticRole synthetic_role,
+      TimingDriver timing_driver);
 
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
-
-  RuntimeMode provider_mode_requested_ = RuntimeMode::platform_backed;
-  SyntheticRole synthetic_role_requested_ = SyntheticRole::Nominal;
-  TimingDriver timing_driver_requested_ = TimingDriver::VirtualTime;
-  bool provider_mode_busy_logged_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.

@@ -449,6 +449,15 @@ func _refresh_from_server() -> void:
 		return
 
 	var provider_mode := "unknown"
+	if _server.has_method("get_active_provider_config"):
+		var cfg: Variant = _server.get_active_provider_config()
+		if typeof(cfg) == TYPE_DICTIONARY:
+			var d: Dictionary = cfg
+			var provider_kind := int(d.get("provider_kind", -1))
+			if provider_kind == _server.PROVIDER_KIND_PLATFORM_BACKED:
+				provider_mode = "platform_backed"
+			elif provider_kind == _server.PROVIDER_KIND_SYNTHETIC:
+				provider_mode = "synthetic"
 	_provider_mode_value.text = provider_mode
 	var snapshot := _fetch_snapshot()
 	var reading := _read_snapshot(snapshot)

@@ -161,7 +161,8 @@ func _refresh_from_server() -> void:
 
 	var snapshot: Variant = server.get_state_snapshot()
 	var has_snapshot := typeof(snapshot) == TYPE_DICTIONARY
-	var state := _derive_ui_state(has_snapshot)
+	var running := bool(server.is_running())
+	var state := _derive_ui_state(running, has_snapshot)
 
 	match state:
 		UI_STATE_RUNNING:
@@ -188,14 +189,14 @@ func _refresh_from_server() -> void:
 	_message_label.text = _state_message(state)
 
 
-func _derive_ui_state(has_snapshot: bool) -> String:
-	if has_snapshot:
+func _derive_ui_state(running: bool, has_snapshot: bool) -> String:
+	if running and has_snapshot:
 		_transition_pending = TRANSITION_NONE
 		return UI_STATE_RUNNING
+	if running:
+		return UI_STATE_STARTING
 
 	match _transition_pending:
-		TRANSITION_STARTING:
-			return UI_STATE_STARTING
 		TRANSITION_STOPPING:
 			_transition_pending = TRANSITION_NONE
 			return UI_STATE_STOPPED
@@ -227,9 +228,22 @@ func _on_start_pressed() -> void:
 		return
 
 	_transition_pending = TRANSITION_STARTING
-	server.start()
+	var selected_mode := _provider_mode_option.get_item_text(_provider_mode_option.selected)
+	var err: int = ERR_INVALID_PARAMETER
+	if selected_mode == "platform_backed":
+		err = server.start_platform_backed()
+	elif selected_mode == "synthetic_timeline_virtual_time":
+		err = server.start_synthetic_with_role_and_timing(
+			server.SYNTHETIC_ROLE_TIMELINE,
+			server.TIMING_DRIVER_VIRTUAL_TIME
+		)
+	else:
+		err = server.start()
 	_refresh_from_server()
-	_message_label.text = "Start requested; waiting for baseline snapshot."
+	if err == OK:
+		_message_label.text = "Start requested; waiting for baseline snapshot."
+	else:
+		_message_label.text = "Start request rejected with error %d." % err
 
 
 func _on_stop_pressed() -> void:
@@ -257,16 +271,4 @@ func _on_provider_mode_selected(index: int) -> void:
 		return
 
 	var selected_mode := _provider_mode_option.get_item_text(index)
-	var err: int = ERR_INVALID_PARAMETER
-	if selected_mode == "platform_backed":
-		err = server.set_platform_backed_provider()
-	elif selected_mode == "synthetic_timeline_virtual_time":
-		err = server.set_synthetic_provider(
-			server.SYNTHETIC_ROLE_TIMELINE,
-			server.TIMING_DRIVER_VIRTUAL_TIME
-		)
-	if err == OK:
-		_message_label.text = "Provider configuration set via CamBANGServer typed provider API."
-	else:
-		_message_label.text = "Provider configuration change rejected with error %d. Stop the server before changing provider configuration." % err
-	_refresh_from_server()
+	_message_label.text = "Selected start provider mode: %s. Press Start Server to apply." % selected_mode

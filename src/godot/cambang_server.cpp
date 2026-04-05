@@ -70,6 +70,14 @@ static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexce
   }
 }
 
+static int runtime_mode_to_provider_kind_int(RuntimeMode mode) noexcept {
+  switch (mode) {
+    case RuntimeMode::platform_backed: return CamBANGServer::PROVIDER_KIND_PLATFORM_BACKED;
+    case RuntimeMode::synthetic: return CamBANGServer::PROVIDER_KIND_SYNTHETIC;
+    default: return CamBANGServer::PROVIDER_KIND_PLATFORM_BACKED;
+  }
+}
+
 } // namespace
 
 CamBANGServer::CamBANGServer() {
@@ -90,13 +98,55 @@ CamBANGServer::~CamBANGServer() {
   }
 }
 
-void CamBANGServer::start() {
+godot::Error CamBANGServer::start() {
+  return start_platform_backed();
+}
+
+godot::Error CamBANGServer::start_platform_backed() {
+  return _start_with_provider_config(
+      RuntimeMode::platform_backed,
+      SyntheticRole::Nominal,
+      TimingDriver::VirtualTime);
+}
+
+godot::Error CamBANGServer::start_synthetic() {
+  return _start_with_provider_config(
+      RuntimeMode::synthetic,
+      SyntheticRole::Nominal,
+      TimingDriver::VirtualTime);
+}
+
+godot::Error CamBANGServer::start_synthetic_with_role(int role) {
+  return start_synthetic_with_role_and_timing(role, TIMING_DRIVER_VIRTUAL_TIME);
+}
+
+godot::Error CamBANGServer::start_synthetic_with_role_and_timing(int role, int timing_driver) {
+  SyntheticRole parsed_role{};
+  if (!parse_synthetic_role_int(role, parsed_role)) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: start_synthetic_with_role_and_timing rejected; unknown synthetic role value '%d'.",
+        role));
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  TimingDriver parsed_timing_driver{};
+  if (!parse_timing_driver_int(timing_driver, parsed_timing_driver)) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: start_synthetic_with_role_and_timing rejected; unknown timing driver value '%d'.",
+        timing_driver));
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  return _start_with_provider_config(RuntimeMode::synthetic, parsed_role, parsed_timing_driver);
+}
+
+godot::Error CamBANGServer::_start_with_provider_config(
+    RuntimeMode mode,
+    SyntheticRole synthetic_role,
+    TimingDriver timing_driver) {
   const CoreRuntimeState state = runtime_.state_copy();
   if (state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE) {
-    // CoreRuntime::start() is already idempotent for active sessions. Mirror that
-    // at the Godot boundary so redundant start() calls do not clear the currently
-    // latched snapshot/counters before the no-op runtime call returns.
-    return;
+    return godot::ERR_BUSY;
   }
 
   // New session starts with no Godot-latched snapshot until first publish.
@@ -119,12 +169,12 @@ void CamBANGServer::start() {
 
   // Defensive re-check: requested mode must be supported in this build.
   {
-    ProviderResult cap = ProviderBroker::check_mode_supported_in_build(provider_mode_requested_);
+    ProviderResult cap = ProviderBroker::check_mode_supported_in_build(mode);
     if (!cap.ok()) {
       ERR_PRINT(godot::vformat(
           "CamBANGServer: cannot start; requested provider_mode='%s' is not supported in this build.",
-          mode_to_cstr(provider_mode_requested_)));
-      return;
+          mode_to_cstr(mode)));
+      return map_provider_result_to_godot_error(cap);
     }
   }
 
@@ -136,7 +186,10 @@ void CamBANGServer::start() {
 
   // Ensure a provider is attached + initialized (latched selection).
   // This is the canonical linkage point between Godot and the core runtime.
-  (void)_ensure_provider_attached_and_initialized();
+  if (!_ensure_provider_attached_and_initialized(mode, synthetic_role, timing_driver)) {
+    return godot::FAILED;
+  }
+  return godot::OK;
 }
 
 void CamBANGServer::stop() {
@@ -169,9 +222,11 @@ void CamBANGServer::stop() {
   last_seen_published_seq_ = runtime_.published_seq();
   active_session_id_ = 0;
   enforce_min_gen_gate_ = false;
+}
 
-  // Allow a fresh "busy" log once per live session.
-  provider_mode_busy_logged_ = false;
+bool CamBANGServer::is_running() const {
+  const CoreRuntimeState state = runtime_.state_copy();
+  return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
 }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
@@ -315,61 +370,26 @@ godot::Variant CamBANGServer::get_state_snapshot() const {
   }
   return latest_export_;
 }
-godot::Error CamBANGServer::set_platform_backed_provider() {
-  // Provider mode is latched per runtime session; changes require STOPPED.
-  if (runtime_.is_running()) {
-    if (!provider_mode_busy_logged_) {
-      ERR_PRINT("CamBANGServer: provider configuration rejected; server is LIVE. Stop the server before changing provider configuration.");
-      provider_mode_busy_logged_ = true;
-    }
-    return godot::ERR_BUSY;
+
+godot::Variant CamBANGServer::get_active_provider_config() const {
+  if (!runtime_.is_running()) {
+    return godot::Variant();
   }
-
-  ProviderResult cap = ProviderBroker::check_mode_supported_in_build(RuntimeMode::platform_backed);
-  if (!cap.ok()) {
-    ERR_PRINT("CamBANGServer: set_platform_backed_provider() rejected; platform-backed mode is not supported in this build.");
-    return map_provider_result_to_godot_error(cap);
+  const ProviderBroker* broker = dynamic_cast<const ProviderBroker*>(provider_.get());
+  if (!broker) {
+    return godot::Variant();
   }
-
-  provider_mode_requested_ = RuntimeMode::platform_backed;
-  return godot::OK;
-}
-
-godot::Error CamBANGServer::set_synthetic_provider(int role, int timing_driver) {
-  if (runtime_.is_running()) {
-    if (!provider_mode_busy_logged_) {
-      ERR_PRINT("CamBANGServer: provider configuration rejected; server is LIVE. Stop the server before changing provider configuration.");
-      provider_mode_busy_logged_ = true;
-    }
-    return godot::ERR_BUSY;
+  godot::Dictionary d;
+  const RuntimeMode mode = broker->runtime_mode_latched();
+  d["provider_kind"] = runtime_mode_to_provider_kind_int(mode);
+  if (mode == RuntimeMode::synthetic) {
+    d["synthetic_role"] = static_cast<int>(broker->synthetic_role_latched());
+    d["timing_driver"] = static_cast<int>(broker->synthetic_timing_driver_latched());
+  } else {
+    d["synthetic_role"] = godot::Variant();
+    d["timing_driver"] = godot::Variant();
   }
-
-  SyntheticRole parsed_role{};
-  if (!parse_synthetic_role_int(role, parsed_role)) {
-    ERR_PRINT(godot::vformat(
-        "CamBANGServer: set_synthetic_provider rejected; unknown synthetic role value '%d'.",
-        role));
-    return godot::ERR_INVALID_PARAMETER;
-  }
-
-  TimingDriver parsed_timing_driver{};
-  if (!parse_timing_driver_int(timing_driver, parsed_timing_driver)) {
-    ERR_PRINT(godot::vformat(
-        "CamBANGServer: set_synthetic_provider rejected; unknown timing driver value '%d'.",
-        timing_driver));
-    return godot::ERR_INVALID_PARAMETER;
-  }
-
-  ProviderResult cap = ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic);
-  if (!cap.ok()) {
-    ERR_PRINT("CamBANGServer: set_synthetic_provider() rejected; synthetic mode is not supported in this build.");
-    return map_provider_result_to_godot_error(cap);
-  }
-
-  provider_mode_requested_ = RuntimeMode::synthetic;
-  synthetic_role_requested_ = parsed_role;
-  timing_driver_requested_ = parsed_timing_driver;
-  return godot::OK;
+  return d;
 }
 
 godot::Error CamBANGServer::select_builtin_scenario(const godot::String& scenario_name) {
@@ -394,7 +414,7 @@ godot::Error CamBANGServer::load_external_scenario(const godot::String& json_tex
       broker->load_timeline_canonical_scenario_from_json_text_for_host(text_utf8));
 }
 
-godot::Error CamBANGServer::start_timeline() {
+godot::Error CamBANGServer::start_scenario() {
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -403,7 +423,7 @@ godot::Error CamBANGServer::start_timeline() {
   return map_provider_result_to_godot_error(broker->start_timeline_scenario_for_host());
 }
 
-godot::Error CamBANGServer::stop_timeline() {
+godot::Error CamBANGServer::stop_scenario() {
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -430,7 +450,10 @@ godot::Error CamBANGServer::advance_timeline(uint64_t dt_ns) {
   return map_provider_result_to_godot_error(broker->advance_timeline_for_host(dt_ns));
 }
 
-bool CamBANGServer::_ensure_provider_attached_and_initialized() {
+bool CamBANGServer::_ensure_provider_attached_and_initialized(
+    RuntimeMode mode,
+    SyntheticRole synthetic_role,
+    TimingDriver timing_driver) {
   if (!runtime_.is_running()) {
     return false;
   }
@@ -440,24 +463,24 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
     return true;
   }
 
-  // Fresh broker per start cycle (latched provider_mode).
+  // Fresh broker per start cycle (latched provider configuration).
   {
     auto broker = std::make_unique<ProviderBroker>();
     broker->set_synthetic_timeline_request_dispatch_hook(
         make_synthetic_timeline_request_dispatch_hook(runtime_));
-    ProviderResult sr = broker->set_runtime_mode_requested(provider_mode_requested_);
+    ProviderResult sr = broker->set_runtime_mode_requested(mode);
     if (!sr.ok()) {
       ERR_PRINT(godot::vformat(
           "CamBANGServer: provider_mode='%s' is not supported in this build.",
-          mode_to_cstr(provider_mode_requested_)));
+          mode_to_cstr(mode)));
       return false;
     }
-    ProviderResult role_req = broker->set_synthetic_role_requested(synthetic_role_requested_);
+    ProviderResult role_req = broker->set_synthetic_role_requested(synthetic_role);
     if (!role_req.ok()) {
       ERR_PRINT("CamBANGServer: requested synthetic role configuration rejected by provider broker.");
       return false;
     }
-    ProviderResult timing_req = broker->set_synthetic_timing_driver_requested(timing_driver_requested_);
+    ProviderResult timing_req = broker->set_synthetic_timing_driver_requested(timing_driver);
     if (!timing_req.ok()) {
       ERR_PRINT("CamBANGServer: requested synthetic timing_driver configuration rejected by provider broker.");
       return false;
@@ -484,13 +507,19 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized() {
 }
 void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGServer::start);
+  godot::ClassDB::bind_method(godot::D_METHOD("start_platform_backed"), &CamBANGServer::start_platform_backed);
+  godot::ClassDB::bind_method(godot::D_METHOD("start_synthetic"), &CamBANGServer::start_synthetic);
+  godot::ClassDB::bind_method(godot::D_METHOD("start_synthetic_with_role", "role"), &CamBANGServer::start_synthetic_with_role);
+  godot::ClassDB::bind_method(
+      godot::D_METHOD("start_synthetic_with_role_and_timing", "role", "timing_driver"),
+      &CamBANGServer::start_synthetic_with_role_and_timing);
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGServer::stop);
-  godot::ClassDB::bind_method(godot::D_METHOD("set_platform_backed_provider"), &CamBANGServer::set_platform_backed_provider);
-  godot::ClassDB::bind_method(godot::D_METHOD("set_synthetic_provider", "role", "timing_driver"), &CamBANGServer::set_synthetic_provider);
+  godot::ClassDB::bind_method(godot::D_METHOD("is_running"), &CamBANGServer::is_running);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_active_provider_config"), &CamBANGServer::get_active_provider_config);
   godot::ClassDB::bind_method(godot::D_METHOD("select_builtin_scenario", "scenario_name"), &CamBANGServer::select_builtin_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("load_external_scenario", "json_text"), &CamBANGServer::load_external_scenario);
-  godot::ClassDB::bind_method(godot::D_METHOD("start_timeline"), &CamBANGServer::start_timeline);
-  godot::ClassDB::bind_method(godot::D_METHOD("stop_timeline"), &CamBANGServer::stop_timeline);
+  godot::ClassDB::bind_method(godot::D_METHOD("start_scenario"), &CamBANGServer::start_scenario);
+  godot::ClassDB::bind_method(godot::D_METHOD("stop_scenario"), &CamBANGServer::stop_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
@@ -498,6 +527,8 @@ void CamBANGServer::_bind_methods() {
   // Internal tick hook (connected to SceneTree.process_frame).
   godot::ClassDB::bind_method(godot::D_METHOD("_on_godot_process_frame"), &CamBANGServer::_on_godot_process_frame);
 
+  BIND_CONSTANT(PROVIDER_KIND_PLATFORM_BACKED);
+  BIND_CONSTANT(PROVIDER_KIND_SYNTHETIC);
   BIND_CONSTANT(SYNTHETIC_ROLE_NOMINAL);
   BIND_CONSTANT(SYNTHETIC_ROLE_TIMELINE);
   BIND_CONSTANT(TIMING_DRIVER_REAL_TIME);

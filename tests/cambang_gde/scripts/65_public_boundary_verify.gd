@@ -21,14 +21,54 @@ func _ready() -> void:
 	if CamBANGServer.has_method("set_provider_mode") or CamBANGServer.has_method("get_provider_mode"):
 		_fail("FAIL: legacy string provider-mode API should not be present on CamBANGServer")
 		return
-	if not CamBANGServer.has_method("set_platform_backed_provider"):
-		_fail("FAIL: CamBANGServer.set_platform_backed_provider() missing")
+	if CamBANGServer.has_method("set_platform_backed_provider") or CamBANGServer.has_method("set_synthetic_provider"):
+		_fail("FAIL: removed stopped-time provider configuration setters should not be present")
 		return
-	if not CamBANGServer.has_method("set_synthetic_provider"):
-		_fail("FAIL: CamBANGServer.set_synthetic_provider() missing")
+	if not CamBANGServer.has_method("start_platform_backed"):
+		_fail("FAIL: CamBANGServer.start_platform_backed() missing")
+		return
+	if not CamBANGServer.has_method("start_synthetic"):
+		_fail("FAIL: CamBANGServer.start_synthetic() missing")
+		return
+	if not CamBANGServer.has_method("start_synthetic_with_role"):
+		_fail("FAIL: CamBANGServer.start_synthetic_with_role() missing")
+		return
+	if not CamBANGServer.has_method("start_synthetic_with_role_and_timing"):
+		_fail("FAIL: CamBANGServer.start_synthetic_with_role_and_timing() missing")
+		return
+	if not CamBANGServer.has_method("is_running"):
+		_fail("FAIL: CamBANGServer.is_running() missing")
+		return
+	if not CamBANGServer.has_method("stop"):
+		_fail("FAIL: CamBANGServer.stop() missing")
+		return
+	if not CamBANGServer.has_method("get_state_snapshot"):
+		_fail("FAIL: CamBANGServer.get_state_snapshot() missing")
+		return
+	if not CamBANGServer.has_method("get_active_provider_config"):
+		_fail("FAIL: CamBANGServer.get_active_provider_config() missing")
+		return
+	if not CamBANGServer.has_method("select_builtin_scenario"):
+		_fail("FAIL: CamBANGServer.select_builtin_scenario() missing")
+		return
+	if not CamBANGServer.has_method("load_external_scenario"):
+		_fail("FAIL: CamBANGServer.load_external_scenario() missing")
+		return
+	if not CamBANGServer.has_method("start_scenario") or not CamBANGServer.has_method("stop_scenario"):
+		_fail("FAIL: CamBANGServer scenario start/stop API missing")
+		return
+	if not CamBANGServer.has_method("set_timeline_paused") or not CamBANGServer.has_method("advance_timeline"):
+		_fail("FAIL: CamBANGServer timeline control API missing")
 		return
 
-	var invalid_role_err := CamBANGServer.set_synthetic_provider(
+	if CamBANGServer.is_running():
+		_fail("FAIL: stop() must leave server not running")
+		return
+	if CamBANGServer.get_active_provider_config() != null:
+		_fail("FAIL: stopped server must report NIL active provider config")
+		return
+
+	var invalid_role_err := CamBANGServer.start_synthetic_with_role_and_timing(
 		9999,
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
 	)
@@ -36,7 +76,7 @@ func _ready() -> void:
 		_fail("FAIL: invalid synthetic role must return ERR_INVALID_PARAMETER")
 		return
 
-	var invalid_timing_err := CamBANGServer.set_synthetic_provider(
+	var invalid_timing_err := CamBANGServer.start_synthetic_with_role_and_timing(
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
 		9999
 	)
@@ -44,12 +84,29 @@ func _ready() -> void:
 		_fail("FAIL: invalid timing driver must return ERR_INVALID_PARAMETER")
 		return
 
-	var set_synth_err := CamBANGServer.set_synthetic_provider(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
-	if set_synth_err != OK:
-		_fail("FAIL: set_synthetic_provider(TIMELINE, VIRTUAL_TIME) rejected while stopped")
+	var platform_start_err := CamBANGServer.start()
+	if platform_start_err != OK:
+		_fail("FAIL: start() default platform-backed failed")
+		return
+	if not CamBANGServer.is_running():
+		_fail("FAIL: start() must set is_running() true")
+		return
+	var platform_cfg = CamBANGServer.get_active_provider_config()
+	if typeof(platform_cfg) != TYPE_DICTIONARY:
+		_fail("FAIL: running platform-backed start must expose Dictionary active config")
+		return
+	if int(platform_cfg.get("provider_kind", -1)) != CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED:
+		_fail("FAIL: platform-backed active config must report provider_kind=PLATFORM_BACKED")
+		return
+	if platform_cfg.get("synthetic_role", "not_null") != null or platform_cfg.get("timing_driver", "not_null") != null:
+		_fail("FAIL: platform-backed active config must report null synthetic fields")
+		return
+	CamBANGServer.stop()
+	if CamBANGServer.is_running():
+		_fail("FAIL: stop() must set is_running() false")
+		return
+	if CamBANGServer.get_active_provider_config() != null:
+		_fail("FAIL: active provider config must be NIL after stop()")
 		return
 
 	print("RUN: godot public boundary verify")
@@ -68,16 +125,42 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
 
-	CamBANGServer.start()
+	var set_synth_start_err := CamBANGServer.start_synthetic_with_role_and_timing(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
+	if set_synth_start_err != OK:
+		_fail("FAIL: start_synthetic_with_role_and_timing(TIMELINE, VIRTUAL_TIME) rejected")
+		return
+	if not CamBANGServer.is_running():
+		_fail("FAIL: synthetic start must set is_running() true")
+		return
 
-	var busy_reconfig_err := CamBANGServer.set_platform_backed_provider()
-	if busy_reconfig_err != ERR_BUSY:
-		_fail("FAIL: running reconfiguration must return ERR_BUSY")
+	var synth_cfg = CamBANGServer.get_active_provider_config()
+	if typeof(synth_cfg) != TYPE_DICTIONARY:
+		_fail("FAIL: running synthetic start must expose Dictionary active config")
+		return
+	if int(synth_cfg.get("provider_kind", -1)) != CamBANGServer.PROVIDER_KIND_SYNTHETIC:
+		_fail("FAIL: synthetic active config must report provider_kind=SYNTHETIC")
+		return
+	if int(synth_cfg.get("synthetic_role", -1)) != CamBANGServer.SYNTHETIC_ROLE_TIMELINE:
+		_fail("FAIL: synthetic active config must report TIMELINE role")
+		return
+	if int(synth_cfg.get("timing_driver", -1)) != CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME:
+		_fail("FAIL: synthetic active config must report VIRTUAL_TIME timing driver")
 		return
 
 	var timeline_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
 	if timeline_stage_err != OK:
 		_fail("FAIL: timeline builtin staging should be available after Timeline-role synthetic configuration")
+		return
+	var start_scenario_err := CamBANGServer.start_scenario()
+	if start_scenario_err != OK:
+		_fail("FAIL: start_scenario() should accept staged builtin scenario")
+		return
+	var stop_scenario_err := CamBANGServer.stop_scenario()
+	if stop_scenario_err != OK:
+		_fail("FAIL: stop_scenario() should stop staged scenario")
 		return
 
 	if CamBANGServer.get_state_snapshot() != null:
@@ -149,11 +232,26 @@ func _restart_and_assert_nil() -> void:
 		return
 
 	CamBANGServer.stop()
+	if CamBANGServer.is_running():
+		_fail("FAIL: is_running() must be false after completed stop()")
+		return
+	if CamBANGServer.get_active_provider_config() != null:
+		_fail("FAIL: get_active_provider_config() must be NIL after completed stop()")
+		return
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: get_state_snapshot() must be NIL after completed stop()")
 		return
 
-	CamBANGServer.start()
+	var restart_err := CamBANGServer.start_synthetic_with_role_and_timing(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
+	if restart_err != OK:
+		_fail("FAIL: restart synthetic start rejected")
+		return
+	if not CamBANGServer.is_running():
+		_fail("FAIL: is_running() must be true during restarted pre-baseline window")
+		return
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: stale prior-generation snapshot leaked before next generation baseline")
 		return

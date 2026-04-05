@@ -11,7 +11,6 @@ var _quit_requested := false
 var _timer: Timer
 var _first_publish_timer: Timer
 var _observation_timer: Timer
-var _dev_node: CamBANGDevNode
 var _cached_snapshot: Dictionary
 var _cached_version := -1
 var _cached_stream_count := -1
@@ -22,7 +21,21 @@ var _observation_started := false
 func _ready() -> void:
 	set_process(true)
 	CamBANGServer.stop()
-	CamBANGServer.set_synthetic_provider(CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	var start_err := CamBANGServer.start_synthetic_with_role_and_timing(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
+	if start_err != OK:
+		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
+		return
+	var stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
+	if stage_err != OK:
+		_fail("FAIL: unable to stage stream_lifecycle_versions scenario")
+		return
+	var scenario_start_err := CamBANGServer.start_scenario()
+	if scenario_start_err != OK:
+		_fail("FAIL: unable to start stream_lifecycle_versions scenario")
+		return
 	print("RUN: godot snapshot polling/immutability abuse")
 
 	_timer = Timer.new()
@@ -47,22 +60,6 @@ func _ready() -> void:
 
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
-
-	CamBANGServer.start()
-	_dev_node = CamBANGDevNode.new()
-	add_child(_dev_node)
-	call_deferred("_start_scenario_after_ready")
-
-
-func _start_scenario_after_ready() -> void:
-	if _done:
-		return
-	if _dev_node == null or not is_instance_valid(_dev_node):
-		_fail("FAIL: dev node unavailable before scenario start")
-		return
-	if not _dev_node.start_scenario("stream_lifecycle_versions"):
-		_fail("FAIL: unable to start stream_lifecycle_versions scenario")
-
 
 func _process(_delta: float) -> void:
 	if _done:

@@ -17,7 +17,10 @@ func _ready() -> void:
 	_log_current_scene_identity("ready")
 
 	CamBANGServer.stop()
-	CamBANGServer.set_synthetic_provider(CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	CamBANGServer.start_synthetic_with_role_and_timing(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
 
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -30,7 +33,10 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_initial_publish):
 		CamBANGServer.state_published.connect(_on_initial_publish)
 
-	CamBANGServer.start()
+	CamBANGServer.start_synthetic_with_role_and_timing(
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
 
 
 func _on_timeout() -> void:
