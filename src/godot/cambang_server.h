@@ -47,15 +47,6 @@ public:
   CamBANGServer();
   ~CamBANGServer() override;
 
-  // User-facing control of core processing.
-  godot::Error start();
-  godot::Error start_platform_backed();
-  godot::Error start_synthetic();
-  godot::Error start_synthetic_with_role(int role);
-  godot::Error start_synthetic_with_role_and_timing(int role, int timing_driver);
-  void stop();
-  bool is_running() const;
-
   static constexpr int PROVIDER_KIND_PLATFORM_BACKED = 0;
   static constexpr int PROVIDER_KIND_SYNTHETIC = 1;
 
@@ -63,6 +54,14 @@ public:
   static constexpr int SYNTHETIC_ROLE_TIMELINE = 1;
   static constexpr int TIMING_DRIVER_REAL_TIME = 0;
   static constexpr int TIMING_DRIVER_VIRTUAL_TIME = 1;
+
+  // User-facing control of core processing.
+  godot::Error start(
+      int provider_kind = PROVIDER_KIND_PLATFORM_BACKED,
+      int role = SYNTHETIC_ROLE_NOMINAL,
+      int timing_driver = TIMING_DRIVER_VIRTUAL_TIME);
+  void stop();
+  bool is_running() const;
 
   godot::Variant get_active_provider_config() const;
 

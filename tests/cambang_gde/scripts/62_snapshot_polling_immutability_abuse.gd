@@ -21,10 +21,7 @@ var _observation_started := false
 func _ready() -> void:
 	set_process(true)
 	CamBANGServer.stop()
-	var start_err := CamBANGServer.start_synthetic_with_role_and_timing(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
+	var start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	if start_err != OK:
 		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
 		return

@@ -17,10 +17,7 @@ func _ready() -> void:
 	_log_current_scene_identity("ready")
 
 	CamBANGServer.stop()
-	CamBANGServer.start_synthetic_with_role_and_timing(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 
 	_timer = Timer.new()
 	_timer.one_shot = true
@@ -33,10 +30,7 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_initial_publish):
 		CamBANGServer.state_published.connect(_on_initial_publish)
 
-	CamBANGServer.start_synthetic_with_role_and_timing(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 
 
 func _on_timeout() -> void:
@@ -69,7 +63,7 @@ func _do_restart_assertions() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_post_restart_publish):
 		CamBANGServer.state_published.connect(_on_post_restart_publish)
 
-	CamBANGServer.start()
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: pre-baseline snapshot visible after restart")
 		return

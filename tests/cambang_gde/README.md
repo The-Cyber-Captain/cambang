@@ -38,7 +38,7 @@ godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn -
 
 Notes:
 - Scenes that need synthetic mode start directly with
-  `CamBANGServer.start_synthetic_with_role_and_timing(TIMELINE, VIRTUAL_TIME)`.
+  `CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)`.
 - `61` and `62` stage/start scenarios via `CamBANGServer.select_builtin_scenario(...)`
   and `CamBANGServer.start_scenario()`.
 - `61` and `62` are bounded-observation verifiers: they watch a short internal observation window
@@ -62,8 +62,7 @@ This branch now includes:
 The editor dock uses only the public singleton API:
 
 - `CamBANGServer.start()`
-- `CamBANGServer.start_platform_backed()`
-- `CamBANGServer.start_synthetic_with_role_and_timing(role, timing_driver)`
+- `CamBANGServer.start(provider_kind[, role[, timing_driver]])`
 - `CamBANGServer.stop()`
 - `CamBANGServer.is_running()`
 - `CamBANGServer.get_active_provider_config()`

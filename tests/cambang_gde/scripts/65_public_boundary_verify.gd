@@ -24,17 +24,11 @@ func _ready() -> void:
 	if CamBANGServer.has_method("set_platform_backed_provider") or CamBANGServer.has_method("set_synthetic_provider"):
 		_fail("FAIL: removed stopped-time provider configuration setters should not be present")
 		return
-	if not CamBANGServer.has_method("start_platform_backed"):
-		_fail("FAIL: CamBANGServer.start_platform_backed() missing")
+	if not CamBANGServer.has_method("start"):
+		_fail("FAIL: CamBANGServer.start() missing")
 		return
-	if not CamBANGServer.has_method("start_synthetic"):
-		_fail("FAIL: CamBANGServer.start_synthetic() missing")
-		return
-	if not CamBANGServer.has_method("start_synthetic_with_role"):
-		_fail("FAIL: CamBANGServer.start_synthetic_with_role() missing")
-		return
-	if not CamBANGServer.has_method("start_synthetic_with_role_and_timing"):
-		_fail("FAIL: CamBANGServer.start_synthetic_with_role_and_timing() missing")
+	if CamBANGServer.has_method("start_platform_backed") or CamBANGServer.has_method("start_synthetic") or CamBANGServer.has_method("start_synthetic_with_role") or CamBANGServer.has_method("start_synthetic_with_role_and_timing"):
+		_fail("FAIL: compact start-family expected; helper proliferation should be absent")
 		return
 	if not CamBANGServer.has_method("is_running"):
 		_fail("FAIL: CamBANGServer.is_running() missing")
@@ -68,18 +62,12 @@ func _ready() -> void:
 		_fail("FAIL: stopped server must report NIL active provider config")
 		return
 
-	var invalid_role_err := CamBANGServer.start_synthetic_with_role_and_timing(
-		9999,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
+	var invalid_role_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, 9999, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	if invalid_role_err != ERR_INVALID_PARAMETER:
 		_fail("FAIL: invalid synthetic role must return ERR_INVALID_PARAMETER")
 		return
 
-	var invalid_timing_err := CamBANGServer.start_synthetic_with_role_and_timing(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		9999
-	)
+	var invalid_timing_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, 9999)
 	if invalid_timing_err != ERR_INVALID_PARAMETER:
 		_fail("FAIL: invalid timing driver must return ERR_INVALID_PARAMETER")
 		return
@@ -109,6 +97,29 @@ func _ready() -> void:
 		_fail("FAIL: active provider config must be NIL after stop()")
 		return
 
+	var synthetic_default_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
+	if synthetic_default_err != OK:
+		_fail("FAIL: start(SYNTHETIC) should default to NOMINAL + VIRTUAL_TIME")
+		return
+	var synth_default_cfg = CamBANGServer.get_active_provider_config()
+	if int(synth_default_cfg.get("synthetic_role", -1)) != CamBANGServer.SYNTHETIC_ROLE_NOMINAL or int(synth_default_cfg.get("timing_driver", -1)) != CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME:
+		_fail("FAIL: start(SYNTHETIC) default config mismatch")
+		return
+	CamBANGServer.stop()
+
+	var synthetic_role_default_timing_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE
+	)
+	if synthetic_role_default_timing_err != OK:
+		_fail("FAIL: start(SYNTHETIC, role) should default timing to VIRTUAL_TIME")
+		return
+	var synth_role_default_cfg = CamBANGServer.get_active_provider_config()
+	if int(synth_role_default_cfg.get("synthetic_role", -1)) != CamBANGServer.SYNTHETIC_ROLE_TIMELINE or int(synth_role_default_cfg.get("timing_driver", -1)) != CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME:
+		_fail("FAIL: start(SYNTHETIC, role) default timing mismatch")
+		return
+	CamBANGServer.stop()
+
 	print("RUN: godot public boundary verify")
 
 	if CamBANGServer.get_state_snapshot() != null:
@@ -125,15 +136,18 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
 
-	var set_synth_start_err := CamBANGServer.start_synthetic_with_role_and_timing(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
+	var set_synth_start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	if set_synth_start_err != OK:
-		_fail("FAIL: start_synthetic_with_role_and_timing(TIMELINE, VIRTUAL_TIME) rejected")
+		_fail("FAIL: start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, TIMELINE, VIRTUAL_TIME) rejected")
 		return
 	if not CamBANGServer.is_running():
 		_fail("FAIL: synthetic start must set is_running() true")
+		return
+	if CamBANGServer.start() != ERR_ALREADY_IN_USE:
+		_fail("FAIL: start() re-entry must return ERR_ALREADY_IN_USE while running")
+		return
+	if CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME) != ERR_ALREADY_IN_USE:
+		_fail("FAIL: synthetic start re-entry must return ERR_ALREADY_IN_USE while running")
 		return
 
 	var synth_cfg = CamBANGServer.get_active_provider_config()
@@ -242,10 +256,7 @@ func _restart_and_assert_nil() -> void:
 		_fail("FAIL: get_state_snapshot() must be NIL after completed stop()")
 		return
 
-	var restart_err := CamBANGServer.start_synthetic_with_role_and_timing(
-		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-	)
+	var restart_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	if restart_err != OK:
 		_fail("FAIL: restart synthetic start rejected")
 		return

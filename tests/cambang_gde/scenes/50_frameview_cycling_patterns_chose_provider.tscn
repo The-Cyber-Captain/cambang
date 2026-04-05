@@ -41,13 +41,10 @@ func _on_state_published(gen, version, topology_ver):
 func _input(event):
 	if event.is_action_pressed(\"request_synthetic_provider\"):
 		CamBANGServer.stop()
-		CamBANGServer.start_synthetic_with_role_and_timing(
-			CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-			CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
-		)
+		CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
 	if event.is_action_pressed(\"request_hardware_backed_provider\"):
 		CamBANGServer.stop()
-		CamBANGServer.start_platform_backed()
+		CamBANGServer.start(CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED)
 	if event.is_action_pressed(\"request_server_start\"):
 		CamBANGServer.start()
 		

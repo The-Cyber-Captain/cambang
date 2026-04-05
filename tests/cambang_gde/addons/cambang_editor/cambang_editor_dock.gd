@@ -231,12 +231,9 @@ func _on_start_pressed() -> void:
 	var selected_mode := _provider_mode_option.get_item_text(_provider_mode_option.selected)
 	var err: int = ERR_INVALID_PARAMETER
 	if selected_mode == "platform_backed":
-		err = server.start_platform_backed()
+		err = server.start(server.PROVIDER_KIND_PLATFORM_BACKED)
 	elif selected_mode == "synthetic_timeline_virtual_time":
-		err = server.start_synthetic_with_role_and_timing(
-			server.SYNTHETIC_ROLE_TIMELINE,
-			server.TIMING_DRIVER_VIRTUAL_TIME
-		)
+		err = server.start(server.PROVIDER_KIND_SYNTHETIC, server.SYNTHETIC_ROLE_TIMELINE, server.TIMING_DRIVER_VIRTUAL_TIME)
 	else:
 		err = server.start()
 	_refresh_from_server()
