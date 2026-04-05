@@ -72,6 +72,23 @@ func _ready() -> void:
 		_fail("FAIL: invalid timing driver must return ERR_INVALID_PARAMETER")
 		return
 
+	var invalid_platform_with_role_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED,
+		CamBANGServer.SYNTHETIC_ROLE_NOMINAL
+	)
+	if invalid_platform_with_role_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: start(PLATFORM_BACKED, role) must return ERR_INVALID_PARAMETER")
+		return
+
+	var invalid_platform_with_role_and_timing_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED,
+		CamBANGServer.SYNTHETIC_ROLE_NOMINAL,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+	)
+	if invalid_platform_with_role_and_timing_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: start(PLATFORM_BACKED, role, timing_driver) must return ERR_INVALID_PARAMETER")
+		return
+
 	var platform_start_err := CamBANGServer.start()
 	if platform_start_err != OK:
 		_fail("FAIL: start() default platform-backed failed")

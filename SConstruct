@@ -225,13 +225,27 @@ if not os.path.isdir(out_dir):
     except OSError:
         pass
 
-# Separate object trees to avoid action collisions between smoke, platform-validate, and gde builds.
+# Separate object trees to avoid action collisions between smoke, platform validation,
+# and gde builds.
 smoke_obj_dir = os.path.join(out_dir, "smoke_obj")
 platform_validate_obj_dir = os.path.join(out_dir, "platform_validate_obj")
 gde_obj_dir = os.path.join(out_dir, "gde_obj")
 
+def _glob_cpp(obj_dir, *parts):
+    return Glob(os.path.join(obj_dir, *parts, "*.cpp"))
+
+def _unique_sources(seq):
+    seen = set()
+    out = []
+    for item in seq:
+        key = str(item)
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
 # ---------------------------------------------------------------------------
-# Core smoke executable (opt-in; stub-provider-only)
+# Core smoke executables / deterministic verifiers (alias: smoke)
 # ---------------------------------------------------------------------------
 if env["smoke"]:
     smoke_env = env.Clone()
@@ -243,29 +257,36 @@ if env["smoke"]:
     if env["platform"] == "windows" and not is_msvc:
         smoke_env.Append(LINKFLAGS=["-mconsole"])
 
-    # Compile sources via a variant dir so smoke objects don't collide with gde objects.
+    # A single compile environment owns the smoke object tree.
     smoke_env.VariantDir(smoke_obj_dir, "src", duplicate=0)
 
-    smoke_sources = []
-    smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    smoke_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    smoke_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    smoke_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    smoke_core_runtime_sources = []
+    smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "core")
+    smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "core", "snapshot")
+    smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "imaging", "api")
+    smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "imaging", "broker")
+    smoke_core_runtime_sources += _glob_cpp(smoke_obj_dir, "pixels", "pattern")
+    smoke_core_runtime_sources = _unique_sources(smoke_core_runtime_sources)
 
-    # Optional stub-provider integration for smoke.
+    smoke_stub_sources = _glob_cpp(smoke_obj_dir, "imaging", "stub")
+    smoke_synthetic_sources = _glob_cpp(smoke_obj_dir, "imaging", "synthetic")
+
+    runtime_smoke_sources = list(smoke_core_runtime_sources)
     if env["provider"] == "stub":
         smoke_env.Append(CPPDEFINES=["CAMBANG_SMOKE_WITH_STUB_PROVIDER=1"])
-        smoke_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
+        runtime_smoke_sources += smoke_stub_sources
+    runtime_smoke_sources = _unique_sources(runtime_smoke_sources)
 
     core_smoke_prog = smoke_env.Program(
         target=os.path.join(out_dir, "core_spine_smoke"),
-        source=smoke_sources + ["src/smoke/core_spine_smoke.cpp"],
+        source=runtime_smoke_sources + ["src/smoke/core_spine_smoke.cpp"],
     )
 
     # Pattern renderer microbenchmark (isolated smoke tool).
     pattern_bench_sources = []
-    pattern_bench_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    pattern_bench_sources += _glob_cpp(smoke_obj_dir, "pixels", "pattern")
     pattern_bench_sources += ["src/smoke/pattern_render_bench.cpp"]
+    pattern_bench_sources = _unique_sources(pattern_bench_sources)
     pattern_bench_prog = smoke_env.Program(
         target=os.path.join(out_dir, "pattern_render_bench"),
         source=pattern_bench_sources,
@@ -273,12 +294,10 @@ if env["smoke"]:
 
     # Deterministic SyntheticProvider Timeline verification tool.
     synthetic_verify_sources = []
-    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    synthetic_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    synthetic_verify_sources += smoke_core_runtime_sources
+    synthetic_verify_sources += smoke_synthetic_sources
     synthetic_verify_sources += ["src/smoke/synthetic_timeline_verify.cpp"]
+    synthetic_verify_sources = _unique_sources(synthetic_verify_sources)
     synthetic_verify_prog = smoke_env.Program(
         target=os.path.join(out_dir, "synthetic_timeline_verify"),
         source=synthetic_verify_sources,
@@ -286,11 +305,9 @@ if env["smoke"]:
 
     # Phase 3 snapshot/native-object/publication verifier.
     phase3_verify_sources = []
-    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    phase3_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    phase3_verify_sources += smoke_core_runtime_sources
     phase3_verify_sources += ["src/smoke/phase3_snapshot_verify.cpp"]
+    phase3_verify_sources = _unique_sources(phase3_verify_sources)
     phase3_verify_prog = smoke_env.Program(
         target=os.path.join(out_dir, "phase3_snapshot_verify"),
         source=phase3_verify_sources,
@@ -298,15 +315,13 @@ if env["smoke"]:
 
     # Deterministic restart boundary verifier (NIL-before-baseline contract).
     restart_boundary_verify_sources = []
-    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
-    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    restart_boundary_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    restart_boundary_verify_sources += smoke_core_runtime_sources
+    restart_boundary_verify_sources += smoke_stub_sources
+    restart_boundary_verify_sources += smoke_synthetic_sources
     restart_boundary_verify_sources += [
         "src/smoke/restart_boundary_verify.cpp",
     ]
+    restart_boundary_verify_sources = _unique_sources(restart_boundary_verify_sources)
     restart_boundary_verify_prog = smoke_env.Program(
         target=os.path.join(out_dir, "restart_boundary_verify"),
         source=restart_boundary_verify_sources,
@@ -314,39 +329,43 @@ if env["smoke"]:
 
     # Deterministic verification-case playback harness.
     verify_case_runner_sources = []
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "broker", "*.cpp"))
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    verify_case_runner_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    verify_case_runner_sources += smoke_core_runtime_sources
+    verify_case_runner_sources += smoke_stub_sources
+    verify_case_runner_sources += smoke_synthetic_sources
     verify_case_runner_sources += [
         "src/smoke/verify_case/verify_case_catalog.cpp",
         "src/smoke/verify_case_runner.cpp",
     ]
+    verify_case_runner_sources = _unique_sources(verify_case_runner_sources)
     verify_case_runner_prog = smoke_env.Program(
         target=os.path.join(out_dir, "verify_case_runner"),
         source=verify_case_runner_sources,
     )
 
     # Provider compliance verification tool.
-    # Keep dependencies aligned with synthetic_timeline_verify smoke wiring.
     provider_verify_sources = []
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "core", "snapshot", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "api", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "broker", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "stub", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "imaging", "synthetic", "*.cpp"))
-    provider_verify_sources += Glob(os.path.join(smoke_obj_dir, "pixels", "pattern", "*.cpp"))
+    provider_verify_sources += smoke_core_runtime_sources
+    provider_verify_sources += smoke_stub_sources
+    provider_verify_sources += smoke_synthetic_sources
     provider_verify_sources += ["src/smoke/provider_compliance_verify.cpp"]
+    provider_verify_sources = _unique_sources(provider_verify_sources)
     provider_verify_prog = smoke_env.Program(
         target=os.path.join(out_dir, "provider_compliance_verify"),
         source=provider_verify_sources,
     )
 
-    smoke_alias = Alias("smoke", [core_smoke_prog, pattern_bench_prog, synthetic_verify_prog, phase3_verify_prog, verify_case_runner_prog, provider_verify_prog, restart_boundary_verify_prog])
+    smoke_alias = Alias(
+        "smoke",
+        [
+            core_smoke_prog,
+            pattern_bench_prog,
+            synthetic_verify_prog,
+            phase3_verify_prog,
+            verify_case_runner_prog,
+            provider_verify_prog,
+            restart_boundary_verify_prog,
+        ],
+    )
     AlwaysBuild(smoke_alias)
 else:
     smoke_alias = Alias("smoke", [])
@@ -362,19 +381,20 @@ if env["platform_validate"]:
     if env["platform"] == "windows" and not is_msvc:
         validate_env.Append(LINKFLAGS=["-mconsole"])
 
-    # Platform validation compiles many shared src/ files with a different flag set
-    # from smoke tools. Keep a dedicated object tree to avoid SCons action collisions.
+    # Platform validation owns a separate object tree so it can diverge in
+    # provider/platform compile flags without colliding with smoke objects.
     validate_env.VariantDir(platform_validate_obj_dir, "src", duplicate=0)
 
     runtime_validate_progs = []
     if env["platform"] == "windows":
         windows_validate_sources = []
-        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "core", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "core", "snapshot", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "imaging", "api", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "imaging", "platform", "windows", "*.cpp"))
-        windows_validate_sources += Glob(os.path.join(platform_validate_obj_dir, "pixels", "pattern", "*.cpp"))
+        windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "core")
+        windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "core", "snapshot")
+        windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "imaging", "api")
+        windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "imaging", "platform", "windows")
+        windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "pixels", "pattern")
         windows_validate_sources += ["src/smoke/windows_mf_runtime_validate.cpp"]
+        windows_validate_sources = _unique_sources(windows_validate_sources)
         validate_env.Append(LIBS=["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"])
         runtime_validate_progs.append(validate_env.Program(
             target=os.path.join(out_dir, "windows_mf_runtime_validate"),

@@ -10,6 +10,8 @@
 
 #include <utility>
 
+#include "imaging/broker/banner_info.h"
+
 namespace cambang {
 
 namespace {
@@ -184,7 +186,7 @@ void CoreRuntime::on_core_timer_tick() {
   const uint64_t now_ns = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
-  // Banner 2: Core-loop provider attachment (latched, effective).
+  // Banner 2: Core-loop provider attachment (effective runtime attachment).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
   if (!provider_banner_printed_ && banners_enabled()) {
     if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
@@ -194,19 +196,20 @@ void CoreRuntime::on_core_timer_tick() {
       if (smoke_printed_process.exchange(true)) {
         provider_banner_printed_ = true;
       } else {
-      const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
-                                  "[CamBANG][Core] provider attached (latched): %s / %s",
-                                  "platform_backed", prov->provider_name());
-      (void)n;
-      std::fprintf(stdout, "%s\n", core_banner_line_);
-      std::fflush(stdout);
-      core_banner_line_pending_.store(true, std::memory_order_release);
-      provider_banner_printed_ = true;
+        const ProviderBannerInfo bi = describe_provider_for_banner(prov);
+        const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
+                                    "[CamBANG][Core] provider attached: %s / %s",
+                                    bi.provider_mode, bi.provider_name);
+        (void)n;
+        std::fprintf(stdout, "%s\n", core_banner_line_);
+        std::fflush(stdout);
+        core_banner_line_pending_.store(true, std::memory_order_release);
+        provider_banner_printed_ = true;
       }
 #else
       const ProviderBannerInfo bi = describe_provider_for_banner(prov);
       const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
-                                  "[CamBANG][Core] provider attached (latched): %s / %s",
+                                  "[CamBANG][Core] provider attached: %s / %s",
                                   bi.provider_mode, bi.provider_name);
       (void)n;
       std::fprintf(stdout, "%s\n", core_banner_line_);
