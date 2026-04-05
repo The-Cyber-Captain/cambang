@@ -1841,6 +1841,10 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
       error = "synthetic virtual time tick not consumed";
       return false;
     }
+    // IMPORTANT: callers validating progression relative to a captured baseline
+    // must provide a delta predicate (e.g., `after > before` checks). Absolute
+    // predicates can be satisfied by already-coalesced snapshots before the
+    // intended post-event progression is actually observed.
     return wait_until_poll([&]() {
       runtime.request_publish();
       auto snap = snapshot_buffer.snapshot_copy();
@@ -1945,6 +1949,11 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   const uint64_t frames_before_update = stream_before_update->frames_received;
   const uint64_t ts_before_update = stream_before_update->last_frame_ts_ns;
 
+  // Step 3 is a DELTA check relative to the captured baseline above:
+  // require both frame-count and timestamp progression after the authored
+  // update-phase advance. Absolute thresholds (e.g. frames_received >= 2) are
+  // incorrect here because a pre-existing/coalesced snapshot may already satisfy
+  // them before post-update progression is observable.
   if (!advance_and_snapshot(period_ns * 2, [&](const CamBANGStateSnapshot& s) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return stream &&
