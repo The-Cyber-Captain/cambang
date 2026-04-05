@@ -396,6 +396,7 @@ if env["platform_validate"]:
         windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "core")
         windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "core", "snapshot")
         windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "imaging", "api")
+        windows_validate_sources += [os.path.join(platform_validate_obj_dir, "imaging", "broker", "banner_info.cpp")]
         windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "imaging", "platform", "windows")
         windows_validate_sources += _glob_cpp(platform_validate_obj_dir, "pixels", "pattern")
         windows_validate_sources += ["src/smoke/windows_mf_runtime_validate.cpp"]
