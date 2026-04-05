@@ -1947,7 +1947,10 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
 
   if (!advance_and_snapshot(period_ns * 2, [&](const CamBANGStateSnapshot& s) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
-        return stream && stream->frames_received >= 2 && stream->mode == CBStreamMode::FLOWING;
+        return stream &&
+               stream->mode == CBStreamMode::FLOWING &&
+               stream->frames_received > frames_before_update &&
+               stream->last_frame_ts_ns > ts_before_update;
       }, "timed out waiting for post-update frame")) {
     cleanup();
     cli::error("FAIL: ", error);
@@ -1969,6 +1972,10 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   if (stream_after_update->frames_received <= frames_before_update ||
       stream_after_update->last_frame_ts_ns <= ts_before_update) {
     cleanup();
+    cli::error("step 3 detail: frames_before=", frames_before_update,
+               " frames_after=", stream_after_update->frames_received,
+               " ts_before=", ts_before_update,
+               " ts_after=", stream_after_update->last_frame_ts_ns);
     fail_step(3, "post-update frame progression missing");
     return 1;
   }
