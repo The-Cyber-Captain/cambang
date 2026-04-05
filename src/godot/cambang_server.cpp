@@ -101,9 +101,9 @@ CamBANGServer::~CamBANGServer() {
 godot::Error CamBANGServer::start(const godot::Variant& provider_kind_arg,
                                   const godot::Variant& role_arg,
                                   const godot::Variant& timing_driver_arg) {
-  const bool has_provider_kind = !provider_kind_arg.is_nil();
-  const bool has_role = !role_arg.is_nil();
-  const bool has_timing_driver = !timing_driver_arg.is_nil();
+  const bool has_provider_kind = provider_kind_arg.get_type() != godot::Variant::NIL;
+  const bool has_role = role_arg.get_type() != godot::Variant::NIL;
+  const bool has_timing_driver = timing_driver_arg.get_type() != godot::Variant::NIL;
 
   int provider_kind = PROVIDER_KIND_PLATFORM_BACKED;
   if (has_provider_kind) {
