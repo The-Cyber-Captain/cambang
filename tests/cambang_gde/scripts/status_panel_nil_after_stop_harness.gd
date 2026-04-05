@@ -2,13 +2,19 @@ extends SceneTree
 
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
 
+var _window: Window = null
+var _panel: Node = null
+var _server: Node = null
+
 class MockServer:
 	extends Node
 	signal state_published(gen, version, topology_version)
+	const PROVIDER_KIND_PLATFORM_BACKED := 0
+	const PROVIDER_KIND_SYNTHETIC := 1
 
 	var snapshot: Variant = null
 	var active_provider_config: Variant = {
-		"provider_kind": 1,
+		"provider_kind": PROVIDER_KIND_SYNTHETIC,
 		"synthetic_role": 1,
 		"timing_driver": 1
 	}
@@ -21,12 +27,12 @@ class MockServer:
 
 
 func _initialize() -> void:
-	var window := Window.new()
-	window.title = "status_panel_nil_after_stop_harness"
-	window.size = DEFAULT_VIEWPORT_SIZE
-	window.mode = Window.MODE_WINDOWED
-	window.visible = true
-	get_root().add_child(window)
+	_window = Window.new()
+	_window.title = "status_panel_nil_after_stop_harness"
+	_window.size = DEFAULT_VIEWPORT_SIZE
+	_window.mode = Window.MODE_WINDOWED
+	_window.visible = true
+	get_root().add_child(_window)
 
 	var panel_script: Variant = load("res://addons/cambang/cambang_status_panel.gd")
 	if panel_script == null or not (panel_script is GDScript):
@@ -38,12 +44,14 @@ func _initialize() -> void:
 		_fail("failed to instantiate status panel")
 		return
 
+	_panel = panel
 	panel.name = "CamBANGStatusPanel"
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	window.add_child(panel)
+	_window.add_child(panel)
 
 	var server := MockServer.new()
+	_server = server
 	server.name = "MockCamBANGServer"
 	get_root().add_child(server)
 
@@ -65,9 +73,17 @@ func _initialize() -> void:
 		_fail("panel remained authoritative after boundary snapshot became NIL")
 		return
 
-	var snapshot_state_label: Label = panel.get("_snapshot_state_value")
-	if snapshot_state_label == null or snapshot_state_label.text.find("No snapshot") == -1:
-		_fail("panel did not update snapshot state label to NIL/no snapshot")
+	var schema_value_label: Label = panel.get("_schema_version_value")
+	if schema_value_label == null or schema_value_label.text != "-":
+		_fail("panel did not clear schema-version display after NIL/no snapshot")
+		return
+	var timestamp_value_label: Label = panel.get("_timestamp_value")
+	if timestamp_value_label == null or not timestamp_value_label.text.begins_with("- "):
+		_fail("panel did not clear timestamp display after NIL/no snapshot")
+		return
+	var last_snapshot_meta: Dictionary = panel.get("_last_snapshot_meta")
+	if not last_snapshot_meta.is_empty():
+		_fail("panel did not clear last snapshot metadata after NIL/no snapshot")
 		return
 
 	var rendered_model: Variant = panel.get("_last_panel_model")
@@ -91,18 +107,21 @@ func _initialize() -> void:
 		_fail("expected exactly one retained generation [2] after authoritative→NIL transition")
 		return
 
-	var retained_provider_entry: Variant = _find_entry(rendered_model, "retained_presentation/subtree/0/gen_2/provider/100")
+	var retained_provider_entry: Variant = _find_entry(
+		rendered_model,
+		"retained_presentation/prior_authoritative/subtree/0/gen_2/provider/100"
+	)
 	if retained_provider_entry == null:
 		_fail("expected retained continuity provider row after authoritative→NIL transition")
 		return
 	if not _entry_has_badge(retained_provider_entry, "continuity-only"):
 		_fail("retained continuity provider row missing continuity-only badge")
 		return
-	if not _entry_info_contains(retained_provider_entry, "continuity only"):
+	if not _entry_info_contains(retained_provider_entry, "Continuity-only retained view"):
 		_fail("retained continuity provider row missing continuity-only wording")
 		return
-	if not _entry_info_contains(retained_provider_entry, "panel-local"):
-		_fail("retained continuity provider row missing panel-local wording")
+	if not _entry_info_contains(retained_provider_entry, "copied from a previously rendered authoritative panel"):
+		_fail("retained continuity provider row missing retained-provenance wording")
 		return
 	if not _entry_info_contains(retained_provider_entry, "not active snapshot truth"):
 		_fail("retained continuity provider row missing not-active-snapshot-truth wording")
@@ -143,7 +162,7 @@ func _initialize() -> void:
 		return
 
 	print("OK: status panel retained lifecycle reconciliation PASS")
-	quit(0)
+	_quit_with_cleanup(0)
 
 
 func _refresh_panel_with_snapshot(panel: Variant, server: MockServer, snapshot: Variant) -> void:
@@ -273,4 +292,14 @@ func _entry_info_contains(entry: Variant, needle: String) -> bool:
 func _fail(message: String) -> void:
 	push_error(message)
 	printerr(message)
-	quit(1)
+	_quit_with_cleanup(1)
+
+
+func _quit_with_cleanup(code: int) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		_panel.queue_free()
+	if _server != null and is_instance_valid(_server):
+		_server.queue_free()
+	if _window != null and is_instance_valid(_window):
+		_window.queue_free()
+	quit(code)
