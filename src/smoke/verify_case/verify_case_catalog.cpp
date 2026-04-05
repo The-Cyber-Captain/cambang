@@ -1798,7 +1798,6 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: enumerate_endpoints failed");
     return 1;
   }
-  runtime.retain_device_identity(VerifyCaseHarness::kDeviceId, eps[0].hardware_id);
 
   const StreamTemplate st = broker.stream_template();
   const uint32_t fps_num = st.profile.target_fps_max != 0 ? st.profile.target_fps_max : st.profile.target_fps_min;
@@ -1810,6 +1809,20 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   const uint64_t period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps_num);
+
+  bool broker_initialized = true;
+  bool provider_attached = true;
+  auto cleanup = [&]() {
+    if (broker_initialized) {
+      (void)broker.shutdown();
+      broker_initialized = false;
+    }
+    if (provider_attached) {
+      runtime.attach_provider(nullptr);
+      provider_attached = false;
+    }
+    runtime.stop();
+  };
 
   auto snapshot_now = [&]() -> std::shared_ptr<const CamBANGStateSnapshot> {
     runtime.request_publish();
@@ -1868,20 +1881,24 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   scenario.timeline.push_back({period_ns * 4 + 2, SyntheticEventType::CloseDevice, "cam0", "", false, {}});
 
   if (!broker.set_timeline_canonical_scenario_for_host(scenario).ok()) {
+    cleanup();
     cli::error("FAIL: canonical explicit-lifecycle submission rejected");
     return 1;
   }
   if (!broker.start_timeline_scenario_for_host().ok()) {
+    cleanup();
     cli::error("FAIL: canonical explicit-lifecycle start rejected");
     return 1;
   }
 
   auto snap_before = snapshot_now();
   if (!snap_before) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
   if (!snap_before->devices.empty() || !snap_before->streams.empty()) {
+    cleanup();
     fail_step(0, "snapshot truth violated before timeline execution");
     return 1;
   }
@@ -1890,6 +1907,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return VerifyCaseHarness::has_device(s, 10001) && stream && stream->mode == CBStreamMode::FLOWING;
       }, "timed out waiting for explicit lifecycle open/create/start")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1898,6 +1916,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
       dispatched[0].type != SyntheticEventType::OpenDevice ||
       dispatched[1].type != SyntheticEventType::CreateStream ||
       dispatched[2].type != SyntheticEventType::StartStream) {
+    cleanup();
     fail_step(1, "explicit lifecycle ordering/path mismatch (expected Open/Create before Start)");
     return 1;
   }
@@ -1906,17 +1925,20 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return stream && stream->frames_received >= 1;
       }, "timed out waiting for first frame")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
 
   auto snap_after_first_frame = snapshot_buffer.snapshot_copy();
   if (!snap_after_first_frame) {
+    cleanup();
     fail_step(2, "snapshot missing after first emit");
     return 1;
   }
   const auto* stream_before_update = VerifyCaseHarness::find_stream(*snap_after_first_frame, 30001);
   if (!stream_before_update) {
+    cleanup();
     fail_step(2, "stream missing after first emit");
     return 1;
   }
@@ -1927,22 +1949,26 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return stream && stream->frames_received >= 2 && stream->mode == CBStreamMode::FLOWING;
       }, "timed out waiting for post-update frame")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
 
   auto snap_after_update = snapshot_buffer.snapshot_copy();
   if (!snap_after_update) {
+    cleanup();
     fail_step(3, "snapshot missing after update emit");
     return 1;
   }
   const auto* stream_after_update = VerifyCaseHarness::find_stream(*snap_after_update, 30001);
   if (!stream_after_update) {
+    cleanup();
     fail_step(3, "stream missing after update emit");
     return 1;
   }
   if (stream_after_update->frames_received <= frames_before_update ||
       stream_after_update->last_frame_ts_ns <= ts_before_update) {
+    cleanup();
     fail_step(3, "post-update frame progression missing");
     return 1;
   }
@@ -1955,18 +1981,21 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return stream && stream->mode == CBStreamMode::STOPPED;
       }, "timed out waiting for stop")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
   if (!advance_and_snapshot(1, [&](const CamBANGStateSnapshot& s) {
         return !VerifyCaseHarness::has_stream(s, 30001);
       }, "timed out waiting for destroy")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
   if (!advance_and_snapshot(1, [&](const CamBANGStateSnapshot& s) {
         return !VerifyCaseHarness::has_device(s, 10001);
       }, "timed out waiting for close")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1978,17 +2007,22 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     }
   }
   if (emitframe_dispatched != 0) {
+    cleanup();
     fail_step(4, "EmitFrame crossed Core request dispatch boundary");
     return 1;
   }
 
   if (!broker.shutdown().ok()) {
+    broker_initialized = false;
     runtime.attach_provider(nullptr);
+    provider_attached = false;
     runtime.stop();
     cli::error("FAIL: broker shutdown failed");
     return 1;
   }
+  broker_initialized = false;
   runtime.attach_provider(nullptr);
+  provider_attached = false;
   runtime.stop();
 
   cli::line("Verification case PASSED");
