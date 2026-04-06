@@ -296,6 +296,14 @@ Examples:
 The purpose is to preserve truthful ownership boundaries in the registry
 and published snapshot.
 
+This is a provider/runtime truthfulness rule. It does **not** by itself
+forbid future Core/playback orchestration decisions at a higher layer.
+No such orchestration is implemented by the current runtime.
+
+Current direction under discussion (future-only, non-normative) is
+strictly reduction-facing if introduced at all (close/destroy-facing),
+not implicit upward realization (`open/create/start`).
+
 ### 9.2 Shutdown is different
 
 During provider shutdown, ordered internal teardown is allowed so the

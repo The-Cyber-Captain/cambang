@@ -187,6 +187,12 @@ This is the primary maintainer check for provider-contract rules such as:
 - deterministic shutdown sequencing
 - synthetic ordering and timeline invariants
 
+It also includes a completion-aware primitive lifecycle check for the
+synthetic runtime/provider path that validates `OpenDevice` →
+`CreateStream` → `StartStream` → `StopStream` → `DestroyStream` →
+`CloseDevice` with authoritative completion gating between destructive
+steps.
+
 ### What it does not do
 
 It deliberately does **not**:
