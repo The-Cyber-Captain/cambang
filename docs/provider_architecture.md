@@ -300,7 +300,7 @@ This is a provider/runtime truthfulness rule. It does **not** by itself
 forbid future Core/playback orchestration decisions at a higher layer.
 No such orchestration is implemented by the current runtime.
 
-Current direction under discussion (future-only, non-normative) is
+Future work may consider (future-only, non-normative)
 strictly reduction-facing if introduced at all (close/destroy-facing),
 not implicit upward realization (`open/create/start`).
 

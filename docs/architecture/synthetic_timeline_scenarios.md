@@ -201,7 +201,7 @@ Under strict semantics, those later operations may then fail truthfully. This re
 
 No new playback policy is implemented by this clarification.
 
-Any future work on this issue, if adopted later, must stay within the single scenario model and is currently only under consideration for **reduction-facing** teardown handling (close/destroy facing), not implicit upward realization (`OpenDevice` / `CreateStream` / `StartStream`).
+Any future work on this issue, if adopted later, must stay within the single scenario model and may be considered in future for **reduction-facing** teardown handling (close/destroy facing), not implicit upward realization (`OpenDevice` / `CreateStream` / `StartStream`).
 
 ---
 
