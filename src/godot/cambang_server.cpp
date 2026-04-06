@@ -484,6 +484,16 @@ godot::Error CamBANGServer::advance_timeline(uint64_t dt_ns) {
   return map_provider_result_to_godot_error(broker->advance_timeline_for_host(dt_ns));
 }
 
+godot::Error CamBANGServer::set_completion_gated_destructive_sequencing_enabled(bool enabled) {
+  ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
+  if (!broker) {
+    return map_provider_result_to_godot_error(
+        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
+  }
+  return map_provider_result_to_godot_error(
+      broker->set_completion_gated_destructive_sequencing_for_host(enabled));
+}
+
 bool CamBANGServer::_ensure_provider_attached_and_initialized(
     RuntimeMode mode,
     SyntheticRole synthetic_role,
@@ -555,6 +565,9 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("stop_scenario"), &CamBANGServer::stop_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
+  godot::ClassDB::bind_method(
+      godot::D_METHOD("set_completion_gated_destructive_sequencing_enabled", "enabled"),
+      &CamBANGServer::set_completion_gated_destructive_sequencing_enabled);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
 
   // Internal tick hook (connected to SceneTree.process_frame).

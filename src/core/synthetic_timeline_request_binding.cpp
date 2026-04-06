@@ -45,9 +45,16 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
     }
     case SyntheticEventType::CloseDevice: {
       const TryCloseDeviceStatus rc = runtime.try_close_device(ev.device_instance_id);
+      timeline_teardown_trace_emit("dispatched CloseDevice device_instance_id=%llu",
+                                   static_cast<unsigned long long>(ev.device_instance_id));
       timeline_teardown_trace_emit("submit CloseDevice device_instance_id=%llu rc=%s",
                                    static_cast<unsigned long long>(ev.device_instance_id),
                                    close_status_cstr(rc));
+      if (rc != TryCloseDeviceStatus::OK) {
+        timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=submit_%s",
+                                     static_cast<unsigned long long>(ev.device_instance_id),
+                                     close_status_cstr(rc));
+      }
       break;
     }
     case SyntheticEventType::CreateStream:
@@ -61,9 +68,16 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       break;
     case SyntheticEventType::DestroyStream: {
       const TryDestroyStreamStatus rc = runtime.try_destroy_stream(ev.stream_id);
+      timeline_teardown_trace_emit("dispatched DestroyStream stream_id=%llu",
+                                   static_cast<unsigned long long>(ev.stream_id));
       timeline_teardown_trace_emit("submit DestroyStream stream_id=%llu rc=%s",
                                    static_cast<unsigned long long>(ev.stream_id),
                                    destroy_status_cstr(rc));
+      if (rc != TryDestroyStreamStatus::OK) {
+        timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=submit_%s",
+                                     static_cast<unsigned long long>(ev.stream_id),
+                                     destroy_status_cstr(rc));
+      }
       break;
     }
     case SyntheticEventType::StartStream:
@@ -71,9 +85,16 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       break;
     case SyntheticEventType::StopStream: {
       const TryStopStreamStatus rc = runtime.try_stop_stream(ev.stream_id);
+      timeline_teardown_trace_emit("dispatched StopStream stream_id=%llu",
+                                   static_cast<unsigned long long>(ev.stream_id));
       timeline_teardown_trace_emit("submit StopStream stream_id=%llu rc=%s",
                                    static_cast<unsigned long long>(ev.stream_id),
                                    stop_status_cstr(rc));
+      if (rc != TryStopStreamStatus::OK) {
+        timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=submit_%s",
+                                     static_cast<unsigned long long>(ev.stream_id),
+                                     stop_status_cstr(rc));
+      }
       break;
     }
     case SyntheticEventType::UpdateStreamPicture:

@@ -511,5 +511,19 @@ ProviderResult ProviderBroker::advance_timeline_for_host(uint64_t dt_ns) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
+ProviderResult ProviderBroker::set_completion_gated_destructive_sequencing_for_host(bool enabled) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_completion_gated_destructive_sequencing_for_host(enabled);
+  }
+#endif
+  (void)enabled;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
 
 } // namespace cambang
