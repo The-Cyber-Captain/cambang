@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "smoke/verify_case/verify_case_harness.h"
+#include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/provider.h"
@@ -194,6 +195,30 @@ bool advance_and_expect_snapshot(VerifyCaseHarness& harness,
   }
 
   error = timeout_message;
+  return false;
+}
+
+void clear_timeline_teardown_trace_queue() {
+  std::string line;
+  while (timeline_teardown_trace_try_pop(line)) {
+  }
+}
+
+bool wait_for_timeline_teardown_trace_contains(const std::string& needle,
+                                               std::string& error,
+                                               int timeout_ms = 500) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  std::string line;
+  while (std::chrono::steady_clock::now() < deadline) {
+    while (timeline_teardown_trace_try_pop(line)) {
+      if (line.find(needle) != std::string::npos) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  error = "timed out waiting for timeline trace: " + needle;
   return false;
 }
 
@@ -1019,6 +1044,78 @@ bool run_synthetic_timeline_scenario_check() {
   return true;
 }
 
+bool run_synthetic_primitive_lifecycle_completion_aware_check() {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle harness start: " << error << "\n";
+    return false;
+  }
+
+  constexpr uint64_t kDeviceId = 9101;
+  constexpr uint64_t kRootId = 9102;
+  constexpr uint64_t kStreamId = 9103;
+
+  clear_timeline_teardown_trace_queue();
+
+  if (!harness.open_device_id(kDeviceId, 0, kRootId, error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle open_device: " << error << "\n";
+    return false;
+  }
+  if (!harness.create_stream_id(kStreamId, kDeviceId, 1, error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle create_stream: " << error << "\n";
+    return false;
+  }
+  if (!harness.start_stream_id(kStreamId, error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle start_stream: " << error << "\n";
+    return false;
+  }
+
+  if (!harness.stop_stream_id(kStreamId, error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle stop_stream: " << error << "\n";
+    return false;
+  }
+  if (!wait_for_timeline_teardown_trace_contains(
+          "callback on_stream_stopped stream_id=" + std::to_string(kStreamId),
+          error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle stop completion callback: " << error << "\n";
+    return false;
+  }
+
+  if (!harness.destroy_stream_id(kStreamId, error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle destroy_stream: " << error << "\n";
+    return false;
+  }
+  if (!wait_for_timeline_teardown_trace_contains(
+          "callback on_stream_destroyed stream_id=" + std::to_string(kStreamId),
+          error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle destroy completion callback: " << error << "\n";
+    return false;
+  }
+
+  if (!harness.close_device_id(kDeviceId, error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle close_device: " << error << "\n";
+    return false;
+  }
+  if (!wait_for_timeline_teardown_trace_contains(
+          "callback on_device_closed instance_id=" + std::to_string(kDeviceId),
+          error)) {
+    std::cerr << "FAIL synthetic primitive lifecycle close completion callback: " << error << "\n";
+    return false;
+  }
+
+  if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return !VerifyCaseHarness::has_stream(s, kStreamId) &&
+               !VerifyCaseHarness::has_device(s, kDeviceId);
+      }, error, 500, 5, "timed out waiting for final primitive lifecycle teardown")) {
+    std::cerr << "FAIL synthetic primitive lifecycle final integrated teardown: " << error << "\n";
+    return false;
+  }
+
+  harness.stop_runtime();
+  return true;
+}
+
 bool run_synthetic_timeline_invalid_order_check() {
   VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
   std::string error;
@@ -1297,6 +1394,33 @@ bool run_broker_timeline_host_surface_check() {
     (void)broker.shutdown();
     return false;
   }
+  if (!broker.advance_timeline_for_host(60'000'002).ok()) {
+    std::cerr << "FAIL broker timeline host surface: advance to teardown boundary failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  bool saw_stop = false;
+  bool saw_destroy = false;
+  bool saw_close = false;
+  for (const auto& ev : dispatched) {
+    if (!saw_stop && ev.type == SyntheticEventType::StopStream) {
+      saw_stop = true;
+      continue;
+    }
+    if (saw_stop && !saw_destroy && ev.type == SyntheticEventType::DestroyStream) {
+      saw_destroy = true;
+      continue;
+    }
+    if (saw_stop && saw_destroy && ev.type == SyntheticEventType::CloseDevice) {
+      saw_close = true;
+      break;
+    }
+  }
+  if (!(saw_stop && saw_destroy && saw_close)) {
+    std::cerr << "FAIL broker timeline host surface: builtin teardown dispatch order mismatch\n";
+    (void)broker.shutdown();
+    return false;
+  }
 
   const std::string valid_json = R"JSON(
 {
@@ -1561,6 +1685,7 @@ int main(int argc, char** argv) {
   if (!run_stub_check()) return 1;
   if (!run_synthetic_check()) return 1;
   if (!run_synthetic_timeline_scenario_check()) return 1;
+  if (!run_synthetic_primitive_lifecycle_completion_aware_check()) return 1;
   if (!run_synthetic_timeline_invalid_order_check()) return 1;
   if (!run_synthetic_timeline_host_controls_check()) return 1;
   if (!run_broker_timeline_host_surface_check()) return 1;

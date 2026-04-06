@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "imaging/broker/banner_info.h"
+#include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
 
@@ -761,7 +762,10 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     (void)streams_.mark_stop_requested_by_core(stream_id);
-    (void)p->stop_stream(stream_id);
+    const ProviderResult sr = p->stop_stream(stream_id);
+    timeline_teardown_trace_emit("provider StopStream stream_id=%llu rc=%u",
+                                 static_cast<unsigned long long>(stream_id),
+                                 static_cast<unsigned>(sr.code));
     (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
   });
 
@@ -784,8 +788,14 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
     if (!p) return;
 
     // Best-effort: stop before destroy.
-    (void)p->stop_stream(stream_id);
+    const ProviderResult sr = p->stop_stream(stream_id);
+    timeline_teardown_trace_emit("provider StopStream(for-destroy) stream_id=%llu rc=%u",
+                                 static_cast<unsigned long long>(stream_id),
+                                 static_cast<unsigned>(sr.code));
     const ProviderResult dr = p->destroy_stream(stream_id);
+    timeline_teardown_trace_emit("provider DestroyStream stream_id=%llu rc=%u",
+                                 static_cast<unsigned long long>(stream_id),
+                                 static_cast<unsigned>(dr.code));
     if (dr.ok()) {
       (void)streams_.on_stream_destroyed(stream_id);
       // Ensure core does not retain a ghost record.
@@ -834,7 +844,10 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
   const CoreThread::PostResult pr = try_post([this, device_instance_id]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
-    (void)p->close_device(device_instance_id);
+    const ProviderResult cr = p->close_device(device_instance_id);
+    timeline_teardown_trace_emit("provider CloseDevice device_instance_id=%llu rc=%u",
+                                 static_cast<unsigned long long>(device_instance_id),
+                                 static_cast<unsigned>(cr.code));
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryCloseDeviceStatus::OK

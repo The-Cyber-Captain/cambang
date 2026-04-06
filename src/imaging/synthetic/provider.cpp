@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
+#include "imaging/api/timeline_teardown_trace.h"
 #include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
@@ -198,6 +199,8 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::StopStream: {
+        timeline_teardown_trace_emit("dispatch StopStream stream_id=%llu",
+                                     static_cast<unsigned long long>(ev.stream_id));
         timeline_dispatch_request_(ev);
         break;
       }
@@ -208,6 +211,8 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::CloseDevice: {
+        timeline_teardown_trace_emit("dispatch CloseDevice device_instance_id=%llu",
+                                     static_cast<unsigned long long>(ev.device_instance_id));
         timeline_dispatch_request_(ev);
         break;
       }
@@ -218,6 +223,8 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::DestroyStream: {
+        timeline_teardown_trace_emit("dispatch DestroyStream stream_id=%llu",
+                                     static_cast<unsigned long long>(ev.stream_id));
         timeline_dispatch_request_(ev);
         break;
       }

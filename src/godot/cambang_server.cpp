@@ -8,6 +8,7 @@
 #include <chrono>
 
 #include "core/synthetic_timeline_request_binding.h"
+#include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
 
@@ -383,6 +384,11 @@ void CamBANGServer::_on_godot_tick(double delta) {
         godot::UtilityFunctions::print(line);
       }
     }
+  }
+
+  std::string timeline_line;
+  while (timeline_teardown_trace_try_pop(timeline_line)) {
+    godot::UtilityFunctions::print(timeline_line.c_str());
   }
 
   // Godot-facing snapshot truth is tick-bounded.
