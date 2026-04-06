@@ -1,5 +1,6 @@
 #include "core/provider_callback_ingress.h"
 
+#include <cstdio>
 #include <utility>
 
 namespace cambang {
@@ -189,6 +190,10 @@ void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {
 }
 
 void ProviderCallbackIngress::on_device_closed(uint64_t device_instance_id) {
+  std::fprintf(stdout,
+               "[timeline_teardown] callback on_device_closed instance_id=%llu\n",
+               static_cast<unsigned long long>(device_instance_id));
+  std::fflush(stdout);
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_DEVICE_CLOSED;
   cmd.payload = CmdProviderDeviceClosed{device_instance_id};
@@ -203,6 +208,10 @@ void ProviderCallbackIngress::on_stream_created(uint64_t stream_id) {
 }
 
 void ProviderCallbackIngress::on_stream_destroyed(uint64_t stream_id) {
+  std::fprintf(stdout,
+               "[timeline_teardown] callback on_stream_destroyed stream_id=%llu\n",
+               static_cast<unsigned long long>(stream_id));
+  std::fflush(stdout);
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_STREAM_DESTROYED;
   cmd.payload = CmdProviderStreamDestroyed{stream_id};
@@ -217,6 +226,11 @@ void ProviderCallbackIngress::on_stream_started(uint64_t stream_id) {
 }
 
 void ProviderCallbackIngress::on_stream_stopped(uint64_t stream_id, ProviderError error_or_ok) {
+  std::fprintf(stdout,
+               "[timeline_teardown] callback on_stream_stopped stream_id=%llu error=%u\n",
+               static_cast<unsigned long long>(stream_id),
+               static_cast<unsigned>(error_or_ok));
+  std::fflush(stdout);
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_STREAM_STOPPED;
   cmd.payload = CmdProviderStreamStopped{stream_id, static_cast<uint32_t>(error_or_ok)};

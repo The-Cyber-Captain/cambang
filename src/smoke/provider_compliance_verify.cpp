@@ -1297,6 +1297,33 @@ bool run_broker_timeline_host_surface_check() {
     (void)broker.shutdown();
     return false;
   }
+  if (!broker.advance_timeline_for_host(60'000'002).ok()) {
+    std::cerr << "FAIL broker timeline host surface: advance to teardown boundary failed\n";
+    (void)broker.shutdown();
+    return false;
+  }
+  bool saw_stop = false;
+  bool saw_destroy = false;
+  bool saw_close = false;
+  for (const auto& ev : dispatched) {
+    if (!saw_stop && ev.type == SyntheticEventType::StopStream) {
+      saw_stop = true;
+      continue;
+    }
+    if (saw_stop && !saw_destroy && ev.type == SyntheticEventType::DestroyStream) {
+      saw_destroy = true;
+      continue;
+    }
+    if (saw_stop && saw_destroy && ev.type == SyntheticEventType::CloseDevice) {
+      saw_close = true;
+      break;
+    }
+  }
+  if (!(saw_stop && saw_destroy && saw_close)) {
+    std::cerr << "FAIL broker timeline host surface: builtin teardown dispatch order mismatch\n";
+    (void)broker.shutdown();
+    return false;
+  }
 
   const std::string valid_json = R"JSON(
 {

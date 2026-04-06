@@ -1,12 +1,40 @@
 #include "core/synthetic_timeline_request_binding.h"
 
 #include <string>
+#include <cstdio>
 
 #include "core/core_runtime.h"
 
 namespace cambang {
 
 namespace {
+
+const char* stop_status_cstr(TryStopStreamStatus s) {
+  switch (s) {
+    case TryStopStreamStatus::OK: return "OK";
+    case TryStopStreamStatus::InvalidArgument: return "INVALID_ARGUMENT";
+    case TryStopStreamStatus::Busy: return "BUSY";
+  }
+  return "UNKNOWN";
+}
+
+const char* destroy_status_cstr(TryDestroyStreamStatus s) {
+  switch (s) {
+    case TryDestroyStreamStatus::OK: return "OK";
+    case TryDestroyStreamStatus::InvalidArgument: return "INVALID_ARGUMENT";
+    case TryDestroyStreamStatus::Busy: return "BUSY";
+  }
+  return "UNKNOWN";
+}
+
+const char* close_status_cstr(TryCloseDeviceStatus s) {
+  switch (s) {
+    case TryCloseDeviceStatus::OK: return "OK";
+    case TryCloseDeviceStatus::InvalidArgument: return "INVALID_ARGUMENT";
+    case TryCloseDeviceStatus::Busy: return "BUSY";
+  }
+  return "UNKNOWN";
+}
 
 void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRuntime& runtime) {
   switch (ev.type) {
@@ -15,9 +43,15 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       (void)runtime.try_open_device(hardware_id, ev.device_instance_id, ev.root_id);
       break;
     }
-    case SyntheticEventType::CloseDevice:
-      (void)runtime.try_close_device(ev.device_instance_id);
+    case SyntheticEventType::CloseDevice: {
+      const TryCloseDeviceStatus rc = runtime.try_close_device(ev.device_instance_id);
+      std::fprintf(stdout,
+                   "[timeline_teardown] submit CloseDevice device_instance_id=%llu rc=%s\n",
+                   static_cast<unsigned long long>(ev.device_instance_id),
+                   close_status_cstr(rc));
+      std::fflush(stdout);
       break;
+    }
     case SyntheticEventType::CreateStream:
       (void)runtime.try_create_stream(
           ev.stream_id,
@@ -27,15 +61,27 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
           nullptr,
           0);
       break;
-    case SyntheticEventType::DestroyStream:
-      (void)runtime.try_destroy_stream(ev.stream_id);
+    case SyntheticEventType::DestroyStream: {
+      const TryDestroyStreamStatus rc = runtime.try_destroy_stream(ev.stream_id);
+      std::fprintf(stdout,
+                   "[timeline_teardown] submit DestroyStream stream_id=%llu rc=%s\n",
+                   static_cast<unsigned long long>(ev.stream_id),
+                   destroy_status_cstr(rc));
+      std::fflush(stdout);
       break;
+    }
     case SyntheticEventType::StartStream:
       (void)runtime.try_start_stream(ev.stream_id);
       break;
-    case SyntheticEventType::StopStream:
-      (void)runtime.try_stop_stream(ev.stream_id);
+    case SyntheticEventType::StopStream: {
+      const TryStopStreamStatus rc = runtime.try_stop_stream(ev.stream_id);
+      std::fprintf(stdout,
+                   "[timeline_teardown] submit StopStream stream_id=%llu rc=%s\n",
+                   static_cast<unsigned long long>(ev.stream_id),
+                   stop_status_cstr(rc));
+      std::fflush(stdout);
       break;
+    }
     case SyntheticEventType::UpdateStreamPicture:
       if (ev.has_picture) {
         (void)runtime.try_set_stream_picture_config(ev.stream_id, ev.picture);

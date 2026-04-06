@@ -198,6 +198,10 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::StopStream: {
+        std::fprintf(stdout,
+                     "[timeline_teardown] dispatch StopStream stream_id=%llu\n",
+                     static_cast<unsigned long long>(ev.stream_id));
+        std::fflush(stdout);
         timeline_dispatch_request_(ev);
         break;
       }
@@ -208,6 +212,10 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::CloseDevice: {
+        std::fprintf(stdout,
+                     "[timeline_teardown] dispatch CloseDevice device_instance_id=%llu\n",
+                     static_cast<unsigned long long>(ev.device_instance_id));
+        std::fflush(stdout);
         timeline_dispatch_request_(ev);
         break;
       }
@@ -218,6 +226,10 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::DestroyStream: {
+        std::fprintf(stdout,
+                     "[timeline_teardown] dispatch DestroyStream stream_id=%llu\n",
+                     static_cast<unsigned long long>(ev.stream_id));
+        std::fflush(stdout);
         timeline_dispatch_request_(ev);
         break;
       }
