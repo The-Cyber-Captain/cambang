@@ -637,6 +637,8 @@ public:
     }
     runtime_.attach_provider(provider_.get());
 
+    // Wire callback observation in the authoritative path:
+    // Provider -> RecordingProviderCallbacks -> CoreRuntime ingress callbacks.
     callback_recorder_.bind_delegate(runtime_.provider_callbacks());
     callback_recorder_.clear();
 
@@ -683,6 +685,8 @@ public:
     }
 
     snapshot_buffer_.clear();
+    callback_recorder_.clear();
+    callback_recorder_.bind_delegate(nullptr);
     endpoint_hardware_ids_.clear();
     synthetic_frame_period_ns_ = 0;
     boundary_.reset(runtime_.published_seq());

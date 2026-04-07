@@ -1174,6 +1174,8 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
       return false;
     }
 
+    // Callback evidence is sourced from VerifyCaseHarness recorder wired into
+    // the actual provider-under-test callback sink.
     harness.clear_recorded_callbacks();
     synthetic->advance(period_ns * 2);
 
