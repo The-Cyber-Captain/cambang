@@ -1186,6 +1186,10 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     bool have_all_callbacks = false;
     const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
     while (std::chrono::steady_clock::now() <= callback_deadline) {
+      // Completion-gated destructive events can remain pending until timeline
+      // playback is advanced again after prior completion callbacks.
+      synthetic->advance(0);
+
       stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
       destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
       closed_index = harness.find_recorded_callback_index("device_closed", device_id);
