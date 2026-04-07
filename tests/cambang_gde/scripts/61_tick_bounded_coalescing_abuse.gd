@@ -31,6 +31,10 @@ func _ready() -> void:
 	if stage_err != OK:
 		_fail("FAIL: unable to stage publication_coalescing scenario")
 		return
+	var strict_mode_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(false)
+	if strict_mode_err != OK:
+		_fail("FAIL: unable to explicitly disable completion-gated destructive sequencing for publication_coalescing")
+		return
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:
 		_fail("FAIL: unable to start publication_coalescing scenario")
