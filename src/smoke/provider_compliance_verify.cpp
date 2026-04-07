@@ -1226,10 +1226,10 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
             evidence.closed_index < 0) {
           evidence.closed_index = evidence.seq;
         }
-        if (line.find("fail DestroyStream stream_id=" + std::to_string(stream_id) + " reason=provider_rc_") != std::string::npos) {
+        if (line.find("[FAIL] DestroyStream stream_id=" + std::to_string(stream_id) + " reason=provider_rc_") != std::string::npos) {
           evidence.fail_destroy = true;
         }
-        if (line.find("fail CloseDevice device_instance_id=" + std::to_string(device_id) + " reason=provider_rc_") != std::string::npos) {
+        if (line.find("[FAIL] CloseDevice device_instance_id=" + std::to_string(device_id) + " reason=provider_rc_") != std::string::npos) {
           evidence.fail_close = true;
         }
       }
@@ -1912,6 +1912,8 @@ int main(int argc, char** argv) {
   if (!parse_opts(argc, argv, opt)) {
     return 2;
   }
+
+  timeline_teardown_trace_set_enabled(true);
 
   if (!run_synthetic_scenario_materialization_check()) return 1;
   if (!run_synthetic_builtin_scenario_library_build_check()) return 1;
