@@ -1183,45 +1183,43 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     int stopped_index = -1;
     int destroyed_index = -1;
     int closed_index = -1;
-    auto wait_for_stage = [&](const char* stage_name,
-                              const std::function<bool()>& stage_ready,
-                              int timeout_ms) -> bool {
-      const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-      while (std::chrono::steady_clock::now() <= callback_deadline) {
-        // Completion-gated destructive events can remain pending until timeline
-        // playback is advanced again after prior completion callbacks.
-        synthetic->advance(0);
-        harness.runtime().request_publish();
+    bool final_absence_reached = false;
+    bool has_stream = false;
+    bool has_device = false;
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+    while (std::chrono::steady_clock::now() <= completion_deadline) {
+      synthetic->advance(1);
+      harness.runtime().request_publish();
 
-        stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
-        destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
-        closed_index = harness.find_recorded_callback_index("device_closed", device_id);
-        if (stage_ready()) {
-          return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      auto snap = harness.snapshot_buffer().snapshot_copy();
+      has_stream = snap && VerifyCaseHarness::has_stream(*snap, stream_id);
+      has_device = snap && VerifyCaseHarness::has_device(*snap, device_id);
+      if (snap && !has_stream && !has_device) {
+        final_absence_reached = true;
+        break;
       }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
-      std::cerr << "DIAG synthetic timeline completion-gated teardown stage_timeout=" << stage_name
-                << " expected stream_id=" << stream_id
+    stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
+    destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
+    closed_index = harness.find_recorded_callback_index("device_closed", device_id);
+
+    if (!final_absence_reached) {
+      std::cerr << "DIAG synthetic timeline completion-gated teardown final_completion_timeout expected stream_id="
+                << stream_id
                 << " device_id=" << device_id
                 << " observed_indices=(stopped=" << stopped_index
                 << ", destroyed=" << destroyed_index
-                << ", closed=" << closed_index << ")\n";
+                << ", closed=" << closed_index << ")"
+                << " snapshot_presence=(stream=" << (has_stream ? "true" : "false")
+                << ", device=" << (has_device ? "true" : "false") << ")\n";
+      std::cerr << "FAIL synthetic timeline completion-gated teardown final snapshot completion not reached\n";
+      harness.stop_runtime();
       return false;
-    };
+    }
 
-    if (!wait_for_stage("stream_stopped", [&]() { return stopped_index >= 0; }, 1200)) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
-      harness.stop_runtime();
-      return false;
-    }
-    if (!wait_for_stage("stream_destroyed", [&]() { return destroyed_index >= 0; }, 1200)) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
-      harness.stop_runtime();
-      return false;
-    }
-    if (!wait_for_stage("device_closed", [&]() { return closed_index >= 0; }, 1200)) {
+    if (stopped_index < 0 || destroyed_index < 0 || closed_index < 0) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
       harness.stop_runtime();
       return false;
@@ -1233,14 +1231,6 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
       return false;
     }
 
-    if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-          return !VerifyCaseHarness::has_stream(s, stream_id) &&
-                 !VerifyCaseHarness::has_device(s, device_id);
-        }, error, 800, 5, "timed out waiting for completion-gated final snapshot truth")) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown final snapshot wait failed: " << error << "\n";
-      harness.stop_runtime();
-      return false;
-    }
     harness.stop_runtime();
   }
 
