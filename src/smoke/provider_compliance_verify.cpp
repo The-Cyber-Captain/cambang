@@ -244,6 +244,15 @@ bool trace_lines_contain(const std::vector<std::string>& lines, const std::strin
   return false;
 }
 
+int trace_lines_find_index(const std::vector<std::string>& lines, const std::string& needle) {
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].find(needle) != std::string::npos) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 
 bool run_synthetic_scenario_materialization_check() {
   SyntheticCanonicalScenario canonical{};
@@ -1234,45 +1243,43 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
       harness.stop_runtime();
       return false;
     }
-    if (!wait_for_timeline_teardown_trace_contains(
+    std::vector<std::string> gated_trace_lines;
+    auto wait_for_trace_and_record = [&](const std::string& needle, int timeout_ms) -> bool {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+      std::string line;
+      while (std::chrono::steady_clock::now() < deadline) {
+        while (timeline_teardown_trace_try_pop(line)) {
+          gated_trace_lines.push_back(line);
+          if (line.find(needle) != std::string::npos) {
+            return true;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      error = "timed out waiting for timeline trace: " + needle;
+      return false;
+    };
+    if (!wait_for_trace_and_record(
             "activate StopStream stream_id=" + std::to_string(stream_id),
-            error,
             1200) ||
-        !wait_for_timeline_teardown_trace_contains(
+        !wait_for_trace_and_record(
             "activate DestroyStream stream_id=" + std::to_string(stream_id),
-            error,
             1200) ||
-        !wait_for_timeline_teardown_trace_contains(
+        !wait_for_trace_and_record(
             "activate CloseDevice device_instance_id=" + std::to_string(device_id),
-            error,
             1200)) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown missing activation traces: " << error << "\n";
       harness.stop_runtime();
       return false;
     }
-    if (!wait_for_timeline_teardown_trace_contains(
-            "pending DestroyStream stream_id=" + std::to_string(stream_id) + " reason=await_stream_stopped",
-            error,
-            1200) ||
-        !wait_for_timeline_teardown_trace_contains(
-            "pending CloseDevice device_instance_id=" + std::to_string(device_id) + " reason=await_device_stream_absence",
-            error,
-            1200)) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown missing pending traces: " << error << "\n";
-      harness.stop_runtime();
-      return false;
-    }
-    if (!wait_for_timeline_teardown_trace_contains(
+    if (!wait_for_trace_and_record(
             "complete StopStream stream_id=" + std::to_string(stream_id),
-            error,
             1200) ||
-        !wait_for_timeline_teardown_trace_contains(
+        !wait_for_trace_and_record(
             "complete DestroyStream stream_id=" + std::to_string(stream_id),
-            error,
             1200) ||
-        !wait_for_timeline_teardown_trace_contains(
+        !wait_for_trace_and_record(
             "complete CloseDevice device_instance_id=" + std::to_string(device_id),
-            error,
             1200)) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown missing ordered completion traces: " << error << "\n";
       harness.stop_runtime();
@@ -1289,11 +1296,43 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     }
 
     const std::vector<std::string> tail_trace_lines = collect_timeline_teardown_trace_lines(400);
+    gated_trace_lines.insert(gated_trace_lines.end(), tail_trace_lines.begin(), tail_trace_lines.end());
+
+    const std::string pending_destroy = "pending DestroyStream stream_id=" + std::to_string(stream_id) + " reason=await_stream_stopped";
+    const std::string pending_close = "pending CloseDevice device_instance_id=" + std::to_string(device_id) + " reason=await_device_stream_absence";
+    const std::string dispatch_destroy = "dispatch DestroyStream stream_id=" + std::to_string(stream_id);
+    const std::string dispatch_close = "dispatch CloseDevice device_instance_id=" + std::to_string(device_id);
+    const std::string complete_stop = "complete StopStream stream_id=" + std::to_string(stream_id);
+    const std::string complete_destroy = "complete DestroyStream stream_id=" + std::to_string(stream_id);
+
+    const int idx_pending_destroy = trace_lines_find_index(gated_trace_lines, pending_destroy);
+    const int idx_pending_close = trace_lines_find_index(gated_trace_lines, pending_close);
+    const int idx_dispatch_destroy = trace_lines_find_index(gated_trace_lines, dispatch_destroy);
+    const int idx_dispatch_close = trace_lines_find_index(gated_trace_lines, dispatch_close);
+    const int idx_complete_stop = trace_lines_find_index(gated_trace_lines, complete_stop);
+    const int idx_complete_destroy = trace_lines_find_index(gated_trace_lines, complete_destroy);
+
+    if (idx_dispatch_destroy < 0 || idx_dispatch_close < 0) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown missing destructive dispatch traces\n";
+      harness.stop_runtime();
+      return false;
+    }
+    if (idx_pending_destroy < 0 && !(idx_complete_stop >= 0 && idx_dispatch_destroy > idx_complete_stop)) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown invalid DestroyStream prerequisite ordering\n";
+      harness.stop_runtime();
+      return false;
+    }
+    if (idx_pending_close < 0 && !(idx_complete_destroy >= 0 && idx_dispatch_close > idx_complete_destroy)) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown invalid CloseDevice prerequisite ordering\n";
+      harness.stop_runtime();
+      return false;
+    }
+
     if (trace_lines_contain(
-            tail_trace_lines,
+            gated_trace_lines,
             "fail DestroyStream stream_id=" + std::to_string(stream_id) + " reason=provider_rc_") ||
         trace_lines_contain(
-            tail_trace_lines,
+            gated_trace_lines,
             "fail CloseDevice device_instance_id=" + std::to_string(device_id) + " reason=provider_rc_")) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown had unexpected provider failure traces\n";
       harness.stop_runtime();
