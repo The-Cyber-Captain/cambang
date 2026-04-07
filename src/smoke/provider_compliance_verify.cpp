@@ -1191,6 +1191,7 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
         // Completion-gated destructive events can remain pending until timeline
         // playback is advanced again after prior completion callbacks.
         synthetic->advance(0);
+        harness.runtime().request_publish();
 
         stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
         destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
