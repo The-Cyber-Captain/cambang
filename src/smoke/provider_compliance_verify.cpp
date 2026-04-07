@@ -1068,59 +1068,6 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
   };
 
   {
-    RecorderCallbacks cb;
-    SyntheticProvider callback_probe;
-    if (!callback_probe.initialize(&cb).ok()) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown callback probe initialize failed\n";
-      return false;
-    }
-    if (!callback_probe.set_completion_gated_destructive_sequencing_for_host(true).ok()) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown callback probe enable option failed\n";
-      (void)callback_probe.shutdown();
-      return false;
-    }
-    if (!callback_probe.set_timeline_scenario_for_host(build_scenario()).ok() ||
-        !callback_probe.start_timeline_scenario_for_host().ok()) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown callback probe scenario start failed\n";
-      (void)callback_probe.shutdown();
-      return false;
-    }
-
-    callback_probe.advance(0);
-    callback_probe.advance(period_ns * 2);
-
-    int stopped_index = -1;
-    int destroyed_index = -1;
-    int closed_index = -1;
-    const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
-    while (std::chrono::steady_clock::now() < callback_deadline) {
-      stopped_index = find_index(cb.events, "stream_stopped", stream_id);
-      destroyed_index = find_index(cb.events, "stream_destroyed", stream_id);
-      closed_index = find_index(cb.events, "device_closed", device_id);
-      if (stopped_index >= 0 && destroyed_index >= 0 && closed_index >= 0) {
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-
-    if (stopped_index < 0 || destroyed_index < 0 || closed_index < 0) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
-      (void)callback_probe.shutdown();
-      return false;
-    }
-    if (!(stopped_index < destroyed_index && destroyed_index < closed_index)) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown callback order mismatch\n";
-      (void)callback_probe.shutdown();
-      return false;
-    }
-
-    if (!callback_probe.shutdown().ok()) {
-      std::cerr << "FAIL synthetic timeline completion-gated teardown callback probe shutdown failed\n";
-      return false;
-    }
-  }
-
-  {
     VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
     std::string error;
     if (!harness.start_runtime(error)) {
@@ -1226,7 +1173,34 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
       harness.stop_runtime();
       return false;
     }
+
+    harness.clear_recorded_callbacks();
     synthetic->advance(period_ns * 2);
+
+    int stopped_index = -1;
+    int destroyed_index = -1;
+    int closed_index = -1;
+    const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    while (std::chrono::steady_clock::now() < callback_deadline) {
+      stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
+      destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
+      closed_index = harness.find_recorded_callback_index("device_closed", device_id);
+      if (stopped_index >= 0 && destroyed_index >= 0 && closed_index >= 0) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (stopped_index < 0 || destroyed_index < 0 || closed_index < 0) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
+      harness.stop_runtime();
+      return false;
+    }
+    if (!(stopped_index < destroyed_index && destroyed_index < closed_index)) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown callback order mismatch\n";
+      harness.stop_runtime();
+      return false;
+    }
 
     if (!harness.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
           return !VerifyCaseHarness::has_stream(s, stream_id) &&
