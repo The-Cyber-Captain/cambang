@@ -986,6 +986,11 @@ private:
       events_.clear();
     }
 
+    void set_diagnostics_enabled(bool enabled) {
+      std::lock_guard<std::mutex> lock(mu_);
+      diagnostics_enabled_ = enabled;
+    }
+
     int find_index(const char* tag, uint64_t id) const {
       std::lock_guard<std::mutex> lock(mu_);
       for (size_t i = 0; i < events_.size(); ++i) {
@@ -1161,7 +1166,3 @@ private:
 };
 
 } // namespace cambang
-    void set_diagnostics_enabled(bool enabled) {
-      std::lock_guard<std::mutex> lock(mu_);
-      diagnostics_enabled_ = enabled;
-    }
