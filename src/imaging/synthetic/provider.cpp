@@ -121,6 +121,86 @@ void SyntheticProvider::timeline_dispatch_request_(const SyntheticScheduledEvent
   }
 }
 
+bool SyntheticProvider::timeline_is_destructive_primitive_(SyntheticEventType type) const {
+  return type == SyntheticEventType::StopStream ||
+         type == SyntheticEventType::DestroyStream ||
+         type == SyntheticEventType::CloseDevice;
+}
+
+bool SyntheticProvider::timeline_destructive_prereq_ready_(
+    const SyntheticScheduledEvent& ev,
+    const char*& reason) const {
+  // Completion authority for this gate is provider-integrated runtime fact:
+  // the relevant stream/device state must already be reflected here.
+  // Submit rc==OK from the host binding is only admission, not completion.
+  reason = nullptr;
+  switch (ev.type) {
+    case SyntheticEventType::DestroyStream: {
+      auto it = streams_.find(ev.stream_id);
+      if (it != streams_.end() && it->second.created && it->second.started) {
+        reason = "await_stream_stopped";
+        return false;
+      }
+      return true;
+    }
+    case SyntheticEventType::CloseDevice: {
+      for (const auto& kv : streams_) {
+        if (kv.second.created && kv.second.req.device_instance_id == ev.device_instance_id) {
+          reason = "await_device_stream_absence";
+          return false;
+        }
+      }
+      return true;
+    }
+    case SyntheticEventType::StopStream:
+      return true;
+    default:
+      return true;
+  }
+}
+
+void SyntheticProvider::timeline_activate_or_dispatch_(const SyntheticScheduledEvent& ev, bool allow_pending) {
+  if (completion_gated_destructive_sequencing_enabled_ && timeline_is_destructive_primitive_(ev.type)) {
+    if (ev.type == SyntheticEventType::StopStream) {
+      timeline_teardown_trace_emit("activate StopStream stream_id=%llu",
+                                   static_cast<unsigned long long>(ev.stream_id));
+    } else if (ev.type == SyntheticEventType::DestroyStream) {
+      timeline_teardown_trace_emit("activate DestroyStream stream_id=%llu",
+                                   static_cast<unsigned long long>(ev.stream_id));
+    } else if (ev.type == SyntheticEventType::CloseDevice) {
+      timeline_teardown_trace_emit("activate CloseDevice device_instance_id=%llu",
+                                   static_cast<unsigned long long>(ev.device_instance_id));
+    }
+
+    const char* reason = nullptr;
+    if (!timeline_destructive_prereq_ready_(ev, reason) && allow_pending) {
+      if (ev.type == SyntheticEventType::DestroyStream) {
+        timeline_teardown_trace_emit("pending DestroyStream stream_id=%llu reason=%s",
+                                     static_cast<unsigned long long>(ev.stream_id),
+                                     reason ? reason : "await_prereq");
+      } else if (ev.type == SyntheticEventType::CloseDevice) {
+        timeline_teardown_trace_emit("pending CloseDevice device_instance_id=%llu reason=%s",
+                                     static_cast<unsigned long long>(ev.device_instance_id),
+                                     reason ? reason : "await_prereq");
+      }
+      timeline_pending_destructive_.push_back(ev);
+      return;
+    }
+  }
+
+  if (ev.type == SyntheticEventType::StopStream) {
+    timeline_teardown_trace_emit("dispatch StopStream stream_id=%llu",
+                                 static_cast<unsigned long long>(ev.stream_id));
+  } else if (ev.type == SyntheticEventType::DestroyStream) {
+    timeline_teardown_trace_emit("dispatch DestroyStream stream_id=%llu",
+                                 static_cast<unsigned long long>(ev.stream_id));
+  } else if (ev.type == SyntheticEventType::CloseDevice) {
+    timeline_teardown_trace_emit("dispatch CloseDevice device_instance_id=%llu",
+                                 static_cast<unsigned long long>(ev.device_instance_id));
+  }
+  timeline_dispatch_request_(ev);
+}
+
 bool SyntheticProvider::materialize_staged_canonical_scenario_(
     SyntheticTimelineScenario& out,
     std::string& error) const {
@@ -199,9 +279,7 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::StopStream: {
-        timeline_teardown_trace_emit("dispatch StopStream stream_id=%llu",
-                                     static_cast<unsigned long long>(ev.stream_id));
-        timeline_dispatch_request_(ev);
+        timeline_activate_or_dispatch_(ev, /*allow_pending=*/false);
         break;
       }
 
@@ -211,9 +289,7 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::CloseDevice: {
-        timeline_teardown_trace_emit("dispatch CloseDevice device_instance_id=%llu",
-                                     static_cast<unsigned long long>(ev.device_instance_id));
-        timeline_dispatch_request_(ev);
+        timeline_activate_or_dispatch_(ev, /*allow_pending=*/true);
         break;
       }
 
@@ -223,9 +299,7 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::DestroyStream: {
-        timeline_teardown_trace_emit("dispatch DestroyStream stream_id=%llu",
-                                     static_cast<unsigned long long>(ev.stream_id));
-        timeline_dispatch_request_(ev);
+        timeline_activate_or_dispatch_(ev, /*allow_pending=*/true);
         break;
       }
 
@@ -235,6 +309,22 @@ void SyntheticProvider::timeline_pump_() {
       }
     }
   }
+
+  if (!completion_gated_destructive_sequencing_enabled_ || timeline_pending_destructive_.empty()) {
+    return;
+  }
+
+  std::vector<SyntheticScheduledEvent> still_pending;
+  still_pending.reserve(timeline_pending_destructive_.size());
+  for (const auto& ev : timeline_pending_destructive_) {
+    const char* reason = nullptr;
+    if (!timeline_destructive_prereq_ready_(ev, reason)) {
+      still_pending.push_back(ev);
+      continue;
+    }
+    timeline_activate_or_dispatch_(ev, /*allow_pending=*/false);
+  }
+  timeline_pending_destructive_.swap(still_pending);
 }
 
 void SyntheticProvider::set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook) {
@@ -766,6 +856,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_seq_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
+  timeline_pending_destructive_.clear();
   timeline_scenario_ = scenario;
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
@@ -786,6 +877,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_seq_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
+  timeline_pending_destructive_.clear();
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = scenario;
   timeline_canonical_staged_ = true;
@@ -803,6 +895,7 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_pending_destructive_.clear();
   if (timeline_canonical_staged_) {
     std::string error;
     if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
@@ -833,6 +926,7 @@ ProviderResult SyntheticProvider::stop_timeline_scenario_for_host() {
   timeline_seq_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
+  timeline_pending_destructive_.clear();
   return ProviderResult::success();
 }
 
@@ -864,6 +958,20 @@ ProviderResult SyntheticProvider::advance_timeline_for_host(uint64_t dt_ns) {
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::set_completion_gated_destructive_sequencing_for_host(bool enabled) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  completion_gated_destructive_sequencing_enabled_ = enabled;
+  if (!enabled) {
+    timeline_pending_destructive_.clear();
+  }
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::shutdown() {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -889,6 +997,7 @@ ProviderResult SyntheticProvider::shutdown() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_pending_destructive_.clear();
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;

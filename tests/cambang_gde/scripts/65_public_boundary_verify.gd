@@ -54,6 +54,9 @@ func _ready() -> void:
 	if not CamBANGServer.has_method("set_timeline_paused") or not CamBANGServer.has_method("advance_timeline"):
 		_fail("FAIL: CamBANGServer timeline control API missing")
 		return
+	if not CamBANGServer.has_method("set_completion_gated_destructive_sequencing_enabled"):
+		_fail("FAIL: CamBANGServer completion-gated destructive sequencing control missing")
+		return
 
 	if CamBANGServer.is_running():
 		_fail("FAIL: stop() must leave server not running")
@@ -184,6 +187,10 @@ func _ready() -> void:
 	var timeline_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
 	if timeline_stage_err != OK:
 		_fail("FAIL: timeline builtin staging should be available after Timeline-role synthetic configuration")
+		return
+	var strict_mode_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(false)
+	if strict_mode_err != OK:
+		_fail("FAIL: expected explicit strict timeline mode selection to succeed")
 		return
 	var start_scenario_err := CamBANGServer.start_scenario()
 	if start_scenario_err != OK:

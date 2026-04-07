@@ -28,6 +28,11 @@ func _ready() -> void:
 		push_error("FAIL: unable to select builtin scenario %s" % BUILTIN_SCENARIO)
 		return
 
+	var enable_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(true)
+	if enable_err != OK:
+		push_error("FAIL: unable to enable completion-gated destructive sequencing")
+		return
+
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:
 		push_error("FAIL: unable to start builtin scenario %s" % BUILTIN_SCENARIO)

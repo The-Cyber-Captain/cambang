@@ -89,6 +89,7 @@ public:
   ProviderResult stop_timeline_scenario_for_host();
   ProviderResult set_timeline_scenario_paused_for_host(bool paused);
   ProviderResult advance_timeline_for_host(uint64_t dt_ns);
+  ProviderResult set_completion_gated_destructive_sequencing_for_host(bool enabled);
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
 
 private:
@@ -105,6 +106,9 @@ private:
   void timeline_schedule_(uint64_t at_ns, SyntheticEventType type, uint64_t stream_id);
   void timeline_schedule_(const SyntheticScheduledEvent& ev);
   void timeline_dispatch_request_(const SyntheticScheduledEvent& ev);
+  void timeline_activate_or_dispatch_(const SyntheticScheduledEvent& ev, bool allow_pending);
+  bool timeline_destructive_prereq_ready_(const SyntheticScheduledEvent& ev, const char*& reason) const;
+  bool timeline_is_destructive_primitive_(SyntheticEventType type) const;
   void timeline_pump_();
   bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
 
@@ -173,10 +177,12 @@ private:
   bool timeline_canonical_staged_ = false;
   bool timeline_running_ = false;
   bool timeline_paused_ = false;
+  bool completion_gated_destructive_sequencing_enabled_ = false;
   std::priority_queue<SyntheticScheduledEvent,
                       std::vector<SyntheticScheduledEvent>,
                       TimelineEventCompare>
       timeline_q_;
+  std::vector<SyntheticScheduledEvent> timeline_pending_destructive_;
   TimelineRequestDispatchHook timeline_request_dispatch_hook_{};
 
   std::atomic<uint64_t> invalid_preset_requests_{0};

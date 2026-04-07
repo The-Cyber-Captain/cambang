@@ -193,6 +193,8 @@ void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {
 void ProviderCallbackIngress::on_device_closed(uint64_t device_instance_id) {
   timeline_teardown_trace_emit("callback on_device_closed instance_id=%llu",
                                static_cast<unsigned long long>(device_instance_id));
+  timeline_teardown_trace_emit("complete CloseDevice device_instance_id=%llu",
+                               static_cast<unsigned long long>(device_instance_id));
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_DEVICE_CLOSED;
   cmd.payload = CmdProviderDeviceClosed{device_instance_id};
@@ -208,6 +210,8 @@ void ProviderCallbackIngress::on_stream_created(uint64_t stream_id) {
 
 void ProviderCallbackIngress::on_stream_destroyed(uint64_t stream_id) {
   timeline_teardown_trace_emit("callback on_stream_destroyed stream_id=%llu",
+                               static_cast<unsigned long long>(stream_id));
+  timeline_teardown_trace_emit("complete DestroyStream stream_id=%llu",
                                static_cast<unsigned long long>(stream_id));
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_STREAM_DESTROYED;
@@ -226,6 +230,14 @@ void ProviderCallbackIngress::on_stream_stopped(uint64_t stream_id, ProviderErro
   timeline_teardown_trace_emit("callback on_stream_stopped stream_id=%llu error=%u",
                                static_cast<unsigned long long>(stream_id),
                                static_cast<unsigned>(error_or_ok));
+  if (error_or_ok == ProviderError::OK) {
+    timeline_teardown_trace_emit("complete StopStream stream_id=%llu",
+                                 static_cast<unsigned long long>(stream_id));
+  } else {
+    timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=provider_error_%u",
+                                 static_cast<unsigned long long>(stream_id),
+                                 static_cast<unsigned>(error_or_ok));
+  }
   CoreCommand cmd;
   cmd.type = CoreCommandType::PROVIDER_STREAM_STOPPED;
   cmd.payload = CmdProviderStreamStopped{stream_id, static_cast<uint32_t>(error_or_ok)};

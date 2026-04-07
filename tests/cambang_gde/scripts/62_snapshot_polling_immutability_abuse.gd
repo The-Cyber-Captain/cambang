@@ -29,6 +29,10 @@ func _ready() -> void:
 	if stage_err != OK:
 		_fail("FAIL: unable to stage stream_lifecycle_versions scenario")
 		return
+	var strict_mode_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(false)
+	if strict_mode_err != OK:
+		_fail("FAIL: unable to explicitly disable completion-gated destructive sequencing for stream_lifecycle_versions")
+		return
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:
 		_fail("FAIL: unable to start stream_lifecycle_versions scenario")

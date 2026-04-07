@@ -71,6 +71,7 @@ public:
   godot::Error stop_scenario();
   godot::Error set_timeline_paused(bool paused);
   godot::Error advance_timeline(uint64_t dt_ns);
+  godot::Error set_completion_gated_destructive_sequencing_enabled(bool enabled);
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
