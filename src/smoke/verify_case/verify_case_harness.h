@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -941,6 +942,10 @@ public:
 
   void clear_recorded_callbacks() { callback_recorder_.clear(); }
 
+  void set_callback_diagnostics_enabled(bool enabled) {
+    callback_recorder_.set_diagnostics_enabled(enabled);
+  }
+
   int find_recorded_callback_index(const char* tag, uint64_t id) const {
     return callback_recorder_.find_index(tag, id);
   }
@@ -1056,6 +1061,15 @@ private:
     void record_(const char* tag, uint64_t id) {
       std::lock_guard<std::mutex> lock(mu_);
       events_.push_back({tag, id});
+      if (diagnostics_enabled_ &&
+          (events_.back().tag == "stream_stopped" ||
+           events_.back().tag == "stream_destroyed" ||
+           events_.back().tag == "device_closed")) {
+        const size_t seq = events_.size() - 1;
+        std::cerr << "[verify_callback_recorder] event=" << events_.back().tag
+                  << " id=" << id
+                  << " seq=" << seq << "\n";
+      }
     }
 
     struct Event {
@@ -1066,6 +1080,7 @@ private:
     IProviderCallbacks* delegate_ = nullptr;
     mutable std::mutex mu_;
     std::vector<Event> events_;
+    bool diagnostics_enabled_ = false;
   };
 
   std::unique_ptr<ICameraProvider> make_provider_() {
@@ -1146,3 +1161,7 @@ private:
 };
 
 } // namespace cambang
+    void set_diagnostics_enabled(bool enabled) {
+      std::lock_guard<std::mutex> lock(mu_);
+      diagnostics_enabled_ = enabled;
+    }

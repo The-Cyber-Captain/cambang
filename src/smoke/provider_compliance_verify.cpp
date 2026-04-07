@@ -1143,6 +1143,7 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
   {
     VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
     std::string error;
+    harness.set_callback_diagnostics_enabled(true);
     if (!harness.start_runtime(error)) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown harness start: " << error << "\n";
       return false;
@@ -1194,6 +1195,11 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     }
 
     if (stopped_index < 0 || destroyed_index < 0 || closed_index < 0) {
+      std::cerr << "DIAG synthetic timeline completion-gated teardown expected stream_id=" << stream_id
+                << " device_id=" << device_id
+                << " observed_indices=(stopped=" << stopped_index
+                << ", destroyed=" << destroyed_index
+                << ", closed=" << closed_index << ")\n";
       std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
       harness.stop_runtime();
       return false;
