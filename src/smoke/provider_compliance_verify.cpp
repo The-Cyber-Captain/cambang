@@ -1183,33 +1183,49 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     int stopped_index = -1;
     int destroyed_index = -1;
     int closed_index = -1;
-    bool have_all_callbacks = false;
-    const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
-    while (std::chrono::steady_clock::now() <= callback_deadline) {
-      // Completion-gated destructive events can remain pending until timeline
-      // playback is advanced again after prior completion callbacks.
-      synthetic->advance(0);
+    auto wait_for_stage = [&](const char* stage_name,
+                              const std::function<bool()>& stage_ready,
+                              int timeout_ms) -> bool {
+      const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+      while (std::chrono::steady_clock::now() <= callback_deadline) {
+        // Completion-gated destructive events can remain pending until timeline
+        // playback is advanced again after prior completion callbacks.
+        synthetic->advance(0);
 
-      stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
-      destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
-      closed_index = harness.find_recorded_callback_index("device_closed", device_id);
-      have_all_callbacks = (stopped_index >= 0 && destroyed_index >= 0 && closed_index >= 0);
-      if (have_all_callbacks) {
-        break;
+        stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
+        destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
+        closed_index = harness.find_recorded_callback_index("device_closed", device_id);
+        if (stage_ready()) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
 
-    if (!have_all_callbacks) {
-      std::cerr << "DIAG synthetic timeline completion-gated teardown expected stream_id=" << stream_id
+      std::cerr << "DIAG synthetic timeline completion-gated teardown stage_timeout=" << stage_name
+                << " expected stream_id=" << stream_id
                 << " device_id=" << device_id
                 << " observed_indices=(stopped=" << stopped_index
                 << ", destroyed=" << destroyed_index
                 << ", closed=" << closed_index << ")\n";
+      return false;
+    };
+
+    if (!wait_for_stage("stream_stopped", [&]() { return stopped_index >= 0; }, 1200)) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
       harness.stop_runtime();
       return false;
     }
+    if (!wait_for_stage("stream_destroyed", [&]() { return destroyed_index >= 0; }, 1200)) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
+      harness.stop_runtime();
+      return false;
+    }
+    if (!wait_for_stage("device_closed", [&]() { return closed_index >= 0; }, 1200)) {
+      std::cerr << "FAIL synthetic timeline completion-gated teardown missing required callback evidence\n";
+      harness.stop_runtime();
+      return false;
+    }
+
     if (!(stopped_index < destroyed_index && destroyed_index < closed_index)) {
       std::cerr << "FAIL synthetic timeline completion-gated teardown callback order mismatch\n";
       harness.stop_runtime();
