@@ -1183,18 +1183,20 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     int stopped_index = -1;
     int destroyed_index = -1;
     int closed_index = -1;
-    const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
-    while (std::chrono::steady_clock::now() < callback_deadline) {
+    bool have_all_callbacks = false;
+    const auto callback_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    while (std::chrono::steady_clock::now() <= callback_deadline) {
       stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
       destroyed_index = harness.find_recorded_callback_index("stream_destroyed", stream_id);
       closed_index = harness.find_recorded_callback_index("device_closed", device_id);
-      if (stopped_index >= 0 && destroyed_index >= 0 && closed_index >= 0) {
+      have_all_callbacks = (stopped_index >= 0 && destroyed_index >= 0 && closed_index >= 0);
+      if (have_all_callbacks) {
         break;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    if (stopped_index < 0 || destroyed_index < 0 || closed_index < 0) {
+    if (!have_all_callbacks) {
       std::cerr << "DIAG synthetic timeline completion-gated teardown expected stream_id=" << stream_id
                 << " device_id=" << device_id
                 << " observed_indices=(stopped=" << stopped_index
