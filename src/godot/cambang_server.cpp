@@ -71,6 +71,10 @@ static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexce
   }
 }
 
+static bool line_contains_token(const std::string& line, const char* token) {
+  return token && line.find(token) != std::string::npos;
+}
+
 static int runtime_mode_to_provider_kind_int(RuntimeMode mode) noexcept {
   switch (mode) {
     case RuntimeMode::platform_backed: return CamBANGServer::PROVIDER_KIND_PLATFORM_BACKED;
@@ -89,6 +93,8 @@ CamBANGServer::CamBANGServer() {
   }
   singleton_ = this;
   runtime_.set_snapshot_publisher(&snapshot_buffer_);
+  timeline_trace_echo_enabled_ = timeline_teardown_trace_enabled();
+  _refresh_timeline_teardown_trace_mode();
 }
 
 CamBANGServer::~CamBANGServer() {
@@ -196,6 +202,11 @@ godot::Error CamBANGServer::_start_with_provider_config(
   }
   last_seen_published_seq_ = runtime_.published_seq();
 
+  active_runtime_mode_ = mode;
+  active_synthetic_role_ = synthetic_role;
+  strict_scenario_unmet_logged_ = false;
+  _refresh_timeline_teardown_trace_mode();
+
   // Defensive re-check: requested mode must be supported in this build.
   {
     ProviderResult cap = ProviderBroker::check_mode_supported_in_build(mode);
@@ -229,6 +240,9 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   runtime_.stop();
+
+  strict_scenario_unmet_logged_ = false;
+  _refresh_timeline_teardown_trace_mode();
 
   // Stop is a boundary operation; core may have published final teardown/retirement
   // truth during deterministic shutdown. Drain one final boundary observation before
@@ -388,7 +402,10 @@ void CamBANGServer::_on_godot_tick(double delta) {
 
   std::string timeline_line;
   while (timeline_teardown_trace_try_pop(timeline_line)) {
-    godot::UtilityFunctions::print(timeline_line.c_str());
+    _handle_timeline_teardown_trace_line(timeline_line);
+    if (timeline_trace_echo_enabled_) {
+      godot::UtilityFunctions::print(timeline_line.c_str());
+    }
   }
 
   // Godot-facing snapshot truth is tick-bounded.
@@ -433,8 +450,11 @@ godot::Error CamBANGServer::select_builtin_scenario(const godot::String& scenari
         ProviderResult::failure(ProviderError::ERR_BAD_STATE));
   }
   const std::string scenario_utf8 = scenario_name.utf8().get_data();
-  return map_provider_result_to_godot_error(
-      broker->select_timeline_builtin_scenario_for_host(scenario_utf8));
+  const ProviderResult pr = broker->select_timeline_builtin_scenario_for_host(scenario_utf8);
+  if (pr.ok()) {
+    strict_scenario_unmet_logged_ = false;
+  }
+  return map_provider_result_to_godot_error(pr);
 }
 
 godot::Error CamBANGServer::load_external_scenario(const godot::String& json_text) {
@@ -444,8 +464,11 @@ godot::Error CamBANGServer::load_external_scenario(const godot::String& json_tex
         ProviderResult::failure(ProviderError::ERR_BAD_STATE));
   }
   const std::string text_utf8 = json_text.utf8().get_data();
-  return map_provider_result_to_godot_error(
-      broker->load_timeline_canonical_scenario_from_json_text_for_host(text_utf8));
+  const ProviderResult pr = broker->load_timeline_canonical_scenario_from_json_text_for_host(text_utf8);
+  if (pr.ok()) {
+    strict_scenario_unmet_logged_ = false;
+  }
+  return map_provider_result_to_godot_error(pr);
 }
 
 godot::Error CamBANGServer::start_scenario() {
@@ -454,7 +477,11 @@ godot::Error CamBANGServer::start_scenario() {
     return map_provider_result_to_godot_error(
         ProviderResult::failure(ProviderError::ERR_BAD_STATE));
   }
-  return map_provider_result_to_godot_error(broker->start_timeline_scenario_for_host());
+  const ProviderResult pr = broker->start_timeline_scenario_for_host();
+  if (pr.ok()) {
+    strict_scenario_unmet_logged_ = false;
+  }
+  return map_provider_result_to_godot_error(pr);
 }
 
 godot::Error CamBANGServer::stop_scenario() {
@@ -490,8 +517,40 @@ godot::Error CamBANGServer::set_completion_gated_destructive_sequencing_enabled(
     return map_provider_result_to_godot_error(
         ProviderResult::failure(ProviderError::ERR_BAD_STATE));
   }
-  return map_provider_result_to_godot_error(
-      broker->set_completion_gated_destructive_sequencing_for_host(enabled));
+  const ProviderResult pr = broker->set_completion_gated_destructive_sequencing_for_host(enabled);
+  if (pr.ok()) {
+    completion_gated_destructive_sequencing_enabled_ = enabled;
+    strict_scenario_unmet_logged_ = false;
+    _refresh_timeline_teardown_trace_mode();
+  }
+  return map_provider_result_to_godot_error(pr);
+}
+
+void CamBANGServer::_refresh_timeline_teardown_trace_mode() {
+  const bool strict_timeline_monitor =
+      runtime_.is_running() && active_runtime_mode_ == RuntimeMode::synthetic &&
+      active_synthetic_role_ == SyntheticRole::Timeline &&
+      !completion_gated_destructive_sequencing_enabled_;
+  timeline_teardown_trace_set_enabled(timeline_trace_echo_enabled_ || strict_timeline_monitor);
+}
+
+void CamBANGServer::_handle_timeline_teardown_trace_line(const std::string& line) {
+  const bool strict_timeline_monitor =
+      runtime_.is_running() && active_runtime_mode_ == RuntimeMode::synthetic &&
+      active_synthetic_role_ == SyntheticRole::Timeline &&
+      !completion_gated_destructive_sequencing_enabled_;
+  if (!strict_timeline_monitor || strict_scenario_unmet_logged_) {
+    return;
+  }
+
+  if (!(line_contains_token(line, "[timeline_teardown][FAIL] DestroyStream") ||
+        line_contains_token(line, "[timeline_teardown][FAIL] CloseDevice"))) {
+    return;
+  }
+
+  godot::UtilityFunctions::push_warning(
+      "[CamBANG][Synthetic][Strict] Scenario conditions unmet. Strict destructive sequencing could not be satisfied in-band for the active timeline scenario.");
+  strict_scenario_unmet_logged_ = true;
 }
 
 bool CamBANGServer::_ensure_provider_attached_and_initialized(

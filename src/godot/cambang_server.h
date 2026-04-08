@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -150,6 +151,15 @@ private:
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
+
+  void _refresh_timeline_teardown_trace_mode();
+  void _handle_timeline_teardown_trace_line(const std::string& line);
+
+  bool timeline_trace_echo_enabled_ = false;
+  RuntimeMode active_runtime_mode_ = RuntimeMode::platform_backed;
+  SyntheticRole active_synthetic_role_ = SyntheticRole::Nominal;
+  bool completion_gated_destructive_sequencing_enabled_ = false;
+  bool strict_scenario_unmet_logged_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.
