@@ -2,6 +2,7 @@
 // This tool intentionally uses provider callbacks, retained snapshots,
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdint>
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <string>
@@ -603,129 +604,139 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
 // ===== Family C: Clustered destructive sequencing interpretation =====
 
 bool run_clustered_strict_branch_check() {
-  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
-  std::string error;
-  if (!harness.start_runtime(error)) {
-    std::cerr << "FAIL clustered strict harness start: " << error << "\n";
-    return false;
-  }
-
-  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
-  if (!synthetic) {
-    std::cerr << "FAIL clustered strict provider cast failed\n";
-    harness.stop_runtime();
-    return false;
-  }
-
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
-  if (!synthetic->set_completion_gated_destructive_sequencing_for_host(false).ok() ||
-      !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
-      !synthetic->start_timeline_scenario_for_host().ok()) {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.timing_driver = TimingDriver::VirtualTime;
+  cfg.endpoint_count = 1;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
+
+  SyntheticProvider synthetic(cfg);
+  if (!synthetic.initialize(&cb).ok()) {
+    return false;
+  }
+
+  std::vector<SyntheticEventType> dispatched;
+  synthetic.set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
+    dispatched.push_back(ev.type);
+  });
+
+  if (!synthetic.set_completion_gated_destructive_sequencing_for_host(false).ok() ||
+      !synthetic.set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
+      !synthetic.start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered strict setup failed\n";
-    harness.stop_runtime();
+    (void)synthetic.shutdown();
     return false;
   }
 
-  if (!wait_for_snapshot_with_progress(
-          harness,
-          *synthetic,
-          0,
-          [&](const CamBANGStateSnapshot& s) {
-            const auto* stream = VerifyCaseHarness::find_stream(s, kClusteredStreamId);
-            return VerifyCaseHarness::has_device(s, kClusteredDeviceId) &&
-                   stream && stream->mode == CBStreamMode::FLOWING;
-          },
-          error,
-          "timed out waiting for clustered strict precondition")) {
-    std::cerr << "FAIL clustered strict precondition failed: " << error << "\n";
-    harness.stop_runtime();
+  synthetic.advance(0);
+
+  const int open_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::OpenDevice) - dispatched.begin());
+  const int create_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CreateStream) - dispatched.begin());
+  const int start_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
+  if (open_dispatch >= static_cast<int>(dispatched.size()) ||
+      create_dispatch >= static_cast<int>(dispatched.size()) ||
+      start_dispatch >= static_cast<int>(dispatched.size())) {
+    std::cerr << "FAIL clustered strict precondition dispatch evidence missing\n";
+    (void)synthetic.shutdown();
     return false;
   }
 
-  synthetic->advance(period_ns * 2);
-  harness.runtime().request_publish();
+  synthetic.advance(period_ns * 2);
 
-  auto snap = harness.snapshot_buffer().snapshot_copy();
-  if (!snap) {
-    std::cerr << "FAIL clustered strict missing post-boundary snapshot\n";
-    harness.stop_runtime();
+  const int stop_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StopStream) - dispatched.begin());
+  const int destroy_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::DestroyStream) - dispatched.begin());
+  const int close_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CloseDevice) - dispatched.begin());
+  if (stop_dispatch >= static_cast<int>(dispatched.size()) ||
+      destroy_dispatch >= static_cast<int>(dispatched.size()) ||
+      close_dispatch >= static_cast<int>(dispatched.size())) {
+    std::cerr << "FAIL clustered strict clustered-boundary dispatch evidence missing\n";
+    (void)synthetic.shutdown();
     return false;
   }
 
-  // Strict interpretation: after clustered boundary, truth must be self-consistent.
-  const bool has_stream = VerifyCaseHarness::has_stream(*snap, kClusteredStreamId);
-  const bool has_device = VerifyCaseHarness::has_device(*snap, kClusteredDeviceId);
-  if (has_stream) {
-    const auto* stream = VerifyCaseHarness::find_stream(*snap, kClusteredStreamId);
-    if (!stream || stream->mode == CBStreamMode::FLOWING) {
-      std::cerr << "FAIL clustered strict impossible retained stream state\n";
-      harness.stop_runtime();
+  const int started_cb = find_event_index(cb.events, "stream_started", kClusteredStreamId);
+  const int stopped_cb = find_event_index(cb.events, "stream_stopped", kClusteredStreamId);
+  const int destroyed_cb = find_event_index(cb.events, "stream_destroyed", kClusteredStreamId);
+  const int closed_cb = find_event_index(cb.events, "device_closed", kClusteredDeviceId);
+
+  if (started_cb < 0) {
+    std::cerr << "FAIL clustered strict missing stream_started callback evidence\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+  if (stopped_cb >= 0 && stopped_cb <= started_cb) {
+    std::cerr << "FAIL clustered strict non-fabricated ordering violated (stopped before started)\n";
+    (void)synthetic.shutdown();
+    return false;
+  }
+  if (destroyed_cb >= 0) {
+    if (stopped_cb < 0 || !(stopped_cb < destroyed_cb)) {
+      std::cerr << "FAIL clustered strict non-fabricated ordering violated (destroyed without prior stopped)\n";
+      (void)synthetic.shutdown();
       return false;
     }
-    if (!has_device) {
-      std::cerr << "FAIL clustered strict impossible retained topology (stream without device)\n";
-      harness.stop_runtime();
+  }
+  if (closed_cb >= 0) {
+    if (destroyed_cb < 0 || !(destroyed_cb < closed_cb)) {
+      std::cerr << "FAIL clustered strict non-fabricated ordering violated (closed without prior destroyed)\n";
+      (void)synthetic.shutdown();
       return false;
     }
   }
 
-  harness.stop_runtime();
-  return true;
+  return synthetic.shutdown().ok();
 }
 
 bool run_clustered_completion_gated_branch_check() {
-  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
-  harness.set_callback_diagnostics_enabled(true);
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.synthetic_role = SyntheticRole::Timeline;
+  cfg.timing_driver = TimingDriver::VirtualTime;
+  cfg.endpoint_count = 1;
+  cfg.nominal.fps_num = 30;
+  cfg.nominal.fps_den = 1;
 
-  std::string error;
-  if (!harness.start_runtime(error)) {
-    std::cerr << "FAIL clustered gated harness start: " << error << "\n";
+  SyntheticProvider synthetic(cfg);
+  if (!synthetic.initialize(&cb).ok()) {
     return false;
   }
 
-  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
-  if (!synthetic) {
-    std::cerr << "FAIL clustered gated provider cast failed\n";
-    harness.stop_runtime();
-    return false;
-  }
+  std::vector<SyntheticEventType> dispatched;
+  synthetic.set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
+    dispatched.push_back(ev.type);
+  });
 
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
-  if (!synthetic->set_completion_gated_destructive_sequencing_for_host(true).ok() ||
-      !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
-      !synthetic->start_timeline_scenario_for_host().ok()) {
+  if (!synthetic.set_completion_gated_destructive_sequencing_for_host(true).ok() ||
+      !synthetic.set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
+      !synthetic.start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered gated setup failed\n";
-    harness.stop_runtime();
+    (void)synthetic.shutdown();
     return false;
   }
 
-  if (!wait_for_snapshot_with_progress(
-          harness,
-          *synthetic,
-          0,
-          [&](const CamBANGStateSnapshot& s) {
-            return VerifyCaseHarness::has_stream(s, kClusteredStreamId) &&
-                   VerifyCaseHarness::has_device(s, kClusteredDeviceId);
-          },
-          error,
-          "timed out waiting for clustered gated precondition")) {
-    std::cerr << "FAIL clustered gated precondition failed: " << error << "\n";
-    harness.stop_runtime();
+  synthetic.advance(0);
+  const int start_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
+  if (start_dispatch >= static_cast<int>(dispatched.size())) {
+    std::cerr << "FAIL clustered gated precondition dispatch evidence missing\n";
+    (void)synthetic.shutdown();
     return false;
   }
 
-  harness.clear_recorded_callbacks();
-  synthetic->advance(period_ns * 2);
+  cb.events.clear();
+  synthetic.advance(period_ns * 2);
 
   int stopped = -1;
   int destroyed = -1;
   int closed = -1;
   for (int i = 0; i < kMaxIters; ++i) {
-    synthetic->advance(1);
-    harness.runtime().request_publish();
-    stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
-    destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
-    closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
+    synthetic.advance(1);
+    stopped = find_event_index(cb.events, "stream_stopped", kClusteredStreamId);
+    destroyed = find_event_index(cb.events, "stream_destroyed", kClusteredStreamId);
+    closed = find_event_index(cb.events, "device_closed", kClusteredDeviceId);
     if (stopped >= 0 && destroyed >= 0 && closed >= 0) {
       break;
     }
@@ -739,33 +750,27 @@ bool run_clustered_completion_gated_branch_check() {
               << ", destroyed=" << destroyed
               << ", closed=" << closed << ")\n";
     std::cerr << "FAIL clustered gated missing callback evidence\n";
-    harness.stop_runtime();
+    (void)synthetic.shutdown();
     return false;
   }
   if (!(stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL clustered gated callback order mismatch\n";
-    harness.stop_runtime();
+    (void)synthetic.shutdown();
     return false;
   }
 
-  bool final_absence = false;
-  for (int i = 0; i < 50; ++i) {
-    synthetic->advance(1);
-    harness.runtime().request_publish();
-    auto snap = harness.snapshot_buffer().snapshot_copy();
-    if (snap && !VerifyCaseHarness::has_stream(*snap, kClusteredStreamId) &&
-        !VerifyCaseHarness::has_device(*snap, kClusteredDeviceId)) {
-      final_absence = true;
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
-  }
-  if (!final_absence) {
-    std::cerr << "WARN clustered gated snapshot convergence not reached within non-gating window\n";
+  const int stop_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StopStream) - dispatched.begin());
+  const int destroy_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::DestroyStream) - dispatched.begin());
+  const int close_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CloseDevice) - dispatched.begin());
+  if (stop_dispatch >= static_cast<int>(dispatched.size()) ||
+      destroy_dispatch >= static_cast<int>(dispatched.size()) ||
+      close_dispatch >= static_cast<int>(dispatched.size())) {
+    std::cerr << "FAIL clustered gated clustered-boundary dispatch evidence missing\n";
+    (void)synthetic.shutdown();
+    return false;
   }
 
-  harness.stop_runtime();
-  return true;
+  return synthetic.shutdown().ok();
 }
 
 // ===== Family D: Broker / host surface compliance =====
