@@ -137,9 +137,19 @@ bool SyntheticProvider::timeline_destructive_prereq_ready_(
   switch (ev.type) {
     case SyntheticEventType::DestroyStream: {
       auto it = streams_.find(ev.stream_id);
-      if (it != streams_.end() && it->second.created && it->second.started) {
-        reason = "await_stream_stopped";
-        return false;
+      if (it != streams_.end()) {
+        if (it->second.created && it->second.started) {
+          reason = "await_stream_stopped";
+          return false;
+        }
+        if (it->second.created) {
+          for (const auto& slot : it->second.pool) {
+            if (slot && slot->in_use.load(std::memory_order_acquire)) {
+              reason = "await_stream_buffers_released";
+              return false;
+            }
+          }
+        }
       }
       return true;
     }

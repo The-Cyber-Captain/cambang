@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdint>
 #include <functional>
@@ -950,6 +951,48 @@ public:
     return callback_recorder_.find_index(tag, id);
   }
 
+  int find_recorded_callback_index_after(const char* tag, uint64_t id, size_t after_count) const {
+    return callback_recorder_.find_index_after(tag, id, after_count);
+  }
+
+  size_t recorded_callback_count() const { return callback_recorder_.event_count(); }
+
+  bool wait_for_recorded_callback_with_progress(const char* tag,
+                                                uint64_t id,
+                                                size_t after_count,
+                                                std::function<void()> progress,
+                                                std::string& error,
+                                                int max_iters = 500,
+                                                int sleep_ms = 5,
+                                                const char* timeout_msg =
+                                                    "timed out waiting for recorded callback") {
+    return wait_until_with_progress([&]() {
+      return callback_recorder_.find_index_after(tag, id, after_count) >= 0;
+    },
+                                    std::move(progress),
+                                    error,
+                                    max_iters,
+                                    sleep_ms,
+                                    timeout_msg);
+  }
+
+  bool wait_for_core_snapshot_with_progress(std::function<bool(const CamBANGStateSnapshot&)> pred,
+                                            std::function<void()> progress,
+                                            std::string& error,
+                                            int max_iters = 500,
+                                            int sleep_ms = 5,
+                                            const char* timeout_msg = "timed out waiting for snapshot") {
+    return wait_until_with_progress([&]() {
+      auto snap = snapshot_buffer_.snapshot_copy();
+      return snap && pred(*snap);
+    },
+                                    std::move(progress),
+                                    error,
+                                    max_iters,
+                                    sleep_ms,
+                                    timeout_msg);
+  }
+
   static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& snap, uint64_t device_id) {
     for (const auto& device : snap.devices) {
       if (device.instance_id == device_id) {
@@ -992,13 +1035,22 @@ private:
     }
 
     int find_index(const char* tag, uint64_t id) const {
+      return find_index_after(tag, id, 0);
+    }
+
+    int find_index_after(const char* tag, uint64_t id, size_t after_count) const {
       std::lock_guard<std::mutex> lock(mu_);
-      for (size_t i = 0; i < events_.size(); ++i) {
+      for (size_t i = after_count; i < events_.size(); ++i) {
         if (events_[i].tag == tag && events_[i].id == id) {
           return static_cast<int>(i);
         }
       }
       return -1;
+    }
+
+    size_t event_count() const {
+      std::lock_guard<std::mutex> lock(mu_);
+      return events_.size();
     }
 
     uint64_t allocate_native_id(NativeObjectType type) override {
@@ -1075,6 +1127,7 @@ private:
                   << " id=" << id
                   << " seq=" << seq << "\n";
       }
+      cv_.notify_all();
     }
 
     struct Event {
@@ -1084,6 +1137,7 @@ private:
 
     IProviderCallbacks* delegate_ = nullptr;
     mutable std::mutex mu_;
+    mutable std::condition_variable cv_;
     std::vector<Event> events_;
     bool diagnostics_enabled_ = false;
   };
@@ -1138,19 +1192,34 @@ private:
     return true;
   }
 
-  static bool wait_until(const std::function<bool()>& pred,
-                         std::string& error,
-                         int max_iters,
-                         int sleep_ms,
-                         const char* timeout_msg) {
+  static bool wait_until_with_progress(const std::function<bool()>& pred,
+                                       std::function<void()> progress,
+                                       std::string& error,
+                                       int max_iters,
+                                       int sleep_ms,
+                                       const char* timeout_msg) {
     for (int i = 0; i < max_iters; ++i) {
       if (pred()) {
         return true;
+      }
+      if (progress) {
+        progress();
+        if (pred()) {
+          return true;
+        }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
     }
     error = timeout_msg;
     return false;
+  }
+
+  static bool wait_until(const std::function<bool()>& pred,
+                         std::string& error,
+                         int max_iters,
+                         int sleep_ms,
+                         const char* timeout_msg) {
+    return wait_until_with_progress(pred, {}, error, max_iters, sleep_ms, timeout_msg);
   }
 
   VerifyCaseProviderKind provider_kind_ = VerifyCaseProviderKind::Synthetic;

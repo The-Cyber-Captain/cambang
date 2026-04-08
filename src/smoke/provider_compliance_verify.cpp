@@ -2,7 +2,6 @@
 // This tool intentionally uses provider callbacks, retained snapshots,
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdint>
-#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <string>
@@ -14,6 +13,7 @@
 #include "imaging/synthetic/provider.h"
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/scenario_model.h"
+#include "imaging/api/timeline_teardown_trace.h"
 #include "smoke/verify_case/verify_case_harness.h"
 
 using namespace cambang;
@@ -34,6 +34,14 @@ constexpr uint64_t kLifecycleStreamId = 9103;
 constexpr uint64_t kClusteredDeviceId = 121;
 constexpr uint64_t kClusteredRootId = 12201;
 constexpr uint64_t kClusteredStreamId = 122;
+
+
+void flush_timeline_teardown_trace(std::ostream& os = std::cerr) {
+  std::string line;
+  while (timeline_teardown_trace_try_pop(line)) {
+    os << line << "\n";
+  }
+}
 
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
@@ -163,6 +171,7 @@ bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
   for (int i = 0; i < max_iters; ++i) {
     synthetic.advance(advance_step_ns);
     harness.runtime().request_publish();
+    flush_timeline_teardown_trace();
     auto snap = harness.snapshot_buffer().snapshot_copy();
     if (snap && predicate(*snap)) {
       return true;
@@ -561,7 +570,9 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
       !harness.destroy_stream_id(kLifecycleStreamId, error) ||
       !harness.close_device_id(kLifecycleDeviceId, error)) {
     std::cerr << "FAIL primitive lifecycle action failed: " << error << "\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
@@ -575,7 +586,9 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
           kSleepMs,
           "timed out waiting for primitive lifecycle final absence")) {
     std::cerr << "FAIL primitive lifecycle final truth failed: " << error << "\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
@@ -588,15 +601,20 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
 
   if (opened < 0 || created < 0 || started < 0 || stopped < 0 || destroyed < 0 || closed < 0) {
     std::cerr << "FAIL primitive lifecycle missing callback evidence\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
   if (!(opened < created && created < started && started < stopped && stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL primitive lifecycle callback order mismatch\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
+  flush_timeline_teardown_trace();
   harness.stop_runtime();
   return true;
 }
@@ -605,103 +623,134 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
 
 bool run_clustered_strict_branch_check() {
   VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
-  harness.set_callback_diagnostics_enabled(true);
   std::string error;
   if (!harness.start_runtime(error)) {
     std::cerr << "FAIL clustered strict harness start: " << error << "\n";
     return false;
   }
+
   auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
   if (!synthetic) {
     std::cerr << "FAIL clustered strict provider cast failed\n";
+    flush_timeline_teardown_trace();
     harness.stop_runtime();
     return false;
   }
 
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
-  std::vector<SyntheticEventType> dispatched;
-  const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(harness.runtime());
-  synthetic->set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
-    dispatched.push_back(ev.type);
-    core_dispatch(ev);
-  });
-
   if (!synthetic->set_completion_gated_destructive_sequencing_for_host(false).ok() ||
       !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
       !synthetic->start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered strict setup failed\n";
+    flush_timeline_teardown_trace();
+    harness.stop_runtime();
+    return false;
+  }
+
+  if (!wait_for_snapshot_with_progress(
+          harness,
+          *synthetic,
+          0,
+          [&](const CamBANGStateSnapshot& s) {
+            const auto* stream = VerifyCaseHarness::find_stream(s, kClusteredStreamId);
+            return VerifyCaseHarness::has_device(s, kClusteredDeviceId) &&
+                   stream && stream->mode == CBStreamMode::FLOWING;
+          },
+          error,
+          "timed out waiting for clustered strict precondition")) {
+    std::cerr << "FAIL clustered strict precondition failed: " << error << "\n";
+    flush_timeline_teardown_trace();
     harness.stop_runtime();
     return false;
   }
 
   harness.clear_recorded_callbacks();
-  synthetic->advance(0);
-
-  const int open_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::OpenDevice) - dispatched.begin());
-  const int create_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CreateStream) - dispatched.begin());
-  const int start_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
-  if (open_dispatch >= static_cast<int>(dispatched.size()) ||
-      create_dispatch >= static_cast<int>(dispatched.size()) ||
-      start_dispatch >= static_cast<int>(dispatched.size())) {
-    std::cerr << "FAIL clustered strict precondition dispatch evidence missing\n";
-    harness.stop_runtime();
-    return false;
-  }
+  const size_t strict_watermark = harness.recorded_callback_count();
 
   synthetic->advance(period_ns * 2);
-  for (int i = 0; i < kMaxIters; ++i) {
+  harness.runtime().request_publish();
+  flush_timeline_teardown_trace();
+
+  const auto strict_progress = [&]() {
     synthetic->advance(1);
     harness.runtime().request_publish();
-    const int stopped_probe = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
-    const int destroyed_probe = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
-    const int closed_probe = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
-    if (stopped_probe >= 0 || destroyed_probe >= 0 || closed_probe >= 0) {
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
-  }
+    flush_timeline_teardown_trace();
+  };
 
-  const int stop_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StopStream) - dispatched.begin());
-  const int destroy_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::DestroyStream) - dispatched.begin());
-  const int close_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CloseDevice) - dispatched.begin());
-  if (stop_dispatch >= static_cast<int>(dispatched.size()) ||
-      destroy_dispatch >= static_cast<int>(dispatched.size()) ||
-      close_dispatch >= static_cast<int>(dispatched.size())) {
-    std::cerr << "FAIL clustered strict clustered-boundary dispatch evidence missing\n";
+  if (!harness.wait_for_recorded_callback_with_progress(
+          "stream_stopped",
+          kClusteredStreamId,
+          strict_watermark,
+          strict_progress,
+          error,
+          kMaxIters,
+          kSleepMs,
+          "timed out waiting for clustered strict stop callback")) {
+    std::cerr << "FAIL clustered strict missing stop callback: " << error << "\n";
+    flush_timeline_teardown_trace();
     harness.stop_runtime();
     return false;
   }
 
-  const int started_cb = harness.find_recorded_callback_index("stream_started", kClusteredStreamId);
-  const int stopped_cb = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
-  const int destroyed_cb = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
-  const int closed_cb = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
+  enum class StrictOutcome {
+    Pending,
+    RetainedStopped,
+    FullyTornDown,
+  };
 
-  if (started_cb < 0) {
-    std::cerr << "FAIL clustered strict missing stream_started callback evidence\n";
+  auto classify_strict_outcome = [&]() -> StrictOutcome {
+    const int destroyed_idx = harness.find_recorded_callback_index_after(
+        "stream_destroyed", kClusteredStreamId, strict_watermark);
+    const int closed_idx = harness.find_recorded_callback_index_after(
+        "device_closed", kClusteredDeviceId, strict_watermark);
+
+    auto snap = harness.snapshot_buffer().snapshot_copy();
+    const bool has_stream = snap && VerifyCaseHarness::has_stream(*snap, kClusteredStreamId);
+    const bool has_device = snap && VerifyCaseHarness::has_device(*snap, kClusteredDeviceId);
+    const auto* stream = (snap ? VerifyCaseHarness::find_stream(*snap, kClusteredStreamId) : nullptr);
+
+    const bool retained_stopped =
+        has_stream && has_device && stream && stream->mode == CBStreamMode::STOPPED &&
+        destroyed_idx < 0 && closed_idx < 0;
+
+    const bool fully_torn_down =
+        destroyed_idx >= 0 && closed_idx >= 0 && destroyed_idx < closed_idx &&
+        !has_stream && !has_device;
+
+    if (fully_torn_down) return StrictOutcome::FullyTornDown;
+    if (retained_stopped) return StrictOutcome::RetainedStopped;
+    return StrictOutcome::Pending;
+  };
+
+  StrictOutcome strict_outcome = StrictOutcome::Pending;
+  for (int i = 0; i < kMaxIters; ++i) {
+    strict_outcome = classify_strict_outcome();
+    if (strict_outcome != StrictOutcome::Pending) break;
+    strict_progress();
+  }
+
+  if (strict_outcome == StrictOutcome::Pending) {
+    const int destroyed_idx = harness.find_recorded_callback_index_after(
+        "stream_destroyed", kClusteredStreamId, strict_watermark);
+    const int closed_idx = harness.find_recorded_callback_index_after(
+        "device_closed", kClusteredDeviceId, strict_watermark);
+    auto snap = harness.snapshot_buffer().snapshot_copy();
+    const bool has_stream = snap && VerifyCaseHarness::has_stream(*snap, kClusteredStreamId);
+    const bool has_device = snap && VerifyCaseHarness::has_device(*snap, kClusteredDeviceId);
+    const auto* stream = (snap ? VerifyCaseHarness::find_stream(*snap, kClusteredStreamId) : nullptr);
+    std::cerr << "FAIL clustered strict valid outcome missing"
+              << " callback_indices=(destroyed=" << destroyed_idx
+              << ", closed=" << closed_idx << ")"
+              << " retained=(has_stream=" << (has_stream ? 1 : 0)
+              << ", has_device=" << (has_device ? 1 : 0)
+              << ", mode=" << (stream ? static_cast<int>(stream->mode) : -1)
+              << ")\n";
+    flush_timeline_teardown_trace();
     harness.stop_runtime();
     return false;
   }
-  if (stopped_cb >= 0 && stopped_cb <= started_cb) {
-    std::cerr << "FAIL clustered strict non-fabricated ordering violated (stopped before started)\n";
-    harness.stop_runtime();
-    return false;
-  }
-  if (destroyed_cb >= 0) {
-    if (stopped_cb < 0 || !(stopped_cb < destroyed_cb)) {
-      std::cerr << "FAIL clustered strict non-fabricated ordering violated (destroyed without prior stopped)\n";
-      harness.stop_runtime();
-      return false;
-    }
-  }
-  if (closed_cb >= 0) {
-    if (destroyed_cb < 0 || !(destroyed_cb < closed_cb)) {
-      std::cerr << "FAIL clustered strict non-fabricated ordering violated (closed without prior destroyed)\n";
-      harness.stop_runtime();
-      return false;
-    }
-  }
 
+  flush_timeline_teardown_trace();
   harness.stop_runtime();
   return true;
 }
@@ -717,115 +766,194 @@ bool run_clustered_completion_gated_branch_check() {
   auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
   if (!synthetic) {
     std::cerr << "FAIL clustered gated provider cast failed\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
-
-  std::vector<SyntheticEventType> dispatched;
-  const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(harness.runtime());
-  synthetic->set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
-    dispatched.push_back(ev.type);
-    core_dispatch(ev);
-  });
 
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
   if (!synthetic->set_completion_gated_destructive_sequencing_for_host(true).ok() ||
       !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
       !synthetic->start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered gated setup failed\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
+    return false;
+  }
+
+  auto progress = [&]() {
+    synthetic->advance(1);
+    harness.runtime().request_publish();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  };
+
+  if (!harness.wait_for_core_snapshot_with_progress(
+          [&](const CamBANGStateSnapshot& s) {
+            const auto* stream = VerifyCaseHarness::find_stream(s, kClusteredStreamId);
+            return VerifyCaseHarness::has_device(s, kClusteredDeviceId) &&
+                   stream && stream->mode == CBStreamMode::FLOWING;
+          },
+          progress,
+          error,
+          kMaxIters,
+          kSleepMs,
+          "timed out waiting for clustered gated startup realization")) {
+    std::cerr << "FAIL clustered gated startup realization failed: " << error << "\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
+    return false;
+  }
+
+  int opened = harness.find_recorded_callback_index("device_opened", kClusteredDeviceId);
+  int created = harness.find_recorded_callback_index("stream_created", kClusteredStreamId);
+  int started = harness.find_recorded_callback_index("stream_started", kClusteredStreamId);
+  if (opened < 0 || created < 0 || started < 0) {
+    std::cerr << "DIAG clustered gated startup callback timeout expected stream_id=" << kClusteredStreamId
+              << " device_id=" << kClusteredDeviceId
+              << " callback_indices=(opened=" << opened
+              << ", created=" << created
+              << ", started=" << started << ")\n";
+    std::cerr << "FAIL clustered gated startup callback evidence missing\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
+    return false;
+  }
+  if (!(opened < created && created < started)) {
+    std::cerr << "FAIL clustered gated startup callback order mismatch\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
   harness.clear_recorded_callbacks();
-  synthetic->advance(0);
-  const int start_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
-  if (start_dispatch >= static_cast<int>(dispatched.size())) {
-    std::cerr << "FAIL clustered gated precondition dispatch evidence missing\n";
-    harness.stop_runtime();
-    return false;
-  }
-
-  harness.clear_recorded_callbacks();
+  const size_t teardown_watermark = harness.recorded_callback_count();
   synthetic->advance(period_ns * 2);
+  harness.runtime().request_publish();
+  flush_timeline_teardown_trace();
 
   int stopped = -1;
   int destroyed = -1;
   int closed = -1;
-  auto wait_for_stage = [&](const char* tag,
-                            uint64_t id,
-                            const char* stage_name,
-    int& out_index) -> bool {
-    for (int i = 0; i < kMaxIters; ++i) {
-      synthetic->advance(1);
-      harness.runtime().request_publish();
-      stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
-      destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
-      closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
-      out_index = harness.find_recorded_callback_index(tag, id);
-      if (out_index >= 0) {
-        return true;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
-    }
 
-    // Short deterministic drain/recheck to avoid edge-of-poll false negatives.
-    for (int i = 0; i < 10; ++i) {
-      synthetic->advance(1);
-      harness.runtime().request_publish();
-      out_index = harness.find_recorded_callback_index(tag, id);
-      if (out_index >= 0) {
-        stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
-        destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
-        closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
-        return true;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
-    }
-
-    stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
-    destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
-    closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
-    std::cerr << "DIAG clustered gated callback stage timeout stage=" << stage_name
-              << " expected stream_id=" << kClusteredStreamId
+  if (!harness.wait_for_recorded_callback_with_progress("stream_stopped",
+                                                        kClusteredStreamId,
+                                                        teardown_watermark,
+                                                        progress,
+                                                        error,
+                                                        kMaxIters * 2,
+                                                        kSleepMs,
+                                                        "timed out waiting for clustered gated stream_stopped")) {
+    stopped = harness.find_recorded_callback_index_after("stream_stopped", kClusteredStreamId, teardown_watermark);
+    destroyed = harness.find_recorded_callback_index_after("stream_destroyed", kClusteredStreamId, teardown_watermark);
+    closed = harness.find_recorded_callback_index_after("device_closed", kClusteredDeviceId, teardown_watermark);
+    std::cerr << "DIAG clustered gated callback wait timeout stage=stream_stopped expected stream_id=" << kClusteredStreamId
               << " device_id=" << kClusteredDeviceId
               << " callback_indices=(stopped=" << stopped
               << ", destroyed=" << destroyed
               << ", closed=" << closed << ")\n";
-    std::cerr << "FAIL clustered gated missing callback evidence at stage " << stage_name << "\n";
-    return false;
-  };
-
-  if (!wait_for_stage("stream_stopped", kClusteredStreamId, "stream_stopped", stopped)) {
-    harness.stop_runtime();
-    return false;
-  }
-  if (!wait_for_stage("stream_destroyed", kClusteredStreamId, "stream_destroyed", destroyed)) {
-    harness.stop_runtime();
-    return false;
-  }
-  if (!wait_for_stage("device_closed", kClusteredDeviceId, "device_closed", closed)) {
-    harness.stop_runtime();
+    std::cerr << "FAIL clustered gated missing callback evidence at stage stream_stopped\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
+  if (!harness.wait_for_recorded_callback_with_progress("stream_destroyed",
+                                                        kClusteredStreamId,
+                                                        teardown_watermark,
+                                                        progress,
+                                                        error,
+                                                        kMaxIters * 2,
+                                                        kSleepMs,
+                                                        "timed out waiting for clustered gated stream_destroyed")) {
+    stopped = harness.find_recorded_callback_index_after("stream_stopped", kClusteredStreamId, teardown_watermark);
+    destroyed = harness.find_recorded_callback_index_after("stream_destroyed", kClusteredStreamId, teardown_watermark);
+    closed = harness.find_recorded_callback_index_after("device_closed", kClusteredDeviceId, teardown_watermark);
+    std::cerr << "DIAG clustered gated callback wait timeout stage=stream_destroyed expected stream_id=" << kClusteredStreamId
+              << " device_id=" << kClusteredDeviceId
+              << " callback_indices=(stopped=" << stopped
+              << ", destroyed=" << destroyed
+              << ", closed=" << closed << ")\n";
+    std::cerr << "FAIL clustered gated missing callback evidence at stage stream_destroyed\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
+    return false;
+  }
+
+  if (!harness.wait_for_recorded_callback_with_progress("device_closed",
+                                                        kClusteredDeviceId,
+                                                        teardown_watermark,
+                                                        progress,
+                                                        error,
+                                                        kMaxIters * 2,
+                                                        kSleepMs,
+                                                        "timed out waiting for clustered gated device_closed")) {
+    stopped = harness.find_recorded_callback_index_after("stream_stopped", kClusteredStreamId, teardown_watermark);
+    destroyed = harness.find_recorded_callback_index_after("stream_destroyed", kClusteredStreamId, teardown_watermark);
+    closed = harness.find_recorded_callback_index_after("device_closed", kClusteredDeviceId, teardown_watermark);
+    std::cerr << "DIAG clustered gated callback wait timeout stage=device_closed expected stream_id=" << kClusteredStreamId
+              << " device_id=" << kClusteredDeviceId
+              << " callback_indices=(stopped=" << stopped
+              << ", destroyed=" << destroyed
+              << ", closed=" << closed << ")\n";
+    std::cerr << "FAIL clustered gated missing callback evidence at stage device_closed\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
+    return false;
+  }
+
+  stopped = harness.find_recorded_callback_index_after("stream_stopped", kClusteredStreamId, teardown_watermark);
+  destroyed = harness.find_recorded_callback_index_after("stream_destroyed", kClusteredStreamId, teardown_watermark);
+  closed = harness.find_recorded_callback_index_after("device_closed", kClusteredDeviceId, teardown_watermark);
+  if (stopped < 0 || destroyed < 0 || closed < 0) {
+    std::cerr << "FAIL clustered gated missing callback evidence after completion\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
+    return false;
+  }
   if (!(stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL clustered gated callback order mismatch\n";
-    harness.stop_runtime();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
-  const int stop_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StopStream) - dispatched.begin());
-  const int destroy_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::DestroyStream) - dispatched.begin());
-  const int close_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CloseDevice) - dispatched.begin());
-  if (stop_dispatch >= static_cast<int>(dispatched.size()) ||
-      destroy_dispatch >= static_cast<int>(dispatched.size()) ||
-      close_dispatch >= static_cast<int>(dispatched.size())) {
-    std::cerr << "FAIL clustered gated clustered-boundary dispatch evidence missing\n";
-    harness.stop_runtime();
+  if (!harness.wait_for_core_snapshot_with_progress(
+          [&](const CamBANGStateSnapshot& s) {
+            return !VerifyCaseHarness::has_stream(s, kClusteredStreamId) &&
+                   !VerifyCaseHarness::has_device(s, kClusteredDeviceId);
+          },
+          progress,
+          error,
+          kMaxIters * 2,
+          kSleepMs,
+          "timed out waiting for clustered gated teardown convergence")) {
+    stopped = harness.find_recorded_callback_index_after("stream_stopped", kClusteredStreamId, teardown_watermark);
+    destroyed = harness.find_recorded_callback_index_after("stream_destroyed", kClusteredStreamId, teardown_watermark);
+    closed = harness.find_recorded_callback_index_after("device_closed", kClusteredDeviceId, teardown_watermark);
+    std::cerr << "DIAG clustered gated teardown convergence timeout expected stream_id=" << kClusteredStreamId
+              << " device_id=" << kClusteredDeviceId
+              << " callback_indices=(stopped=" << stopped
+              << ", destroyed=" << destroyed
+              << ", closed=" << closed << ")\n";
+    std::cerr << "FAIL clustered gated teardown did not converge: " << error << "\n";
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  harness.stop_runtime();
     return false;
   }
 
+  flush_timeline_teardown_trace();
   harness.stop_runtime();
   return true;
 }
@@ -855,13 +983,17 @@ bool run_broker_timeline_host_surface_check() {
 
   if (!broker.select_timeline_builtin_scenario_for_host("stream_lifecycle_versions").ok()) {
     std::cerr << "FAIL broker timeline host surface builtin selection failed\n";
-    (void)broker.shutdown();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  (void)broker.shutdown();
     return false;
   }
 
   if (!broker.advance_timeline_for_host(0).ok() || !dispatched.empty()) {
     std::cerr << "FAIL broker timeline host surface staged scenario dispatched before start\n";
-    (void)broker.shutdown();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  (void)broker.shutdown();
     return false;
   }
 
@@ -870,7 +1002,9 @@ bool run_broker_timeline_host_surface_check() {
       !broker.set_completion_gated_destructive_sequencing_for_host(false).ok() ||
       !broker.advance_timeline_for_host(60'000'002).ok()) {
     std::cerr << "FAIL broker timeline host surface run failed\n";
-    (void)broker.shutdown();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  (void)broker.shutdown();
     return false;
   }
 
@@ -890,7 +1024,9 @@ bool run_broker_timeline_host_surface_check() {
   }
   if (!(saw_open && saw_create && saw_start && saw_stop && saw_destroy && saw_close)) {
     std::cerr << "FAIL broker timeline host surface missing expected dispatch progression\n";
-    (void)broker.shutdown();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  (void)broker.shutdown();
     return false;
   }
 
@@ -922,14 +1058,18 @@ bool run_broker_timeline_host_surface_check() {
   if (!broker.load_timeline_canonical_scenario_from_json_text_for_host(valid_json, nullptr).ok() ||
       !broker.advance_timeline_for_host(0).ok() || !dispatched.empty()) {
     std::cerr << "FAIL broker timeline host surface external stage-only behavior changed\n";
-    (void)broker.shutdown();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  (void)broker.shutdown();
     return false;
   }
 
   std::string load_error;
   if (broker.load_timeline_canonical_scenario_from_json_text_for_host("{\"schema_version\":\"bad\"}", &load_error).ok()) {
     std::cerr << "FAIL broker timeline host surface strict loader accepted invalid json\n";
-    (void)broker.shutdown();
+    flush_timeline_teardown_trace();
+    flush_timeline_teardown_trace();
+  (void)broker.shutdown();
     return false;
   }
 
@@ -1151,6 +1291,7 @@ int main(int argc, char** argv) {
     if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
   }
 
+  flush_timeline_teardown_trace();
   std::cout << "PASS provider_compliance_verify\n";
   return 0;
 }
