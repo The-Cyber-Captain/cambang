@@ -1184,21 +1184,28 @@ bool run_synthetic_timeline_completion_gated_destructive_sequencing_check() {
     int destroyed_index = -1;
     int closed_index = -1;
     bool final_absence_reached = false;
-    bool has_stream = false;
-    bool has_device = false;
-    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
-    while (std::chrono::steady_clock::now() <= completion_deadline) {
+    bool has_stream = true;
+    bool has_device = true;
+
+    constexpr int kMaxIters = 500;
+    constexpr int kSleepMs = 5;
+    for (int i = 0; i < kMaxIters; ++i) {
+      // Keep completion-gated progression moving and request publication of
+      // the latest integrated truth through the normal harness path.
       synthetic->advance(1);
       harness.runtime().request_publish();
 
       auto snap = harness.snapshot_buffer().snapshot_copy();
-      has_stream = snap && VerifyCaseHarness::has_stream(*snap, stream_id);
-      has_device = snap && VerifyCaseHarness::has_device(*snap, device_id);
-      if (snap && !has_stream && !has_device) {
-        final_absence_reached = true;
-        break;
+      if (snap) {
+        has_stream = VerifyCaseHarness::has_stream(*snap, stream_id);
+        has_device = VerifyCaseHarness::has_device(*snap, device_id);
+        if (!has_stream && !has_device) {
+          final_absence_reached = true;
+          break;
+        }
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
     }
 
     stopped_index = harness.find_recorded_callback_index("stream_stopped", stream_id);
