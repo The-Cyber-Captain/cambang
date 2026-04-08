@@ -604,34 +604,38 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
 // ===== Family C: Clustered destructive sequencing interpretation =====
 
 bool run_clustered_strict_branch_check() {
-  const uint64_t period_ns = 1'000'000'000ull / 30ull;
-  RecorderCallbacks cb;
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.timing_driver = TimingDriver::VirtualTime;
-  cfg.endpoint_count = 1;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
-
-  SyntheticProvider synthetic(cfg);
-  if (!synthetic.initialize(&cb).ok()) {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  harness.set_callback_diagnostics_enabled(true);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL clustered strict harness start: " << error << "\n";
+    return false;
+  }
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL clustered strict provider cast failed\n";
+    harness.stop_runtime();
     return false;
   }
 
+  const uint64_t period_ns = 1'000'000'000ull / 30ull;
   std::vector<SyntheticEventType> dispatched;
-  synthetic.set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
+  const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(harness.runtime());
+  synthetic->set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
     dispatched.push_back(ev.type);
+    core_dispatch(ev);
   });
 
-  if (!synthetic.set_completion_gated_destructive_sequencing_for_host(false).ok() ||
-      !synthetic.set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
-      !synthetic.start_timeline_scenario_for_host().ok()) {
+  if (!synthetic->set_completion_gated_destructive_sequencing_for_host(false).ok() ||
+      !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
+      !synthetic->start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered strict setup failed\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
-  synthetic.advance(0);
+  harness.clear_recorded_callbacks();
+  synthetic->advance(0);
 
   const int open_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::OpenDevice) - dispatched.begin());
   const int create_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::CreateStream) - dispatched.begin());
@@ -640,11 +644,21 @@ bool run_clustered_strict_branch_check() {
       create_dispatch >= static_cast<int>(dispatched.size()) ||
       start_dispatch >= static_cast<int>(dispatched.size())) {
     std::cerr << "FAIL clustered strict precondition dispatch evidence missing\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
-  synthetic.advance(period_ns * 2);
+  synthetic->advance(period_ns * 2);
+  for (int i = 0; i < kMaxIters; ++i) {
+    synthetic->advance(1);
+    const int stopped_probe = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
+    const int destroyed_probe = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
+    const int closed_probe = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
+    if (stopped_probe >= 0 || destroyed_probe >= 0 || closed_probe >= 0) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
 
   const int stop_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StopStream) - dispatched.begin());
   const int destroy_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::DestroyStream) - dispatched.begin());
@@ -653,90 +667,95 @@ bool run_clustered_strict_branch_check() {
       destroy_dispatch >= static_cast<int>(dispatched.size()) ||
       close_dispatch >= static_cast<int>(dispatched.size())) {
     std::cerr << "FAIL clustered strict clustered-boundary dispatch evidence missing\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
-  const int started_cb = find_event_index(cb.events, "stream_started", kClusteredStreamId);
-  const int stopped_cb = find_event_index(cb.events, "stream_stopped", kClusteredStreamId);
-  const int destroyed_cb = find_event_index(cb.events, "stream_destroyed", kClusteredStreamId);
-  const int closed_cb = find_event_index(cb.events, "device_closed", kClusteredDeviceId);
+  const int started_cb = harness.find_recorded_callback_index("stream_started", kClusteredStreamId);
+  const int stopped_cb = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
+  const int destroyed_cb = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
+  const int closed_cb = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
 
   if (started_cb < 0) {
     std::cerr << "FAIL clustered strict missing stream_started callback evidence\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
   if (stopped_cb >= 0 && stopped_cb <= started_cb) {
     std::cerr << "FAIL clustered strict non-fabricated ordering violated (stopped before started)\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
   if (destroyed_cb >= 0) {
     if (stopped_cb < 0 || !(stopped_cb < destroyed_cb)) {
       std::cerr << "FAIL clustered strict non-fabricated ordering violated (destroyed without prior stopped)\n";
-      (void)synthetic.shutdown();
+      harness.stop_runtime();
       return false;
     }
   }
   if (closed_cb >= 0) {
     if (destroyed_cb < 0 || !(destroyed_cb < closed_cb)) {
       std::cerr << "FAIL clustered strict non-fabricated ordering violated (closed without prior destroyed)\n";
-      (void)synthetic.shutdown();
+      harness.stop_runtime();
       return false;
     }
   }
 
-  return synthetic.shutdown().ok();
+  harness.stop_runtime();
+  return true;
 }
 
 bool run_clustered_completion_gated_branch_check() {
-  RecorderCallbacks cb;
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.timing_driver = TimingDriver::VirtualTime;
-  cfg.endpoint_count = 1;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
-
-  SyntheticProvider synthetic(cfg);
-  if (!synthetic.initialize(&cb).ok()) {
+  VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
+  harness.set_callback_diagnostics_enabled(true);
+  std::string error;
+  if (!harness.start_runtime(error)) {
+    std::cerr << "FAIL clustered gated harness start: " << error << "\n";
+    return false;
+  }
+  auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
+  if (!synthetic) {
+    std::cerr << "FAIL clustered gated provider cast failed\n";
+    harness.stop_runtime();
     return false;
   }
 
   std::vector<SyntheticEventType> dispatched;
-  synthetic.set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
+  const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(harness.runtime());
+  synthetic->set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
     dispatched.push_back(ev.type);
+    core_dispatch(ev);
   });
 
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
-  if (!synthetic.set_completion_gated_destructive_sequencing_for_host(true).ok() ||
-      !synthetic.set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
-      !synthetic.start_timeline_scenario_for_host().ok()) {
+  if (!synthetic->set_completion_gated_destructive_sequencing_for_host(true).ok() ||
+      !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
+      !synthetic->start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered gated setup failed\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
-  synthetic.advance(0);
+  harness.clear_recorded_callbacks();
+  synthetic->advance(0);
   const int start_dispatch = static_cast<int>(std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
   if (start_dispatch >= static_cast<int>(dispatched.size())) {
     std::cerr << "FAIL clustered gated precondition dispatch evidence missing\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
-  cb.events.clear();
-  synthetic.advance(period_ns * 2);
+  harness.clear_recorded_callbacks();
+  synthetic->advance(period_ns * 2);
 
   int stopped = -1;
   int destroyed = -1;
   int closed = -1;
   for (int i = 0; i < kMaxIters; ++i) {
-    synthetic.advance(1);
-    stopped = find_event_index(cb.events, "stream_stopped", kClusteredStreamId);
-    destroyed = find_event_index(cb.events, "stream_destroyed", kClusteredStreamId);
-    closed = find_event_index(cb.events, "device_closed", kClusteredDeviceId);
+    synthetic->advance(1);
+    stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
+    destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
+    closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
     if (stopped >= 0 && destroyed >= 0 && closed >= 0) {
       break;
     }
@@ -750,12 +769,12 @@ bool run_clustered_completion_gated_branch_check() {
               << ", destroyed=" << destroyed
               << ", closed=" << closed << ")\n";
     std::cerr << "FAIL clustered gated missing callback evidence\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
   if (!(stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL clustered gated callback order mismatch\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
@@ -766,11 +785,12 @@ bool run_clustered_completion_gated_branch_check() {
       destroy_dispatch >= static_cast<int>(dispatched.size()) ||
       close_dispatch >= static_cast<int>(dispatched.size())) {
     std::cerr << "FAIL clustered gated clustered-boundary dispatch evidence missing\n";
-    (void)synthetic.shutdown();
+    harness.stop_runtime();
     return false;
   }
 
-  return synthetic.shutdown().ok();
+  harness.stop_runtime();
+  return true;
 }
 
 // ===== Family D: Broker / host surface compliance =====
