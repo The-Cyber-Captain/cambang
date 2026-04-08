@@ -651,6 +651,7 @@ bool run_clustered_strict_branch_check() {
   synthetic->advance(period_ns * 2);
   for (int i = 0; i < kMaxIters; ++i) {
     synthetic->advance(1);
+    harness.runtime().request_publish();
     const int stopped_probe = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
     const int destroyed_probe = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
     const int closed_probe = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
@@ -754,9 +755,10 @@ bool run_clustered_completion_gated_branch_check() {
   auto wait_for_stage = [&](const char* tag,
                             uint64_t id,
                             const char* stage_name,
-                            int& out_index) -> bool {
+    int& out_index) -> bool {
     for (int i = 0; i < kMaxIters; ++i) {
       synthetic->advance(1);
+      harness.runtime().request_publish();
       stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
       destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
       closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
@@ -770,6 +772,7 @@ bool run_clustered_completion_gated_branch_check() {
     // Short deterministic drain/recheck to avoid edge-of-poll false negatives.
     for (int i = 0; i < 10; ++i) {
       synthetic->advance(1);
+      harness.runtime().request_publish();
       out_index = harness.find_recorded_callback_index(tag, id);
       if (out_index >= 0) {
         stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
