@@ -751,27 +751,61 @@ bool run_clustered_completion_gated_branch_check() {
   int stopped = -1;
   int destroyed = -1;
   int closed = -1;
-  for (int i = 0; i < kMaxIters; ++i) {
-    synthetic->advance(1);
+  auto wait_for_stage = [&](const char* tag,
+                            uint64_t id,
+                            const char* stage_name,
+                            int& out_index) -> bool {
+    for (int i = 0; i < kMaxIters; ++i) {
+      synthetic->advance(1);
+      stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
+      destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
+      closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
+      out_index = harness.find_recorded_callback_index(tag, id);
+      if (out_index >= 0) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+
+    // Short deterministic drain/recheck to avoid edge-of-poll false negatives.
+    for (int i = 0; i < 10; ++i) {
+      synthetic->advance(1);
+      out_index = harness.find_recorded_callback_index(tag, id);
+      if (out_index >= 0) {
+        stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
+        destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
+        closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+
     stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
     destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
     closed = harness.find_recorded_callback_index("device_closed", kClusteredDeviceId);
-    if (stopped >= 0 && destroyed >= 0 && closed >= 0) {
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
-  }
-
-  if (stopped < 0 || destroyed < 0 || closed < 0) {
-    std::cerr << "DIAG clustered gated callback completion timeout expected stream_id=" << kClusteredStreamId
+    std::cerr << "DIAG clustered gated callback stage timeout stage=" << stage_name
+              << " expected stream_id=" << kClusteredStreamId
               << " device_id=" << kClusteredDeviceId
               << " callback_indices=(stopped=" << stopped
               << ", destroyed=" << destroyed
               << ", closed=" << closed << ")\n";
-    std::cerr << "FAIL clustered gated missing callback evidence\n";
+    std::cerr << "FAIL clustered gated missing callback evidence at stage " << stage_name << "\n";
+    return false;
+  };
+
+  if (!wait_for_stage("stream_stopped", kClusteredStreamId, "stream_stopped", stopped)) {
     harness.stop_runtime();
     return false;
   }
+  if (!wait_for_stage("stream_destroyed", kClusteredStreamId, "stream_destroyed", destroyed)) {
+    harness.stop_runtime();
+    return false;
+  }
+  if (!wait_for_stage("device_closed", kClusteredDeviceId, "device_closed", closed)) {
+    harness.stop_runtime();
+    return false;
+  }
+
   if (!(stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL clustered gated callback order mismatch\n";
     harness.stop_runtime();
