@@ -142,3 +142,15 @@ Validation should establish confidence in:
 Where a provider is hardware-backed and environment-sensitive, runtime
 validation may supplement the verifier, but should not replace contract
 checks.
+
+For synthetic timeline destructive sequencing specifically, maintainers should
+distinguish between:
+
+- **provider contract verification**
+  - primarily covered by `provider_compliance_verify`, including strict vs
+    completion-gated clustered destructive cases
+
+- **default-path canonical realization**
+  - covered by `canonical_timeline_realization`, which serves as a simple
+    always-pass completion-gated realization proof rather than a strict-edge
+    diagnostic

@@ -186,12 +186,25 @@ This is the primary maintainer check for provider-contract rules such as:
 - non-lossy lifecycle/native-object/error delivery
 - deterministic shutdown sequencing
 - synthetic ordering and timeline invariants
+- clustered destructive sequencing behavior under strict vs completion-gated modes
 
-It also includes a completion-aware primitive lifecycle check for the
-synthetic runtime/provider path that validates `OpenDevice` →
-`CreateStream` → `StartStream` → `StopStream` → `DestroyStream` →
-`CloseDevice` with authoritative completion gating between destructive
-steps.
+### What it proves for synthetic timeline destructive sequencing
+
+For clustered destructive synthetic timeline cases, the verifier accepts the
+runtime-valid strict and completion-gated outcomes rather than assuming a single
+destroy/close realization shape.
+
+In particular:
+
+- **strict** validation may legitimately result in either:
+    - retained stopped state with in-band destroy/close failure, or
+    - full in-band destroy/close success
+
+- **completion-gated** validation proves eventual successful destructive
+  realization once the relevant readiness truth exists
+
+This tool is therefore the authoritative deterministic verifier for provider
+contract behavior in this area.
 
 ### What it does not do
 
@@ -223,6 +236,55 @@ Expected result:
 ```text
 PASS provider_compliance_verify
 ```
+
+---
+
+## 6.1 `canonical_timeline_realization`
+
+**Category:** Verification case (run via `verify_case_runner`)
+
+### Purpose
+
+`canonical_timeline_realization` is a small, readable, default-path proof that
+an authored synthetic timeline realizes correctly end-to-end.
+
+It is intended to remain:
+
+- canonical
+- completion-gated by default
+- always-pass
+- easy to interpret
+
+It is **not** intended to act as a second provider compliance verifier or as a
+strict-edge diagnostic probe.
+
+### Current role
+
+This verification case keeps a clear authored destructive sequence, including:
+
+- `StopStream @ T`
+- `DestroyStream @ T+1`
+- `CloseDevice @ T+2`
+
+without widening those timings arbitrarily.
+
+Under the current default completion-gated model, the case continues advancing
+synthetic virtual time while waiting for realized destroy/close truth, rather
+than assuming one tiny post-stop advance must always suffice.
+
+This means the case proves:
+
+> given a straightforward authored timeline, the standard/default synthetic
+> timeline path realizes cleanly
+
+### Usage
+
+```text
+./out/verify_case_runner.exe canonical_timeline_realization
+```
+
+This case should be stable under repetition and is suitable as a fast regression
+signal for default synthetic timeline realization behavior.
 
 ---
 
