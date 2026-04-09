@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <functional>
 
-#include "core/core_mailbox.h"
+#include "core/provider_to_core_commands.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_stream_registry.h"
@@ -27,7 +27,7 @@ struct CoreDispatchStats final {
   uint64_t frames_unknown_stream = 0;
 };
 
-// CoreDispatcher is the core-thread-only consumer of CoreCommand.
+// CoreDispatcher is the core-thread-only consumer of ProviderToCoreCommand.
 //
 // For this build slice, there is no downstream frame consumer yet.
 // Therefore, the dispatcher proves ownership correctness by ALWAYS releasing
@@ -51,7 +51,7 @@ public:
   CoreDispatcher& operator=(const CoreDispatcher&) = delete;
 
   // Must be called ONLY on the core thread.
-  void dispatch(CoreCommand&& cmd);
+  void dispatch(ProviderToCoreCommand&& cmd);
 
   // Must be called ONLY on the core thread.
   [[nodiscard]] CoreDispatchStats stats() const noexcept { return stats_; }

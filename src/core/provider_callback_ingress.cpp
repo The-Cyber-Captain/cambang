@@ -38,7 +38,7 @@ void ProviderCallbackIngress::on_frame_ingress_dispatched_(uint64_t stream_id) {
 }
 
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
-                                                 std::function<void(CoreCommand&&)> sink,
+                                                 std::function<void(ProviderToCoreCommand&&)> sink,
                                                  std::function<uint64_t()> core_monotonic_now_ns)
     : core_thread_(core_thread),
       sink_(std::move(sink)),
@@ -82,7 +82,7 @@ uint32_t ProviderCallbackIngress::ingress_depth_for_stream(uint64_t stream_id) c
   return (it != stream_ingress_depth_.end()) ? it->second : 0;
 }
 
-void ProviderCallbackIngress::post_command(CoreCommand cmd) {
+void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
   // That is acceptable for scaffolding; later we can replace with fixed-capacity mailbox.
@@ -90,14 +90,14 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
     return;
   }
 
-  const CoreCommandType type = cmd.type;
+  const ProviderToCoreCommandType type = cmd.type;
   uint64_t frame_stream_id = 0;
 
   // Preserve a copy of the frame for the failure-to-enqueue path. We must not rely on
-  // moved-from CoreCommand contents after constructing the posted lambda.
+  // moved-from ProviderToCoreCommand contents after constructing the posted lambda.
   FrameView fail_frame;
   bool has_fail_frame = false;
-  if (type == CoreCommandType::PROVIDER_FRAME) {
+  if (type == ProviderToCoreCommandType::PROVIDER_FRAME) {
     auto& frame_payload = std::get<CmdProviderFrame>(cmd.payload);
     fail_frame = frame_payload.frame;
     frame_stream_id = frame_payload.frame.stream_id;
@@ -107,7 +107,7 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
   const CoreThread::PostResult r = core_thread_->try_post([this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
-    if (c.type == CoreCommandType::PROVIDER_FRAME) {
+    if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       on_frame_ingress_dispatched_(frame_stream_id);
     }
     if (sink) {
@@ -117,7 +117,7 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
 
     // Defensive fallback (should not be used in normal wiring):
     // Ensure release-on-drop semantics are upheld even if no sink is bound.
-    if (c.type == CoreCommandType::PROVIDER_FRAME) {
+    if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       auto& p = std::get<CmdProviderFrame>(c.payload);
       p.frame.release_now();
       p.frame.release = nullptr;
@@ -184,36 +184,36 @@ void ProviderCallbackIngress::post_command(CoreCommand cmd) {
 }
 
 void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_DEVICE_OPENED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED;
   cmd.payload = CmdProviderDeviceOpened{device_instance_id};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_device_closed(uint64_t device_instance_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_DEVICE_CLOSED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_DEVICE_CLOSED;
   cmd.payload = CmdProviderDeviceClosed{device_instance_id};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_stream_created(uint64_t stream_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_STREAM_CREATED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_CREATED;
   cmd.payload = CmdProviderStreamCreated{stream_id};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_stream_destroyed(uint64_t stream_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_STREAM_DESTROYED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_DESTROYED;
   cmd.payload = CmdProviderStreamDestroyed{stream_id};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_stream_started(uint64_t stream_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_STREAM_STARTED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_STARTED;
   cmd.payload = CmdProviderStreamStarted{stream_id};
   post_command(std::move(cmd));
 }
@@ -224,29 +224,29 @@ void ProviderCallbackIngress::on_stream_stopped(uint64_t stream_id, ProviderErro
                                  static_cast<unsigned long long>(stream_id),
                                  static_cast<unsigned>(error_or_ok));
   }
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_STREAM_STOPPED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_STOPPED;
   cmd.payload = CmdProviderStreamStopped{stream_id, static_cast<uint32_t>(error_or_ok)};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_capture_started(uint64_t capture_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_CAPTURE_STARTED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
   cmd.payload = CmdProviderCaptureStarted{capture_id};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_capture_completed(uint64_t capture_id) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_CAPTURE_COMPLETED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED;
   cmd.payload = CmdProviderCaptureCompleted{capture_id};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id, ProviderError error) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_CAPTURE_FAILED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED;
   cmd.payload = CmdProviderCaptureFailed{capture_id, static_cast<uint32_t>(error)};
   post_command(std::move(cmd));
 }
@@ -254,23 +254,23 @@ void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id, ProviderErr
 void ProviderCallbackIngress::on_frame(const FrameView& frame) {
   // FrameView is a provider-owned view. Ownership is returned to the provider only when
   // core calls frame.release_now(). The core dispatcher MUST ensure release-on-drop.
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_FRAME;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_FRAME;
   (void)on_frame_ingress_enqueued_(frame.stream_id);
   cmd.payload = CmdProviderFrame{frame}; // copies the view (not the buffer)
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_device_error(uint64_t device_instance_id, ProviderError error) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_DEVICE_ERROR;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_DEVICE_ERROR;
   cmd.payload = CmdProviderDeviceError{device_instance_id, static_cast<uint32_t>(error)};
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_stream_error(uint64_t stream_id, ProviderError error) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_STREAM_ERROR;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_ERROR;
   cmd.payload = CmdProviderStreamError{stream_id, static_cast<uint32_t>(error)};
   post_command(std::move(cmd));
 }
@@ -289,15 +289,15 @@ void ProviderCallbackIngress::on_native_object_created(const NativeObjectCreateI
   p.has_created_ns = info.has_created_ns;
   p.created_ns = info.created_ns;
 
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED;
   cmd.payload = p;
   post_command(std::move(cmd));
 }
 
 void ProviderCallbackIngress::on_native_object_destroyed(const NativeObjectDestroyInfo& info) {
-  CoreCommand cmd;
-  cmd.type = CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED;
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED;
   cmd.payload = CmdProviderNativeObjectDestroyed{info.native_id, info.has_destroyed_ns, info.destroyed_ns};
   post_command(std::move(cmd));
 }

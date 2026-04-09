@@ -127,7 +127,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Defaulting is performed by core using provider->stream_template().
   // profile_version ownership is core-authoritative for this ingress:
   // pass profile_version=0 to request core-assigned lineage.
-  // These are non-blocking and may return Busy if the core mailbox is full.
+  // These are non-blocking and may return Busy if the provider_to_core_commands is full.
   TryCreateStreamStatus try_create_stream(
       uint64_t stream_id,
       uint64_t device_instance_id,
@@ -250,7 +250,7 @@ private:
   void on_core_timer_tick() override;
   void on_core_stop() override;
 
-  void enqueue_provider_fact(CoreCommand&& cmd);
+  void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
 
@@ -303,7 +303,7 @@ private:
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;
 
-  std::deque<CoreCommand> provider_facts_;
+  std::deque<ProviderToCoreCommand> provider_facts_;
   std::deque<CoreThread::Task> requests_;
 
   enum class ShutdownPhase : uint8_t {

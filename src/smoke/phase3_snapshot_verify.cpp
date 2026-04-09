@@ -31,7 +31,7 @@ is covered by dedicated Godot scene checks.
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
 #include "core/latest_frame_mailbox.h"
-#include "core/core_mailbox.h"
+#include "core/provider_to_core_commands.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_runtime.h"
 #include "core/core_stream_registry.h"
@@ -195,8 +195,8 @@ static int test_visibility_diagnostics_snapshot_truth() {
   }
 
   auto dispatch_frame = [&](FrameView frame) {
-    CoreCommand cmd{};
-    cmd.type = CoreCommandType::PROVIDER_FRAME;
+    ProviderToCoreCommand cmd{};
+    cmd.type = ProviderToCoreCommandType::PROVIDER_FRAME;
     cmd.payload = CmdProviderFrame{frame};
     dispatcher.dispatch(std::move(cmd));
   };
@@ -914,8 +914,8 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
   };
   frame.release_user = &releases;
 
-  CoreCommand cmd{};
-  cmd.type = CoreCommandType::PROVIDER_FRAME;
+  ProviderToCoreCommand cmd{};
+  cmd.type = ProviderToCoreCommandType::PROVIDER_FRAME;
   cmd.payload = CmdProviderFrame{frame};
   dispatcher.dispatch(std::move(cmd));
 
