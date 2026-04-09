@@ -481,6 +481,7 @@ godot::Variant CamBANGServer::get_active_provider_config() const {
   godot::Dictionary d;
   const RuntimeMode mode = broker->runtime_mode_latched();
   d["provider_kind"] = runtime_mode_to_provider_kind_int(mode);
+  d["timeline_reconciliation"] = godot::Variant();
   if (mode == RuntimeMode::synthetic) {
     const SyntheticRole role = broker->synthetic_role_latched();
     const TimingDriver timing_driver = broker->synthetic_timing_driver_latched();
