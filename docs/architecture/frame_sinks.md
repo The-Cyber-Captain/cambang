@@ -128,6 +128,56 @@ including GPU-native YUV import and shader conversion.
 Frame sinks are extension points, not redefinitions of the core provider
 contract.
 
+## Release-facing naming and role split
+
+Frame sinks are an **internal/runtime boundary concept**.
+
+They define how accepted `FrameView` payloads leave the core runtime and
+enter downstream handling under deterministic ownership/release rules.
+
+They do **not** by themselves define the Godot-facing image access API.
+
+### Godot-facing image access
+
+Release-facing/public API should be expressed in **result-oriented** terms
+rather than mailbox-oriented terms.
+
+Canonical Godot-facing image-access nouns are:
+
+- **Stream Result**
+- **Capture Result**
+- **Capture Result Set**
+
+These describe what the user/runtime-visible API exposes, not which sink
+implementation populated that result.
+
+### Internal sink specialization vocabulary
+
+When implementation discussion needs to distinguish repeating-stream and
+still-capture paths, prefer:
+
+- **Stream Sink**
+- **Capture Sink**
+
+This keeps sink terminology aligned with the corresponding public runtime concepts:
+
+- repeating stream output
+- still-capture output
+
+without promoting development-only mailbox semantics into release
+architecture.
+
+### Mailbox status
+
+`LatestFrameMailbox` remains a **development-only** sink used for current
+visibility/integration validation.
+
+It must not be treated as the canonical release-facing image-access model.
+
+Release-facing design may retain, transform, upload, or forward image data
+through other sink implementations while exposing result-oriented
+Godot-facing APIs.
+
 ---
 
 ## Counter semantics alignment

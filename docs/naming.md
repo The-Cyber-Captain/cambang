@@ -342,7 +342,72 @@ platform objects.
 
 ------------------------------------------------------------------------
 
-## 6. Lifecycle `phase` vs operational `mode`
+## 6. Image access API
+
+CamBANG distinguishes between the published snapshot / introspection model
+and the Godot-facing API used to obtain image-bearing runtime outputs.
+
+- Snapshot terminology describes immutable published runtime truth.
+- Image access terminology describes image-bearing outputs that users may
+  retrieve, inspect, process, display, or save.
+
+These concepts are related at the application level but are not the same API surface.
+
+### Result vocabulary
+
+The canonical Godot-facing result nouns are:
+
+- **Stream Result** — the image-bearing result exposed for a repeating stream
+- **Capture Result** — the image-bearing result of a device still capture
+- **Capture Result Set** — the grouped result returned from a rig-triggered
+  capture, containing the subset of device capture results that were actually realized
+
+These terms describe user-facing/runtime-visible outputs.
+They do **not** define sink/storage mechanics by themselves.
+
+### Rig capture result-set rule
+
+`CamBANGRig.trigger_sync_capture()` is conceptually a grouped still-capture
+operation across rig members.
+
+The intuitive Godot-facing output is therefore a **Capture Result Set**
+containing the subset of member-device **Capture Result** objects that
+successfully realized for that trigger.
+
+This avoids introducing a parallel rig-owned pixel artifact model when
+the useful results are already device-associated still-capture outputs.
+
+### Internal sink terminology
+
+Within implementation/architecture discussions, the umbrella sink category remains:
+
+- **Frame Sink**
+
+Where stream-specific and still-specific sink paths need to be distinguished,
+prefer:
+
+- **Stream Sink**
+- **Capture Sink**
+
+Avoid introducing new public/API terminology that exposes temporary
+mailbox-oriented implementation details.
+
+### Mailbox terminology rule
+
+For image-delivery/image-access architecture, avoid using **mailbox** as the
+primary public-facing concept.
+
+Rationale:
+
+- the current `LatestFrameMailbox` is development-only visibility scaffolding
+- release image access should be expressed in result-oriented/API terms
+- the codebase already uses mailbox terminology in other internal contexts,
+  so reusing it for release image access would increase ambiguity
+
+
+------------------------------------------------------------------------
+
+## 7. Lifecycle `phase` vs operational `mode`
 
 To avoid ambiguity, CamBANG uses separate fields for lifecycle and
 operational posture.
@@ -420,7 +485,7 @@ Behavioural semantics and determinism guarantees are defined in `provider_archit
 
 ------------------------------------------------------------------------
 
-## 7. Identity and lineage
+## 8. Identity and lineage
 
 To support reliable diagnostics (including "old teardown + new live"
 scenarios), CamBANG separates stable hardware identity from core
@@ -435,7 +500,7 @@ but still present due to teardown or retention policies.
 
 ------------------------------------------------------------------------
 
-## 8. Internal naming (for contributors)
+## 9. Internal naming (for contributors)
 
 These names appear in the native/core implementation, build system, and
 debugging logs.
@@ -451,7 +516,7 @@ debugging logs.
 
 ------------------------------------------------------------------------
 
-## 9. Glossary (quick reference)
+## 10. Glossary (quick reference)
 
 - **Spec**: hardware-reported truth (with optional user corrections).
 - **Config**: user intent (choices made by the developer/app).
