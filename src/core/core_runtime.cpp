@@ -763,9 +763,6 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     if (!p) return;
     (void)streams_.mark_stop_requested_by_core(stream_id);
     const ProviderResult sr = p->stop_stream(stream_id);
-    timeline_teardown_trace_emit("provider StopStream stream_id=%llu rc=%u",
-                                 static_cast<unsigned long long>(stream_id),
-                                 static_cast<unsigned>(sr.code));
     if (!sr.ok()) {
       timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
@@ -793,14 +790,8 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
     if (!p) return;
 
     // Best-effort: stop before destroy.
-    const ProviderResult sr = p->stop_stream(stream_id);
-    timeline_teardown_trace_emit("provider StopStream(for-destroy) stream_id=%llu rc=%u",
-                                 static_cast<unsigned long long>(stream_id),
-                                 static_cast<unsigned>(sr.code));
+    (void)p->stop_stream(stream_id);
     const ProviderResult dr = p->destroy_stream(stream_id);
-    timeline_teardown_trace_emit("provider DestroyStream stream_id=%llu rc=%u",
-                                 static_cast<unsigned long long>(stream_id),
-                                 static_cast<unsigned>(dr.code));
     if (!dr.ok()) {
       timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
@@ -855,9 +846,6 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     const ProviderResult cr = p->close_device(device_instance_id);
-    timeline_teardown_trace_emit("provider CloseDevice device_instance_id=%llu rc=%u",
-                                 static_cast<unsigned long long>(device_instance_id),
-                                 static_cast<unsigned>(cr.code));
     if (!cr.ok()) {
       timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(device_instance_id),
