@@ -23,17 +23,18 @@ var _observation_started := false
 func _ready() -> void:
 	set_process(true)
 	CamBANGServer.stop()
-	var start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	var start_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+	)
 	if start_err != OK:
 		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
 		return
 	var stage_err := CamBANGServer.select_builtin_scenario("publication_coalescing")
 	if stage_err != OK:
 		_fail("FAIL: unable to stage publication_coalescing scenario")
-		return
-	var strict_mode_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(false)
-	if strict_mode_err != OK:
-		_fail("FAIL: unable to explicitly disable completion-gated destructive sequencing for publication_coalescing")
 		return
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:

@@ -121,6 +121,20 @@ ProviderResult ProviderBroker::set_synthetic_timing_driver_requested(TimingDrive
   return ProviderResult::success();
 }
 
+ProviderResult ProviderBroker::set_synthetic_timeline_reconciliation_requested(TimelineReconciliation reconciliation) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  // Applicable only to synthetic timeline + virtual_time.
+  if (mode_requested_ != RuntimeMode::synthetic ||
+      synthetic_role_requested_ != SyntheticRole::Timeline ||
+      timing_driver_requested_ != TimingDriver::VirtualTime) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  timeline_reconciliation_requested_ = reconciliation;
+  return ProviderResult::success();
+}
+
 void ProviderBroker::set_synthetic_timeline_request_dispatch_hook(
     std::function<void(const SyntheticScheduledEvent&)> hook) {
   synthetic_timeline_request_dispatch_hook_ = std::move(hook);
@@ -145,6 +159,7 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   mode_latched_ = mode_requested_;
   synthetic_role_latched_ = synthetic_role_requested_;
   timing_driver_latched_ = timing_driver_requested_;
+  timeline_reconciliation_latched_ = timeline_reconciliation_requested_;
 
   // Defensive: re-check build support (mirrors server-side validation).
   ProviderResult cap = check_mode_supported_in_build(mode_latched_);
@@ -158,6 +173,7 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     SyntheticProviderConfig cfg{};
     cfg.synthetic_role = synthetic_role_latched_;
     cfg.timing_driver = timing_driver_latched_;
+    cfg.timeline_reconciliation = timeline_reconciliation_latched_;
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
     active_ = std::move(syn);
@@ -511,17 +527,17 @@ ProviderResult ProviderBroker::advance_timeline_for_host(uint64_t dt_ns) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-ProviderResult ProviderBroker::set_completion_gated_destructive_sequencing_for_host(bool enabled) {
+ProviderResult ProviderBroker::set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
   }
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
-    return syn->set_completion_gated_destructive_sequencing_for_host(enabled);
+    return syn->set_timeline_reconciliation_for_host(reconciliation);
   }
 #endif
-  (void)enabled;
+  (void)reconciliation;
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 

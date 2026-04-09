@@ -10,14 +10,15 @@ func _ready() -> void:
 		push_warning("CamBANGServer singleton not available.")
 		return
 		
-	await get_tree().create_timer(10.0).timeout
+	await get_tree().create_timer(2.0).timeout
 
 	CamBANGServer.stop()
 
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
-		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
 	)
 	if start_err != OK:
 		push_error("FAIL: synthetic timeline start rejected with error %d" % start_err)
@@ -28,11 +29,6 @@ func _ready() -> void:
 		push_error("FAIL: unable to select builtin scenario %s" % BUILTIN_SCENARIO)
 		return
 
-	#var enable_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(true)
-	var enable_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(false)
-	if enable_err != OK:
-		push_error("FAIL: unable to set completion-gated destructive sequencing")
-		return
 
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:

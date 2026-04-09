@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -55,11 +56,15 @@ public:
   static constexpr int TIMING_DRIVER_REAL_TIME = 0;
   static constexpr int TIMING_DRIVER_VIRTUAL_TIME = 1;
 
+  static constexpr int TIMELINE_RECONCILIATION_COMPLETION_GATED = 0;
+  static constexpr int TIMELINE_RECONCILIATION_STRICT = 1;
+
   // User-facing control of core processing.
   godot::Error start(
       const godot::Variant& provider_kind = godot::Variant(),
       const godot::Variant& role = godot::Variant(),
-      const godot::Variant& timing_driver = godot::Variant());
+      const godot::Variant& timing_driver = godot::Variant(),
+      const godot::Variant& timeline_reconciliation = godot::Variant());
   void stop();
   bool is_running() const;
 
@@ -71,7 +76,6 @@ public:
   godot::Error stop_scenario();
   godot::Error set_timeline_paused(bool paused);
   godot::Error advance_timeline(uint64_t dt_ns);
-  godot::Error set_completion_gated_destructive_sequencing_enabled(bool enabled);
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
@@ -141,7 +145,8 @@ private:
   godot::Error _start_with_provider_config(
       RuntimeMode mode,
       SyntheticRole synthetic_role,
-      TimingDriver timing_driver);
+      TimingDriver timing_driver,
+      bool completion_gated_destructive_sequencing_enabled);
   bool _ensure_provider_attached_and_initialized(
       RuntimeMode mode,
       SyntheticRole synthetic_role,
@@ -150,6 +155,15 @@ private:
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
+
+  void _refresh_timeline_teardown_trace_mode();
+  void _handle_timeline_teardown_trace_line(const std::string& line);
+
+  bool timeline_trace_echo_enabled_ = false;
+  RuntimeMode active_runtime_mode_ = RuntimeMode::platform_backed;
+  SyntheticRole active_synthetic_role_ = SyntheticRole::Nominal;
+  bool completion_gated_destructive_sequencing_enabled_ = true;
+  bool strict_scenario_unmet_logged_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.

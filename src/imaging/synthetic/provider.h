@@ -89,7 +89,7 @@ public:
   ProviderResult stop_timeline_scenario_for_host();
   ProviderResult set_timeline_scenario_paused_for_host(bool paused);
   ProviderResult advance_timeline_for_host(uint64_t dt_ns);
-  ProviderResult set_completion_gated_destructive_sequencing_for_host(bool enabled);
+  ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
 
 private:

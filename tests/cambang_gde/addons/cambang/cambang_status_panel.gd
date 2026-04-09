@@ -458,6 +458,14 @@ func _refresh_from_server() -> void:
 				provider_mode = "platform_backed"
 			elif provider_kind == _server.PROVIDER_KIND_SYNTHETIC:
 				provider_mode = "synthetic"
+				var synthetic_role := d.get("synthetic_role", null)
+				if synthetic_role != null and int(synthetic_role) == _server.SYNTHETIC_ROLE_TIMELINE:
+					provider_mode = "synthetic/timeline"
+					var timeline_reconciliation := str(d.get("timeline_reconciliation", ""))
+					if timeline_reconciliation == "completion_gated":
+						provider_mode += "/completion-gated"
+					elif timeline_reconciliation == "strict":
+						provider_mode += "/strict"
 	_provider_mode_value.text = provider_mode
 	var snapshot := _fetch_snapshot()
 	var reading := _read_snapshot(snapshot)

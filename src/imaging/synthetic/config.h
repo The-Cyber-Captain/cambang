@@ -20,6 +20,13 @@ enum class TimingDriver : std::uint8_t {
   VirtualTime = 1,
 };
 
+// Reconciliation policy for clustered destructive timeline actions in
+// synthetic timeline / virtual_time mode.
+enum class TimelineReconciliation : std::uint8_t {
+  CompletionGated = 0,
+  Strict = 1,
+};
+
 struct SyntheticNominalDefaults {
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -43,6 +50,7 @@ struct SyntheticPatternDefaults {
 struct SyntheticProviderConfig {
   SyntheticRole synthetic_role = SyntheticRole::Nominal;
   TimingDriver timing_driver = TimingDriver::VirtualTime;
+  TimelineReconciliation timeline_reconciliation = TimelineReconciliation::CompletionGated;
 
   uint32_t endpoint_count = 2;
 

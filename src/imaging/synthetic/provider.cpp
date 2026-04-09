@@ -36,6 +36,8 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   if (cfg_.endpoint_count == 0) {
     cfg_.endpoint_count = 1;
   }
+  completion_gated_destructive_sequencing_enabled_ =
+      (cfg_.timeline_reconciliation == TimelineReconciliation::CompletionGated);
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -140,6 +142,14 @@ bool SyntheticProvider::timeline_destructive_prereq_ready_(
       if (it != streams_.end() && it->second.created && it->second.started) {
         reason = "await_stream_stopped";
         return false;
+      }
+      if (it != streams_.end() && it->second.created) {
+        for (const auto& slot : it->second.pool) {
+          if (slot && slot->in_use.load(std::memory_order_acquire)) {
+            reason = "await_stream_buffers_released";
+            return false;
+          }
+        }
       }
       return true;
     }
@@ -958,15 +968,16 @@ ProviderResult SyntheticProvider::advance_timeline_for_host(uint64_t dt_ns) {
   return ProviderResult::success();
 }
 
-ProviderResult SyntheticProvider::set_completion_gated_destructive_sequencing_for_host(bool enabled) {
+ProviderResult SyntheticProvider::set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   if (cfg_.synthetic_role != SyntheticRole::Timeline) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
-  completion_gated_destructive_sequencing_enabled_ = enabled;
-  if (!enabled) {
+  completion_gated_destructive_sequencing_enabled_ =
+      (reconciliation == TimelineReconciliation::CompletionGated);
+  if (!completion_gated_destructive_sequencing_enabled_) {
     timeline_pending_destructive_.clear();
   }
   return ProviderResult::success();
