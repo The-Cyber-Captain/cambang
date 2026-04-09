@@ -11,12 +11,17 @@ class MockServer:
 	signal state_published(gen, version, topology_version)
 	const PROVIDER_KIND_PLATFORM_BACKED := 0
 	const PROVIDER_KIND_SYNTHETIC := 1
+	const SYNTHETIC_ROLE_NOMINAL := 0
+	const SYNTHETIC_ROLE_TIMELINE := 1
+	const TIMING_DRIVER_REAL_TIME := 0
+	const TIMING_DRIVER_VIRTUAL_TIME := 1
 
 	var snapshot: Variant = null
 	var active_provider_config: Variant = {
 		"provider_kind": PROVIDER_KIND_SYNTHETIC,
-		"synthetic_role": 1,
-		"timing_driver": 1
+		"synthetic_role": SYNTHETIC_ROLE_TIMELINE,
+		"timing_driver": TIMING_DRIVER_VIRTUAL_TIME,
+		"timeline_reconciliation": null
 	}
 
 	func get_state_snapshot() -> Variant:
