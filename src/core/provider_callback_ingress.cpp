@@ -85,7 +85,7 @@ uint32_t ProviderCallbackIngress::ingress_depth_for_stream(uint64_t stream_id) c
 void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
-  // That is acceptable for scaffolding; later we can replace with fixed-capacity mailbox.
+  // That is acceptable for scaffolding; later we can replace with a fixed-capacity provider_to_core_commands queue.
   if (!core_thread_) {
     return;
   }

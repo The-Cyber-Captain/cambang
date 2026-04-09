@@ -127,7 +127,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Defaulting is performed by core using provider->stream_template().
   // profile_version ownership is core-authoritative for this ingress:
   // pass profile_version=0 to request core-assigned lineage.
-  // These are non-blocking and may return Busy if the provider_to_core_commands is full.
+  // These are non-blocking and may return Busy if the provider_to_core_commands queue is full.
   TryCreateStreamStatus try_create_stream(
       uint64_t stream_id,
       uint64_t device_instance_id,

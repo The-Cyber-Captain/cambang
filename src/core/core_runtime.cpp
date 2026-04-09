@@ -914,7 +914,7 @@ void CoreRuntime::request_publish() {
     return;
   }
 
-  // Coalesce publish requests to avoid spamming the provider_to_core_commands.
+  // Coalesce publish requests to avoid spamming the provider_to_core_commands queue.
   const bool was_pending = publish_pending_.exchange(true, std::memory_order_acq_rel);
   if (was_pending) {
     publish_requests_coalesced_.fetch_add(1, std::memory_order_relaxed);
