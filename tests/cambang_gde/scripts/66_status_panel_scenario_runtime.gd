@@ -18,7 +18,8 @@ func _ready() -> void:
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
-		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED # Default (can be removed)
+		#CamBANGServer.TIMELINE_RECONCILIATION_STRICT
 	)
 	if start_err != OK:
 		push_error("FAIL: synthetic timeline start rejected with error %d" % start_err)

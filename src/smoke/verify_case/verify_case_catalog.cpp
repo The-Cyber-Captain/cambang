@@ -2001,16 +2001,48 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  if (!advance_and_snapshot(1, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_stream(s, 30001);
-      }, "timed out waiting for destroy")) {
+
+  auto advance_until_realized = [&](uint64_t step_ns,
+                                    int max_steps,
+                                    const std::function<bool(const CamBANGStateSnapshot&)>& pred,
+                                    const char* timeout_message) -> bool {
+    runtime.request_publish();
+    if (auto snap = snapshot_buffer.snapshot_copy(); snap && pred(*snap)) {
+      return true;
+    }
+    for (int i = 0; i < max_steps; ++i) {
+      if (!broker.try_tick_virtual_time(step_ns)) {
+        error = "synthetic virtual time tick not consumed";
+        return false;
+      }
+      runtime.request_publish();
+      if (wait_until_poll([&]() {
+            auto snap = snapshot_buffer.snapshot_copy();
+            return snap && pred(*snap);
+          }, error, timeout_message, /*max_iters=*/20, /*sleep_ms=*/1)) {
+        return true;
+      }
+    }
+    error = timeout_message;
+    return false;
+  };
+
+  if (!advance_until_realized(1,
+                              /*max_steps=*/256,
+                              [&](const CamBANGStateSnapshot& s) {
+                                return !VerifyCaseHarness::has_stream(s, 30001);
+                              },
+                              "timed out waiting for destroy")) {
     cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
-  if (!advance_and_snapshot(1, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_device(s, 10001);
-      }, "timed out waiting for close")) {
+  if (!advance_until_realized(1,
+                              /*max_steps=*/256,
+                              [&](const CamBANGStateSnapshot& s) {
+                                return !VerifyCaseHarness::has_device(s, 10001);
+                              },
+                              "timed out waiting for close")) {
     cleanup();
     cli::error("FAIL: ", error);
     return 1;

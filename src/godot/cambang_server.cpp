@@ -481,6 +481,7 @@ godot::Variant CamBANGServer::get_active_provider_config() const {
   godot::Dictionary d;
   const RuntimeMode mode = broker->runtime_mode_latched();
   d["provider_kind"] = runtime_mode_to_provider_kind_int(mode);
+  d["timeline_reconciliation"] = godot::Variant();
   if (mode == RuntimeMode::synthetic) {
     const SyntheticRole role = broker->synthetic_role_latched();
     const TimingDriver timing_driver = broker->synthetic_timing_driver_latched();
@@ -631,13 +632,19 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized(
       ERR_PRINT("CamBANGServer: requested synthetic timing_driver configuration rejected by provider broker.");
       return false;
     }
-    ProviderResult recon_req = broker->set_synthetic_timeline_reconciliation_requested(
-        completion_gated_destructive_sequencing_enabled_
-            ? TimelineReconciliation::CompletionGated
-            : TimelineReconciliation::Strict);
-    if (!recon_req.ok()) {
-      ERR_PRINT("CamBANGServer: requested synthetic timeline_reconciliation configuration rejected by provider broker.");
-      return false;
+    const bool reconciliation_applicable =
+        mode == RuntimeMode::synthetic &&
+        synthetic_role == SyntheticRole::Timeline &&
+        timing_driver == TimingDriver::VirtualTime;
+    if (reconciliation_applicable) {
+      ProviderResult recon_req = broker->set_synthetic_timeline_reconciliation_requested(
+          completion_gated_destructive_sequencing_enabled_
+              ? TimelineReconciliation::CompletionGated
+              : TimelineReconciliation::Strict);
+      if (!recon_req.ok()) {
+        ERR_PRINT("CamBANGServer: requested synthetic timeline_reconciliation configuration rejected by provider broker.");
+        return false;
+      }
     }
     provider_ = std::move(broker);
   }
