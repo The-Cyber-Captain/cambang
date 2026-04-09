@@ -54,8 +54,8 @@ func _ready() -> void:
 	if not CamBANGServer.has_method("set_timeline_paused") or not CamBANGServer.has_method("advance_timeline"):
 		_fail("FAIL: CamBANGServer timeline control API missing")
 		return
-	if not CamBANGServer.has_method("set_completion_gated_destructive_sequencing_enabled"):
-		_fail("FAIL: CamBANGServer completion-gated destructive sequencing control missing")
+	if CamBANGServer.has_method("set_completion_gated_destructive_sequencing_enabled"):
+		_fail("FAIL: legacy live timeline reconciliation setter should be absent")
 		return
 
 	if CamBANGServer.is_running():
@@ -73,6 +73,46 @@ func _ready() -> void:
 	var invalid_timing_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, 9999)
 	if invalid_timing_err != ERR_INVALID_PARAMETER:
 		_fail("FAIL: invalid timing driver must return ERR_INVALID_PARAMETER")
+		return
+
+	var invalid_reconciliation_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		9999
+	)
+	if invalid_reconciliation_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: invalid timeline reconciliation must return ERR_INVALID_PARAMETER")
+		return
+
+	var invalid_platform_with_reconciliation_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED,
+		CamBANGServer.SYNTHETIC_ROLE_NOMINAL,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+	)
+	if invalid_platform_with_reconciliation_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: start(PLATFORM_BACKED, role, timing_driver, reconciliation) must return ERR_INVALID_PARAMETER")
+		return
+
+	var invalid_nominal_with_reconciliation_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_NOMINAL,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+	)
+	if invalid_nominal_with_reconciliation_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: start(SYNTHETIC, NOMINAL, VIRTUAL_TIME, reconciliation) must return ERR_INVALID_PARAMETER")
+		return
+
+	var invalid_realtime_with_reconciliation_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_REAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+	)
+	if invalid_realtime_with_reconciliation_err != ERR_INVALID_PARAMETER:
+		_fail("FAIL: start(SYNTHETIC, TIMELINE, REAL_TIME, reconciliation) must return ERR_INVALID_PARAMETER")
 		return
 
 	var invalid_platform_with_role_err := CamBANGServer.start(
@@ -106,7 +146,7 @@ func _ready() -> void:
 	if int(platform_cfg.get("provider_kind", -1)) != CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED:
 		_fail("FAIL: platform-backed active config must report provider_kind=PLATFORM_BACKED")
 		return
-	if platform_cfg.get("synthetic_role", "not_null") != null or platform_cfg.get("timing_driver", "not_null") != null:
+	if platform_cfg.get("synthetic_role", "not_null") != null or platform_cfg.get("timing_driver", "not_null") != null or platform_cfg.get("timeline_reconciliation", "not_null") != null:
 		_fail("FAIL: platform-backed active config must report null synthetic fields")
 		return
 	CamBANGServer.stop()
@@ -125,6 +165,9 @@ func _ready() -> void:
 	if int(synth_default_cfg.get("synthetic_role", -1)) != CamBANGServer.SYNTHETIC_ROLE_NOMINAL or int(synth_default_cfg.get("timing_driver", -1)) != CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME:
 		_fail("FAIL: start(SYNTHETIC) default config mismatch")
 		return
+	if synth_default_cfg.get("timeline_reconciliation", "not_null") != null:
+		_fail("FAIL: start(SYNTHETIC) nominal config must report null timeline_reconciliation")
+		return
 	CamBANGServer.stop()
 
 	var synthetic_role_default_timing_err := CamBANGServer.start(
@@ -137,6 +180,9 @@ func _ready() -> void:
 	var synth_role_default_cfg = CamBANGServer.get_active_provider_config()
 	if int(synth_role_default_cfg.get("synthetic_role", -1)) != CamBANGServer.SYNTHETIC_ROLE_TIMELINE or int(synth_role_default_cfg.get("timing_driver", -1)) != CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME:
 		_fail("FAIL: start(SYNTHETIC, role) default timing mismatch")
+		return
+	if str(synth_role_default_cfg.get("timeline_reconciliation", "")) != "completion_gated":
+		_fail("FAIL: start(SYNTHETIC, TIMELINE) must default timeline_reconciliation to completion_gated")
 		return
 	CamBANGServer.stop()
 
@@ -156,9 +202,14 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
 
-	var set_synth_start_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	var set_synth_start_err := CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+	)
 	if set_synth_start_err != OK:
-		_fail("FAIL: start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, TIMELINE, VIRTUAL_TIME) rejected")
+		_fail("FAIL: start(SYNTHETIC, TIMELINE, VIRTUAL_TIME, STRICT) rejected")
 		return
 	if not CamBANGServer.is_running():
 		_fail("FAIL: synthetic start must set is_running() true")
@@ -168,6 +219,14 @@ func _ready() -> void:
 		return
 	if CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME) != ERR_ALREADY_IN_USE:
 		_fail("FAIL: synthetic start re-entry must return ERR_ALREADY_IN_USE while running")
+		return
+	if CamBANGServer.start(
+		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
+		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
+		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
+		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+	) != ERR_ALREADY_IN_USE:
+		_fail("FAIL: synthetic strict start re-entry must return ERR_ALREADY_IN_USE while running")
 		return
 
 	var synth_cfg = CamBANGServer.get_active_provider_config()
@@ -183,14 +242,13 @@ func _ready() -> void:
 	if int(synth_cfg.get("timing_driver", -1)) != CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME:
 		_fail("FAIL: synthetic active config must report VIRTUAL_TIME timing driver")
 		return
+	if str(synth_cfg.get("timeline_reconciliation", "")) != "strict":
+		_fail("FAIL: synthetic active config must report strict timeline_reconciliation")
+		return
 
 	var timeline_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
 	if timeline_stage_err != OK:
 		_fail("FAIL: timeline builtin staging should be available after Timeline-role synthetic configuration")
-		return
-	var strict_mode_err := CamBANGServer.set_completion_gated_destructive_sequencing_enabled(false)
-	if strict_mode_err != OK:
-		_fail("FAIL: expected explicit strict timeline mode selection to succeed")
 		return
 	var start_scenario_err := CamBANGServer.start_scenario()
 	if start_scenario_err != OK:

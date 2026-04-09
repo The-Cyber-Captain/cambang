@@ -36,6 +36,7 @@ public:
   ProviderResult set_runtime_mode_requested(RuntimeMode mode) noexcept;
   ProviderResult set_synthetic_role_requested(SyntheticRole role) noexcept;
   ProviderResult set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept;
+  ProviderResult set_synthetic_timeline_reconciliation_requested(TimelineReconciliation reconciliation) noexcept;
 
   const char* provider_name() const override;
   ProviderKind provider_kind() const noexcept override;
@@ -92,12 +93,13 @@ public:
   ProviderResult stop_timeline_scenario_for_host();
   ProviderResult set_timeline_scenario_paused_for_host(bool paused);
   ProviderResult advance_timeline_for_host(uint64_t dt_ns);
-  ProviderResult set_completion_gated_destructive_sequencing_for_host(bool enabled);
+  ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_synthetic_timeline_request_dispatch_hook(std::function<void(const SyntheticScheduledEvent&)> hook);
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
   SyntheticRole synthetic_role_latched() const noexcept { return synthetic_role_latched_; }
   TimingDriver synthetic_timing_driver_latched() const noexcept { return timing_driver_latched_; }
+  TimelineReconciliation synthetic_timeline_reconciliation_latched() const noexcept { return timeline_reconciliation_latched_; }
 
 private:
   ProviderBroker(const ProviderBroker&) = delete;
@@ -115,8 +117,10 @@ private:
   RuntimeMode mode_latched_ = RuntimeMode::platform_backed;
   SyntheticRole synthetic_role_requested_ = SyntheticRole::Nominal;
   TimingDriver timing_driver_requested_ = TimingDriver::VirtualTime;
+  TimelineReconciliation timeline_reconciliation_requested_ = TimelineReconciliation::CompletionGated;
   SyntheticRole synthetic_role_latched_ = SyntheticRole::Nominal;
   TimingDriver timing_driver_latched_ = TimingDriver::VirtualTime;
+  TimelineReconciliation timeline_reconciliation_latched_ = TimelineReconciliation::CompletionGated;
   std::function<void(const SyntheticScheduledEvent&)> synthetic_timeline_request_dispatch_hook_{};
 };
 
