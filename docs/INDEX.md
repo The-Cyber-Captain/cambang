@@ -130,6 +130,7 @@ Current dev notes:
 - `dev/maintainer_tools.md`
 - `dev/provider_compliance_checklist.md`
 - `dev/snapshot_truth_rules.md`
+- `dev/synthetic_timeline_reconciliation_notes.md`
 - `dev/upstream_discrepancies.md`
 - `dev/windows_mf_visibility_phase.md`
 
