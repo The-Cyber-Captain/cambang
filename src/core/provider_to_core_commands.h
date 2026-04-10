@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 #include <variant>
@@ -7,7 +7,7 @@
 namespace cambang {
 
 // -----------------------------------------------------------------------------
-// Core Mailbox
+// Provider-to-Core Commands
 //
 // Defines the closed set of commands that may be executed on the core thread.
 // All external stimuli must be translated into one of these commands before
@@ -21,7 +21,7 @@ namespace cambang {
 
 // Enumerates all core command types.
 // This must remain explicit and closed (no open-ended polymorphism).
-enum class CoreCommandType : uint8_t {
+enum class ProviderToCoreCommandType : uint8_t {
   INVALID = 0,
 
   // Provider lifecycle
@@ -129,7 +129,7 @@ struct CmdProviderNativeObjectDestroyed {
 struct CmdTimerTick {};
 
 // Variant containing all possible payloads.
-using CoreCommandPayload = std::variant<
+using ProviderToCoreCommandData = std::variant<
   CmdProviderDeviceOpened,
   CmdProviderDeviceClosed,
   CmdProviderStreamCreated,
@@ -148,9 +148,9 @@ using CoreCommandPayload = std::variant<
 >;
 
 // Wrapper command object.
-struct CoreCommand {
-  CoreCommandType type = CoreCommandType::INVALID;
-  CoreCommandPayload payload;
+struct ProviderToCoreCommand {
+  ProviderToCoreCommandType type = ProviderToCoreCommandType::INVALID;
+  ProviderToCoreCommandData payload;
 };
 
 } // namespace cambang

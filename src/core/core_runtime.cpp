@@ -51,7 +51,7 @@ CoreRuntime::CoreRuntime()
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }),
-      ingress_(&core_thread_, [this](CoreCommand&& cmd) {
+      ingress_(&core_thread_, [this](ProviderToCoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
         // Provider callbacks are "facts"; we enqueue them and process them before requests
         // on each core pump tick.
@@ -224,7 +224,7 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 1) Drain provider facts ("what happened") first.
   while (!provider_facts_.empty()) {
-    CoreCommand cmd = std::move(provider_facts_.front());
+    ProviderToCoreCommand cmd = std::move(provider_facts_.front());
     provider_facts_.pop_front();
     dispatcher_.dispatch(std::move(cmd));
   }
@@ -914,7 +914,7 @@ void CoreRuntime::request_publish() {
     return;
   }
 
-  // Coalesce publish requests to avoid spamming the core mailbox.
+  // Coalesce publish requests to avoid spamming the provider_to_core_commands queue.
   const bool was_pending = publish_pending_.exchange(true, std::memory_order_acq_rel);
   if (was_pending) {
     publish_requests_coalesced_.fetch_add(1, std::memory_order_relaxed);
@@ -951,7 +951,7 @@ void CoreRuntime::request_publish() {
   }
 }
 
-void CoreRuntime::enqueue_provider_fact(CoreCommand&& cmd) {
+void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
   assert(core_thread_.is_core_thread());
   provider_facts_.push_back(std::move(cmd));
   core_thread_.request_timer_tick();

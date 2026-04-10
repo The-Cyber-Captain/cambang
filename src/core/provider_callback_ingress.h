@@ -6,7 +6,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "core/core_mailbox.h"
+#include "core/provider_to_core_commands.h"
 #include "core/core_thread.h"
 #include "imaging/api/icamera_provider.h"
 
@@ -17,7 +17,7 @@ namespace cambang {
 //
 // Invariants:
 // - Provider threads MUST NOT touch core state directly.
-// - Every callback is marshalled into a CoreCommand and posted onto CoreThread.
+// - Every callback is marshalled into a ProviderToCoreCommand and posted onto CoreThread.
 // - No business logic exists here; this is a transport adapter only.
 //
 // Mailbox hardening (Build slice C):
@@ -41,9 +41,9 @@ public:
   };
 
   // sink is invoked ONLY on the core thread.
-  // It is responsible for consuming the CoreCommand (e.g., dispatching).
+  // It is responsible for consuming the ProviderToCoreCommand (e.g., dispatching).
   ProviderCallbackIngress(CoreThread* core_thread,
-                          std::function<void(CoreCommand&&)> sink,
+                          std::function<void(ProviderToCoreCommand&&)> sink,
                           std::function<uint64_t()> core_monotonic_now_ns);
   ~ProviderCallbackIngress() override = default;
 
@@ -83,10 +83,10 @@ private:
   void on_frame_ingress_failed_(uint64_t stream_id);
   void on_frame_ingress_dispatched_(uint64_t stream_id);
 
-  void post_command(CoreCommand cmd);
+  void post_command(ProviderToCoreCommand cmd);
 
   CoreThread* core_thread_ = nullptr; // non-owning
-  std::function<void(CoreCommand&&)> sink_;
+  std::function<void(ProviderToCoreCommand&&)> sink_;
   std::function<uint64_t()> core_monotonic_now_ns_;
 
   std::atomic<uint64_t> native_id_seq_{1};

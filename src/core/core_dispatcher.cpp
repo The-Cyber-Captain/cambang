@@ -23,7 +23,7 @@ uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
 
 
 
-void CoreDispatcher::dispatch(CoreCommand&& cmd) {
+void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   // NOTE: For this build slice we are proving lifecycle only.
   //
   // Add minimal core state mutation:
@@ -35,7 +35,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
   stats_.commands_total++;
 
   switch (cmd.type) {
-  case CoreCommandType::PROVIDER_DEVICE_OPENED: {
+  case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
     if (devices_) {
@@ -45,7 +45,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_DEVICE_CLOSED: {
+  case ProviderToCoreCommandType::PROVIDER_DEVICE_CLOSED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceClosed>(cmd.payload);
     if (devices_) {
@@ -55,7 +55,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_CREATED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
     if (streams_) {
@@ -65,7 +65,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_DESTROYED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_DESTROYED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamDestroyed>(cmd.payload);
     if (streams_) {
@@ -75,7 +75,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_STARTED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
     if (streams_) {
@@ -85,7 +85,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_STOPPED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_STOPPED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStopped>(cmd.payload);
     if (streams_) {
@@ -95,7 +95,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_ERROR: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_ERROR: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamError>(cmd.payload);
     if (streams_) {
@@ -105,7 +105,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_DEVICE_ERROR: {
+  case ProviderToCoreCommandType::PROVIDER_DEVICE_ERROR: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceError>(cmd.payload);
     if (devices_) {
@@ -116,7 +116,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
   }
 
   
-case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
+case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
   if (native_objects_) {
@@ -140,7 +140,7 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   break;
 }
 
-case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
+case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
   if (native_objects_) {
@@ -152,7 +152,7 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   break;
 }
 
-  case CoreCommandType::PROVIDER_FRAME: {
+  case ProviderToCoreCommandType::PROVIDER_FRAME: {
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
 
     stats_.commands_handled++;
