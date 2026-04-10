@@ -405,6 +405,69 @@ Rationale:
   so reusing it for release image access would increase ambiguity
 
 
+### Initial release-facing model
+
+The initial release-facing image-access model is intentionally narrow and
+result-oriented.
+
+It exists to provide non-dev image access without promoting temporary
+development-only mailbox semantics into the public API.
+
+#### Stream Result
+
+In the initial release-facing model, **Stream Result** is
+**latest-result-oriented**.
+
+This means:
+
+- it represents the latest retained repeating-stream image output made
+  available through the image access API
+- it is a user-facing/runtime-visible result concept, not a sink/storage
+  implementation term
+- it does not imply that every produced stream frame is retained
+- it does not by itself define the final storage, upload, or fanout strategy
+
+This model therefore provides a non-dev way to retrieve, inspect,
+process, display, or save the latest available repeating-stream image
+output without committing the public API to mailbox-shaped semantics.
+
+#### Capture Result
+
+In the initial release-facing model, **Capture Result** is the discrete
+image-bearing runtime output of a device still capture.
+
+Unlike repeating-stream output, still-capture output is not modeled as a
+continuously replaced repeating result.
+
+#### Capture Result Set
+
+In the initial release-facing model, **Capture Result Set** is the grouped
+output of a rig-triggered capture.
+
+It contains the subset of device-associated **Capture Result** objects that
+were actually realized for that trigger.
+
+This preserves the device association of realized still captures rather
+than introducing a separate rig-owned pixel artifact model.
+
+### Initial scope
+
+Included in the initial release-facing image-access model:
+
+- latest-result-oriented repeating-stream access
+- device still-capture result access
+- rig-triggered grouped capture result access
+
+Not implied by the initial release-facing image-access model:
+
+- sequence / broadcast / video-recording APIs
+- final GPU-native presentation architecture
+- full third-party hand-off architecture
+- guarantees that every flowing stream frame is retained or externally exposed
+
+These may be added later without redefining the meanings of
+**Stream Result**, **Capture Result**, or **Capture Result Set**.
+
 ------------------------------------------------------------------------
 
 ## 7. Lifecycle `phase` vs operational `mode`

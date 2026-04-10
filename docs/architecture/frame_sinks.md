@@ -167,6 +167,52 @@ This keeps sink terminology aligned with the corresponding public runtime concep
 without promoting development-only mailbox semantics into release
 architecture.
 
+### Initial release-facing mapping
+
+The initial release-facing image-access model uses a result-oriented split
+between repeating-stream and still-capture paths.
+
+#### Stream Sink → Stream Result
+
+A **Stream Sink** is the internal/runtime path responsible for handling
+accepted repeating-stream `FrameView` payloads for downstream stream-image
+access purposes.
+
+In the initial release-facing model:
+
+- accepted repeating-stream payloads may populate the latest retained
+  **Stream Result**
+- this is a result-oriented release-facing model, not public mailbox semantics
+- the model does not imply that every flowing stream frame is retained,
+  exported, or fanned out
+
+This mapping is intentionally compatible with later expansion to
+additional stream-consumption paths such as recording, broadcast, or
+third-party hand-off without redefining the public **Stream Result** noun.
+
+#### Capture Sink → Capture Result
+
+A **Capture Sink** is the internal/runtime path responsible for handling
+accepted still-capture payloads for downstream still-image access purposes.
+
+**Capture Sink** populates **Capture Result** objects, which represent
+discrete device-associated still-capture outputs rather than continuously
+replaced repeating-stream outputs.
+
+Rig-triggered grouped still capture is exposed publicly as a
+**Capture Result Set** containing the subset of realized device-associated
+**Capture Result** objects for that trigger.
+
+### Initial non-goals
+
+This model does not by itself define:
+
+- final GPU-native presentation architecture
+- full stream-sequence / recording / broadcast APIs
+- complete third-party fanout design
+- a requirement that release-facing stream access reuse development-only
+  mailbox implementation or terminology
+
 ### Mailbox status
 
 `LatestFrameMailbox` remains a **development-only** sink used for current

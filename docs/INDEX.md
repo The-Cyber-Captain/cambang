@@ -75,6 +75,7 @@ redefine canonical rules.
 | synthetic_picture_appearance_in_scenarios.md | Defines scenario-authored synthetic appearance/state boundaries for timeline replay. |
 | maintainer_tools.md             | Defines the Godot runtime boundary and interaction contract, plus CLI verification tools. |
 | pattern_module.md               | Explains the deterministic pattern generator module used for testing and diagnostics.     |
+| godot_boundary_contract.md     | Consolidates the externally visible Godot-facing runtime contract.                        |
 
 ### Reading guidance
 
@@ -84,11 +85,12 @@ For lifecycle behaviour, read:
 2. lifecycle_model.md (hierarchy and event flow)
 3. provider_state_machines.md (resource state transitions)
 
-For snapshot publication behaviour, read:
+For snapshot publication and Godot-boundary behaviour, read:
 
-1. state_snapshot.md (canonical snapshot structure)
-2. publication_model.md (tick-bounded publication)
-3. publication_counter_examples.md (counter interpretation)
+1. state_snapshot.md (canonical snapshot structure and counter meaning)
+2. godot_boundary_contract.md (canonical observable Godot-facing contract)
+3. publication_model.md (tick-bounded publication mechanics and coalescing)
+4. publication_counter_examples.md (counter interpretation examples)
 
 ### Roles of current supplements include:
 
