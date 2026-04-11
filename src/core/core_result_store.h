@@ -66,13 +66,14 @@ public:
   CoreResultStore() = default;
   ~CoreResultStore() = default;
 
-  void retain_frame(const FrameView& frame,
+  bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
                     uint64_t capture_timestamp_ns);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
+  void clear();
 
 private:
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);

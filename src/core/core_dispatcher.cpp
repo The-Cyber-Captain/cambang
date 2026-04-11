@@ -160,17 +160,21 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
 
     const uint64_t sid = p.frame.stream_id;
     std::optional<StreamIntent> stream_intent;
+    bool retained_for_result = false;
+    uint64_t integrated_ts_ns = 0;
     if (streams_) {
-      const uint64_t integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+      integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
       }
       if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
         stream_intent = stream_rec->intent;
       }
-      if (result_store_) {
-        result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
-      }
+    } else {
+      integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+    }
+    if (result_store_) {
+      retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
     }
 
     if (frame_sink_) {
@@ -187,13 +191,18 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
         }
       }
     } else {
-      // No sink configured: release-on-drop and count as dropped (not delivered).
+      // No sink configured: release payload deterministically.
+      // If result retention already accepted this frame, it is not counted as dropped.
       p.frame.release_now();
       stats_.frames_released++;
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
       if (streams_) {
-        streams_->on_frame_dropped(sid);
+        if (retained_for_result) {
+          streams_->on_frame_released(sid);
+        } else {
+          streams_->on_frame_dropped(sid);
+        }
       }
     }
     break;

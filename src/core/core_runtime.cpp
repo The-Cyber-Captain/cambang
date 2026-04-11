@@ -172,6 +172,8 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
+  // Do not carry retained result artifacts across generation boundaries.
+  result_store_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
@@ -563,6 +565,9 @@ if (dispatcher_.consume_relevant_state_changed()) {
 }
 
 void CoreRuntime::on_core_stop() {
+  // Runtime is no longer live; clear retained results so stop/start boundaries
+  // cannot expose stale prior-generation result truth.
+  result_store_.clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }

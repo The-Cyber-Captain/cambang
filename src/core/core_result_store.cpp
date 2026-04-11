@@ -32,12 +32,12 @@ CoreImageFactBundle build_default_facts(const CoreResultPayloadCpuPacked& payloa
 
 } // namespace
 
-void CoreResultStore::retain_frame(const FrameView& frame,
+bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
                                    uint64_t capture_timestamp_ns) {
   CoreResultPayloadCpuPacked payload{};
   if (!try_copy_cpu_packed_payload(frame, payload)) {
-    return;
+    return false;
   }
 
   const CoreImageFactBundle facts = build_default_facts(payload);
@@ -66,6 +66,7 @@ void CoreResultStore::retain_frame(const FrameView& frame,
     capture_result->facts = facts;
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
+  return frame.stream_id != 0 || frame.capture_id != 0;
 }
 
 SharedStreamResultData CoreResultStore::get_latest_stream_result(uint64_t stream_id) const {
@@ -102,6 +103,12 @@ std::vector<SharedCaptureResultData> CoreResultStore::get_capture_result_set(uin
     out.push_back(result);
   }
   return out;
+}
+
+void CoreResultStore::clear() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  latest_stream_results_.clear();
+  capture_results_by_capture_id_.clear();
 }
 
 bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out) {
