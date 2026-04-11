@@ -2,18 +2,12 @@
 
 #include "core/core_dispatcher.h"
 
-#include <cstdio>
 #include <cstdlib>
 #include <variant>
 
 namespace cambang {
 
 namespace {
-bool result_debug_enabled() {
-  const char* v = std::getenv("CAMBANG_DEBUG_RESULT_PATH");
-  return (v && v[0] == '1' && v[1] == '\0');
-}
-
 uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
   if (ts.tick_ns == 0) {
     return 0;
@@ -187,18 +181,6 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           result_retention_allowed_ ? result_retention_allowed_() : true;
       if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
         retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
-      } else if (result_debug_enabled()) {
-        const char* reason = !result_routing_enabled_
-                                 ? "routing_disabled"
-                                 : (!lifecycle_allows_retention ? "lifecycle_not_live"
-                                                                : "stream_not_valid");
-        std::fprintf(
-            stderr,
-            "[CamBANG][debug][result] dispatcher skip retain (%s): stream=%llu capture=%llu device=%llu\n",
-            reason,
-            static_cast<unsigned long long>(p.frame.stream_id),
-            static_cast<unsigned long long>(p.frame.capture_id),
-            static_cast<unsigned long long>(p.frame.device_instance_id));
       }
     }
 

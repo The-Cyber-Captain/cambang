@@ -1,17 +1,10 @@
 #include "core/core_result_store.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 namespace cambang {
 
 namespace {
-bool result_debug_enabled() {
-  const char* v = std::getenv("CAMBANG_DEBUG_RESULT_PATH");
-  return (v && v[0] == '1' && v[1] == '\0');
-}
-
 uint32_t infer_bit_depth(uint32_t format_fourcc) {
   if (format_fourcc == FOURCC_RGBA || format_fourcc == FOURCC_BGRA) {
     return 8;
@@ -72,15 +65,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     capture_result->facts = facts;
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
-  if (result_debug_enabled()) {
-    std::fprintf(
-        stderr,
-        "[CamBANG][debug][result] retained frame: stream=%llu capture=%llu device=%llu ts_ns=%llu\n",
-        static_cast<unsigned long long>(frame.stream_id),
-        static_cast<unsigned long long>(frame.capture_id),
-        static_cast<unsigned long long>(frame.device_instance_id),
-        static_cast<unsigned long long>(capture_timestamp_ns));
-  }
   return frame.stream_id != 0 || frame.capture_id != 0;
 }
 
@@ -122,13 +106,6 @@ std::vector<SharedCaptureResultData> CoreResultStore::get_capture_result_set(uin
 
 void CoreResultStore::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (result_debug_enabled()) {
-    std::fprintf(
-        stderr,
-        "[CamBANG][debug][result] clear store: stream_results=%llu capture_groups=%llu\n",
-        static_cast<unsigned long long>(latest_stream_results_.size()),
-        static_cast<unsigned long long>(capture_results_by_capture_id_.size()));
-  }
   latest_stream_results_.clear();
   capture_results_by_capture_id_.clear();
 }
