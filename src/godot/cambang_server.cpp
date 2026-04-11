@@ -1,4 +1,7 @@
 #include "godot/cambang_server.h"
+#include "godot/cambang_capture_result.h"
+#include "godot/cambang_capture_result_set.h"
+#include "godot/cambang_stream_result.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
@@ -318,6 +321,34 @@ void CamBANGServer::stop() {
 bool CamBANGServer::is_running() const {
   const CoreRuntimeState state = runtime_.state_copy();
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
+}
+
+CamBANGStreamResult* CamBANGServer::get_latest_stream_result(uint64_t stream_id) const {
+  SharedStreamResultData data = runtime_.get_latest_stream_result(stream_id);
+  if (!data) {
+    return nullptr;
+  }
+  CamBANGStreamResult* out = memnew(CamBANGStreamResult);
+  out->set_data(std::move(data));
+  return out;
+}
+
+CamBANGCaptureResult* CamBANGServer::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+  SharedCaptureResultData data = runtime_.get_capture_result(capture_id, device_instance_id);
+  if (!data) {
+    return nullptr;
+  }
+  CamBANGCaptureResult* out = memnew(CamBANGCaptureResult);
+  out->set_data(std::move(data));
+  return out;
+}
+
+CamBANGCaptureResultSet* CamBANGServer::get_capture_result_set(uint64_t capture_id) const {
+  std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
+  CamBANGCaptureResultSet* out = memnew(CamBANGCaptureResultSet);
+  out->set_capture_id(capture_id);
+  out->set_results(std::move(results));
+  return out;
 }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
@@ -684,6 +715,9 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set", "capture_id"), &CamBANGServer::get_capture_result_set);
 
   // Internal tick hook (connected to SceneTree.process_frame).
   godot::ClassDB::bind_method(godot::D_METHOD("_on_godot_process_frame"), &CamBANGServer::_on_godot_process_frame);

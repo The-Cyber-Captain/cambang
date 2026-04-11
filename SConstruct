@@ -284,6 +284,10 @@ if env["smoke"]:
         target=os.path.join(out_dir, "core_spine_smoke"),
         source=runtime_smoke_sources + ["src/smoke/core_spine_smoke.cpp"],
     )
+    core_result_path_smoke_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "core_result_path_smoke"),
+        source=smoke_core_runtime_sources + ["src/smoke/core_result_path_smoke.cpp"],
+    )
 
     # Pattern renderer microbenchmark (isolated smoke tool).
     pattern_bench_sources = []
@@ -363,6 +367,7 @@ if env["smoke"]:
         "smoke",
         [
             core_smoke_prog,
+            core_result_path_smoke_prog,
             pattern_bench_prog,
             synthetic_verify_prog,
             phase3_verify_prog,
@@ -501,6 +506,10 @@ if env["gde"]:
     gde_sources += [
         os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_stream_result.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
     ]
 

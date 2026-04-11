@@ -10,6 +10,7 @@
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_result_store.h"
 #include "core/core_rig_registry.h"
 #include "core/core_runtime_state.h"
 #include "core/core_spec_state.h"
@@ -191,6 +192,18 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 
+  SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const {
+    return result_store_.get_latest_stream_result(stream_id);
+  }
+
+  SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+    return result_store_.get_capture_result(capture_id, device_instance_id);
+  }
+
+  std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const {
+    return result_store_.get_capture_result_set(capture_id);
+  }
+
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
 #endif
@@ -261,6 +274,7 @@ private:
   CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
+  CoreResultStore result_store_;
 
   // Snapshot header counters (schema v1).
   // gen: core generation counter, monotonic across app/server lifetime.

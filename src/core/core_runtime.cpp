@@ -63,6 +63,7 @@ CoreRuntime::CoreRuntime()
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }) {
+  dispatcher_.set_result_store(&result_store_);
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only latest-frame sink (core thread dispatch path).
   dispatcher_.set_frame_sink(&latest_frame_sink_);

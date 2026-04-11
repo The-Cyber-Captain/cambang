@@ -9,6 +9,7 @@
 #include "core/core_native_object_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_frame_sink.h"
+#include "core/core_result_store.h"
 
 namespace cambang {
 
@@ -70,6 +71,7 @@ public:
   // If unset, frames are released immediately (release-on-drop).
   // Must be called before the core thread starts, or from the core thread.
   void set_frame_sink(ICoreFrameSink* sink) noexcept { frame_sink_ = sink; }
+  void set_result_store(CoreResultStore* result_store) noexcept { result_store_ = result_store; }
 
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
@@ -80,6 +82,7 @@ private:
 
   bool relevant_state_changed_ = false;
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
+  CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
   CoreDispatchStats stats_{};
 };
 

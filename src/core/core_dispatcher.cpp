@@ -159,10 +159,17 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     stats_.frames_received++;
 
     const uint64_t sid = p.frame.stream_id;
+    std::optional<StreamIntent> stream_intent;
     if (streams_) {
       const uint64_t integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
+      }
+      if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
+        stream_intent = stream_rec->intent;
+      }
+      if (result_store_) {
+        result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
       }
     }
 
