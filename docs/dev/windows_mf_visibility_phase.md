@@ -1,3 +1,12 @@
+> Platform-validation phase record.
+>
+> This document records an implementation-validation phase and should not be read
+> as defining the release-facing image/result architecture.
+>
+> For current release direction, see:
+> - `docs/dev/pixel_result_architecture_direction.md`
+> - `docs/architecture/pixel_payload_and_result_contract.md`
+
 # Windows MF Visibility Phase (Build Phase – Dev Accelerator)
 
 Branch: `build-phase-windows-provider-min-1`

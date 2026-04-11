@@ -52,8 +52,10 @@ They must:
 - avoid duplicating or restating core architecture unnecessarily
 - remain narrowly scoped
 
-The lists in this index are intended to be complete for the current canonical documentation set.
-Any change that adds, removes, renames, or reclassifies a canonical or supplement document must update this index in the same change.
+The lists in this index are intended to be complete for the current canonical
+documentation set.
+Any change that adds, removes, renames, or reclassifies a canonical or
+supplement document must update this index in the same change.
 
 Current supplements:
 
@@ -63,19 +65,19 @@ edge cases, or conceptual models that support the canonical documents.
 They may include diagrams, examples, and reasoning aids, but must not
 redefine canonical rules.
 
-| Document                        | Purpose                                                                                   |
-|---------------------------------|-------------------------------------------------------------------------------------------|
-| lifecycle_model.md              | Explains lifecycle hierarchy and event flow across provider → core → Godot.               |
-| provider_state_machines.md      | Defines provider/device/stream/frame-producer state machines and valid transitions.       |
-| provider_strand_model.md        | Clarifies provider-strand delivery rules and event-class guarantees.                      |
-| publication_model.md            | Describes tick-bounded publication and Godot-visible snapshot behaviour.                  |
-| publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`.                   |
-| frame_sinks.md                  | Describes frame sink types and responsibilities.                                          |
-| synthetic_timeline_scenarios.md | Fixes scenario terminology and ownership boundaries for SyntheticProvider timeline work.   |
+| Document | Purpose |
+|---|---|
+| lifecycle_model.md | Explains lifecycle hierarchy and event flow across provider → core → Godot. |
+| provider_state_machines.md | Defines provider/device/stream/frame-producer state machines and valid transitions. |
+| provider_strand_model.md | Clarifies provider-strand delivery rules and event-class guarantees. |
+| publication_model.md | Describes tick-bounded publication and Godot-visible snapshot behaviour. |
+| publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`. |
+| frame_sinks.md | Describes frame sink types and responsibilities. |
+| pixel_payload_and_result_contract.md | Defines the multi-representation payload/result contract for release-facing stream and capture paths. |
+| synthetic_timeline_scenarios.md | Fixes scenario terminology and ownership boundaries for SyntheticProvider timeline work. |
 | synthetic_picture_appearance_in_scenarios.md | Defines scenario-authored synthetic appearance/state boundaries for timeline replay. |
-| maintainer_tools.md             | Defines the Godot runtime boundary and interaction contract, plus CLI verification tools. |
-| pattern_module.md               | Explains the deterministic pattern generator module used for testing and diagnostics.     |
-| godot_boundary_contract.md     | Consolidates the externally visible Godot-facing runtime contract.                        |
+| pattern_module.md | Explains the deterministic pattern generator module used for testing and diagnostics. |
+| godot_boundary_contract.md | Consolidates the externally visible Godot-facing runtime contract. |
 
 ### Reading guidance
 
@@ -92,6 +94,12 @@ For snapshot publication and Godot-boundary behaviour, read:
 3. publication_model.md (tick-bounded publication mechanics and coalescing)
 4. publication_counter_examples.md (counter interpretation examples)
 
+For release-facing image/result architecture, read:
+
+1. frame_sinks.md (internal sink boundary and current result-oriented split)
+2. pixel_payload_and_result_contract.md (payload kinds, ownership, retention, and materialization)
+3. naming.md (public result vocabulary and Godot-facing terminology)
+
 ### Roles of current supplements include:
 
 - `lifecycle_model.md` explains hierarchy, lifecycle phases, and provider-strand event flow
@@ -102,8 +110,10 @@ For snapshot publication and Godot-boundary behaviour, read:
 - `publication_counter_examples.md` illustrates progression of `gen`, `version`,
   and `topology_version` across representative runtime situations
 - `frame_sinks.md` explains the core frame-consumer boundary
+- `pixel_payload_and_result_contract.md` defines the release-facing multi-representation payload/result contract, including retention, ownership, and materialization
 - `godot_boundary_contract.md` consolidates the externally visible Godot-facing runtime contract
 - `pattern_module.md` documents synthetic pixel rendering
+
 ---
 
 ## 3. Development / scaffolding notes
@@ -130,6 +140,7 @@ Current dev notes:
 - `dev/frameview_stage.md`
 - `dev/godot_boundary_verification_scenes.md`
 - `dev/maintainer_tools.md`
+- `dev/pixel_result_architecture_direction.md`
 - `dev/provider_compliance_checklist.md`
 - `dev/snapshot_truth_rules.md`
 - `dev/synthetic_timeline_reconciliation_notes.md`
@@ -170,7 +181,6 @@ introduced.
 This structure helps keep CamBANG documentation precise, authoritative,
 and resistant to drift as the project evolves.
 
-
 ## Recently Consolidated Topics
 
 | Former Topic | Current Location |
@@ -178,3 +188,5 @@ and resistant to drift as the project evolves.
 | Provider strand detail | `architecture/provider_strand_model.md` |
 | Snapshot truth guidance | `dev/snapshot_truth_rules.md` |
 | Godot boundary verification scenes | `dev/godot_boundary_verification_scenes.md` |
+| Pixel/result architecture direction | `dev/pixel_result_architecture_direction.md` |
+| Payload/result contract | `architecture/pixel_payload_and_result_contract.md` |
