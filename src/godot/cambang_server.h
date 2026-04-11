@@ -28,6 +28,9 @@
 #include <godot_cpp/classes/window.hpp>
 
 namespace cambang {
+class CamBANGStreamResult;
+class CamBANGCaptureResult;
+class CamBANGCaptureResultSet;
 
 // CamBANGServer is the release-facing lifecycle owner.
 //
@@ -83,6 +86,9 @@ public:
   // - Before the first publish, returns NIL.
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
+  CamBANGStreamResult* get_latest_stream_result(uint64_t stream_id) const;
+  CamBANGCaptureResult* get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
+  CamBANGCaptureResultSet* get_capture_result_set(uint64_t capture_id) const;
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.

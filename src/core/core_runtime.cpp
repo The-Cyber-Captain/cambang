@@ -37,6 +37,11 @@ static bool banners_enabled() noexcept {
   return !(v && v[0] == '0' && v[1] == '\0');
 }
 
+static bool disable_result_routing_requested() noexcept {
+  const char* v = std::getenv("CAMBANG_DISABLE_RESULT_ROUTING");
+  return (v && v[0] == '1' && v[1] == '\0');
+}
+
 CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
@@ -50,6 +55,8 @@ CoreRuntime::CoreRuntime()
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+      }, [this]() -> bool {
+        return state_.load(std::memory_order_acquire) == CoreRuntimeState::LIVE;
       }),
       ingress_(&core_thread_, [this](ProviderToCoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
@@ -63,6 +70,9 @@ CoreRuntime::CoreRuntime()
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }) {
+  dispatcher_.set_result_store(&result_store_);
+  const bool result_routing_enabled = !disable_result_routing_requested();
+  dispatcher_.set_result_routing_enabled(result_routing_enabled);
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only latest-frame sink (core thread dispatch path).
   dispatcher_.set_frame_sink(&latest_frame_sink_);
@@ -171,6 +181,8 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
+  // Do not carry retained result artifacts across generation boundaries.
+  result_store_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
@@ -562,6 +574,9 @@ if (dispatcher_.consume_relevant_state_changed()) {
 }
 
 void CoreRuntime::on_core_stop() {
+  // Runtime is no longer live; clear retained results so stop/start boundaries
+  // cannot expose stale prior-generation result truth.
+  result_store_.clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }
