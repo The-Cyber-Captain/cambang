@@ -40,7 +40,7 @@ public:
                CoreNativeObjectRegistry* native_objects,
                const uint64_t* current_gen,
                std::function<uint64_t()> now_ns,
-               std::function<bool()> result_retention_allowed)
+               std::function<bool()> result_retention_allowed = []() { return true; })
       : streams_(streams),
         devices_(devices),
         native_objects_(native_objects),
