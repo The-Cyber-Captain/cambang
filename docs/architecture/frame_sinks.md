@@ -3,6 +3,14 @@
 > This document supplements `core_runtime_model.md`,
 > `provider_architecture.md`, and `architecture/publication_model.md`.
 > It does not supersede them.
+> 
+> > Current release-facing payload/result contract:
+> See `docs/architecture/pixel_payload_and_result_contract.md`.
+>
+> `frame_sinks.md` defines the internal/runtime sink boundary.
+> The payload/result contract defines the retained-result, ownership,
+> and materialization model used by release-facing `Stream Result`,
+> `Capture Result`, and `Capture Result Set`.
 
 ---
 
