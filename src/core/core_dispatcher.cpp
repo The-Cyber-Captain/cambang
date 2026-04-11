@@ -169,6 +169,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     std::optional<StreamIntent> stream_intent;
     bool retained_for_result = false;
     uint64_t integrated_ts_ns = 0;
+    bool has_stream_record = (sid == 0);
     if (streams_) {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
@@ -176,17 +177,25 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       }
       if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
         stream_intent = stream_rec->intent;
+        has_stream_record = true;
       }
     } else {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
     }
     if (result_store_) {
-      if (result_routing_enabled_) {
+      const bool lifecycle_allows_retention =
+          result_retention_allowed_ ? result_retention_allowed_() : true;
+      if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
         retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
       } else if (result_debug_enabled()) {
+        const char* reason = !result_routing_enabled_
+                                 ? "routing_disabled"
+                                 : (!lifecycle_allows_retention ? "lifecycle_not_live"
+                                                                : "stream_not_valid");
         std::fprintf(
             stderr,
-            "[CamBANG][debug][result] dispatcher skip retain (routing disabled): stream=%llu capture=%llu device=%llu\n",
+            "[CamBANG][debug][result] dispatcher skip retain (%s): stream=%llu capture=%llu device=%llu\n",
+            reason,
             static_cast<unsigned long long>(p.frame.stream_id),
             static_cast<unsigned long long>(p.frame.capture_id),
             static_cast<unsigned long long>(p.frame.device_instance_id));

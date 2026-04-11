@@ -60,6 +60,8 @@ CoreRuntime::CoreRuntime()
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+      }, [this]() -> bool {
+        return state_.load(std::memory_order_acquire) == CoreRuntimeState::LIVE;
       }),
       ingress_(&core_thread_, [this](ProviderToCoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).

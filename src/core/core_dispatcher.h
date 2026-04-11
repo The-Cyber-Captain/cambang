@@ -39,12 +39,14 @@ public:
                CoreDeviceRegistry* devices,
                CoreNativeObjectRegistry* native_objects,
                const uint64_t* current_gen,
-               std::function<uint64_t()> now_ns)
+               std::function<uint64_t()> now_ns,
+               std::function<bool()> result_retention_allowed)
       : streams_(streams),
         devices_(devices),
         native_objects_(native_objects),
         current_gen_(current_gen),
-        now_ns_(std::move(now_ns)) {}
+        now_ns_(std::move(now_ns)),
+        result_retention_allowed_(std::move(result_retention_allowed)) {}
 
   ~CoreDispatcher() = default;
 
@@ -80,6 +82,7 @@ private:
   CoreNativeObjectRegistry* native_objects_ = nullptr; // non-owning; core-thread-only
   const uint64_t* current_gen_ = nullptr; // non-owning; core-thread-only
   std::function<uint64_t()> now_ns_{};    // core-thread-only
+  std::function<bool()> result_retention_allowed_{}; // core-thread-only
 
   bool relevant_state_changed_ = false;
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
