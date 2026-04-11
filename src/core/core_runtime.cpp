@@ -37,6 +37,16 @@ static bool banners_enabled() noexcept {
   return !(v && v[0] == '0' && v[1] == '\0');
 }
 
+static bool result_debug_enabled() noexcept {
+  const char* v = std::getenv("CAMBANG_DEBUG_RESULT_PATH");
+  return (v && v[0] == '1' && v[1] == '\0');
+}
+
+static bool disable_result_routing_requested() noexcept {
+  const char* v = std::getenv("CAMBANG_DISABLE_RESULT_ROUTING");
+  return (v && v[0] == '1' && v[1] == '\0');
+}
+
 CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
@@ -64,6 +74,15 @@ CoreRuntime::CoreRuntime()
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }) {
   dispatcher_.set_result_store(&result_store_);
+  const bool result_routing_enabled = !disable_result_routing_requested();
+  dispatcher_.set_result_routing_enabled(result_routing_enabled);
+  if (result_debug_enabled()) {
+    std::fprintf(
+        stderr,
+        "[CamBANG][debug][result] routing %s (CAMBANG_DISABLE_RESULT_ROUTING=%s)\n",
+        result_routing_enabled ? "ENABLED" : "DISABLED",
+        result_routing_enabled ? "0" : "1");
+  }
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only latest-frame sink (core thread dispatch path).
   dispatcher_.set_frame_sink(&latest_frame_sink_);
@@ -138,6 +157,9 @@ bool CoreRuntime::start() {
 }
 
 void CoreRuntime::stop() {
+  if (result_debug_enabled()) {
+    std::fprintf(stderr, "[CamBANG][debug][result] stop() begin\n");
+  }
   // Idempotent stop.
   const CoreRuntimeState st0 = state_.exchange(CoreRuntimeState::TEARING_DOWN, std::memory_order_acq_rel);
   if (st0 == CoreRuntimeState::STOPPED || st0 == CoreRuntimeState::CREATED) {
@@ -166,6 +188,9 @@ void CoreRuntime::stop() {
   }
 
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
+  if (result_debug_enabled()) {
+    std::fprintf(stderr, "[CamBANG][debug][result] stop() end\n");
+  }
 }
 
 
@@ -565,11 +590,17 @@ if (dispatcher_.consume_relevant_state_changed()) {
 }
 
 void CoreRuntime::on_core_stop() {
+  if (result_debug_enabled()) {
+    std::fprintf(stderr, "[CamBANG][debug][result] on_core_stop() begin\n");
+  }
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
+  if (result_debug_enabled()) {
+    std::fprintf(stderr, "[CamBANG][debug][result] on_core_stop() end\n");
+  }
 }
 
 void CoreRuntime::post(CoreThread::Task task) {
