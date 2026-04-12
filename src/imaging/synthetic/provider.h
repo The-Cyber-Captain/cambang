@@ -134,13 +134,16 @@ private:
     CpuPackedPatternRenderer renderer{};
 
     struct BufferSlot {
-      SyntheticProvider* owner = nullptr;
       uint64_t stream_id = 0;
       std::vector<std::uint8_t> bytes;
       std::atomic<bool> in_use{false};
     };
-    std::vector<std::unique_ptr<BufferSlot>> pool;
+    std::vector<std::shared_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
+  };
+
+  struct FrameReleaseLease {
+    std::shared_ptr<StreamState::BufferSlot> slot;
   };
 
   static void release_frame_(void* user, const FrameView* frame);
