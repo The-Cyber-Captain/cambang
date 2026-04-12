@@ -144,6 +144,7 @@ private:
 
   struct FrameReleaseLease {
     std::shared_ptr<StreamState::BufferSlot> slot;
+    std::shared_ptr<std::vector<std::uint8_t>> bytes;
   };
 
   static void release_frame_(void* user, const FrameView* frame);

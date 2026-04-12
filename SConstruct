@@ -506,6 +506,7 @@ if env["gde"]:
     gde_sources += [
         os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_device.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
