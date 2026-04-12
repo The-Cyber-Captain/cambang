@@ -240,7 +240,7 @@ func _try_verify_capture_result() -> void:
 	_step_ok("capture to_image materialization verified")
 
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d" % [
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=initial verification" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
 		capture_result.get_height(),
@@ -306,7 +306,7 @@ func _poll_inspection_capture_result() -> void:
 		_inspection_capture_id = 0
 		return
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\n(manual capture)" % [
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=manual capture" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
 		capture_result.get_height(),
