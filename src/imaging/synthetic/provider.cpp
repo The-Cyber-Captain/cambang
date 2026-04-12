@@ -65,7 +65,7 @@ CaptureTemplate SyntheticProvider::capture_template() const {
   t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
   t.profile.target_fps_max = t.profile.target_fps_min;
 
-  t.picture.preset = PatternPreset::XyXor;
+  t.picture.preset = PatternPreset::NoiseAnimated;
   t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed ^ 0xA5A5u);
   t.picture.overlay_frame_index_offsets = true;
   t.picture.overlay_moving_bar = false;
