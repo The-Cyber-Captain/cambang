@@ -6,6 +6,7 @@
 #include <string>
 
 #include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/variant.hpp>
@@ -88,10 +89,10 @@ public:
   // - Before the first publish, returns NIL.
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
-  CamBANGDevice* get_device(uint64_t device_instance_id) const;
-  CamBANGStreamResult* get_latest_stream_result(uint64_t stream_id) const;
-  CamBANGCaptureResult* get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
-  CamBANGCaptureResultSet* get_capture_result_set(uint64_t capture_id) const;
+  godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
+  godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;
+  godot::Ref<CamBANGCaptureResult> get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
+  godot::Ref<CamBANGCaptureResultSet> get_capture_result_set(uint64_t capture_id) const;
   uint64_t trigger_device_capture(uint64_t device_instance_id);
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)

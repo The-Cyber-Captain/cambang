@@ -24,19 +24,21 @@ bool CamBANGCaptureResultSet::is_empty() const {
 godot::Array CamBANGCaptureResultSet::get_results() const {
   godot::Array out;
   for (const auto& [_, data] : results_by_device_) {
-    CamBANGCaptureResult* r = memnew(CamBANGCaptureResult);
+    godot::Ref<CamBANGCaptureResult> r;
+    r.instantiate();
     r->set_data(data);
     out.push_back(r);
   }
   return out;
 }
 
-CamBANGCaptureResult* CamBANGCaptureResultSet::get_result_for_device(uint64_t device_instance_id) const {
+godot::Ref<CamBANGCaptureResult> CamBANGCaptureResultSet::get_result_for_device(uint64_t device_instance_id) const {
   auto it = results_by_device_.find(device_instance_id);
   if (it == results_by_device_.end() || !it->second) {
-    return nullptr;
+    return godot::Ref<CamBANGCaptureResult>();
   }
-  CamBANGCaptureResult* r = memnew(CamBANGCaptureResult);
+  godot::Ref<CamBANGCaptureResult> r;
+  r.instantiate();
   r->set_data(it->second);
   return r;
 }
