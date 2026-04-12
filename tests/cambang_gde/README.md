@@ -27,6 +27,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Server-driven status panel integration proof: starts synthetic timeline mode,
     selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
     `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
+- `scenes/70_result_retrieval_verification.tscn`
+  - Verifies Godot-facing tranche-1 result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Expected pass string: `OK: result_retrieval_verification passed`
+
 
 ## Running
 
@@ -39,6 +43,7 @@ godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/66_status_panel_scenario_runtime.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
 ```
 
 Notes:
@@ -50,7 +55,7 @@ Notes:
   and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
   large value such as `--quit-after 1000`.
-- `60`, `61`, `62`, `63`, and `65` are intended to self-terminate with an explicit terminal `OK: ... PASS`
+- `60`, `61`, `62`, `63`, `65`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
 - `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
   builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`

@@ -1,0 +1,88 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/70_result_retrieval_verification.gd" id="1_script"]
+
+[node name="70_ResultRetrievalVerification" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="RootMargin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 16
+
+[node name="MainColumn" type="VBoxContainer" parent="RootMargin"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="RootMargin/MainColumn"]
+layout_mode = 2
+text = "Tranche-1 Result Retrieval Verification"
+
+[node name="ResultsRow" type="HBoxContainer" parent="RootMargin/MainColumn"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 20
+
+[node name="StreamPanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+
+[node name="StreamTitle" type="Label" parent="RootMargin/MainColumn/ResultsRow/StreamPanel"]
+layout_mode = 2
+text = "Latest Stream Result"
+
+[node name="StreamTexture" type="TextureRect" parent="RootMargin/MainColumn/ResultsRow/StreamPanel"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+stretch_mode = 5
+expand_mode = 1
+
+[node name="StreamFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/StreamPanel"]
+layout_mode = 2
+text = "waiting for stream result..."
+
+[node name="CapturePanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+
+[node name="CaptureTitle" type="Label" parent="RootMargin/MainColumn/ResultsRow/CapturePanel"]
+layout_mode = 2
+text = "Latest Capture Result"
+
+[node name="CaptureTexture" type="TextureRect" parent="RootMargin/MainColumn/ResultsRow/CapturePanel"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+stretch_mode = 5
+expand_mode = 1
+
+[node name="CaptureFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/CapturePanel"]
+layout_mode = 2
+text = "waiting for capture result..."
+
+[node name="StatusLabel" type="RichTextLabel" parent="RootMargin/MainColumn"]
+custom_minimum_size = Vector2(0, 220)
+layout_mode = 2
+size_flags_vertical = 3
+bbcode_enabled = false
+scroll_active = true
