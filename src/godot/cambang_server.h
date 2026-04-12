@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -31,6 +32,7 @@ namespace cambang {
 class CamBANGStreamResult;
 class CamBANGCaptureResult;
 class CamBANGCaptureResultSet;
+class CamBANGDevice;
 
 // CamBANGServer is the release-facing lifecycle owner.
 //
@@ -86,9 +88,11 @@ public:
   // - Before the first publish, returns NIL.
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
+  CamBANGDevice* get_device(uint64_t device_instance_id) const;
   CamBANGStreamResult* get_latest_stream_result(uint64_t stream_id) const;
   CamBANGCaptureResult* get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   CamBANGCaptureResultSet* get_capture_result_set(uint64_t capture_id) const;
+  uint64_t trigger_device_capture(uint64_t device_instance_id);
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
@@ -174,6 +178,7 @@ private:
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
+  std::atomic<uint64_t> next_capture_id_{1};
 };
 
 } // namespace cambang

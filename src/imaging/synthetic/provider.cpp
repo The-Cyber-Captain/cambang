@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
@@ -662,8 +663,84 @@ ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, 
 }
 
 ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
-  (void)req;
-  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.capture_id == 0 || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  auto dev_it = devices_.find(req.device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  const uint32_t fmt = req.format_fourcc == 0 ? FOURCC_RGBA : req.format_fourcc;
+  if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA)) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (req.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  const uint32_t stride = req.width * 4u;
+  const size_t frame_size = static_cast<size_t>(stride) * static_cast<size_t>(req.height);
+  auto bytes = std::make_shared<std::vector<std::uint8_t>>();
+  bytes->resize(frame_size);
+
+  StreamTemplate tmpl = stream_template();
+  bool preset_valid = true;
+  PatternSpec spec = to_pattern_spec(tmpl.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  if (!preset_valid) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  PatternRenderTarget dst{};
+  dst.data = bytes->data();
+  dst.size_bytes = bytes->size();
+  dst.width = req.width;
+  dst.height = req.height;
+  dst.stride_bytes = stride;
+  dst.format = PatternSpec::PackedFormat::RGBA8;
+
+  const uint64_t capture_ts_ns = clock_.now_ns();
+  PatternOverlayData ov{};
+  ov.frame_index = 0;
+  ov.timestamp_ns = capture_ts_ns;
+  ov.stream_id = 0;
+
+  CpuPackedPatternRenderer renderer{};
+  renderer.render_into(spec, dst, ov);
+
+  if (fmt == FOURCC_BGRA) {
+    for (size_t i = 0; i + 3 < bytes->size(); i += 4) {
+      std::swap((*bytes)[i], (*bytes)[i + 2]);
+    }
+  }
+
+  FrameView fv{};
+  fv.device_instance_id = req.device_instance_id;
+  fv.stream_id = 0;
+  fv.capture_id = req.capture_id;
+  fv.width = req.width;
+  fv.height = req.height;
+  fv.format_fourcc = fmt;
+  fv.capture_timestamp.value = capture_ts_ns;
+  fv.capture_timestamp.tick_ns = 1;
+  fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+  fv.data = bytes->data();
+  fv.size_bytes = bytes->size();
+  fv.stride_bytes = stride;
+
+  auto* lease = new FrameReleaseLease();
+  lease->bytes = bytes;
+  fv.release = &SyntheticProvider::release_frame_;
+  fv.release_user = lease;
+
+  strand_.post_capture_started(req.capture_id);
+  strand_.post_frame(fv);
+  strand_.post_capture_completed(req.capture_id);
+  return ProviderResult::success();
 }
 
 ProviderResult SyntheticProvider::abort_capture(uint64_t capture_id) {

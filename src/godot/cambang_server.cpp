@@ -1,6 +1,7 @@
 #include "godot/cambang_server.h"
 #include "godot/cambang_capture_result.h"
 #include "godot/cambang_capture_result_set.h"
+#include "godot/cambang_device.h"
 #include "godot/cambang_stream_result.h"
 
 #include <godot_cpp/core/class_db.hpp>
@@ -323,6 +324,15 @@ bool CamBANGServer::is_running() const {
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
 }
 
+CamBANGDevice* CamBANGServer::get_device(uint64_t device_instance_id) const {
+  if (device_instance_id == 0) {
+    return nullptr;
+  }
+  CamBANGDevice* out = memnew(CamBANGDevice);
+  out->set_server_and_instance(const_cast<CamBANGServer*>(this), device_instance_id);
+  return out;
+}
+
 CamBANGStreamResult* CamBANGServer::get_latest_stream_result(uint64_t stream_id) const {
   SharedStreamResultData data = runtime_.get_latest_stream_result(stream_id);
   if (!data) {
@@ -349,6 +359,37 @@ CamBANGCaptureResultSet* CamBANGServer::get_capture_result_set(uint64_t capture_
   out->set_capture_id(capture_id);
   out->set_results(std::move(results));
   return out;
+}
+
+uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
+  if (device_instance_id == 0 || !is_running() || !provider_) {
+    return 0;
+  }
+
+  const StreamTemplate tmpl = provider_->stream_template();
+
+  CaptureRequest req{};
+  req.device_instance_id = device_instance_id;
+  req.rig_id = 0;
+  req.width = tmpl.profile.width;
+  req.height = tmpl.profile.height;
+  req.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+
+  if (req.width == 0 || req.height == 0) {
+    return 0;
+  }
+
+  uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  if (capture_id == 0) {
+    capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  }
+  req.capture_id = capture_id;
+
+  const ProviderResult pr = provider_->trigger_capture(req);
+  if (!pr.ok()) {
+    return 0;
+  }
+  return capture_id;
 }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
@@ -715,6 +756,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set", "capture_id"), &CamBANGServer::get_capture_result_set);
