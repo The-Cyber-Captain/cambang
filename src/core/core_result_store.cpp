@@ -1,10 +1,46 @@
 #include "core/core_result_store.h"
 
+#include <cstdlib>
 #include <cstring>
 
 namespace cambang {
 
 namespace {
+enum class ResultIsolationMode {
+  kNormal,
+  kSkipCopy,
+  kSkipStore,
+};
+
+ResultIsolationMode get_result_isolation_mode() {
+  const char* const raw = std::getenv("CAMBANG_RESULT_ISOLATION");
+  if (raw == nullptr) {
+    return ResultIsolationMode::kNormal;
+  }
+  if (std::strcmp(raw, "skip_copy") == 0) {
+    return ResultIsolationMode::kSkipCopy;
+  }
+  if (std::strcmp(raw, "skip_store") == 0) {
+    return ResultIsolationMode::kSkipStore;
+  }
+  return ResultIsolationMode::kNormal;
+}
+
+bool populate_cpu_packed_metadata_without_copy(const FrameView& frame, CoreResultPayloadCpuPacked& out) {
+  if (frame.width == 0 || frame.height == 0 || frame.data == nullptr || frame.size_bytes == 0) {
+    return false;
+  }
+  if (!(frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA)) {
+    return false;
+  }
+  out.format_fourcc = frame.format_fourcc;
+  out.width = frame.width;
+  out.height = frame.height;
+  out.stride_bytes = (frame.stride_bytes == 0) ? (frame.width * 4u) : frame.stride_bytes;
+  out.bytes.clear();
+  return true;
+}
+
 uint32_t infer_bit_depth(uint32_t format_fourcc) {
   if (format_fourcc == FOURCC_RGBA || format_fourcc == FOURCC_BGRA) {
     return 8;
@@ -34,12 +70,21 @@ CoreImageFactBundle build_default_facts(const CoreResultPayloadCpuPacked& payloa
 bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
                                    uint64_t capture_timestamp_ns) {
+  const ResultIsolationMode isolation_mode = get_result_isolation_mode();
   CoreResultPayloadCpuPacked payload{};
-  if (!try_copy_cpu_packed_payload(frame, payload)) {
+  if (isolation_mode == ResultIsolationMode::kSkipCopy) {
+    if (!populate_cpu_packed_metadata_without_copy(frame, payload)) {
+      return false;
+    }
+  } else if (!try_copy_cpu_packed_payload(frame, payload)) {
     return false;
   }
 
   const CoreImageFactBundle facts = build_default_facts(payload);
+
+  if (isolation_mode == ResultIsolationMode::kSkipStore) {
+    return frame.stream_id != 0 || frame.capture_id != 0;
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
