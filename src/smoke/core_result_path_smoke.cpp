@@ -53,6 +53,6 @@ int main() {
   no_mailbox_store.retain_frame(stream_frame, StreamIntent::PREVIEW, 111);
   assert(no_mailbox_store.get_latest_stream_result(20));
 
-  std::cout << "core_result_path_smoke: PASS\n";
+  std::cout << "PASS core_result_path_smoke\n";
   return 0;
 }

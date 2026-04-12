@@ -583,8 +583,7 @@ ProviderResult SyntheticProvider::start_stream(
     s.pool.clear();
     s.pool.reserve(kPoolSize);
     for (size_t i = 0; i < kPoolSize; ++i) {
-      auto slot = std::make_unique<SyntheticProvider::StreamState::BufferSlot>();
-      slot->owner = this;
+      auto slot = std::make_shared<SyntheticProvider::StreamState::BufferSlot>();
       slot->stream_id = stream_id;
       slot->bytes.resize(size_bytes);
       slot->in_use.store(false, std::memory_order_relaxed);
@@ -1032,9 +1031,14 @@ ProviderResult SyntheticProvider::shutdown() {
 
 void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   (void)frame;
-  auto* slot = static_cast<StreamState::BufferSlot*>(user);
-  if (!slot) return;
-  slot->in_use.store(false, std::memory_order_release);
+  auto* lease = static_cast<FrameReleaseLease*>(user);
+  if (!lease) {
+    return;
+  }
+  if (lease->slot) {
+    lease->slot->in_use.store(false, std::memory_order_release);
+  }
+  delete lease;
 }
 
 void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
@@ -1047,7 +1051,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   const uint32_t stride = w * 4u;
 
   // Acquire a buffer slot.
-  StreamState::BufferSlot* slot = nullptr;
+  std::shared_ptr<StreamState::BufferSlot> slot;
   const size_t n = s.pool.size();
   if (n == 0) {
     return;
@@ -1060,7 +1064,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     }
     bool expected = false;
     if (cand->in_use.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-      slot = cand.get();
+      slot = cand;
       s.pool_cursor = (idx + 1) % n;
       break;
     }
@@ -1104,8 +1108,10 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.data = slot->bytes.data();
   fv.size_bytes = slot->bytes.size();
   fv.stride_bytes = stride;
+  auto* lease = new FrameReleaseLease();
+  lease->slot = slot;
   fv.release = &SyntheticProvider::release_frame_;
-  fv.release_user = slot;
+  fv.release_user = lease;
 
   strand_.post_frame(fv);
   s.frame_index++;

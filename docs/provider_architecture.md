@@ -260,6 +260,16 @@ Frame events may be dropped under pressure, but frame dropping must not:
 - suppress native-object events
 - distort registry truthfulness
 
+### 7.3 Admitted-frame release lifetime invariant
+
+Once a provider admits a frame to Core, the frame's payload memory,
+release token / `release_user`, and any storage touched by the release
+callback must remain valid until Core actually invokes the release callback.
+
+Providers may use provider-internal frame lease/release-safety state to
+uphold this invariant. This lease state is provider-internal bookkeeping
+and is **not** a registry-visible native object type.
+
 ---
 
 ## 8. Threading discipline

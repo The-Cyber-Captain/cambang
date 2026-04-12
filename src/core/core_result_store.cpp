@@ -1,10 +1,28 @@
 #include "core/core_result_store.h"
 
 #include <cstring>
+#include <limits>
 
 namespace cambang {
 
 namespace {
+
+bool checked_mul_size_t(size_t a, size_t b, size_t& out) {
+  if (a != 0 && b > (std::numeric_limits<size_t>::max() / a)) {
+    return false;
+  }
+  out = a * b;
+  return true;
+}
+
+bool checked_add_size_t(size_t a, size_t b, size_t& out) {
+  if (b > (std::numeric_limits<size_t>::max() - a)) {
+    return false;
+  }
+  out = a + b;
+  return true;
+}
+
 uint32_t infer_bit_depth(uint32_t format_fourcc) {
   if (format_fourcc == FOURCC_RGBA || format_fourcc == FOURCC_BGRA) {
     return 8;
@@ -118,12 +136,30 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
   if (!(frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA)) {
     return false;
   }
+  if (frame.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+    return false;
+  }
 
-  const size_t row_bytes = static_cast<size_t>(frame.width) * 4u;
+  size_t row_bytes = 0;
+  if (!checked_mul_size_t(static_cast<size_t>(frame.width), 4u, row_bytes)) {
+    return false;
+  }
   const size_t src_stride = (frame.stride_bytes == 0) ? row_bytes : static_cast<size_t>(frame.stride_bytes);
+  if (src_stride < row_bytes) {
+    return false;
+  }
   const size_t h = static_cast<size_t>(frame.height);
-  const size_t needed = (h == 0) ? 0 : ((h - 1u) * src_stride + row_bytes);
-  if (frame.size_bytes < needed) {
+  size_t stride_span = 0;
+  if (h > 1u && !checked_mul_size_t(h - 1u, src_stride, stride_span)) {
+    return false;
+  }
+  size_t needed = 0;
+  if (!checked_add_size_t(stride_span, row_bytes, needed) || frame.size_bytes < needed) {
+    return false;
+  }
+
+  size_t dst_size = 0;
+  if (!checked_mul_size_t(row_bytes, h, dst_size)) {
     return false;
   }
 
@@ -131,11 +167,14 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
   out.width = frame.width;
   out.height = frame.height;
   out.stride_bytes = static_cast<uint32_t>(row_bytes);
-  out.bytes.resize(row_bytes * h);
+  if (dst_size > out.bytes.max_size()) {
+    return false;
+  }
+  out.bytes.resize(dst_size);
 
   const uint8_t* src = frame.data;
   uint8_t* dst = out.bytes.data();
-  for (uint32_t y = 0; y < frame.height; ++y) {
+  for (size_t y = 0; y < h; ++y) {
     std::memcpy(dst, src, row_bytes);
     src += src_stride;
     dst += row_bytes;
