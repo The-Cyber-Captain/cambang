@@ -22,6 +22,7 @@ enum class SyntheticEventType : std::uint32_t {
   CreateStream = 5,
   DestroyStream = 6,
   UpdateStreamPicture = 7,
+  UpdateCapturePicture = 8,
 };
 
 struct SyntheticScheduledEvent {

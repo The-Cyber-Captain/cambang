@@ -117,6 +117,11 @@ struct StreamTemplate {
   PictureConfig picture{};
 };
 
+struct CaptureTemplate {
+  CaptureProfile profile{};
+  PictureConfig picture{};
+};
+
 // Convert PictureConfig + geometry to a renderer PatternSpec.
 // If out_preset_valid is provided, it is set to whether cfg.preset existed in registry.
 // Invalid presets deterministically fall back to XyXor.
@@ -187,6 +192,7 @@ struct CaptureRequest {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t format_fourcc = 0;        // e.g., 'JPEG', 'RAW '
+  PictureConfig picture{};
 
   uint64_t profile_version = 0;      // core bookkeeping
 };

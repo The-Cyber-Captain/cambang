@@ -1138,7 +1138,21 @@ StreamTemplate WindowsProvider::stream_template() const {
   return t;
 }
 
+CaptureTemplate WindowsProvider::capture_template() const {
+  CaptureTemplate t{};
+  t.profile = stream_template().profile;
+  t.picture.preset = PatternPreset::XyXor;
+  t.picture.seed = 0;
+  t.picture.overlay_frame_index_offsets = false;
+  t.picture.overlay_moving_bar = false;
+  return t;
+}
+
 ProviderResult WindowsProvider::set_stream_picture_config(uint64_t /*stream_id*/, const PictureConfig& /*picture*/) {
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult WindowsProvider::set_capture_picture_config(uint64_t /*device_instance_id*/, const PictureConfig& /*picture*/) {
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 

@@ -28,6 +28,17 @@ StreamTemplate StubProvider::stream_template() const {
   return t;
 }
 
+CaptureTemplate StubProvider::capture_template() const {
+  CaptureTemplate t{};
+  t.profile = stream_template().profile;
+  t.picture.preset = PatternPreset::Checker;
+  t.picture.seed = 11;
+  t.picture.overlay_frame_index_offsets = true;
+  t.picture.overlay_moving_bar = false;
+  t.picture.checker_size_px = 10;
+  return t;
+}
+
 bool StubProvider::is_known_hardware_id(const std::string& hardware_id) const {
   return hardware_id == kStubHardwareId;
 }
@@ -136,6 +147,7 @@ ProviderResult StubProvider::open_device(
   dev.open = true;
   dev.stream_id = 0;
   dev.native_id = alloc_native_id_(NativeObjectType::Device);
+  dev.capture_picture = capture_template().picture;
 
   emit_native_created_(dev.native_id, NativeObjectType::Device, root_id, device_instance_id, 0, provider_native_id_, 0);
   strand_.post_device_opened(device_instance_id);
@@ -501,6 +513,18 @@ ProviderResult StubProvider::set_stream_picture_config(uint64_t stream_id, const
   }
 
   st_it->second.picture = picture;
+  return ProviderResult::success();
+}
+
+ProviderResult StubProvider::set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  dev_it->second.capture_picture = picture;
   return ProviderResult::success();
 }
 

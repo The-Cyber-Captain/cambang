@@ -66,8 +66,19 @@ StreamTemplate ProviderBroker::stream_template() const {
   return StreamTemplate{};
 }
 
+CaptureTemplate ProviderBroker::capture_template() const {
+  if (active_) {
+    return active_->capture_template();
+  }
+  return CaptureTemplate{};
+}
+
 bool ProviderBroker::supports_stream_picture_updates() const noexcept {
   return active_ ? active_->supports_stream_picture_updates() : false;
+}
+
+bool ProviderBroker::supports_capture_picture_updates() const noexcept {
+  return active_ ? active_->supports_capture_picture_updates() : false;
 }
 
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
@@ -293,6 +304,14 @@ ProviderResult ProviderBroker::set_stream_picture_config(uint64_t stream_id, con
   return active_->set_stream_picture_config(stream_id, picture);
 }
 
+ProviderResult ProviderBroker::set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+  return active_->set_capture_picture_config(device_instance_id, picture);
+}
+
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
@@ -412,6 +431,8 @@ ProviderResult ProviderBroker::select_timeline_builtin_scenario_for_host(const s
     library_id = SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions;
   } else if (scenario_name == "publication_coalescing") {
     library_id = SyntheticBuiltinScenarioLibraryId::PublicationCoalescing;
+  } else if (scenario_name == "stream_inspection_live") {
+    library_id = SyntheticBuiltinScenarioLibraryId::StreamInspectionLive;
   } else {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }

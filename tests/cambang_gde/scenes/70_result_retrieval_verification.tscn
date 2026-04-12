@@ -80,6 +80,20 @@ expand_mode = 1
 layout_mode = 2
 text = "waiting for capture result..."
 
+[node name="GuiControls" type="HBoxContainer" parent="RootMargin/MainColumn"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="GuiHint" type="Label" parent="RootMargin/MainColumn/GuiControls"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "GUI controls (headed mode):"
+
+[node name="CaptureAgainButton" type="Button" parent="RootMargin/MainColumn/GuiControls"]
+layout_mode = 2
+disabled = true
+text = "Capture Again"
+
 [node name="StatusLabel" type="RichTextLabel" parent="RootMargin/MainColumn"]
 custom_minimum_size = Vector2(0, 220)
 layout_mode = 2

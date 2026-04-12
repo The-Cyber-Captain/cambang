@@ -29,6 +29,7 @@ enum class LoaderActionType : std::uint8_t {
   DestroyStream,
   CloseDevice,
   UpdateStreamPicture,
+  UpdateCapturePicture,
   Invalid,
 };
 
@@ -40,6 +41,7 @@ LoaderActionType parse_loader_action_type(const std::string& token) {
   if (token == "DestroyStream") return LoaderActionType::DestroyStream;
   if (token == "CloseDevice") return LoaderActionType::CloseDevice;
   if (token == "UpdateStreamPicture") return LoaderActionType::UpdateStreamPicture;
+  if (token == "UpdateCapturePicture") return LoaderActionType::UpdateCapturePicture;
   return LoaderActionType::Invalid;
 }
 
@@ -150,6 +152,20 @@ bool validate_parsed_synthetic_scenario_loader_document(
         }
         if (stream_keys.find(a.stream_key) == stream_keys.end()) {
           set_error(error, ctx + ".stream_key references unknown stream key: " + a.stream_key);
+          return false;
+        }
+        if (!valid_pattern_preset_token(a.picture.preset)) {
+          set_error(error, ctx + ".picture.preset has invalid token: " + a.picture.preset);
+          return false;
+        }
+        break;
+      case LoaderActionType::UpdateCapturePicture:
+        if (!a.has_device_key || a.has_stream_key || !a.has_picture) {
+          set_error(error, ctx + " must contain device_key and picture only");
+          return false;
+        }
+        if (device_keys.find(a.device_key) == device_keys.end()) {
+          set_error(error, ctx + ".device_key references unknown device key: " + a.device_key);
           return false;
         }
         if (!valid_pattern_preset_token(a.picture.preset)) {

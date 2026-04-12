@@ -57,6 +57,21 @@ StreamTemplate SyntheticProvider::stream_template() const {
   return t;
 }
 
+CaptureTemplate SyntheticProvider::capture_template() const {
+  CaptureTemplate t{};
+  t.profile.width = cfg_.nominal.width;
+  t.profile.height = cfg_.nominal.height;
+  t.profile.format_fourcc = cfg_.nominal.format_fourcc;
+  t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
+  t.profile.target_fps_max = t.profile.target_fps_min;
+
+  t.picture.preset = PatternPreset::XyXor;
+  t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed ^ 0xA5A5u);
+  t.picture.overlay_frame_index_offsets = true;
+  t.picture.overlay_moving_bar = false;
+  return t;
+}
+
 ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   if (initialized_) {
     return ProviderResult::success();
@@ -318,6 +333,10 @@ void SyntheticProvider::timeline_pump_() {
         timeline_dispatch_request_(ev);
         break;
       }
+      case SyntheticEventType::UpdateCapturePicture: {
+        timeline_dispatch_request_(ev);
+        break;
+      }
     }
   }
 
@@ -431,6 +450,7 @@ ProviderResult SyntheticProvider::open_device(
   d.root_id = root_id;
   d.open = true;
   d.native_id = alloc_native_id_(NativeObjectType::Device);
+  d.capture_picture = capture_template().picture;
 
   emit_native_create_device_(d);
   strand_.post_device_opened(device_instance_id);
@@ -662,6 +682,21 @@ ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, 
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end() || !it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (!find_preset_info(picture.preset)) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+  it->second.capture_picture = picture;
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -688,9 +723,8 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   auto bytes = std::make_shared<std::vector<std::uint8_t>>();
   bytes->resize(frame_size);
 
-  StreamTemplate tmpl = stream_template();
   bool preset_valid = true;
-  PatternSpec spec = to_pattern_spec(tmpl.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  PatternSpec spec = to_pattern_spec(req.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
   if (!preset_valid) {
     invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
   }
