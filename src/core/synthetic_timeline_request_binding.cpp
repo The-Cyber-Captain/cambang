@@ -87,6 +87,11 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
         (void)runtime.try_set_stream_picture_config(ev.stream_id, ev.picture);
       }
       break;
+    case SyntheticEventType::UpdateCapturePicture:
+      if (ev.has_picture) {
+        (void)runtime.try_set_capture_picture_config(ev.device_instance_id, ev.picture);
+      }
+      break;
     case SyntheticEventType::EmitFrame:
       // Fact-like provider-originated event; remains provider-direct.
       break;

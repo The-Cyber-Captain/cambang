@@ -65,8 +65,8 @@ func _ready() -> void:
 	_require(start_err == OK, "step %d FAIL: synthetic timeline start rejected (%d)" % [_step, start_err])
 	_step_ok("bootstrap synthetic runtime started")
 
-	var stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
-	_require(stage_err == OK, "step %d FAIL: unable to stage stream_lifecycle_versions" % _step)
+	var stage_err := CamBANGServer.select_builtin_scenario("stream_inspection_live")
+	_require(stage_err == OK, "step %d FAIL: unable to stage stream_inspection_live" % _step)
 	_step_ok("bootstrap scenario staged")
 
 	var scenario_start_err := CamBANGServer.start_scenario()

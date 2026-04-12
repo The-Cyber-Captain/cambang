@@ -44,6 +44,16 @@ bool CoreDeviceRegistry::retain_capture_profile(uint64_t device_instance_id,
   return true;
 }
 
+bool CoreDeviceRegistry::set_capture_picture(uint64_t device_instance_id, const PictureConfig& picture) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto& rec = devices_[device_instance_id];
+  rec.device_instance_id = device_instance_id;
+  rec.capture_picture = picture;
+  return true;
+}
+
 bool CoreDeviceRegistry::set_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
   if (device_instance_id == 0) {
     return false;

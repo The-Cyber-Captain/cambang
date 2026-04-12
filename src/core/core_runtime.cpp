@@ -836,10 +836,12 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     return TryOpenDeviceStatus::Busy;
   }
 
-  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id]() {
+  const CaptureTemplate capture_tmpl = prov->capture_template();
+  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id, capture_tmpl]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
+    (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
     (void)p->open_device(hardware_id, device_instance_id, root_id);
   });
 
@@ -903,6 +905,72 @@ TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
 
   return (pr == CoreThread::PostResult::Enqueued) ? TrySetStreamPictureStatus::OK
                                                   : TrySetStreamPictureStatus::Busy;
+}
+
+TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
+    uint64_t device_instance_id,
+    const PictureConfig& picture) noexcept {
+  if (device_instance_id == 0) {
+    return TrySetCapturePictureStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TrySetCapturePictureStatus::Busy;
+  }
+  if (!prov->supports_capture_picture_updates()) {
+    return TrySetCapturePictureStatus::NotSupported;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, picture]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    const ProviderResult sr = p->set_capture_picture_config(device_instance_id, picture);
+    if (!sr.ok()) {
+      return;
+    }
+    if (devices_.set_capture_picture(device_instance_id, picture)) {
+      request_publish_from_core_unchecked();
+    }
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TrySetCapturePictureStatus::OK
+                                                  : TrySetCapturePictureStatus::Busy;
+}
+
+bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return false;
+  }
+
+  const CaptureTemplate tmpl = prov->capture_template();
+  out.device_instance_id = device_instance_id;
+  out.rig_id = 0;
+  out.width = tmpl.profile.width;
+  out.height = tmpl.profile.height;
+  out.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+  out.profile_version = 0;
+  out.picture = tmpl.picture;
+
+  if (const auto* rec = devices_.find(device_instance_id)) {
+    if (rec->capture_width > 0) {
+      out.width = rec->capture_width;
+    }
+    if (rec->capture_height > 0) {
+      out.height = rec->capture_height;
+    }
+    if (rec->capture_format != 0) {
+      out.format_fourcc = rec->capture_format;
+    }
+    out.profile_version = rec->capture_profile_version;
+    out.picture = rec->capture_picture;
+  }
+
+  return out.width > 0 && out.height > 0;
 }
 
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {

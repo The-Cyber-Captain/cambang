@@ -83,10 +83,15 @@ public:
   // Provider default stream template (profile + picture). Core uses this for
   // stream creation-time defaulting.
   virtual StreamTemplate stream_template() const = 0;
+  // Provider default capture template (profile + picture). Core/host uses this for
+  // capture request defaulting.
+  virtual CaptureTemplate capture_template() const = 0;
 
   // Whether stream-scoped picture updates are supported.
   // If false, core should return NotSupported deterministically without calling into the provider.
   virtual bool supports_stream_picture_updates() const noexcept = 0;
+  // Whether capture-scoped picture updates are supported.
+  virtual bool supports_capture_picture_updates() const noexcept = 0;
 
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
@@ -119,6 +124,9 @@ public:
   // Stream-scoped picture update path.
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) = 0;
+  // Capture-scoped picture update path (device-scoped retained capture picture).
+  // Providers that do not support this must return ERR_NOT_SUPPORTED.
+  virtual ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) = 0;
 
   // Trigger a still capture for a device instance (device capture or rig capture).
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;

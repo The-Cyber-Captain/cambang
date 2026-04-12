@@ -33,7 +33,9 @@ public:
 
 
   StreamTemplate stream_template() const override;
+  CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }
+  bool supports_capture_picture_updates() const noexcept override { return true; }
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
@@ -55,6 +57,7 @@ public:
   ProviderResult stop_stream(uint64_t stream_id) override;
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
+  ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -118,6 +121,7 @@ private:
     uint64_t root_id = 0;
     bool open = false;
     uint64_t native_id = 0;
+    PictureConfig capture_picture{};
   };
 
   struct StreamState {

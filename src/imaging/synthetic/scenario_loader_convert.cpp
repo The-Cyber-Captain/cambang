@@ -52,6 +52,10 @@ bool parse_event_type(const std::string& token, SyntheticEventType& out) {
     out = SyntheticEventType::UpdateStreamPicture;
     return true;
   }
+  if (token == "UpdateCapturePicture") {
+    out = SyntheticEventType::UpdateCapturePicture;
+    return true;
+  }
   return false;
 }
 

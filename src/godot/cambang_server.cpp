@@ -370,16 +370,8 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
     return 0;
   }
 
-  const StreamTemplate tmpl = provider_->stream_template();
-
   CaptureRequest req{};
-  req.device_instance_id = device_instance_id;
-  req.rig_id = 0;
-  req.width = tmpl.profile.width;
-  req.height = tmpl.profile.height;
-  req.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
-
-  if (req.width == 0 || req.height == 0) {
+  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
     return 0;
   }
 

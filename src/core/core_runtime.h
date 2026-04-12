@@ -40,6 +40,13 @@ enum class TrySetStreamPictureStatus : uint8_t {
   InvalidArgument = 3,
 };
 
+enum class TrySetCapturePictureStatus : uint8_t {
+  OK = 0,
+  NotSupported = 1,
+  Busy = 2,
+  InvalidArgument = 3,
+};
+
 enum class TryCreateStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
@@ -153,6 +160,10 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Stream-scoped picture update path.
   // Non-blocking: enqueues the provider call onto the core thread.
   TrySetStreamPictureStatus try_set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) noexcept;
+  // Device-scoped capture-picture update path.
+  TrySetCapturePictureStatus try_set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) noexcept;
+
+  bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {

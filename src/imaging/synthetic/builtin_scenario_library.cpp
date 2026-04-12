@@ -36,6 +36,8 @@ const char* synthetic_builtin_scenario_library_name(SyntheticBuiltinScenarioLibr
       return "topology_change_versions";
     case SyntheticBuiltinScenarioLibraryId::PublicationCoalescing:
       return "publication_coalescing";
+    case SyntheticBuiltinScenarioLibraryId::StreamInspectionLive:
+      return "stream_inspection_live";
   }
   return "unknown";
 }
@@ -135,6 +137,17 @@ bool build_synthetic_builtin_scenario_library_canonical_scenario(
     add_timeline_action(out, 100'000'000, SyntheticEventType::StopStream, nullptr, kMainStreamKey, false, PictureConfig{});
     add_timeline_action(out, 100'000'001, SyntheticEventType::DestroyStream, nullptr, kMainStreamKey, false, PictureConfig{});
     add_timeline_action(out, 100'000'002, SyntheticEventType::CloseDevice, kDeviceKey, nullptr, false, PictureConfig{});
+    return true;
+  }
+
+  if (id == SyntheticBuiltinScenarioLibraryId::StreamInspectionLive) {
+    PictureConfig inspection{};
+    inspection.preset = PatternPreset::Checker;
+    inspection.seed = 17;
+    inspection.overlay_frame_index_offsets = true;
+    inspection.overlay_moving_bar = true;
+    inspection.checker_size_px = 24;
+    add_timeline_action(out, 20'000'000, SyntheticEventType::UpdateStreamPicture, nullptr, kMainStreamKey, true, inspection);
     return true;
   }
 

@@ -277,6 +277,16 @@ bool materialize_synthetic_canonical_scenario(
           return false;
         }
         break;
+      case SyntheticEventType::UpdateCapturePicture:
+        if (ev.device_instance_id == 0) {
+          set_error(error, "UpdateCapturePicture requires declared device key");
+          return false;
+        }
+        if (!device_open[ev.device_instance_id]) {
+          set_error(error, "UpdateCapturePicture requires device to be open for device key: " + device_key_by_id[ev.device_instance_id]);
+          return false;
+        }
+        break;
       case SyntheticEventType::EmitFrame:
         if (!require_stream_device_open(ev.stream_id, "EmitFrame")) {
           return false;
