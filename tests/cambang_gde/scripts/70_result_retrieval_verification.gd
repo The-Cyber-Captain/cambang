@@ -14,6 +14,7 @@ extends Control
 const QUIT_FLUSH_FRAMES := 2
 const STREAM_TIMEOUT_MS := 4000
 const CAPTURE_TIMEOUT_MS := 4000
+const INSPECTION_CAPTURE_TIMEOUT_MS := 4000
 const TOTAL_TIMEOUT_MS := 10000
 const PAYLOAD_KIND_CPU_PACKED := 0
 
@@ -22,23 +23,37 @@ const PAYLOAD_KIND_CPU_PACKED := 0
 @onready var _capture_facts_label: Label = $RootMargin/MainColumn/ResultsRow/CapturePanel/CaptureFacts
 @onready var _stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamTexture
 @onready var _capture_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/CapturePanel/CaptureTexture
+@onready var _gui_controls: HBoxContainer = $RootMargin/MainColumn/GuiControls
+@onready var _capture_again_button: Button = $RootMargin/MainColumn/GuiControls/CaptureAgainButton
 
 var _step := 0
 var _done := false
 var _quit_requested := false
+var _inspection_mode := false
+var _is_headless := false
 var _start_ms := 0
 var _stream_poll_start_ms := 0
 var _capture_poll_start_ms := 0
+var _inspection_capture_poll_start_ms := 0
 
 var _device_instance_id := 0
 var _stream_id := 0
 var _capture_id := 0
+var _inspection_capture_id := 0
 
 func _ready() -> void:
 	_status_label.clear()
+	_is_headless = DisplayServer.get_name() == "headless"
 	_start_ms = Time.get_ticks_msec()
 	_stream_poll_start_ms = _start_ms
 	set_process(true)
+	set_process_unhandled_input(true)
+
+	if _is_headless:
+		_gui_controls.visible = false
+	else:
+		_capture_again_button.pressed.connect(_on_capture_again_pressed)
+		_capture_again_button.disabled = true
 
 	CamBANGServer.stop()
 	var start_err := CamBANGServer.start(
@@ -64,6 +79,10 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if _done:
 		return
+	if _inspection_mode:
+		_update_stream_panel_live()
+		_poll_inspection_capture_result()
+		return
 
 	if Time.get_ticks_msec() - _start_ms > TOTAL_TIMEOUT_MS:
 		_fail("step %d FAIL: total verification timeout" % _step)
@@ -84,6 +103,18 @@ func _process(_delta: float) -> void:
 		_fail("step %d FAIL: capture result did not appear within timeout" % _step)
 		return
 	_try_verify_capture_result()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _is_headless:
+		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key_event := event as InputEventKey
+		if key_event.keycode == KEY_ESCAPE:
+			_append_status("INFO: Esc pressed; quitting scene")
+			_cleanup_and_quit(0)
+		elif key_event.keycode == KEY_C and _inspection_mode:
+			_request_manual_capture()
 
 
 func _try_latch_ids_from_snapshot() -> void:
@@ -219,6 +250,72 @@ func _try_verify_capture_result() -> void:
 	_ok("OK: result_retrieval_verification passed")
 
 
+func _update_stream_panel_live() -> void:
+	if _stream_id == 0:
+		return
+	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
+	if stream_result == null:
+		return
+	var stream_image: Image = stream_result.to_image()
+	if stream_image == null:
+		return
+	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
+	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live in inspection mode)" % [
+		stream_result.get_payload_kind(),
+		stream_result.get_width(),
+		stream_result.get_height(),
+		stream_result.get_stream_id()
+	]
+
+
+func _on_capture_again_pressed() -> void:
+	_request_manual_capture()
+
+
+func _request_manual_capture() -> void:
+	if _is_headless or not _inspection_mode:
+		return
+	if _inspection_capture_id != 0:
+		_append_status("INFO: capture already pending; wait for completion")
+		return
+	var device = CamBANGServer.get_device(_device_instance_id)
+	if device == null:
+		_append_status("WARN: cannot capture again; device unavailable")
+		return
+	_inspection_capture_id = int(device.trigger_capture())
+	if _inspection_capture_id == 0:
+		_append_status("WARN: manual capture request rejected (capture_id=0)")
+		return
+	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
+	_append_status("INFO: manual capture requested (capture_id=%d)" % _inspection_capture_id)
+
+
+func _poll_inspection_capture_result() -> void:
+	if _inspection_capture_id == 0:
+		return
+	if Time.get_ticks_msec() - _inspection_capture_poll_start_ms > INSPECTION_CAPTURE_TIMEOUT_MS:
+		_append_status("WARN: manual capture timeout for capture_id=%d" % _inspection_capture_id)
+		_inspection_capture_id = 0
+		return
+	var capture_result = CamBANGServer.get_capture_result(_inspection_capture_id, _device_instance_id)
+	if capture_result == null:
+		return
+	var capture_image: Image = capture_result.to_image()
+	if capture_image == null:
+		_append_status("WARN: manual capture image materialization failed")
+		_inspection_capture_id = 0
+		return
+	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\n(manual capture)" % [
+		capture_result.get_payload_kind(),
+		capture_result.get_width(),
+		capture_result.get_height(),
+		capture_result.get_capture_id()
+	]
+	_append_status("INFO: manual capture displayed (capture_id=%d)" % _inspection_capture_id)
+	_inspection_capture_id = 0
+
+
 func _step_ok(detail: String) -> void:
 	_append_status("step %d OK: %s" % [_step, detail])
 	_step += 1
@@ -238,9 +335,15 @@ func _append_status(line: String) -> void:
 func _ok(message: String) -> void:
 	if _done:
 		return
-	_done = true
 	_append_status(message)
-	_cleanup_and_quit(0)
+	if _is_headless:
+		_done = true
+		_cleanup_and_quit(0)
+		return
+	_inspection_mode = true
+	_capture_again_button.disabled = false
+	_append_status("GUI mode: staying open for inspection")
+	_append_status("Press Esc to quit (optional: press C or click 'Capture Again')")
 
 
 func _fail(message: String) -> void:
