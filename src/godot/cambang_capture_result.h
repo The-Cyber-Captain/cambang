@@ -1,7 +1,7 @@
 #pragma once
 
 #include <godot_cpp/classes/image.hpp>
-#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
@@ -11,8 +11,8 @@
 
 namespace cambang {
 
-class CamBANGCaptureResult final : public godot::Object {
-  GDCLASS(CamBANGCaptureResult, godot::Object)
+class CamBANGCaptureResult final : public godot::RefCounted {
+  GDCLASS(CamBANGCaptureResult, godot::RefCounted)
 
 public:
   static constexpr int CAPABILITY_READY = static_cast<int>(ResultCapability::READY);

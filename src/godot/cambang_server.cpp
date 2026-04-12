@@ -324,38 +324,42 @@ bool CamBANGServer::is_running() const {
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
 }
 
-CamBANGDevice* CamBANGServer::get_device(uint64_t device_instance_id) const {
+godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id) const {
   if (device_instance_id == 0) {
-    return nullptr;
+    return godot::Ref<CamBANGDevice>();
   }
-  CamBANGDevice* out = memnew(CamBANGDevice);
+  godot::Ref<CamBANGDevice> out;
+  out.instantiate();
   out->set_server_and_instance(const_cast<CamBANGServer*>(this), device_instance_id);
   return out;
 }
 
-CamBANGStreamResult* CamBANGServer::get_latest_stream_result(uint64_t stream_id) const {
+godot::Ref<CamBANGStreamResult> CamBANGServer::get_latest_stream_result(uint64_t stream_id) const {
   SharedStreamResultData data = runtime_.get_latest_stream_result(stream_id);
   if (!data) {
-    return nullptr;
+    return godot::Ref<CamBANGStreamResult>();
   }
-  CamBANGStreamResult* out = memnew(CamBANGStreamResult);
+  godot::Ref<CamBANGStreamResult> out;
+  out.instantiate();
   out->set_data(std::move(data));
   return out;
 }
 
-CamBANGCaptureResult* CamBANGServer::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
   SharedCaptureResultData data = runtime_.get_capture_result(capture_id, device_instance_id);
   if (!data) {
-    return nullptr;
+    return godot::Ref<CamBANGCaptureResult>();
   }
-  CamBANGCaptureResult* out = memnew(CamBANGCaptureResult);
+  godot::Ref<CamBANGCaptureResult> out;
+  out.instantiate();
   out->set_data(std::move(data));
   return out;
 }
 
-CamBANGCaptureResultSet* CamBANGServer::get_capture_result_set(uint64_t capture_id) const {
+godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set(uint64_t capture_id) const {
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
-  CamBANGCaptureResultSet* out = memnew(CamBANGCaptureResultSet);
+  godot::Ref<CamBANGCaptureResultSet> out;
+  out.instantiate();
   out->set_capture_id(capture_id);
   out->set_results(std::move(results));
   return out;

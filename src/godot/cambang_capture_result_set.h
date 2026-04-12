@@ -2,7 +2,8 @@
 
 #include <map>
 
-#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/array.hpp>
 
@@ -12,8 +13,8 @@ namespace cambang {
 
 class CamBANGCaptureResult;
 
-class CamBANGCaptureResultSet final : public godot::Object {
-  GDCLASS(CamBANGCaptureResultSet, godot::Object)
+class CamBANGCaptureResultSet final : public godot::RefCounted {
+  GDCLASS(CamBANGCaptureResultSet, godot::RefCounted)
 
 public:
   CamBANGCaptureResultSet() = default;
@@ -25,7 +26,7 @@ public:
   int size() const;
   bool is_empty() const;
   godot::Array get_results() const;
-  CamBANGCaptureResult* get_result_for_device(uint64_t device_instance_id) const;
+  godot::Ref<CamBANGCaptureResult> get_result_for_device(uint64_t device_instance_id) const;
 
   static void _bind_methods();
 

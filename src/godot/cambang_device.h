@@ -2,15 +2,15 @@
 
 #include <cstdint>
 
-#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 namespace cambang {
 
 class CamBANGServer;
 
-class CamBANGDevice final : public godot::Object {
-  GDCLASS(CamBANGDevice, godot::Object)
+class CamBANGDevice final : public godot::RefCounted {
+  GDCLASS(CamBANGDevice, godot::RefCounted)
 
 public:
   CamBANGDevice() = default;
