@@ -47,6 +47,12 @@ public:
   bool supports_stream_picture_updates() const noexcept override;
   bool supports_capture_picture_updates() const noexcept override;
 
+  ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override;
+  ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest& req) const noexcept override;
+
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
 

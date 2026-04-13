@@ -81,6 +81,19 @@ bool ProviderBroker::supports_capture_picture_updates() const noexcept {
   return active_ ? active_->supports_capture_picture_updates() : false;
 }
 
+ProducerBackingCapabilities ProviderBroker::stream_backing_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  return active_ ? active_->stream_backing_capabilities(profile, picture)
+                 : ProducerBackingCapabilities{false, false};
+}
+
+ProducerBackingCapabilities ProviderBroker::capture_backing_capabilities(
+    const CaptureRequest& req) const noexcept {
+  return active_ ? active_->capture_backing_capabilities(req)
+                 : ProducerBackingCapabilities{false, false};
+}
+
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
   switch (mode) {
     case RuntimeMode::platform_backed: {

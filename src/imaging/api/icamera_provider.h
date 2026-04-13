@@ -93,6 +93,24 @@ public:
   // Whether capture-scoped picture updates are supported.
   virtual bool supports_capture_picture_updates() const noexcept = 0;
 
+  // Internal producer-backing capability advertisement for stream realization.
+  // Backing capability is provider/runtime truth and is distinct from payload kind policy.
+  virtual ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept {
+    (void)profile;
+    (void)picture;
+    return ProducerBackingCapabilities{true, false};
+  }
+
+  // Internal producer-backing capability advertisement for still-capture realization.
+  // Backing capability is provider/runtime truth and is distinct from payload kind policy.
+  virtual ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest& req) const noexcept {
+    (void)req;
+    return ProducerBackingCapabilities{true, false};
+  }
+
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
   virtual ProviderResult initialize(IProviderCallbacks* callbacks) = 0;

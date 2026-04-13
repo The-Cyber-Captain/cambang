@@ -76,6 +76,50 @@ CaptureTemplate SyntheticProvider::capture_template() const {
   return t;
 }
 
+ProducerBackingCapabilities SyntheticProvider::stream_backing_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  (void)profile;
+  (void)picture;
+  return apply_verification_backing_override_(runtime_truth_backing_capabilities_());
+}
+
+ProducerBackingCapabilities SyntheticProvider::capture_backing_capabilities(
+    const CaptureRequest& req) const noexcept {
+  (void)req;
+  return apply_verification_backing_override_(runtime_truth_backing_capabilities_());
+}
+
+bool SyntheticProvider::has_runtime_gpu_backing_path_() noexcept {
+  // Truthful runtime gate for this tranche: synthetic currently has no real
+  // runtime GPU-backed realization path wired for stream or capture emission.
+  return false;
+}
+
+ProducerBackingCapabilities SyntheticProvider::runtime_truth_backing_capabilities_() const noexcept {
+  return ProducerBackingCapabilities{
+      true,
+      has_runtime_gpu_backing_path_(),
+  };
+}
+
+ProducerBackingCapabilities SyntheticProvider::apply_verification_backing_override_(
+    ProducerBackingCapabilities runtime_truth) const noexcept {
+  switch (cfg_.verification_backing_advertisement_override) {
+    case SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth:
+      return runtime_truth;
+    case SyntheticVerificationBackingAdvertisementOverride::ForceCpuOnly:
+      return ProducerBackingCapabilities{true, false};
+    case SyntheticVerificationBackingAdvertisementOverride::ForceCpuAndGpu:
+      return ProducerBackingCapabilities{true, true};
+    case SyntheticVerificationBackingAdvertisementOverride::ForceGpuOnly:
+      return ProducerBackingCapabilities{false, true};
+    default:
+      return runtime_truth;
+  }
+}
+
+
 uint64_t SyntheticProvider::generator_frame_ordinal_from_ns_(
     uint64_t timestamp_ns,
     const PictureConfig& picture) noexcept {

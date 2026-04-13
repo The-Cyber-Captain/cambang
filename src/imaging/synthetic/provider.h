@@ -37,6 +37,12 @@ public:
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
 
+  ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept override;
+  ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest& req) const noexcept override;
+
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
 
@@ -114,6 +120,10 @@ private:
   bool timeline_is_destructive_primitive_(SyntheticEventType type) const;
   void timeline_pump_();
   bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
+  static bool has_runtime_gpu_backing_path_() noexcept;
+  ProducerBackingCapabilities runtime_truth_backing_capabilities_() const noexcept;
+  ProducerBackingCapabilities apply_verification_backing_override_(
+      ProducerBackingCapabilities runtime_truth) const noexcept;
 
   struct DeviceState {
     std::string hardware_id;
