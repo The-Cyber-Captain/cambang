@@ -114,6 +114,8 @@ bool convert_parsed_synthetic_scenario_loader_document_to_canonical(
     if (a.has_picture) {
       mapped.has_picture = true;
       mapped.picture.seed = a.picture.seed;
+      mapped.picture.generator_fps_num = a.picture.generator_fps_num;
+      mapped.picture.generator_fps_den = a.picture.generator_fps_den;
       mapped.picture.overlay_frame_index_offsets = a.picture.overlay_frame_index_offsets;
       mapped.picture.overlay_moving_bar = a.picture.overlay_moving_bar;
       mapped.picture.solid_r = a.picture.solid_r;

@@ -130,7 +130,6 @@ private:
     bool started = false;
     bool producing = false;
     uint64_t frame_producer_native_id = 0;
-    uint64_t frame_index = 0;
     uint64_t next_due_ns = 0;
     uint64_t native_id = 0;
 
@@ -160,6 +159,7 @@ private:
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
+  static uint64_t generator_frame_ordinal_from_ns_(uint64_t timestamp_ns, const PictureConfig& picture) noexcept;
 
   void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
                                ProviderError stop_error,

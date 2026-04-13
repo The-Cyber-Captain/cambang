@@ -417,7 +417,7 @@ bool parse_picture(const JsonValue& value,
     return false;
   }
   if (!require_only_fields(value,
-                           {"preset", "seed", "overlay_frame_index_offsets", "overlay_moving_bar", "solid_r", "solid_g", "solid_b", "solid_a", "checker_size_px"},
+                           {"preset", "seed", "generator_fps_num", "generator_fps_den", "overlay_frame_index_offsets", "overlay_moving_bar", "solid_r", "solid_g", "solid_b", "solid_a", "checker_size_px"},
                            error,
                            context)) {
     return false;
@@ -425,6 +425,8 @@ bool parse_picture(const JsonValue& value,
 
   const JsonValue* preset = find_field(value, "preset");
   const JsonValue* seed = find_field(value, "seed");
+  const JsonValue* generator_fps_num = find_field(value, "generator_fps_num");
+  const JsonValue* generator_fps_den = find_field(value, "generator_fps_den");
   const JsonValue* overlay_offsets = find_field(value, "overlay_frame_index_offsets");
   const JsonValue* overlay_bar = find_field(value, "overlay_moving_bar");
   const JsonValue* solid_r = find_field(value, "solid_r");
@@ -435,6 +437,8 @@ bool parse_picture(const JsonValue& value,
 
   if (!require_type(preset, JsonValue::Type::String, context + ".preset", error) ||
       !require_type(seed, JsonValue::Type::Number, context + ".seed", error) ||
+      (generator_fps_num && !require_type(generator_fps_num, JsonValue::Type::Number, context + ".generator_fps_num", error)) ||
+      (generator_fps_den && !require_type(generator_fps_den, JsonValue::Type::Number, context + ".generator_fps_den", error)) ||
       !require_type(overlay_offsets, JsonValue::Type::Bool, context + ".overlay_frame_index_offsets", error) ||
       !require_type(overlay_bar, JsonValue::Type::Bool, context + ".overlay_moving_bar", error) ||
       !require_type(solid_r, JsonValue::Type::Number, context + ".solid_r", error) ||
@@ -455,6 +459,14 @@ bool parse_picture(const JsonValue& value,
       !parse_u32(*solid_b, context + ".solid_b", b, error) ||
       !parse_u32(*solid_a, context + ".solid_a", a, error) ||
       !parse_u32(*checker, context + ".checker_size_px", out.checker_size_px, error)) {
+    return false;
+  }
+  if (generator_fps_num &&
+      !parse_u32(*generator_fps_num, context + ".generator_fps_num", out.generator_fps_num, error)) {
+    return false;
+  }
+  if (generator_fps_den &&
+      !parse_u32(*generator_fps_den, context + ".generator_fps_den", out.generator_fps_den, error)) {
     return false;
   }
   if (r > 255 || g > 255 || b > 255 || a > 255) {

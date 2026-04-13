@@ -52,6 +52,8 @@ StreamTemplate SyntheticProvider::stream_template() const {
   // Canonical default per tranche: noise_animated.
   t.picture.preset = PatternPreset::NoiseAnimated;
   t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed);
+  t.picture.generator_fps_num = 30;
+  t.picture.generator_fps_den = 1;
   t.picture.overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
   t.picture.overlay_moving_bar = true;
   return t;
@@ -65,11 +67,33 @@ CaptureTemplate SyntheticProvider::capture_template() const {
   t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
   t.profile.target_fps_max = t.profile.target_fps_min;
 
-  t.picture.preset = PatternPreset::XyXor;
+  t.picture.preset = PatternPreset::NoiseAnimated;
   t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed ^ 0xA5A5u);
+  t.picture.generator_fps_num = 30;
+  t.picture.generator_fps_den = 1;
   t.picture.overlay_frame_index_offsets = true;
   t.picture.overlay_moving_bar = false;
   return t;
+}
+
+uint64_t SyntheticProvider::generator_frame_ordinal_from_ns_(
+    uint64_t timestamp_ns,
+    const PictureConfig& picture) noexcept {
+  if (picture.generator_fps_num == 0 || picture.generator_fps_den == 0) {
+    return 0;
+  }
+  const __uint128_t numerator =
+      static_cast<__uint128_t>(timestamp_ns) * static_cast<__uint128_t>(picture.generator_fps_num);
+  const __uint128_t denominator =
+      static_cast<__uint128_t>(1'000'000'000ull) * static_cast<__uint128_t>(picture.generator_fps_den);
+  if (denominator == 0) {
+    return 0;
+  }
+  const __uint128_t q = numerator / denominator;
+  if (q > static_cast<__uint128_t>(std::numeric_limits<uint64_t>::max())) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(q);
 }
 
 ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
@@ -514,7 +538,6 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
 
   s.created = true;
   s.started = false;
-  s.frame_index = 0;
   s.next_due_ns = 0;
   s.native_id = alloc_native_id_(NativeObjectType::Stream);
 
@@ -633,7 +656,6 @@ ProviderResult SyntheticProvider::start_stream(
     strand_.post_native_object_created(info);
   }
 
-  s.frame_index = 0;
   // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
@@ -739,7 +761,7 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   const uint64_t capture_ts_ns = clock_.now_ns();
   PatternOverlayData ov{};
-  ov.frame_index = 0;
+  ov.frame_index = generator_frame_ordinal_from_ns_(capture_ts_ns, req.picture);
   ov.timestamp_ns = capture_ts_ns;
   ov.stream_id = 0;
 
@@ -1200,7 +1222,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   dst.format = PatternSpec::PackedFormat::RGBA8;
 
   PatternOverlayData ov{};
-  ov.frame_index = s.frame_index;
+  ov.frame_index = generator_frame_ordinal_from_ns_(scheduled_capture_ns, s.picture);
   ov.timestamp_ns = scheduled_capture_ns;
   ov.stream_id = s.req.stream_id;
 
@@ -1225,7 +1247,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.release_user = lease;
 
   strand_.post_frame(fv);
-  s.frame_index++;
 }
 
 void SyntheticProvider::emit_due_frames_() {

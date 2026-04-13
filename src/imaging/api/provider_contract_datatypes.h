@@ -99,6 +99,13 @@ struct PictureConfig {
   PatternPreset preset = PatternPreset::XyXor;
   uint32_t seed = 0;
 
+  // Synthetic source-generation cadence (independent of stream/profile FPS).
+  // Render-driving frame ordinal samples synthetic time using:
+  // floor(timestamp_ns * generator_fps_num / (1e9 * generator_fps_den)).
+  // If either term is 0, source is treated as static.
+  uint32_t generator_fps_num = 30;
+  uint32_t generator_fps_den = 1;
+
   // Overlays (implemented by the Pattern Module renderer for synthetic/stub).
   bool overlay_frame_index_offsets = true;
   bool overlay_moving_bar = true;
