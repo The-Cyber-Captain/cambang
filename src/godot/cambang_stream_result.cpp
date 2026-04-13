@@ -70,10 +70,7 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   if (!data_) {
     return godot::Variant();
   }
-  if (data_->payload_kind != ResultPayloadKind::GPU_SURFACE) {
-    return to_image();
-  }
-  if (data_->retained_gpu_surface) {
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_surface) {
     godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_surface);
     if (retained.is_valid()) {
       return retained;
@@ -88,7 +85,7 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   if (cached_display_view_.is_valid()) {
     return cached_display_view_;
   }
-  return to_image();
+  return godot::Variant();
 }
 
 godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
