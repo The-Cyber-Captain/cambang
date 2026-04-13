@@ -279,6 +279,7 @@ struct FrameView {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t format_fourcc = 0;
+  ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
 
   // Timing
   CaptureTimestamp capture_timestamp{};

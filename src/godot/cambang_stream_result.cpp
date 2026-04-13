@@ -1,5 +1,7 @@
 #include "godot/cambang_stream_result.h"
 
+#include <godot_cpp/classes/image_texture.hpp>
+
 #include "godot/cambang_result_convert.h"
 
 namespace cambang {
@@ -47,14 +49,35 @@ godot::Dictionary CamBANGStreamResult::get_optical_calibration_provenance() cons
 }
 
 int CamBANGStreamResult::can_get_display_view() const {
-  return data_ ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
+  if (!data_) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  return (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) ? CAPABILITY_READY : CAPABILITY_CHEAP;
 }
 
 int CamBANGStreamResult::can_to_image() const {
-  return data_ ? CAPABILITY_CHEAP : CAPABILITY_UNSUPPORTED;
+  if (!data_) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  return CAPABILITY_CHEAP;
 }
 
 godot::Variant CamBANGStreamResult::get_display_view() const {
+  if (!data_) {
+    return godot::Variant();
+  }
+  if (data_->payload_kind != ResultPayloadKind::GPU_SURFACE) {
+    return to_image();
+  }
+  if (!cached_display_view_.is_valid()) {
+    godot::Ref<godot::Image> image = to_image();
+    if (image.is_valid()) {
+      cached_display_view_ = godot::ImageTexture::create_from_image(image);
+    }
+  }
+  if (cached_display_view_.is_valid()) {
+    return cached_display_view_;
+  }
   return to_image();
 }
 

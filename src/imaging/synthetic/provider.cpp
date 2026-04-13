@@ -1303,6 +1303,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.width = w;
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
+  fv.primary_backing_kind = gpu_ok ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;

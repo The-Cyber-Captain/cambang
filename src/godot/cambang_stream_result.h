@@ -1,6 +1,7 @@
 #pragma once
 
 #include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -23,7 +24,10 @@ public:
 
   CamBANGStreamResult() = default;
 
-  void set_data(SharedStreamResultData data) { data_ = std::move(data); }
+  void set_data(SharedStreamResultData data) {
+    data_ = std::move(data);
+    cached_display_view_.unref();
+  }
 
   uint32_t get_width() const;
   uint32_t get_height() const;
@@ -58,6 +62,7 @@ public:
   static void _bind_methods();
 
 private:
+  mutable godot::Ref<godot::Texture2D> cached_display_view_;
   SharedStreamResultData data_;
 };
 
