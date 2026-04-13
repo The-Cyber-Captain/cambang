@@ -67,7 +67,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     stream_result->device_instance_id = frame.device_instance_id;
     stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
     stream_result->capture_timestamp_ns = capture_timestamp_ns;
-    stream_result->payload_kind = ResultPayloadKind::CPU_PACKED;
+    stream_result->payload_kind = (frame.primary_backing_kind == ProducerBackingKind::GPU)
+        ? ResultPayloadKind::GPU_SURFACE
+        : ResultPayloadKind::CPU_PACKED;
     stream_result->payload = payload;
     stream_result->facts = facts;
     latest_stream_results_[frame.stream_id] = std::move(stream_result);

@@ -17,6 +17,7 @@ const CAPTURE_TIMEOUT_MS := 4000
 const INSPECTION_CAPTURE_TIMEOUT_MS := 4000
 const TOTAL_TIMEOUT_MS := 10000
 const PAYLOAD_KIND_CPU_PACKED := 0
+const PAYLOAD_KIND_GPU_SURFACE := 2
 
 @onready var _status_label: RichTextLabel = $RootMargin/MainColumn/StatusLabel
 @onready var _stream_facts_label: Label = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamFacts
@@ -149,7 +150,11 @@ func _try_verify_stream_result() -> void:
 	_require(stream_result.get_width() > 0, "step %d FAIL: stream width invalid" % _step)
 	_require(stream_result.get_height() > 0, "step %d FAIL: stream height invalid" % _step)
 	_require(stream_result.get_format() != 0, "step %d FAIL: stream format invalid" % _step)
-	_require(stream_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: tranche-1 stream payload_kind must be CPU_PACKED" % _step)
+	var stream_payload_kind := int(stream_result.get_payload_kind())
+	_require(
+		stream_payload_kind == PAYLOAD_KIND_CPU_PACKED or stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
+		"step %d FAIL: stream payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
+	)
 	_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
 	_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
 	_step_ok("stream direct properties verified")
@@ -174,6 +179,13 @@ func _try_verify_stream_result() -> void:
 	_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
 	_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
 	_step_ok("stream to_image materialization verified")
+
+	var stream_display_view = stream_result.get_display_view()
+	if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
+		_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
+	else:
+		_require(stream_display_view is Image, "step %d FAIL: CPU_PACKED stream display_view must be Image" % _step)
+	_step_ok("stream display_view path verified")
 
 	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
 	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d" % [
