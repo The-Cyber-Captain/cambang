@@ -268,10 +268,10 @@ func _update_stream_panel_live() -> void:
 	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
 	if stream_result == null:
 		return
-	var stream_image: Image = stream_result.to_image()
-	if stream_image == null:
+	var stream_display_view = stream_result.get_display_view()
+	if not (stream_display_view is Texture2D):
 		return
-	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
+	_stream_texture_rect.texture = stream_display_view
 	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live in inspection mode)" % [
 		stream_result.get_payload_kind(),
 		stream_result.get_width(),
