@@ -3,6 +3,7 @@
 #include <godot_cpp/classes/image_texture.hpp>
 
 #include "godot/cambang_result_convert.h"
+#include "godot/synthetic_gpu_backing_bridge.h"
 
 namespace cambang {
 
@@ -52,7 +53,10 @@ int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  return (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) ? CAPABILITY_READY : CAPABILITY_CHEAP;
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_surface) {
+    return CAPABILITY_READY;
+  }
+  return CAPABILITY_CHEAP;
 }
 
 int CamBANGStreamResult::can_to_image() const {
@@ -68,6 +72,12 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   }
   if (data_->payload_kind != ResultPayloadKind::GPU_SURFACE) {
     return to_image();
+  }
+  if (data_->retained_gpu_surface) {
+    godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_surface);
+    if (retained.is_valid()) {
+      return retained;
+    }
   }
   if (!cached_display_view_.is_valid()) {
     godot::Ref<godot::Image> image = to_image();
