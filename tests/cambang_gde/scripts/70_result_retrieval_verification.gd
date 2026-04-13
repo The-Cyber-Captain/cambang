@@ -184,10 +184,10 @@ func _try_verify_stream_result() -> void:
 	if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
 		_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
 	else:
-		_require(stream_display_view is Image, "step %d FAIL: CPU_PACKED stream display_view must be Image" % _step)
+		_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
 	_step_ok("stream display_view path verified")
 
-	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
+	_stream_texture_rect.texture = stream_display_view
 	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d" % [
 		stream_result.get_payload_kind(),
 		stream_result.get_width(),
@@ -268,10 +268,10 @@ func _update_stream_panel_live() -> void:
 	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
 	if stream_result == null:
 		return
-	var stream_image: Image = stream_result.to_image()
-	if stream_image == null:
+	var stream_display_view = stream_result.get_display_view()
+	if not (stream_display_view is Texture2D):
 		return
-	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
+	_stream_texture_rect.texture = stream_display_view
 	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live in inspection mode)" % [
 		stream_result.get_payload_kind(),
 		stream_result.get_width(),

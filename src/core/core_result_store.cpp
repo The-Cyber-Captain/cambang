@@ -3,6 +3,8 @@
 #include <cstring>
 #include <limits>
 
+#include "imaging/synthetic/gpu_backing_runtime.h"
+
 namespace cambang {
 
 namespace {
@@ -62,14 +64,24 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (frame.stream_id != 0) {
+    std::shared_ptr<void> retained_gpu_surface;
+    if (frame.primary_backing_kind == ProducerBackingKind::GPU) {
+      retained_gpu_surface = synthetic_gpu_backing_retain_display_surface_rgba8(
+          payload.bytes.data(),
+          payload.width,
+          payload.height,
+          payload.stride_bytes);
+    }
+
     auto stream_result = std::make_shared<CoreStreamResultData>();
     stream_result->stream_id = frame.stream_id;
     stream_result->device_instance_id = frame.device_instance_id;
     stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
     stream_result->capture_timestamp_ns = capture_timestamp_ns;
-    stream_result->payload_kind = (frame.primary_backing_kind == ProducerBackingKind::GPU)
+    stream_result->payload_kind = retained_gpu_surface
         ? ResultPayloadKind::GPU_SURFACE
         : ResultPayloadKind::CPU_PACKED;
+    stream_result->retained_gpu_surface = std::move(retained_gpu_surface);
     stream_result->payload = payload;
     stream_result->facts = facts;
     latest_stream_results_[frame.stream_id] = std::move(stream_result);

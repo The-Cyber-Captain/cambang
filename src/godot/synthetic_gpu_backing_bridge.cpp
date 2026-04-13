@@ -7,6 +7,8 @@
 
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/rd_texture_format.hpp>
 #include <godot_cpp/classes/rd_texture_view.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -15,6 +17,10 @@
 
 namespace cambang {
 namespace {
+
+struct RetainedDisplaySurface final {
+  godot::Ref<godot::Texture2D> texture;
+};
 
 bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
@@ -114,9 +120,43 @@ bool global_rd_roundtrip_rgba8(
   return true;
 }
 
+std::shared_ptr<void> retain_display_surface_rgba8(
+    const uint8_t* src,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes) noexcept {
+  if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
+    return {};
+  }
+
+  godot::Ref<godot::Image> image;
+  image.instantiate();
+  if (image.is_null()) {
+    return {};
+  }
+  godot::PackedByteArray bytes;
+  bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
+  std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
+  image->set_data(static_cast<int64_t>(width),
+                  static_cast<int64_t>(height),
+                  false,
+                  godot::Image::FORMAT_RGBA8,
+                  bytes);
+
+  godot::Ref<godot::ImageTexture> texture = godot::ImageTexture::create_from_image(image);
+  if (texture.is_null()) {
+    return {};
+  }
+
+  auto surface = std::make_shared<RetainedDisplaySurface>();
+  surface->texture = texture;
+  return std::static_pointer_cast<void>(surface);
+}
+
 const SyntheticGpuBackingRuntimeOps kOps{
     &global_rd_available,
     &global_rd_roundtrip_rgba8,
+    &retain_display_surface_rgba8,
 };
 
 } // namespace
@@ -129,6 +169,14 @@ void install_synthetic_gpu_backing_godot_bridge() {
 void uninstall_synthetic_gpu_backing_godot_bridge() {
   clear_synthetic_gpu_backing_runtime_ops();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
+}
+
+godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& surface) {
+  if (!surface) {
+    return {};
+  }
+  const std::shared_ptr<RetainedDisplaySurface> retained = std::static_pointer_cast<RetainedDisplaySurface>(surface);
+  return retained ? retained->texture : godot::Ref<godot::Texture2D>();
 }
 
 } // namespace cambang

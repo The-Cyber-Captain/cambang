@@ -1,10 +1,30 @@
 #include "godot/cambang_stream_result.h"
 
+#include <cstdlib>
+
 #include <godot_cpp/classes/image_texture.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #include "godot/cambang_result_convert.h"
+#include "godot/synthetic_gpu_backing_bridge.h"
 
 namespace cambang {
+
+namespace {
+
+bool stream_display_trace_enabled() {
+  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
+  return value && value[0] != '\0' && value[0] != '0';
+}
+
+void trace_stream_display_path(const char* path) {
+  if (!stream_display_trace_enabled()) {
+    return;
+  }
+  godot::UtilityFunctions::print("[CamBANG][StreamResult] display_view_path=", path);
+}
+
+} // namespace
 
 uint32_t CamBANGStreamResult::get_width() const { return data_ ? data_->payload.width : 0; }
 uint32_t CamBANGStreamResult::get_height() const { return data_ ? data_->payload.height : 0; }
@@ -52,7 +72,10 @@ int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  return (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) ? CAPABILITY_READY : CAPABILITY_CHEAP;
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_surface) {
+    return CAPABILITY_READY;
+  }
+  return CAPABILITY_CHEAP;
 }
 
 int CamBANGStreamResult::can_to_image() const {
@@ -66,8 +89,12 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   if (!data_) {
     return godot::Variant();
   }
-  if (data_->payload_kind != ResultPayloadKind::GPU_SURFACE) {
-    return to_image();
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_surface) {
+    godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_surface);
+    if (retained.is_valid()) {
+      trace_stream_display_path("retained_gpu_surface");
+      return retained;
+    }
   }
   if (!cached_display_view_.is_valid()) {
     godot::Ref<godot::Image> image = to_image();
@@ -76,9 +103,10 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
     }
   }
   if (cached_display_view_.is_valid()) {
+    trace_stream_display_path("cpu_texture_fallback");
     return cached_display_view_;
   }
-  return to_image();
+  return godot::Variant();
 }
 
 godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
