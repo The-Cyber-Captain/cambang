@@ -10,6 +10,7 @@
 #include "imaging/broker/provider_broker.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
+#include "imaging/synthetic/gpu_backing_runtime.h"
 #include "imaging/synthetic/provider.h"
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/scenario_model.h"
@@ -984,7 +985,7 @@ bool run_synthetic_backing_capability_advertisement_check() {
     return true;
   };
 
-  const bool runtime_gpu_gate = false;
+  const bool runtime_gpu_gate = synthetic_gpu_backing_runtime_available();
 
   if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth, true, runtime_gpu_gate)) return false;
   if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceCpuOnly, true, false)) return false;

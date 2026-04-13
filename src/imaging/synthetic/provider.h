@@ -16,7 +16,6 @@
 #include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
 #include "imaging/synthetic/virtual_clock.h"
-
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 namespace cambang {
@@ -145,6 +144,8 @@ private:
 
     PictureConfig picture{};
     CpuPackedPatternRenderer renderer{};
+    bool prefer_gpu_backing = false;
+    std::vector<std::uint8_t> gpu_staging;
 
     struct BufferSlot {
       uint64_t stream_id = 0;

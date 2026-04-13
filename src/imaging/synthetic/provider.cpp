@@ -10,6 +10,7 @@
 
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/api/timeline_teardown_trace.h"
+#include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
@@ -91,9 +92,7 @@ ProducerBackingCapabilities SyntheticProvider::capture_backing_capabilities(
 }
 
 bool SyntheticProvider::has_runtime_gpu_backing_path_() noexcept {
-  // Truthful runtime gate for this tranche: synthetic currently has no real
-  // runtime GPU-backed realization path wired for stream or capture emission.
-  return false;
+  return synthetic_gpu_backing_runtime_available();
 }
 
 ProducerBackingCapabilities SyntheticProvider::runtime_truth_backing_capabilities_() const noexcept {
@@ -679,6 +678,8 @@ ProviderResult SyntheticProvider::start_stream(
     }
     s.pool_cursor = 0;
   }
+  s.prefer_gpu_backing = has_runtime_gpu_backing_path_();
+  s.gpu_staging.resize(size_bytes);
 
   s.started = true;
   s.producing = true;
@@ -788,6 +789,8 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   const size_t frame_size = static_cast<size_t>(stride) * static_cast<size_t>(req.height);
   auto bytes = std::make_shared<std::vector<std::uint8_t>>();
   bytes->resize(frame_size);
+  std::vector<std::uint8_t> gpu_staging;
+  gpu_staging.resize(frame_size);
 
   bool preset_valid = true;
   PatternSpec spec = to_pattern_spec(req.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
@@ -796,8 +799,8 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   }
 
   PatternRenderTarget dst{};
-  dst.data = bytes->data();
-  dst.size_bytes = bytes->size();
+  dst.data = gpu_staging.data();
+  dst.size_bytes = gpu_staging.size();
   dst.width = req.width;
   dst.height = req.height;
   dst.stride_bytes = stride;
@@ -811,6 +814,15 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   CpuPackedPatternRenderer renderer{};
   renderer.render_into(spec, dst, ov);
+  const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
+      gpu_staging.data(),
+      req.width,
+      req.height,
+      stride,
+      *bytes);
+  if (!gpu_ok) {
+    std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
+  }
 
   if (fmt == FOURCC_BGRA) {
     for (size_t i = 0; i + 3 < bytes->size(); i += 4) {
@@ -1258,8 +1270,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
 
   PatternRenderTarget dst{};
-  dst.data = slot->bytes.data();
-  dst.size_bytes = slot->bytes.size();
+  dst.data = s.gpu_staging.data();
+  dst.size_bytes = s.gpu_staging.size();
   dst.width = w;
   dst.height = h;
   dst.stride_bytes = stride;
@@ -1271,6 +1283,18 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   ov.stream_id = s.req.stream_id;
 
   s.renderer.render_into(spec, dst, ov);
+  bool gpu_ok = false;
+  if (s.prefer_gpu_backing) {
+    gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
+        s.gpu_staging.data(),
+        w,
+        h,
+        stride,
+        slot->bytes);
+  }
+  if (!gpu_ok) {
+    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+  }
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;

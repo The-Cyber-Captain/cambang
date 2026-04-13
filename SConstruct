@@ -512,6 +512,7 @@ if env["gde"]:
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
+        os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]
 
     if env["dev_nodes"]:
