@@ -187,7 +187,7 @@ func _try_verify_stream_result() -> void:
 		_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
 	_step_ok("stream display_view path verified")
 
-	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
+	_stream_texture_rect.texture = stream_display_view
 	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d" % [
 		stream_result.get_payload_kind(),
 		stream_result.get_width(),
