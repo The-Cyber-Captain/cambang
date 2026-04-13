@@ -61,6 +61,7 @@ bool synthetic_gpu_backing_realize_rgba8_via_global_gpu(
   return ok;
 }
 
+#if defined(CAMBANG_GDE_BUILD) && CAMBANG_GDE_BUILD
 std::shared_ptr<void> synthetic_gpu_backing_retain_display_surface_rgba8(
     const uint8_t* src,
     uint32_t width,
@@ -75,5 +76,6 @@ std::shared_ptr<void> synthetic_gpu_backing_retain_display_surface_rgba8(
   trace_line(surface ? "retain_display_surface success=true" : "retain_display_surface success=false");
   return surface;
 }
+#endif
 
 } // namespace cambang

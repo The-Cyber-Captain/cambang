@@ -423,6 +423,7 @@ else:
 
 if env["gde"]:
     gde_env = env.Clone()
+    gde_env.Append(CPPDEFINES=["CAMBANG_GDE_BUILD=1"])
 
     # Compile sources via a separate variant dir to avoid collisions with smoke.
     gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
