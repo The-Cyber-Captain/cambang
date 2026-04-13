@@ -601,7 +601,7 @@ debugging logs.
 - **Spec**: hardware-reported truth (with optional user corrections).
 - **Config**: user intent (choices made by the developer/app).
 - **Capture Profile**: fidelity definition for image production (streams and stills).
-- **PictureConfig**: per-stream picture appearance configuration, distinct from Capture Profile (structural capture properties).
+- **PictureConfig**: picture/source appearance configuration, distinct from Capture Profile and from storage/backing capability.
 - **Snapshot**: immutable published record of current truth.
 - **Phase**: lifecycle stage of an entity/native object.
 - **Mode**: operational posture of an entity.

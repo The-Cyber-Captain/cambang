@@ -433,6 +433,7 @@ In particular:
 This note does not freeze exact retention heuristics or auxiliary-backing policy.
 It exists to prevent future implementation from teaching the wrong lesson that
 a non-CPU primary payload removes the need for an available CPU-facing fallback.
+
 ---
 
 ## 13. Immediate implementation consequence
