@@ -16,6 +16,7 @@
 #include "godot/cambang_capture_result.h"
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_stream_result.h"
+#include "godot/synthetic_gpu_backing_bridge.h"
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
 #include "godot/dev/cambang_dev_node.h"
@@ -33,6 +34,7 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     godot::ClassDB::register_class<cambang::CamBANGStreamResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResultSet>();
+    cambang::install_synthetic_gpu_backing_godot_bridge();
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
     godot::ClassDB::register_class<cambang::CamBANGDevNode>();
@@ -58,6 +60,7 @@ static void cambang_gde_uninitialize(godot::ModuleInitializationLevel p_level) {
         memdelete(g_server);
         g_server = nullptr;
     }
+    cambang::uninstall_synthetic_gpu_backing_godot_bridge();
 }
 
 extern "C" GDExtensionBool GDE_EXPORT cambang_gdextension_init(
