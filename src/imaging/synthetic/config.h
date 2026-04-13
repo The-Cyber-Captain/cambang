@@ -27,6 +27,13 @@ enum class TimelineReconciliation : std::uint8_t {
   Strict = 1,
 };
 
+enum class SyntheticVerificationBackingAdvertisementOverride : std::uint8_t {
+  RuntimeTruth = 0,
+  ForceCpuOnly = 1,
+  ForceCpuAndGpu = 2,
+  ForceGpuOnly = 3,
+};
+
 struct SyntheticNominalDefaults {
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -57,6 +64,10 @@ struct SyntheticProviderConfig {
   SyntheticNominalDefaults nominal{};
   SyntheticPatternDefaults pattern{};
   SyntheticTimelineScenario timeline_scenario{};
+
+  // Verification-only advertisement override. Non-release behavior.
+  SyntheticVerificationBackingAdvertisementOverride verification_backing_advertisement_override =
+      SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth;
 };
 
 } // namespace cambang

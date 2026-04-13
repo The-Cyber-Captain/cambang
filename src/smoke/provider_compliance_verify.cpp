@@ -944,6 +944,56 @@ bool run_broker_timeline_host_surface_check() {
   return true;
 }
 
+
+bool run_synthetic_backing_capability_advertisement_check() {
+  auto verify_mode = [](SyntheticVerificationBackingAdvertisementOverride mode,
+                        bool expected_cpu,
+                        bool expected_gpu) -> bool {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.verification_backing_advertisement_override = mode;
+
+    SyntheticProvider provider(cfg);
+    if (!provider.initialize(&cb).ok()) {
+      std::cerr << "FAIL synthetic backing capability check initialize failed\n";
+      return false;
+    }
+
+    CaptureProfile profile{};
+    PictureConfig picture{};
+    CaptureRequest req{};
+
+    const ProducerBackingCapabilities stream_caps = provider.stream_backing_capabilities(profile, picture);
+    const ProducerBackingCapabilities capture_caps = provider.capture_backing_capabilities(req);
+
+    const bool stream_ok = (stream_caps.cpu_backed_available == expected_cpu) &&
+                           (stream_caps.gpu_backed_available == expected_gpu);
+    const bool capture_ok = (capture_caps.cpu_backed_available == expected_cpu) &&
+                            (capture_caps.gpu_backed_available == expected_gpu);
+
+    if (!provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic backing capability check shutdown failed\n";
+      return false;
+    }
+
+    if (!stream_ok || !capture_ok) {
+      std::cerr << "FAIL synthetic backing capability advertisement mismatch\n";
+      return false;
+    }
+    return true;
+  };
+
+  const bool runtime_gpu_gate = false;
+
+  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth, true, runtime_gpu_gate)) return false;
+  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceCpuOnly, true, false)) return false;
+  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceCpuAndGpu, true, true)) return false;
+  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceGpuOnly, false, true)) return false;
+
+  return true;
+}
+
 // ===== Family E: Synthetic frame/picture integration compliance =====
 
 bool run_synthetic_timeline_picture_appearance_check() {
@@ -1142,14 +1192,17 @@ int main(int argc, char** argv) {
   // 4) Broker / host surface compliance.
   if (!run_broker_timeline_host_surface_check()) return 1;
 
-  // 5) Synthetic frame/picture integration checks.
+  // 5) Synthetic backing capability advertisement seam checks.
+  if (!run_synthetic_backing_capability_advertisement_check()) return 1;
+
+  // 6) Synthetic frame/picture integration checks.
   if (!run_synthetic_timeline_picture_appearance_check()) return 1;
 
   // Additional provider direct sanity coverage retained.
   if (!run_stub_provider_sanity_check()) return 1;
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
 
-  // 6) External scenario file path (first-class, optional input).
+  // 7) External scenario file path (first-class, optional input).
   if (!opt.external_scenario_file.empty()) {
     if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
   }

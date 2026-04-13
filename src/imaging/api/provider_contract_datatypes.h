@@ -49,6 +49,21 @@ enum class ProviderError : uint32_t {
   ERR_SHUTTING_DOWN,
 };
 
+
+// Internal producer backing vocabulary.
+//
+// This models producer realization capability and is intentionally separate
+// from payload/result taxonomy (e.g., ResultPayloadKind).
+enum class ProducerBackingKind : uint8_t {
+  CPU = 0,
+  GPU = 1,
+};
+
+struct ProducerBackingCapabilities {
+  bool cpu_backed_available = false;
+  bool gpu_backed_available = false;
+};
+
 // Deterministic result for provider method calls.
 struct ProviderResult {
   ProviderError code = ProviderError::OK;
