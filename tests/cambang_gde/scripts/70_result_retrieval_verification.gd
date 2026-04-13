@@ -184,7 +184,7 @@ func _try_verify_stream_result() -> void:
 	if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
 		_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
 	else:
-		_require(stream_display_view is Image, "step %d FAIL: CPU_PACKED stream display_view must be Image" % _step)
+		_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
 	_step_ok("stream display_view path verified")
 
 	_stream_texture_rect.texture = ImageTexture.create_from_image(stream_image)
