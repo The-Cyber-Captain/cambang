@@ -162,7 +162,7 @@ truth.
 
 ### `PictureConfig`
 
-Per-stream picture appearance configuration.
+Picture/source appearance configuration.
 
 `PictureConfig` represents user intent regarding how frames should
 appear, independent of structural capture properties.
@@ -170,11 +170,19 @@ appear, independent of structural capture properties.
 It is distinct from **Capture Profile**:
 
 - Capture Profile defines structural capture properties such as resolution, pixel format, and frame rate range.
-- PictureConfig defines picture appearance parameters.
+- PictureConfig defines picture/source appearance parameters.
 
 For synthetic and stub providers, `PictureConfig` describes
 pattern-generation parameters. Platform-backed providers may interpret
 `PictureConfig` as picture adjustment parameters subject to capability.
+
+`PictureConfig` may also include picture/source generation controls such as
+generator cadence (for example `generator_fps_num` / `generator_fps_den`)
+used to determine the synthetic source-frame ordinal supplied to the renderer.
+
+Picture/source appearance intent is distinct from storage/backing capability.
+For example, choosing a pattern preset or generator cadence does not by itself
+assert that CPU-backed or GPU-backed realization is available.
 
 ### Pattern Presets (Synthetic Pixel Generation)
 
@@ -467,6 +475,15 @@ Not implied by the initial release-facing image-access model:
 
 These may be added later without redefining the meanings of
 **Stream Result**, **Capture Result**, or **Capture Result Set**.
+
+### Payload-kind vs engine-realization vocabulary
+
+CamBANG payload kinds such as `GPU_SURFACE` are provider/core/result-facing
+runtime concepts.
+
+Engine-specific realization objects used at the Godot boundary (for example
+texture or rendering resources) are adapter artifacts rather than payload-kind
+vocabulary.
 
 ------------------------------------------------------------------------
 

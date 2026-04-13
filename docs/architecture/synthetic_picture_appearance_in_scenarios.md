@@ -94,6 +94,17 @@ This avoids introducing a parallel appearance model while preserving a clear bou
 - provider owns application of those changes to stream render state
 - Pattern Module renders deterministically from resulting appearance state
 
+Scenario-authored appearance remains distinct from producer backing capability.
+
+In particular:
+
+- scenario chooses picture/source appearance intent through `PictureConfig`
+- producer/provider determine which backing kinds are actually available in the current runtime
+- scenario does not author CPU-backed vs GPU-backed realization policy
+
+Future GPU-backed synthetic realization does not change this boundary.
+Scenario continues to author appearance intent, while producer/provider own
+backing capability and realization choice.
 ---
 
 ## 8. Non-goals

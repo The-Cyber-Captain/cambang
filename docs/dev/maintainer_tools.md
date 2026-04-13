@@ -122,6 +122,28 @@ The terse provider-audit checklist remains separately documented in:
 ```text
 docs/dev/provider_compliance_checklist.md
 ```
+## 4.x Dev-only producer capability override
+
+For internal verification only, maintainer tooling may temporarily force synthetic
+producer backing advertisement to shapes such as:
+
+- CPU-only
+- CPU+GPU
+- GPU-only
+
+This exists solely to validate provider/core/result policy handling for backing
+selection and fallback behavior.
+
+These overrides are:
+
+- non-release
+- intentionally capability-falsifying when selected
+- not runtime truth
+- not part of the public/provider contract
+
+Maintainers should treat such modes as verification aids rather than as evidence
+that the synthetic producer truthfully supports those capability sets in normal
+operation.
 
 ---
 

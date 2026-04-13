@@ -416,6 +416,23 @@ Implementation and follow-up design must preserve:
 
 If future code or docs begin to treat `CPU_PACKED` as the canonical representation rather than the first fully-supported slice, that is architectural drift and should be corrected.
 
+## 12.x Upcoming non-CPU exemplar discipline
+
+A future non-CPU exemplar should not redefine CPU access as optional.
+
+In particular:
+
+- a non-CPU primary payload such as `GPU_SURFACE` remains compatible with an
+  available `to_image()` fallback path
+- the first non-CPU exemplar may legitimately use one primary backing plus an
+  optional auxiliary CPU backing
+- early stream-oriented non-CPU exemplars are likely to be clearer than capture-
+  oriented ones, because display-oriented usefulness is more central to stream
+  results
+
+This note does not freeze exact retention heuristics or auxiliary-backing policy.
+It exists to prevent future implementation from teaching the wrong lesson that
+a non-CPU primary payload removes the need for an available CPU-facing fallback.
 ---
 
 ## 13. Immediate implementation consequence

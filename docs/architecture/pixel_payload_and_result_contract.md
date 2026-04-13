@@ -215,6 +215,50 @@ Depending on `payload_kind`, this may include:
 
 This document does not freeze exact C++ field layout, but the presence of adequate metadata is part of the contract.
 
+## 6.x Primary backing vs auxiliary backing
+
+A realized image-bearing artifact may have:
+
+- one **primary backing**
+- zero or more **auxiliary backings**
+
+The result’s `payload_kind` reflects the **primary backing only**.
+
+Auxiliary backings may improve access/materialization capability and cost outcomes,
+but they do not create multiple primary payload kinds for a single accepted artifact.
+
+### 6.x.1 CPU and GPU backing are not treated as symmetric choices
+
+CPU-backed and GPU-backed realization are not treated as perfectly symmetric choices
+with only an abstract performance difference.
+
+In particular:
+
+- CPU `Image` materialization remains an **available** result-facing fallback path.
+- This does **not** imply that CPU backing is always the primary retained form.
+- This does **not** imply that CPU materialization is always cheap.
+- GPU-native usefulness remains runtime/path dependent.
+
+### 6.x.2 Sources that can provide more than one backing
+
+A source may legitimately provide more than one backing for the same realized artifact,
+for example:
+
+- CPU-backed and GPU-backed realization for the same stream frame
+- CPU-readable and encoded forms for the same capture artifact
+
+Provider policy chooses one backing as primary and may optionally retain another as
+auxiliary when that improves usefulness or avoids later expensive materialization.
+
+### 6.x.3 Unsupported GPU-only realization
+
+If a source offers only GPU-backed realization and the current runtime does not provide
+a usable GPU realization path for that result flow, that source/path is unsupported for
+that flow.
+
+CamBANG must not treat this case as equivalent to having CPU-backed fallback when no such
+CPU-backed realization is actually available.
+
 ---
 
 ## 7. Ownership and deterministic release
@@ -395,6 +439,15 @@ CamBANG must not assume that every retained result is already available in every
 ## 11.2 Capability/cost states
 
 Result access/materialization paths should be classifiable in provider-agnostic terms.
+
+Capability/cost reporting should be interpreted with backing asymmetry in mind.
+
+In particular:
+
+- a primary `GPU_SURFACE` may still require expensive CPU materialization
+- a primary `CPU_PACKED` may still admit cheap display-oriented realization
+- the existence of more than one backing for the same artifact does not change the
+  single-primary-payload rule
 
 Recommended first-pass capability/cost states:
 

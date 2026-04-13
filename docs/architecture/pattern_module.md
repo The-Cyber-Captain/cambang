@@ -339,6 +339,27 @@ provider/core contract:
 - providers remain responsible for deterministic delivery and correct metadata
 - snapshot publication is unchanged
 
+## 7.x Producer backing capability boundary
+
+The Pattern Module’s current v1 implementation is CPU packed only.
+
+However, producer-side backing capability should be understood as a boundary
+below provider policy rather than as a permanent architectural CPU-only limit.
+
+Future producer implementations may advertise backing capability such as:
+
+- CPU-backed realization available
+- GPU-backed realization available
+
+while preserving the same higher-level pattern/preset semantics.
+
+This does not alter the Pattern Module’s determinism rule:
+
+- per-frame/source evolution remains driven by caller-supplied inputs
+- the renderer must not consult hidden time or global state
+
+Provider policy may choose among the backing kinds actually available from the
+producer implementation in the current runtime.
 ---
 
 ## 8. How to Add a New Pattern
