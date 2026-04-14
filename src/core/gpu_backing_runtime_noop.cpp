@@ -3,7 +3,7 @@
 #if !defined(CAMBANG_GDE_BUILD) || !(CAMBANG_GDE_BUILD)
 namespace cambang {
 
-std::shared_ptr<void> synthetic_gpu_backing_retain_display_surface_rgba8(
+std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
     const uint8_t* /*src*/,
     uint32_t /*width*/,
     uint32_t /*height*/,

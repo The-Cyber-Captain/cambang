@@ -14,7 +14,7 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint32_t height,
       uint32_t stride_bytes,
       std::vector<uint8_t>& out) noexcept = nullptr;
-  std::shared_ptr<void> (*retain_display_surface_rgba8)(
+  std::shared_ptr<void> (*retain_primary_gpu_backing_rgba8)(
       const uint8_t* src,
       uint32_t width,
       uint32_t height,
@@ -32,7 +32,7 @@ bool synthetic_gpu_backing_realize_rgba8_via_global_gpu(
     uint32_t stride_bytes,
     std::vector<uint8_t>& out) noexcept;
 
-std::shared_ptr<void> synthetic_gpu_backing_retain_display_surface_rgba8(
+std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
     const uint8_t* src,
     uint32_t width,
     uint32_t height,

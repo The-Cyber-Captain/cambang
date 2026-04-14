@@ -3,6 +3,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -18,9 +20,53 @@
 namespace cambang {
 namespace {
 
-struct RetainedDisplaySurface final {
-  godot::Ref<godot::Texture2D> texture;
+void enqueue_pending_release(const godot::RID& rid);
+
+struct RetainedSyntheticGpuBacking final {
+  godot::RID rd_texture;
+  uint32_t width = 0;
+  uint32_t height = 0;
+
+  ~RetainedSyntheticGpuBacking() {
+    if (!rd_texture.is_valid()) {
+      return;
+    }
+    enqueue_pending_release(rd_texture);
+  }
 };
+
+std::mutex g_pending_release_mutex;
+std::vector<godot::RID> g_pending_releases;
+
+void enqueue_pending_release(const godot::RID& rid) {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  g_pending_releases.push_back(rid);
+}
+
+void drain_pending_releases() {
+  std::vector<godot::RID> pending;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (g_pending_releases.empty()) {
+      return;
+    }
+    pending.swap(g_pending_releases);
+  }
+
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    for (godot::RID& rid : pending) {
+      g_pending_releases.push_back(std::move(rid));
+    }
+    return;
+  }
+  for (const godot::RID& rid : pending) {
+    if (rid.is_valid()) {
+      rs->free_rid(rid);
+    }
+  }
+}
 
 bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
@@ -105,7 +151,7 @@ bool global_rd_roundtrip_rgba8(
   }
 
   const godot::PackedByteArray readback = rd->texture_get_data(tex, 0);
-  rd->free_rid(tex);
+  rs->free_rid(tex);
   if (readback.size() <= 0) {
     trace_gpu("roundtrip_result texture_create=true readback=false success=false");
     return false;
@@ -120,12 +166,97 @@ bool global_rd_roundtrip_rgba8(
   return true;
 }
 
-std::shared_ptr<void> retain_display_surface_rgba8(
+std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
     const uint8_t* src,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
   if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
+    return {};
+  }
+  drain_pending_releases();
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return {};
+  }
+  godot::RenderingDevice* rd = rs->get_rendering_device();
+  if (!rd) {
+    return {};
+  }
+
+  godot::Ref<godot::RDTextureFormat> format;
+  format.instantiate();
+  format->set_width(static_cast<int64_t>(width));
+  format->set_height(static_cast<int64_t>(height));
+  format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+  format->set_usage_bits(
+      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
+      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
+      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
+
+  godot::Ref<godot::RDTextureView> view;
+  view.instantiate();
+
+  godot::PackedByteArray bytes;
+  bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
+  std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
+
+  godot::Array data;
+  data.push_back(bytes);
+  const godot::RID texture = rd->texture_create(format, view, data);
+  if (!texture.is_valid()) {
+    return {};
+  }
+
+  auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  retained_backing->rd_texture = texture;
+  retained_backing->width = width;
+  retained_backing->height = height;
+  return std::static_pointer_cast<void>(retained_backing);
+}
+
+const SyntheticGpuBackingRuntimeOps kOps{
+    &global_rd_available,
+    &global_rd_roundtrip_rgba8,
+    &retain_primary_gpu_backing_rgba8,
+};
+
+} // namespace
+
+void install_synthetic_gpu_backing_godot_bridge() {
+  drain_pending_releases();
+  set_synthetic_gpu_backing_runtime_ops(&kOps);
+  trace_gpu("bridge_install runtime_ops_registered=true");
+}
+
+void uninstall_synthetic_gpu_backing_godot_bridge() {
+  drain_pending_releases();
+  clear_synthetic_gpu_backing_runtime_ops();
+  trace_gpu("bridge_uninstall runtime_ops_registered=false");
+}
+
+godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
+  drain_pending_releases();
+  if (!backing) {
+    return {};
+  }
+  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
+      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
+  if (!retained) {
+    return {};
+  }
+
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return {};
+  }
+  godot::RenderingDevice* rd = rs->get_rendering_device();
+  if (!rd || !retained->rd_texture.is_valid()) {
+    return {};
+  }
+
+  const godot::PackedByteArray readback = rd->texture_get_data(retained->rd_texture, 0);
+  if (readback.size() <= 0) {
     return {};
   }
 
@@ -134,49 +265,15 @@ std::shared_ptr<void> retain_display_surface_rgba8(
   if (image.is_null()) {
     return {};
   }
-  godot::PackedByteArray bytes;
-  bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
-  std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
-  image->set_data(static_cast<int64_t>(width),
-                  static_cast<int64_t>(height),
+  image->set_data(static_cast<int64_t>(retained->width),
+                  static_cast<int64_t>(retained->height),
                   false,
                   godot::Image::FORMAT_RGBA8,
-                  bytes);
-
-  godot::Ref<godot::ImageTexture> texture = godot::ImageTexture::create_from_image(image);
-  if (texture.is_null()) {
+                  readback);
+  if (image->is_empty()) {
     return {};
   }
-
-  auto surface = std::make_shared<RetainedDisplaySurface>();
-  surface->texture = texture;
-  return std::static_pointer_cast<void>(surface);
-}
-
-const SyntheticGpuBackingRuntimeOps kOps{
-    &global_rd_available,
-    &global_rd_roundtrip_rgba8,
-    &retain_display_surface_rgba8,
-};
-
-} // namespace
-
-void install_synthetic_gpu_backing_godot_bridge() {
-  set_synthetic_gpu_backing_runtime_ops(&kOps);
-  trace_gpu("bridge_install runtime_ops_registered=true");
-}
-
-void uninstall_synthetic_gpu_backing_godot_bridge() {
-  clear_synthetic_gpu_backing_runtime_ops();
-  trace_gpu("bridge_uninstall runtime_ops_registered=false");
-}
-
-godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& surface) {
-  if (!surface) {
-    return {};
-  }
-  const std::shared_ptr<RetainedDisplaySurface> retained = std::static_pointer_cast<RetainedDisplaySurface>(surface);
-  return retained ? retained->texture : godot::Ref<godot::Texture2D>();
+  return godot::ImageTexture::create_from_image(image);
 }
 
 } // namespace cambang
