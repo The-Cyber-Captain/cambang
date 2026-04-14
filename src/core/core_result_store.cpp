@@ -30,14 +30,14 @@ uint32_t infer_bit_depth(uint32_t format_fourcc) {
   return 0;
 }
 
-CoreImageFactBundle build_default_facts(const CoreResultPayloadCpuPacked& payload) {
+CoreImageFactBundle build_default_facts(uint32_t width, uint32_t height, uint32_t format_fourcc) {
   CoreImageFactBundle facts{};
   facts.has_image_properties = true;
-  facts.image_properties.width = payload.width;
-  facts.image_properties.height = payload.height;
-  facts.image_properties.format = payload.format_fourcc;
+  facts.image_properties.width = width;
+  facts.image_properties.height = height;
+  facts.image_properties.format = format_fourcc;
   facts.image_properties.orientation = 0;
-  facts.image_properties.bit_depth = infer_bit_depth(payload.format_fourcc);
+  facts.image_properties.bit_depth = infer_bit_depth(format_fourcc);
 
   facts.image_properties_provenance.width = ResultFactProvenance::HARDWARE_REPORTED;
   facts.image_properties_provenance.height = ResultFactProvenance::HARDWARE_REPORTED;
@@ -45,6 +45,13 @@ CoreImageFactBundle build_default_facts(const CoreResultPayloadCpuPacked& payloa
   facts.image_properties_provenance.orientation = ResultFactProvenance::UNKNOWN;
   facts.image_properties_provenance.bit_depth = ResultFactProvenance::PROVIDER_DERIVED;
   return facts;
+}
+
+bool has_valid_result_image_description(const FrameView& frame) {
+  if (frame.width == 0 || frame.height == 0) {
+    return false;
+  }
+  return frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA;
 }
 
 } // namespace
@@ -59,12 +66,14 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!try_copy_cpu_packed_payload(frame, payload)) {
       return false;
     }
-    facts = build_default_facts(payload);
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (frame.stream_id != 0) {
+    if (!has_valid_result_image_description(frame)) {
+      return false;
+    }
     const bool gpu_primary =
         frame.primary_backing_kind == ProducerBackingKind::GPU &&
         static_cast<bool>(frame.primary_backing_artifact);
@@ -78,11 +87,15 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     stream_result->device_instance_id = frame.device_instance_id;
     stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
     stream_result->capture_timestamp_ns = capture_timestamp_ns;
+    stream_result->image_width = frame.width;
+    stream_result->image_height = frame.height;
+    stream_result->image_format_fourcc = frame.format_fourcc;
     stream_result->payload_kind = retained_gpu_backing
         ? ResultPayloadKind::GPU_SURFACE
         : ResultPayloadKind::CPU_PACKED;
     stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     stream_result->payload = payload;
+    facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
     stream_result->facts = facts;
     latest_stream_results_[frame.stream_id] = std::move(stream_result);
   }
@@ -97,6 +110,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     capture_result->capture_timestamp_ns = capture_timestamp_ns;
     capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
     capture_result->payload = payload;
+    facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
     capture_result->facts = facts;
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }

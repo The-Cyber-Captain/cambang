@@ -35,9 +35,9 @@ bool has_retained_cpu_payload(const SharedStreamResultData& data) {
 
 } // namespace
 
-uint32_t CamBANGStreamResult::get_width() const { return data_ ? data_->payload.width : 0; }
-uint32_t CamBANGStreamResult::get_height() const { return data_ ? data_->payload.height : 0; }
-uint32_t CamBANGStreamResult::get_format() const { return data_ ? data_->payload.format_fourcc : 0; }
+uint32_t CamBANGStreamResult::get_width() const { return data_ ? data_->image_width : 0; }
+uint32_t CamBANGStreamResult::get_height() const { return data_ ? data_->image_height : 0; }
+uint32_t CamBANGStreamResult::get_format() const { return data_ ? data_->image_format_fourcc : 0; }
 int CamBANGStreamResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }

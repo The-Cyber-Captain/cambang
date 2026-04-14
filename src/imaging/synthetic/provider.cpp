@@ -1312,6 +1312,14 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.data = gpu_ok ? nullptr : slot->bytes.data();
   fv.size_bytes = gpu_ok ? 0u : slot->bytes.size();
   fv.stride_bytes = gpu_ok ? 0u : stride;
+  const bool profile_compatible =
+      fv.width == s.req.profile.width &&
+      fv.height == s.req.profile.height &&
+      (s.req.profile.format_fourcc == 0 || s.req.profile.format_fourcc == fv.format_fourcc);
+  if (!profile_compatible) {
+    slot->in_use.store(false, std::memory_order_release);
+    return;
+  }
   auto* lease = new FrameReleaseLease();
   lease->slot = slot;
   fv.release = &SyntheticProvider::release_frame_;
