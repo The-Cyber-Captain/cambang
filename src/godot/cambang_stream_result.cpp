@@ -73,7 +73,7 @@ int CamBANGStreamResult::can_get_display_view() const {
     return CAPABILITY_UNSUPPORTED;
   }
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
-    return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
+    return data_->retained_gpu_backing ? CAPABILITY_EXPENSIVE : CAPABILITY_UNSUPPORTED;
   }
   return CAPABILITY_CHEAP;
 }
@@ -97,7 +97,6 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
         return retained;
       }
     }
-    return godot::Variant();
   }
   if (!cached_display_view_.is_valid()) {
     godot::Ref<godot::Image> image = to_image();

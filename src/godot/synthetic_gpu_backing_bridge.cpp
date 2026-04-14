@@ -9,9 +9,10 @@
 
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/rd_texture_format.hpp>
 #include <godot_cpp/classes/rd_texture_view.hpp>
-#include <godot_cpp/classes/texture2d_rd.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
@@ -23,7 +24,8 @@ void enqueue_pending_release(const godot::RID& rid);
 
 struct RetainedSyntheticGpuBacking final {
   godot::RID rd_texture;
-  godot::Ref<godot::Texture2DRD> display_texture;
+  uint32_t width = 0;
+  uint32_t height = 0;
 
   ~RetainedSyntheticGpuBacking() {
     if (!rd_texture.is_valid()) {
@@ -216,6 +218,8 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->rd_texture = texture;
+  retained_backing->width = width;
+  retained_backing->height = height;
   return std::static_pointer_cast<void>(retained_backing);
 }
 
@@ -258,16 +262,26 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   if (!rd || !retained->rd_texture.is_valid()) {
     return {};
   }
-  if (!retained->display_texture.is_valid()) {
-    godot::Ref<godot::Texture2DRD> display_texture;
-    display_texture.instantiate();
-    if (display_texture.is_null()) {
-      return {};
-    }
-    display_texture->set_texture_rd_rid(retained->rd_texture);
-    retained->display_texture = display_texture;
+
+  const godot::PackedByteArray readback = rd->texture_get_data(retained->rd_texture, 0);
+  if (readback.size() <= 0) {
+    return {};
   }
-  return retained->display_texture;
+
+  godot::Ref<godot::Image> image;
+  image.instantiate();
+  if (image.is_null()) {
+    return {};
+  }
+  image->set_data(static_cast<int64_t>(retained->width),
+                  static_cast<int64_t>(retained->height),
+                  false,
+                  godot::Image::FORMAT_RGBA8,
+                  readback);
+  if (image->is_empty()) {
+    return {};
+  }
+  return godot::ImageTexture::create_from_image(image);
 }
 
 } // namespace cambang
