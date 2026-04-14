@@ -232,6 +232,10 @@ Release-facing design may retain, transform, upload, or forward image data
 through other sink implementations while exposing result-oriented
 Godot-facing APIs.
 
+`LatestFrameMailbox` is a CPU-byte visibility sink, not the release-facing
+result model. Valid GPU-primary frames may have no CPU payload and can be
+unsupported by this mailbox path without being malformed.
+
 ---
 
 ## Counter semantics alignment
@@ -259,3 +263,8 @@ snapshot are:
 
 These are sink-neutral stream truth fields. They reflect the current retained
 visibility path disposition without exposing mailbox-local storage internals.
+
+Current visibility rejection counters are still interim semantics. During this
+phase, valid GPU-primary/no-CPU-payload frames may temporarily surface under the
+nearest existing unsupported/format-style rejection bucket; these should not be
+read as authoritative result-correctness failures.

@@ -42,16 +42,21 @@ The first fully-supported retained payload representation is:
 
 This is an implementation slice, **not** the canonical or ultimate release representation.
 
-### 2.2 Architecturally in-scope, not yet implemented as full result paths
+### 2.2 Architecturally in-scope payload kinds beyond the first fully-supported slice
 
-The following remain first-class architectural targets, but are not part of the first fully-supported slice:
+The following remain first-class architectural targets:
 
 - `CPU_PLANAR`
 - `GPU_SURFACE`
 - `ENCODED_IMAGE`
 - `RAW_IMAGE`
 
-These must remain visible in architecture, terminology, and internal representation vocabulary even if they are not fully realized in slice 1.
+`CPU_PLANAR`, `ENCODED_IMAGE`, and `RAW_IMAGE` are still beyond the first
+fully-supported slice.
+
+`GPU_SURFACE` is now concretely exercised for synthetic stream results as a
+retained-primary path; this note still preserves the historical “slice 1 was
+`CPU_PACKED` first” implementation framing.
 
 ---
 
@@ -191,6 +196,8 @@ Initial stream operations:
 - `to_image()` is the explicit CPU materialization path.
 
 `get_display_view()` must not silently behave like “always convert to CPU image.”
+For retained synthetic `GPU_SURFACE`, `get_display_view()` now has a direct GPU
+display-view path.
 
 ### 6.7 Explicit non-goals for `StreamResult` in slice 1
 
@@ -416,19 +423,21 @@ Implementation and follow-up design must preserve:
 
 If future code or docs begin to treat `CPU_PACKED` as the canonical representation rather than the first fully-supported slice, that is architectural drift and should be corrected.
 
-## 12.x Upcoming non-CPU exemplar discipline
+## 12.x Non-CPU exemplar discipline (now exercised)
 
-A future non-CPU exemplar should not redefine CPU access as optional.
+The non-CPU exemplar now exists in synthetic stream paths and still must not
+teach the wrong architecture lesson about access semantics.
 
 In particular:
 
 - a non-CPU primary payload such as `GPU_SURFACE` remains compatible with an
   available `to_image()` fallback path
-- the first non-CPU exemplar may legitimately use one primary backing plus an
+- the current synthetic `GPU_SURFACE` exemplar may legitimately use one primary
+  backing plus an
   optional auxiliary CPU backing
-- early stream-oriented non-CPU exemplars are likely to be clearer than capture-
-  oriented ones, because display-oriented usefulness is more central to stream
-  results
+- direct display-view access can be GPU-native while `to_image()` remains the
+  explicit CPU materialization API and chooses the least expensive supported CPU
+  route from current retained state
 
 This note does not freeze exact retention heuristics or auxiliary-backing policy.
 It exists to prevent future implementation from teaching the wrong lesson that

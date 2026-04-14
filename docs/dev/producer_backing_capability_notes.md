@@ -3,7 +3,7 @@
 Status: Dev note  
 Purpose: Freeze the current working understanding of producer backing capability,
 provider backing-selection policy, and non-release capability override use in
-preparation for the first non-CPU exemplar tranche.
+the current synthetic-stream GPU-primary exemplar phase.
 
 ## 1. Producer capability vs provider policy
 
@@ -29,6 +29,9 @@ For the current synthetic producer implementation:
 
 This does not imply that all producers or future platform-backed providers share
 the same invariant.
+
+Synthetic stream results now exercise a concrete GPU-primary retained path
+(`GPU_SURFACE`) when GPU backing is selected and supported.
 
 ## 3. Policy space still includes GPU-only
 
@@ -67,5 +70,7 @@ multiple primary payload kinds.
 CPU `Image` materialization remains an available result-facing fallback path.
 
 This does not imply that CPU backing is always primary or always cheap.
+CPU fallback availability also does not imply eager auxiliary CPU retention for
+GPU-primary results.
 It does imply that CPU and GPU backing should not be treated as perfectly
 symmetric choices.
