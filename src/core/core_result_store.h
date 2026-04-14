@@ -45,7 +45,7 @@ struct CoreStreamResultData {
   StreamIntent intent = StreamIntent::PREVIEW;
   uint64_t capture_timestamp_ns = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
-  std::shared_ptr<void> retained_gpu_surface{};
+  std::shared_ptr<void> retained_gpu_backing{};
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};
 };

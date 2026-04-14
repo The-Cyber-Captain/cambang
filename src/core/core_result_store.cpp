@@ -64,9 +64,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (frame.stream_id != 0) {
-    std::shared_ptr<void> retained_gpu_surface;
+    std::shared_ptr<void> retained_gpu_backing;
     if (frame.primary_backing_kind == ProducerBackingKind::GPU) {
-      retained_gpu_surface = synthetic_gpu_backing_retain_display_surface_rgba8(
+      retained_gpu_backing = synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
           payload.bytes.data(),
           payload.width,
           payload.height,
@@ -78,10 +78,10 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     stream_result->device_instance_id = frame.device_instance_id;
     stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
     stream_result->capture_timestamp_ns = capture_timestamp_ns;
-    stream_result->payload_kind = retained_gpu_surface
+    stream_result->payload_kind = retained_gpu_backing
         ? ResultPayloadKind::GPU_SURFACE
         : ResultPayloadKind::CPU_PACKED;
-    stream_result->retained_gpu_surface = std::move(retained_gpu_surface);
+    stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     stream_result->payload = payload;
     stream_result->facts = facts;
     latest_stream_results_[frame.stream_id] = std::move(stream_result);

@@ -18,8 +18,26 @@
 namespace cambang {
 namespace {
 
-struct RetainedDisplaySurface final {
-  godot::Ref<godot::Texture2D> texture;
+struct RetainedSyntheticGpuBacking final {
+  godot::RID rd_texture;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  mutable godot::Ref<godot::Texture2D> cached_display_texture;
+
+  ~RetainedSyntheticGpuBacking() {
+    if (!rd_texture.is_valid()) {
+      return;
+    }
+    godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+    if (!rs) {
+      return;
+    }
+    godot::RenderingDevice* rd = rs->get_rendering_device();
+    if (!rd) {
+      return;
+    }
+    rd->free_rid(rd_texture);
+  }
 };
 
 bool gpu_trace_enabled() noexcept {
@@ -120,7 +138,7 @@ bool global_rd_roundtrip_rgba8(
   return true;
 }
 
-std::shared_ptr<void> retain_display_surface_rgba8(
+std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
     const uint8_t* src,
     uint32_t width,
     uint32_t height,
@@ -128,35 +146,50 @@ std::shared_ptr<void> retain_display_surface_rgba8(
   if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
-
-  godot::Ref<godot::Image> image;
-  image.instantiate();
-  if (image.is_null()) {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
     return {};
   }
+  godot::RenderingDevice* rd = rs->get_rendering_device();
+  if (!rd) {
+    return {};
+  }
+
+  godot::Ref<godot::RDTextureFormat> format;
+  format.instantiate();
+  format->set_width(static_cast<int64_t>(width));
+  format->set_height(static_cast<int64_t>(height));
+  format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+  format->set_usage_bits(
+      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
+      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
+      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
+
+  godot::Ref<godot::RDTextureView> view;
+  view.instantiate();
+
   godot::PackedByteArray bytes;
   bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
   std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
-  image->set_data(static_cast<int64_t>(width),
-                  static_cast<int64_t>(height),
-                  false,
-                  godot::Image::FORMAT_RGBA8,
-                  bytes);
 
-  godot::Ref<godot::ImageTexture> texture = godot::ImageTexture::create_from_image(image);
-  if (texture.is_null()) {
+  godot::Array data;
+  data.push_back(bytes);
+  const godot::RID texture = rd->texture_create(format, view, data);
+  if (!texture.is_valid()) {
     return {};
   }
 
-  auto surface = std::make_shared<RetainedDisplaySurface>();
-  surface->texture = texture;
-  return std::static_pointer_cast<void>(surface);
+  auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  retained_backing->rd_texture = texture;
+  retained_backing->width = width;
+  retained_backing->height = height;
+  return std::static_pointer_cast<void>(retained_backing);
 }
 
 const SyntheticGpuBackingRuntimeOps kOps{
     &global_rd_available,
     &global_rd_roundtrip_rgba8,
-    &retain_display_surface_rgba8,
+    &retain_primary_gpu_backing_rgba8,
 };
 
 } // namespace
@@ -171,12 +204,48 @@ void uninstall_synthetic_gpu_backing_godot_bridge() {
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
-godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& surface) {
-  if (!surface) {
+godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
+  if (!backing) {
     return {};
   }
-  const std::shared_ptr<RetainedDisplaySurface> retained = std::static_pointer_cast<RetainedDisplaySurface>(surface);
-  return retained ? retained->texture : godot::Ref<godot::Texture2D>();
+  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
+      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
+  if (!retained) {
+    return {};
+  }
+  if (retained->cached_display_texture.is_valid()) {
+    return retained->cached_display_texture;
+  }
+
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return {};
+  }
+  godot::RenderingDevice* rd = rs->get_rendering_device();
+  if (!rd || !retained->rd_texture.is_valid()) {
+    return {};
+  }
+
+  const godot::PackedByteArray readback = rd->texture_get_data(retained->rd_texture, 0);
+  if (readback.size() <= 0) {
+    return {};
+  }
+
+  godot::Ref<godot::Image> image;
+  image.instantiate();
+  if (image.is_null()) {
+    return {};
+  }
+  image->set_data(static_cast<int64_t>(retained->width),
+                  static_cast<int64_t>(retained->height),
+                  false,
+                  godot::Image::FORMAT_RGBA8,
+                  readback);
+  if (image->is_empty()) {
+    return {};
+  }
+  retained->cached_display_texture = godot::ImageTexture::create_from_image(image);
+  return retained->cached_display_texture;
 }
 
 } // namespace cambang

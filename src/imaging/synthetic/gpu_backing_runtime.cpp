@@ -62,19 +62,19 @@ bool synthetic_gpu_backing_realize_rgba8_via_global_gpu(
 }
 
 #if defined(CAMBANG_GDE_BUILD) && CAMBANG_GDE_BUILD
-std::shared_ptr<void> synthetic_gpu_backing_retain_display_surface_rgba8(
+std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
     const uint8_t* src,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
   const SyntheticGpuBackingRuntimeOps* ops = g_ops.load(std::memory_order_acquire);
-  if (!ops || !ops->retain_display_surface_rgba8) {
-    trace_line("retain_display_surface success=false reason=ops_unset_or_missing_retain_fn");
+  if (!ops || !ops->retain_primary_gpu_backing_rgba8) {
+    trace_line("retain_gpu_backing success=false reason=ops_unset_or_missing_retain_fn");
     return {};
   }
-  std::shared_ptr<void> surface = ops->retain_display_surface_rgba8(src, width, height, stride_bytes);
-  trace_line(surface ? "retain_display_surface success=true" : "retain_display_surface success=false");
-  return surface;
+  std::shared_ptr<void> backing = ops->retain_primary_gpu_backing_rgba8(src, width, height, stride_bytes);
+  trace_line(backing ? "retain_gpu_backing success=true" : "retain_gpu_backing success=false");
+  return backing;
 }
 #endif
 
