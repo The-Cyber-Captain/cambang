@@ -1293,7 +1293,9 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
         stride);
     gpu_ok = static_cast<bool>(gpu_backing);
   }
-  std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+  if (!gpu_ok) {
+    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+  }
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
@@ -1307,9 +1309,9 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = slot->bytes.data();
-  fv.size_bytes = slot->bytes.size();
-  fv.stride_bytes = stride;
+  fv.data = gpu_ok ? nullptr : slot->bytes.data();
+  fv.size_bytes = gpu_ok ? 0u : slot->bytes.size();
+  fv.stride_bytes = gpu_ok ? 0u : stride;
   auto* lease = new FrameReleaseLease();
   lease->slot = slot;
   fv.release = &SyntheticProvider::release_frame_;

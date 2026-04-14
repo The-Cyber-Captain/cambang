@@ -24,6 +24,15 @@ void trace_stream_display_path(const char* path) {
   godot::UtilityFunctions::print("[CamBANG][StreamResult] display_view_path=", path);
 }
 
+bool has_retained_cpu_payload(const SharedStreamResultData& data) {
+  if (!data) {
+    return false;
+  }
+  return data->payload.width != 0 &&
+         data->payload.height != 0 &&
+         !data->payload.bytes.empty();
+}
+
 } // namespace
 
 uint32_t CamBANGStreamResult::get_width() const { return data_ ? data_->payload.width : 0; }
@@ -82,7 +91,15 @@ int CamBANGStreamResult::can_to_image() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  return CAPABILITY_CHEAP;
+  if (has_retained_cpu_payload(data_)) {
+    return CAPABILITY_CHEAP;
+  }
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
+    return synthetic_gpu_backing_can_materialize_to_image(data_->retained_gpu_backing)
+        ? CAPABILITY_EXPENSIVE
+        : CAPABILITY_UNSUPPORTED;
+  }
+  return CAPABILITY_UNSUPPORTED;
 }
 
 godot::Variant CamBANGStreamResult::get_display_view() const {
@@ -116,7 +133,13 @@ godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
   if (!data_) {
     return godot::Ref<godot::Image>();
   }
-  return payload_to_image(data_->payload);
+  if (has_retained_cpu_payload(data_)) {
+    return payload_to_image(data_->payload);
+  }
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
+    return synthetic_gpu_backing_materialize_to_image(data_->retained_gpu_backing);
+  }
+  return godot::Ref<godot::Image>();
 }
 
 void CamBANGStreamResult::_bind_methods() {
