@@ -26,7 +26,6 @@ struct RetainedSyntheticGpuBacking final {
   godot::RID rd_texture;
   uint32_t width = 0;
   uint32_t height = 0;
-  mutable godot::Ref<godot::Texture2D> cached_display_texture;
 
   ~RetainedSyntheticGpuBacking() {
     if (!rd_texture.is_valid()) {
@@ -246,9 +245,6 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   if (!retained) {
     return {};
   }
-  if (retained->cached_display_texture.is_valid()) {
-    return retained->cached_display_texture;
-  }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
@@ -277,8 +273,7 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   if (image->is_empty()) {
     return {};
   }
-  retained->cached_display_texture = godot::ImageTexture::create_from_image(image);
-  return retained->cached_display_texture;
+  return godot::ImageTexture::create_from_image(image);
 }
 
 } // namespace cambang
