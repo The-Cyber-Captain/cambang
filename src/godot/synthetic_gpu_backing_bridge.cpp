@@ -256,7 +256,7 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   }
   godot::RenderingDevice* rd = rs->get_rendering_device();
   if (!rd || !retained->rd_texture.is_valid()) {
-    return {};
+    return retained->display_texture;
   }
   if (!retained->display_texture.is_valid()) {
     godot::Ref<godot::Texture2DRD> texture;
@@ -264,7 +264,9 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     if (texture.is_null()) {
       return {};
     }
+    // Texture2DRD assumes ownership of this RID after binding.
     texture->set_texture_rd_rid(retained->rd_texture);
+    retained->rd_texture = godot::RID();
     retained->display_texture = texture;
   }
   return retained->display_texture;
