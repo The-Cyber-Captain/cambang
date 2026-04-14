@@ -250,6 +250,10 @@ for example:
 Provider policy chooses one backing as primary and may optionally retain another as
 auxiliary when that improves usefulness or avoids later expensive materialization.
 
+For synthetic stream results, current retained-primary `GPU_SURFACE` truth is
+determined by the emitted/retained GPU artifact itself, not by whether an
+auxiliary CPU backing is also retained.
+
 ### 6.x.3 Unsupported GPU-only realization
 
 If a source offers only GPU-backed realization and the current runtime does not provide
@@ -300,6 +304,14 @@ If a payload is retained as part of a Stream Result or Capture Result:
 No resource may be reported as released before it is actually released.
 
 Original payload truth and derived-retention truth must remain auditable through Core/runtime accounting.
+
+### 7.6 Adapter-layer ownership transfer
+
+Display wrappers/adapters (for example Godot-side `Texture2DRD`) are
+adapter-layer display realizations, not the retained-primary payload-kind seam.
+
+When GPU artifact ownership (for example RID ownership) is transferred into an
+adapter object, retained-backing cleanup must not also free that same resource.
 
 ---
 
@@ -357,6 +369,10 @@ A Stream Result may retain one or more of:
 - CPU packed payload
 - derived display-oriented representation
 - derived CPU/image representation
+
+For retained synthetic-stream `GPU_SURFACE`, `get_display_view()` now includes a
+direct GPU display path via the display adapter path; this path must not be
+reframed as CPU materialization.
 
 ## 9.4 Preferred stream retention direction
 
@@ -449,6 +465,10 @@ In particular:
 - the existence of more than one backing for the same artifact does not change the
   single-primary-payload rule
 
+`to_image()` remains explicit CPU materialization and should select the least
+expensive supported CPU route from the current retained state, whether that
+route uses auxiliary CPU backing or explicit GPU readback/materialization.
+
 Recommended first-pass capability/cost states:
 
 - `READY`
@@ -525,6 +545,9 @@ Structural image facts such as:
 - orientation
 - bit depth
 - crop state where meaningful
+
+These properties should be populated from authoritative realized frame metadata,
+not inferred from incidental CPU payload presence.
 
 ## 13.2 CaptureAttributes
 
