@@ -22,6 +22,17 @@ inline bool validate_frame_minimal(const FrameView& f, size_t row_bytes, size_t 
   return f.size_bytes >= needed;
 }
 
+inline bool is_gpu_primary_without_cpu_payload(const FrameView& f) {
+  const bool has_cpu_payload = f.data != nullptr && f.size_bytes != 0;
+  if (has_cpu_payload) {
+    return false;
+  }
+  return f.width != 0 &&
+         f.height != 0 &&
+         f.primary_backing_kind == ProducerBackingKind::GPU &&
+         static_cast<bool>(f.primary_backing_artifact);
+}
+
 } // namespace
 
 CoreVisibilityPath LatestFrameMailbox::write_from_core(FrameView frame) {
@@ -55,6 +66,13 @@ CoreVisibilityPath LatestFrameMailbox::write_from_core(FrameView frame) {
     stats_.frames_received += 1;
 
     if (!supported) {
+      stats_.frames_dropped_unsupported += 1;
+      return CoreVisibilityPath::REJECTED_UNSUPPORTED;
+    }
+    if (is_gpu_primary_without_cpu_payload(frame)) {
+      // This mailbox only consumes CPU-addressable packed bytes today.
+      // A valid GPU-primary artifact without CPU bytes is unsupported for this
+      // dev visibility path, not malformed.
       stats_.frames_dropped_unsupported += 1;
       return CoreVisibilityPath::REJECTED_UNSUPPORTED;
     }

@@ -44,6 +44,9 @@ struct CoreStreamResultData {
   uint64_t device_instance_id = 0;
   StreamIntent intent = StreamIntent::PREVIEW;
   uint64_t capture_timestamp_ns = 0;
+  uint32_t image_width = 0;
+  uint32_t image_height = 0;
+  uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
   std::shared_ptr<void> retained_gpu_backing{};
   CoreResultPayloadCpuPacked payload{};
@@ -77,6 +80,7 @@ public:
   void clear();
 
 private:
+  static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
 
   mutable std::mutex mutex_;
