@@ -3,6 +3,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -18,6 +20,8 @@
 namespace cambang {
 namespace {
 
+void enqueue_pending_release(const godot::RID& rid);
+
 struct RetainedSyntheticGpuBacking final {
   godot::RID rd_texture;
   uint32_t width = 0;
@@ -28,17 +32,42 @@ struct RetainedSyntheticGpuBacking final {
     if (!rd_texture.is_valid()) {
       return;
     }
-    godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-    if (!rs) {
-      return;
-    }
-    godot::RenderingDevice* rd = rs->get_rendering_device();
-    if (!rd) {
-      return;
-    }
-    rd->free_rid(rd_texture);
+    enqueue_pending_release(rd_texture);
   }
 };
+
+std::mutex g_pending_release_mutex;
+std::vector<godot::RID> g_pending_releases;
+
+void enqueue_pending_release(const godot::RID& rid) {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  g_pending_releases.push_back(rid);
+}
+
+void drain_pending_releases() {
+  std::vector<godot::RID> pending;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (g_pending_releases.empty()) {
+      return;
+    }
+    pending.swap(g_pending_releases);
+  }
+
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    for (godot::RID& rid : pending) {
+      g_pending_releases.push_back(std::move(rid));
+    }
+    return;
+  }
+  for (const godot::RID& rid : pending) {
+    if (rid.is_valid()) {
+      rs->free_rid(rid);
+    }
+  }
+}
 
 bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
@@ -123,7 +152,7 @@ bool global_rd_roundtrip_rgba8(
   }
 
   const godot::PackedByteArray readback = rd->texture_get_data(tex, 0);
-  rd->free_rid(tex);
+  rs->free_rid(tex);
   if (readback.size() <= 0) {
     trace_gpu("roundtrip_result texture_create=true readback=false success=false");
     return false;
@@ -146,6 +175,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
+  drain_pending_releases();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return {};
@@ -195,16 +225,19 @@ const SyntheticGpuBackingRuntimeOps kOps{
 } // namespace
 
 void install_synthetic_gpu_backing_godot_bridge() {
+  drain_pending_releases();
   set_synthetic_gpu_backing_runtime_ops(&kOps);
   trace_gpu("bridge_install runtime_ops_registered=true");
 }
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
+  drain_pending_releases();
   clear_synthetic_gpu_backing_runtime_ops();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
+  drain_pending_releases();
   if (!backing) {
     return {};
   }
