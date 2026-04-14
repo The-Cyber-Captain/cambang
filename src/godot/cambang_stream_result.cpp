@@ -72,8 +72,8 @@ int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
-    return CAPABILITY_EXPENSIVE;
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
+    return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
   }
   return CAPABILITY_CHEAP;
 }
@@ -89,12 +89,15 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   if (!data_) {
     return godot::Variant();
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
-    godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing);
-    if (retained.is_valid()) {
-      trace_stream_display_path("retained_gpu_backing");
-      return retained;
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
+    if (data_->retained_gpu_backing) {
+      godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing);
+      if (retained.is_valid()) {
+        trace_stream_display_path("retained_gpu_backing");
+        return retained;
+      }
     }
+    return godot::Variant();
   }
   if (!cached_display_view_.is_valid()) {
     godot::Ref<godot::Image> image = to_image();
