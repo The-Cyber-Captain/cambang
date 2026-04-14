@@ -73,7 +73,7 @@ int CamBANGStreamResult::can_get_display_view() const {
     return CAPABILITY_UNSUPPORTED;
   }
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
-    return CAPABILITY_READY;
+    return CAPABILITY_EXPENSIVE;
   }
   return CAPABILITY_CHEAP;
 }

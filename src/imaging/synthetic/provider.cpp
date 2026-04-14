@@ -1284,17 +1284,16 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
 
   s.renderer.render_into(spec, dst, ov);
   bool gpu_ok = false;
+  std::shared_ptr<void> gpu_backing;
   if (s.prefer_gpu_backing) {
-    gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
+    gpu_backing = synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
         s.gpu_staging.data(),
         w,
         h,
-        stride,
-        slot->bytes);
+        stride);
+    gpu_ok = static_cast<bool>(gpu_backing);
   }
-  if (!gpu_ok) {
-    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
-  }
+  std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
@@ -1304,6 +1303,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
   fv.primary_backing_kind = gpu_ok ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
+  fv.primary_backing_artifact = std::move(gpu_backing);
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;

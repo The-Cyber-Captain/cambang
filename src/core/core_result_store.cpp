@@ -3,8 +3,6 @@
 #include <cstring>
 #include <limits>
 
-#include "imaging/synthetic/gpu_backing_runtime.h"
-
 namespace cambang {
 
 namespace {
@@ -54,24 +52,26 @@ CoreImageFactBundle build_default_facts(const CoreResultPayloadCpuPacked& payloa
 bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
                                    uint64_t capture_timestamp_ns) {
+  const bool has_cpu_payload = has_cpu_packed_payload(frame);
   CoreResultPayloadCpuPacked payload{};
-  if (!try_copy_cpu_packed_payload(frame, payload)) {
-    return false;
+  CoreImageFactBundle facts{};
+  if (has_cpu_payload) {
+    if (!try_copy_cpu_packed_payload(frame, payload)) {
+      return false;
+    }
+    facts = build_default_facts(payload);
   }
-
-  const CoreImageFactBundle facts = build_default_facts(payload);
 
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (frame.stream_id != 0) {
-    std::shared_ptr<void> retained_gpu_backing;
-    if (frame.primary_backing_kind == ProducerBackingKind::GPU) {
-      retained_gpu_backing = synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
-          payload.bytes.data(),
-          payload.width,
-          payload.height,
-          payload.stride_bytes);
+    const bool gpu_primary =
+        frame.primary_backing_kind == ProducerBackingKind::GPU &&
+        static_cast<bool>(frame.primary_backing_artifact);
+    if (!gpu_primary && !has_cpu_payload) {
+      return false;
     }
+    std::shared_ptr<void> retained_gpu_backing = frame.primary_backing_artifact;
 
     auto stream_result = std::make_shared<CoreStreamResultData>();
     stream_result->stream_id = frame.stream_id;
@@ -88,6 +88,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   }
 
   if (frame.capture_id != 0) {
+    if (!has_cpu_payload) {
+      return false;
+    }
     auto capture_result = std::make_shared<CoreCaptureResultData>();
     capture_result->capture_id = frame.capture_id;
     capture_result->device_instance_id = frame.device_instance_id;
@@ -143,7 +146,7 @@ void CoreResultStore::clear() {
 }
 
 bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out) {
-  if (frame.width == 0 || frame.height == 0 || frame.data == nullptr || frame.size_bytes == 0) {
+  if (!has_cpu_packed_payload(frame)) {
     return false;
   }
 
@@ -195,6 +198,13 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
   }
 
   return true;
+}
+
+bool CoreResultStore::has_cpu_packed_payload(const FrameView& frame) {
+  return frame.width != 0 &&
+         frame.height != 0 &&
+         frame.data != nullptr &&
+         frame.size_bytes != 0;
 }
 
 } // namespace cambang

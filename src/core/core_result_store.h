@@ -77,6 +77,7 @@ public:
   void clear();
 
 private:
+  static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
 
   mutable std::mutex mutex_;

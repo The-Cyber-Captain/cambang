@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -287,6 +288,10 @@ struct FrameView {
   // Buffer
   const uint8_t* data = nullptr;
   size_t size_bytes = 0;
+  // Optional opaque primary artifact for non-CPU-backed frames.
+  // For ProducerBackingKind::GPU this carries the authoritative provider->core
+  // primary backing when available.
+  std::shared_ptr<void> primary_backing_artifact{};
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;
