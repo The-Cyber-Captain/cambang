@@ -843,7 +843,57 @@ public:
 
   bool emit_frame(std::string& error) { return emit_frame_for_stream(kStreamId, error); }
 
+  bool wait_for_stream_quiescence(uint64_t stream_id,
+                                  std::string& error,
+                                  int max_iters = 500,
+                                  int sleep_ms = 5) {
+    if (!wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+          const auto* stream = find_stream(s, stream_id);
+          return stream && stream->queue_depth == 0;
+        },
+        error,
+        max_iters,
+        sleep_ms,
+        "timed out waiting for stream ingress queue to drain")) {
+      return false;
+    }
+
+    auto settled = snapshot_buffer_.snapshot_copy();
+    if (!settled) {
+      error = "missing snapshot while establishing stream quiescence";
+      return false;
+    }
+    const auto* settled_stream = find_stream(*settled, stream_id);
+    if (!settled_stream) {
+      error = "stream missing while establishing stream quiescence";
+      return false;
+    }
+    const uint64_t settled_frames = settled_stream->frames_received;
+    const uint64_t before = runtime_.published_seq();
+    runtime_.request_publish();
+    if (!wait_for_core_publish_count(before + 1,
+                                     error,
+                                     max_iters,
+                                     sleep_ms)) {
+      return false;
+    }
+
+    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+      const auto* stream = find_stream(s, stream_id);
+      return stream &&
+             stream->queue_depth == 0 &&
+             stream->frames_received == settled_frames;
+    }, error, max_iters, sleep_ms, "timed out waiting for stream quiescence verification publish");
+  }
+
   bool emit_frame_for_stream(uint64_t stream_id, std::string& error) {
+    uint64_t baseline_frames = 0;
+    if (auto baseline = snapshot_buffer_.snapshot_copy(); baseline) {
+      if (const auto* stream = find_stream(*baseline, stream_id); stream) {
+        baseline_frames = stream->frames_received;
+      }
+    }
+
     const uint64_t before = runtime_.published_seq();
 
     switch (provider_kind_) {
@@ -873,8 +923,10 @@ public:
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
       const auto* stream = find_stream(s, stream_id);
-      return stream && stream->frames_received >= 1;
-    }, error, 500, 5, "timed out waiting for frame publish");
+      return stream &&
+             stream->frames_received > baseline_frames &&
+             stream->queue_depth == 0;
+    }, error, 500, 5, "timed out waiting for frame publish convergence");
   }
 
   bool request_publish_only(std::string& error) {
