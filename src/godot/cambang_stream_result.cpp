@@ -81,6 +81,33 @@ int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
+
+  // Display-view capability is classified by the currently implemented display
+  // path, not by payload-kind family alone.
+  //
+  // READY:
+  //   The retained artifact is already directly suitable for display-view
+  //   access. In the current slice, this is GPU_SURFACE with retained GPU
+  //   backing.
+  //
+  // CHEAP:
+  //   Only explicitly whitelisted payload/path combinations known to require
+  //   modest additional work in the current implementation. In the current
+  //   slice, CPU_PACKED is cheap because get_display_view() can realize a
+  //   display texture through the existing CPU image fallback without a broad
+  //   conversion/decode/repack pipeline.
+  //
+  // EXPENSIVE:
+  //   A supported display-view path exists, but requires substantial extra work
+  //   such as materialization, conversion, decode, repack, or comparable
+  //   processing. New payload kinds should default here only once such a path
+  //   is actually implemented and proven.
+  //
+  // UNSUPPORTED:
+  //   No current supported display-view path exists.
+  //
+  // New payload kinds must not inherit CHEAP by default; they must earn their
+  // classification from the actual implemented display path.
   switch (data_->payload_kind) {
     case ResultPayloadKind::GPU_SURFACE:
       return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
