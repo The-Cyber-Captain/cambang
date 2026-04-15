@@ -296,7 +296,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
   format->set_usage_bits(
       godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
+      godot::RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT |
       godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
 
   godot::Ref<godot::RDTextureView> view;
