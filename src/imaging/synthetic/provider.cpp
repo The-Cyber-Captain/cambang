@@ -80,22 +80,34 @@ CaptureTemplate SyntheticProvider::capture_template() const {
 ProducerBackingCapabilities SyntheticProvider::stream_backing_capabilities(
     const CaptureProfile& profile,
     const PictureConfig& picture) const noexcept {
-  (void)profile;
-  (void)picture;
-  return apply_verification_backing_override_(runtime_truth_backing_capabilities_());
+  const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
+  return apply_verification_backing_override_(runtime_truth);
 }
 
 ProducerBackingCapabilities SyntheticProvider::capture_backing_capabilities(
     const CaptureRequest& req) const noexcept {
-  (void)req;
-  return apply_verification_backing_override_(runtime_truth_backing_capabilities_());
+  const ProducerBackingCapabilities runtime_truth = query_capture_producer_capabilities_(req);
+  return apply_verification_backing_override_(runtime_truth);
 }
 
 bool SyntheticProvider::has_runtime_gpu_backing_path_() noexcept {
   return synthetic_gpu_backing_runtime_available();
 }
 
-ProducerBackingCapabilities SyntheticProvider::runtime_truth_backing_capabilities_() const noexcept {
+ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilities_(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  (void)profile;
+  (void)picture;
+  return ProducerBackingCapabilities{
+      true,
+      has_runtime_gpu_backing_path_(),
+  };
+}
+
+ProducerBackingCapabilities SyntheticProvider::query_capture_producer_capabilities_(
+    const CaptureRequest& req) const noexcept {
+  (void)req;
   return ProducerBackingCapabilities{
       true,
       has_runtime_gpu_backing_path_(),
@@ -104,6 +116,8 @@ ProducerBackingCapabilities SyntheticProvider::runtime_truth_backing_capabilitie
 
 ProducerBackingCapabilities SyntheticProvider::apply_verification_backing_override_(
     ProducerBackingCapabilities runtime_truth) const noexcept {
+  // Verification-only advertisement override. Non-release behavior layered on
+  // top of producer/runtime truth.
   switch (cfg_.verification_backing_advertisement_override) {
     case SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth:
       return runtime_truth;
@@ -116,6 +130,11 @@ ProducerBackingCapabilities SyntheticProvider::apply_verification_backing_overri
     default:
       return runtime_truth;
   }
+}
+
+bool SyntheticProvider::choose_stream_gpu_preference_(
+    ProducerBackingCapabilities capabilities) const noexcept {
+  return capabilities.gpu;
 }
 
 
@@ -678,7 +697,8 @@ ProviderResult SyntheticProvider::start_stream(
     }
     s.pool_cursor = 0;
   }
-  s.prefer_gpu_backing = has_runtime_gpu_backing_path_();
+  const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
+  s.prefer_gpu_backing = choose_stream_gpu_preference_(runtime_truth);
   s.gpu_staging.resize(size_bytes);
 
   s.started = true;

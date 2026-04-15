@@ -120,9 +120,14 @@ private:
   void timeline_pump_();
   bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
   static bool has_runtime_gpu_backing_path_() noexcept;
-  ProducerBackingCapabilities runtime_truth_backing_capabilities_() const noexcept;
+  ProducerBackingCapabilities query_stream_producer_capabilities_(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept;
+  ProducerBackingCapabilities query_capture_producer_capabilities_(
+      const CaptureRequest& req) const noexcept;
   ProducerBackingCapabilities apply_verification_backing_override_(
       ProducerBackingCapabilities runtime_truth) const noexcept;
+  bool choose_stream_gpu_preference_(ProducerBackingCapabilities capabilities) const noexcept;
 
   struct DeviceState {
     std::string hardware_id;

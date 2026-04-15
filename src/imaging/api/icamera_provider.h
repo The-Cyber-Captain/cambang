@@ -100,7 +100,7 @@ public:
       const PictureConfig& picture) const noexcept {
     (void)profile;
     (void)picture;
-    return ProducerBackingCapabilities{true, false};
+    return ProducerBackingCapabilities{false, false};
   }
 
   // Internal producer-backing capability advertisement for still-capture realization.
@@ -108,7 +108,7 @@ public:
   virtual ProducerBackingCapabilities capture_backing_capabilities(
       const CaptureRequest& req) const noexcept {
     (void)req;
-    return ProducerBackingCapabilities{true, false};
+    return ProducerBackingCapabilities{false, false};
   }
 
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
