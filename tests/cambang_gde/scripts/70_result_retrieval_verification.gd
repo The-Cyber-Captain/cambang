@@ -81,7 +81,8 @@ func _process(_delta: float) -> void:
 	if _done:
 		return
 	if _inspection_mode:
-		_update_stream_panel_live()
+		if _stream_texture_rect.texture == null:
+			_ensure_stream_panel_display_view_bound()
 		_poll_inspection_capture_result()
 		return
 
@@ -175,6 +176,8 @@ func _try_verify_stream_result() -> void:
 	_require(stream_can_to_image != int(stream_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: stream can_to_image() unexpectedly unsupported" % _step)
 	_step_ok("stream can_to_image capability verified")
 
+	# to_image() is explicit materialization onto CPU-backed storage; it is not
+	# the normal live display path.
 	var stream_image: Image = stream_result.to_image()
 	_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
 	_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
@@ -187,13 +190,7 @@ func _try_verify_stream_result() -> void:
 		_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
 	_step_ok("stream display_view path verified")
 
-	_stream_texture_rect.texture = stream_display_view
-	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d" % [
-		stream_result.get_payload_kind(),
-		stream_result.get_width(),
-		stream_result.get_height(),
-		stream_result.get_stream_id()
-	]
+	_ensure_stream_panel_display_view_bound(stream_result, true)
 	_step_ok("stream image displayed")
 
 	var device = CamBANGServer.get_device(_device_instance_id)
@@ -262,21 +259,31 @@ func _try_verify_capture_result() -> void:
 	_ok("OK: result_retrieval_verification passed")
 
 
-func _update_stream_panel_live() -> void:
-	if _stream_id == 0:
+func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind: bool = false) -> void:
+	var latest_stream_result = stream_result
+	if latest_stream_result == null:
+		if _stream_id == 0:
+			return
+		latest_stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
+	if latest_stream_result == null:
 		return
-	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
-	if stream_result == null:
+	if int(latest_stream_result.can_get_display_view()) == int(latest_stream_result.CAPABILITY_UNSUPPORTED):
 		return
-	var stream_display_view = stream_result.get_display_view()
+
+	# get_display_view() is a display-oriented live view of current retained
+	# stream state. For GPU-backed paths this is buffer-like/live, so user code
+	# should bind it rather than rebinding every frame to force updates.
+	var stream_display_view = latest_stream_result.get_display_view()
 	if not (stream_display_view is Texture2D):
 		return
-	_stream_texture_rect.texture = stream_display_view
-	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live in inspection mode)" % [
-		stream_result.get_payload_kind(),
-		stream_result.get_width(),
-		stream_result.get_height(),
-		stream_result.get_stream_id()
+	var current_texture = _stream_texture_rect.texture
+	if force_rebind or current_texture == null or current_texture != stream_display_view:
+		_stream_texture_rect.texture = stream_display_view
+	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live display view bound)" % [
+		latest_stream_result.get_payload_kind(),
+		latest_stream_result.get_width(),
+		latest_stream_result.get_height(),
+		latest_stream_result.get_stream_id()
 	]
 
 
@@ -353,6 +360,7 @@ func _ok(message: String) -> void:
 		_cleanup_and_quit(0)
 		return
 	_inspection_mode = true
+	_ensure_stream_panel_display_view_bound()
 	_capture_again_button.disabled = false
 	_append_status("GUI mode: staying open for inspection")
 	_append_status("Press Esc to quit (optional: press C or click 'Capture Again')")
@@ -369,6 +377,11 @@ func _fail(message: String) -> void:
 
 func _cleanup_and_quit(code: int) -> void:
 	set_process(false)
+	# Drop UI-held display/capture texture refs before runtime teardown. The
+	# stream display view may be backed by runtime-owned GPU state that becomes
+	# invalid after CamBANGServer.stop().
+	_stream_texture_rect.texture = null
+	_capture_texture_rect.texture = null
 	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true

@@ -669,6 +669,7 @@ ProviderResult SyntheticProvider::start_stream(
   auto& s = it->second;
   s.req.profile = profile;
   s.picture = picture;
+  release_stream_live_gpu_backing_(s);
 
   const uint32_t w = profile.width;
   const uint32_t h = profile.height;
@@ -751,6 +752,7 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  release_stream_live_gpu_backing_(s);
   return ProviderResult::success();
 }
 
@@ -917,6 +919,7 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  release_stream_live_gpu_backing_(s);
   s.started = false;
   strand_.post_stream_destroyed(s.req.stream_id);
   emit_native_destroy_(s.native_id);
@@ -1250,6 +1253,42 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   delete lease;
 }
 
+bool SyntheticProvider::ensure_stream_live_gpu_backing_(
+    StreamState& s,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride) {
+  if (s.live_gpu_backing &&
+      s.live_gpu_width == width &&
+      s.live_gpu_height == height &&
+      s.live_gpu_stride_bytes == stride) {
+    return true;
+  }
+  release_stream_live_gpu_backing_(s);
+  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(width, height, stride);
+  if (!s.live_gpu_backing) {
+    return false;
+  }
+  s.live_gpu_width = width;
+  s.live_gpu_height = height;
+  s.live_gpu_stride_bytes = stride;
+  return true;
+}
+
+void SyntheticProvider::release_stream_live_gpu_backing_(StreamState& s) {
+  if (!s.live_gpu_backing) {
+    s.live_gpu_width = 0;
+    s.live_gpu_height = 0;
+    s.live_gpu_stride_bytes = 0;
+    return;
+  }
+  synthetic_gpu_backing_release_stream_live_gpu_backing(s.live_gpu_backing);
+  s.live_gpu_backing.reset();
+  s.live_gpu_width = 0;
+  s.live_gpu_height = 0;
+  s.live_gpu_stride_bytes = 0;
+}
+
 void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
   if (!callbacks_) {
     return;
@@ -1306,12 +1345,28 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   bool gpu_ok = false;
   std::shared_ptr<void> gpu_backing;
   if (s.prefer_gpu_backing) {
-    gpu_backing = synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
-        s.gpu_staging.data(),
-        w,
-        h,
-        stride);
-    gpu_ok = static_cast<bool>(gpu_backing);
+    if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+      gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+          s.live_gpu_backing,
+          s.gpu_staging.data(),
+          w,
+          h,
+          stride);
+      if (!gpu_ok) {
+        release_stream_live_gpu_backing_(s);
+        if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+          gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+              s.live_gpu_backing,
+              s.gpu_staging.data(),
+              w,
+              h,
+              stride);
+        }
+      }
+      if (gpu_ok) {
+        gpu_backing = s.live_gpu_backing;
+      }
+    }
   }
   if (!gpu_ok) {
     std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());

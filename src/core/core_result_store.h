@@ -48,6 +48,9 @@ struct CoreStreamResultData {
   uint32_t image_height = 0;
   uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
+  // For stream paths this may reference stream-owned live backing updated in
+  // place while flowing; this is display/live-state retention, not frozen
+  // per-frame GPU artifact identity.
   std::shared_ptr<void> retained_gpu_backing{};
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};

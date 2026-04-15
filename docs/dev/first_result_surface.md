@@ -201,6 +201,11 @@ the current retained stream state.
 Where supported, this may be backed by **live GPU-backed stream display state**
 owned by the stream and updated in place while the stream flows.
 
+For synthetic GPU-backed repeating streams, this live display state is retained
+for the active flowing lifetime of the stream (rather than recreated per
+delivered frame) and is released deterministically on stream stop/destroy and
+provider teardown.
+
 This display-view path is intentionally **buffer-like**. It is not a promise of
 frozen historical image identity for previously obtained stream-result objects.
 
