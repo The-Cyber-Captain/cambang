@@ -12,6 +12,7 @@
 #include "core/result_capability.h"
 
 namespace cambang {
+class CoreRuntime;
 
 class CamBANGStreamResult final : public godot::RefCounted {
   GDCLASS(CamBANGStreamResult, godot::RefCounted)
@@ -24,10 +25,7 @@ public:
 
   CamBANGStreamResult() = default;
 
-  void set_data(SharedStreamResultData data) {
-    data_ = std::move(data);
-    cached_display_view_.unref();
-  }
+  void set_data(SharedStreamResultData data) { data_ = std::move(data); }
 
   uint32_t get_width() const;
   uint32_t get_height() const;
@@ -59,10 +57,12 @@ public:
   godot::Variant get_display_view() const;
   godot::Ref<godot::Image> to_image() const;
 
+  static void refresh_live_stream_cpu_display_views(const CoreRuntime& runtime);
+  static void clear_live_stream_cpu_display_views();
+
   static void _bind_methods();
 
 private:
-  mutable godot::Ref<godot::Texture2D> cached_display_view_;
   SharedStreamResultData data_;
 };
 

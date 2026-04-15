@@ -271,8 +271,8 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 		return
 
 	# get_display_view() is a display-oriented live view of current retained
-	# stream state. For GPU-backed paths this is buffer-like/live, so user code
-	# should bind it rather than rebinding every frame to force updates.
+	# stream state for flowing streams. Bind once, leave it bound while flowing,
+	# and only rebind when the view object genuinely changes.
 	var stream_display_view = latest_stream_result.get_display_view()
 	if not (stream_display_view is Texture2D):
 		return
