@@ -845,6 +845,8 @@ public:
 
   bool wait_for_stream_quiescence(uint64_t stream_id,
                                   std::string& error,
+                                  uint64_t* stable_frames_out = nullptr,
+                                  int min_stable_observations = 3,
                                   int max_iters = 500,
                                   int sleep_ms = 5) {
     if (!wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
@@ -857,31 +859,47 @@ public:
       return false;
     }
 
-    auto settled = snapshot_buffer_.snapshot_copy();
-    if (!settled) {
-      error = "missing snapshot while establishing stream quiescence";
-      return false;
-    }
-    const auto* settled_stream = find_stream(*settled, stream_id);
-    if (!settled_stream) {
-      error = "stream missing while establishing stream quiescence";
-      return false;
-    }
-    const uint64_t settled_frames = settled_stream->frames_received;
-    const uint64_t before = runtime_.published_seq();
-    runtime_.request_publish();
-    if (!wait_for_core_publish_count(before + 1,
-                                     error,
-                                     max_iters,
-                                     sleep_ms)) {
-      return false;
+    if (min_stable_observations < 1) {
+      min_stable_observations = 1;
     }
 
-    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      const auto* stream = find_stream(s, stream_id);
-      return stream &&
-             stream->frames_received == settled_frames;
-    }, error, max_iters, sleep_ms, "timed out waiting for stream quiescence verification publish");
+    uint64_t candidate_frames = 0;
+    bool has_candidate = false;
+    int stable_observations = 0;
+
+    for (int i = 0; i < max_iters; ++i) {
+      // Best-effort prompt for boundary visibility; a fresh publish is optional.
+      runtime_.request_publish();
+
+      auto snap = snapshot_buffer_.snapshot_copy();
+      if (snap) {
+        const auto* stream = find_stream(*snap, stream_id);
+        if (!stream) {
+          error = "stream missing while establishing stream quiescence";
+          return false;
+        }
+
+        const uint64_t frames = stream->frames_received;
+        if (!has_candidate || frames != candidate_frames) {
+          candidate_frames = frames;
+          has_candidate = true;
+          stable_observations = 1;
+        } else {
+          ++stable_observations;
+          if (stable_observations >= min_stable_observations) {
+            if (stable_frames_out) {
+              *stable_frames_out = candidate_frames;
+            }
+            return true;
+          }
+        }
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+    }
+
+    error = "timed out waiting for bounded stream quiescence";
+    return false;
   }
 
   bool emit_frame_for_stream(uint64_t stream_id, std::string& error) {
