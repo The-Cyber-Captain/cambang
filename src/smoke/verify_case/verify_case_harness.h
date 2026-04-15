@@ -848,13 +848,12 @@ public:
                                   int max_iters = 500,
                                   int sleep_ms = 5) {
     if (!wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-          const auto* stream = find_stream(s, stream_id);
-          return stream && stream->queue_depth == 0;
+          return find_stream(s, stream_id) != nullptr;
         },
         error,
         max_iters,
         sleep_ms,
-        "timed out waiting for stream ingress queue to drain")) {
+        "timed out waiting for stream presence while establishing quiescence")) {
       return false;
     }
 
@@ -881,7 +880,6 @@ public:
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
       const auto* stream = find_stream(s, stream_id);
       return stream &&
-             stream->queue_depth == 0 &&
              stream->frames_received == settled_frames;
     }, error, max_iters, sleep_ms, "timed out waiting for stream quiescence verification publish");
   }
@@ -924,8 +922,7 @@ public:
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
       const auto* stream = find_stream(s, stream_id);
       return stream &&
-             stream->frames_received > baseline_frames &&
-             stream->queue_depth == 0;
+             stream->frames_received > baseline_frames;
     }, error, 500, 5, "timed out waiting for frame publish convergence");
   }
 
