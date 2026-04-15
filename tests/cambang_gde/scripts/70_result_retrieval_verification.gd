@@ -21,10 +21,13 @@ const PAYLOAD_KIND_GPU_SURFACE := 2
 
 @onready var _status_label: RichTextLabel = $RootMargin/MainColumn/StatusLabel
 @onready var _stream_facts_label: Label = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamFacts
+@onready var _requested_stream_facts_label: Label = $RootMargin/MainColumn/ResultsRow/RequestedStreamPanel/RequestedStreamFacts
 @onready var _capture_facts_label: Label = $RootMargin/MainColumn/ResultsRow/CapturePanel/CaptureFacts
 @onready var _stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamTexture
+@onready var _requested_stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/RequestedStreamPanel/RequestedStreamTexture
 @onready var _capture_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/CapturePanel/CaptureTexture
 @onready var _gui_controls: HBoxContainer = $RootMargin/MainColumn/GuiControls
+@onready var _request_stream_image_button: Button = $RootMargin/MainColumn/GuiControls/RequestStreamImageButton
 @onready var _capture_again_button: Button = $RootMargin/MainColumn/GuiControls/CaptureAgainButton
 
 var _step := 0
@@ -53,7 +56,9 @@ func _ready() -> void:
 	if _is_headless:
 		_gui_controls.visible = false
 	else:
+		_request_stream_image_button.pressed.connect(_on_request_stream_image_pressed)
 		_capture_again_button.pressed.connect(_on_capture_again_pressed)
+		_request_stream_image_button.disabled = true
 		_capture_again_button.disabled = true
 
 	CamBANGServer.stop()
@@ -182,6 +187,9 @@ func _try_verify_stream_result() -> void:
 	_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
 	_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
 	_step_ok("stream to_image materialization verified")
+	_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request")
+	_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
+	_step_ok("requested stream image panel populated from explicit request")
 
 	var stream_display_view = stream_result.get_display_view()
 	if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
@@ -291,6 +299,44 @@ func _on_capture_again_pressed() -> void:
 	_request_manual_capture()
 
 
+func _on_request_stream_image_pressed() -> void:
+	_request_manual_stream_image()
+
+
+func _request_manual_stream_image() -> void:
+	if _is_headless or not _inspection_mode:
+		return
+	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
+	if stream_result == null:
+		_append_status("WARN: cannot request stream to_image(); latest stream result unavailable")
+		return
+	_materialize_requested_stream_image(stream_result, "mode=manual stream to_image request")
+
+
+func _materialize_requested_stream_image(stream_result, mode_text: String) -> void:
+	if stream_result == null:
+		return
+	# Explicit to_image() materialization from stream result. This yields a
+	# manually requested CPU-backed artifact, not the normal live display path.
+	var requested_image: Image = stream_result.to_image()
+	if requested_image == null:
+		_append_status("WARN: requested stream to_image() returned null")
+		return
+	if requested_image.get_width() <= 0 or requested_image.get_height() <= 0:
+		_append_status("WARN: requested stream to_image() dimensions invalid")
+		return
+	_requested_stream_texture_rect.texture = ImageTexture.create_from_image(requested_image)
+	_requested_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n%s" % [
+		stream_result.get_payload_kind(),
+		stream_result.get_width(),
+		stream_result.get_height(),
+		stream_result.get_stream_id(),
+		mode_text
+	]
+	if mode_text.begins_with("mode=manual"):
+		_append_status("INFO: requested stream image displayed (%s)" % mode_text)
+
+
 func _request_manual_capture() -> void:
 	if _is_headless or not _inspection_mode:
 		return
@@ -361,9 +407,10 @@ func _ok(message: String) -> void:
 		return
 	_inspection_mode = true
 	_ensure_stream_panel_display_view_bound()
+	_request_stream_image_button.disabled = false
 	_capture_again_button.disabled = false
 	_append_status("GUI mode: staying open for inspection")
-	_append_status("Press Esc to quit (optional: press C or click 'Capture Again')")
+	_append_status("Press Esc to quit (optional: click 'Request Stream Image' / 'Capture Again')")
 
 
 func _fail(message: String) -> void:
@@ -381,6 +428,7 @@ func _cleanup_and_quit(code: int) -> void:
 	# stream display view may be backed by runtime-owned GPU state that becomes
 	# invalid after CamBANGServer.stop().
 	_stream_texture_rect.texture = null
+	_requested_stream_texture_rect.texture = null
 	_capture_texture_rect.texture = null
 	CamBANGServer.stop()
 	if not _quit_requested:

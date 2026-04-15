@@ -67,6 +67,28 @@ stretch_mode = 5
 layout_mode = 2
 text = "waiting for stream result..."
 
+[node name="RequestedStreamPanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+
+[node name="RequestedStreamTitle" type="Label" parent="RootMargin/MainColumn/ResultsRow/RequestedStreamPanel"]
+layout_mode = 2
+text = "Requested Image From Stream Result"
+
+[node name="RequestedStreamTexture" type="TextureRect" parent="RootMargin/MainColumn/ResultsRow/RequestedStreamPanel"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+expand_mode = 1
+stretch_mode = 5
+
+[node name="RequestedStreamFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/RequestedStreamPanel"]
+layout_mode = 2
+text = "waiting for explicit stream to_image() request..."
+
 [node name="CapturePanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
 layout_mode = 2
 size_flags_horizontal = 3
@@ -97,6 +119,11 @@ theme_override_constants/separation = 10
 layout_mode = 2
 size_flags_horizontal = 3
 text = "GUI controls (headed mode):"
+
+[node name="RequestStreamImageButton" type="Button" parent="RootMargin/MainColumn/GuiControls"]
+layout_mode = 2
+disabled = true
+text = "Request Stream Image"
 
 [node name="CaptureAgainButton" type="Button" parent="RootMargin/MainColumn/GuiControls"]
 layout_mode = 2
