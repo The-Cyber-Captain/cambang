@@ -500,6 +500,56 @@ For example:
 - encoded-byte access should not secretly re-encode raw pixels unless made explicit
 - image materialization methods may legitimately be `EXPENSIVE`
 
+## 11.4 Stream display-view semantics
+
+For repeating streams, `get_display_view()` is a **display-oriented live view**
+of the **current retained stream state**.
+
+Where supported, this display path may be backed by **live GPU-backed stream
+display state** that is:
+
+- owned by the stream
+- updated in place while the stream flows
+- exposed as a display-oriented live view
+
+This display-view path is intentionally **buffer-like**. It is not a promise of
+frozen historical image identity for previously obtained stream-result objects.
+
+The existence of a live GPU-backed display path for repeating streams does **not**
+imply that still-capture results should retain or expose per-capture GPU artifacts
+at the public result seam.
+
+## 11.5 Stream `to_image()` semantics
+
+`to_image()` remains the explicit path for **materialization onto CPU-backed
+storage**.
+
+For stream results, `to_image()` materializes onto CPU-backed storage from the
+**current retained stream state at the time of the call**.
+
+This wording describes the storage class of the returned artifact. It does **not**
+commit the contract to any particular hidden implementation mechanism used to
+perform that materialization.
+
+Display-view access and materialization onto CPU-backed storage are therefore
+distinct paths:
+
+- `get_display_view()` — display-oriented live view
+- `to_image()` — explicit materialization onto CPU-backed storage
+
+`get_display_view()` must not be reframed as implicit materialization onto
+CPU-backed storage.
+
+## 11.6 Capture-result guardrail
+
+Still-capture public result semantics remain distinct from repeating-stream
+display-view semantics.
+
+A capture result is a **discrete artifact** at the public result seam. Future
+capture support may internally use whatever retained/runtime state is appropriate,
+but this stream-side live GPU-backed display model must not be generalized into a
+public model of retained or exposed per-capture GPU artifacts.
+
 ---
 
 ## 12. “Useful display” tiers

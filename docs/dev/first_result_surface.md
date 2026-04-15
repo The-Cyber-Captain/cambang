@@ -193,11 +193,26 @@ Initial stream operations:
 ### 6.6 Intent of these operations
 
 - `get_display_view()` is the preferred display-oriented access path.
-- `to_image()` is the explicit CPU materialization path.
+- `to_image()` is the explicit path for **materialization onto CPU-backed storage**.
 
-`get_display_view()` must not silently behave like “always convert to CPU image.”
-For retained synthetic `GPU_SURFACE`, `get_display_view()` now has a direct GPU
-display-view path.
+For `StreamResult`, `get_display_view()` is a **display-oriented live view** of
+the current retained stream state.
+
+Where supported, this may be backed by **live GPU-backed stream display state**
+owned by the stream and updated in place while the stream flows.
+
+This display-view path is intentionally **buffer-like**. It is not a promise of
+frozen historical image identity for previously obtained stream-result objects.
+
+`to_image()` performs explicit materialization onto CPU-backed storage from the
+current retained stream state at the time of the call.
+
+`get_display_view()` must not silently behave like “always convert to CPU-backed
+storage.”
+
+For synthetic `GPU_SURFACE`, `get_display_view()` has a direct GPU display path.
+That direct display path must not be reframed as materialization onto CPU-backed
+storage.
 
 ### 6.7 Explicit non-goals for `StreamResult` in slice 1
 
@@ -284,7 +299,19 @@ or, where supported and appropriate:
 
 Actual file saving belongs to Godot/app code.
 
-### 7.7 Explicit non-goals for `CaptureResult` in slice 1
+### 7.7 Capture-result guardrail
+
+Still-capture public result semantics remain distinct from repeating-stream
+display-view semantics.
+
+A capture result is a **discrete artifact** at the public result seam and should
+not inherit the stream-side notion of a live GPU-backed display buffer.
+
+The existence of a live GPU-backed display path for repeating streams must not be
+used to justify retained or exposed per-capture GPU artifacts in the public
+capture-result model.
+
+### 7.8 Explicit non-goals for `CaptureResult` in slice 1
 
 Not included in slice 1:
 
