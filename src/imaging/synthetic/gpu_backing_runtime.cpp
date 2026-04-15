@@ -76,6 +76,74 @@ std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
   trace_line(backing ? "retain_gpu_backing success=true" : "retain_gpu_backing success=false");
   return backing;
 }
+
+std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes) noexcept {
+  const SyntheticGpuBackingRuntimeOps* ops = g_ops.load(std::memory_order_acquire);
+  if (!ops || !ops->create_stream_live_gpu_backing_rgba8) {
+    trace_line("create_stream_live_gpu_backing success=false reason=ops_unset_or_missing_create_fn");
+    return {};
+  }
+  std::shared_ptr<void> backing = ops->create_stream_live_gpu_backing_rgba8(width, height, stride_bytes);
+  trace_line(backing ? "create_stream_live_gpu_backing success=true"
+                     : "create_stream_live_gpu_backing success=false");
+  return backing;
+}
+
+bool synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+    const std::shared_ptr<void>& backing,
+    const uint8_t* src,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes) noexcept {
+  const SyntheticGpuBackingRuntimeOps* ops = g_ops.load(std::memory_order_acquire);
+  if (!ops || !ops->update_stream_live_gpu_backing_rgba8) {
+    trace_line("update_stream_live_gpu_backing success=false reason=ops_unset_or_missing_update_fn");
+    return false;
+  }
+  const bool ok = ops->update_stream_live_gpu_backing_rgba8(backing, src, width, height, stride_bytes);
+  trace_line(ok ? "update_stream_live_gpu_backing success=true" : "update_stream_live_gpu_backing success=false");
+  return ok;
+}
+
+void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept {
+  const SyntheticGpuBackingRuntimeOps* ops = g_ops.load(std::memory_order_acquire);
+  if (!ops || !ops->release_stream_live_gpu_backing) {
+    trace_line("release_stream_live_gpu_backing skipped reason=ops_unset_or_missing_release_fn");
+    backing.reset();
+    return;
+  }
+  ops->release_stream_live_gpu_backing(backing);
+  trace_line("release_stream_live_gpu_backing done");
+}
+#else
+std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes) noexcept {
+  (void)width;
+  (void)height;
+  (void)stride_bytes;
+  return {};
+}
+bool synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+    const std::shared_ptr<void>& backing,
+    const uint8_t* src,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes) noexcept {
+  (void)backing;
+  (void)src;
+  (void)width;
+  (void)height;
+  (void)stride_bytes;
+  return false;
+}
+void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept {
+  backing.reset();
+}
 #endif
 
 } // namespace cambang

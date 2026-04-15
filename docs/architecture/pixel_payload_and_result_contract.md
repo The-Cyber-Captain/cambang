@@ -313,6 +313,11 @@ adapter-layer display realizations, not the retained-primary payload-kind seam.
 When GPU artifact ownership (for example RID ownership) is transferred into an
 adapter object, retained-backing cleanup must not also free that same resource.
 
+For repeating-stream retained GPU display state, release timing must remain
+deterministic at stream-lifetime boundaries (for example stop/destroy/provider
+teardown/reconfiguration invalidation), with adapter-layer deferral limited to
+narrow fallback cases where immediate release is not possible.
+
 ---
 
 ## 8. Stream Sink and Capture Sink split

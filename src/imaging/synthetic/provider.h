@@ -151,6 +151,10 @@ private:
     CpuPackedPatternRenderer renderer{};
     bool prefer_gpu_backing = false;
     std::vector<std::uint8_t> gpu_staging;
+    std::shared_ptr<void> live_gpu_backing{};
+    uint32_t live_gpu_width = 0;
+    uint32_t live_gpu_height = 0;
+    uint32_t live_gpu_stride_bytes = 0;
 
     struct BufferSlot {
       uint64_t stream_id = 0;
@@ -175,6 +179,8 @@ private:
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
+  bool ensure_stream_live_gpu_backing_(StreamState& s, uint32_t width, uint32_t height, uint32_t stride);
+  void release_stream_live_gpu_backing_(StreamState& s);
   static uint64_t generator_frame_ordinal_from_ns_(uint64_t timestamp_ns, const PictureConfig& picture) noexcept;
 
   void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
