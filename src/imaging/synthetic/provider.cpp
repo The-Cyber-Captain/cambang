@@ -134,7 +134,7 @@ ProducerBackingCapabilities SyntheticProvider::apply_verification_backing_overri
 
 bool SyntheticProvider::choose_stream_gpu_preference_(
     ProducerBackingCapabilities capabilities) const noexcept {
-  return capabilities.gpu;
+  return capabilities.gpu_backed_available;
 }
 
 
