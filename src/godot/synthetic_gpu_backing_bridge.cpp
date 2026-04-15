@@ -54,9 +54,11 @@ struct RetainedSyntheticGpuBacking final {
     godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
     godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
     if (rd) {
+      // Deterministic immediate release is the primary lifetime model.
       rd->free_rid(rid);
       return;
     }
+    // Fallback only: if RD access is unavailable at this instant, defer free.
     enqueue_pending_release(rid);
   }
 
@@ -66,6 +68,8 @@ struct RetainedSyntheticGpuBacking final {
 };
 
 std::mutex g_pending_release_mutex;
+// Narrow fallback queue only. Normal lifetime is deterministic immediate
+// release in release_now() when a RenderingDevice is available.
 std::vector<godot::RID> g_pending_releases;
 
 void enqueue_pending_release(const godot::RID& rid) {
@@ -85,6 +89,7 @@ void drain_pending_releases() {
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
+    // Fallback remains pending until a later point with RD access.
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
     for (godot::RID& rid : pending) {
       g_pending_releases.push_back(std::move(rid));
@@ -93,6 +98,7 @@ void drain_pending_releases() {
   }
   godot::RenderingDevice* rd = rs->get_rendering_device();
   if (!rd) {
+    // Fallback remains pending until a later point with RD access.
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
     for (godot::RID& rid : pending) {
       g_pending_releases.push_back(std::move(rid));
@@ -129,7 +135,16 @@ void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
       runtime_truth_gpu_available);
 }
 
-bool resolve_backing_texture_rid(const std::shared_ptr<RetainedSyntheticGpuBacking>& retained, godot::RID& out) {
+struct BackingSnapshot final {
+  godot::RID rid;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride_bytes = 0;
+};
+
+bool snapshot_backing_for_use(
+    const std::shared_ptr<RetainedSyntheticGpuBacking>& retained,
+    BackingSnapshot& out) {
   if (!retained) {
     return false;
   }
@@ -138,14 +153,19 @@ bool resolve_backing_texture_rid(const std::shared_ptr<RetainedSyntheticGpuBacki
     return false;
   }
   if (retained->rd_texture.is_valid()) {
-    out = retained->rd_texture;
-    return true;
+    out.rid = retained->rd_texture;
+  } else if (retained->display_texture.is_valid()) {
+    out.rid = retained->display_texture->get_texture_rd_rid();
+  } else {
+    return false;
   }
-  if (retained->display_texture.is_valid()) {
-    out = retained->display_texture->get_texture_rd_rid();
-    return out.is_valid();
+  if (!out.rid.is_valid()) {
+    return false;
   }
-  return false;
+  out.width = retained->width;
+  out.height = retained->height;
+  out.stride_bytes = retained->stride_bytes;
+  return true;
 }
 
 bool global_rd_available() noexcept {
@@ -345,18 +365,21 @@ bool update_stream_live_gpu_backing_rgba8(
   if (!retained) {
     return false;
   }
-  godot::RID rid;
-  if (!resolve_backing_texture_rid(retained, rid) || !rid.is_valid()) {
+  BackingSnapshot snapshot{};
+  if (!snapshot_backing_for_use(retained, snapshot)) {
     return false;
   }
-  if (retained->width != width || retained->height != height || retained->stride_bytes != stride_bytes) {
+  if (snapshot.width != width || snapshot.height != height || snapshot.stride_bytes != stride_bytes) {
     return false;
   }
 
   godot::PackedByteArray bytes;
   bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
   std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
-  rd->texture_update(rid, 0, bytes);
+  rd->texture_update(snapshot.rid, 0, bytes);
+  // Godot's RD texture_update path used here does not provide explicit success/failure.
+  // This helper can only report precondition/runtime-availability failures directly.
+  // Provider-side recreate+retry therefore triggers only when those observable checks fail.
   return true;
 }
 
@@ -411,6 +434,10 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     return {};
   }
   godot::RenderingDevice* rd = rs->get_rendering_device();
+  std::lock_guard<std::mutex> lock(retained->mutex);
+  if (retained->released) {
+    return {};
+  }
   if (!rd || !retained->rd_texture.is_valid()) {
     return retained->display_texture;
   }
@@ -420,7 +447,8 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     if (texture.is_null()) {
       return {};
     }
-    // Texture2DRD assumes ownership of this RID after binding.
+    // Display view is a live wrapper over stream-owned backing. Texture2DRD
+    // assumes ownership of this RID after binding.
     texture->set_texture_rd_rid(retained->rd_texture);
     retained->rd_texture = godot::RID();
     retained->display_texture = texture;
@@ -442,8 +470,8 @@ bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>&
   if (!rs || !rs->get_rendering_device()) {
     return false;
   }
-  godot::RID rid;
-  return resolve_backing_texture_rid(retained, rid);
+  BackingSnapshot snapshot{};
+  return snapshot_backing_for_use(retained, snapshot);
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
@@ -464,16 +492,16 @@ godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::s
   if (!rd) {
     return {};
   }
-  godot::RID rid;
-  if (!resolve_backing_texture_rid(retained, rid)) {
+  BackingSnapshot snapshot{};
+  if (!snapshot_backing_for_use(retained, snapshot)) {
     return {};
   }
-  const godot::PackedByteArray readback = rd->texture_get_data(rid, 0);
+  const godot::PackedByteArray readback = rd->texture_get_data(snapshot.rid, 0);
   if (readback.size() <= 0) {
     return {};
   }
 
-  if (retained->width == 0 || retained->height == 0) {
+  if (snapshot.width == 0 || snapshot.height == 0) {
     return {};
   }
 
@@ -482,8 +510,8 @@ godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::s
   if (image.is_null()) {
     return {};
   }
-  image->set_data(static_cast<int64_t>(retained->width),
-                  static_cast<int64_t>(retained->height),
+  image->set_data(static_cast<int64_t>(snapshot.width),
+                  static_cast<int64_t>(snapshot.height),
                   false,
                   godot::Image::FORMAT_RGBA8,
                   readback);
