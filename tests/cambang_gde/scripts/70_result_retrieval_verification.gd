@@ -377,6 +377,11 @@ func _fail(message: String) -> void:
 
 func _cleanup_and_quit(code: int) -> void:
 	set_process(false)
+	# Drop UI-held display/capture texture refs before runtime teardown. The
+	# stream display view may be backed by runtime-owned GPU state that becomes
+	# invalid after CamBANGServer.stop().
+	_stream_texture_rect.texture = null
+	_capture_texture_rect.texture = null
 	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
