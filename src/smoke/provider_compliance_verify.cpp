@@ -155,6 +155,7 @@ bool assert_native_balance(const std::vector<EventRec>& events, const char* name
 bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
                                      SyntheticProvider& synthetic,
                                      uint64_t advance_step_ns,
+                                     uint64_t min_published_seq,
                                      const std::function<bool(const CamBANGStateSnapshot&)>& predicate,
                                      std::string& error,
                                      const char* timeout_msg,
@@ -163,6 +164,10 @@ bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
   for (int i = 0; i < max_iters; ++i) {
     synthetic.advance(advance_step_ns);
     harness.runtime().request_publish();
+    if (harness.runtime().published_seq() < min_published_seq) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+      continue;
+    }
     auto snap = harness.snapshot_buffer().snapshot_copy();
     if (snap && predicate(*snap)) {
       return true;
@@ -631,6 +636,7 @@ bool run_clustered_strict_branch_check() {
           harness,
           *synthetic,
           0,
+          harness.runtime().published_seq(),
           [&](const CamBANGStateSnapshot& s) {
             const auto* stream = VerifyCaseHarness::find_stream(s, kClusteredStreamId);
             return VerifyCaseHarness::has_device(s, kClusteredDeviceId) &&
@@ -643,12 +649,29 @@ bool run_clustered_strict_branch_check() {
     return false;
   }
 
+  const uint64_t post_boundary_min_publish = harness.runtime().published_seq() + 1;
   synthetic->advance(period_ns * 2);
   harness.runtime().request_publish();
 
+  if (!wait_for_snapshot_with_progress(
+          harness,
+          *synthetic,
+          1,
+          post_boundary_min_publish,
+          [&](const CamBANGStateSnapshot& s) {
+            const auto* stream = VerifyCaseHarness::find_stream(s, kClusteredStreamId);
+            return !stream || stream->mode != CBStreamMode::FLOWING;
+          },
+          error,
+          "timed out waiting for clustered strict post-boundary convergence")) {
+    std::cerr << "FAIL clustered strict post-boundary convergence failed: " << error << "\n";
+    harness.stop_runtime();
+    return false;
+  }
+
   auto snap = harness.snapshot_buffer().snapshot_copy();
   if (!snap) {
-    std::cerr << "FAIL clustered strict missing post-boundary snapshot\n";
+    std::cerr << "FAIL clustered strict missing converged post-boundary snapshot\n";
     harness.stop_runtime();
     return false;
   }

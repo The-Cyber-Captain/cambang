@@ -843,7 +843,73 @@ public:
 
   bool emit_frame(std::string& error) { return emit_frame_for_stream(kStreamId, error); }
 
+  bool wait_for_stream_quiescence(uint64_t stream_id,
+                                  std::string& error,
+                                  uint64_t* stable_frames_out = nullptr,
+                                  int min_stable_observations = 3,
+                                  int max_iters = 500,
+                                  int sleep_ms = 5) {
+    if (!wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+          return find_stream(s, stream_id) != nullptr;
+        },
+        error,
+        max_iters,
+        sleep_ms,
+        "timed out waiting for stream presence while establishing quiescence")) {
+      return false;
+    }
+
+    if (min_stable_observations < 1) {
+      min_stable_observations = 1;
+    }
+
+    uint64_t candidate_frames = 0;
+    bool has_candidate = false;
+    int stable_observations = 0;
+
+    for (int i = 0; i < max_iters; ++i) {
+      // Best-effort prompt for boundary visibility; a fresh publish is optional.
+      runtime_.request_publish();
+
+      auto snap = snapshot_buffer_.snapshot_copy();
+      if (snap) {
+        const auto* stream = find_stream(*snap, stream_id);
+        if (!stream) {
+          error = "stream missing while establishing stream quiescence";
+          return false;
+        }
+
+        const uint64_t frames = stream->frames_received;
+        if (!has_candidate || frames != candidate_frames) {
+          candidate_frames = frames;
+          has_candidate = true;
+          stable_observations = 1;
+        } else {
+          ++stable_observations;
+          if (stable_observations >= min_stable_observations) {
+            if (stable_frames_out) {
+              *stable_frames_out = candidate_frames;
+            }
+            return true;
+          }
+        }
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+    }
+
+    error = "timed out waiting for bounded stream quiescence";
+    return false;
+  }
+
   bool emit_frame_for_stream(uint64_t stream_id, std::string& error) {
+    uint64_t baseline_frames = 0;
+    if (auto baseline = snapshot_buffer_.snapshot_copy(); baseline) {
+      if (const auto* stream = find_stream(*baseline, stream_id); stream) {
+        baseline_frames = stream->frames_received;
+      }
+    }
+
     const uint64_t before = runtime_.published_seq();
 
     switch (provider_kind_) {
@@ -873,8 +939,9 @@ public:
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
       const auto* stream = find_stream(s, stream_id);
-      return stream && stream->frames_received >= 1;
-    }, error, 500, 5, "timed out waiting for frame publish");
+      return stream &&
+             stream->frames_received > baseline_frames;
+    }, error, 500, 5, "timed out waiting for frame publish convergence");
   }
 
   bool request_publish_only(std::string& error) {

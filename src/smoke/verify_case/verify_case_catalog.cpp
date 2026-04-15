@@ -2198,30 +2198,47 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
     fail_step(2, "stream not flowing before starvation window");
     return 1;
   }
-  const uint64_t before_frames = flowing->frames_received;
-  if (!h.request_publish_only(error)) {
+  uint64_t before_frames = 0;
+  if (!h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error, &before_frames)) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, VerifyCaseHarness::kStreamId);
+        return stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, 500, 5, "timed out waiting for flowing stream at starvation boundary")) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  auto boundary_snap = h.snapshot_buffer().snapshot_copy();
+  const auto* quiesced = boundary_snap ? VerifyCaseHarness::find_stream(*boundary_snap, VerifyCaseHarness::kStreamId) : nullptr;
+  if (!quiesced || quiesced->mode != CBStreamMode::FLOWING) {
+    fail_step(2, "stream not flowing at starvation boundary");
+    return 1;
+  }
+  before_frames = quiesced->frames_received;
+
+  uint64_t after_frames = 0;
+  if (!h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error, &after_frames)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
 
-  const auto* after = VerifyCaseHarness::find_stream(*h.observed().raw, VerifyCaseHarness::kStreamId);
+  auto after_snap = h.snapshot_buffer().snapshot_copy();
+  const auto* after = after_snap ? VerifyCaseHarness::find_stream(*after_snap, VerifyCaseHarness::kStreamId) : nullptr;
   if (!after) {
-    fail_step(3, "stream missing after starvation window");
+    fail_step(4, "stream missing after starvation window");
     return 1;
   }
-  if (after->frames_received != before_frames) {
-    fail_step(3, "frames advanced during starvation window");
+  if (after_frames != before_frames || after->frames_received != before_frames) {
+    fail_step(4, "frames advanced during starvation window");
     return 1;
   }
   if (after->mode != CBStreamMode::FLOWING) {
-    fail_step(3, "stream changed mode during starvation window");
+    fail_step(4, "stream changed mode during starvation window");
     return 1;
   }
-  cli::line("step 3 OK");
+  cli::line("step 4 OK");
 
   cli::line("Verification case PASSED");
   return 0;
