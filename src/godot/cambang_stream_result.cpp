@@ -81,10 +81,17 @@ int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
-    return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
+  switch (data_->payload_kind) {
+    case ResultPayloadKind::GPU_SURFACE:
+      return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
+    case ResultPayloadKind::CPU_PACKED:
+      return CAPABILITY_CHEAP;
+    case ResultPayloadKind::CPU_PLANAR:
+    case ResultPayloadKind::ENCODED_IMAGE:
+    case ResultPayloadKind::RAW_IMAGE:
+    default:
+      return CAPABILITY_UNSUPPORTED;
   }
-  return CAPABILITY_CHEAP;
 }
 
 int CamBANGStreamResult::can_to_image() const {
