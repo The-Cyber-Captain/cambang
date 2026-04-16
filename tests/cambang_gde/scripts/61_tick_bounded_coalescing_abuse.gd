@@ -100,6 +100,9 @@ func _on_observation_timeout() -> void:
 func _topology_signature(snapshot: Dictionary) -> String:
 	var devices: Array = snapshot.get("devices", [])
 	var streams: Array = snapshot.get("streams", [])
+	var rigs: Array = snapshot.get("rigs", [])
+	var native_objects: Array = snapshot.get("native_objects", [])
+	var detached_root_ids: Array = snapshot.get("detached_root_ids", [])
 
 	var device_keys: Array[String] = []
 	for d in devices:
@@ -108,15 +111,32 @@ func _topology_signature(snapshot: Dictionary) -> String:
 
 	var stream_keys: Array[String] = []
 	for s in streams:
-		stream_keys.append("%s:%s" % [
-			str(s.get("stream_id", 0)),
-			str(s.get("device_instance_id", 0)),
-		])
+		stream_keys.append(str(s.get("stream_id", 0)))
 	stream_keys.sort()
 
-	return "D[%s]|S[%s]" % [
+	var rig_keys: Array[String] = []
+	for r in rigs:
+		rig_keys.append(str(r.get("rig_id", 0)))
+	rig_keys.sort()
+
+	var root_keys: Array[String] = []
+	for n in native_objects:
+		var root_id := int(n.get("root_id", 0))
+		if root_id != 0:
+			root_keys.append(str(root_id))
+	root_keys.sort()
+
+	var detached_keys: Array[String] = []
+	for root_id in detached_root_ids:
+		detached_keys.append(str(root_id))
+	detached_keys.sort()
+
+	return "D[%s]|R[%s]|S[%s]|ROOT[%s]|DET[%s]" % [
 		";".join(device_keys),
+		";".join(rig_keys),
 		";".join(stream_keys),
+		";".join(root_keys),
+		";".join(detached_keys),
 	]
 
 	
