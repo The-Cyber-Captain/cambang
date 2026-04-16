@@ -152,6 +152,12 @@ Current implemented executable slice includes:
 - minimal realization/lifecycle events: `OpenDevice`, `CloseDevice`, `CreateStream`, `DestroyStream`
 - stream-scoped appearance update event: `UpdateStreamPicture` (maps through provider `PictureConfig` semantics)
 
+Implementation-status note (current verified path): stream appearance authoring
+in the built-in scenario library is verified through explicit
+`UpdateStreamPicture` events. In this slice, embedded picture payload on
+`StartStream` is not documented as the canonical/effective stream-picture
+application path.
+
 This implemented slice is still a starting boundary, not the architectural ceiling.
 
 Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue.

@@ -58,6 +58,11 @@ Preferred first slice: **stream-scoped appearance state**.
 
 This keeps the model small and deterministic while supporting meaningful visual source distinction.
 
+Implementation-status note (current verified path): built-in scenario appearance
+authoring is currently verified through explicit `UpdateStreamPicture` events
+in the timeline. `StartStream` embedded-picture fields are not documented here
+as the canonical/effective stream-picture application route.
+
 Per-frame appearance overrides may be considered later, but are not the primary first-slice model.
 
 ---
@@ -116,6 +121,10 @@ This tranche explicitly excludes:
 - full recording pipeline design
 - broad release UX design
 - unrelated runtime/provider architecture redesign
+
+Capture-picture authoring behavior is intentionally left conservative here:
+this note only freezes the currently verified stream-picture path above and
+does not declare broader capture-picture authoring behavior as canonical yet.
 
 ---
 
