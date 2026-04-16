@@ -219,7 +219,7 @@ current retained stream state at the time of the call.
 `get_display_view()` must not silently behave like “always convert to CPU-backed
 storage.”
 
-A `display_view` is a stream-owned live backing, not a detached materialized
+A `display_view` is a live view over stream-owned live backing, not a detached materialized
 image artifact. Consumers that bind it into UI/display objects are responsible
 for dropping those bindings before stopping/destroying the owning runtime or
 stream state.
