@@ -148,23 +148,11 @@ bool build_synthetic_builtin_scenario_library_canonical_scenario(
     inspection.overlay_moving_bar = true;
     inspection.checker_size_px = 24;
 
-    // Scene-70 verification expects authored checker stream appearance from
-    // timeline start. Apply it directly on StartStream at t=0 (no delayed
-    // UpdateStreamPicture transition for this scenario).
-    for (auto& action : out.timeline) {
-      if (action.type == SyntheticEventType::StartStream &&
-          action.stream_key == kMainStreamKey &&
-          action.at_ns == 0) {
-        action.has_picture = true;
-        action.picture = inspection;
-        return true;
-      }
-    }
-
-    if (error) {
-      *error = "stream_inspection_live missing StartStream(main_stream@0ns) prelude";
-    }
-    return false;
+    // Runtime-effective stream picture path is UpdateStreamPicture. Author
+    // checker inspection appearance at 0ns so startup retrieval is deterministic
+    // without relying on delayed picture updates.
+    add_timeline_action(out, 0, SyntheticEventType::UpdateStreamPicture, nullptr, kMainStreamKey, true, inspection);
+    return true;
   }
 
   if (error) {
