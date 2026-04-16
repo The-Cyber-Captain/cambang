@@ -63,6 +63,20 @@ Examples include:
 A platform-backed provider is an **adapter to the contract**, not a
 source of truth for what the contract means.
 
+### 2.2.x Platform target families
+
+CamBANG is designed to support platform-backed provider families including:
+
+- `windows_mediafoundation` — Windows / Media Foundation
+- `android_camera2` — Android / Camera2
+- `linux_v4l2` — Linux / Video4Linux2
+- `apple_avfoundation` — macOS / iOS / iPadOS / AVFoundation
+- `web_getusermedia` — Web / Media Capture and Streams (`getUserMedia`)
+
+These target families identify the backend API surfaces CamBANG expects to adapt through the provider contract.
+
+They do not imply equal implementation maturity, and they do not alter the canonical rule that platform-backed providers are adapters to the same provider contract.
+
 ### 2.3 Capability maturity
 
 Provider implementations may differ in capability maturity.
