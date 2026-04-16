@@ -26,6 +26,7 @@ struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
   godot::RID rd_texture;
   godot::Ref<godot::Texture2DRD> display_texture;
+  godot::PackedByteArray upload_bytes;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
@@ -365,18 +366,31 @@ bool update_stream_live_gpu_backing_rgba8(
   if (!retained) {
     return false;
   }
-  BackingSnapshot snapshot{};
-  if (!snapshot_backing_for_use(retained, snapshot)) {
-    return false;
-  }
-  if (snapshot.width != width || snapshot.height != height || snapshot.stride_bytes != stride_bytes) {
-    return false;
-  }
+  godot::RID texture_rid;
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released) {
+      return false;
+    }
+    if (retained->width != width || retained->height != height || retained->stride_bytes != stride_bytes) {
+      return false;
+    }
+    if (retained->rd_texture.is_valid()) {
+      texture_rid = retained->rd_texture;
+    } else if (retained->display_texture.is_valid()) {
+      texture_rid = retained->display_texture->get_texture_rd_rid();
+    }
+    if (!texture_rid.is_valid()) {
+      return false;
+    }
 
-  godot::PackedByteArray bytes;
-  bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
-  std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
-  rd->texture_update(snapshot.rid, 0, bytes);
+    const int64_t frame_bytes = static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height);
+    if (retained->upload_bytes.size() != frame_bytes) {
+      retained->upload_bytes.resize(frame_bytes);
+    }
+    std::memcpy(retained->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
+    rd->texture_update(texture_rid, 0, retained->upload_bytes);
+  }
   // Godot's RD texture_update path used here does not provide explicit success/failure.
   // This helper can only report precondition/runtime-availability failures directly.
   // Provider-side recreate+retry therefore triggers only when those observable checks fail.
