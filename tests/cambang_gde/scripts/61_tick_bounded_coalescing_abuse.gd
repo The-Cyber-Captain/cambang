@@ -100,17 +100,26 @@ func _on_observation_timeout() -> void:
 func _topology_signature(snapshot: Dictionary) -> String:
 	var devices: Array = snapshot.get("devices", [])
 	var streams: Array = snapshot.get("streams", [])
+
 	var device_keys: Array[String] = []
 	for d in devices:
-		device_keys.append("%s:%s" % [str(d.get("instance_id", 0)), str(d.get("phase", 0))])
+		device_keys.append(str(d.get("instance_id", 0)))
 	device_keys.sort()
+
 	var stream_keys: Array[String] = []
 	for s in streams:
-		stream_keys.append("%s:%s:%s" % [str(s.get("stream_id", 0)), str(s.get("device_instance_id", 0)), str(s.get("phase", 0))])
+		stream_keys.append("%s:%s" % [
+			str(s.get("stream_id", 0)),
+			str(s.get("device_instance_id", 0)),
+		])
 	stream_keys.sort()
-	return "D[%s]|S[%s]" % [";".join(device_keys), ";".join(stream_keys)]
 
+	return "D[%s]|S[%s]" % [
+		";".join(device_keys),
+		";".join(stream_keys),
+	]
 
+	
 func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 	if _done:
 		return
