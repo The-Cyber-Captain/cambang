@@ -434,3 +434,28 @@ Godot scenes verify:
 ## Output Discipline
 
 Scenes must flush output before quitting so that PASS/FAIL messages are reliably captured by automated runs.
+
+
+## Scene 70 maintainer-teaching note (`stream_inspection_live`)
+
+Scene 70 is a maintainer-facing verification/teaching scene for stream result
+surfaces.
+
+It now demonstrates:
+
+- live stream display via `StreamResult.get_display_view()` (display-oriented
+  live view over stream-owned live backing)
+- a separate manual/discrete stream `to_image()` request shown in its own panel
+  as explicit materialization onto CPU-backed storage
+- consumer responsibility to unbind/drop active display-view UI bindings before
+  runtime teardown
+
+For the built-in `stream_inspection_live` scenario, checker appearance at
+startup is now authored through the verified effective timeline path:
+
+- `UpdateStreamPicture(... checker ...)` at `0 ns`
+
+This removes ambiguity in the initial requested stream `to_image()` panel for
+scene 70.
+
+Capture-picture behavior was intentionally left untouched in this correction.

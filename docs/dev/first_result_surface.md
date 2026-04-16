@@ -198,6 +198,10 @@ Initial stream operations:
 For `StreamResult`, `get_display_view()` is a **display-oriented live view** of
 the current retained stream state.
 
+At the user-facing contract level, this is the consistent live-view path across
+supported stream backing kinds (including CPU-backed and GPU-backed paths),
+even where internal realization differs by backing/provider.
+
 Where supported, this may be backed by **live GPU-backed stream display state**
 owned by the stream and updated in place while the stream flows.
 
@@ -214,6 +218,11 @@ current retained stream state at the time of the call.
 
 `get_display_view()` must not silently behave like “always convert to CPU-backed
 storage.”
+
+A `display_view` is a stream-owned live backing, not a detached materialized
+image artifact. Consumers that bind it into UI/display objects are responsible
+for dropping those bindings before stopping/destroying the owning runtime or
+stream state.
 
 For synthetic `GPU_SURFACE`, `get_display_view()` has a direct GPU display path.
 That direct display path must not be reframed as materialization onto CPU-backed
@@ -467,9 +476,10 @@ In particular:
 - the current synthetic `GPU_SURFACE` exemplar may legitimately use one primary
   backing plus an
   optional auxiliary CPU backing
-- direct display-view access can be GPU-native while `to_image()` remains the
-  explicit CPU materialization API and chooses the least expensive supported CPU
-  route from current retained state
+- direct display-view access can use stream-owned live backing (including a
+  GPU-native path where supported) while `to_image()` remains the explicit API
+  for materialization onto CPU-backed storage and chooses the least expensive
+  supported CPU route from current retained state
 
 This note does not freeze exact retention heuristics or auxiliary-backing policy.
 It exists to prevent future implementation from teaching the wrong lesson that

@@ -379,6 +379,11 @@ For retained synthetic-stream `GPU_SURFACE`, `get_display_view()` now includes a
 direct GPU display path via the display adapter path; this path must not be
 reframed as CPU materialization.
 
+At the user-facing contract level, `StreamResult.get_display_view()` is the
+consistent **display-oriented live view** path across supported stream backing
+kinds (including CPU-backed and GPU-backed paths), even when the internal
+realization path differs by backing/provider.
+
 ## 9.4 Preferred stream retention direction
 
 Preferred retained form order is roughly:
@@ -519,6 +524,16 @@ display state** that is:
 
 This display-view path is intentionally **buffer-like**. It is not a promise of
 frozen historical image identity for previously obtained stream-result objects.
+
+User-facing semantic note: this live-view contract applies across supported
+CPU-backed and GPU-backed stream paths. The contract is about a
+**display-oriented live view** and does not claim identical internal realization
+mechanics across backing kinds.
+
+Consumer binding responsibility: a `display_view` is a runtime-backed display
+object, not a detached materialized image artifact. Consumers that bind a
+`display_view` into UI/display objects are responsible for dropping those
+bindings before stopping/destroying the owning runtime or stream state.
 
 The existence of a live GPU-backed display path for repeating streams does **not**
 imply that still-capture results should retain or expose per-capture GPU artifacts
