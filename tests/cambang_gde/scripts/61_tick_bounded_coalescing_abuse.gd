@@ -4,43 +4,58 @@ const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 7000
 const FIRST_PUBLISH_TIMEOUT_MS := 2000
 const OBSERVATION_WINDOW_MS := 1200
-const MIN_PUBLISHES := 3
 
 var _done := false
 var _quit_requested := false
+
 var _timer: Timer
 var _first_publish_timer: Timer
 var _observation_timer: Timer
+
 var _signal_count_this_tick := 0
 var _publish_count := 0
+var _tick_count := 0
+
+var _first_publish_seen := false
+var _observation_started := false
+
 var _last_gen := -1
 var _last_version := -1
 var _last_topology_version := -1
-var _last_topology_sig := ""
-var _observation_started := false
+
+var _saw_nonbaseline_publish := false
+var _saw_realized_device := false
+var _saw_realized_stream := false
+
+var _last_debug_summary := ""
 
 
 func _ready() -> void:
 	set_process(true)
+
 	CamBANGServer.stop()
+
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
-		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED #Default (can be removed)
-		#CamBANGServer.TIMELINE_RECONCILIATION_STRICT
+		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
+		# CamBANGServer.TIMELINE_RECONCILIATION_STRICT
 	)
 	if start_err != OK:
 		_fail("FAIL: synthetic timeline start rejected with error %d" % start_err)
 		return
+
 	var stage_err := CamBANGServer.select_builtin_scenario("publication_coalescing")
 	if stage_err != OK:
 		_fail("FAIL: unable to stage publication_coalescing scenario")
 		return
+
 	var scenario_start_err := CamBANGServer.start_scenario()
 	if scenario_start_err != OK:
 		_fail("FAIL: unable to start publication_coalescing scenario")
 		return
+
 	print("RUN: godot tick-bounded coalescing abuse")
 
 	_timer = Timer.new()
@@ -66,17 +81,23 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
 
+
 func _process(_delta: float) -> void:
 	if _done:
 		return
-	# Frame driver: keep headless main loop actively ticking until verifier completion.
+
+	_tick_count += 1
+
+	# Any signals received since the previous _process belong to the same Godot tick bucket.
 	if _signal_count_this_tick > 1:
-		_fail("FAIL: more than one state_published emission observed in one Godot tick")
+		_fail_with_context("FAIL: more than one state_published emission observed in one Godot tick")
 		return
+
 	_signal_count_this_tick = 0
 
+
 func _on_timeout() -> void:
-	_fail("FAIL: tick-bounded coalescing abuse timed out before reaching deterministic completion")
+	_fail_with_context("FAIL: tick-bounded coalescing abuse timed out before reaching deterministic completion")
 
 
 func _on_first_publish_timeout() -> void:
@@ -84,62 +105,34 @@ func _on_first_publish_timeout() -> void:
 		return
 	if _publish_count > 0:
 		return
-	_fail("FAIL: no state_published callback observed during startup window")
+	_fail_with_context("FAIL: no state_published callback observed during startup window")
 
 
 func _on_observation_timeout() -> void:
 	if _done:
 		return
+
 	print("INFO: observation-timeout fired (tick-bounded coalescing verifier)")
-	if _publish_count < MIN_PUBLISHES:
-		_fail("FAIL: insufficient publishes observed for coalescing checks")
+
+	if not _first_publish_seen:
+		_fail_with_context("FAIL: observation window ended without first publish")
 		return
+
+	if not _saw_nonbaseline_publish:
+		_fail_with_context("FAIL: no non-baseline publish observed during observation window")
+		return
+
+	if not _saw_realized_device:
+		_fail_with_context("FAIL: no realized device observed during observation window")
+		return
+
+	if not _saw_realized_stream:
+		_fail_with_context("FAIL: no realized stream observed during observation window")
+		return
+
 	_ok("OK: godot tick-bounded coalescing abuse PASS")
 
 
-func _topology_signature(snapshot: Dictionary) -> String:
-	var devices: Array = snapshot.get("devices", [])
-	var streams: Array = snapshot.get("streams", [])
-	var rigs: Array = snapshot.get("rigs", [])
-	var native_objects: Array = snapshot.get("native_objects", [])
-	var detached_root_ids: Array = snapshot.get("detached_root_ids", [])
-
-	var device_keys: Array[String] = []
-	for d in devices:
-		device_keys.append(str(d.get("instance_id", 0)))
-	device_keys.sort()
-
-	var stream_keys: Array[String] = []
-	for s in streams:
-		stream_keys.append(str(s.get("stream_id", 0)))
-	stream_keys.sort()
-
-	var rig_keys: Array[String] = []
-	for r in rigs:
-		rig_keys.append(str(r.get("rig_id", 0)))
-	rig_keys.sort()
-
-	var root_keys: Array[String] = []
-	for n in native_objects:
-		var root_id := int(n.get("root_id", 0))
-		if root_id != 0:
-			root_keys.append(str(root_id))
-	root_keys.sort()
-
-	var detached_keys: Array[String] = []
-	for root_id in detached_root_ids:
-		detached_keys.append(str(root_id))
-	detached_keys.sort()
-
-	return "D[%s]|R[%s]|S[%s]|ROOT[%s]|DET[%s]" % [
-		";".join(device_keys),
-		";".join(rig_keys),
-		";".join(stream_keys),
-		";".join(root_keys),
-		";".join(detached_keys),
-	]
-
-	
 func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 	if _done:
 		return
@@ -149,39 +142,95 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
-		_fail("FAIL: NIL snapshot received in state_published handler")
+		_fail_with_context("FAIL: NIL snapshot received in state_published handler")
 		return
 
-	if _last_gen == -1:
+	var snap_gen := int(snapshot.get("gen", -1))
+	var snap_version := int(snapshot.get("version", -1))
+	var snap_topology_version := int(snapshot.get("topology_version", -1))
+
+	var devices: Array = snapshot.get("devices", [])
+	var streams: Array = snapshot.get("streams", [])
+	var native_objects: Array = snapshot.get("native_objects", [])
+	var detached_root_ids: Array = snapshot.get("detached_root_ids", [])
+
+	_last_debug_summary = (
+		"tick=%d publish_count=%d signal=(g=%d v=%d tv=%d) "
+		+ "snapshot=(g=%d v=%d tv=%d) sizes=(devices=%d streams=%d native=%d detached=%d) "
+		+ "prev=(g=%d v=%d tv=%d) flags=(first=%s nonbaseline=%s dev=%s stream=%s)"
+	) % [
+		_tick_count,
+		_publish_count,
+		gen,
+		version,
+		topology_version,
+		snap_gen,
+		snap_version,
+		snap_topology_version,
+		devices.size(),
+		streams.size(),
+		native_objects.size(),
+		detached_root_ids.size(),
+		_last_gen,
+		_last_version,
+		_last_topology_version,
+		str(_first_publish_seen),
+		str(_saw_nonbaseline_publish),
+		str(_saw_realized_device),
+		str(_saw_realized_stream),
+	]
+
+	if snap_gen != gen:
+		_fail_with_context("FAIL: signal/snapshot gen mismatch")
+		return
+	if snap_version != version:
+		_fail_with_context("FAIL: signal/snapshot version mismatch")
+		return
+	if snap_topology_version != topology_version:
+		_fail_with_context("FAIL: signal/snapshot topology_version mismatch")
+		return
+
+	if not _first_publish_seen:
+		_first_publish_seen = true
 		print("INFO: first publish observed")
 		_start_observation_window()
+
+		if version != 0:
+			_fail_with_context("FAIL: first observed publish was not baseline version=0")
+			return
+		if topology_version != 0:
+			_fail_with_context("FAIL: first observed publish was not baseline topology_version=0")
+			return
+
 		_last_gen = gen
 		_last_version = version
 		_last_topology_version = topology_version
-		_last_topology_sig = _topology_signature(snapshot)
-		return
-
-	if gen != _last_gen:
-		_fail("FAIL: generation changed unexpectedly during coalescing abuse")
-		return
-	if version != _last_version + 1:
-		_fail("FAIL: version is not contiguous within generation")
-		return
-
-	var topo_sig := _topology_signature(snapshot)
-	var observed_change := topo_sig != _last_topology_sig
-	if observed_change:
-		if topology_version != _last_topology_version + 1:
-			_fail("FAIL: topology_version did not increment on observed topology change")
-			return
 	else:
-		if topology_version != _last_topology_version:
-			_fail("FAIL: topology_version changed without observed topology change")
+		if gen != _last_gen:
+			_fail_with_context("FAIL: generation changed unexpectedly during coalescing abuse")
 			return
 
-	_last_version = version
-	_last_topology_version = topology_version
-	_last_topology_sig = topo_sig
+		if version != _last_version + 1:
+			_fail_with_context("FAIL: version is not contiguous within generation")
+			return
+
+		if topology_version < _last_topology_version:
+			_fail_with_context("FAIL: topology_version regressed")
+			return
+
+		if topology_version > _last_topology_version and version <= _last_version:
+			_fail_with_context("FAIL: topology_version changed without version advance")
+			return
+
+		_last_version = version
+		_last_topology_version = topology_version
+
+	if version > 0:
+		_saw_nonbaseline_publish = true
+	if devices.size() > 0:
+		_saw_realized_device = true
+	if streams.size() > 0:
+		_saw_realized_stream = true
 
 
 func _start_observation_window() -> void:
@@ -191,6 +240,7 @@ func _start_observation_window() -> void:
 		return
 	if _observation_timer == null or not is_instance_valid(_observation_timer):
 		return
+
 	_observation_started = true
 	print("INFO: observation window started")
 	_observation_timer.start()
@@ -213,17 +263,27 @@ func _fail(msg: String) -> void:
 	_cleanup_and_quit(1)
 
 
+func _fail_with_context(msg: String) -> void:
+	if _last_debug_summary != "":
+		print("INFO: %s" % _last_debug_summary)
+	_fail(msg)
+
+
 func _cleanup_and_quit(code: int) -> void:
 	set_process(false)
+
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 	if _first_publish_timer != null and is_instance_valid(_first_publish_timer):
 		_first_publish_timer.stop()
 	if _observation_timer != null and is_instance_valid(_observation_timer):
 		_observation_timer.stop()
+
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
+
 	CamBANGServer.stop()
+
 	if not _quit_requested:
 		_quit_requested = true
 		call_deferred("_quit_next_frame", code)
