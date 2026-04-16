@@ -1,5 +1,7 @@
 #include "godot/cambang_stream_result.h"
 
+#include <algorithm>
+#include <cstring>
 #include <cstdlib>
 #include <map>
 #include <mutex>
@@ -39,10 +41,46 @@ bool has_retained_cpu_payload(const SharedStreamResultData& data) {
 
 struct LiveCpuDisplayViewEntry final {
   godot::Ref<godot::ImageTexture> texture;
+  godot::Ref<godot::Image> image;
+  godot::PackedByteArray upload_bytes;
+  std::vector<uint8_t> converted_rgba;
   uint64_t last_capture_timestamp_ns = 0;
   uint32_t width = 0;
   uint32_t height = 0;
 };
+
+bool upload_live_cpu_rgba_bytes(
+    LiveCpuDisplayViewEntry& entry,
+    const SharedStreamResultData& data,
+    uint32_t width,
+    uint32_t height) {
+  if (!data) {
+    return false;
+  }
+  const size_t required = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  if (data->payload.bytes.size() < required) {
+    return false;
+  }
+
+  if (data->payload.format_fourcc == FOURCC_RGBA) {
+    entry.converted_rgba.clear();
+    entry.upload_bytes.resize(static_cast<int64_t>(required));
+    std::memcpy(entry.upload_bytes.ptrw(), data->payload.bytes.data(), required);
+    return true;
+  }
+  if (data->payload.format_fourcc == FOURCC_BGRA) {
+    entry.converted_rgba.resize(required);
+    std::memcpy(entry.converted_rgba.data(), data->payload.bytes.data(), required);
+    for (size_t i = 0; i + 3 < entry.converted_rgba.size(); i += 4) {
+      std::swap(entry.converted_rgba[i], entry.converted_rgba[i + 2]);
+      entry.converted_rgba[i + 3] = 255;
+    }
+    entry.upload_bytes.resize(static_cast<int64_t>(required));
+    std::memcpy(entry.upload_bytes.ptrw(), entry.converted_rgba.data(), required);
+    return true;
+  }
+  return false;
+}
 
 std::mutex g_live_cpu_display_views_mutex;
 std::map<uint64_t, LiveCpuDisplayViewEntry> g_live_cpu_display_views;
@@ -59,28 +97,41 @@ bool refresh_live_cpu_display_view_entry(
       entry.texture.is_valid()) {
     return true;
   }
-
-  godot::Ref<godot::Image> image = payload_to_image(data->payload);
-  if (image.is_null()) {
+  const uint32_t width = data->payload.width;
+  const uint32_t height = data->payload.height;
+  if (!upload_live_cpu_rgba_bytes(entry, data, width, height)) {
     return false;
   }
 
+  if (entry.image.is_null()) {
+    entry.image.instantiate();
+    if (entry.image.is_null()) {
+      return false;
+    }
+  }
+  entry.image->set_data(
+      static_cast<int64_t>(width),
+      static_cast<int64_t>(height),
+      false,
+      godot::Image::FORMAT_RGBA8,
+      entry.upload_bytes);
+
   const bool need_recreate =
       entry.texture.is_null() ||
-      entry.width != data->payload.width ||
-      entry.height != data->payload.height;
+      entry.width != width ||
+      entry.height != height;
   if (need_recreate) {
-    entry.texture = godot::ImageTexture::create_from_image(image);
+    entry.texture = godot::ImageTexture::create_from_image(entry.image);
     if (entry.texture.is_null()) {
       return false;
     }
   } else {
-    entry.texture->update(image);
+    entry.texture->update(entry.image);
   }
 
   entry.last_capture_timestamp_ns = data->capture_timestamp_ns;
-  entry.width = data->payload.width;
-  entry.height = data->payload.height;
+  entry.width = width;
+  entry.height = height;
   return true;
 }
 
