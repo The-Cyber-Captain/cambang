@@ -1265,6 +1265,8 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
     return true;
   }
   release_stream_live_gpu_backing_(s);
+  // Create and recreate share the same runtime helper so usage flags remain
+  // identical for initial allocation and retry allocation.
   s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(width, height, stride);
   if (!s.live_gpu_backing) {
     return false;
@@ -1353,6 +1355,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
           h,
           stride);
       if (!gpu_ok) {
+        // Preserve current provider hardening shape: one release/recreate and
+        // one retry if the in-place live-backing update reports failure.
         release_stream_live_gpu_backing_(s);
         if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
           gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
@@ -1369,6 +1373,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     }
   }
   if (!gpu_ok) {
+    // Intentional current-slice behavior: renderer output stages in CPU memory
+    // each frame, then uploads to the stream-owned live GPU backing when used.
     std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
   }
 

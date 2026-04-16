@@ -1,10 +1,14 @@
 #include "godot/cambang_stream_result.h"
 
 #include <cstdlib>
+#include <map>
+#include <mutex>
+#include <vector>
 
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include "core/core_runtime.h"
 #include "godot/cambang_result_convert.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 
@@ -31,6 +35,65 @@ bool has_retained_cpu_payload(const SharedStreamResultData& data) {
   return data->payload.width != 0 &&
          data->payload.height != 0 &&
          !data->payload.bytes.empty();
+}
+
+struct LiveCpuDisplayViewEntry final {
+  godot::Ref<godot::ImageTexture> texture;
+  uint64_t last_capture_timestamp_ns = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+
+std::mutex g_live_cpu_display_views_mutex;
+std::map<uint64_t, LiveCpuDisplayViewEntry> g_live_cpu_display_views;
+
+bool refresh_live_cpu_display_view_entry(
+    LiveCpuDisplayViewEntry& entry,
+    const SharedStreamResultData& data) {
+  if (!data || data->stream_id == 0 || !has_retained_cpu_payload(data)) {
+    return false;
+  }
+  if (entry.last_capture_timestamp_ns == data->capture_timestamp_ns &&
+      entry.width == data->payload.width &&
+      entry.height == data->payload.height &&
+      entry.texture.is_valid()) {
+    return true;
+  }
+
+  godot::Ref<godot::Image> image = payload_to_image(data->payload);
+  if (image.is_null()) {
+    return false;
+  }
+
+  const bool need_recreate =
+      entry.texture.is_null() ||
+      entry.width != data->payload.width ||
+      entry.height != data->payload.height;
+  if (need_recreate) {
+    entry.texture = godot::ImageTexture::create_from_image(image);
+    if (entry.texture.is_null()) {
+      return false;
+    }
+  } else {
+    entry.texture->update(image);
+  }
+
+  entry.last_capture_timestamp_ns = data->capture_timestamp_ns;
+  entry.width = data->payload.width;
+  entry.height = data->payload.height;
+  return true;
+}
+
+godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResultData& data) {
+  if (!data || data->stream_id == 0 || !has_retained_cpu_payload(data)) {
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+  LiveCpuDisplayViewEntry& entry = g_live_cpu_display_views[data->stream_id];
+  if (!refresh_live_cpu_display_view_entry(entry, data)) {
+    return {};
+  }
+  return entry.texture;
 }
 
 } // namespace
@@ -93,9 +156,9 @@ int CamBANGStreamResult::can_get_display_view() const {
   // CHEAP:
   //   Only explicitly whitelisted payload/path combinations known to require
   //   modest additional work in the current implementation. In the current
-  //   slice, CPU_PACKED is cheap because get_display_view() can realize a
-  //   display texture through the existing CPU image fallback without a broad
-  //   conversion/decode/repack pipeline.
+  //   slice, CPU_PACKED is cheap because get_display_view() uses a stream-owned
+  //   live ImageTexture that is refreshed from current retained stream state
+  //   without a broad conversion/decode/repack pipeline.
   //
   // EXPENSIVE:
   //   A supported display-view path exists, but requires substantial extra work
@@ -150,15 +213,10 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
     }
     return godot::Variant();
   }
-  if (!cached_display_view_.is_valid()) {
-    godot::Ref<godot::Image> image = to_image();
-    if (image.is_valid()) {
-      cached_display_view_ = godot::ImageTexture::create_from_image(image);
-    }
-  }
-  if (cached_display_view_.is_valid()) {
-    trace_stream_display_path("cpu_texture_fallback");
-    return cached_display_view_;
+  godot::Ref<godot::Texture2D> live_cpu = ensure_live_cpu_display_view(data_);
+  if (live_cpu.is_valid()) {
+    trace_stream_display_path("stream_live_cpu_display_view");
+    return live_cpu;
   }
   return godot::Variant();
 }
@@ -211,6 +269,35 @@ void CamBANGStreamResult::_bind_methods() {
   BIND_CONSTANT(CAPABILITY_CHEAP);
   BIND_CONSTANT(CAPABILITY_EXPENSIVE);
   BIND_CONSTANT(CAPABILITY_UNSUPPORTED);
+}
+
+void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntime& runtime) {
+  std::vector<uint64_t> stream_ids;
+  {
+    std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+    stream_ids.reserve(g_live_cpu_display_views.size());
+    for (const auto& kv : g_live_cpu_display_views) {
+      stream_ids.push_back(kv.first);
+    }
+  }
+
+  for (uint64_t stream_id : stream_ids) {
+    SharedStreamResultData data = runtime.get_latest_stream_result(stream_id);
+    if (!data || data->payload_kind != ResultPayloadKind::CPU_PACKED || !has_retained_cpu_payload(data)) {
+      continue;
+    }
+    std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+    auto it = g_live_cpu_display_views.find(stream_id);
+    if (it == g_live_cpu_display_views.end()) {
+      continue;
+    }
+    (void)refresh_live_cpu_display_view_entry(it->second, data);
+  }
+}
+
+void CamBANGStreamResult::clear_live_stream_cpu_display_views() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+  g_live_cpu_display_views.clear();
 }
 
 } // namespace cambang

@@ -239,6 +239,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   latest_export_.clear();
   has_latest_export_ = false;
   has_godot_counters_ = false;
+  CamBANGStreamResult::clear_live_stream_cpu_display_views();
 
   // Begin a new boundary session and reject any prior-generation late publishes
   // until the first snapshot from the next expected generation is observed.
@@ -292,6 +293,7 @@ void CamBANGServer::stop() {
     provider_.reset();
   }
   runtime_.stop();
+  CamBANGStreamResult::clear_live_stream_cpu_display_views();
 
   strict_scenario_unmet_logged_ = false;
   _refresh_timeline_teardown_trace_mode();
@@ -514,6 +516,10 @@ void CamBANGServer::_on_godot_tick(double delta) {
         godot::UtilityFunctions::print(line);
       }
     }
+
+    // CPU_PACKED stream display views use stream-owned live ImageTexture
+    // wrappers that are refreshed from latest retained stream state each tick.
+    CamBANGStreamResult::refresh_live_stream_cpu_display_views(runtime_);
   }
 
   std::string timeline_line;

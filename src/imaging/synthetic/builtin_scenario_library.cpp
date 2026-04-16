@@ -147,7 +147,11 @@ bool build_synthetic_builtin_scenario_library_canonical_scenario(
     inspection.overlay_frame_index_offsets = true;
     inspection.overlay_moving_bar = true;
     inspection.checker_size_px = 24;
-    add_timeline_action(out, 20'000'000, SyntheticEventType::UpdateStreamPicture, nullptr, kMainStreamKey, true, inspection);
+
+    // Runtime-effective stream picture path is UpdateStreamPicture. Author
+    // checker inspection appearance at 0ns so startup retrieval is deterministic
+    // without relying on delayed picture updates.
+    add_timeline_action(out, 0, SyntheticEventType::UpdateStreamPicture, nullptr, kMainStreamKey, true, inspection);
     return true;
   }
 
