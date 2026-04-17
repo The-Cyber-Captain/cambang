@@ -39,12 +39,8 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
-    const uint64_t now_ns = now_ns_ ? now_ns_() : 0;
     if (devices_) {
       devices_->on_device_opened(p.device_instance_id);
-    }
-    if (acquisition_sessions_) {
-      acquisition_sessions_->on_device_opened(p.device_instance_id, now_ns);
     }
     relevant_state_changed_ = true;
     break;
@@ -53,12 +49,8 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_DEVICE_CLOSED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceClosed>(cmd.payload);
-    const uint64_t now_ns = now_ns_ ? now_ns_() : 0;
     if (devices_) {
       devices_->on_device_closed(p.device_instance_id);
-    }
-    if (acquisition_sessions_) {
-      acquisition_sessions_->on_device_closed(p.device_instance_id, now_ns);
     }
     relevant_state_changed_ = true;
     break;
