@@ -190,6 +190,9 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         snap.acquisition_sessions.reserve(in.acquisition_sessions->all().size());
         for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
             (void)session_id;
+            if (rec.phase == CBLifecyclePhase::DESTROYED) {
+                continue;
+            }
             AcquisitionSessionState s;
             s.acquisition_session_id = rec.acquisition_session_id;
             s.device_instance_id = rec.device_instance_id;

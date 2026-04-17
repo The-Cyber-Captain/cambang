@@ -175,13 +175,14 @@ struct OwnedFrame {
 
 static int test_visibility_diagnostics_snapshot_truth() {
   CoreDeviceRegistry devices;
+  CoreAcquisitionSessionRegistry acquisition_sessions;
   CoreStreamRegistry streams;
   CoreNativeObjectRegistry native_objects;
   LatestFrameMailbox mailbox;
   MailboxSink sink(&mailbox);
   uint64_t gen = 0;
   uint64_t now_ns = 1000;
-  CoreDispatcher dispatcher(&streams, &devices, &native_objects, &gen, [&now_ns]() {
+  CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {
     return now_ns++;
   });
   dispatcher.set_frame_sink(&sink);
@@ -706,11 +707,9 @@ static int test_topology_detached_and_retirement() {
   rt.request_publish();
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && has_stream(*s, kStreamId) &&
-               has_acquisition_session_for_device(*s, kDeviceId) &&
-               s->topology_version > topo1;
+        return s && has_stream(*s, kStreamId) && s->topology_version > topo1;
       })) {
-    std::cerr << "FAIL: stream/acquisition-session appearance topology transition missing\n";
+    std::cerr << "FAIL: stream appearance topology transition missing\n";
     rt.stop();
     return 1;
   }
@@ -894,12 +893,13 @@ static int test_timestamp_preservation_and_fallback() {
 
 static int test_no_sink_delivered_vs_dropped_accounting() {
   CoreStreamRegistry streams;
+  CoreAcquisitionSessionRegistry acquisition_sessions;
   CoreDeviceRegistry devices;
   CoreNativeObjectRegistry native_objects;
   uint64_t gen = 0;
   uint64_t now_ns = 1000;
 
-  CoreDispatcher dispatcher(&streams, &devices, &native_objects, &gen, [&now_ns]() {
+  CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {
     return now_ns++;
   });
 

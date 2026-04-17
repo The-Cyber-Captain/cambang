@@ -32,15 +32,16 @@ public:
     uint64_t ended_ns = 0;
   };
 
-  bool on_device_opened(uint64_t device_instance_id, uint64_t now_ns);
-  bool on_device_closed(uint64_t device_instance_id, uint64_t now_ns);
+  bool on_native_object_created(uint64_t native_id,
+                                uint32_t type,
+                                uint64_t owner_device_instance_id,
+                                uint64_t created_ns);
+  bool on_native_object_destroyed(uint64_t native_id, uint64_t destroyed_ns);
   void clear();
 
   const std::map<uint64_t, AcquisitionSessionEntry>& all() const noexcept { return sessions_; }
 
 private:
-  uint64_t next_acquisition_session_id_ = 1;
-  std::map<uint64_t, uint64_t> active_session_by_device_;
   std::map<uint64_t, AcquisitionSessionEntry> sessions_;
 };
 
