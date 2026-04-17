@@ -2127,9 +2127,9 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2524,7 +2524,31 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
 
+  uint64_t acquisition_session_native_id = 0;
+  uint64_t frameproducer_native_id = 0;
+  if (!h.observed().raw) {
+    fail_step(2, "missing raw snapshot while capturing disconnect seam ids");
+    return 1;
+  }
+  for (const auto& rec : h.observed().raw->native_objects) {
+    if (rec.owner_device_instance_id != VerifyCaseHarness::kDeviceId) {
+      continue;
+    }
+    if (rec.type == static_cast<uint32_t>(NativeObjectType::AcquisitionSession)) {
+      acquisition_session_native_id = rec.native_id;
+    } else if (rec.type == static_cast<uint32_t>(NativeObjectType::FrameProducer) &&
+               rec.owner_stream_id == VerifyCaseHarness::kStreamId) {
+      frameproducer_native_id = rec.native_id;
+    }
+  }
+  if (acquisition_session_native_id == 0 || frameproducer_native_id == 0) {
+    fail_step(2, "missing acquisition-session/frameproducer native seam ids before disconnect");
+    return 1;
+  }
+
   if (!h.inject_provider_stream_stop(VerifyCaseHarness::kStreamId, ProviderError::ERR_PROVIDER_FAILED, error) ||
+      !h.inject_provider_native_object_destroyed(frameproducer_native_id, error) ||
+      !h.inject_provider_native_object_destroyed(acquisition_session_native_id, error) ||
       !h.inject_provider_stream_destroyed(VerifyCaseHarness::kStreamId, error) ||
       !h.inject_provider_device_closed(VerifyCaseHarness::kDeviceId, error)) {
     cli::error("FAIL: ", error);
@@ -2765,7 +2789,7 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(false),
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
                   h.observed())) {
     return 1;
   }

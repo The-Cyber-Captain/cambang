@@ -1048,6 +1048,20 @@ public:
     }, error, 500, 5, "timed out waiting for provider stream destroy publish");
   }
 
+  bool inject_provider_native_object_destroyed(uint64_t native_id, std::string& error) {
+    NativeObjectDestroyInfo info{};
+    info.native_id = native_id;
+    runtime_.provider_callbacks()->on_native_object_destroyed(info);
+    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+      for (const auto& rec : s.native_objects) {
+        if (rec.native_id == native_id && rec.phase != CBLifecyclePhase::DESTROYED) {
+          return false;
+        }
+      }
+      return true;
+    }, error, 500, 5, "timed out waiting for provider native destroy publish");
+  }
+
   bool inject_provider_device_closed(uint64_t device_id, std::string& error) {
     runtime_.provider_callbacks()->on_device_closed(device_id);
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
