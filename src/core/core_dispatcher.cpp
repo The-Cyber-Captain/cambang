@@ -120,6 +120,7 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
 case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
+  bool state_changed = false;
   if (native_objects_) {
     const uint64_t fallback_created_ns = now_ns_ ? now_ns_() : 0;
     const uint64_t created_ns = p.has_created_ns ? p.created_ns : fallback_created_ns;
@@ -137,20 +138,33 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
         p.buffers_in_use,
         creation_gen,
         created_ns);
+    state_changed = true;
+    if (acquisition_sessions_) {
+      state_changed =
+          acquisition_sessions_->on_native_object_created(
+              p.native_id, p.type, p.owner_device_instance_id, created_ns) ||
+          state_changed;
+    }
   }
-  relevant_state_changed_ = true;
+  relevant_state_changed_ = relevant_state_changed_ || state_changed;
   break;
 }
 
 case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
+  bool state_changed = false;
   if (native_objects_) {
     const uint64_t integration_destroyed_ns = now_ns_ ? now_ns_() : 0;
     const uint64_t destroyed_ns = p.has_destroyed_ns ? p.destroyed_ns : integration_destroyed_ns;
     native_objects_->on_native_object_destroyed(p.native_id, destroyed_ns, integration_destroyed_ns);
+    state_changed = true;
+    if (acquisition_sessions_) {
+      state_changed =
+          acquisition_sessions_->on_native_object_destroyed(p.native_id, destroyed_ns) || state_changed;
+    }
   }
-  relevant_state_changed_ = true;
+  relevant_state_changed_ = relevant_state_changed_ || state_changed;
   break;
 }
 

@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "core/provider_to_core_commands.h"
+#include "core/core_acquisition_session_registry.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_stream_registry.h"
@@ -36,12 +37,14 @@ struct CoreDispatchStats final {
 class CoreDispatcher final {
 public:
   CoreDispatcher(CoreStreamRegistry* streams,
+               CoreAcquisitionSessionRegistry* acquisition_sessions,
                CoreDeviceRegistry* devices,
                CoreNativeObjectRegistry* native_objects,
                const uint64_t* current_gen,
                std::function<uint64_t()> now_ns,
                std::function<bool()> result_retention_allowed = []() { return true; })
       : streams_(streams),
+        acquisition_sessions_(acquisition_sessions),
         devices_(devices),
         native_objects_(native_objects),
         current_gen_(current_gen),
@@ -78,6 +81,7 @@ public:
 
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
+  CoreAcquisitionSessionRegistry* acquisition_sessions_ = nullptr; // non-owning; core-thread-only
   CoreDeviceRegistry* devices_ = nullptr; // non-owning; core-thread-only
   CoreNativeObjectRegistry* native_objects_ = nullptr; // non-owning; core-thread-only
   const uint64_t* current_gen_ = nullptr; // non-owning; core-thread-only
