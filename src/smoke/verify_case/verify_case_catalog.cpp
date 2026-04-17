@@ -2127,8 +2127,8 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(0)
-                      .expect_acquisition_session(false)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
                       .expect_frameproducer(false),
                   h.observed())) {
     return 1;
