@@ -135,6 +135,8 @@ private:
     uint64_t root_id = 0;
     bool open = false;
     uint64_t native_id = 0;
+    uint64_t acquisition_session_native_id = 0;
+    uint32_t acquisition_session_stream_refs = 0;
     PictureConfig capture_picture{};
   };
 
@@ -146,6 +148,7 @@ private:
     uint64_t frame_producer_native_id = 0;
     uint64_t next_due_ns = 0;
     uint64_t native_id = 0;
+    uint64_t acquisition_session_native_id = 0;
 
     PictureConfig picture{};
     CpuPackedPatternRenderer renderer{};
@@ -176,6 +179,9 @@ private:
   uint64_t alloc_native_id_(NativeObjectType type);
   void emit_native_create_device_(const DeviceState& d);
   void emit_native_destroy_(uint64_t native_id);
+  uint64_t ensure_native_acquisition_session_(DeviceState& d);
+  void retain_native_acquisition_session_for_stream_(DeviceState& d);
+  void release_native_acquisition_session_for_stream_(uint64_t device_instance_id);
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
