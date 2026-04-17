@@ -745,6 +745,7 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		"server",
 		"provider",
 		"device",
+		"acquisition_session",
 		"stream",
 		"rig",
 		"native_object",
@@ -763,6 +764,8 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		return "provider"
 	if model.id.begins_with("stream/") or model.id.contains("/stream/"):
 		return "stream"
+	if model.id.begins_with("acquisition_session/") or model.id.contains("/acquisition_session/"):
+		return "acquisition_session"
 	if model.id.begins_with("device/") or model.id.contains("/device/"):
 		return "device"
 	if model.id.begins_with("rig/") or model.id.contains("/rig/"):
@@ -785,6 +788,8 @@ func _class_color(object_class: String) -> Color:
 			return _resolve_class_theme_color("status_row_provider_accent", Color(0.47, 0.71, 0.96, 0.96))
 		"device":
 			return _resolve_class_theme_color("status_row_device_accent", Color(0.41, 0.82, 0.61, 0.96))
+		"acquisition_session":
+			return _resolve_class_theme_color("status_row_acquisition_session_accent", Color(0.53, 0.86, 0.76, 0.96))
 		"stream":
 			return _resolve_class_theme_color("status_row_stream_accent", Color(0.63, 0.70, 0.97, 0.96))
 		"rig":
