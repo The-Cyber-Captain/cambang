@@ -154,9 +154,14 @@ In scenarios that explicitly realize descendants, the expected next observable
 transitions are:
 
 - provider-only → device realized (`version += 1`, `topology_version += 1`)
-- device realized → stream realized (`version += 1`, `topology_version += 1`)
-- stream realized → frameproducer realized (`version += 1`, `topology_version`
-  may remain unchanged if the observable topology signature does not change)
+- device realized → acquisition session realized (`version += 1`,
+  `topology_version += 1`) when the first successful `create_stream(...)`
+  realizes the current stream-backed `AcquisitionSession`
+- acquisition session realized → stream realized (`version += 1`,
+  `topology_version += 1`)
+- started/producing seam → frameproducer realized (`version += 1`,
+  `topology_version` may remain unchanged if the observable topology signature
+  does not change)
 
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
