@@ -35,6 +35,7 @@ Example:
 
 Core start
 Device discovered
+AcquisitionSession created (stream-backed, on first successful create_stream)
 Stream created
 
 Observable publications:
@@ -43,7 +44,8 @@ Observable publications:
 |---|-----|---|---|---|
 | baseline | 0   | 0 | 0 | runtime started |
 | update | 0   | 1 | 1 | device added |
-| update | 0   | 2 | 2 | stream added |
+| update | 0   | 2 | 2 | acquisition session added |
+| update | 0   | 3 | 3 | stream added |
 
 ---
 
@@ -72,8 +74,11 @@ Device removal example:
 |---|---|---|
 | baseline | 0 | 0 |
 | device added | 1 | 1 |
-| stream added | 2 | 2 |
-| device removed | 3 | 3 |
+| acquisition session added | 2 | 2 |
+| stream added | 3 | 3 |
+| stream destroyed | 4 | 4 |
+| acquisition session destroyed (last stream removed) | 5 | 5 |
+| device removed | 6 | 6 |
 
 Topology changes cause both counters to advance.
 
@@ -87,16 +92,21 @@ Example runtime progression:
 |---|---|---|
 | baseline | 0 | 0 |
 | device discovered | 1 | 1 |
-| stream created | 2 | 2 |
-| frame updates | 3 | 2 |
-| frame updates | 4 | 2 |
-| stream destroyed | 5 | 3 |
-| device removed | 6 | 4 |
+| acquisition session created | 2 | 2 |
+| stream created | 3 | 3 |
+| frame updates | 4 | 3 |
+| frame updates | 5 | 3 |
+| stream destroyed | 6 | 4 |
+| acquisition session destroyed | 7 | 5 |
+| device removed | 8 | 6 |
 
 Interpretation:
 
 - `version` shows observable state progression.
 - `topology_version` indicates structural changes.
+- Top-level `acquisition_sessions[]` reflects current/live session truth;
+  destroyed-retained historical diagnostics remain available through retained
+  `native_objects`.
 
 ---
 
