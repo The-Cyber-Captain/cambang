@@ -68,7 +68,7 @@ redefine canonical rules.
 | Document | Purpose |
 |---|---|
 | lifecycle_model.md | Explains lifecycle hierarchy and event flow across provider → core → Godot. |
-| provider_state_machines.md | Defines provider/device/stream/frame-producer state machines and valid transitions. |
+| provider_state_machines.md | Defines provider/device/acquisition-session/stream/frame-producer state machines and valid transitions. |
 | provider_strand_model.md | Clarifies provider-strand delivery rules and event-class guarantees. |
 | publication_model.md | Describes tick-bounded publication and Godot-visible snapshot behaviour. |
 | publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`. |
@@ -156,7 +156,8 @@ These documents must clearly state when code is:
 ### Additional provider-discipline note
 
 Provider semantics are defined by the canonical architecture, the
-reference providers, and the compliance verifier / verification cases.
+reference providers, and compliance verification tools and verification
+cases.
 
 Platform-backed providers are adapters to that contract. They must not
 redefine lifecycle, defaulting, registry, snapshot, or timestamp
