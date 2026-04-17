@@ -789,7 +789,7 @@ func _class_color(object_class: String) -> Color:
 		"device":
 			return _resolve_class_theme_color("status_row_device_accent", Color(0.41, 0.82, 0.61, 0.96))
 		"acquisition_session":
-			return _resolve_class_theme_color("status_row_acquisition_session_accent", Color(0.53, 0.86, 0.76, 0.96))
+			return _resolve_class_theme_color("status_row_acquisition_session_accent", Color(0.96, 0.91, 0.60, 0.96))
 		"stream":
 			return _resolve_class_theme_color("status_row_stream_accent", Color(0.63, 0.70, 0.97, 0.96))
 		"rig":

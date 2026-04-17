@@ -283,8 +283,8 @@ func _resolve_style() -> StatusPanelStyle:
 	style.panel_bg = _resolve_panel_color("status_panel_bg", Color(0.07, 0.09, 0.12, 0.9))
 	style.identity_font = _resolve_shared_font("status_identity_font", fallback_font)
 	style.identity_font_size = _resolve_shared_int("status_identity_font_size", 13)
-	style.identity_font_color = _resolve_panel_color("status_identity_font_color", Color(0.88, 0.90, 0.93, 1.0))
-	style.identity_outline_color = _resolve_panel_color("status_identity_outline_color", Color(0.02, 0.03, 0.04, 0.55))
+	style.identity_font_color = _resolve_panel_color("status_identity_font_color", Color(0.0, 0.0, 0.0, 1.0))
+	style.identity_outline_color = _resolve_panel_color("status_identity_outline_color", Color(1.0, 1.0, 1.0, 0.92))
 	style.identity_outline_size = maxi(
 		1,
 		int(round(float(style.identity_font_size) * _resolve_shared_float("status_identity_outline_ratio", 0.08)))
