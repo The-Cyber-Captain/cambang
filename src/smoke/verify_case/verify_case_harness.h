@@ -1,13 +1,16 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -636,7 +639,12 @@ public:
     }
     runtime_.attach_provider(provider_.get());
 
-    if (!provider_->initialize(runtime_.provider_callbacks()).ok()) {
+    // Wire callback observation in the authoritative path:
+    // Provider -> RecordingProviderCallbacks -> CoreRuntime ingress callbacks.
+    callback_recorder_.bind_delegate(runtime_.provider_callbacks());
+    callback_recorder_.clear();
+
+    if (!provider_->initialize(&callback_recorder_).ok()) {
       error = std::string("provider initialize failed (") + verify_case_provider_name(provider_kind_) + ")";
       runtime_.attach_provider(nullptr);
       (void)provider_->shutdown();
@@ -679,6 +687,8 @@ public:
     }
 
     snapshot_buffer_.clear();
+    callback_recorder_.clear();
+    callback_recorder_.bind_delegate(nullptr);
     endpoint_hardware_ids_.clear();
     synthetic_frame_period_ns_ = 0;
     boundary_.reset(runtime_.published_seq());
@@ -833,7 +843,73 @@ public:
 
   bool emit_frame(std::string& error) { return emit_frame_for_stream(kStreamId, error); }
 
+  bool wait_for_stream_quiescence(uint64_t stream_id,
+                                  std::string& error,
+                                  uint64_t* stable_frames_out = nullptr,
+                                  int min_stable_observations = 3,
+                                  int max_iters = 500,
+                                  int sleep_ms = 5) {
+    if (!wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+          return find_stream(s, stream_id) != nullptr;
+        },
+        error,
+        max_iters,
+        sleep_ms,
+        "timed out waiting for stream presence while establishing quiescence")) {
+      return false;
+    }
+
+    if (min_stable_observations < 1) {
+      min_stable_observations = 1;
+    }
+
+    uint64_t candidate_frames = 0;
+    bool has_candidate = false;
+    int stable_observations = 0;
+
+    for (int i = 0; i < max_iters; ++i) {
+      // Best-effort prompt for boundary visibility; a fresh publish is optional.
+      runtime_.request_publish();
+
+      auto snap = snapshot_buffer_.snapshot_copy();
+      if (snap) {
+        const auto* stream = find_stream(*snap, stream_id);
+        if (!stream) {
+          error = "stream missing while establishing stream quiescence";
+          return false;
+        }
+
+        const uint64_t frames = stream->frames_received;
+        if (!has_candidate || frames != candidate_frames) {
+          candidate_frames = frames;
+          has_candidate = true;
+          stable_observations = 1;
+        } else {
+          ++stable_observations;
+          if (stable_observations >= min_stable_observations) {
+            if (stable_frames_out) {
+              *stable_frames_out = candidate_frames;
+            }
+            return true;
+          }
+        }
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+    }
+
+    error = "timed out waiting for bounded stream quiescence";
+    return false;
+  }
+
   bool emit_frame_for_stream(uint64_t stream_id, std::string& error) {
+    uint64_t baseline_frames = 0;
+    if (auto baseline = snapshot_buffer_.snapshot_copy(); baseline) {
+      if (const auto* stream = find_stream(*baseline, stream_id); stream) {
+        baseline_frames = stream->frames_received;
+      }
+    }
+
     const uint64_t before = runtime_.published_seq();
 
     switch (provider_kind_) {
@@ -863,8 +939,9 @@ public:
     }
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
       const auto* stream = find_stream(s, stream_id);
-      return stream && stream->frames_received >= 1;
-    }, error, 500, 5, "timed out waiting for frame publish");
+      return stream &&
+             stream->frames_received > baseline_frames;
+    }, error, 500, 5, "timed out waiting for frame publish convergence");
   }
 
   bool request_publish_only(std::string& error) {
@@ -931,6 +1008,58 @@ public:
   CoreRuntime& runtime() noexcept { return runtime_; }
   StateSnapshotBuffer& snapshot_buffer() noexcept { return snapshot_buffer_; }
 
+  void clear_recorded_callbacks() { callback_recorder_.clear(); }
+
+  void set_callback_diagnostics_enabled(bool enabled) {
+    callback_recorder_.set_diagnostics_enabled(enabled);
+  }
+
+  int find_recorded_callback_index(const char* tag, uint64_t id) const {
+    return callback_recorder_.find_index(tag, id);
+  }
+
+  int find_recorded_callback_index_after(const char* tag, uint64_t id, size_t after_count) const {
+    return callback_recorder_.find_index_after(tag, id, after_count);
+  }
+
+  size_t recorded_callback_count() const { return callback_recorder_.event_count(); }
+
+  bool wait_for_recorded_callback_with_progress(const char* tag,
+                                                uint64_t id,
+                                                size_t after_count,
+                                                std::function<void()> progress,
+                                                std::string& error,
+                                                int max_iters = 500,
+                                                int sleep_ms = 5,
+                                                const char* timeout_msg =
+                                                    "timed out waiting for recorded callback") {
+    return wait_until_with_progress([&]() {
+      return callback_recorder_.find_index_after(tag, id, after_count) >= 0;
+    },
+                                    std::move(progress),
+                                    error,
+                                    max_iters,
+                                    sleep_ms,
+                                    timeout_msg);
+  }
+
+  bool wait_for_core_snapshot_with_progress(std::function<bool(const CamBANGStateSnapshot&)> pred,
+                                            std::function<void()> progress,
+                                            std::string& error,
+                                            int max_iters = 500,
+                                            int sleep_ms = 5,
+                                            const char* timeout_msg = "timed out waiting for snapshot") {
+    return wait_until_with_progress([&]() {
+      auto snap = snapshot_buffer_.snapshot_copy();
+      return snap && pred(*snap);
+    },
+                                    std::move(progress),
+                                    error,
+                                    max_iters,
+                                    sleep_ms,
+                                    timeout_msg);
+  }
+
   static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& snap, uint64_t device_id) {
     for (const auto& device : snap.devices) {
       if (device.instance_id == device_id) {
@@ -958,6 +1087,128 @@ public:
   }
 
 private:
+  class RecordingProviderCallbacks final : public IProviderCallbacks {
+  public:
+    void bind_delegate(IProviderCallbacks* delegate) { delegate_ = delegate; }
+
+    void clear() {
+      std::lock_guard<std::mutex> lock(mu_);
+      events_.clear();
+    }
+
+    void set_diagnostics_enabled(bool enabled) {
+      std::lock_guard<std::mutex> lock(mu_);
+      diagnostics_enabled_ = enabled;
+    }
+
+    int find_index(const char* tag, uint64_t id) const {
+      return find_index_after(tag, id, 0);
+    }
+
+    int find_index_after(const char* tag, uint64_t id, size_t after_count) const {
+      std::lock_guard<std::mutex> lock(mu_);
+      for (size_t i = after_count; i < events_.size(); ++i) {
+        if (events_[i].tag == tag && events_[i].id == id) {
+          return static_cast<int>(i);
+        }
+      }
+      return -1;
+    }
+
+    size_t event_count() const {
+      std::lock_guard<std::mutex> lock(mu_);
+      return events_.size();
+    }
+
+    uint64_t allocate_native_id(NativeObjectType type) override {
+      return delegate_ ? delegate_->allocate_native_id(type) : 0;
+    }
+
+    uint64_t core_monotonic_now_ns() override {
+      return delegate_ ? delegate_->core_monotonic_now_ns() : 0;
+    }
+
+    void on_device_opened(uint64_t id) override {
+      record_("device_opened", id);
+      if (delegate_) delegate_->on_device_opened(id);
+    }
+    void on_device_closed(uint64_t id) override {
+      record_("device_closed", id);
+      if (delegate_) delegate_->on_device_closed(id);
+    }
+    void on_stream_created(uint64_t id) override {
+      record_("stream_created", id);
+      if (delegate_) delegate_->on_stream_created(id);
+    }
+    void on_stream_destroyed(uint64_t id) override {
+      record_("stream_destroyed", id);
+      if (delegate_) delegate_->on_stream_destroyed(id);
+    }
+    void on_stream_started(uint64_t id) override {
+      record_("stream_started", id);
+      if (delegate_) delegate_->on_stream_started(id);
+    }
+    void on_stream_stopped(uint64_t id, ProviderError error) override {
+      record_("stream_stopped", id);
+      if (delegate_) delegate_->on_stream_stopped(id, error);
+    }
+    void on_capture_started(uint64_t id) override {
+      if (delegate_) delegate_->on_capture_started(id);
+    }
+    void on_capture_completed(uint64_t id) override {
+      if (delegate_) delegate_->on_capture_completed(id);
+    }
+    void on_capture_failed(uint64_t id, ProviderError error) override {
+      if (delegate_) delegate_->on_capture_failed(id, error);
+    }
+    void on_frame(const FrameView& frame) override {
+      if (delegate_) {
+        delegate_->on_frame(frame);
+      } else if (frame.release) {
+        frame.release(frame.release_user, &frame);
+      }
+    }
+    void on_device_error(uint64_t id, ProviderError error) override {
+      if (delegate_) delegate_->on_device_error(id, error);
+    }
+    void on_stream_error(uint64_t id, ProviderError error) override {
+      if (delegate_) delegate_->on_stream_error(id, error);
+    }
+    void on_native_object_created(const NativeObjectCreateInfo& info) override {
+      if (delegate_) delegate_->on_native_object_created(info);
+    }
+    void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override {
+      if (delegate_) delegate_->on_native_object_destroyed(info);
+    }
+
+  private:
+    void record_(const char* tag, uint64_t id) {
+      std::lock_guard<std::mutex> lock(mu_);
+      events_.push_back({tag, id});
+      if (diagnostics_enabled_ &&
+          (events_.back().tag == "stream_stopped" ||
+           events_.back().tag == "stream_destroyed" ||
+           events_.back().tag == "device_closed")) {
+        const size_t seq = events_.size() - 1;
+        std::cerr << "[verify_callback_recorder] event=" << events_.back().tag
+                  << " id=" << id
+                  << " seq=" << seq << "\n";
+      }
+      cv_.notify_all();
+    }
+
+    struct Event {
+      std::string tag;
+      uint64_t id = 0;
+    };
+
+    IProviderCallbacks* delegate_ = nullptr;
+    mutable std::mutex mu_;
+    mutable std::condition_variable cv_;
+    std::vector<Event> events_;
+    bool diagnostics_enabled_ = false;
+  };
+
   std::unique_ptr<ICameraProvider> make_provider_() {
     if (provider_kind_ == VerifyCaseProviderKind::Stub) {
       return std::make_unique<StubProvider>();
@@ -1008,19 +1259,34 @@ private:
     return true;
   }
 
-  static bool wait_until(const std::function<bool()>& pred,
-                         std::string& error,
-                         int max_iters,
-                         int sleep_ms,
-                         const char* timeout_msg) {
+  static bool wait_until_with_progress(const std::function<bool()>& pred,
+                                       std::function<void()> progress,
+                                       std::string& error,
+                                       int max_iters,
+                                       int sleep_ms,
+                                       const char* timeout_msg) {
     for (int i = 0; i < max_iters; ++i) {
       if (pred()) {
         return true;
+      }
+      if (progress) {
+        progress();
+        if (pred()) {
+          return true;
+        }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
     }
     error = timeout_msg;
     return false;
+  }
+
+  static bool wait_until(const std::function<bool()>& pred,
+                         std::string& error,
+                         int max_iters,
+                         int sleep_ms,
+                         const char* timeout_msg) {
+    return wait_until_with_progress(pred, {}, error, max_iters, sleep_ms, timeout_msg);
   }
 
   VerifyCaseProviderKind provider_kind_ = VerifyCaseProviderKind::Synthetic;
@@ -1032,6 +1298,7 @@ private:
   ObservationBoundary boundary_;
   ObservedSnapshot last_snapshot_before_stop_clear_{};
   RealizationProfiler* realization_profiler_ = nullptr;
+  RecordingProviderCallbacks callback_recorder_;
 };
 
 } // namespace cambang

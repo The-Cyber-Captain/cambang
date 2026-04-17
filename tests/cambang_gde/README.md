@@ -23,6 +23,15 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
     synchronous handler/snapshot consistency, NIL-after-stop, and no stale generation leakage.
   - Expected pass string: `OK: godot public boundary verify PASS`
+- `scenes/66_status_panel_scenario_runtime.tscn`
+  - Server-driven status panel integration proof: starts synthetic timeline mode,
+    selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
+    `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
+- `scenes/70_result_retrieval_verification.tscn`
+  - Verifies Godot-facing tranche-1 result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
+  - Expected pass string: `OK: result_retrieval_verification passed`
+
 
 ## Running
 
@@ -34,18 +43,24 @@ godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse
 godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 1000
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/66_status_panel_scenario_runtime.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
 ```
 
 Notes:
-- Scenes force provider mode to `synthetic` before `start()`.
-- `61` and `62` instantiate a dev node and trigger existing scenario names via
-  `CamBANGDevNode.start_scenario(name)`.
+- Scenes that need synthetic mode start directly with
+  `CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)`.
+- `61` and `62` stage/start scenarios via `CamBANGServer.select_builtin_scenario(...)`
+  and `CamBANGServer.start_scenario()`.
 - `61` and `62` are bounded-observation verifiers: they watch a short internal observation window
   and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
   large value such as `--quit-after 1000`.
-- `60`, `61`, `62`, `63`, and `65` are intended to self-terminate with an explicit terminal `OK: ... PASS`
+- `60`, `61`, `62`, `63`, `65`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
+- `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
+  builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
+  for bounded CLI execution.
 
 ## Shared status panel and editor dock
 
@@ -61,9 +76,10 @@ This branch now includes:
 The editor dock uses only the public singleton API:
 
 - `CamBANGServer.start()`
+- `CamBANGServer.start(provider_kind[, role[, timing_driver]])`
 - `CamBANGServer.stop()`
-- `CamBANGServer.set_provider_mode()`
-- `CamBANGServer.get_provider_mode()`
+- `CamBANGServer.is_running()`
+- `CamBANGServer.get_active_provider_config()`
 - `CamBANGServer.get_state_snapshot()`
 
 ## Status panel harness

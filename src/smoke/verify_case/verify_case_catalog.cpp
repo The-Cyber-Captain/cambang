@@ -242,22 +242,61 @@ bool observe_provider_only_authoritative_start(VerifyCaseHarness& h,
 
   settled_version = 0;
   if (is_provider_pending_snapshot(*h.observed().raw, want_gen)) {
-    if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-          return s.gen == want_gen && is_provider_only_authoritative_snapshot(s, want_gen);
-        }, error)) {
-      cli::error("FAIL: ", error);
+    bool distinct_provider_only_publish_observed = false;
+    uint64_t prev_version = h.observed().version;
+    uint64_t prev_topology_version = h.observed().topology_version;
+    for (int i = 0; i < 500; ++i) {
+      if (!h.tick()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+
+      const auto& observed = h.observed();
+      if (observed.is_nil || !observed.raw) {
+        fail_step(step_index, "expected non-NIL/raw snapshot while waiting for provider-only authoritative startup truth");
+        return false;
+      }
+      if (observed.gen != want_gen) {
+        fail_step(step_index, "provider-only startup changed generation unexpectedly");
+        return false;
+      }
+      if (observed.version < prev_version) {
+        fail_step(step_index, "provider-only startup regressed observed version");
+        return false;
+      }
+      if (observed.topology_version < prev_topology_version) {
+        fail_step(step_index, "provider-only startup regressed observed topology_version");
+        return false;
+      }
+      if (observed.device_count != 0 || observed.stream_count != 0) {
+        fail_step(step_index, "provider-only startup exposed public descendants unexpectedly");
+        return false;
+      }
+
+      prev_version = observed.version;
+      prev_topology_version = observed.topology_version;
+      if (is_provider_only_authoritative_snapshot(*observed.raw, want_gen)) {
+        distinct_provider_only_publish_observed = observed.version > 0;
+        settled_version = observed.version;
+        if (distinct_provider_only_publish_observed) {
+          cli::line("step ", step_index,
+                    " detail: observed distinct provider-only authoritative publish after provider_pending baseline");
+        } else {
+          cli::line("step ", step_index,
+                    " detail: provider-only authoritative startup truth already coalesced at current boundary view");
+        }
+        break;
+      }
+      if (!is_provider_pending_snapshot(*observed.raw, want_gen)) {
+        log_restarted_baseline_diagnostic(step_index, observed);
+        fail_step(step_index, "provider-only startup settled to unexpected non-authoritative shape");
+        return false;
+      }
+    }
+    if (!h.observed().raw || !is_provider_only_authoritative_snapshot(*h.observed().raw, want_gen)) {
+      fail_step(step_index, "timed out waiting for observable provider-only authoritative startup truth");
       return false;
     }
-    if (!h.tick()) {
-      fail_step(step_index, "expected provider-only authoritative publish after provider_pending baseline");
-      return false;
-    }
-    if (!expect_step(step_index,
-                     SnapshotExpectation{}.gen(want_gen).version(1).topology_version(0).device_count(0).stream_count(0),
-                     h.observed())) {
-      return false;
-    }
-    settled_version = 1;
   }
 
   if (!h.observed().raw || !is_provider_only_authoritative_snapshot(*h.observed().raw, want_gen)) {
@@ -422,42 +461,61 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                                  size_t want_device_count,
                                  size_t want_stream_count,
                                  const char* wait_timeout_message,
-                                 const char* publish_message,
                                  const std::function<bool(const CamBANGStateSnapshot&)>& pred) -> bool {
-    if (h.observed().raw && pred(*h.observed().raw)) {
-      return true;
-    }
-
-    const ObservedSnapshot before = h.observed();
-    if (!h.wait_for_core_snapshot(pred, error, 500, 5, wait_timeout_message)) {
-      cli::error("FAIL: ", error);
-      return false;
-    }
-    if (!h.tick()) {
-      fail_step(step_index, publish_message);
-      return false;
-    }
     if (h.observed().is_nil || !h.observed().raw) {
-      fail_step(step_index, "expected non-NIL snapshot while settling native shape");
+      fail_step(step_index, "expected non-NIL/raw snapshot before settling native shape");
       return false;
     }
     if (h.observed().gen != want_gen) {
-      fail_step(step_index, "native-shape settle changed generation unexpectedly");
+      fail_step(step_index, "native-shape settle started on unexpected generation");
       return false;
     }
     if (h.observed().device_count != want_device_count || h.observed().stream_count != want_stream_count) {
-      fail_step(step_index, "native-shape settle changed public device/stream counts unexpectedly");
+      fail_step(step_index, "native-shape settle started with unexpected public device/stream counts");
       return false;
     }
-    if (h.observed().version <= before.version) {
-      fail_step(step_index, "expected native-shape settle to advance observable version");
-      return false;
+    if (pred(*h.observed().raw)) {
+      return true;
     }
-    if (h.observed().topology_version < before.topology_version) {
-      fail_step(step_index, "native-shape settle regressed topology_version");
-      return false;
+
+    uint64_t prev_version = h.observed().version;
+    uint64_t prev_topology_version = h.observed().topology_version;
+    for (int i = 0; i < 500; ++i) {
+      if (!h.tick()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+      const auto& observed = h.observed();
+      if (observed.is_nil || !observed.raw) {
+        fail_step(step_index, "expected non-NIL/raw snapshot while settling native shape");
+        return false;
+      }
+      if (observed.gen != want_gen) {
+        fail_step(step_index, "native-shape settle changed generation unexpectedly");
+        return false;
+      }
+      if (observed.device_count != want_device_count || observed.stream_count != want_stream_count) {
+        fail_step(step_index, "native-shape settle changed public device/stream counts unexpectedly");
+        return false;
+      }
+      if (observed.version <= prev_version) {
+        fail_step(step_index, "native-shape settle consumed non-forward boundary publish");
+        return false;
+      }
+      if (observed.topology_version < prev_topology_version) {
+        fail_step(step_index, "native-shape settle regressed topology_version");
+        return false;
+      }
+
+      prev_version = observed.version;
+      prev_topology_version = observed.topology_version;
+      if (pred(*observed.raw)) {
+        return true;
+      }
     }
-    return pred(*h.observed().raw);
+
+    error = wait_timeout_message;
+    return false;
   };
 
   const auto is_device_realization_native_shape = [](const CamBANGStateSnapshot& s) {
@@ -570,7 +628,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            0,
                            "timed out waiting for device-descendant native shape after device realization",
-                           "expected device-descendant native-object publish after device realization",
                            is_device_realization_native_shape)) {
     log_restarted_baseline_diagnostic(3, h.observed());
     fail_step(3, "device realization native-object shape mismatch");
@@ -603,7 +660,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            1,
                            "timed out waiting for stream-descendant native shape after stream realization",
-                           "expected stream-descendant native-object publish after stream realization",
                            is_stream_realization_native_shape)) {
     log_restarted_baseline_diagnostic(4, h.observed());
     fail_step(4, "stream realization native-object shape mismatch");
@@ -636,7 +692,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            1,
                            "timed out waiting for frameproducer native shape after start_stream",
-                           "expected frameproducer native-object publish after start_stream",
                            is_full_realization_native_shape)) {
     log_restarted_baseline_diagnostic(5, h.observed());
     fail_step(5, "full realization native-object shape mismatch");
@@ -769,6 +824,65 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
     return false;
   };
 
+  auto observe_stage_at_least = [&](uint64_t want_gen,
+                                    RestartChurnCutPoint min_stage,
+                                    const char* timeout_message) -> bool {
+    if (!h.observed().raw || h.observed().is_nil) {
+      fail_step(0, "restart churn expected non-NIL/raw snapshot while observing stage");
+      return false;
+    }
+    if (h.observed().gen != want_gen) {
+      fail_step(0, "restart churn observed wrong generation while observing stage");
+      return false;
+    }
+
+    uint64_t prev_version = h.observed().version;
+    uint64_t prev_topology_version = h.observed().topology_version;
+    RestartChurnCutPoint prev_stage = observed_restart_churn_stage(*h.observed().raw, want_gen);
+    if (static_cast<int>(prev_stage) >= static_cast<int>(min_stage)) {
+      return true;
+    }
+
+    for (int i = 0; i < 500; ++i) {
+      if (!h.tick()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+      const auto& observed = h.observed();
+      if (observed.is_nil || !observed.raw) {
+        fail_step(0, "restart churn observed NIL while waiting for stage progression");
+        return false;
+      }
+      if (observed.gen != want_gen) {
+        fail_step(0, "restart churn generation changed unexpectedly while waiting for stage progression");
+        return false;
+      }
+      if (observed.version <= prev_version) {
+        fail_step(0, "restart churn consumed non-forward boundary publish while waiting for stage progression");
+        return false;
+      }
+      if (observed.topology_version < prev_topology_version) {
+        fail_step(0, "restart churn topology_version regressed while waiting for stage progression");
+        return false;
+      }
+
+      const RestartChurnCutPoint stage = observed_restart_churn_stage(*observed.raw, want_gen);
+      if (static_cast<int>(stage) < static_cast<int>(prev_stage)) {
+        fail_step(0, "restart churn stage regressed while waiting for stage progression");
+        return false;
+      }
+      prev_version = observed.version;
+      prev_topology_version = observed.topology_version;
+      prev_stage = stage;
+      if (static_cast<int>(stage) >= static_cast<int>(min_stage)) {
+        return true;
+      }
+    }
+
+    cli::error("FAIL: ", timeout_message);
+    return false;
+  };
+
   auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
     cli::line("[restart-churn] cycle=", cycle_index + 1,
               " gen=", gen,
@@ -824,6 +938,11 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
     if (!require_boundary_tick("expected observable publish after open_device during restart churn")) {
       return 1;
     }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::DeviceIdentity,
+                                "timed out waiting for device identity during restart churn")) {
+      return 1;
+    }
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
       emit_cycle_report(cycle_index, want_gen, planned_cut_point);
@@ -832,17 +951,10 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
       continue;
     }
 
-    if (observed_restart_churn_stage(*h.observed().raw, want_gen) == RestartChurnCutPoint::DeviceIdentity) {
-      if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-            return static_cast<int>(observed_restart_churn_stage(s, want_gen)) >=
-                   static_cast<int>(RestartChurnCutPoint::DeviceNative);
-          }, error, 500, 5, "timed out waiting for device native during restart churn")) {
-        cli::error("FAIL: ", error);
-        return 1;
-      }
-      if (!require_boundary_tick("expected observable publish for device native during restart churn")) {
-        return 1;
-      }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::DeviceNative,
+                                "timed out waiting for observable device native-or-later stage during restart churn")) {
+      return 1;
     }
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
@@ -857,6 +969,11 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
       return 1;
     }
     if (!require_boundary_tick("expected observable publish after create_stream during restart churn")) {
+      return 1;
+    }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::StreamVisible,
+                                "timed out waiting for stream visible-or-later stage during restart churn")) {
       return 1;
     }
 
@@ -875,17 +992,10 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
       return 1;
     }
 
-    const auto is_complete = [&](const CamBANGStateSnapshot& s) {
-      return observed_restart_churn_stage(s, want_gen) == RestartChurnCutPoint::Complete;
-    };
-    if (!is_complete(*h.observed().raw)) {
-      if (!h.wait_for_core_snapshot(is_complete, error, 500, 5, "timed out waiting for completion during restart churn")) {
-        cli::error("FAIL: ", error);
-        return 1;
-      }
-      if (!require_boundary_tick("expected observable completion publish during restart churn")) {
-        return 1;
-      }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::Complete,
+                                "timed out waiting for observable completion during restart churn")) {
+      return 1;
     }
 
     emit_cycle_report(cycle_index, want_gen, planned_cut_point);
@@ -958,6 +1068,65 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
     return false;
   };
 
+  auto observe_stage_at_least = [&](uint64_t want_gen,
+                                    RestartChurnCutPoint min_stage,
+                                    const char* timeout_message) -> bool {
+    if (!h.observed().raw || h.observed().is_nil) {
+      fail_step(0, "restart churn settle expected non-NIL/raw snapshot while observing stage");
+      return false;
+    }
+    if (h.observed().gen != want_gen) {
+      fail_step(0, "restart churn settle observed wrong generation while observing stage");
+      return false;
+    }
+
+    uint64_t prev_version = h.observed().version;
+    uint64_t prev_topology_version = h.observed().topology_version;
+    RestartChurnCutPoint prev_stage = observed_restart_churn_stage(*h.observed().raw, want_gen);
+    if (static_cast<int>(prev_stage) >= static_cast<int>(min_stage)) {
+      return true;
+    }
+
+    for (int i = 0; i < 500; ++i) {
+      if (!h.tick()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+      const auto& observed = h.observed();
+      if (observed.is_nil || !observed.raw) {
+        fail_step(0, "restart churn settle observed NIL while waiting for stage progression");
+        return false;
+      }
+      if (observed.gen != want_gen) {
+        fail_step(0, "restart churn settle generation changed unexpectedly while waiting for stage progression");
+        return false;
+      }
+      if (observed.version <= prev_version) {
+        fail_step(0, "restart churn settle consumed non-forward publish while waiting for stage progression");
+        return false;
+      }
+      if (observed.topology_version < prev_topology_version) {
+        fail_step(0, "restart churn settle topology_version regressed while waiting for stage progression");
+        return false;
+      }
+
+      const RestartChurnCutPoint stage = observed_restart_churn_stage(*observed.raw, want_gen);
+      if (static_cast<int>(stage) < static_cast<int>(prev_stage)) {
+        fail_step(0, "restart churn settle stage regressed while waiting for stage progression");
+        return false;
+      }
+      prev_version = observed.version;
+      prev_topology_version = observed.topology_version;
+      prev_stage = stage;
+      if (static_cast<int>(stage) >= static_cast<int>(min_stage)) {
+        return true;
+      }
+    }
+
+    cli::error("FAIL: ", timeout_message);
+    return false;
+  };
+
   auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
     cli::line("[restart-churn] cycle=", cycle_index + 1,
               " gen=", gen,
@@ -1013,6 +1182,11 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
     if (!require_boundary_tick("expected observable publish after open_device during restart churn settle prelude")) {
       return 1;
     }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::DeviceIdentity,
+                                "timed out waiting for device identity during restart churn settle prelude")) {
+      return 1;
+    }
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
       emit_cycle_report(cycle_index, want_gen, planned_cut_point);
@@ -1021,17 +1195,10 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
       continue;
     }
 
-    if (observed_restart_churn_stage(*h.observed().raw, want_gen) == RestartChurnCutPoint::DeviceIdentity) {
-      if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-            return static_cast<int>(observed_restart_churn_stage(s, want_gen)) >=
-                   static_cast<int>(RestartChurnCutPoint::DeviceNative);
-          }, error, 500, 5, "timed out waiting for device native during restart churn settle prelude")) {
-        cli::error("FAIL: ", error);
-        return 1;
-      }
-      if (!require_boundary_tick("expected observable publish for device native during restart churn settle prelude")) {
-        return 1;
-      }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::DeviceNative,
+                                "timed out waiting for observable device native-or-later stage during restart churn settle prelude")) {
+      return 1;
     }
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
@@ -1046,6 +1213,11 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
       return 1;
     }
     if (!require_boundary_tick("expected observable publish after create_stream during restart churn settle prelude")) {
+      return 1;
+    }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::StreamVisible,
+                                "timed out waiting for stream visible-or-later stage during restart churn settle prelude")) {
       return 1;
     }
 
@@ -1241,6 +1413,65 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
     return false;
   };
 
+  auto observe_stage_at_least = [&](uint64_t want_gen,
+                                    RestartChurnCutPoint min_stage,
+                                    const char* timeout_message) -> bool {
+    if (!h.observed().raw || h.observed().is_nil) {
+      fail_step(0, "failure-seeking churn expected non-NIL/raw snapshot while observing stage");
+      return false;
+    }
+    if (h.observed().gen != want_gen) {
+      fail_step(0, "failure-seeking churn observed wrong generation while observing stage");
+      return false;
+    }
+
+    uint64_t prev_version = h.observed().version;
+    uint64_t prev_topology_version = h.observed().topology_version;
+    RestartChurnCutPoint prev_stage = observed_restart_churn_stage(*h.observed().raw, want_gen);
+    if (static_cast<int>(prev_stage) >= static_cast<int>(min_stage)) {
+      return true;
+    }
+
+    for (int i = 0; i < 500; ++i) {
+      if (!h.tick()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+      const auto& observed = h.observed();
+      if (observed.is_nil || !observed.raw) {
+        fail_step(0, "failure-seeking churn observed NIL while waiting for stage progression");
+        return false;
+      }
+      if (observed.gen != want_gen) {
+        fail_step(0, "failure-seeking churn generation changed unexpectedly while waiting for stage progression");
+        return false;
+      }
+      if (observed.version <= prev_version) {
+        fail_step(0, "failure-seeking churn consumed non-forward publish while waiting for stage progression");
+        return false;
+      }
+      if (observed.topology_version < prev_topology_version) {
+        fail_step(0, "failure-seeking churn topology_version regressed while waiting for stage progression");
+        return false;
+      }
+
+      const RestartChurnCutPoint stage = observed_restart_churn_stage(*observed.raw, want_gen);
+      if (static_cast<int>(stage) < static_cast<int>(prev_stage)) {
+        fail_step(0, "failure-seeking churn stage regressed while waiting for stage progression");
+        return false;
+      }
+      prev_version = observed.version;
+      prev_topology_version = observed.topology_version;
+      prev_stage = stage;
+      if (static_cast<int>(stage) >= static_cast<int>(min_stage)) {
+        return true;
+      }
+    }
+
+    cli::error("FAIL: ", timeout_message);
+    return false;
+  };
+
   auto emit_cycle_report = [&](size_t cycle_index, uint64_t gen, RestartChurnCutPoint planned_cut_point) {
     cli::line("[restart-churn] verification_case=", verify_case_label,
               " cycle=", cycle_index + 1,
@@ -1298,6 +1529,11 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
     if (!require_boundary_tick("expected observable publish after open_device during failure-seeking restart churn")) {
       return 1;
     }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::DeviceIdentity,
+                                "timed out waiting for device identity during failure-seeking restart churn")) {
+      return 1;
+    }
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceIdentity) {
       emit_cycle_report(cycle_index, want_gen, planned_cut_point);
@@ -1306,17 +1542,10 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
       continue;
     }
 
-    if (observed_restart_churn_stage(*h.observed().raw, want_gen) == RestartChurnCutPoint::DeviceIdentity) {
-      if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-            return static_cast<int>(observed_restart_churn_stage(s, want_gen)) >=
-                   static_cast<int>(RestartChurnCutPoint::DeviceNative);
-          }, error, 500, 5, "timed out waiting for device native during failure-seeking restart churn")) {
-        cli::error("FAIL: ", error);
-        return 1;
-      }
-      if (!require_boundary_tick("expected observable publish for device native during failure-seeking restart churn")) {
-        return 1;
-      }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::DeviceNative,
+                                "timed out waiting for observable device native-or-later stage during failure-seeking restart churn")) {
+      return 1;
     }
 
     if (planned_cut_point == RestartChurnCutPoint::DeviceNative) {
@@ -1331,6 +1560,11 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
       return 1;
     }
     if (!require_boundary_tick("expected observable publish after create_stream during failure-seeking restart churn")) {
+      return 1;
+    }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::StreamVisible,
+                                "timed out waiting for stream visible-or-later stage during failure-seeking restart churn")) {
       return 1;
     }
 
@@ -1763,6 +1997,16 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: provider broker synthetic mode request failed");
     return 1;
   }
+  if (!broker.set_synthetic_role_requested(SyntheticRole::Timeline).ok()) {
+    runtime.stop();
+    cli::error("FAIL: provider broker synthetic role request failed");
+    return 1;
+  }
+  if (!broker.set_synthetic_timing_driver_requested(TimingDriver::VirtualTime).ok()) {
+    runtime.stop();
+    cli::error("FAIL: provider broker synthetic timing request failed");
+    return 1;
+  }
 
   std::vector<SyntheticScheduledEvent> dispatched;
   const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(runtime);
@@ -1788,7 +2032,6 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: enumerate_endpoints failed");
     return 1;
   }
-  runtime.retain_device_identity(VerifyCaseHarness::kDeviceId, eps[0].hardware_id);
 
   const StreamTemplate st = broker.stream_template();
   const uint32_t fps_num = st.profile.target_fps_max != 0 ? st.profile.target_fps_max : st.profile.target_fps_min;
@@ -1800,6 +2043,20 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   const uint64_t period_ns = 1'000'000'000ull / static_cast<uint64_t>(fps_num);
+
+  bool broker_initialized = true;
+  bool provider_attached = true;
+  auto cleanup = [&]() {
+    if (broker_initialized) {
+      (void)broker.shutdown();
+      broker_initialized = false;
+    }
+    if (provider_attached) {
+      runtime.attach_provider(nullptr);
+      provider_attached = false;
+    }
+    runtime.stop();
+  };
 
   auto snapshot_now = [&]() -> std::shared_ptr<const CamBANGStateSnapshot> {
     runtime.request_publish();
@@ -1818,6 +2075,10 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
       error = "synthetic virtual time tick not consumed";
       return false;
     }
+    // IMPORTANT: callers validating progression relative to a captured baseline
+    // must provide a delta predicate (e.g., `after > before` checks). Absolute
+    // predicates can be satisfied by already-coalesced snapshots before the
+    // intended post-event progression is actually observed.
     return wait_until_poll([&]() {
       runtime.request_publish();
       auto snap = snapshot_buffer.snapshot_copy();
@@ -1858,20 +2119,24 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   scenario.timeline.push_back({period_ns * 4 + 2, SyntheticEventType::CloseDevice, "cam0", "", false, {}});
 
   if (!broker.set_timeline_canonical_scenario_for_host(scenario).ok()) {
+    cleanup();
     cli::error("FAIL: canonical explicit-lifecycle submission rejected");
     return 1;
   }
   if (!broker.start_timeline_scenario_for_host().ok()) {
+    cleanup();
     cli::error("FAIL: canonical explicit-lifecycle start rejected");
     return 1;
   }
 
   auto snap_before = snapshot_now();
   if (!snap_before) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
   if (!snap_before->devices.empty() || !snap_before->streams.empty()) {
+    cleanup();
     fail_step(0, "snapshot truth violated before timeline execution");
     return 1;
   }
@@ -1880,6 +2145,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return VerifyCaseHarness::has_device(s, 10001) && stream && stream->mode == CBStreamMode::FLOWING;
       }, "timed out waiting for explicit lifecycle open/create/start")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1888,6 +2154,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
       dispatched[0].type != SyntheticEventType::OpenDevice ||
       dispatched[1].type != SyntheticEventType::CreateStream ||
       dispatched[2].type != SyntheticEventType::StartStream) {
+    cleanup();
     fail_step(1, "explicit lifecycle ordering/path mismatch (expected Open/Create before Start)");
     return 1;
   }
@@ -1896,48 +2163,67 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return stream && stream->frames_received >= 1;
       }, "timed out waiting for first frame")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
 
   auto snap_after_first_frame = snapshot_buffer.snapshot_copy();
   if (!snap_after_first_frame) {
+    cleanup();
     fail_step(2, "snapshot missing after first emit");
     return 1;
   }
   const auto* stream_before_update = VerifyCaseHarness::find_stream(*snap_after_first_frame, 30001);
   if (!stream_before_update) {
+    cleanup();
     fail_step(2, "stream missing after first emit");
     return 1;
   }
   const uint64_t frames_before_update = stream_before_update->frames_received;
   const uint64_t ts_before_update = stream_before_update->last_frame_ts_ns;
 
+  // Step 3 is a DELTA check relative to the captured baseline above:
+  // require both frame-count and timestamp progression after the authored
+  // update-phase advance. Absolute thresholds (e.g. frames_received >= 2) are
+  // incorrect here because a pre-existing/coalesced snapshot may already satisfy
+  // them before post-update progression is observable.
   if (!advance_and_snapshot(period_ns * 2, [&](const CamBANGStateSnapshot& s) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
-        return stream && stream->frames_received >= 2 && stream->mode == CBStreamMode::FLOWING;
+        return stream &&
+               stream->mode == CBStreamMode::FLOWING &&
+               stream->frames_received > frames_before_update &&
+               stream->last_frame_ts_ns > ts_before_update;
       }, "timed out waiting for post-update frame")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
 
   auto snap_after_update = snapshot_buffer.snapshot_copy();
   if (!snap_after_update) {
+    cleanup();
     fail_step(3, "snapshot missing after update emit");
     return 1;
   }
   const auto* stream_after_update = VerifyCaseHarness::find_stream(*snap_after_update, 30001);
   if (!stream_after_update) {
+    cleanup();
     fail_step(3, "stream missing after update emit");
     return 1;
   }
   if (stream_after_update->frames_received <= frames_before_update ||
       stream_after_update->last_frame_ts_ns <= ts_before_update) {
+    cleanup();
+    cli::error("step 3 detail: frames_before=", frames_before_update,
+               " frames_after=", stream_after_update->frames_received,
+               " ts_before=", ts_before_update,
+               " ts_after=", stream_after_update->last_frame_ts_ns);
     fail_step(3, "post-update frame progression missing");
     return 1;
   }
   // NOTE: verify-case smoke builds do not have a dedicated frame-copy observer
-  // exposed at this layer (CoreRuntime mailbox accessor is dev-node scoped).
+  // exposed at this layer (CoreRuntime latest_frame_mailbox accessor is dev-node scoped).
   // We therefore assert update request dispatch + post-update frame progression
   // rather than pixel signatures in this runtime/harness verification.
 
@@ -1945,18 +2231,53 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         const auto* stream = VerifyCaseHarness::find_stream(s, 30001);
         return stream && stream->mode == CBStreamMode::STOPPED;
       }, "timed out waiting for stop")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
-  if (!advance_and_snapshot(1, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_stream(s, 30001);
-      }, "timed out waiting for destroy")) {
+
+  auto advance_until_realized = [&](uint64_t step_ns,
+                                    int max_steps,
+                                    const std::function<bool(const CamBANGStateSnapshot&)>& pred,
+                                    const char* timeout_message) -> bool {
+    runtime.request_publish();
+    if (auto snap = snapshot_buffer.snapshot_copy(); snap && pred(*snap)) {
+      return true;
+    }
+    for (int i = 0; i < max_steps; ++i) {
+      if (!broker.try_tick_virtual_time(step_ns)) {
+        error = "synthetic virtual time tick not consumed";
+        return false;
+      }
+      runtime.request_publish();
+      if (wait_until_poll([&]() {
+            auto snap = snapshot_buffer.snapshot_copy();
+            return snap && pred(*snap);
+          }, error, timeout_message, /*max_iters=*/20, /*sleep_ms=*/1)) {
+        return true;
+      }
+    }
+    error = timeout_message;
+    return false;
+  };
+
+  if (!advance_until_realized(1,
+                              /*max_steps=*/256,
+                              [&](const CamBANGStateSnapshot& s) {
+                                return !VerifyCaseHarness::has_stream(s, 30001);
+                              },
+                              "timed out waiting for destroy")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
-  if (!advance_and_snapshot(1, [&](const CamBANGStateSnapshot& s) {
-        return !VerifyCaseHarness::has_device(s, 10001);
-      }, "timed out waiting for close")) {
+  if (!advance_until_realized(1,
+                              /*max_steps=*/256,
+                              [&](const CamBANGStateSnapshot& s) {
+                                return !VerifyCaseHarness::has_device(s, 10001);
+                              },
+                              "timed out waiting for close")) {
+    cleanup();
     cli::error("FAIL: ", error);
     return 1;
   }
@@ -1968,17 +2289,22 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     }
   }
   if (emitframe_dispatched != 0) {
+    cleanup();
     fail_step(4, "EmitFrame crossed Core request dispatch boundary");
     return 1;
   }
 
   if (!broker.shutdown().ok()) {
+    broker_initialized = false;
     runtime.attach_provider(nullptr);
+    provider_attached = false;
     runtime.stop();
     cli::error("FAIL: broker shutdown failed");
     return 1;
   }
+  broker_initialized = false;
   runtime.attach_provider(nullptr);
+  provider_attached = false;
   runtime.stop();
 
   cli::line("Verification case PASSED");
@@ -2106,30 +2432,47 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
     fail_step(2, "stream not flowing before starvation window");
     return 1;
   }
-  const uint64_t before_frames = flowing->frames_received;
-  if (!h.request_publish_only(error)) {
+  uint64_t before_frames = 0;
+  if (!h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error, &before_frames)) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        const auto* stream = VerifyCaseHarness::find_stream(s, VerifyCaseHarness::kStreamId);
+        return stream && stream->mode == CBStreamMode::FLOWING;
+      }, error, 500, 5, "timed out waiting for flowing stream at starvation boundary")) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
+  auto boundary_snap = h.snapshot_buffer().snapshot_copy();
+  const auto* quiesced = boundary_snap ? VerifyCaseHarness::find_stream(*boundary_snap, VerifyCaseHarness::kStreamId) : nullptr;
+  if (!quiesced || quiesced->mode != CBStreamMode::FLOWING) {
+    fail_step(2, "stream not flowing at starvation boundary");
+    return 1;
+  }
+  before_frames = quiesced->frames_received;
+
+  uint64_t after_frames = 0;
+  if (!h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error, &after_frames)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
 
-  const auto* after = VerifyCaseHarness::find_stream(*h.observed().raw, VerifyCaseHarness::kStreamId);
+  auto after_snap = h.snapshot_buffer().snapshot_copy();
+  const auto* after = after_snap ? VerifyCaseHarness::find_stream(*after_snap, VerifyCaseHarness::kStreamId) : nullptr;
   if (!after) {
-    fail_step(3, "stream missing after starvation window");
+    fail_step(4, "stream missing after starvation window");
     return 1;
   }
-  if (after->frames_received != before_frames) {
-    fail_step(3, "frames advanced during starvation window");
+  if (after_frames != before_frames || after->frames_received != before_frames) {
+    fail_step(4, "frames advanced during starvation window");
     return 1;
   }
   if (after->mode != CBStreamMode::FLOWING) {
-    fail_step(3, "stream changed mode during starvation window");
+    fail_step(4, "stream changed mode during starvation window");
     return 1;
   }
-  cli::line("step 3 OK");
+  cli::line("step 4 OK");
 
   cli::line("Verification case PASSED");
   return 0;

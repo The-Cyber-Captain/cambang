@@ -1,9 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
+#include <string>
 
 #include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/variant.hpp>
@@ -15,6 +18,7 @@
 #include "godot/state_snapshot_export.h"
 
 #include "imaging/broker/mode.h"
+#include "imaging/synthetic/config.h"
 
 // Provider lifecycle is owned by the server (Godot thread), but attached to the
 // core runtime (core thread) via CoreRuntime::attach_provider.
@@ -26,6 +30,10 @@
 #include <godot_cpp/classes/window.hpp>
 
 namespace cambang {
+class CamBANGStreamResult;
+class CamBANGCaptureResult;
+class CamBANGCaptureResultSet;
+class CamBANGDevice;
 
 // CamBANGServer is the release-facing lifecycle owner.
 //
@@ -46,33 +54,34 @@ public:
   CamBANGServer();
   ~CamBANGServer() override;
 
+  static constexpr int PROVIDER_KIND_PLATFORM_BACKED = 0;
+  static constexpr int PROVIDER_KIND_SYNTHETIC = 1;
+
+  static constexpr int SYNTHETIC_ROLE_NOMINAL = 0;
+  static constexpr int SYNTHETIC_ROLE_TIMELINE = 1;
+  static constexpr int TIMING_DRIVER_REAL_TIME = 0;
+  static constexpr int TIMING_DRIVER_VIRTUAL_TIME = 1;
+
+  static constexpr int TIMELINE_RECONCILIATION_COMPLETION_GATED = 0;
+  static constexpr int TIMELINE_RECONCILIATION_STRICT = 1;
+
   // User-facing control of core processing.
-  void start();
+  godot::Error start(
+      const godot::Variant& provider_kind = godot::Variant(),
+      const godot::Variant& role = godot::Variant(),
+      const godot::Variant& timing_driver = godot::Variant(),
+      const godot::Variant& timeline_reconciliation = godot::Variant());
   void stop();
+  bool is_running() const;
 
-  /**
-   * set_provider_mode(mode: String) -> Error
-   *
-   * Godot-facing runtime provider mode selection.
-   *
-   * Valid values:
-   *   - "platform_backed" (default; intended to be safe)
-   *   - "synthetic" (only if compiled in)
-   *
-   * Rules:
-   *   - Provider mode is latched per runtime session.
-   *   - This may ONLY be called while the server is STOPPED
-   *     (before start() or after stop()).
-   *   - If called while LIVE, ERR_BUSY is returned (and logged once).
-   *   - If the requested mode is not supported in this build,
-   *     ERR_UNAVAILABLE is returned.
-   *
-   * Changing provider_mode requires a stop() → set_provider_mode() → start() cycle.
-   */
-  godot::Error set_provider_mode(const godot::String& mode);
+  godot::Variant get_active_provider_config() const;
 
-  /// Returns the currently requested (latched-for-next-start) provider_mode string.
-  godot::String get_provider_mode() const;
+  godot::Error select_builtin_scenario(const godot::String& scenario_name);
+  godot::Error load_external_scenario(const godot::String& json_text);
+  godot::Error start_scenario();
+  godot::Error stop_scenario();
+  godot::Error set_timeline_paused(bool paused);
+  godot::Error advance_timeline(uint64_t dt_ns);
 
   static CamBANGServer* get_singleton() noexcept { return singleton_; }
 
@@ -80,6 +89,11 @@ public:
   // - Before the first publish, returns NIL.
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
+  godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
+  godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;
+  godot::Ref<CamBANGCaptureResult> get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
+  godot::Ref<CamBANGCaptureResultSet> get_capture_result_set(uint64_t capture_id) const;
+  uint64_t trigger_device_capture(uint64_t device_instance_id);
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
@@ -139,18 +153,33 @@ private:
   uint64_t accepted_min_gen_ = 0;
 
   void _ensure_tick_connected();
-  bool _ensure_provider_attached_and_initialized();
+  godot::Error _start_with_provider_config(
+      RuntimeMode mode,
+      SyntheticRole synthetic_role,
+      TimingDriver timing_driver,
+      bool completion_gated_destructive_sequencing_enabled);
+  bool _ensure_provider_attached_and_initialized(
+      RuntimeMode mode,
+      SyntheticRole synthetic_role,
+      TimingDriver timing_driver);
 
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
 
-  RuntimeMode provider_mode_requested_ = RuntimeMode::platform_backed;
-  bool provider_mode_busy_logged_ = false;
+  void _refresh_timeline_teardown_trace_mode();
+  void _handle_timeline_teardown_trace_line(const std::string& line);
+
+  bool timeline_trace_echo_enabled_ = false;
+  RuntimeMode active_runtime_mode_ = RuntimeMode::platform_backed;
+  SyntheticRole active_synthetic_role_ = SyntheticRole::Nominal;
+  bool completion_gated_destructive_sequencing_enabled_ = true;
+  bool strict_scenario_unmet_logged_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
+  std::atomic<uint64_t> next_capture_id_{1};
 };
 
 } // namespace cambang

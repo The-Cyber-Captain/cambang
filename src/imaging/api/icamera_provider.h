@@ -60,6 +60,15 @@ public:
   virtual void on_native_object_destroyed(const NativeObjectDestroyInfo& info) = 0;
 };
 
+
+// Runtime kind exposed for lightweight diagnostics (e.g. banners).
+// This reflects the provider's active runtime truth without exposing broker internals.
+enum class ProviderKind : uint8_t {
+  unknown = 0,
+  platform_backed = 1,
+  synthetic = 2,
+};
+
 // Core-facing provider interface (platform backends implement this).
 class ICameraProvider {
 public:
@@ -68,13 +77,39 @@ public:
   // Provider identity (for logs / diagnostics).
   virtual const char* provider_name() const = 0;
 
+  // Provider active kind (for logs / diagnostics).
+  virtual ProviderKind provider_kind() const noexcept = 0;
+
   // Provider default stream template (profile + picture). Core uses this for
   // stream creation-time defaulting.
   virtual StreamTemplate stream_template() const = 0;
+  // Provider default capture template (profile + picture). Core/host uses this for
+  // capture request defaulting.
+  virtual CaptureTemplate capture_template() const = 0;
 
   // Whether stream-scoped picture updates are supported.
   // If false, core should return NotSupported deterministically without calling into the provider.
   virtual bool supports_stream_picture_updates() const noexcept = 0;
+  // Whether capture-scoped picture updates are supported.
+  virtual bool supports_capture_picture_updates() const noexcept = 0;
+
+  // Internal producer-backing capability advertisement for stream realization.
+  // Backing capability is provider/runtime truth and is distinct from payload kind policy.
+  virtual ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept {
+    (void)profile;
+    (void)picture;
+    return ProducerBackingCapabilities{false, false};
+  }
+
+  // Internal producer-backing capability advertisement for still-capture realization.
+  // Backing capability is provider/runtime truth and is distinct from payload kind policy.
+  virtual ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest& req) const noexcept {
+    (void)req;
+    return ProducerBackingCapabilities{false, false};
+  }
 
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
@@ -107,6 +142,9 @@ public:
   // Stream-scoped picture update path.
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) = 0;
+  // Capture-scoped picture update path (device-scoped retained capture picture).
+  // Providers that do not support this must return ERR_NOT_SUPPORTED.
+  virtual ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) = 0;
 
   // Trigger a still capture for a device instance (device capture or rig capture).
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;

@@ -5,9 +5,12 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
+#include "imaging/api/timeline_teardown_trace.h"
+#include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
 
 namespace cambang {
@@ -25,20 +28,6 @@ uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   return (one_sec * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
 }
 
-static bool banners_enabled() noexcept {
-  const char* v = std::getenv("CAMBANG_BANNERS");
-  // Spec: CAMBANG_BANNERS=0 disables banners.
-  return !(v && v[0] == '0' && v[1] == '\0');
-}
-
-static const char* role_to_string(SyntheticRole r) noexcept {
-  switch (r) {
-    case SyntheticRole::Nominal: return "nominal";
-    case SyntheticRole::Timeline: return "timeline";
-  }
-  return "unknown";
-}
-
 } // namespace
 
 SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(cfg) {
@@ -49,6 +38,8 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   if (cfg_.endpoint_count == 0) {
     cfg_.endpoint_count = 1;
   }
+  completion_gated_destructive_sequencing_enabled_ =
+      (cfg_.timeline_reconciliation == TimelineReconciliation::CompletionGated);
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -62,9 +53,109 @@ StreamTemplate SyntheticProvider::stream_template() const {
   // Canonical default per tranche: noise_animated.
   t.picture.preset = PatternPreset::NoiseAnimated;
   t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed);
+  t.picture.generator_fps_num = 30;
+  t.picture.generator_fps_den = 1;
   t.picture.overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
   t.picture.overlay_moving_bar = true;
   return t;
+}
+
+CaptureTemplate SyntheticProvider::capture_template() const {
+  CaptureTemplate t{};
+  t.profile.width = cfg_.nominal.width;
+  t.profile.height = cfg_.nominal.height;
+  t.profile.format_fourcc = cfg_.nominal.format_fourcc;
+  t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
+  t.profile.target_fps_max = t.profile.target_fps_min;
+
+  t.picture.preset = PatternPreset::NoiseAnimated;
+  t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed ^ 0xA5A5u);
+  t.picture.generator_fps_num = 30;
+  t.picture.generator_fps_den = 1;
+  t.picture.overlay_frame_index_offsets = true;
+  t.picture.overlay_moving_bar = false;
+  return t;
+}
+
+ProducerBackingCapabilities SyntheticProvider::stream_backing_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
+  return apply_verification_backing_override_(runtime_truth);
+}
+
+ProducerBackingCapabilities SyntheticProvider::capture_backing_capabilities(
+    const CaptureRequest& req) const noexcept {
+  const ProducerBackingCapabilities runtime_truth = query_capture_producer_capabilities_(req);
+  return apply_verification_backing_override_(runtime_truth);
+}
+
+bool SyntheticProvider::has_runtime_gpu_backing_path_() noexcept {
+  return synthetic_gpu_backing_runtime_available();
+}
+
+ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilities_(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  (void)profile;
+  (void)picture;
+  return ProducerBackingCapabilities{
+      true,
+      has_runtime_gpu_backing_path_(),
+  };
+}
+
+ProducerBackingCapabilities SyntheticProvider::query_capture_producer_capabilities_(
+    const CaptureRequest& req) const noexcept {
+  (void)req;
+  return ProducerBackingCapabilities{
+      true,
+      has_runtime_gpu_backing_path_(),
+  };
+}
+
+ProducerBackingCapabilities SyntheticProvider::apply_verification_backing_override_(
+    ProducerBackingCapabilities runtime_truth) const noexcept {
+  // Verification-only advertisement override. Non-release behavior layered on
+  // top of producer/runtime truth.
+  switch (cfg_.verification_backing_advertisement_override) {
+    case SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth:
+      return runtime_truth;
+    case SyntheticVerificationBackingAdvertisementOverride::ForceCpuOnly:
+      return ProducerBackingCapabilities{true, false};
+    case SyntheticVerificationBackingAdvertisementOverride::ForceCpuAndGpu:
+      return ProducerBackingCapabilities{true, true};
+    case SyntheticVerificationBackingAdvertisementOverride::ForceGpuOnly:
+      return ProducerBackingCapabilities{false, true};
+    default:
+      return runtime_truth;
+  }
+}
+
+bool SyntheticProvider::choose_stream_gpu_preference_(
+    ProducerBackingCapabilities capabilities) const noexcept {
+  return capabilities.gpu_backed_available;
+}
+
+
+uint64_t SyntheticProvider::generator_frame_ordinal_from_ns_(
+    uint64_t timestamp_ns,
+    const PictureConfig& picture) noexcept {
+  if (picture.generator_fps_num == 0 || picture.generator_fps_den == 0) {
+    return 0;
+  }
+  const __uint128_t numerator =
+      static_cast<__uint128_t>(timestamp_ns) * static_cast<__uint128_t>(picture.generator_fps_num);
+  const __uint128_t denominator =
+      static_cast<__uint128_t>(1'000'000'000ull) * static_cast<__uint128_t>(picture.generator_fps_den);
+  if (denominator == 0) {
+    return 0;
+  }
+  const __uint128_t q = numerator / denominator;
+  if (q > static_cast<__uint128_t>(std::numeric_limits<uint64_t>::max())) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(q);
 }
 
 ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
@@ -78,11 +169,6 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
-
-  if (banners_enabled()) {
-    std::fprintf(stdout, "[Synthetic] role=%s\n", role_to_string(cfg_.synthetic_role));
-    std::fflush(stdout);
-  }
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Backward-compatibility baseline for Timeline-role synthetic operation:
@@ -137,6 +223,94 @@ void SyntheticProvider::timeline_dispatch_request_(const SyntheticScheduledEvent
   if (timeline_request_dispatch_hook_) {
     timeline_request_dispatch_hook_(ev);
   }
+}
+
+bool SyntheticProvider::timeline_is_destructive_primitive_(SyntheticEventType type) const {
+  return type == SyntheticEventType::StopStream ||
+         type == SyntheticEventType::DestroyStream ||
+         type == SyntheticEventType::CloseDevice;
+}
+
+bool SyntheticProvider::timeline_destructive_prereq_ready_(
+    const SyntheticScheduledEvent& ev,
+    const char*& reason) const {
+  // Completion authority for this gate is provider-integrated runtime fact:
+  // the relevant stream/device state must already be reflected here.
+  // Submit rc==OK from the host binding is only admission, not completion.
+  reason = nullptr;
+  switch (ev.type) {
+    case SyntheticEventType::DestroyStream: {
+      auto it = streams_.find(ev.stream_id);
+      if (it != streams_.end() && it->second.created && it->second.started) {
+        reason = "await_stream_stopped";
+        return false;
+      }
+      if (it != streams_.end() && it->second.created) {
+        for (const auto& slot : it->second.pool) {
+          if (slot && slot->in_use.load(std::memory_order_acquire)) {
+            reason = "await_stream_buffers_released";
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    case SyntheticEventType::CloseDevice: {
+      for (const auto& kv : streams_) {
+        if (kv.second.created && kv.second.req.device_instance_id == ev.device_instance_id) {
+          reason = "await_device_stream_absence";
+          return false;
+        }
+      }
+      return true;
+    }
+    case SyntheticEventType::StopStream:
+      return true;
+    default:
+      return true;
+  }
+}
+
+void SyntheticProvider::timeline_activate_or_dispatch_(const SyntheticScheduledEvent& ev, bool allow_pending) {
+  if (completion_gated_destructive_sequencing_enabled_ && timeline_is_destructive_primitive_(ev.type)) {
+    if (ev.type == SyntheticEventType::StopStream) {
+      timeline_teardown_trace_emit("activate StopStream stream_id=%llu",
+                                   static_cast<unsigned long long>(ev.stream_id));
+    } else if (ev.type == SyntheticEventType::DestroyStream) {
+      timeline_teardown_trace_emit("activate DestroyStream stream_id=%llu",
+                                   static_cast<unsigned long long>(ev.stream_id));
+    } else if (ev.type == SyntheticEventType::CloseDevice) {
+      timeline_teardown_trace_emit("activate CloseDevice device_instance_id=%llu",
+                                   static_cast<unsigned long long>(ev.device_instance_id));
+    }
+
+    const char* reason = nullptr;
+    if (!timeline_destructive_prereq_ready_(ev, reason) && allow_pending) {
+      if (ev.type == SyntheticEventType::DestroyStream) {
+        timeline_teardown_trace_emit("pending DestroyStream stream_id=%llu reason=%s",
+                                     static_cast<unsigned long long>(ev.stream_id),
+                                     reason ? reason : "await_prereq");
+      } else if (ev.type == SyntheticEventType::CloseDevice) {
+        timeline_teardown_trace_emit("pending CloseDevice device_instance_id=%llu reason=%s",
+                                     static_cast<unsigned long long>(ev.device_instance_id),
+                                     reason ? reason : "await_prereq");
+      }
+      timeline_pending_destructive_.push_back(ev);
+      return;
+    }
+  }
+
+  if (ev.type == SyntheticEventType::StopStream) {
+    timeline_teardown_trace_emit("dispatch StopStream stream_id=%llu",
+                                 static_cast<unsigned long long>(ev.stream_id));
+  } else if (ev.type == SyntheticEventType::DestroyStream) {
+    timeline_teardown_trace_emit("dispatch DestroyStream stream_id=%llu",
+                                 static_cast<unsigned long long>(ev.stream_id));
+  } else if (ev.type == SyntheticEventType::CloseDevice) {
+    timeline_teardown_trace_emit("dispatch CloseDevice device_instance_id=%llu",
+                                 static_cast<unsigned long long>(ev.device_instance_id));
+  }
+  timeline_dispatch_request_(ev);
 }
 
 bool SyntheticProvider::materialize_staged_canonical_scenario_(
@@ -217,7 +391,7 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::StopStream: {
-        timeline_dispatch_request_(ev);
+        timeline_activate_or_dispatch_(ev, /*allow_pending=*/false);
         break;
       }
 
@@ -227,7 +401,7 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::CloseDevice: {
-        timeline_dispatch_request_(ev);
+        timeline_activate_or_dispatch_(ev, /*allow_pending=*/true);
         break;
       }
 
@@ -237,7 +411,7 @@ void SyntheticProvider::timeline_pump_() {
       }
 
       case SyntheticEventType::DestroyStream: {
-        timeline_dispatch_request_(ev);
+        timeline_activate_or_dispatch_(ev, /*allow_pending=*/true);
         break;
       }
 
@@ -245,8 +419,28 @@ void SyntheticProvider::timeline_pump_() {
         timeline_dispatch_request_(ev);
         break;
       }
+      case SyntheticEventType::UpdateCapturePicture: {
+        timeline_dispatch_request_(ev);
+        break;
+      }
     }
   }
+
+  if (!completion_gated_destructive_sequencing_enabled_ || timeline_pending_destructive_.empty()) {
+    return;
+  }
+
+  std::vector<SyntheticScheduledEvent> still_pending;
+  still_pending.reserve(timeline_pending_destructive_.size());
+  for (const auto& ev : timeline_pending_destructive_) {
+    const char* reason = nullptr;
+    if (!timeline_destructive_prereq_ready_(ev, reason)) {
+      still_pending.push_back(ev);
+      continue;
+    }
+    timeline_activate_or_dispatch_(ev, /*allow_pending=*/false);
+  }
+  timeline_pending_destructive_.swap(still_pending);
 }
 
 void SyntheticProvider::set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook) {
@@ -342,6 +536,7 @@ ProviderResult SyntheticProvider::open_device(
   d.root_id = root_id;
   d.open = true;
   d.native_id = alloc_native_id_(NativeObjectType::Device);
+  d.capture_picture = capture_template().picture;
 
   emit_native_create_device_(d);
   strand_.post_device_opened(device_instance_id);
@@ -405,7 +600,6 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
 
   s.created = true;
   s.started = false;
-  s.frame_index = 0;
   s.next_due_ns = 0;
   s.native_id = alloc_native_id_(NativeObjectType::Stream);
 
@@ -475,6 +669,7 @@ ProviderResult SyntheticProvider::start_stream(
   auto& s = it->second;
   s.req.profile = profile;
   s.picture = picture;
+  release_stream_live_gpu_backing_(s);
 
   const uint32_t w = profile.width;
   const uint32_t h = profile.height;
@@ -495,8 +690,7 @@ ProviderResult SyntheticProvider::start_stream(
     s.pool.clear();
     s.pool.reserve(kPoolSize);
     for (size_t i = 0; i < kPoolSize; ++i) {
-      auto slot = std::make_unique<SyntheticProvider::StreamState::BufferSlot>();
-      slot->owner = this;
+      auto slot = std::make_shared<SyntheticProvider::StreamState::BufferSlot>();
       slot->stream_id = stream_id;
       slot->bytes.resize(size_bytes);
       slot->in_use.store(false, std::memory_order_relaxed);
@@ -504,6 +698,9 @@ ProviderResult SyntheticProvider::start_stream(
     }
     s.pool_cursor = 0;
   }
+  const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
+  s.prefer_gpu_backing = choose_stream_gpu_preference_(runtime_truth);
+  s.gpu_staging.resize(size_bytes);
 
   s.started = true;
   s.producing = true;
@@ -525,7 +722,6 @@ ProviderResult SyntheticProvider::start_stream(
     strand_.post_native_object_created(info);
   }
 
-  s.frame_index = 0;
   // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
@@ -556,6 +752,7 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  release_stream_live_gpu_backing_(s);
   return ProviderResult::success();
 }
 
@@ -574,9 +771,110 @@ ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, 
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end() || !it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (!find_preset_info(picture.preset)) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+  it->second.capture_picture = picture;
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
-  (void)req;
-  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.capture_id == 0 || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  auto dev_it = devices_.find(req.device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  const uint32_t fmt = req.format_fourcc == 0 ? FOURCC_RGBA : req.format_fourcc;
+  if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA)) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (req.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  const uint32_t stride = req.width * 4u;
+  const size_t frame_size = static_cast<size_t>(stride) * static_cast<size_t>(req.height);
+  auto bytes = std::make_shared<std::vector<std::uint8_t>>();
+  bytes->resize(frame_size);
+  std::vector<std::uint8_t> gpu_staging;
+  gpu_staging.resize(frame_size);
+
+  bool preset_valid = true;
+  PatternSpec spec = to_pattern_spec(req.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  if (!preset_valid) {
+    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  PatternRenderTarget dst{};
+  dst.data = gpu_staging.data();
+  dst.size_bytes = gpu_staging.size();
+  dst.width = req.width;
+  dst.height = req.height;
+  dst.stride_bytes = stride;
+  dst.format = PatternSpec::PackedFormat::RGBA8;
+
+  const uint64_t capture_ts_ns = clock_.now_ns();
+  PatternOverlayData ov{};
+  ov.frame_index = generator_frame_ordinal_from_ns_(capture_ts_ns, req.picture);
+  ov.timestamp_ns = capture_ts_ns;
+  ov.stream_id = 0;
+
+  CpuPackedPatternRenderer renderer{};
+  renderer.render_into(spec, dst, ov);
+  const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
+      gpu_staging.data(),
+      req.width,
+      req.height,
+      stride,
+      *bytes);
+  if (!gpu_ok) {
+    std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
+  }
+
+  if (fmt == FOURCC_BGRA) {
+    for (size_t i = 0; i + 3 < bytes->size(); i += 4) {
+      std::swap((*bytes)[i], (*bytes)[i + 2]);
+    }
+  }
+
+  FrameView fv{};
+  fv.device_instance_id = req.device_instance_id;
+  fv.stream_id = 0;
+  fv.capture_id = req.capture_id;
+  fv.width = req.width;
+  fv.height = req.height;
+  fv.format_fourcc = fmt;
+  fv.capture_timestamp.value = capture_ts_ns;
+  fv.capture_timestamp.tick_ns = 1;
+  fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+  fv.data = bytes->data();
+  fv.size_bytes = bytes->size();
+  fv.stride_bytes = stride;
+
+  auto* lease = new FrameReleaseLease();
+  lease->bytes = bytes;
+  fv.release = &SyntheticProvider::release_frame_;
+  fv.release_user = lease;
+
+  strand_.post_capture_started(req.capture_id);
+  strand_.post_frame(fv);
+  strand_.post_capture_completed(req.capture_id);
+  return ProviderResult::success();
 }
 
 ProviderResult SyntheticProvider::abort_capture(uint64_t capture_id) {
@@ -621,6 +919,7 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  release_stream_live_gpu_backing_(s);
   s.started = false;
   strand_.post_stream_destroyed(s.req.stream_id);
   emit_native_destroy_(s.native_id);
@@ -778,6 +1077,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_seq_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
+  timeline_pending_destructive_.clear();
   timeline_scenario_ = scenario;
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
@@ -798,6 +1098,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_seq_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
+  timeline_pending_destructive_.clear();
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = scenario;
   timeline_canonical_staged_ = true;
@@ -815,6 +1116,7 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_pending_destructive_.clear();
   if (timeline_canonical_staged_) {
     std::string error;
     if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
@@ -845,6 +1147,7 @@ ProviderResult SyntheticProvider::stop_timeline_scenario_for_host() {
   timeline_seq_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
+  timeline_pending_destructive_.clear();
   return ProviderResult::success();
 }
 
@@ -859,6 +1162,35 @@ ProviderResult SyntheticProvider::set_timeline_scenario_paused_for_host(bool pau
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   timeline_paused_ = paused;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::advance_timeline_for_host(uint64_t dt_ns) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  if (cfg_.timing_driver != TimingDriver::VirtualTime) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  advance(dt_ns);
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (cfg_.synthetic_role != SyntheticRole::Timeline) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  completion_gated_destructive_sequencing_enabled_ =
+      (reconciliation == TimelineReconciliation::CompletionGated);
+  if (!completion_gated_destructive_sequencing_enabled_) {
+    timeline_pending_destructive_.clear();
+  }
   return ProviderResult::success();
 }
 
@@ -887,6 +1219,7 @@ ProviderResult SyntheticProvider::shutdown() {
     timeline_q_.pop();
   }
   timeline_seq_ = 0;
+  timeline_pending_destructive_.clear();
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
@@ -910,9 +1243,52 @@ ProviderResult SyntheticProvider::shutdown() {
 
 void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   (void)frame;
-  auto* slot = static_cast<StreamState::BufferSlot*>(user);
-  if (!slot) return;
-  slot->in_use.store(false, std::memory_order_release);
+  auto* lease = static_cast<FrameReleaseLease*>(user);
+  if (!lease) {
+    return;
+  }
+  if (lease->slot) {
+    lease->slot->in_use.store(false, std::memory_order_release);
+  }
+  delete lease;
+}
+
+bool SyntheticProvider::ensure_stream_live_gpu_backing_(
+    StreamState& s,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride) {
+  if (s.live_gpu_backing &&
+      s.live_gpu_width == width &&
+      s.live_gpu_height == height &&
+      s.live_gpu_stride_bytes == stride) {
+    return true;
+  }
+  release_stream_live_gpu_backing_(s);
+  // Create and recreate share the same runtime helper so usage flags remain
+  // identical for initial allocation and retry allocation.
+  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(width, height, stride);
+  if (!s.live_gpu_backing) {
+    return false;
+  }
+  s.live_gpu_width = width;
+  s.live_gpu_height = height;
+  s.live_gpu_stride_bytes = stride;
+  return true;
+}
+
+void SyntheticProvider::release_stream_live_gpu_backing_(StreamState& s) {
+  if (!s.live_gpu_backing) {
+    s.live_gpu_width = 0;
+    s.live_gpu_height = 0;
+    s.live_gpu_stride_bytes = 0;
+    return;
+  }
+  synthetic_gpu_backing_release_stream_live_gpu_backing(s.live_gpu_backing);
+  s.live_gpu_backing.reset();
+  s.live_gpu_width = 0;
+  s.live_gpu_height = 0;
+  s.live_gpu_stride_bytes = 0;
 }
 
 void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
@@ -925,7 +1301,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   const uint32_t stride = w * 4u;
 
   // Acquire a buffer slot.
-  StreamState::BufferSlot* slot = nullptr;
+  std::shared_ptr<StreamState::BufferSlot> slot;
   const size_t n = s.pool.size();
   if (n == 0) {
     return;
@@ -938,7 +1314,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     }
     bool expected = false;
     if (cand->in_use.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-      slot = cand.get();
+      slot = cand;
       s.pool_cursor = (idx + 1) % n;
       break;
     }
@@ -955,19 +1331,52 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
 
   PatternRenderTarget dst{};
-  dst.data = slot->bytes.data();
-  dst.size_bytes = slot->bytes.size();
+  dst.data = s.gpu_staging.data();
+  dst.size_bytes = s.gpu_staging.size();
   dst.width = w;
   dst.height = h;
   dst.stride_bytes = stride;
   dst.format = PatternSpec::PackedFormat::RGBA8;
 
   PatternOverlayData ov{};
-  ov.frame_index = s.frame_index;
+  ov.frame_index = generator_frame_ordinal_from_ns_(scheduled_capture_ns, s.picture);
   ov.timestamp_ns = scheduled_capture_ns;
   ov.stream_id = s.req.stream_id;
 
   s.renderer.render_into(spec, dst, ov);
+  bool gpu_ok = false;
+  std::shared_ptr<void> gpu_backing;
+  if (s.prefer_gpu_backing) {
+    if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+      gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+          s.live_gpu_backing,
+          s.gpu_staging.data(),
+          w,
+          h,
+          stride);
+      if (!gpu_ok) {
+        // Preserve current provider hardening shape: one release/recreate and
+        // one retry if the in-place live-backing update reports failure.
+        release_stream_live_gpu_backing_(s);
+        if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+          gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+              s.live_gpu_backing,
+              s.gpu_staging.data(),
+              w,
+              h,
+              stride);
+        }
+      }
+      if (gpu_ok) {
+        gpu_backing = s.live_gpu_backing;
+      }
+    }
+  }
+  if (!gpu_ok) {
+    // Intentional current-slice behavior: renderer output stages in CPU memory
+    // each frame, then uploads to the stream-owned live GPU backing when used.
+    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+  }
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
@@ -976,17 +1385,28 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.width = w;
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
+  fv.primary_backing_kind = gpu_ok ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
+  fv.primary_backing_artifact = std::move(gpu_backing);
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = slot->bytes.data();
-  fv.size_bytes = slot->bytes.size();
-  fv.stride_bytes = stride;
+  fv.data = gpu_ok ? nullptr : slot->bytes.data();
+  fv.size_bytes = gpu_ok ? 0u : slot->bytes.size();
+  fv.stride_bytes = gpu_ok ? 0u : stride;
+  const bool profile_compatible =
+      fv.width == s.req.profile.width &&
+      fv.height == s.req.profile.height &&
+      (s.req.profile.format_fourcc == 0 || s.req.profile.format_fourcc == fv.format_fourcc);
+  if (!profile_compatible) {
+    slot->in_use.store(false, std::memory_order_release);
+    return;
+  }
+  auto* lease = new FrameReleaseLease();
+  lease->slot = slot;
   fv.release = &SyntheticProvider::release_frame_;
-  fv.release_user = slot;
+  fv.release_user = lease;
 
   strand_.post_frame(fv);
-  s.frame_index++;
 }
 
 void SyntheticProvider::emit_due_frames_() {

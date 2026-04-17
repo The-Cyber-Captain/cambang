@@ -2,27 +2,42 @@ extends SceneTree
 
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
 
+var _window: Window = null
+var _panel: Node = null
+var _server: Node = null
+
 class MockServer:
 	extends Node
 	signal state_published(gen, version, topology_version)
+	const PROVIDER_KIND_PLATFORM_BACKED := 0
+	const PROVIDER_KIND_SYNTHETIC := 1
+	const SYNTHETIC_ROLE_NOMINAL := 0
+	const SYNTHETIC_ROLE_TIMELINE := 1
+	const TIMING_DRIVER_REAL_TIME := 0
+	const TIMING_DRIVER_VIRTUAL_TIME := 1
 
 	var snapshot: Variant = null
-	var provider_mode := "synthetic"
+	var active_provider_config: Variant = {
+		"provider_kind": PROVIDER_KIND_SYNTHETIC,
+		"synthetic_role": SYNTHETIC_ROLE_TIMELINE,
+		"timing_driver": TIMING_DRIVER_VIRTUAL_TIME,
+		"timeline_reconciliation": null
+	}
 
 	func get_state_snapshot() -> Variant:
 		return snapshot
 
-	func get_provider_mode() -> String:
-		return provider_mode
+	func get_active_provider_config() -> Variant:
+		return active_provider_config
 
 
 func _initialize() -> void:
-	var window := Window.new()
-	window.title = "status_panel_provider_only_transition_harness"
-	window.size = DEFAULT_VIEWPORT_SIZE
-	window.mode = Window.MODE_WINDOWED
-	window.visible = true
-	get_root().add_child(window)
+	_window = Window.new()
+	_window.title = "status_panel_provider_only_transition_harness"
+	_window.size = DEFAULT_VIEWPORT_SIZE
+	_window.mode = Window.MODE_WINDOWED
+	_window.visible = true
+	get_root().add_child(_window)
 
 	var panel_script: Variant = load("res://addons/cambang/cambang_status_panel.gd")
 	if panel_script == null or not (panel_script is GDScript):
@@ -34,12 +49,14 @@ func _initialize() -> void:
 		_fail("failed to instantiate status panel")
 		return
 
+	_panel = panel
 	panel.name = "CamBANGStatusPanel"
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	window.add_child(panel)
+	_window.add_child(panel)
 
 	var server := MockServer.new()
+	_server = server
 	server.name = "MockCamBANGServer"
 	get_root().add_child(server)
 
@@ -114,7 +131,7 @@ func _initialize() -> void:
 		return
 
 	print("OK: status panel provider-only transition harness PASS")
-	quit(0)
+	_quit_with_cleanup(0)
 
 
 func _refresh_panel_with_snapshot(panel: Variant, server: MockServer, snapshot: Variant) -> void:
@@ -279,4 +296,14 @@ func _collect_entry_ids(model: Variant) -> Array[String]:
 func _fail(message: String) -> void:
 	push_error(message)
 	printerr(message)
-	quit(1)
+	_quit_with_cleanup(1)
+
+
+func _quit_with_cleanup(code: int) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		_panel.queue_free()
+	if _server != null and is_instance_valid(_server):
+		_server.queue_free()
+	if _window != null and is_instance_valid(_window):
+		_window.queue_free()
+	quit(code)

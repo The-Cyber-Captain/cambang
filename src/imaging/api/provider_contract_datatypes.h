@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,21 @@ enum class ProviderError : uint32_t {
   ERR_TRANSIENT_FAILURE,
   ERR_PROVIDER_FAILED,
   ERR_SHUTTING_DOWN,
+};
+
+
+// Internal producer backing vocabulary.
+//
+// This models producer realization capability and is intentionally separate
+// from payload/result taxonomy (e.g., ResultPayloadKind).
+enum class ProducerBackingKind : uint8_t {
+  CPU = 0,
+  GPU = 1,
+};
+
+struct ProducerBackingCapabilities {
+  bool cpu_backed_available = false;
+  bool gpu_backed_available = false;
 };
 
 // Deterministic result for provider method calls.
@@ -99,6 +115,13 @@ struct PictureConfig {
   PatternPreset preset = PatternPreset::XyXor;
   uint32_t seed = 0;
 
+  // Synthetic source-generation cadence (independent of stream/profile FPS).
+  // Render-driving frame ordinal samples synthetic time using:
+  // floor(timestamp_ns * generator_fps_num / (1e9 * generator_fps_den)).
+  // If either term is 0, source is treated as static.
+  uint32_t generator_fps_num = 30;
+  uint32_t generator_fps_den = 1;
+
   // Overlays (implemented by the Pattern Module renderer for synthetic/stub).
   bool overlay_frame_index_offsets = true;
   bool overlay_moving_bar = true;
@@ -113,6 +136,11 @@ struct PictureConfig {
 };
 
 struct StreamTemplate {
+  CaptureProfile profile{};
+  PictureConfig picture{};
+};
+
+struct CaptureTemplate {
   CaptureProfile profile{};
   PictureConfig picture{};
 };
@@ -187,6 +215,7 @@ struct CaptureRequest {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t format_fourcc = 0;        // e.g., 'JPEG', 'RAW '
+  PictureConfig picture{};
 
   uint64_t profile_version = 0;      // core bookkeeping
 };
@@ -251,6 +280,7 @@ struct FrameView {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t format_fourcc = 0;
+  ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
 
   // Timing
   CaptureTimestamp capture_timestamp{};
@@ -258,6 +288,10 @@ struct FrameView {
   // Buffer
   const uint8_t* data = nullptr;
   size_t size_bytes = 0;
+  // Optional opaque primary artifact for non-CPU-backed frames.
+  // For ProducerBackingKind::GPU this carries the authoritative provider->core
+  // primary backing when available.
+  std::shared_ptr<void> primary_backing_artifact{};
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;

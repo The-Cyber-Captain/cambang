@@ -10,6 +10,9 @@
 
 #include <utility>
 
+#include "imaging/broker/banner_info.h"
+#include "imaging/api/timeline_teardown_trace.h"
+
 namespace cambang {
 
 namespace {
@@ -34,6 +37,11 @@ static bool banners_enabled() noexcept {
   return !(v && v[0] == '0' && v[1] == '\0');
 }
 
+static bool disable_result_routing_requested() noexcept {
+  const char* v = std::getenv("CAMBANG_DISABLE_RESULT_ROUTING");
+  return (v && v[0] == '1' && v[1] == '\0');
+}
+
 CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
@@ -47,8 +55,10 @@ CoreRuntime::CoreRuntime()
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+      }, [this]() -> bool {
+        return state_.load(std::memory_order_acquire) == CoreRuntimeState::LIVE;
       }),
-      ingress_(&core_thread_, [this](CoreCommand&& cmd) {
+      ingress_(&core_thread_, [this](ProviderToCoreCommand&& cmd) {
         // This lambda is executed ONLY on the core thread (posted by ingress).
         // Provider callbacks are "facts"; we enqueue them and process them before requests
         // on each core pump tick.
@@ -60,6 +70,9 @@ CoreRuntime::CoreRuntime()
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
       }) {
+  dispatcher_.set_result_store(&result_store_);
+  const bool result_routing_enabled = !disable_result_routing_requested();
+  dispatcher_.set_result_routing_enabled(result_routing_enabled);
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   // Dev-only latest-frame sink (core thread dispatch path).
   dispatcher_.set_frame_sink(&latest_frame_sink_);
@@ -168,6 +181,8 @@ void CoreRuntime::stop() {
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
   epoch_ = std::chrono::steady_clock::now();
+  // Do not carry retained result artifacts across generation boundaries.
+  result_store_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
@@ -184,7 +199,7 @@ void CoreRuntime::on_core_timer_tick() {
   const uint64_t now_ns = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
-  // Banner 2: Core-loop provider attachment (latched, effective).
+  // Banner 2: Core-loop provider attachment (effective runtime attachment).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
   if (!provider_banner_printed_ && banners_enabled()) {
     if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
@@ -194,19 +209,20 @@ void CoreRuntime::on_core_timer_tick() {
       if (smoke_printed_process.exchange(true)) {
         provider_banner_printed_ = true;
       } else {
-      const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
-                                  "[CamBANG][Core] provider attached (latched): %s / %s",
-                                  "platform_backed", prov->provider_name());
-      (void)n;
-      std::fprintf(stdout, "%s\n", core_banner_line_);
-      std::fflush(stdout);
-      core_banner_line_pending_.store(true, std::memory_order_release);
-      provider_banner_printed_ = true;
+        const ProviderBannerInfo bi = describe_provider_for_banner(prov);
+        const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
+                                    "[CamBANG][Core] provider attached: %s / %s",
+                                    bi.provider_mode, bi.provider_name);
+        (void)n;
+        std::fprintf(stdout, "%s\n", core_banner_line_);
+        std::fflush(stdout);
+        core_banner_line_pending_.store(true, std::memory_order_release);
+        provider_banner_printed_ = true;
       }
 #else
       const ProviderBannerInfo bi = describe_provider_for_banner(prov);
       const int n = std::snprintf(core_banner_line_, sizeof(core_banner_line_),
-                                  "[CamBANG][Core] provider attached (latched): %s / %s",
+                                  "[CamBANG][Core] provider attached: %s / %s",
                                   bi.provider_mode, bi.provider_name);
       (void)n;
       std::fprintf(stdout, "%s\n", core_banner_line_);
@@ -220,7 +236,7 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 1) Drain provider facts ("what happened") first.
   while (!provider_facts_.empty()) {
-    CoreCommand cmd = std::move(provider_facts_.front());
+    ProviderToCoreCommand cmd = std::move(provider_facts_.front());
     provider_facts_.pop_front();
     dispatcher_.dispatch(std::move(cmd));
   }
@@ -558,6 +574,9 @@ if (dispatcher_.consume_relevant_state_changed()) {
 }
 
 void CoreRuntime::on_core_stop() {
+  // Runtime is no longer live; clear retained results so stop/start boundaries
+  // cannot expose stale prior-generation result truth.
+  result_store_.clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }
@@ -758,7 +777,12 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     (void)streams_.mark_stop_requested_by_core(stream_id);
-    (void)p->stop_stream(stream_id);
+    const ProviderResult sr = p->stop_stream(stream_id);
+    if (!sr.ok()) {
+      timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=provider_rc_%u",
+                                   static_cast<unsigned long long>(stream_id),
+                                   static_cast<unsigned>(sr.code));
+    }
     (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
   });
 
@@ -783,6 +807,11 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
     // Best-effort: stop before destroy.
     (void)p->stop_stream(stream_id);
     const ProviderResult dr = p->destroy_stream(stream_id);
+    if (!dr.ok()) {
+      timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=provider_rc_%u",
+                                   static_cast<unsigned long long>(stream_id),
+                                   static_cast<unsigned>(dr.code));
+    }
     if (dr.ok()) {
       (void)streams_.on_stream_destroyed(stream_id);
       // Ensure core does not retain a ghost record.
@@ -807,10 +836,12 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     return TryOpenDeviceStatus::Busy;
   }
 
-  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id]() {
+  const CaptureTemplate capture_tmpl = prov->capture_template();
+  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id, capture_tmpl]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
+    (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
     (void)p->open_device(hardware_id, device_instance_id, root_id);
   });
 
@@ -831,7 +862,12 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
   const CoreThread::PostResult pr = try_post([this, device_instance_id]() {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
-    (void)p->close_device(device_instance_id);
+    const ProviderResult cr = p->close_device(device_instance_id);
+    if (!cr.ok()) {
+      timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=provider_rc_%u",
+                                   static_cast<unsigned long long>(device_instance_id),
+                                   static_cast<unsigned>(cr.code));
+    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryCloseDeviceStatus::OK
@@ -871,6 +907,72 @@ TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
                                                   : TrySetStreamPictureStatus::Busy;
 }
 
+TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
+    uint64_t device_instance_id,
+    const PictureConfig& picture) noexcept {
+  if (device_instance_id == 0) {
+    return TrySetCapturePictureStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TrySetCapturePictureStatus::Busy;
+  }
+  if (!prov->supports_capture_picture_updates()) {
+    return TrySetCapturePictureStatus::NotSupported;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, picture]() {
+    ICameraProvider* p = provider_.load(std::memory_order_acquire);
+    if (!p) return;
+    const ProviderResult sr = p->set_capture_picture_config(device_instance_id, picture);
+    if (!sr.ok()) {
+      return;
+    }
+    if (devices_.set_capture_picture(device_instance_id, picture)) {
+      request_publish_from_core_unchecked();
+    }
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued) ? TrySetCapturePictureStatus::OK
+                                                  : TrySetCapturePictureStatus::Busy;
+}
+
+bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return false;
+  }
+
+  const CaptureTemplate tmpl = prov->capture_template();
+  out.device_instance_id = device_instance_id;
+  out.rig_id = 0;
+  out.width = tmpl.profile.width;
+  out.height = tmpl.profile.height;
+  out.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
+  out.profile_version = 0;
+  out.picture = tmpl.picture;
+
+  if (const auto* rec = devices_.find(device_instance_id)) {
+    if (rec->capture_width > 0) {
+      out.width = rec->capture_width;
+    }
+    if (rec->capture_height > 0) {
+      out.height = rec->capture_height;
+    }
+    if (rec->capture_format != 0) {
+      out.format_fourcc = rec->capture_format;
+    }
+    out.profile_version = rec->capture_profile_version;
+    out.picture = rec->capture_picture;
+  }
+
+  return out.width > 0 && out.height > 0;
+}
+
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {
   Stats s;
   s.publish_requests_coalesced = publish_requests_coalesced_.load(std::memory_order_relaxed);
@@ -895,7 +997,7 @@ void CoreRuntime::request_publish() {
     return;
   }
 
-  // Coalesce publish requests to avoid spamming the core mailbox.
+  // Coalesce publish requests to avoid spamming the provider_to_core_commands queue.
   const bool was_pending = publish_pending_.exchange(true, std::memory_order_acq_rel);
   if (was_pending) {
     publish_requests_coalesced_.fetch_add(1, std::memory_order_relaxed);
@@ -932,7 +1034,7 @@ void CoreRuntime::request_publish() {
   }
 }
 
-void CoreRuntime::enqueue_provider_fact(CoreCommand&& cmd) {
+void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
   assert(core_thread_.is_core_thread());
   provider_facts_.push_back(std::move(cmd));
   core_thread_.request_timer_tick();

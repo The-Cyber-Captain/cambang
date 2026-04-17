@@ -3,6 +3,14 @@
 > This document supplements `core_runtime_model.md`,
 > `provider_architecture.md`, and `architecture/publication_model.md`.
 > It does not supersede them.
+> 
+> > Current release-facing payload/result contract:
+> See `docs/architecture/pixel_payload_and_result_contract.md`.
+>
+> `frame_sinks.md` defines the internal/runtime sink boundary.
+> The payload/result contract defines the retained-result, ownership,
+> and materialization model used by release-facing `Stream Result`,
+> `Capture Result`, and `Capture Result Set`.
 
 ---
 
@@ -128,6 +136,106 @@ including GPU-native YUV import and shader conversion.
 Frame sinks are extension points, not redefinitions of the core provider
 contract.
 
+## Release-facing naming and role split
+
+Frame sinks are an **internal/runtime boundary concept**.
+
+They define how accepted `FrameView` payloads leave the core runtime and
+enter downstream handling under deterministic ownership/release rules.
+
+They do **not** by themselves define the Godot-facing image access API.
+
+### Godot-facing image access
+
+Release-facing/public API should be expressed in **result-oriented** terms
+rather than mailbox-oriented terms.
+
+Canonical Godot-facing image-access nouns are:
+
+- **Stream Result**
+- **Capture Result**
+- **Capture Result Set**
+
+These describe what the user/runtime-visible API exposes, not which sink
+implementation populated that result.
+
+### Internal sink specialization vocabulary
+
+When implementation discussion needs to distinguish repeating-stream and
+still-capture paths, prefer:
+
+- **Stream Sink**
+- **Capture Sink**
+
+This keeps sink terminology aligned with the corresponding public runtime concepts:
+
+- repeating stream output
+- still-capture output
+
+without promoting development-only mailbox semantics into release
+architecture.
+
+### Initial release-facing mapping
+
+The initial release-facing image-access model uses a result-oriented split
+between repeating-stream and still-capture paths.
+
+#### Stream Sink → Stream Result
+
+A **Stream Sink** is the internal/runtime path responsible for handling
+accepted repeating-stream `FrameView` payloads for downstream stream-image
+access purposes.
+
+In the initial release-facing model:
+
+- accepted repeating-stream payloads may populate the latest retained
+  **Stream Result**
+- this is a result-oriented release-facing model, not public mailbox semantics
+- the model does not imply that every flowing stream frame is retained,
+  exported, or fanned out
+
+This mapping is intentionally compatible with later expansion to
+additional stream-consumption paths such as recording, broadcast, or
+third-party hand-off without redefining the public **Stream Result** noun.
+
+#### Capture Sink → Capture Result
+
+A **Capture Sink** is the internal/runtime path responsible for handling
+accepted still-capture payloads for downstream still-image access purposes.
+
+**Capture Sink** populates **Capture Result** objects, which represent
+discrete device-associated still-capture outputs rather than continuously
+replaced repeating-stream outputs.
+
+Rig-triggered grouped still capture is exposed publicly as a
+**Capture Result Set** containing the subset of realized device-associated
+**Capture Result** objects for that trigger.
+
+### Initial non-goals
+
+This model does not by itself define:
+
+- final GPU-native presentation architecture
+- full stream-sequence / recording / broadcast APIs
+- complete third-party fanout design
+- a requirement that release-facing stream access reuse development-only
+  mailbox implementation or terminology
+
+### Mailbox status
+
+`LatestFrameMailbox` remains a **development-only** sink used for current
+visibility/integration validation.
+
+It must not be treated as the canonical release-facing image-access model.
+
+Release-facing design may retain, transform, upload, or forward image data
+through other sink implementations while exposing result-oriented
+Godot-facing APIs.
+
+`LatestFrameMailbox` is a CPU-byte visibility sink, not the release-facing
+result model. Valid GPU-primary frames may have no CPU payload and can be
+unsupported by this mailbox path without being malformed.
+
 ---
 
 ## Counter semantics alignment
@@ -155,3 +263,8 @@ snapshot are:
 
 These are sink-neutral stream truth fields. They reflect the current retained
 visibility path disposition without exposing mailbox-local storage internals.
+
+Current visibility rejection counters are still interim semantics. During this
+phase, valid GPU-primary/no-CPU-payload frames may temporarily surface under the
+nearest existing unsupported/format-style rejection bucket; these should not be
+read as authoritative result-correctness failures.

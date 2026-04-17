@@ -17,6 +17,8 @@ struct SyntheticScenarioLoaderParsedCaptureProfile {
 struct SyntheticScenarioLoaderParsedPicture {
   std::string preset;
   std::uint32_t seed = 0;
+  std::uint32_t generator_fps_num = 30;
+  std::uint32_t generator_fps_den = 1;
   bool overlay_frame_index_offsets = true;
   bool overlay_moving_bar = true;
   std::uint8_t solid_r = 0;

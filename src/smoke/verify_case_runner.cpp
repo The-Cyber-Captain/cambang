@@ -1,5 +1,4 @@
 #include <charconv>
-#include <cstdio>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -12,122 +11,7 @@
 
 #include "smoke/verify_case/verify_case_catalog.h"
 
-#if defined(_WIN32)
-  #include <io.h>
-  #define CAMBANG_CLOSE _close
-  #define CAMBANG_DUP _dup
-  #define CAMBANG_DUP2 _dup2
-#else
-  #include <unistd.h>
-  #define CAMBANG_CLOSE close
-  #define CAMBANG_DUP dup
-  #define CAMBANG_DUP2 dup2
-#endif
-
 namespace {
-
-struct BufferedRunResult {
-  int rc = 0;
-  std::string output;
-};
-
-class ScopedStdCapture final {
-public:
-  bool begin() {
-    capture_ = std::tmpfile();
-    if (!capture_) {
-      return false;
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-
-    saved_stdout_fd_ = CAMBANG_DUP(fileno(stdout));
-    saved_stderr_fd_ = CAMBANG_DUP(fileno(stderr));
-    if (saved_stdout_fd_ < 0 || saved_stderr_fd_ < 0) {
-      cleanup_capture_();
-      return false;
-    }
-
-    const int capture_fd = fileno(capture_);
-    if (CAMBANG_DUP2(capture_fd, fileno(stdout)) < 0 ||
-        CAMBANG_DUP2(capture_fd, fileno(stderr)) < 0) {
-      restore();
-      cleanup_capture_();
-      return false;
-    }
-
-    active_ = true;
-    return true;
-  }
-
-  std::string end() {
-    if (!capture_) {
-      return {};
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-    restore();
-
-    std::rewind(capture_);
-    std::string data;
-    char buffer[4096];
-    while (const size_t n = std::fread(buffer, 1, sizeof(buffer), capture_)) {
-      data.append(buffer, n);
-    }
-
-    cleanup_capture_();
-    return data;
-  }
-
-  ~ScopedStdCapture() {
-    restore();
-    cleanup_capture_();
-  }
-
-private:
-  void restore_saved_fds_() {
-    if (saved_stdout_fd_ >= 0) {
-      CAMBANG_CLOSE(saved_stdout_fd_);
-      saved_stdout_fd_ = -1;
-    }
-    if (saved_stderr_fd_ >= 0) {
-      CAMBANG_CLOSE(saved_stderr_fd_);
-      saved_stderr_fd_ = -1;
-    }
-  }
-
-  void cleanup_capture_() {
-    if (capture_) {
-      std::fclose(capture_);
-      capture_ = nullptr;
-    }
-  }
-
-  void restore() {
-    if (!active_) {
-      restore_saved_fds_();
-      return;
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-    if (saved_stdout_fd_ >= 0) {
-      (void)CAMBANG_DUP2(saved_stdout_fd_, fileno(stdout));
-    }
-    if (saved_stderr_fd_ >= 0) {
-      (void)CAMBANG_DUP2(saved_stderr_fd_, fileno(stderr));
-    }
-    restore_saved_fds_();
-    active_ = false;
-  }
-
-  FILE* capture_ = nullptr;
-  int saved_stdout_fd_ = -1;
-  int saved_stderr_fd_ = -1;
-  bool active_ = false;
-};
 
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
@@ -135,9 +19,10 @@ bool starts_with(const std::string& s, const std::string& prefix) {
 
 void usage(const char* argv0, const std::vector<cambang::VerifyCaseDefinition>& verify_cases) {
   std::cerr << "usage: " << argv0 << " <verification_case_name> [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
-  std::cerr << "   or: " << argv0 << " --run-all [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]]\n";
+  std::cerr << "   or: " << argv0 << " --run-all [--provider=synthetic|stub] [--repeat=N] [--trace-realization[=block|csv|both]] [--verbose]\n";
   std::cerr << "default provider: synthetic\n";
   std::cerr << "default repeat: 1\n";
+  std::cerr << "default run-all: concise (pass details suppressed unless --verbose)\n";
   std::cerr << "available verification cases:\n";
   for (const auto& verify_case : verify_cases) {
     std::cerr << "  " << verify_case.name << "\n";
@@ -172,28 +57,28 @@ bool parse_trace_realization(const std::string& value, cambang::RealizationProfi
   return false;
 }
 
-BufferedRunResult run_buffered(const cambang::VerifyCaseDefinition& verify_case) {
-  ScopedStdCapture capture;
-  if (!capture.begin()) {
-    return BufferedRunResult{verify_case.run(), {}};
-  }
 
-  const int rc = verify_case.run();
-  return BufferedRunResult{rc, capture.end()};
+
+void append_line_to_buffer(FILE* stream, const std::string& text, void* user) {
+  auto* buffer = static_cast<std::string*>(user);
+  if (!buffer) {
+    return;
+  }
+  (*buffer) += (stream == stderr) ? "[stderr] " : "[stdout] ";
+  buffer->append(text);
+  buffer->push_back('\n');
 }
 
-void emit_buffered_failure_detail(std::string_view verify_case_name,
-                                  uint64_t iteration,
-                                  uint64_t repeat_count,
-                                  const std::string& detail) {
-  cli::line("[failure-detail] ", verify_case_name, " iteration ", iteration, "/", repeat_count);
-  if (!detail.empty()) {
-    std::fwrite(detail.data(), 1, detail.size(), stdout);
-    if (detail.back() != '\n') {
-      std::fputc('\n', stdout);
-    }
-    std::fflush(stdout);
+void print_case_log_dump(std::string_view case_name, const std::string& buffer) {
+  if (buffer.empty()) {
+    return;
   }
+  std::cerr << "----- begin verify-case log: " << case_name << " -----\n";
+  std::cerr << buffer;
+  if (buffer.back() != '\n') {
+    std::cerr << '\n';
+  }
+  std::cerr << "----- end verify-case log: " << case_name << " -----\n";
 }
 
 int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
@@ -219,35 +104,49 @@ int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
   return 0;
 }
 
-int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verify_cases, uint64_t repeat_count) {
+int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verify_cases,
+                         uint64_t repeat_count,
+                         bool verbose) {
   size_t passed = 0;
   size_t failed = 0;
 
   for (const auto& verify_case : verify_cases) {
     bool verify_case_failed = false;
     uint64_t completed = 0;
+    uint64_t failed_iteration = 0;
+    std::string case_log;
 
-    for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
-      const BufferedRunResult result = run_buffered(verify_case);
-      if (result.rc != 0) {
-        cli::line("[FAIL] ", verify_case.name, " (iteration ", iteration, "/", repeat_count, ")");
-        emit_buffered_failure_detail(verify_case.name, iteration, repeat_count, result.output);
-        verify_case_failed = true;
-        ++failed;
-        break;
+    {
+      cli::scoped_line_sink capture(&append_line_to_buffer, &case_log);
+      for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
+        const int rc = verify_case.run();
+        if (rc != 0) {
+          verify_case_failed = true;
+          failed_iteration = iteration;
+          ++failed;
+          break;
+        }
+        completed = iteration;
       }
-      completed = iteration;
     }
 
-    if (!verify_case_failed) {
-      ++passed;
-      cli::line("[PASS] ", verify_case.name, " (", completed, "/", repeat_count, ")");
+    if (verify_case_failed) {
+      print_case_log_dump(verify_case.name, case_log);
+      cli::line("[FAIL] ", verify_case.name, " (iteration ", failed_iteration, "/", repeat_count, ")");
+      continue;
     }
+
+    ++passed;
+    if (verbose) {
+      print_case_log_dump(verify_case.name, case_log);
+    }
+    cli::line("[PASS] ", verify_case.name, " (", completed, "/", repeat_count, ")");
   }
 
   cli::line("Summary: ", passed, " passed, ", failed, " failed");
   return failed == 0 ? 0 : 1;
 }
+
 
 } // namespace
 
@@ -256,6 +155,7 @@ int main(int argc, char** argv) {
   uint64_t repeat_count = 1;
   bool repeat_specified = false;
   bool run_all = false;
+  bool run_all_verbose = false;
   std::string requested;
   cambang::RealizationProfilerOptions profiler_options{};
   profiler_options.target_device_id = cambang::VerifyCaseHarness::kDeviceId;
@@ -316,6 +216,10 @@ int main(int argc, char** argv) {
       run_all = true;
       continue;
     }
+    if (arg == "--verbose") {
+      run_all_verbose = true;
+      continue;
+    }
     if (!requested.empty()) {
       const auto verify_cases = cambang::verify_case_catalog(provider_kind, profiler_options);
       std::cerr << "unexpected extra argument: " << arg << "\n";
@@ -332,7 +236,7 @@ int main(int argc, char** argv) {
       usage(argv[0], verify_cases);
       return 2;
     }
-    return run_all_verify_cases(verify_cases, repeat_count);
+    return run_all_verify_cases(verify_cases, repeat_count, run_all_verbose);
   }
 
   if (requested.empty()) {

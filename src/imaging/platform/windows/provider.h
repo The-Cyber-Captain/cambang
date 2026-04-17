@@ -54,9 +54,13 @@ public:
   ~WindowsProvider() override;
 
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }
+  ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
+
 
   StreamTemplate stream_template() const override;
+  CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return false; }
+  bool supports_capture_picture_updates() const noexcept override { return false; }
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
@@ -78,6 +82,7 @@ public:
   ProviderResult stop_stream(uint64_t stream_id) override;
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
+  ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;

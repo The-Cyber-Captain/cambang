@@ -10,6 +10,7 @@
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
+#include "core/core_result_store.h"
 #include "core/core_rig_registry.h"
 #include "core/core_runtime_state.h"
 #include "core/core_spec_state.h"
@@ -33,6 +34,13 @@
 namespace cambang {
 
 enum class TrySetStreamPictureStatus : uint8_t {
+  OK = 0,
+  NotSupported = 1,
+  Busy = 2,
+  InvalidArgument = 3,
+};
+
+enum class TrySetCapturePictureStatus : uint8_t {
   OK = 0,
   NotSupported = 1,
   Busy = 2,
@@ -127,7 +135,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Defaulting is performed by core using provider->stream_template().
   // profile_version ownership is core-authoritative for this ingress:
   // pass profile_version=0 to request core-assigned lineage.
-  // These are non-blocking and may return Busy if the core mailbox is full.
+  // These are non-blocking and may return Busy if the provider_to_core_commands queue is full.
   TryCreateStreamStatus try_create_stream(
       uint64_t stream_id,
       uint64_t device_instance_id,
@@ -152,6 +160,10 @@ enum class TryCloseDeviceStatus : uint8_t {
   // Stream-scoped picture update path.
   // Non-blocking: enqueues the provider call onto the core thread.
   TrySetStreamPictureStatus try_set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) noexcept;
+  // Device-scoped capture-picture update path.
+  TrySetCapturePictureStatus try_set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) noexcept;
+
+  bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
@@ -190,6 +202,18 @@ enum class TryCloseDeviceStatus : uint8_t {
   }
 
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
+
+  SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const {
+    return result_store_.get_latest_stream_result(stream_id);
+  }
+
+  SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+    return result_store_.get_capture_result(capture_id, device_instance_id);
+  }
+
+  std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const {
+    return result_store_.get_capture_result_set(capture_id);
+  }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
@@ -250,7 +274,7 @@ private:
   void on_core_timer_tick() override;
   void on_core_stop() override;
 
-  void enqueue_provider_fact(CoreCommand&& cmd);
+  void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
 
@@ -261,6 +285,7 @@ private:
   CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
+  CoreResultStore result_store_;
 
   // Snapshot header counters (schema v1).
   // gen: core generation counter, monotonic across app/server lifetime.
@@ -303,7 +328,7 @@ private:
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;
 
-  std::deque<CoreCommand> provider_facts_;
+  std::deque<ProviderToCoreCommand> provider_facts_;
   std::deque<CoreThread::Task> requests_;
 
   enum class ShutdownPhase : uint8_t {

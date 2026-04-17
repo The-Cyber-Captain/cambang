@@ -20,9 +20,13 @@ public:
   ~StubProvider() override = default;
 
   const char* provider_name() const override;
+  ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
+
 
   StreamTemplate stream_template() const override;
+  CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }
+  bool supports_capture_picture_updates() const noexcept override { return true; }
 
 // Test instrumentation (thread-safe).
 uint64_t frames_emitted() const noexcept { return frames_emitted_.load(std::memory_order_relaxed); }
@@ -60,6 +64,7 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   ProviderResult stop_stream(uint64_t stream_id) override;
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
+  ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -84,6 +89,7 @@ private:
     // Core enforces 1 repeating stream per device instance; we track the current one (0 if none).
     uint64_t stream_id = 0;
     uint64_t native_id = 0;
+    PictureConfig capture_picture{};
   };
 
   struct StreamState {

@@ -2,6 +2,7 @@
 
 #include "core/core_dispatcher.h"
 
+#include <cstdlib>
 #include <variant>
 
 namespace cambang {
@@ -11,16 +12,19 @@ uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
   if (ts.tick_ns == 0) {
     return 0;
   }
-  if (ts.domain != CaptureTimestampDomain::CORE_MONOTONIC) {
-    return 0;
+  switch (ts.domain) {
+    case CaptureTimestampDomain::CORE_MONOTONIC:
+    case CaptureTimestampDomain::PROVIDER_MONOTONIC:
+      return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
+    default:
+      return 0;
   }
-  return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
 }
 } // namespace
 
 
 
-void CoreDispatcher::dispatch(CoreCommand&& cmd) {
+void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   // NOTE: For this build slice we are proving lifecycle only.
   //
   // Add minimal core state mutation:
@@ -32,7 +36,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
   stats_.commands_total++;
 
   switch (cmd.type) {
-  case CoreCommandType::PROVIDER_DEVICE_OPENED: {
+  case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
     if (devices_) {
@@ -42,7 +46,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_DEVICE_CLOSED: {
+  case ProviderToCoreCommandType::PROVIDER_DEVICE_CLOSED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceClosed>(cmd.payload);
     if (devices_) {
@@ -52,7 +56,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_CREATED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
     if (streams_) {
@@ -62,7 +66,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_DESTROYED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_DESTROYED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamDestroyed>(cmd.payload);
     if (streams_) {
@@ -72,7 +76,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_STARTED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
     if (streams_) {
@@ -82,7 +86,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_STOPPED: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_STOPPED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStopped>(cmd.payload);
     if (streams_) {
@@ -92,7 +96,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_STREAM_ERROR: {
+  case ProviderToCoreCommandType::PROVIDER_STREAM_ERROR: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamError>(cmd.payload);
     if (streams_) {
@@ -102,7 +106,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
     break;
   }
 
-  case CoreCommandType::PROVIDER_DEVICE_ERROR: {
+  case ProviderToCoreCommandType::PROVIDER_DEVICE_ERROR: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceError>(cmd.payload);
     if (devices_) {
@@ -113,7 +117,7 @@ void CoreDispatcher::dispatch(CoreCommand&& cmd) {
   }
 
   
-case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
+case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
   if (native_objects_) {
@@ -137,7 +141,7 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   break;
 }
 
-case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
+case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
   if (native_objects_) {
@@ -149,17 +153,34 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   break;
 }
 
-  case CoreCommandType::PROVIDER_FRAME: {
+  case ProviderToCoreCommandType::PROVIDER_FRAME: {
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
 
     stats_.commands_handled++;
     stats_.frames_received++;
 
     const uint64_t sid = p.frame.stream_id;
+    std::optional<StreamIntent> stream_intent;
+    bool retained_for_result = false;
+    uint64_t integrated_ts_ns = 0;
+    bool has_stream_record = (sid == 0);
     if (streams_) {
-      const uint64_t integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+      integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
         stats_.frames_unknown_stream++;
+      }
+      if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
+        stream_intent = stream_rec->intent;
+        has_stream_record = true;
+      }
+    } else {
+      integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+    }
+    if (result_store_) {
+      const bool lifecycle_allows_retention =
+          result_retention_allowed_ ? result_retention_allowed_() : true;
+      if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
+        retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
       }
     }
 
@@ -177,13 +198,18 @@ case CoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
         }
       }
     } else {
-      // No sink configured: release-on-drop and count as dropped (not delivered).
+      // No sink configured: release payload deterministically.
+      // If result retention already accepted this frame, it is not counted as dropped.
       p.frame.release_now();
       stats_.frames_released++;
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
       if (streams_) {
-        streams_->on_frame_dropped(sid);
+        if (retained_for_result) {
+          streams_->on_frame_released(sid);
+        } else {
+          streams_->on_frame_dropped(sid);
+        }
       }
     }
     break;

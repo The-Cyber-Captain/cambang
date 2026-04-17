@@ -92,6 +92,16 @@ Out of scope for this tranche:
 - file formats and schemas
 - persistence/recording pipeline design
 
+### 5.1 Single-scenario-model clarification
+
+CamBANG continues to use **one scenario model**.
+
+- scenarios remain primitive-capable
+- existing primitive lifecycle vocabulary remains valid for diagnostics and replay
+- this clarification does **not** introduce a second scenario-handling model
+
+There is currently no alternate runtime scenario model that replaces primitive events.
+
 ---
 
 ## 6. Host integration boundary
@@ -142,6 +152,12 @@ Current implemented executable slice includes:
 - minimal realization/lifecycle events: `OpenDevice`, `CloseDevice`, `CreateStream`, `DestroyStream`
 - stream-scoped appearance update event: `UpdateStreamPicture` (maps through provider `PictureConfig` semantics)
 
+Implementation-status note (current verified path): stream appearance authoring
+in the built-in scenario library is verified through explicit
+`UpdateStreamPicture` events. In this slice, embedded picture payload on
+`StartStream` is not documented as the canonical/effective stream-picture
+application path.
+
 This implemented slice is still a starting boundary, not the architectural ceiling.
 
 Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue.
@@ -156,6 +172,42 @@ That subset is an implementation starting point, not the architectural ceiling.
 Canonical scenario direction remains a self-contained authored/recorded timeline unit. The event model is therefore expected to expand with minimal lifecycle/realization events needed to author and replay scenarios without hidden host-side semantic reconstruction (for example, device/stream realization and create/destroy-style families).
 
 Tranche 1 intentionally does not freeze the complete long-term scenario event vocabulary.
+
+### 7.1 Verified primitive lifecycle status
+
+Primitive lifecycle operations have been verified in a completion-aware native verification path (`provider_compliance_verify`) for the sequence:
+
+1. `OpenDevice`
+2. `CreateStream`
+3. `StartStream`
+4. `StopStream`
+5. wait for authoritative stop completion
+6. `DestroyStream`
+7. wait for authoritative destroy completion
+8. `CloseDevice`
+9. wait for authoritative close completion
+
+This means recent stuck/variable teardown observations in Godot scenario playback are **not** sufficient evidence that primitive lifecycle support is missing or fundamentally broken.
+
+### 7.2 Clustered destructive-event boundary sensitivity (current issue)
+
+Under current strict primitive playback, tightly adjacent destructive events such as:
+
+- `StopStream`
+- `DestroyStream`
+- `CloseDevice`
+
+may be dispatched in an advancement boundary context where later destructive operations are attempted before earlier completion is yet authoritative.
+
+Under strict semantics, those later operations may then fail truthfully. This reflects strict primitive playback boundary sensitivity; it is not:
+
+- snapshot fabrication
+- panel/state invention
+- provider-side auto-cascade
+
+No new playback policy is implemented by this clarification.
+
+Any future work on this issue, if adopted later, must stay within the single scenario model and may be considered in future for **reduction-facing** teardown handling (close/destroy facing), not implicit upward realization (`OpenDevice` / `CreateStream` / `StartStream`).
 
 ---
 

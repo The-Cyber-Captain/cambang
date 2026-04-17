@@ -122,6 +122,28 @@ The terse provider-audit checklist remains separately documented in:
 ```text
 docs/dev/provider_compliance_checklist.md
 ```
+## 4.x Dev-only producer capability override
+
+For internal verification only, maintainer tooling may temporarily force synthetic
+producer backing advertisement to shapes such as:
+
+- CPU-only
+- CPU+GPU
+- GPU-only
+
+This exists solely to validate provider/core/result policy handling for backing
+selection and fallback behavior.
+
+These overrides are:
+
+- non-release
+- intentionally capability-falsifying when selected
+- not runtime truth
+- not part of the public/provider contract
+
+Maintainers should treat such modes as verification aids rather than as evidence
+that the synthetic producer truthfully supports those capability sets in normal
+operation.
 
 ---
 
@@ -186,6 +208,25 @@ This is the primary maintainer check for provider-contract rules such as:
 - non-lossy lifecycle/native-object/error delivery
 - deterministic shutdown sequencing
 - synthetic ordering and timeline invariants
+- clustered destructive sequencing behavior under strict vs completion-gated modes
+
+### What it proves for synthetic timeline destructive sequencing
+
+For clustered destructive synthetic timeline cases, the verifier accepts the
+runtime-valid strict and completion-gated outcomes rather than assuming a single
+destroy/close realization shape.
+
+In particular:
+
+- **strict** validation may legitimately result in either:
+    - retained stopped state with in-band destroy/close failure, or
+    - full in-band destroy/close success
+
+- **completion-gated** validation proves eventual successful destructive
+  realization once the relevant readiness truth exists
+
+This tool is therefore the authoritative deterministic verifier for provider
+contract behavior in this area.
 
 ### What it does not do
 
@@ -217,6 +258,55 @@ Expected result:
 ```text
 PASS provider_compliance_verify
 ```
+
+---
+
+## 6.1 `canonical_timeline_realization`
+
+**Category:** Verification case (run via `verify_case_runner`)
+
+### Purpose
+
+`canonical_timeline_realization` is a small, readable, default-path proof that
+an authored synthetic timeline realizes correctly end-to-end.
+
+It is intended to remain:
+
+- canonical
+- completion-gated by default
+- always-pass
+- easy to interpret
+
+It is **not** intended to act as a second provider compliance verifier or as a
+strict-edge diagnostic probe.
+
+### Current role
+
+This verification case keeps a clear authored destructive sequence, including:
+
+- `StopStream @ T`
+- `DestroyStream @ T+1`
+- `CloseDevice @ T+2`
+
+without widening those timings arbitrarily.
+
+Under the current default completion-gated model, the case continues advancing
+synthetic virtual time while waiting for realized destroy/close truth, rather
+than assuming one tiny post-stop advance must always suffice.
+
+This means the case proves:
+
+> given a straightforward authored timeline, the standard/default synthetic
+> timeline path realizes cleanly
+
+### Usage
+
+```text
+./out/verify_case_runner.exe canonical_timeline_realization
+```
+
+This case should be stable under repetition and is suitable as a fast regression
+signal for default synthetic timeline realization behavior.
 
 ---
 
@@ -344,3 +434,28 @@ Godot scenes verify:
 ## Output Discipline
 
 Scenes must flush output before quitting so that PASS/FAIL messages are reliably captured by automated runs.
+
+
+## Scene 70 maintainer-teaching note (`stream_inspection_live`)
+
+Scene 70 is a maintainer-facing verification/teaching scene for stream result
+surfaces.
+
+It now demonstrates:
+
+- live stream display via `StreamResult.get_display_view()` (display-oriented
+  live view over stream-owned live backing)
+- a separate manual/discrete stream `to_image()` request shown in its own panel
+  as explicit materialization onto CPU-backed storage
+- consumer responsibility to unbind/drop active display-view UI bindings before
+  runtime teardown
+
+For the built-in `stream_inspection_live` scenario, checker appearance at
+startup is now authored through the verified effective timeline path:
+
+- `UpdateStreamPicture(... checker ...)` at `0 ns`
+
+This removes ambiguity in the initial requested stream `to_image()` panel for
+scene 70.
+
+Capture-picture behavior was intentionally left untouched in this correction.

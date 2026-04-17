@@ -1,3 +1,12 @@
+> Transitional dev-stage record.
+>
+> This document describes a development-only visibility stage and does not define
+> the current release-facing image/result architecture.
+>
+> Current release direction is defined in:
+> - `docs/dev/pixel_result_architecture_direction.md`
+> - `docs/architecture/pixel_payload_and_result_contract.md`
+
 # FrameView Stage (Dev Visibility – Server-Owned Core Loop)
 
 This stage exists to produce a **visible, end-to-end validation** of the

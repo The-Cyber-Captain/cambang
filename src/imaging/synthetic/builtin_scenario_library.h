@@ -15,6 +15,7 @@ enum class SyntheticBuiltinScenarioLibraryId : std::uint8_t {
   StreamLifecycleVersions = 0,
   TopologyChangeVersions = 1,
   PublicationCoalescing = 2,
+  StreamInspectionLive = 3,
 };
 
 const char* synthetic_builtin_scenario_library_name(SyntheticBuiltinScenarioLibraryId id) noexcept;

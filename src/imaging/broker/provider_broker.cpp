@@ -54,6 +54,11 @@ const char* ProviderBroker::provider_name() const {
   return "broker(uninitialized)";
 }
 
+ProviderKind ProviderBroker::provider_kind() const noexcept {
+  return mode_latched_ == RuntimeMode::synthetic ? ProviderKind::synthetic
+                                                  : ProviderKind::platform_backed;
+}
+
 StreamTemplate ProviderBroker::stream_template() const {
   if (active_) {
     return active_->stream_template();
@@ -61,8 +66,32 @@ StreamTemplate ProviderBroker::stream_template() const {
   return StreamTemplate{};
 }
 
+CaptureTemplate ProviderBroker::capture_template() const {
+  if (active_) {
+    return active_->capture_template();
+  }
+  return CaptureTemplate{};
+}
+
 bool ProviderBroker::supports_stream_picture_updates() const noexcept {
   return active_ ? active_->supports_stream_picture_updates() : false;
+}
+
+bool ProviderBroker::supports_capture_picture_updates() const noexcept {
+  return active_ ? active_->supports_capture_picture_updates() : false;
+}
+
+ProducerBackingCapabilities ProviderBroker::stream_backing_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  return active_ ? active_->stream_backing_capabilities(profile, picture)
+                 : ProducerBackingCapabilities{false, false};
+}
+
+ProducerBackingCapabilities ProviderBroker::capture_backing_capabilities(
+    const CaptureRequest& req) const noexcept {
+  return active_ ? active_->capture_backing_capabilities(req)
+                 : ProducerBackingCapabilities{false, false};
 }
 
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
@@ -100,6 +129,36 @@ ProviderResult ProviderBroker::set_runtime_mode_requested(RuntimeMode mode) noex
   return ProviderResult::success();
 }
 
+ProviderResult ProviderBroker::set_synthetic_role_requested(SyntheticRole role) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  synthetic_role_requested_ = role;
+  return ProviderResult::success();
+}
+
+ProviderResult ProviderBroker::set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  timing_driver_requested_ = timing_driver;
+  return ProviderResult::success();
+}
+
+ProviderResult ProviderBroker::set_synthetic_timeline_reconciliation_requested(TimelineReconciliation reconciliation) noexcept {
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  // Applicable only to synthetic timeline + virtual_time.
+  if (mode_requested_ != RuntimeMode::synthetic ||
+      synthetic_role_requested_ != SyntheticRole::Timeline ||
+      timing_driver_requested_ != TimingDriver::VirtualTime) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  timeline_reconciliation_requested_ = reconciliation;
+  return ProviderResult::success();
+}
+
 void ProviderBroker::set_synthetic_timeline_request_dispatch_hook(
     std::function<void(const SyntheticScheduledEvent&)> hook) {
   synthetic_timeline_request_dispatch_hook_ = std::move(hook);
@@ -122,6 +181,9 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   // Mode selection is explicit and latched per runtime session.
   // (Server provides the requested mode; broker does not consult env/CLI.)
   mode_latched_ = mode_requested_;
+  synthetic_role_latched_ = synthetic_role_requested_;
+  timing_driver_latched_ = timing_driver_requested_;
+  timeline_reconciliation_latched_ = timeline_reconciliation_requested_;
 
   // Defensive: re-check build support (mirrors server-side validation).
   ProviderResult cap = check_mode_supported_in_build(mode_latched_);
@@ -133,9 +195,9 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   if (mode_latched_ == RuntimeMode::synthetic) {
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
     SyntheticProviderConfig cfg{};
-    // Defaults: nominal role, virtual_time driver (first landing).
-    cfg.synthetic_role = SyntheticRole::Nominal;
-    cfg.timing_driver = TimingDriver::VirtualTime;
+    cfg.synthetic_role = synthetic_role_latched_;
+    cfg.timing_driver = timing_driver_latched_;
+    cfg.timeline_reconciliation = timeline_reconciliation_latched_;
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
     active_ = std::move(syn);
@@ -255,6 +317,14 @@ ProviderResult ProviderBroker::set_stream_picture_config(uint64_t stream_id, con
   return active_->set_stream_picture_config(stream_id, picture);
 }
 
+ProviderResult ProviderBroker::set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+  return active_->set_capture_picture_config(device_instance_id, picture);
+}
+
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
@@ -361,6 +431,44 @@ ProviderResult ProviderBroker::set_timeline_canonical_scenario_for_host(const Sy
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
+ProviderResult ProviderBroker::select_timeline_builtin_scenario_for_host(const std::string& scenario_name) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  SyntheticBuiltinScenarioLibraryId library_id{};
+  if (scenario_name == "stream_lifecycle_versions") {
+    library_id = SyntheticBuiltinScenarioLibraryId::StreamLifecycleVersions;
+  } else if (scenario_name == "topology_change_versions") {
+    library_id = SyntheticBuiltinScenarioLibraryId::TopologyChangeVersions;
+  } else if (scenario_name == "publication_coalescing") {
+    library_id = SyntheticBuiltinScenarioLibraryId::PublicationCoalescing;
+  } else if (scenario_name == "stream_inspection_live") {
+    library_id = SyntheticBuiltinScenarioLibraryId::StreamInspectionLive;
+  } else {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  SyntheticCanonicalScenario canonical{};
+  std::string error;
+  if (!build_synthetic_builtin_scenario_library_canonical_scenario(
+          library_id,
+          stream_template().profile,
+          canonical,
+          &error)) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_timeline_scenario_for_host(canonical);
+  }
+#else
+  (void)scenario_name;
+#endif
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
 ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_text_for_host(
     const std::string& text,
     std::string* error) {
@@ -436,6 +544,34 @@ ProviderResult ProviderBroker::set_timeline_scenario_paused_for_host(bool paused
   }
 #endif
   (void)paused;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::advance_timeline_for_host(uint64_t dt_ns) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->advance_timeline_for_host(dt_ns);
+  }
+#endif
+  (void)dt_ns;
+  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+}
+
+ProviderResult ProviderBroker::set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation) {
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    return syn->set_timeline_reconciliation_for_host(reconciliation);
+  }
+#endif
+  (void)reconciliation;
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 

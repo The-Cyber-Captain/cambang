@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=2 format=3 uid="uid://wshwntl6sffg"]
 
-[ext_resource type="Script" path="res://scripts/61_tick_bounded_coalescing_abuse.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://ur2vmrve0kt1" path="res://scripts/61_tick_bounded_coalescing_abuse.gd" id="1_script"]
 
 [node name="61_TickBoundedCoalescingAbuse" type="Node"]
 script = ExtResource("1_script")

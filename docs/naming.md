@@ -162,7 +162,7 @@ truth.
 
 ### `PictureConfig`
 
-Per-stream picture appearance configuration.
+Picture/source appearance configuration.
 
 `PictureConfig` represents user intent regarding how frames should
 appear, independent of structural capture properties.
@@ -170,11 +170,19 @@ appear, independent of structural capture properties.
 It is distinct from **Capture Profile**:
 
 - Capture Profile defines structural capture properties such as resolution, pixel format, and frame rate range.
-- PictureConfig defines picture appearance parameters.
+- PictureConfig defines picture/source appearance parameters.
 
 For synthetic and stub providers, `PictureConfig` describes
 pattern-generation parameters. Platform-backed providers may interpret
 `PictureConfig` as picture adjustment parameters subject to capability.
+
+`PictureConfig` may also include picture/source generation controls such as
+generator cadence (for example `generator_fps_num` / `generator_fps_den`)
+used to determine the synthetic source-frame ordinal supplied to the renderer.
+
+Picture/source appearance intent is distinct from storage/backing capability.
+For example, choosing a pattern preset or generator cadence does not by itself
+assert that CPU-backed or GPU-backed realization is available.
 
 ### Pattern Presets (Synthetic Pixel Generation)
 
@@ -342,7 +350,144 @@ platform objects.
 
 ------------------------------------------------------------------------
 
-## 6. Lifecycle `phase` vs operational `mode`
+## 6. Image access API
+
+CamBANG distinguishes between the published snapshot / introspection model
+and the Godot-facing API used to obtain image-bearing runtime outputs.
+
+- Snapshot terminology describes immutable published runtime truth.
+- Image access terminology describes image-bearing outputs that users may
+  retrieve, inspect, process, display, or save.
+
+These concepts are related at the application level but are not the same API surface.
+
+### Result vocabulary
+
+The canonical Godot-facing result nouns are:
+
+- **Stream Result** — the image-bearing result exposed for a repeating stream
+- **Capture Result** — the image-bearing result of a device still capture
+- **Capture Result Set** — the grouped result returned from a rig-triggered
+  capture, containing the subset of device capture results that were actually realized
+
+These terms describe user-facing/runtime-visible outputs.
+They do **not** define sink/storage mechanics by themselves.
+
+### Rig capture result-set rule
+
+`CamBANGRig.trigger_sync_capture()` is conceptually a grouped still-capture
+operation across rig members.
+
+The intuitive Godot-facing output is therefore a **Capture Result Set**
+containing the subset of member-device **Capture Result** objects that
+successfully realized for that trigger.
+
+This avoids introducing a parallel rig-owned pixel artifact model when
+the useful results are already device-associated still-capture outputs.
+
+### Internal sink terminology
+
+Within implementation/architecture discussions, the umbrella sink category remains:
+
+- **Frame Sink**
+
+Where stream-specific and still-specific sink paths need to be distinguished,
+prefer:
+
+- **Stream Sink**
+- **Capture Sink**
+
+Avoid introducing new public/API terminology that exposes temporary
+mailbox-oriented implementation details.
+
+### Mailbox terminology rule
+
+For image-delivery/image-access architecture, avoid using **mailbox** as the
+primary public-facing concept.
+
+Rationale:
+
+- the current `LatestFrameMailbox` is development-only visibility scaffolding
+- release image access should be expressed in result-oriented/API terms
+- the codebase already uses mailbox terminology in other internal contexts,
+  so reusing it for release image access would increase ambiguity
+
+
+### Initial release-facing model
+
+The initial release-facing image-access model is intentionally narrow and
+result-oriented.
+
+It exists to provide non-dev image access without promoting temporary
+development-only mailbox semantics into the public API.
+
+#### Stream Result
+
+In the initial release-facing model, **Stream Result** is
+**latest-result-oriented**.
+
+This means:
+
+- it represents the latest retained repeating-stream image output made
+  available through the image access API
+- it is a user-facing/runtime-visible result concept, not a sink/storage
+  implementation term
+- it does not imply that every produced stream frame is retained
+- it does not by itself define the final storage, upload, or fanout strategy
+
+This model therefore provides a non-dev way to retrieve, inspect,
+process, display, or save the latest available repeating-stream image
+output without committing the public API to mailbox-shaped semantics.
+
+#### Capture Result
+
+In the initial release-facing model, **Capture Result** is the discrete
+image-bearing runtime output of a device still capture.
+
+Unlike repeating-stream output, still-capture output is not modeled as a
+continuously replaced repeating result.
+
+#### Capture Result Set
+
+In the initial release-facing model, **Capture Result Set** is the grouped
+output of a rig-triggered capture.
+
+It contains the subset of device-associated **Capture Result** objects that
+were actually realized for that trigger.
+
+This preserves the device association of realized still captures rather
+than introducing a separate rig-owned pixel artifact model.
+
+### Initial scope
+
+Included in the initial release-facing image-access model:
+
+- latest-result-oriented repeating-stream access
+- device still-capture result access
+- rig-triggered grouped capture result access
+
+Not implied by the initial release-facing image-access model:
+
+- sequence / broadcast / video-recording APIs
+- final GPU-native presentation architecture
+- full third-party hand-off architecture
+- guarantees that every flowing stream frame is retained or externally exposed
+
+These may be added later without redefining the meanings of
+**Stream Result**, **Capture Result**, or **Capture Result Set**.
+
+### Payload-kind vs engine-realization vocabulary
+
+CamBANG payload kinds such as `GPU_SURFACE` are provider/core/result-facing
+runtime concepts.
+
+Engine-specific realization objects used at the Godot boundary (for example
+texture or rendering resources) are adapter artifacts rather than payload-kind
+vocabulary.
+
+------------------------------------------------------------------------
+
+## 7. Lifecycle `phase` vs operational `mode`
 
 To avoid ambiguity, CamBANG uses separate fields for lifecycle and
 operational posture.
@@ -420,7 +565,7 @@ Behavioural semantics and determinism guarantees are defined in `provider_archit
 
 ------------------------------------------------------------------------
 
-## 7. Identity and lineage
+## 8. Identity and lineage
 
 To support reliable diagnostics (including "old teardown + new live"
 scenarios), CamBANG separates stable hardware identity from core
@@ -435,7 +580,7 @@ but still present due to teardown or retention policies.
 
 ------------------------------------------------------------------------
 
-## 8. Internal naming (for contributors)
+## 9. Internal naming (for contributors)
 
 These names appear in the native/core implementation, build system, and
 debugging logs.
@@ -451,12 +596,12 @@ debugging logs.
 
 ------------------------------------------------------------------------
 
-## 9. Glossary (quick reference)
+## 10. Glossary (quick reference)
 
 - **Spec**: hardware-reported truth (with optional user corrections).
 - **Config**: user intent (choices made by the developer/app).
 - **Capture Profile**: fidelity definition for image production (streams and stills).
-- **PictureConfig**: per-stream picture appearance configuration, distinct from Capture Profile (structural capture properties).
+- **PictureConfig**: picture/source appearance configuration, distinct from Capture Profile and from storage/backing capability.
 - **Snapshot**: immutable published record of current truth.
 - **Phase**: lifecycle stage of an entity/native object.
 - **Mode**: operational posture of an entity.

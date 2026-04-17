@@ -63,6 +63,20 @@ Examples include:
 A platform-backed provider is an **adapter to the contract**, not a
 source of truth for what the contract means.
 
+### 2.2.x Platform target families
+
+CamBANG is designed to support platform-backed provider families including:
+
+- `windows_mediafoundation` — Windows / Media Foundation
+- `android_camera2` — Android / Camera2
+- `linux_v4l2` — Linux / Video4Linux2
+- `apple_avfoundation` — macOS / iOS / iPadOS / AVFoundation
+- `web_getusermedia` — Web / Media Capture and Streams (`getUserMedia`)
+
+These target families identify the backend API surfaces CamBANG expects to adapt through the provider contract.
+
+They do not imply equal implementation maturity, and they do not alter the canonical rule that platform-backed providers are adapters to the same provider contract.
+
 ### 2.3 Capability maturity
 
 Provider implementations may differ in capability maturity.
@@ -260,6 +274,16 @@ Frame events may be dropped under pressure, but frame dropping must not:
 - suppress native-object events
 - distort registry truthfulness
 
+### 7.3 Admitted-frame release lifetime invariant
+
+Once a provider admits a frame to Core, the frame's payload memory,
+release token / `release_user`, and any storage touched by the release
+callback must remain valid until Core actually invokes the release callback.
+
+Providers may use provider-internal frame lease/release-safety state to
+uphold this invariant. This lease state is provider-internal bookkeeping
+and is **not** a registry-visible native object type.
+
 ---
 
 ## 8. Threading discipline
@@ -295,6 +319,14 @@ Examples:
 
 The purpose is to preserve truthful ownership boundaries in the registry
 and published snapshot.
+
+This is a provider/runtime truthfulness rule. It does **not** by itself
+forbid future Core/playback orchestration decisions at a higher layer.
+No such orchestration is implemented by the current runtime.
+
+Future work may consider (future-only, non-normative)
+strictly reduction-facing if introduced at all (close/destroy-facing),
+not implicit upward realization (`open/create/start`).
 
 ### 9.2 Shutdown is different
 
