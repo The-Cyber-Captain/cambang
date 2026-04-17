@@ -381,8 +381,9 @@ Providers release owned resources in dependency order:
 
 1. FrameProducer
 2. Stream
-3. Device
-4. Provider
+3. AcquisitionSession (when realized)
+4. Device
+5. Provider
 
 At each boundary the provider emits the appropriate lifecycle and
 native-object events reflecting the actual state transition.

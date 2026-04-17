@@ -36,7 +36,7 @@ DESTROYED
 Rules:
 
 - Provider lifecycle events must be reported truthfully.
-- Provider destruction must occur **after all devices and streams are released**.
+- Provider destruction must occur **after all devices, AcquisitionSession seams, and streams are released**.
 - Providers must not emit fabricated destroy events to tidy state.
 
 ---
@@ -58,7 +58,7 @@ DESTROYED
 
 Constraints:
 
-- Streams require a `LIVE` device.
+- AcquisitionSession seams and streams require a `LIVE` device.
 - Devices should not close while streams exist.
 - Providers should surface ordering violations rather than hide them.
 

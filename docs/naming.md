@@ -328,18 +328,19 @@ canonical meanings.
 |-----|--------|
 | **Provider** | Backend implementation controlling a camera API |
 | **Device** | Opened camera hardware instance |
+| **AcquisitionSession** | Provider-reported acquisition seam truth category |
 | **Stream** | Configured capture pipeline producing frames |
 
 These terms are provider-agnostic abstractions.
 
 Platform terminology such as:
 
-- session
 - reader
 - pipeline
 - track
 
-remains provider-internal.
+remains provider-internal. `AcquisitionSession` is now a canonical shared term
+in CamBANG runtime/snapshot/native vocabulary.
 
 ### Godot-facing naming
 

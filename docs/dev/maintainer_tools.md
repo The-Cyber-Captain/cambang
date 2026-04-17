@@ -205,6 +205,7 @@ This is the primary maintainer check for provider-contract rules such as:
 - serialized provider → core callback delivery
 - lifecycle ordering correctness
 - native-object create / destroy reporting
+- AcquisitionSession-aware native/snapshot expectations
 - non-lossy lifecycle/native-object/error delivery
 - deterministic shutdown sequencing
 - synthetic ordering and timeline invariants

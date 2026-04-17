@@ -115,7 +115,7 @@ If Tier 3 truth is already clear via hierarchy/grouping/containment, textual rep
 
 Tier 3 reinforcement is allowed only when it adds clarity.
 
-- Allowed example direction: FrameProducer ownership can be reinforced by structure plus a concise info line.
+- Allowed example direction: AcquisitionSession/FrameProducer ownership can be reinforced by structure plus a concise info line.
 - Not allowed: repeating the same fact in multiple text forms without added explanatory value.
 
 Rule: reinforcement must add clarity, not restate structure verbatim.

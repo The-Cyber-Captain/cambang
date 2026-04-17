@@ -25,11 +25,12 @@ Health is applied ahead of all other badges.
 
 Current projection order is:
 
-- `provider/main`
+- `provider/<id>` (current single-provider row id is typically `provider/main`)
 - `device/<instance_id>`
 - `acquisition_session/<acquisition_session_id>`
 - `stream/<stream_id>`
-- `native/*` descendants including optional frameproducer rows
+- optional `frameproducer/<id>` rows (native projection)
+- other `native/*` descendants
 
 For native ancestry reconstruction, `owner_acquisition_session_id` is used before
 stream-level fallback where session ownership is available.

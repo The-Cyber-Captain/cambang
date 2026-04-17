@@ -58,12 +58,12 @@ The hierarchy is intentionally **provider-agnostic**.
 
 Platform terminology such as:
 
-- session
 - reader
 - pipeline
 - track
 
-remains provider-internal.
+remains provider-internal. `AcquisitionSession` itself is now a canonical
+CamBANG/shared lifecycle noun and is not treated as provider-private wording.
 
 ---
 
@@ -225,11 +225,34 @@ A `Device` represents an opened handle to a specific camera endpoint.
 
 Ordering constraints:
 
-- streams require a device to be open / live
+- AcquisitionSession/streams require a device to be open / live
 - a device should not be closed while any owned stream exists
 - providers should preserve ordering truth rather than silently hide violations
 
-### 5.3 Stream lifecycle
+### 5.3 AcquisitionSession lifecycle
+
+```text
+CREATED
+   │
+   ▼
+LIVE
+   │
+   ▼
+TEARING_DOWN
+   │
+   ▼
+DESTROYED
+```
+
+An `AcquisitionSession` represents provider-reported acquisition seam truth for
+the device lineage.
+
+Current implementation scope:
+
+- concrete realization is stream-backed in `SyntheticProvider`
+- still-only realization is not yet implemented
+
+### 5.4 Stream lifecycle
 
 ```text
 CREATED
@@ -258,7 +281,7 @@ Core also enforces the invariant:
 Multiple stream records may exist, but only one may be active
 (`mode != STOPPED`) at a time.
 
-### 5.4 FrameProducer lifecycle
+### 5.5 FrameProducer lifecycle
 
 ```text
 IDLE ── enable ──> PRODUCING
@@ -295,6 +318,8 @@ Examples:
 | device destroyed | hardware or equivalent resource released |
 | stream created | capture pipeline created |
 | stream destroyed | pipeline released |
+| AcquisitionSession created | acquisition seam realized |
+| AcquisitionSession destroyed | acquisition seam released |
 | FrameProducer created | production actually enabled |
 | FrameProducer destroyed | production actually stopped |
 
