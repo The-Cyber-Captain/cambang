@@ -61,7 +61,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 5502,
@@ -76,9 +77,11 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": []
   }
 }

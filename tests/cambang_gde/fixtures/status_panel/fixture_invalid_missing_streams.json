@@ -27,6 +27,7 @@
     "rigs": [],
     "devices": [],
     "native_objects": [],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": []
   }
 }

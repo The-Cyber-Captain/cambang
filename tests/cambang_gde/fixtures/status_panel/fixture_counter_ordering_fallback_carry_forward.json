@@ -16,7 +16,9 @@
         "name": "rig-prelude",
         "phase": "LIVE",
         "mode": "ARMED",
-        "member_hardware_ids": ["synthetic:1"],
+        "member_hardware_ids": [
+          "synthetic:1"
+        ],
         "capture_profile_version": 11,
         "capture_width": 5000,
         "capture_height": 3000,
@@ -77,32 +79,180 @@
       }
     ],
     "native_objects": [
-      {"native_id": 100, "type": "provider", "phase": "LIVE", "creation_gen": 40, "owner_device_instance_id": 0, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 101, "type": "device", "phase": "LIVE", "creation_gen": 40, "owner_device_instance_id": 1, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 102, "type": "stream", "phase": "LIVE", "creation_gen": 40, "owner_device_instance_id": 1, "owner_stream_id": 1, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0}
+      {
+        "native_id": 100,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 40,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 101,
+        "type": "device",
+        "phase": "LIVE",
+        "creation_gen": 40,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 102,
+        "type": "stream",
+        "phase": "LIVE",
+        "creation_gen": 40,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 1,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 1
+      },
+      {
+        "native_id": 103,
+        "type": "acquisition_session",
+        "phase": "LIVE",
+        "creation_gen": 40,
+        "owner_device_instance_id": 1,
+        "owner_acquisition_session_id": 1,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": [
+      {
+        "acquisition_session_id": 1,
+        "device_instance_id": 1,
+        "phase": "LIVE",
+        "capture_profile_version": 0,
+        "capture_width": 0,
+        "capture_height": 0,
+        "capture_format": 0,
+        "captures_triggered": 0,
+        "captures_completed": 0,
+        "captures_failed": 0,
+        "last_capture_id": 0,
+        "last_capture_latency_ns": 0,
+        "error_code": 0
+      }
+    ]
   },
   "expected_panel_outcome": {
     "contract_gap_count": 0,
     "projection_gap_count": 0,
-    "required_row_ids": ["provider/100", "device/1", "device/2", "stream/2", "rig/7"],
+    "required_row_ids": [
+      "provider/100",
+      "device/1",
+      "device/2",
+      "stream/2",
+      "rig/7",
+      "acquisition_session/2"
+    ],
     "required_counters_by_row": {
-      "rig/7": ["members"],
-      "device/1": ["errors", "still_w", "still_h", "still_fmt", "still_prof"]
+      "rig/7": [
+        "members"
+      ],
+      "device/1": [
+        "errors",
+        "still_w",
+        "still_h",
+        "still_fmt",
+        "still_prof"
+      ]
     },
     "required_counter_values_by_row": {
-      "device/1": {"errors": 3, "still_w": 4032, "still_h": 3024}
+      "device/1": {
+        "errors": 3,
+        "still_w": 4032,
+        "still_h": 3024
+      }
     },
     "required_badges_by_row": {
-      "device/1": ["destroyed"]
+      "device/1": [
+        "destroyed"
+      ]
     },
     "required_counter_order_by_row": {
-      "device/1": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt", "still_prof"],
-      "device/2": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt", "still_prof"],
-      "stream/2": ["width", "height", "fps_min", "fps_max", "fmt", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
-      "rig/7": ["still_h", "still_w", "members"],
-      "provider/100": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"]
+      "device/1": [
+        "camera_spec_version",
+        "errors",
+        "last_error_code",
+        "rebuild_count",
+        "warm_hold_ms",
+        "warm_remaining_ms",
+        "still_w",
+        "still_h",
+        "still_fmt",
+        "still_prof"
+      ],
+      "device/2": [
+        "camera_spec_version",
+        "errors",
+        "last_error_code",
+        "rebuild_count",
+        "warm_hold_ms",
+        "warm_remaining_ms",
+        "still_w",
+        "still_h",
+        "still_fmt",
+        "still_prof"
+      ],
+      "stream/2": [
+        "width",
+        "height",
+        "fps_min",
+        "fps_max",
+        "fmt",
+        "prof",
+        "recv",
+        "deliv",
+        "queue",
+        "drop",
+        "last_ts",
+        "shown",
+        "rej_inv",
+        "rej_fmt"
+      ],
+      "rig/7": [
+        "still_h",
+        "still_w",
+        "members"
+      ],
+      "provider/100": [
+        "rigs",
+        "devices",
+        "streams",
+        "native_all",
+        "native_cur",
+        "native_prev",
+        "native_dead"
+      ]
     }
   },
   "payload": {
@@ -118,7 +268,9 @@
         "name": "rig-main",
         "phase": "LIVE",
         "mode": "ARMED",
-        "member_hardware_ids": ["synthetic:2"],
+        "member_hardware_ids": [
+          "synthetic:2"
+        ],
         "capture_profile_version": 33,
         "capture_width": 6000,
         "capture_height": 4000,
@@ -179,11 +331,104 @@
       }
     ],
     "native_objects": [
-      {"native_id": 100, "type": "provider", "phase": "LIVE", "creation_gen": 41, "owner_device_instance_id": 0, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 201, "type": "device", "phase": "LIVE", "creation_gen": 41, "owner_device_instance_id": 2, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 202, "type": "stream", "phase": "LIVE", "creation_gen": 41, "owner_device_instance_id": 2, "owner_stream_id": 2, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 203, "type": "device", "phase": "DESTROYED", "creation_gen": 41, "owner_device_instance_id": 1, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0}
+      {
+        "native_id": 100,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 41,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 201,
+        "type": "device",
+        "phase": "LIVE",
+        "creation_gen": 41,
+        "owner_device_instance_id": 2,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 202,
+        "type": "stream",
+        "phase": "LIVE",
+        "creation_gen": 41,
+        "owner_device_instance_id": 2,
+        "owner_stream_id": 2,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 2
+      },
+      {
+        "native_id": 203,
+        "type": "device",
+        "phase": "DESTROYED",
+        "creation_gen": 41,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 204,
+        "type": "acquisition_session",
+        "phase": "LIVE",
+        "creation_gen": 41,
+        "owner_device_instance_id": 2,
+        "owner_acquisition_session_id": 2,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": [
+      {
+        "acquisition_session_id": 2,
+        "device_instance_id": 2,
+        "phase": "LIVE",
+        "capture_profile_version": 0,
+        "capture_width": 0,
+        "capture_height": 0,
+        "capture_format": 0,
+        "captures_triggered": 0,
+        "captures_completed": 0,
+        "captures_failed": 0,
+        "last_capture_id": 0,
+        "last_capture_latency_ns": 0,
+        "error_code": 0
+      }
+    ]
   }
 }

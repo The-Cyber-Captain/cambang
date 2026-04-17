@@ -102,6 +102,9 @@ func _initialize() -> void:
 	if row_ids.has("stream/1"):
 		_fail("authoritative stream row remained visible after NIL reconciliation")
 		return
+	if row_ids.has("acquisition_session/1"):
+		_fail("authoritative acquisition_session row remained visible after NIL reconciliation")
+		return
 
 	var retained_states: Array = panel.get("_retained_subtrees")
 	if retained_states.is_empty():
@@ -205,6 +208,23 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"errors_count": 0
 			}
 		],
+		"acquisition_sessions": [
+			{
+				"acquisition_session_id": 1,
+				"device_instance_id": 1,
+				"phase": "LIVE",
+				"capture_profile_version": 0,
+				"capture_width": 0,
+				"capture_height": 0,
+				"capture_format": 0,
+				"captures_triggered": 0,
+				"captures_completed": 0,
+				"captures_failed": 0,
+				"last_capture_id": 0,
+				"last_capture_latency_ns": 0,
+				"error_code": 0
+			}
+		],
 		"streams": [
 			{
 				"stream_id": 1,
@@ -222,12 +242,23 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"native_id": provider_native_id,
 				"type": "provider",
 				"phase": "LIVE",
-				"creation_gen": gen
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
 			},
 			{
 				"native_id": 101,
 				"type": "device",
 				"owner_device_instance_id": 1,
+				"phase": "LIVE",
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
+			},
+			{
+				"native_id": 104,
+				"type": "acquisition_session",
+				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
+				"owner_stream_id": 0,
 				"phase": "LIVE",
 				"creation_gen": gen
 			},
@@ -235,6 +266,7 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"native_id": 102,
 				"type": "stream",
 				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
 				"creation_gen": gen
@@ -243,6 +275,7 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"native_id": 103,
 				"type": "frameproducer",
 				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
 				"creation_gen": gen

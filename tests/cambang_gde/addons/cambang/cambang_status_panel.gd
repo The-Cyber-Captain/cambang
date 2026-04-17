@@ -581,13 +581,14 @@ func _build_debug_runtime_evidence_dump(snapshot: Variant, model: PanelModel) ->
 					continue
 				var rec := raw_rec as Dictionary
 				lines.append(
-					"  native_id=%d type=%s phase=%s creation_gen=%s owner_device_instance_id=%s owner_stream_id=%s owner_provider_native_id=%s root_id=%s"
+					"  native_id=%d type=%s phase=%s creation_gen=%s owner_device_instance_id=%s owner_acquisition_session_id=%s owner_stream_id=%s owner_provider_native_id=%s root_id=%s"
 					% [
 						int(rec.get("native_id", 0)),
 						str(rec.get("type", "")),
 						str(rec.get("phase", "")),
 						str(rec.get("creation_gen", "")),
 						str(rec.get("owner_device_instance_id", "")),
+						str(rec.get("owner_acquisition_session_id", "")),
 						str(rec.get("owner_stream_id", "")),
 						str(rec.get("owner_provider_native_id", "")),
 						str(rec.get("root_id", "")),
@@ -3045,6 +3046,7 @@ func _check_snapshot_runtime_compat(snapshot: Dictionary) -> Dictionary:
 
 	_check_required_array_field(snapshot, "rigs", contract_gaps)
 	_check_required_array_field(snapshot, "devices", contract_gaps)
+	_check_required_array_field(snapshot, "acquisition_sessions", contract_gaps)
 	_check_required_array_field(snapshot, "streams", contract_gaps)
 	_check_required_array_field(snapshot, "native_objects", contract_gaps)
 	_check_required_array_field(snapshot, "detached_root_ids", contract_gaps)
@@ -3346,6 +3348,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var devices := _safe_array(snapshot.get("devices", []), issues, "devices")
 	var rigs := _safe_array(snapshot.get("rigs", []), issues, "rigs")
+	var acquisition_sessions := _safe_array(snapshot.get("acquisition_sessions", []), issues, "acquisition_sessions")
 	var streams := _safe_array(snapshot.get("streams", []), issues, "streams")
 	var native_objects := _safe_array(snapshot.get("native_objects", []), issues, "native_objects")
 	var detached_root_ids := _safe_array(snapshot.get("detached_root_ids", []), issues, "detached_root_ids")
@@ -3421,6 +3424,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	var provider_counters: Array[CounterModel] = [
 		_counter("rigs", rigs.size(), 1),
 		_counter("devices", devices.size(), 1),
+		_counter("acquisition_sessions", acquisition_sessions.size(), 1),
 		_counter("streams", streams.size(), 1),
 		_counter("native_all", native_objects.size(), 1),
 		_counter("native_cur", current_native_objects.size(), 1),
@@ -3449,6 +3453,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var promoted_native_ids := {}
 	var current_device_native_matches_by_instance := {}
+	var current_acquisition_session_native_matches_by_session_id := {}
 	var current_stream_native_matches_by_stream_id := {}
 	var current_non_live_device_native_matches_by_instance := {}
 	var current_non_live_stream_native_matches_by_stream_id := {}
@@ -3467,6 +3472,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					if not current_non_live_device_native_matches_by_instance.has(owner_instance_id):
 						current_non_live_device_native_matches_by_instance[owner_instance_id] = []
 					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
+		elif native_type_key == "acquisition_session":
+			var owner_acquisition_session_id := int(native_rec.get("owner_acquisition_session_id", 0))
+			if owner_acquisition_session_id > 0:
+				if not current_acquisition_session_native_matches_by_session_id.has(owner_acquisition_session_id):
+					current_acquisition_session_native_matches_by_session_id[owner_acquisition_session_id] = []
+				current_acquisition_session_native_matches_by_session_id[owner_acquisition_session_id].append(native_rec)
 		elif native_type_key == "stream":
 			var owner_stream_id := int(native_rec.get("owner_stream_id", 0))
 			if owner_stream_id > 0:
@@ -3480,6 +3491,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var devices_by_instance := {}
 	var provider_device_ids_by_instance := {}
+	var acquisition_session_entry_id_by_session_id := {}
 	for i in range(devices.size()):
 		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
 		if rec.is_empty():
@@ -3548,6 +3560,82 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
 		panel.entries.append(device_entry)
 
+	for i in range(acquisition_sessions.size()):
+		var rec := _safe_dict(acquisition_sessions[i], issues, "acquisition_sessions[%d]" % i)
+		if rec.is_empty():
+			continue
+		var acquisition_session_id := int(rec.get("acquisition_session_id", 0))
+		if acquisition_session_id <= 0:
+			issues.append("Contract gap: acquisition_sessions[%d] missing valid acquisition_session_id." % i)
+			continue
+		if acquisition_session_entry_id_by_session_id.has(acquisition_session_id):
+			issues.append("Contract gap: duplicate acquisition_session_id=%d." % acquisition_session_id)
+			continue
+		var acquisition_session_owner_device_instance := int(rec.get("device_instance_id", 0))
+		if acquisition_session_owner_device_instance <= 0:
+			issues.append("Contract gap: acquisition_session/%d missing valid device_instance_id." % acquisition_session_id)
+			continue
+		var acquisition_session_parent_id := "device/%d" % acquisition_session_owner_device_instance
+		if not _entry_exists(panel.entries, acquisition_session_parent_id):
+			issues.append(
+				"Acquisition Session boundary breach: acquisition_session/%d owner device_instance_id=%d not present in snapshot devices."
+				% [acquisition_session_id, acquisition_session_owner_device_instance]
+			)
+			acquisition_session_parent_id = provider_id
+		var acquisition_session_phase: Variant = rec.get("phase", -1)
+		var acquisition_session_badges: Array[BadgeModel] = [
+			_badge("neutral", "phase=%s" % _phase_display_label(acquisition_session_phase)),
+		]
+		var acquisition_session_info: Array[String] = []
+		var acquisition_session_native_matches: Array = current_acquisition_session_native_matches_by_session_id.get(acquisition_session_id, [])
+		if acquisition_session_native_matches.size() == 1:
+			var acquisition_session_native_rec: Dictionary = acquisition_session_native_matches[0]
+			var acquisition_session_native_phase: Variant = acquisition_session_native_rec.get("phase", -1)
+			if _phase_display_label(acquisition_session_native_phase) != _phase_display_label(acquisition_session_phase):
+				acquisition_session_info.append(
+					"Native phase differs: %s (row phase=%s)."
+					% [_phase_display_label(acquisition_session_native_phase), _phase_display_label(acquisition_session_phase)]
+				)
+			promoted_native_ids[int(acquisition_session_native_rec.get("native_id", 0))] = true
+		elif acquisition_session_native_matches.size() > 1:
+			acquisition_session_info.append(
+				"Contract ambiguity: acquisition_session row has %d matching current-generation AcquisitionSession native objects."
+				% acquisition_session_native_matches.size()
+			)
+		var acquisition_session_entry_id := "acquisition_session/%d" % acquisition_session_id
+		var acquisition_session_entry := _entry(
+			acquisition_session_entry_id,
+			acquisition_session_parent_id,
+			3 if acquisition_session_parent_id != provider_id else 2,
+			"Acquisition Session",
+			true,
+			true,
+			acquisition_session_badges,
+			_counters_from_record(
+				rec,
+				[
+					["capture_prof", "capture_profile_version", 2],
+					["capture_w", "capture_width", 4],
+					["capture_h", "capture_height", 4],
+					["capture_fmt", "capture_format", 4],
+					["triggered", "captures_triggered", 3],
+					["completed", "captures_completed", 3],
+					["failed", "captures_failed", 3],
+					["last_capture_id", "last_capture_id", 3],
+					["last_capture_latency", "last_capture_latency_ns", 4],
+					["error_code", "error_code", 2],
+				],
+				[],
+				"acquisition_session"
+			),
+			acquisition_session_info,
+			"acquisition_session"
+		)
+		if acquisition_session_native_matches.size() == 1:
+			acquisition_session_entry.materialized_native_id = int(acquisition_session_native_matches[0].get("native_id", 0))
+		panel.entries.append(acquisition_session_entry)
+		acquisition_session_entry_id_by_session_id[acquisition_session_id] = acquisition_session_entry_id
+
 	var streams_by_device := {}
 	var seen_stream_ids := {}
 	for i in range(streams.size()):
@@ -3579,7 +3667,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	
 
 	for instance_id in provider_device_ids_by_instance.keys():
-		var parent_entry_id := str(provider_device_ids_by_instance[instance_id])
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
@@ -3605,10 +3692,24 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
 					% stream_matches.size()
 				)
+			var stream_parent_resolution := _resolve_stream_parent_entry_id(
+				stream_id,
+				int(rec.get("device_instance_id", 0)),
+				stream_matches,
+				acquisition_session_entry_id_by_session_id,
+				panel.entries,
+				provider_id
+			)
+			var parent_entry_id := str(stream_parent_resolution.get("parent_id", ""))
+			if parent_entry_id.is_empty():
+				parent_entry_id = str(provider_device_ids_by_instance.get(instance_id, provider_id))
+			var stream_parent_notes: Array = stream_parent_resolution.get("notes", [])
+			for note in stream_parent_notes:
+				stream_info.append(str(note))
 			var stream_entry := _entry(
 				"stream/%d" % stream_id,
 				parent_entry_id,
-				3,
+				_depth_for_parent(parent_entry_id),
 				"stream/%d" % stream_id,
 				false,
 				true,
@@ -3641,6 +3742,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
 			panel.entries.append(stream_entry)
 
+	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var current_grounded_destroyed_device_row_id_by_instance := {}
 	for instance_key in current_non_live_device_native_matches_by_instance.keys():
 		var canonical_device_id := "device/%d" % int(instance_key)
@@ -3689,16 +3791,22 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if destroyed_stream_native_id <= 0:
 				issues.append("Contract ambiguity: current-generation DESTROYED Stream native object missing valid native_id.")
 				continue
-			var destroyed_stream_parent_id := provider_id
-			var destroyed_stream_owner_instance := int(destroyed_stream_native.get("owner_device_instance_id", 0))
-			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
-				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
+			var destroyed_stream_parent_resolution := _resolve_native_parent_id_with_breach_context(
+				destroyed_stream_native,
+				provider_id,
+				orphan_row_id,
+				detached_root_ids,
+				acquisition_session_entry_id_by_session_id,
+				panel.entries
+			)
+			var destroyed_stream_parent_id := str(destroyed_stream_parent_resolution.get("parent_id", provider_id))
+			var destroyed_stream_info: Array[String] = destroyed_stream_parent_resolution.get("notes", [])
 			promoted_native_ids[destroyed_stream_native_id] = true
 			var destroyed_stream_counters := _last_known_same_row_type_counters(canonical_stream_id, "stream")
 			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
-				3 if destroyed_stream_parent_id != provider_id else 2,
+				_depth_for_parent(destroyed_stream_parent_id),
 				"stream/%d [destroyed]" % int(stream_key),
 				true,
 				true,
@@ -3706,7 +3814,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				destroyed_stream_counters,
-				[],
+				destroyed_stream_info,
 				"stream"
 			)
 			destroyed_stream_entry.materialized_native_id = destroyed_stream_native_id
@@ -3773,7 +3881,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_append_lines(member_context_lines, member_info)
 			))
 
-	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var orphan_rows: Array[StatusEntryModel] = []
 	var orphan_rows_by_id := {}
 	for i in range(current_native_objects.size()):
@@ -3790,7 +3897,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			provider_id,
 			orphan_row_id,
 			detached_root_ids,
-			devices_by_instance,
+			acquisition_session_entry_id_by_session_id,
 			panel.entries,
 			issues,
 			snapshot_gen,
@@ -3872,7 +3979,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				provider_id,
 				orphan_row_id,
 				detached_root_ids,
-				devices_by_instance,
+				acquisition_session_entry_id_by_session_id,
 				panel.entries,
 				issues,
 				snapshot_gen,
@@ -4030,12 +4137,98 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 		info_lines.append("destroyed: authoritative prior-generation snapshot truth.")
 
 
+func _resolve_stream_parent_entry_id(
+		stream_id: int,
+		device_instance_id: int,
+		stream_native_matches: Array,
+		acquisition_session_entry_id_by_session_id: Dictionary,
+		existing_entries: Array[StatusEntryModel],
+		provider_id: String
+	) -> Dictionary:
+	var parent_id := "device/%d" % device_instance_id
+	var notes: Array[String] = []
+	var owner_acquisition_session_id := 0
+	if stream_native_matches.size() == 1:
+		owner_acquisition_session_id = int((stream_native_matches[0] as Dictionary).get("owner_acquisition_session_id", 0))
+	elif stream_native_matches.size() > 1:
+		notes.append(
+			"Contract ambiguity: stream/%d parent owner could not be resolved to one Acquisition Session." % stream_id
+		)
+
+	if owner_acquisition_session_id > 0:
+		var acquisition_session_parent_id := str(
+			acquisition_session_entry_id_by_session_id.get(owner_acquisition_session_id, "")
+		)
+		if acquisition_session_parent_id.is_empty():
+			notes.append(
+				"Acquisition Session boundary breach: stream/%d owner_acquisition_session_id=%d not present in snapshot acquisition_sessions."
+				% [stream_id, owner_acquisition_session_id]
+			)
+			if _entry_exists(existing_entries, parent_id):
+				return {"parent_id": parent_id, "notes": notes}
+			return {"parent_id": provider_id, "notes": notes}
+		return {"parent_id": acquisition_session_parent_id, "notes": notes}
+
+	if _entry_exists(existing_entries, parent_id):
+		return {"parent_id": parent_id, "notes": notes}
+	notes.append(
+		"Acquisition Session boundary breach: stream/%d owner device_instance_id=%d not present in snapshot devices."
+		% [stream_id, device_instance_id]
+	)
+	return {"parent_id": provider_id, "notes": notes}
+
+
+func _resolve_native_parent_id_with_breach_context(
+		rec: Dictionary,
+		provider_id: String,
+		orphan_row_id: String,
+		detached_root_ids: Array,
+		acquisition_session_entry_id_by_session_id: Dictionary,
+		existing_entries: Array[StatusEntryModel]
+	) -> Dictionary:
+	var owner_stream_id := int(rec.get("owner_stream_id", 0))
+	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
+	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
+	var root_id := int(rec.get("root_id", 0))
+	var native_type_key := _native_object_type_key(rec)
+	var notes: Array[String] = []
+
+	if owner_stream_id > 0 and native_type_key != "stream":
+		var stream_parent_id := "stream/%d" % owner_stream_id
+		if _entry_exists(existing_entries, stream_parent_id):
+			return {"parent_id": stream_parent_id, "notes": notes}
+		notes.append("Contract gap: owner stream not present in snapshot streams.")
+
+	if owner_acquisition_session_id > 0:
+		var acquisition_session_parent_id := str(
+			acquisition_session_entry_id_by_session_id.get(owner_acquisition_session_id, "")
+		)
+		if not acquisition_session_parent_id.is_empty():
+			return {"parent_id": acquisition_session_parent_id, "notes": notes}
+		notes.append(
+			"Acquisition Session boundary breach: owner_acquisition_session_id=%d not present in snapshot acquisition_sessions."
+			% owner_acquisition_session_id
+		)
+
+	if owner_device_instance_id > 0:
+		var device_parent_id := "device/%d" % owner_device_instance_id
+		if _entry_exists(existing_entries, device_parent_id):
+			return {"parent_id": device_parent_id, "notes": notes}
+		notes.append("Contract gap: owner device not present in snapshot devices.")
+
+	if _contains_int(detached_root_ids, root_id):
+		return {"parent_id": orphan_row_id, "notes": notes}
+
+	notes.append("Contract gap: native object has no stream/acquisition-session/device owner; placed under provider.")
+	return {"parent_id": provider_id, "notes": notes}
+
+
 func _build_native_object_entry(
 		rec: Dictionary,
 		provider_id: String,
 		orphan_row_id: String,
 		detached_root_ids: Array,
-		devices_by_instance: Dictionary,
+		acquisition_session_entry_id_by_session_id: Dictionary,
 		existing_entries: Array[StatusEntryModel],
 		issues: Array[String],
 		snapshot_gen: int,
@@ -4046,6 +4239,7 @@ func _build_native_object_entry(
 		issues.append("Contract gap: native object missing valid native_id.")
 		return null
 	var owner_stream_id := int(rec.get("owner_stream_id", 0))
+	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
 	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
 	var root_id := int(rec.get("root_id", 0))
 	var native_type_key := _native_object_type_key(rec)
@@ -4056,27 +4250,20 @@ func _build_native_object_entry(
 	var info_lines: Array[String] = []
 
 	if not is_provider_native:
-		var can_parent_to_stream := owner_stream_id > 0 and native_type_key != "stream"
-		if can_parent_to_stream:
-			parent_id = "stream/%d" % owner_stream_id
-			if not _entry_exists(existing_entries, parent_id):
-				info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-				if not _contains_int(detached_root_ids, root_id):
-					parent_id = provider_id
-		elif owner_device_instance_id > 0:
-			parent_id = "device/%d" % owner_device_instance_id
-			if not _entry_exists(existing_entries, parent_id):
-				info_lines.append("Contract gap: owner device not present in snapshot devices.")
-				if not _contains_int(detached_root_ids, root_id):
-					parent_id = provider_id
-			else:
-				var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
-				if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
-					info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
-		elif _contains_int(detached_root_ids, root_id):
+		var parent_resolution := _resolve_native_parent_id_with_breach_context(
+			rec,
+			provider_id,
+			orphan_row_id,
+			detached_root_ids,
+			acquisition_session_entry_id_by_session_id,
+			existing_entries
+		)
+		parent_id = str(parent_resolution.get("parent_id", provider_id))
+		var parent_notes: Array = parent_resolution.get("notes", [])
+		for note in parent_notes:
+			info_lines.append(str(note))
+		if parent_id == orphan_row_id:
 			parent_id = orphan_row_id
-		else:
-			info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
@@ -4093,6 +4280,9 @@ func _build_native_object_entry(
 			info_lines.append("owner_stream_id=%d" % owner_stream_id)
 		if rec.has("creation_gen"):
 			info_lines.append("creation_gen=%d" % int(rec.get("creation_gen", 0)))
+	elif native_type_key == "acquisition_session":
+		row_id = "acquisition_session/%d" % native_id
+		row_label = "acquisition_session/%d" % native_id
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))]
@@ -4132,6 +4322,8 @@ func _visual_object_class_for_native_type(native_type_key: String) -> String:
 			return "provider"
 		"device":
 			return "device"
+		"acquisition_session":
+			return "acquisition_session"
 		"stream":
 			return "stream"
 		"rig":
@@ -4300,6 +4492,8 @@ func _should_default_expand_entry(entry: StatusEntryModel) -> bool:
 
 func _depth_for_parent(parent_id: String) -> int:
 	if parent_id.begins_with("stream/"):
+		return 5
+	if parent_id.begins_with("acquisition_session/"):
 		return 4
 	if parent_id.begins_with("device/") or parent_id.begins_with("rig/"):
 		return 3
@@ -4753,6 +4947,7 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 			return {
 				"rigs": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"devices": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"acquisition_sessions": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"streams": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"native_all": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"native_cur": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
@@ -4791,6 +4986,19 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"drop": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": true},
 				"rej_fmt": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
 				"rej_inv": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+			}
+		"acquisition_session":
+			return {
+				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"triggered": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"completed": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"failed": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"last_capture_id": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"last_capture_latency": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"error_code": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
 			}
 		"rig":
 			return {
@@ -4971,6 +5179,8 @@ func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
 		return "device"
 	if visual == "stream":
 		return "stream"
+	if visual == "acquisition_session":
+		return "acquisition_session"
 	if visual == "rig":
 		return "rig"
 	if _is_native_object_entry(entry) or _is_frameproducer_entry(entry):
@@ -4998,7 +5208,7 @@ func _counter_preference_table() -> Dictionary:
 			"configuration": ["gen", "topology", "version"],
 		},
 		"provider": {
-			"derived_aggregate": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
+			"derived_aggregate": ["rigs", "devices", "acquisition_sessions", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
 		},
 		"device": {
 			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt"],
@@ -5007,6 +5217,11 @@ func _counter_preference_table() -> Dictionary:
 			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
 			"activity": ["recv", "deliv", "queue"],
 			"pressure_failure": ["drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
+		},
+		"acquisition_session": {
+			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt"],
+			"activity": ["triggered", "completed", "last_capture_id"],
+			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
 		},
 		"rig": {
 			"configuration": ["still_w", "still_h"],
@@ -5327,8 +5542,10 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			2:
 				return "device"
 			3:
-				return "stream"
+				return "acquisition_session"
 			4:
+				return "stream"
+			5:
 				return "frameproducer"
 			_:
 				return ""
@@ -5339,6 +5556,8 @@ func _native_object_type_key(rec: Dictionary) -> String:
 				return "provider"
 			"device":
 				return "device"
+			"acquisition_session", "acquisitionsession", "acquisition session":
+				return "acquisition_session"
 			"stream":
 				return "stream"
 			"frameproducer", "frame_producer", "frame producer":
