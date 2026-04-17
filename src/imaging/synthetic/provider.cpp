@@ -512,6 +512,58 @@ void SyntheticProvider::emit_native_destroy_(uint64_t native_id) {
   strand_.post_native_object_destroyed(info);
 }
 
+uint64_t SyntheticProvider::ensure_native_acquisition_session_(DeviceState& d) {
+  if (d.acquisition_session_native_id != 0) {
+    return d.acquisition_session_native_id;
+  }
+  if (!callbacks_) {
+    return 0;
+  }
+
+  d.acquisition_session_native_id = alloc_native_id_(NativeObjectType::AcquisitionSession);
+  if (d.acquisition_session_native_id == 0) {
+    return 0;
+  }
+
+  NativeObjectCreateInfo info{};
+  info.native_id = d.acquisition_session_native_id;
+  info.type = static_cast<uint32_t>(NativeObjectType::AcquisitionSession);
+  info.root_id = d.root_id;
+  info.owner_device_instance_id = d.device_instance_id;
+  info.owner_provider_native_id = provider_native_id_;
+  info.owner_rig_id = 0;
+  info.has_created_ns = true;
+  info.created_ns = clock_.now_ns();
+  strand_.post_native_object_created(info);
+  return d.acquisition_session_native_id;
+}
+
+void SyntheticProvider::retain_native_acquisition_session_for_stream_(DeviceState& d) {
+  if (ensure_native_acquisition_session_(d) == 0) {
+    return;
+  }
+  ++d.acquisition_session_stream_refs;
+}
+
+void SyntheticProvider::release_native_acquisition_session_for_stream_(uint64_t device_instance_id) {
+  auto dit = devices_.find(device_instance_id);
+  if (dit == devices_.end()) {
+    return;
+  }
+  DeviceState& d = dit->second;
+  if (d.acquisition_session_stream_refs == 0) {
+    return;
+  }
+  --d.acquisition_session_stream_refs;
+  if (d.acquisition_session_stream_refs != 0) {
+    return;
+  }
+  if (d.acquisition_session_native_id != 0) {
+    emit_native_destroy_(d.acquisition_session_native_id);
+    d.acquisition_session_native_id = 0;
+  }
+}
+
 ProviderResult SyntheticProvider::open_device(
     const std::string& hardware_id,
     uint64_t device_instance_id,
@@ -561,6 +613,11 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
   }
 
   it->second.open = false;
+  if (it->second.acquisition_session_native_id != 0) {
+    emit_native_destroy_(it->second.acquisition_session_native_id);
+    it->second.acquisition_session_native_id = 0;
+    it->second.acquisition_session_stream_refs = 0;
+  }
   strand_.post_device_closed(device_instance_id);
   emit_native_destroy_(it->second.native_id);
   devices_.erase(it);
@@ -598,6 +655,9 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
+  retain_native_acquisition_session_for_stream_(dit->second);
+  s.acquisition_session_native_id = dit->second.acquisition_session_native_id;
+
   s.created = true;
   s.started = false;
   s.next_due_ns = 0;
@@ -610,6 +670,7 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
     info.type = static_cast<uint32_t>(NativeObjectType::Stream);
     info.root_id = dit->second.root_id;
     info.owner_device_instance_id = req.device_instance_id;
+    info.owner_acquisition_session_id = s.acquisition_session_native_id;
     info.owner_stream_id = req.stream_id;
     info.owner_provider_native_id = provider_native_id_;
     info.owner_rig_id = 0;
@@ -644,6 +705,7 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
 
   strand_.post_stream_destroyed(stream_id);
   emit_native_destroy_(it->second.native_id);
+  release_native_acquisition_session_for_stream_(it->second.req.device_instance_id);
   streams_.erase(it);
   return ProviderResult::success();
 }
@@ -714,6 +776,7 @@ ProviderResult SyntheticProvider::start_stream(
     info.native_id = s.frame_producer_native_id;
     info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
     info.owner_device_instance_id = s.req.device_instance_id;
+    info.owner_acquisition_session_id = s.acquisition_session_native_id;
     info.owner_stream_id = s.req.stream_id;
     info.owner_provider_native_id = provider_native_id_;
     info.owner_rig_id = 0;
@@ -923,12 +986,18 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   s.started = false;
   strand_.post_stream_destroyed(s.req.stream_id);
   emit_native_destroy_(s.native_id);
+  release_native_acquisition_session_for_stream_(s.req.device_instance_id);
   streams_.erase(it);
 }
 
 void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::iterator it) {
   if (it == devices_.end()) {
     return;
+  }
+  if (it->second.acquisition_session_native_id != 0) {
+    emit_native_destroy_(it->second.acquisition_session_native_id);
+    it->second.acquisition_session_native_id = 0;
+    it->second.acquisition_session_stream_refs = 0;
   }
   it->second.open = false;
   strand_.post_device_closed(it->second.device_instance_id);

@@ -111,6 +111,7 @@ struct CmdProviderNativeObjectCreated {
   uint32_t type = 0;
   uint64_t root_id = 0;
   uint64_t owner_device_instance_id = 0;
+  uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint64_t owner_provider_native_id = 0;
   uint64_t owner_rig_id = 0;

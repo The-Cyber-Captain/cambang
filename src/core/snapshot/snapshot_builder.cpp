@@ -5,6 +5,7 @@
 #include <set>
 
 #include "core/core_device_registry.h"
+#include "core/core_acquisition_session_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_rig_registry.h"
 #include "core/core_spec_state.h"
@@ -184,6 +185,29 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         }
     }
 
+    // Acquisition sessions
+    if (in.acquisition_sessions) {
+        snap.acquisition_sessions.reserve(in.acquisition_sessions->all().size());
+        for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
+            (void)session_id;
+            AcquisitionSessionState s;
+            s.acquisition_session_id = rec.acquisition_session_id;
+            s.device_instance_id = rec.device_instance_id;
+            s.phase = rec.phase;
+            s.capture_profile_version = rec.capture_profile_version;
+            s.capture_width = rec.capture_width;
+            s.capture_height = rec.capture_height;
+            s.capture_format = rec.capture_format;
+            s.captures_triggered = rec.captures_triggered;
+            s.captures_completed = rec.captures_completed;
+            s.captures_failed = rec.captures_failed;
+            s.last_capture_id = rec.last_capture_id;
+            s.last_capture_latency_ns = rec.last_capture_latency_ns;
+            s.error_code = rec.error_code;
+            snap.acquisition_sessions.push_back(std::move(s));
+        }
+    }
+
     // Streams
     if (in.streams) {
         snap.streams.reserve(in.streams->all().size());
@@ -255,6 +279,7 @@ if (in.native_objects) {
         }
 
         n.owner_device_instance_id = rec.owner_device_instance_id;
+        n.owner_acquisition_session_id = rec.owner_acquisition_session_id;
         n.owner_stream_id = rec.owner_stream_id;
         n.owner_provider_native_id = rec.owner_provider_native_id;
         n.owner_rig_id = rec.owner_rig_id;
@@ -298,6 +323,13 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         for (const auto& [sid, rec] : in.streams->all()) {
             (void)rec;
             fnv1a_u64(h, sid);
+        }
+    }
+    if (in.acquisition_sessions) {
+        fnv1a_u64(h, static_cast<uint64_t>(in.acquisition_sessions->all().size()));
+        for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
+            (void)rec;
+            fnv1a_u64(h, session_id);
         }
     }
 

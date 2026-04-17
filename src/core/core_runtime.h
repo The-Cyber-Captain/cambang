@@ -8,6 +8,7 @@
 #include <string>
 
 #include "core/core_dispatcher.h"
+#include "core/core_acquisition_session_registry.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_result_store.h"
@@ -282,6 +283,7 @@ private:
   CoreThread core_thread_;
   CoreRigRegistry rigs_;
   CoreDeviceRegistry devices_;
+  CoreAcquisitionSessionRegistry acquisition_sessions_;
   CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
