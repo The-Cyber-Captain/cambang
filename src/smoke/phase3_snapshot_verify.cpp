@@ -114,6 +114,15 @@ static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& s, uint
   return nullptr;
 }
 
+static bool has_acquisition_session_for_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
+  for (const auto& acq : s.acquisition_sessions) {
+    if (acq.device_instance_id == device_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 class MailboxSink final : public ICoreFrameSink {
 public:
   explicit MailboxSink(LatestFrameMailbox* mailbox) : mailbox_(mailbox) {}
@@ -469,7 +478,7 @@ static int test_destroyed_retention_does_not_cross_generation_baseline() {
   }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && s->gen == 0 && s->version == 0;
+        return s && s->gen == 0 && s->version == 0 && s->acquisition_sessions.empty();
       })) {
     std::cerr << "FAIL: missing baseline snapshot for gen0\n";
     rt.stop();
@@ -512,7 +521,7 @@ static int test_destroyed_retention_does_not_cross_generation_baseline() {
   }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && s->gen == 1 && s->version == 0;
+        return s && s->gen == 1 && s->version == 0 && s->acquisition_sessions.empty();
       })) {
     std::cerr << "FAIL: missing baseline snapshot for gen1\n";
     rt.stop();
@@ -549,7 +558,7 @@ static int test_live_session_retirement_expiry_publication() {
 
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && s->version == 0;
+        return s && s->version == 0 && s->acquisition_sessions.empty();
       })) {
     std::cerr << "FAIL: missing baseline snapshot\n";
     rt.stop();
@@ -672,7 +681,7 @@ static int test_topology_detached_and_retirement() {
     return 1;
   }
 
-  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0; })) {
+  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0 && s->acquisition_sessions.empty(); })) {
     std::cerr << "FAIL: missing baseline snapshot\n";
     rt.stop();
     return 1;
@@ -697,9 +706,11 @@ static int test_topology_detached_and_retirement() {
   rt.request_publish();
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && has_stream(*s, kStreamId) && s->topology_version > topo1;
+        return s && has_stream(*s, kStreamId) &&
+               has_acquisition_session_for_device(*s, kDeviceId) &&
+               s->topology_version > topo1;
       })) {
-    std::cerr << "FAIL: stream appearance topology transition missing\n";
+    std::cerr << "FAIL: stream/acquisition-session appearance topology transition missing\n";
     rt.stop();
     return 1;
   }
@@ -735,9 +746,11 @@ static int test_topology_detached_and_retirement() {
   rt.request_publish();
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && !has_stream(*s, kStreamId) && s->topology_version > topo2;
+        return s && !has_stream(*s, kStreamId) &&
+               !has_acquisition_session_for_device(*s, kDeviceId) &&
+               s->topology_version > topo2;
       })) {
-    std::cerr << "FAIL: stream disappearance topology transition missing\n";
+    std::cerr << "FAIL: stream/acquisition-session disappearance topology transition missing\n";
     rt.stop();
     return 1;
   }
@@ -796,7 +809,7 @@ static int test_timestamp_preservation_and_fallback() {
     std::cerr << "FAIL: runtime start\n";
     return 1;
   }
-  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0; })) {
+  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0 && s->acquisition_sessions.empty(); })) {
     std::cerr << "FAIL: missing baseline snapshot\n";
     rt.stop();
     return 1;
