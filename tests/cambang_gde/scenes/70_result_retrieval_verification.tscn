@@ -3,7 +3,7 @@
 [ext_resource type="Script" uid="uid://cqb6fxwqtolh4" path="res://scripts/70_result_retrieval_verification.gd" id="1_script"]
 [ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="2_dch17"]
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_jspro"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dch17"]
 bg_color = Color(0.07, 0.09, 0.12, 0.9)
 corner_radius_top_left = 6
 corner_radius_top_right = 6
@@ -17,6 +17,8 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
 script = ExtResource("1_script")
 
 [node name="RootMargin" type="MarginContainer" parent="."]
@@ -26,13 +28,14 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-theme_override_constants/margin_left = 24
-theme_override_constants/margin_top = 16
-theme_override_constants/margin_right = 24
-theme_override_constants/margin_bottom = 16
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 10
 
 [node name="MainColumn" type="VBoxContainer" parent="RootMargin"]
 layout_mode = 2
+size_flags_horizontal = 4
 theme_override_constants/separation = 12
 
 [node name="Title" type="Label" parent="RootMargin/MainColumn"]
@@ -41,7 +44,6 @@ text = "Tranche-1 Result Retrieval Verification"
 
 [node name="ResultsRow" type="HBoxContainer" parent="RootMargin/MainColumn"]
 layout_mode = 2
-size_flags_vertical = 3
 size_flags_stretch_ratio = 0.75
 theme_override_constants/separation = 20
 
@@ -131,16 +133,15 @@ disabled = true
 text = "Capture Again"
 
 [node name="CamBANGStatusPanel" type="PanelContainer" parent="RootMargin/MainColumn"]
-custom_minimum_size = Vector2(320, 0)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
-theme_override_styles/panel = SubResource("StyleBoxFlat_jspro")
+theme_override_styles/panel = SubResource("StyleBoxFlat_dch17")
 script = ExtResource("2_dch17")
 metadata/_custom_type_script = "uid://djv2vyhmruoh2"
 
 [node name="StatusLabel" type="RichTextLabel" parent="RootMargin/MainColumn"]
-custom_minimum_size = Vector2(0, 220)
+custom_minimum_size = Vector2(0, 100)
 layout_mode = 2
 size_flags_vertical = 3
-size_flags_stretch_ratio = 0.5
+size_flags_stretch_ratio = 0.15
