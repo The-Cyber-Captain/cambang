@@ -1,4 +1,4 @@
-# CamBANG State Snapshot (Schema v1)
+# CamBANG State Snapshot (Schema v2)
 
 This document specifies the **public** snapshot payload published by
 CamBANG core and exposed via `CamBANGServer` as `CamBANGStateSnapshot`.
@@ -256,11 +256,11 @@ design).
 
 ------------------------------------------------------------------------
 
-## 5. Top-level schema (v1)
+## 5. Top-level schema (v2)
 
 ``` text
 CamBANGStateSnapshot {
-  schema_version: uint32           // = 1
+  schema_version: uint32           // = 2
   gen: uint64                      // core generation (monotonic across app/server lifetime)
   version: uint64                  // increments every publish within this gen
   topology_version: uint64         // increments on structural change within this gen
@@ -270,6 +270,7 @@ CamBANGStateSnapshot {
 
   rigs: Array<CamBANGRigState>
   devices: Array<CamBANGDeviceState>
+  acquisition_sessions: Array<AcquisitionSessionState>
   streams: Array<CamBANGStreamState>
 
   native_objects: Array<NativeObjectRecord>
@@ -334,7 +335,7 @@ This guarantees that each core generation (`gen`) produces at least one
 deterministic baseline snapshot after `CamBANGServer.start()` completes.
 ------------------------------------------------------------------------
 
-## 6. Record schemas (v1)
+## 6. Record schemas (v2)
 
 ### 6.0 `profile_version` / `capture_profile_version`
 
@@ -408,7 +409,47 @@ CamBANGDeviceState {
 }
 ```
 
-### 6.3 `CamBANGStreamState`
+### 6.3 `AcquisitionSessionState` (provisional tranche-1 shape)
+
+`AcquisitionSessionState` is introduced as a first-class snapshot category for
+acquisition-session truth. This tranche intentionally uses a provisional field
+shape borrowed from the existing still-capture summary vocabulary. Field
+residency is not final long-term approval in this tranche.
+
+Boundary direction remains:
+
+- Device remains the hardware/resource posture boundary.
+- Stream remains the repeating-flow boundary.
+- AcquisitionSession is the acquisition-session truth boundary, especially for
+  still-capture/session-scoped truth where applicable.
+
+`AcquisitionSession` is runtime/provider-originated truth and is not a directly
+scenario-authored object.
+
+``` text
+AcquisitionSessionState {
+  acquisition_session_id: uint64
+  device_instance_id: uint64
+
+  phase: phase
+
+  capture_profile_version: uint64
+  capture_width: uint32
+  capture_height: uint32
+  capture_format: uint32
+
+  captures_triggered: uint64
+  captures_completed: uint64
+  captures_failed: uint64
+
+  last_capture_id: uint64
+  last_capture_latency_ns: uint64
+
+  error_code: int32
+}
+```
+
+### 6.4 `CamBANGStreamState`
 
 A repeating stream. Each device supports at most **one active repeating
 stream** at a time (design choice).
@@ -470,7 +511,7 @@ CamBANGStreamState {
 **Invariant (v1):** - At most one stream per `device_instance_id` may be
 `phase=LIVE` and `mode != STOPPED`.
 
-### 6.4 `NativeObjectRecord`
+### 6.5 `NativeObjectRecord`
 
 Native/core objects created by the provider on behalf of CamBANG
 are tracked as registry records.
@@ -478,11 +519,12 @@ are tracked as registry records.
 ``` text
 NativeObjectRecord {
   native_id: uint64
-  type: provider | device | stream | frameproducer
+  type: provider | device | acquisition_session | stream | frameproducer
 
   phase: phase
 
   owner_device_instance_id: uint64       // 0 if none/unknown
+  owner_acquisition_session_id: uint64   // 0 if none/unknown
   owner_stream_id: uint64                // 0 if none/unknown
   owner_provider_native_id: uint64       // 0 if none/unknown
   owner_rig_id: uint64                   // 0 if none/unknown
@@ -535,9 +577,13 @@ A `root_id` is included if: - its controlling owner has ended, **and** -
 at least one `NativeObjectRecord` with that `root_id` still exists in
 the registry (either not DESTROYED, or DESTROYED but still retained).
 
-“Controlling owner” refers to the device instance or stream
+“Controlling owner” refers to the AcquisitionSession, device instance, or stream
 that originally owned the native object branch associated with the
 root_id.
+
+If descendants survive past a dead controlling AcquisitionSession, this must be
+treated as an **Acquisition Session boundary breach** in diagnostics and not
+collapsed into generic orphan meaning.
 
 ------------------------------------------------------------------------
 

@@ -103,6 +103,29 @@ struct CamBANGDeviceState {
     int32_t last_error_code = 0;
 };
 
+// Provisional tranche-1 contract shape for acquisition-session truth.
+// Field residency may evolve in later contract tranches.
+struct AcquisitionSessionState {
+    uint64_t acquisition_session_id = 0;
+    uint64_t device_instance_id = 0;
+
+    CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
+
+    uint64_t capture_profile_version = 0;
+    uint32_t capture_width = 0;
+    uint32_t capture_height = 0;
+    uint32_t capture_format = 0;
+
+    uint64_t captures_triggered = 0;
+    uint64_t captures_completed = 0;
+    uint64_t captures_failed = 0;
+
+    uint64_t last_capture_id = 0;
+    uint64_t last_capture_latency_ns = 0;
+
+    int32_t error_code = 0;
+};
+
 struct CamBANGStreamState {
     uint64_t stream_id = 0;
     uint64_t device_instance_id = 0;
@@ -141,6 +164,7 @@ struct NativeObjectRecord {
     CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
 
     uint64_t owner_device_instance_id = 0; // 0 if none/unknown
+    uint64_t owner_acquisition_session_id = 0; // 0 if none/unknown
     uint64_t owner_stream_id = 0;          // 0 if none/unknown
     uint64_t owner_provider_native_id = 0; // 0 if none/unknown
     uint64_t owner_rig_id = 0;             // 0 if none/unknown
@@ -158,7 +182,7 @@ struct NativeObjectRecord {
 };
 
 struct CamBANGStateSnapshot {
-    static constexpr uint32_t kSchemaVersion = 1;
+    static constexpr uint32_t kSchemaVersion = 2;
 
     uint32_t schema_version = kSchemaVersion;
     uint64_t gen = 0;
@@ -170,6 +194,7 @@ struct CamBANGStateSnapshot {
 
     std::vector<CamBANGRigState> rigs;
     std::vector<CamBANGDeviceState> devices;
+    std::vector<AcquisitionSessionState> acquisition_sessions;
     std::vector<CamBANGStreamState> streams;
 
     std::vector<NativeObjectRecord> native_objects;
