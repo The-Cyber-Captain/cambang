@@ -1,4 +1,4 @@
-# CamBANG State Snapshot (Schema v2)
+# CamBANG State Snapshot (Schema v1)
 
 This document specifies the **public** snapshot payload published by
 CamBANG core and exposed via `CamBANGServer` as `CamBANGStateSnapshot`.
@@ -256,11 +256,11 @@ design).
 
 ------------------------------------------------------------------------
 
-## 5. Top-level schema (v2)
+## 5. Top-level schema (v1)
 
 ``` text
 CamBANGStateSnapshot {
-  schema_version: uint32           // = 2
+  schema_version: uint32           // = 1
   gen: uint64                      // core generation (monotonic across app/server lifetime)
   version: uint64                  // increments every publish within this gen
   topology_version: uint64         // increments on structural change within this gen
@@ -335,7 +335,7 @@ This guarantees that each core generation (`gen`) produces at least one
 deterministic baseline snapshot after `CamBANGServer.start()` completes.
 ------------------------------------------------------------------------
 
-## 6. Record schemas (v2)
+## 6. Record schemas (v1)
 
 ### 6.0 `profile_version` / `capture_profile_version`
 

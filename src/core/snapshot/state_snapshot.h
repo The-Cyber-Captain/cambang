@@ -182,7 +182,7 @@ struct NativeObjectRecord {
 };
 
 struct CamBANGStateSnapshot {
-    static constexpr uint32_t kSchemaVersion = 2;
+    static constexpr uint32_t kSchemaVersion = 1;
 
     uint32_t schema_version = kSchemaVersion;
     uint64_t gen = 0;
