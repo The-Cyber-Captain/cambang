@@ -703,9 +703,9 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
     }
   }
 
-  strand_.post_stream_destroyed(stream_id);
   emit_native_destroy_(it->second.native_id);
   release_native_acquisition_session_for_stream_(it->second.req.device_instance_id);
+  strand_.post_stream_destroyed(stream_id);
   streams_.erase(it);
   return ProviderResult::success();
 }
@@ -808,13 +808,13 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   }
   auto& s = it->second;
   s.started = false;
-  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   if (s.producing) {
     // Production has stopped immediately in this provider.
     emit_native_destroy_(s.frame_producer_native_id);
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  strand_.post_stream_stopped(stream_id, ProviderError::OK);
   release_stream_live_gpu_backing_(s);
   return ProviderResult::success();
 }
@@ -974,19 +974,22 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   }
 
   StreamState& s = it->second;
-  if (emit_stop_event && s.started) {
-    strand_.post_stream_stopped(s.req.stream_id, stop_error);
-  }
+  const bool had_started = s.started;
+  const uint64_t stream_id = s.req.stream_id;
+  const uint64_t device_instance_id = s.req.device_instance_id;
   if (s.producing) {
     emit_native_destroy_(s.frame_producer_native_id);
     s.producing = false;
     s.frame_producer_native_id = 0;
   }
+  if (emit_stop_event && had_started) {
+    strand_.post_stream_stopped(stream_id, stop_error);
+  }
   release_stream_live_gpu_backing_(s);
   s.started = false;
-  strand_.post_stream_destroyed(s.req.stream_id);
   emit_native_destroy_(s.native_id);
-  release_native_acquisition_session_for_stream_(s.req.device_instance_id);
+  release_native_acquisition_session_for_stream_(device_instance_id);
+  strand_.post_stream_destroyed(stream_id);
   streams_.erase(it);
 }
 
@@ -1069,14 +1072,14 @@ ProviderResult SyntheticProvider::fail_stream_for_test(uint64_t stream_id, Provi
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  strand_.post_stream_error(stream_id, error);
-  if (it->second.started) {
-    strand_.post_stream_stopped(stream_id, error);
-  }
   if (it->second.producing) {
     emit_native_destroy_(it->second.frame_producer_native_id);
     it->second.producing = false;
     it->second.frame_producer_native_id = 0;
+  }
+  strand_.post_stream_error(stream_id, error);
+  if (it->second.started) {
+    strand_.post_stream_stopped(stream_id, error);
   }
   it->second.started = false;
   return ProviderResult::success();
