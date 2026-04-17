@@ -278,6 +278,20 @@ CamBANGStateSnapshot {
   detached_root_ids: Array<uint64> // computed by core (see §7)
 }
 ```
+### 5.1 `acquisition_sessions` truth scope (v1)
+
+`acquisition_sessions` is a top-level snapshot category in schema version **1**.
+
+Current v1 meaning is intentionally narrow and implementation-synchronized:
+
+- `acquisition_sessions[]` reports **current/live retained AcquisitionSession truth** for the active generation.
+- It is **not** the destroyed-history archive for prior sessions.
+- Destroyed/retained lifecycle history remains diagnosable through `native_objects` retention.
+
+This distinction is important for diagnostics and panel projection: live session truth
+comes from top-level `acquisition_sessions`, while historical teardown ordering remains
+visible through retained `NativeObjectRecord` entries.
+
 ### 5.x Effective retained truth (normative)
 
 Certain snapshot fields represent **effective retained truth** within Core.
@@ -420,11 +434,17 @@ Boundary direction remains:
 
 - Device remains the hardware/resource posture boundary.
 - Stream remains the repeating-flow boundary.
-- AcquisitionSession is the acquisition-session truth boundary, especially for
-  still-capture/session-scoped truth where applicable.
+- AcquisitionSession is the acquisition-session truth boundary.
 
 `AcquisitionSession` is runtime/provider-originated truth and is not a directly
 scenario-authored object.
+
+Implementation-status clarification (current repo truth):
+
+- Current concrete AcquisitionSession realization is stream-backed in `SyntheticProvider`.
+- Still-only AcquisitionSession realization is **not yet implemented**.
+- Still capture callbacks alone must not be treated as retained AcquisitionSession
+  realization in core state.
 
 ``` text
 AcquisitionSessionState {

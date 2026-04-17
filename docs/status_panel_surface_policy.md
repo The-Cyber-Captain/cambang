@@ -46,7 +46,7 @@ May be surfaced as:
 - diagnostic (info lines)
 
 Examples:
-- ownership (`owner_stream_id`)
+- ownership (`owner_acquisition_session_id`, `owner_stream_id`)
 - lineage (`creation_gen`)
 - rig membership
 - detached/orphan grouping
@@ -82,6 +82,21 @@ A field is traceably represented through one of:
 - derived-but-explainable indicator that can be tied to snapshot inputs
 
 ---
+
+
+### 3.1 Current implemented hierarchy note
+
+Current StatusPanel projection is AcquisitionSession-aware and reconstructs
+ancestry as:
+
+- `Provider -> Device -> AcquisitionSession -> Stream -> optional FrameProducer`
+
+Rows of the form `acquisition_session/<id>` are first-class projection entries.
+`owner_acquisition_session_id` is used in ancestry reconstruction for native rows.
+
+When descendants survive beyond an ended controlling AcquisitionSession seam,
+the panel must preserve explicit **Acquisition Session boundary breach**
+classification rather than collapsing that condition into a generic stream breach.
 
 ## 4) Optional field handling
 
@@ -270,11 +285,11 @@ This registry is presentation logic, not snapshot schema truth, and should remai
 - **Tier 1:** No confirmed missing Tier 1 direct surfaces for rows backed by canonical device/stream/rig snapshot records.
 - **Rig mode:** now surfaced as `mode=<VALUE>` badge when `rig.mode` exists (no longer a known gap).
 - **Tier 2 ambiguity:** some provider/native aggregate counters (for example `native_*`) are renderer-derived rollups over snapshot arrays, not direct scalar fields; this is acceptable when traceable.
-- **Tier 3 ambiguity:** several native-object ownership/lineage fields are only partially surfaced (`owner_stream_id`/`creation_gen` emphasized for frameproducer; other owner fields are mostly structural/diagnostic).
+- **Tier 3 ambiguity:** several native-object ownership/lineage fields are only partially surfaced (`owner_acquisition_session_id`/`owner_stream_id`/`creation_gen` emphasized for frameproducer; other owner fields are mostly structural/diagnostic).
 
 ---
 
-## 8) Schema → UI surface audit (current renderer/harness, read-only)
+## 8) Schema → UI surface audit (current renderer/scene projection, read-only)
 
 Legend:
 - Surfaced?: `yes` / `traceable` / `no`
@@ -315,9 +330,9 @@ Legend:
 | stream | intent/stop_reason/last_frame_ts_ns/device_instance_id | 3/2 | partly traceable | structural + partial counter (`last_ts`) | no | ambiguous | policy decision required |
 | native object (generic) | phase | 1 | yes | badge | no | correct | none |
 | native object (generic) | bytes_allocated/buffers_in_use | 2 | yes | counters | no | correct | none |
-| native object (generic) | owner_stream_id/owner_device_instance_id/root_id | 3 | traceable | structural parent/orphan grouping | no | correct | keep traceable |
+| native object (generic) | owner_acquisition_session_id/owner_stream_id/owner_device_instance_id/root_id | 3 | traceable | structural parent/orphan grouping | no | correct | keep traceable |
 | native object (generic) | owner_provider_native_id/owner_rig_id/created_ns/destroyed_ns | 3/2 | no | missing | n/a | ambiguous | policy decision required |
-| frameproducer | owner_stream_id | 3 | yes | info line + structural parent | no | correct | none |
+| frameproducer | owner_acquisition_session_id/owner_stream_id | 3 | yes | info line + structural parent | no | correct | none |
 | frameproducer | creation_gen | 3 | yes | info line (and prior-gen notes where applicable) | no | correct | none |
 | orphan/detached structures | detached roots grouping | 3 | yes | structural row + `detached` badge + `roots` counter | no | correct | none |
 | contract/projection diagnostics | contract_gaps / projection_gaps | 1 | yes | dedicated rows + warning badges + count counter | no | correct | none |

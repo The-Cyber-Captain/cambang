@@ -64,7 +64,30 @@ Constraints:
 
 ---
 
-# 3. Stream lifecycle
+# 3. AcquisitionSession lifecycle
+
+AcquisitionSession represents provider-reported acquisition boundary truth.
+
+CREATED
+   │ acquisition session realized
+   ▼
+LIVE
+   │ teardown requested / owner seam ended
+   ▼
+TEARING_DOWN
+   │ native session released
+   ▼
+DESTROYED
+
+Constraints:
+
+- AcquisitionSession lifecycle must be reported from actual provider native-object truth.
+- Current implemented concrete realization is stream-backed in `SyntheticProvider`.
+- Still-only AcquisitionSession realization is not yet implemented.
+
+---
+
+# 4. Stream lifecycle
 
 Streams represent capture pipelines.
 
@@ -87,7 +110,7 @@ Frame production is controlled by the **FrameProducer** state.
 
 ---
 
-# 4. FrameProducer state machine
+# 5. FrameProducer state machine
 
 FrameProducer describes **active frame generation** for a stream.
 
@@ -108,7 +131,7 @@ FrameProducer events may occur many times within a single stream lifecycle.
 
 ---
 
-# 5. Provider strand delivery rules
+# 6. Provider strand delivery rules
 
 All provider facts must be delivered through the **provider strand**.
 
@@ -129,12 +152,12 @@ Rules:
 
 ---
 
-# 6. Axes summary
+# 7. Axes summary
 
 | Axis | Purpose |
 |---|---|
 | Lifecycle phase | registry truth (`CREATED` → `DESTROYED`) |
-| Operational state | provider/device/stream runtime status |
+| Operational state | provider/device/acquisition-session/stream runtime status |
 | FrameProducer state | frame generation enablement |
 
 These axes must not be collapsed into a single state machine.
@@ -169,6 +192,18 @@ Device handle active and capable of streaming.
 Transitions
 CLOSED → OPEN      device opened
 OPEN   → CLOSED    device closed
+
+### AcquisitionSession Presence State
+
+ABSENT
+No AcquisitionSession seam is currently realized for the device lineage.
+
+PRESENT
+AcquisitionSession seam is realized and reported in provider native-object truth.
+
+Current implementation note:
+- Concrete realization is stream-backed in `SyntheticProvider`.
+- Still-only AcquisitionSession realization is not yet implemented.
 
 
 ### Stream Presence State

@@ -20,6 +20,23 @@ Health badge role mapping is:
 
 Health is applied ahead of all other badges.
 
+
+## Structural projection hierarchy (current implementation)
+
+Current projection order is:
+
+- `provider/main`
+- `device/<instance_id>`
+- `acquisition_session/<acquisition_session_id>`
+- `stream/<stream_id>`
+- `native/*` descendants including optional frameproducer rows
+
+For native ancestry reconstruction, `owner_acquisition_session_id` is used before
+stream-level fallback where session ownership is available.
+
+The projection logic preserves explicit **Acquisition Session boundary breach**
+classification when a descendant survives beyond its controlling AcquisitionSession seam.
+
 ---
 
 ## Lifecycle badge phase parsing
@@ -259,6 +276,43 @@ Priority order:
 
 ---
 
+
+## AcquisitionSession health rules
+
+AcquisitionSession health facts include:
+
+- contract/projection failure
+- lifecycle contradiction
+- preserved state
+- destroyed state
+
+An AcquisitionSession row is considered:
+
+- **preserved** if it is a retained projection entry or has badge `continuity-only`
+- **destroyed** if it has badge `destroyed` or parsed phase is `destroyed`
+
+### AcquisitionSession = `BAD` if any of:
+- contract/projection failure
+- lifecycle contradiction
+
+### AcquisitionSession = `UNKNOWN` if:
+- phase cannot be parsed from row badges
+
+### AcquisitionSession = `ATTN` if:
+- preserved and not destroyed
+
+### Otherwise:
+- AcquisitionSession = `OK`
+
+Priority order:
+
+- `BAD`
+- `UNKNOWN`
+- `ATTN`
+- `OK`
+
+---
+
 ## Stream health rules
 
 Stream health facts include:
@@ -385,7 +439,7 @@ Priority order:
 
 ## Contract / projection failure detection
 
-For server, provider, device, stream, and native rows, contract/projection failure is treated as a high-priority negative signal.
+For server, provider, device, AcquisitionSession, stream, and native rows, contract/projection failure is treated as a high-priority negative signal.
 
 Depending on row type, this is detected from some combination of:
 
@@ -403,6 +457,7 @@ Where present, these failures force `BAD` for:
 - device
 - stream
 - native rows
+- acquisition_session rows
 
 ---
 

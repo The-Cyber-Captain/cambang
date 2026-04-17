@@ -36,7 +36,7 @@ The following terms are distinct and must not be conflated:
   - **scenario loader**: future serialized ingestion path used to load external scenario libraries
 - **verification case**: maintainer-authored smoke/CLI procedural validation input
 - **verification case catalog**: maintainer tooling selector/list for verification cases (`verify_case_catalog`)
-- **fixture**: static payload/data artifact, often consumed by tooling or UI/harness checks
+- **fixture**: static payload/data artifact, often consumed by tooling or UI/scene checks
 
 A verification case may exercise a scenario. A fixture may be used by either. None of these terms are interchangeable.
 
@@ -172,6 +172,16 @@ That subset is an implementation starting point, not the architectural ceiling.
 Canonical scenario direction remains a self-contained authored/recorded timeline unit. The event model is therefore expected to expand with minimal lifecycle/realization events needed to author and replay scenarios without hidden host-side semantic reconstruction (for example, device/stream realization and create/destroy-style families).
 
 Tranche 1 intentionally does not freeze the complete long-term scenario event vocabulary.
+
+### 7.x AcquisitionSession guardrail
+
+`AcquisitionSession` is not a directly scenario-authored timeline primitive in
+this vocabulary slice.
+
+Scenario events do not include direct AcquisitionSession create/destroy commands.
+Any AcquisitionSession realization remains provider runtime truth. Current
+implemented concrete realization in SyntheticProvider is stream-backed rather
+than still-only.
 
 ### 7.1 Verified primitive lifecycle status
 

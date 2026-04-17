@@ -458,4 +458,4 @@ startup is now authored through the verified effective timeline path:
 This removes ambiguity in the initial requested stream `to_image()` panel for
 scene 70.
 
-Capture-picture behavior was intentionally left untouched in this correction.
+Capture-picture behavior was intentionally left unchanged in this correction.

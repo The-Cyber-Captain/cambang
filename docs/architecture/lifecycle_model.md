@@ -21,9 +21,10 @@ CamBANG standardises camera-stack ownership into a provider-agnostic model:
 ```text
 Provider
  └─ Device
-     └─ Stream
-         └─ FrameProducer (optional)
-             └─ Frame (repeated samples)
+     └─ AcquisitionSession
+         └─ Stream
+             └─ FrameProducer (optional)
+                 └─ Frame (repeated samples)
 ```
 
 Meaning of each level:
@@ -32,12 +33,19 @@ Meaning of each level:
 |---|---|
 | Provider | Core is bound to one provider backend instance |
 | Device | Provider owns an opened camera device handle |
+| AcquisitionSession | Provider-reported acquisition seam for that device lineage |
 | Stream | Provider owns a configured capture pipeline |
 | FrameProducer | Stream is actively producing frames |
 | Frame | Individual frame sample delivered to Core |
 
 `FrameProducer` is optional and used primarily for diagnostics,
 synthetic testing, and meaningful platform-backed lifecycle boundaries.
+
+Implementation status (current repo truth):
+
+- Concrete `AcquisitionSession` realization is stream-backed in `SyntheticProvider`
+  (first successful `create_stream(...)` to last stream destroy for that device).
+- Still-only `AcquisitionSession` realization is not yet implemented.
 
 This hierarchy is reflected in:
 
@@ -179,7 +187,7 @@ Required guarantees:
 
 ---
 
-## 5. Provider, device, stream, and FrameProducer lifecycles
+## 5. Provider, device, AcquisitionSession, stream, and FrameProducer lifecycles
 
 ### 5.1 Provider lifecycle
 
