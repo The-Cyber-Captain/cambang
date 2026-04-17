@@ -577,7 +577,7 @@ public:
     if (expect_frameproducer_.has_value()) {
       const bool visible = !observed.is_nil &&
                            observed.raw &&
-                           native_count_(*observed.raw, NativeObjectType::FrameProducer) > 0;
+                           native_live_count_(*observed.raw, NativeObjectType::FrameProducer) > 0;
       require(visible == *expect_frameproducer_,
               std::string("expect_frameproducer mismatch expected=") +
                   (*expect_frameproducer_ ? "true" : "false"));
@@ -598,10 +598,10 @@ private:
   std::optional<bool> expect_acquisition_session_;
   std::optional<bool> expect_frameproducer_;
 
-  static size_t native_count_(const CamBANGStateSnapshot& snap, NativeObjectType type) {
+  static size_t native_live_count_(const CamBANGStateSnapshot& snap, NativeObjectType type) {
     size_t count = 0;
     for (const auto& rec : snap.native_objects) {
-      if (rec.type == static_cast<uint32_t>(type)) {
+      if (rec.type == static_cast<uint32_t>(type) && rec.phase != CBLifecyclePhase::DESTROYED) {
         ++count;
       }
     }

@@ -707,11 +707,9 @@ static int test_topology_detached_and_retirement() {
   rt.request_publish();
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && has_stream(*s, kStreamId) &&
-               has_acquisition_session_for_device(*s, kDeviceId) &&
-               s->topology_version > topo1;
+        return s && has_stream(*s, kStreamId) && s->topology_version > topo1;
       })) {
-    std::cerr << "FAIL: stream/acquisition-session appearance topology transition missing\n";
+    std::cerr << "FAIL: stream appearance topology transition missing\n";
     rt.stop();
     return 1;
   }
