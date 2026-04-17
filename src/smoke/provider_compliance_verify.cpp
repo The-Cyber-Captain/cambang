@@ -129,6 +129,15 @@ int find_native_create_id(const std::vector<EventRec>& events, uint32_t type, ui
   return -1;
 }
 
+int find_native_create_id_by_type(const std::vector<EventRec>& events, uint32_t type) {
+  for (const auto& e : events) {
+    if (e.tag == "native_created" && e.type == type) {
+      return static_cast<int>(e.id);
+    }
+  }
+  return -1;
+}
+
 int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) {
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i].tag == "frame" && events[i].ts.value == ts_ns) {
@@ -1182,9 +1191,12 @@ bool run_synthetic_provider_direct_sanity_check() {
   const int closed = find_event_index(cb.events, "device_closed", req.device_instance_id);
   const int fp_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::FrameProducer), req.stream_id);
   const int stream_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
+  const int acquisition_session_native_id =
+      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
   const int device_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Device), 0);
 
-  if (stopped < 0 || destroyed < 0 || closed < 0 || fp_native_id < 0 || stream_native_id < 0 || device_native_id < 0) {
+  if (stopped < 0 || destroyed < 0 || closed < 0 ||
+      fp_native_id < 0 || stream_native_id < 0 || acquisition_session_native_id < 0 || device_native_id < 0) {
     std::cerr << "FAIL synthetic direct sanity missing callback/native evidence\n";
     return false;
   }
