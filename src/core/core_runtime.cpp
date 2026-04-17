@@ -51,7 +51,7 @@ CoreRuntime::CoreRuntime()
       version_(0),
       topology_version_(0),
       last_topology_sig_(0),
-      dispatcher_(&streams_, &devices_, &native_objects_, &current_gen_, [this]() -> uint64_t {
+      dispatcher_(&streams_, &devices_, &acquisition_sessions_, &native_objects_, &current_gen_, [this]() -> uint64_t {
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
@@ -183,6 +183,7 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
+  acquisition_sessions_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
@@ -352,6 +353,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     SnapshotBuilder::Inputs in;
     in.rigs = &rigs_;
     in.devices = &devices_;
+    in.acquisition_sessions = &acquisition_sessions_;
     in.streams = &streams_;
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;

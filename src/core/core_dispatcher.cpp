@@ -39,8 +39,12 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
+    const uint64_t now_ns = now_ns_ ? now_ns_() : 0;
     if (devices_) {
       devices_->on_device_opened(p.device_instance_id);
+    }
+    if (acquisition_sessions_) {
+      acquisition_sessions_->on_device_opened(p.device_instance_id, now_ns);
     }
     relevant_state_changed_ = true;
     break;
@@ -49,8 +53,12 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_DEVICE_CLOSED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceClosed>(cmd.payload);
+    const uint64_t now_ns = now_ns_ ? now_ns_() : 0;
     if (devices_) {
       devices_->on_device_closed(p.device_instance_id);
+    }
+    if (acquisition_sessions_) {
+      acquisition_sessions_->on_device_closed(p.device_instance_id, now_ns);
     }
     relevant_state_changed_ = true;
     break;
@@ -129,6 +137,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
         p.type,
         p.root_id,
         p.owner_device_instance_id,
+        p.owner_acquisition_session_id,
         p.owner_stream_id,
         p.owner_provider_native_id,
         p.owner_rig_id,
