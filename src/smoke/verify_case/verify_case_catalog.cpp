@@ -50,6 +50,7 @@ const char* native_type_name(uint32_t type) {
   switch (static_cast<NativeObjectType>(type)) {
     case NativeObjectType::Provider: return "provider";
     case NativeObjectType::Device: return "device";
+    case NativeObjectType::AcquisitionSession: return "acquisition_session";
     case NativeObjectType::Stream: return "stream";
     case NativeObjectType::FrameProducer: return "frameproducer";
   }
@@ -71,8 +72,9 @@ enum class RestartChurnCutPoint : uint8_t {
   ProviderVisible = 0,
   DeviceIdentity = 1,
   DeviceNative = 2,
-  StreamVisible = 3,
-  Complete = 4,
+  AcquisitionSessionVisible = 3,
+  StreamVisible = 4,
+  Complete = 5,
 };
 
 const char* restart_churn_cut_point_name(RestartChurnCutPoint cut_point) {
@@ -80,6 +82,7 @@ const char* restart_churn_cut_point_name(RestartChurnCutPoint cut_point) {
     case RestartChurnCutPoint::ProviderVisible: return "provider_visible";
     case RestartChurnCutPoint::DeviceIdentity: return "device_identity";
     case RestartChurnCutPoint::DeviceNative: return "device_native";
+    case RestartChurnCutPoint::AcquisitionSessionVisible: return "acquisition_session_visible";
     case RestartChurnCutPoint::StreamVisible: return "stream_visible";
     case RestartChurnCutPoint::Complete: return "complete";
   }
@@ -91,6 +94,7 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
   const bool device_identity = !snap.devices.empty();
 
   bool device_native = false;
+  bool acquisition_session_visible = false;
   bool frameproducer_visible = false;
   for (const auto& rec : snap.native_objects) {
     if (rec.creation_gen != current_gen) {
@@ -98,6 +102,10 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
     }
     if (rec.type == static_cast<uint32_t>(NativeObjectType::Device) && rec.owner_device_instance_id == VerifyCaseHarness::kDeviceId) {
       device_native = true;
+    }
+    if (rec.type == static_cast<uint32_t>(NativeObjectType::AcquisitionSession) &&
+        rec.owner_device_instance_id == VerifyCaseHarness::kDeviceId) {
+      acquisition_session_visible = true;
     }
     if (rec.type == static_cast<uint32_t>(NativeObjectType::FrameProducer) &&
         rec.owner_device_instance_id == VerifyCaseHarness::kDeviceId &&
@@ -111,6 +119,9 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
   }
   if (!snap.streams.empty()) {
     return RestartChurnCutPoint::StreamVisible;
+  }
+  if (acquisition_session_visible) {
+    return RestartChurnCutPoint::AcquisitionSessionVisible;
   }
   if (device_native) {
     return RestartChurnCutPoint::DeviceNative;
@@ -127,6 +138,7 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
 struct NativeShapeSummary {
   size_t current_generation_provider_count = 0;
   size_t current_generation_device_count = 0;
+  size_t current_generation_acquisition_session_count = 0;
   size_t current_generation_stream_count = 0;
   size_t current_generation_frameproducer_count = 0;
   size_t stale_prior_generation_count = 0;
@@ -142,6 +154,7 @@ NativeShapeSummary summarize_native_shape(const CamBANGStateSnapshot& snap, uint
     switch (static_cast<NativeObjectType>(rec.type)) {
       case NativeObjectType::Provider: ++summary.current_generation_provider_count; break;
       case NativeObjectType::Device: ++summary.current_generation_device_count; break;
+      case NativeObjectType::AcquisitionSession: ++summary.current_generation_acquisition_session_count; break;
       case NativeObjectType::Stream: ++summary.current_generation_stream_count; break;
       case NativeObjectType::FrameProducer: ++summary.current_generation_frameproducer_count; break;
     }
@@ -167,6 +180,8 @@ void log_restarted_baseline_diagnostic(int step_index, const ObservedSnapshot& o
              (summary.current_generation_provider_count > 0 ? "yes" : "no"),
              " current_gen_device_descendants_present=",
              (summary.current_generation_device_count > 0 ? "yes" : "no"),
+             " current_gen_acquisition_session_descendants_present=",
+             (summary.current_generation_acquisition_session_count > 0 ? "yes" : "no"),
              " current_gen_stream_descendants_present=",
              (summary.current_generation_stream_count > 0 ? "yes" : "no"),
              " any_frameproducer_descendants_present=",
@@ -183,6 +198,7 @@ void log_restarted_baseline_diagnostic(int step_index, const ObservedSnapshot& o
                " owner_provider_native_id=", rec.owner_provider_native_id,
                " owner_rig_id=", rec.owner_rig_id,
                " owner_device_instance_id=", rec.owner_device_instance_id,
+               " owner_acquisition_session_id=", rec.owner_acquisition_session_id,
                " owner_stream_id=", rec.owner_stream_id);
   }
 }
@@ -194,6 +210,7 @@ bool is_provider_only_authoritative_snapshot(const CamBANGStateSnapshot& snap, u
   }
   if (summary.current_generation_provider_count != 1 ||
       summary.current_generation_device_count != 0 ||
+      summary.current_generation_acquisition_session_count != 0 ||
       summary.current_generation_stream_count != 0 ||
       summary.current_generation_frameproducer_count != 0) {
     return false;
@@ -212,6 +229,7 @@ bool is_provider_pending_snapshot(const CamBANGStateSnapshot& snap, uint64_t cur
   const NativeShapeSummary summary = summarize_native_shape(snap, current_gen);
   return summary.current_generation_provider_count == 0 &&
          summary.current_generation_device_count == 0 &&
+         summary.current_generation_acquisition_session_count == 0 &&
          summary.current_generation_stream_count == 0 &&
          summary.current_generation_frameproducer_count == 0 &&
          summary.stale_prior_generation_count == 0 &&
@@ -385,6 +403,9 @@ int provider_only_authoritative_baseline(VerifyCaseProviderKind provider_kind) {
     if (!observed.raw->streams.empty()) {
       return fail_step(step_index, "expected no streams in provider-only baseline");
     }
+    if (!observed.raw->acquisition_sessions.empty()) {
+      return fail_step(step_index, "expected no acquisition sessions in provider-only baseline");
+    }
     if (observed.raw->native_objects.size() != 1) {
       return fail_step(step_index, "expected exactly one native object in provider-only baseline");
     }
@@ -521,6 +542,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
   const auto is_device_realization_native_shape = [](const CamBANGStateSnapshot& s) {
     return count_native_type(s, NativeObjectType::Provider) == 1 &&
            count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::AcquisitionSession) == 0 &&
            count_native_type(s, NativeObjectType::Stream) == 0 &&
            count_native_type(s, NativeObjectType::FrameProducer) == 0;
   };
@@ -528,6 +550,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
   const auto is_stream_realization_native_shape = [](const CamBANGStateSnapshot& s) {
     return count_native_type(s, NativeObjectType::Provider) == 1 &&
            count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::AcquisitionSession) == 1 &&
            count_native_type(s, NativeObjectType::Stream) == 1 &&
            count_native_type(s, NativeObjectType::FrameProducer) == 0;
   };
@@ -535,6 +558,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
   const auto is_full_realization_native_shape = [](const CamBANGStateSnapshot& s) {
     return count_native_type(s, NativeObjectType::Provider) == 1 &&
            count_native_type(s, NativeObjectType::Device) == 1 &&
+           count_native_type(s, NativeObjectType::AcquisitionSession) == 1 &&
            count_native_type(s, NativeObjectType::Stream) == 1 &&
            count_native_type(s, NativeObjectType::FrameProducer) == 1;
   };
@@ -563,6 +587,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
   }
   if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
       count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+      count_native_type(*h.observed().raw, NativeObjectType::AcquisitionSession) != 0 ||
       count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
       count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
     fail_step(1, "provider-only baseline native-object shape mismatch");
@@ -580,12 +605,16 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                         .version(current_version + 1)
                         .topology_version(current_topology_version)
                         .device_count(0)
+                        .acquisition_session_count(0)
+                        .expect_acquisition_session(false)
+                        .expect_frameproducer(false)
                         .stream_count(0),
                     h.observed())) {
       return 1;
     }
     if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
         count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+        count_native_type(*h.observed().raw, NativeObjectType::AcquisitionSession) != 0 ||
         count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
         count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
       log_restarted_baseline_diagnostic(2, h.observed());
@@ -600,6 +629,9 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                              .version(current_version)
                              .topology_version(current_topology_version)
                              .device_count(0)
+                             .acquisition_session_count(0)
+                             .expect_acquisition_session(false)
+                             .expect_frameproducer(false)
                              .stream_count(0),
                          h.observed())) {
     return 1;
@@ -619,6 +651,9 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version + 1)
                       .device_count(1)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false)
                       .stream_count(0),
                   h.observed())) {
     return 1;
@@ -651,6 +686,9 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version + 1)
                       .device_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false)
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -683,6 +721,9 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version)
                       .device_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic)
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -736,6 +777,7 @@ int provider_only_then_stop(VerifyCaseProviderKind provider_kind) {
   }
   if (!h.observed().raw || count_native_type(*h.observed().raw, NativeObjectType::Provider) != 1 ||
       count_native_type(*h.observed().raw, NativeObjectType::Device) != 0 ||
+      count_native_type(*h.observed().raw, NativeObjectType::AcquisitionSession) != 0 ||
       count_native_type(*h.observed().raw, NativeObjectType::Stream) != 0 ||
       count_native_type(*h.observed().raw, NativeObjectType::FrameProducer) != 0) {
     fail_step(1, "provider-only baseline native-object shape mismatch before stop");
@@ -750,6 +792,7 @@ int provider_only_then_stop(VerifyCaseProviderKind provider_kind) {
   if (!h.last_snapshot_before_stop_clear().is_nil) {
     const auto* final_raw = h.last_snapshot_before_stop_clear().raw.get();
     if (final_raw && (count_native_type(*final_raw, NativeObjectType::Device) != 0 ||
+                      count_native_type(*final_raw, NativeObjectType::AcquisitionSession) != 0 ||
                       count_native_type(*final_raw, NativeObjectType::Stream) != 0 ||
                       count_native_type(*final_raw, NativeObjectType::FrameProducer) != 0)) {
       fail_step(2, "stop boundary fabricated descendants before NIL clear");
@@ -812,6 +855,7 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
       RestartChurnCutPoint::DeviceIdentity,
       RestartChurnCutPoint::ProviderVisible,
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
       RestartChurnCutPoint::Complete,
   };
@@ -971,6 +1015,19 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
     if (!require_boundary_tick("expected observable publish after create_stream during restart churn")) {
       return 1;
     }
+    if (!observe_stage_at_least(want_gen,
+                                RestartChurnCutPoint::AcquisitionSessionVisible,
+                                "timed out waiting for acquisition session visible-or-later stage during restart churn")) {
+      return 1;
+    }
+
+    if (planned_cut_point == RestartChurnCutPoint::AcquisitionSessionVisible) {
+      emit_cycle_report(cycle_index, want_gen, planned_cut_point);
+      cli::line("[restart-churn] cycle=", cycle_index + 1, " stop_requested");
+      h.stop_runtime();
+      continue;
+    }
+
     if (!observe_stage_at_least(want_gen,
                                 RestartChurnCutPoint::StreamVisible,
                                 "timed out waiting for stream visible-or-later stage during restart churn")) {
@@ -1702,10 +1759,13 @@ int restart_churn_then_settle_deep(VerifyCaseProviderKind provider_kind,
   const std::vector<RestartChurnCutPoint> cut_points = {
       RestartChurnCutPoint::DeviceIdentity,
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
   };
   return restart_churn_then_settle_variant("restart_churn_then_settle_deep",
@@ -1740,10 +1800,12 @@ int restart_churn_then_settle_stream_churn(VerifyCaseProviderKind provider_kind,
                                            const RealizationProfilerOptions& profiler_options) {
   const std::vector<RestartChurnCutPoint> cut_points = {
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
       RestartChurnCutPoint::StreamVisible,
       RestartChurnCutPoint::StreamVisible,
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
   };
   return restart_churn_then_settle_variant("restart_churn_then_settle_stream_churn",
@@ -1760,6 +1822,7 @@ int restart_churn_then_settle_long(VerifyCaseProviderKind provider_kind,
       RestartChurnCutPoint::ProviderVisible,
       RestartChurnCutPoint::DeviceIdentity,
       RestartChurnCutPoint::DeviceNative,
+      RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
   };
   return restart_churn_then_settle_variant("restart_churn_then_settle_long",
@@ -1816,7 +1879,16 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
 
   h.tick();
   if (!check_step(0,
-                  SnapshotExpectation{}.is_nil(false).gen(0).version(0).topology_version(0).device_count(0).stream_count(0),
+                  SnapshotExpectation{}
+                      .is_nil(false)
+                      .gen(0)
+                      .version(0)
+                      .topology_version(0)
+                      .device_count(0)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -1826,7 +1898,16 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(0), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1835,7 +1916,16 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(2).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(2)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1844,7 +1934,16 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(3, SnapshotExpectation{}.version(3).topology_version(2).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(3,
+                  SnapshotExpectation{}
+                      .version(3)
+                      .topology_version(2)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -1853,7 +1952,16 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(4, SnapshotExpectation{}.version(4).topology_version(2).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(4,
+                  SnapshotExpectation{}
+                      .version(4)
+                      .topology_version(2)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -1862,7 +1970,16 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(5, SnapshotExpectation{}.version(5).topology_version(2).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(5,
+                  SnapshotExpectation{}
+                      .version(5)
+                      .topology_version(2)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1883,7 +2000,9 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -1892,7 +2011,16 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(0), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1901,7 +2029,16 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(2).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(2)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1910,7 +2047,16 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(3, SnapshotExpectation{}.version(3).topology_version(3).device_count(1).stream_count(0), h.observed())) {
+  if (!check_step(3,
+                  SnapshotExpectation{}
+                      .version(3)
+                      .topology_version(3)
+                      .device_count(1)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1919,7 +2065,16 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(4, SnapshotExpectation{}.version(4).topology_version(4).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(4,
+                  SnapshotExpectation{}
+                      .version(4)
+                      .topology_version(4)
+                      .device_count(0)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -1940,7 +2095,9 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -1950,13 +2107,30 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
   }
 
   const ObservedSnapshot before_tick = h.observed();
-  if (!SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).matches(before_tick, error)) {
+  if (!SnapshotExpectation{}
+           .version(0)
+           .topology_version(0)
+           .device_count(0)
+           .stream_count(0)
+           .acquisition_session_count(0)
+           .expect_acquisition_session(false)
+           .expect_frameproducer(false)
+           .matches(before_tick, error)) {
     cli::error("step 1 FAIL (state changed before observation boundary)");
     return 1;
   }
 
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -2135,9 +2309,9 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  if (!snap_before->devices.empty() || !snap_before->streams.empty()) {
+  if (!snap_before->devices.empty() || !snap_before->streams.empty() || !snap_before->acquisition_sessions.empty()) {
     cleanup();
-    fail_step(0, "snapshot truth violated before timeline execution");
+    fail_step(0, "snapshot truth violated before timeline execution (expected no acquisition sessions)");
     return 1;
   }
 
@@ -2326,7 +2500,9 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -2335,7 +2511,16 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(1)
+                      .expect_acquisition_session(true)
+                      .expect_frameproducer(true),
+                  h.observed())) {
     return 1;
   }
 
@@ -2346,7 +2531,16 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(2).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(2)
+                      .device_count(0)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -2364,7 +2558,9 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -2373,7 +2569,16 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -2382,7 +2587,16 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
     fail_step(2, "close_device did not fail with live child stream");
     return 1;
   }
-  if (!check_step(2, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -2391,7 +2605,16 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(3, SnapshotExpectation{}.version(2).topology_version(2).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(3,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(2)
+                      .device_count(0)
+                      .stream_count(0)
+                      .acquisition_session_count(0)
+                      .expect_acquisition_session(false)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -2414,7 +2637,9 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -2423,7 +2648,16 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(1)
+                      .expect_acquisition_session(true)
+                      .expect_frameproducer(true),
+                  h.observed())) {
     return 1;
   }
 
@@ -2493,7 +2727,9 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -2502,7 +2738,16 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -2512,7 +2757,16 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -2537,7 +2791,9 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -2546,7 +2802,16 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                  h.observed())) {
     return 1;
   }
 
@@ -2555,7 +2820,16 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -2564,7 +2838,16 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(3, SnapshotExpectation{}.version(3).topology_version(1).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(3,
+                  SnapshotExpectation{}
+                      .version(3)
+                      .topology_version(1)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false),
+                  h.observed())) {
     return 1;
   }
 
@@ -2594,7 +2877,9 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
   }
 
   h.tick();
-  if (!check_step(0, SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0), h.observed())) {
+  if (!check_step(0,
+                  SnapshotExpectation{}.version(0).topology_version(0).device_count(0).stream_count(0).acquisition_session_count(0),
+                  h.observed())) {
     return 1;
   }
 
@@ -2608,7 +2893,16 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(1, SnapshotExpectation{}.version(1).topology_version(1).device_count(2).stream_count(2), h.observed())) {
+  if (!check_step(1,
+                  SnapshotExpectation{}
+                      .version(1)
+                      .topology_version(1)
+                      .device_count(2)
+                      .stream_count(2)
+                      .acquisition_session_count(2)
+                      .expect_acquisition_session(true)
+                      .expect_frameproducer(true),
+                  h.observed())) {
     return 1;
   }
 
@@ -2619,7 +2913,16 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(2, SnapshotExpectation{}.version(2).topology_version(2).device_count(1).stream_count(1), h.observed())) {
+  if (!check_step(2,
+                  SnapshotExpectation{}
+                      .version(2)
+                      .topology_version(2)
+                      .device_count(1)
+                      .stream_count(1)
+                      .acquisition_session_count(1)
+                      .expect_acquisition_session(true)
+                      .expect_frameproducer(true),
+                  h.observed())) {
     return 1;
   }
 

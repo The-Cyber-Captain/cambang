@@ -183,6 +183,7 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
+  acquisition_sessions_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
@@ -352,6 +353,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     SnapshotBuilder::Inputs in;
     in.rigs = &rigs_;
     in.devices = &devices_;
+    in.acquisition_sessions = &acquisition_sessions_;
     in.streams = &streams_;
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;

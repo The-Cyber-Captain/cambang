@@ -13,6 +13,7 @@
     "imaging_spec_version",
     "rigs",
     "devices",
+    "acquisition_sessions",
     "streams",
     "native_objects",
     "detached_root_ids"
@@ -48,6 +49,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/CamBANGDeviceState"
+      }
+    },
+    "acquisition_sessions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AcquisitionSessionState"
       }
     },
     "streams": {
@@ -295,6 +302,66 @@
         }
       }
     },
+    "AcquisitionSessionState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acquisition_session_id",
+        "device_instance_id",
+        "phase",
+        "capture_profile_version",
+        "capture_width",
+        "capture_height",
+        "capture_format",
+        "captures_triggered",
+        "captures_completed",
+        "captures_failed",
+        "last_capture_id",
+        "last_capture_latency_ns",
+        "error_code"
+      ],
+      "properties": {
+        "acquisition_session_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "capture_profile_version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "capture_width": {
+          "$ref": "#/$defs/uint32"
+        },
+        "capture_height": {
+          "$ref": "#/$defs/uint32"
+        },
+        "capture_format": {
+          "$ref": "#/$defs/uint32"
+        },
+        "captures_triggered": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_completed": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_failed": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_capture_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_capture_latency_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "error_code": {
+          "$ref": "#/$defs/int32"
+        }
+      }
+    },
     "CamBANGStreamState": {
       "type": "object",
       "additionalProperties": false,
@@ -395,6 +462,7 @@
         "type",
         "phase",
         "owner_device_instance_id",
+        "owner_acquisition_session_id",
         "owner_stream_id",
         "owner_provider_native_id",
         "owner_rig_id",
@@ -416,6 +484,9 @@
           "$ref": "#/$defs/lifecycle_phase"
         },
         "owner_device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "owner_acquisition_session_id": {
           "$ref": "#/$defs/uint64"
         },
         "owner_stream_id": {
@@ -452,6 +523,7 @@
       "enum": [
         "provider",
         "device",
+        "acquisition_session",
         "stream",
         "frameproducer"
       ],

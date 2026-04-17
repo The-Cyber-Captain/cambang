@@ -7,6 +7,7 @@
 namespace cambang {
 
 class CoreDeviceRegistry;
+class CoreAcquisitionSessionRegistry;
 class CoreRigRegistry;
 class CoreStreamRegistry;
 class ProviderCallbackIngress;
@@ -20,6 +21,7 @@ class SnapshotBuilder final {
 public:
     struct Inputs {
         const CoreDeviceRegistry* devices = nullptr;
+        const CoreAcquisitionSessionRegistry* acquisition_sessions = nullptr;
         const CoreRigRegistry* rigs = nullptr;
         const CoreStreamRegistry* streams = nullptr;
         // Provider ingress stats may be used for queue_depth in future.
