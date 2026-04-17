@@ -59,5 +59,4 @@ pointing/emulate_mouse_from_touch=false
 
 [rendering]
 
-renderer/rendering_method="gl_compatibility"
-renderer/rendering_method.mobile="gl_compatibility"
+renderer/rendering_method="mobile"

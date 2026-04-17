@@ -23,8 +23,8 @@
     ],
     "required_counter_values_by_row": {
       "provider/100": {
-        "native_all": 4,
-        "native_cur": 4,
+        "native_all": 5,
+        "native_cur": 5,
         "native_prev": 0
       }
     },
