@@ -12,7 +12,8 @@
       "device/1001",
       "stream/1101",
       "stream/1102",
-      "frameproducer/1201"
+      "frameproducer/1201",
+      "acquisition_session/1001"
     ],
     "required_visible_row_ids": [
       "frameproducer/1201"
@@ -119,7 +120,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 1001,
@@ -134,7 +136,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 1101,
@@ -149,7 +152,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 1001
       },
       {
         "native_id": 1102,
@@ -164,7 +168,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 1001
       },
       {
         "native_id": 1201,
@@ -179,9 +184,43 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 1001
+      },
+      {
+        "native_id": 1202,
+        "type": "acquisition_session",
+        "phase": "LIVE",
+        "creation_gen": 40,
+        "owner_device_instance_id": 1001,
+        "owner_acquisition_session_id": 1001,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
         "buffers_in_use": 0
       }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": [
+      {
+        "acquisition_session_id": 1001,
+        "device_instance_id": 1001,
+        "phase": "LIVE",
+        "capture_profile_version": 0,
+        "capture_width": 0,
+        "capture_height": 0,
+        "capture_format": 0,
+        "captures_triggered": 0,
+        "captures_completed": 0,
+        "captures_failed": 0,
+        "last_capture_id": 0,
+        "last_capture_latency_ns": 0,
+        "error_code": 0
+      }
+    ]
   }
 }

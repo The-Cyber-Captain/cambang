@@ -10,7 +10,12 @@
       "server/main",
       "provider/100",
       "native_object/102"
-    ]
+    ],
+    "required_info_substrings_by_row": {
+      "native_object/102": [
+        "Acquisition Session boundary breach"
+      ]
+    }
   },
   "payload": {
     "schema_version": 1,
@@ -36,7 +41,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 102,
@@ -44,6 +50,7 @@
         "phase": "LIVE",
         "creation_gen": 2,
         "owner_device_instance_id": 999,
+        "owner_acquisition_session_id": 777,
         "owner_stream_id": 1,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
@@ -54,6 +61,7 @@
         "buffers_in_use": 0
       }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": []
   }
 }

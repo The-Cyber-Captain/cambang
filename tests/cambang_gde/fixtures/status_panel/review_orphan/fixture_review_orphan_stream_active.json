@@ -15,7 +15,8 @@
       "device/2001",
       "stream/2100",
       "provider/2000/orphaned_native_objects",
-      "native_object/2101"
+      "native_object/2101",
+      "acquisition_session/2001"
     ],
     "required_visible_row_ids": [
       "provider/2000/orphaned_native_objects",
@@ -95,7 +96,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 2001,
@@ -110,7 +112,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 2100,
@@ -125,7 +128,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 2001
       },
       {
         "native_id": 2101,
@@ -140,11 +144,45 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 2102,
+        "type": "acquisition_session",
+        "phase": "LIVE",
+        "creation_gen": 50,
+        "owner_device_instance_id": 2001,
+        "owner_acquisition_session_id": 2001,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
         "buffers_in_use": 0
       }
     ],
     "detached_root_ids": [
       9101
+    ],
+    "acquisition_sessions": [
+      {
+        "acquisition_session_id": 2001,
+        "device_instance_id": 2001,
+        "phase": "LIVE",
+        "capture_profile_version": 0,
+        "capture_width": 0,
+        "capture_height": 0,
+        "capture_format": 0,
+        "captures_triggered": 0,
+        "captures_completed": 0,
+        "captures_failed": 0,
+        "last_capture_id": 0,
+        "last_capture_latency_ns": 0,
+        "error_code": 0
+      }
     ]
   }
 }

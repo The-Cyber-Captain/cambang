@@ -60,7 +60,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 4101,
@@ -75,7 +76,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 4201,
@@ -90,7 +92,8 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       },
       {
         "native_id": 4301,
@@ -105,11 +108,13 @@
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
-        "buffers_in_use": 0
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
       }
     ],
     "detached_root_ids": [
       9301
-    ]
+    ],
+    "acquisition_sessions": []
   }
 }

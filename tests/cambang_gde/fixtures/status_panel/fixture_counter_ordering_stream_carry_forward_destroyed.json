@@ -57,21 +57,120 @@
       }
     ],
     "native_objects": [
-      {"native_id": 100, "type": "provider", "phase": "LIVE", "creation_gen": 50, "owner_device_instance_id": 0, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 101, "type": "device", "phase": "LIVE", "creation_gen": 50, "owner_device_instance_id": 1, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 102, "type": "stream", "phase": "LIVE", "creation_gen": 50, "owner_device_instance_id": 1, "owner_stream_id": 1, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0}
+      {
+        "native_id": 100,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 50,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 101,
+        "type": "device",
+        "phase": "LIVE",
+        "creation_gen": 50,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 102,
+        "type": "stream",
+        "phase": "LIVE",
+        "creation_gen": 50,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 1,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 1
+      },
+      {
+        "native_id": 103,
+        "type": "acquisition_session",
+        "phase": "LIVE",
+        "creation_gen": 50,
+        "owner_device_instance_id": 1,
+        "owner_acquisition_session_id": 1,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0
+      }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": [
+      {
+        "acquisition_session_id": 1,
+        "device_instance_id": 1,
+        "phase": "LIVE",
+        "capture_profile_version": 0,
+        "capture_width": 0,
+        "capture_height": 0,
+        "capture_format": 0,
+        "captures_triggered": 0,
+        "captures_completed": 0,
+        "captures_failed": 0,
+        "last_capture_id": 0,
+        "last_capture_latency_ns": 0,
+        "error_code": 0
+      }
+    ]
   },
   "expected_panel_outcome": {
     "contract_gap_count": 0,
     "projection_gap_count": 0,
-    "required_row_ids": ["provider/100", "device/1", "stream/1"],
+    "required_row_ids": [
+      "provider/100",
+      "device/1",
+      "stream/1"
+    ],
     "required_badges_by_row": {
-      "stream/1": ["destroyed"]
+      "stream/1": [
+        "destroyed"
+      ]
     },
     "required_counters_by_row": {
-      "stream/1": ["width", "height", "fps_min", "fps_max", "fmt", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"]
+      "stream/1": [
+        "width",
+        "height",
+        "fps_min",
+        "fps_max",
+        "fmt",
+        "prof",
+        "recv",
+        "deliv",
+        "queue",
+        "drop",
+        "last_ts",
+        "shown",
+        "rej_inv",
+        "rej_fmt"
+      ]
     },
     "required_counter_values_by_row": {
       "stream/1": {
@@ -89,7 +188,22 @@
       }
     },
     "required_counter_order_by_row": {
-      "stream/1": ["width", "height", "fps_min", "fps_max", "fmt", "prof", "recv", "deliv", "queue", "drop", "last_ts", "shown", "rej_inv", "rej_fmt"]
+      "stream/1": [
+        "width",
+        "height",
+        "fps_min",
+        "fps_max",
+        "fmt",
+        "prof",
+        "recv",
+        "deliv",
+        "queue",
+        "drop",
+        "last_ts",
+        "shown",
+        "rej_inv",
+        "rej_fmt"
+      ]
     }
   },
   "payload": {
@@ -122,10 +236,56 @@
     ],
     "streams": [],
     "native_objects": [
-      {"native_id": 100, "type": "provider", "phase": "LIVE", "creation_gen": 51, "owner_device_instance_id": 0, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 101, "type": "device", "phase": "LIVE", "creation_gen": 51, "owner_device_instance_id": 1, "owner_stream_id": 0, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0},
-      {"native_id": 202, "type": "stream", "phase": "DESTROYED", "creation_gen": 51, "owner_device_instance_id": 1, "owner_stream_id": 1, "owner_provider_native_id": 0, "owner_rig_id": 0, "root_id": 0, "created_ns": 0, "destroyed_ns": 0, "bytes_allocated": 0, "buffers_in_use": 0}
+      {
+        "native_id": 100,
+        "type": "provider",
+        "phase": "LIVE",
+        "creation_gen": 51,
+        "owner_device_instance_id": 0,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 101,
+        "type": "device",
+        "phase": "LIVE",
+        "creation_gen": 51,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 0,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      },
+      {
+        "native_id": 202,
+        "type": "stream",
+        "phase": "DESTROYED",
+        "creation_gen": 51,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 1,
+        "owner_provider_native_id": 0,
+        "owner_rig_id": 0,
+        "root_id": 0,
+        "created_ns": 0,
+        "destroyed_ns": 0,
+        "bytes_allocated": 0,
+        "buffers_in_use": 0,
+        "owner_acquisition_session_id": 0
+      }
     ],
-    "detached_root_ids": []
+    "detached_root_ids": [],
+    "acquisition_sessions": []
   }
 }
