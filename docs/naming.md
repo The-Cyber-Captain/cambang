@@ -29,6 +29,24 @@ To prevent cross-layer ambiguity:
 ------------------------------------------------------------------------
 
 ## 1. Godot-facing API objects
+### CamBANG prefix rule (normative)
+
+`CamBANG*` naming is reserved for **Godot-facing API classes**.
+
+Internal/core/schema/runtime record types must use internal/shared names
+without adding a `CamBANG` prefix. For AcquisitionSession-related truth this
+includes canonical terms such as:
+
+- `AcquisitionSession`
+- `AcquisitionSessionState`
+- `acquisition_sessions`
+- `acquisition_session_id`
+- `owner_acquisition_session_id`
+
+This naming rule does **not** imply approval of a new Godot-facing
+`CamBANGAcquisitionSession*` class. Variant-compatible snapshot data remains the
+default Godot-facing representation unless explicitly documented otherwise.
+
 
 ### `CamBANGServer`
 
@@ -310,18 +328,19 @@ canonical meanings.
 |-----|--------|
 | **Provider** | Backend implementation controlling a camera API |
 | **Device** | Opened camera hardware instance |
+| **AcquisitionSession** | Provider-reported acquisition seam truth category |
 | **Stream** | Configured capture pipeline producing frames |
 
 These terms are provider-agnostic abstractions.
 
 Platform terminology such as:
 
-- session
 - reader
 - pipeline
 - track
 
-remains provider-internal.
+remains provider-internal. `AcquisitionSession` is now a canonical shared term
+in CamBANG runtime/snapshot/native vocabulary.
 
 ### Godot-facing naming
 
@@ -342,6 +361,7 @@ Native object registry types use the same canonical nouns:
 
 - `Provider`
 - `Device`
+- `AcquisitionSession`
 - `Stream`
 - `FrameProducer`
 

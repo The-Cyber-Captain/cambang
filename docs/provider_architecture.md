@@ -103,7 +103,7 @@ The canonical semantics come from:
 
 1. Core architecture documents
 2. the platform-agnostic reference providers
-3. the provider compliance verifier / harness
+3. the provider compliance verifier
 
 Platform-backed providers must conform to that model.
 
@@ -350,6 +350,7 @@ At minimum, implemented providers normally report:
 
 - `Provider`
 - `Device`
+- `AcquisitionSession` (when the provider concretely realizes it)
 - `Stream`
 - `FrameProducer`
 
@@ -363,6 +364,15 @@ registry look tidy.
 
 The registry / snapshot model depends on truthful object history,
 including diagnostically useful ordering failures.
+
+Implementation status note (current):
+
+- `SyntheticProvider` now reports a truthful stream-backed `AcquisitionSession` seam
+  (created on first successful `create_stream(...)`, destroyed when the last stream
+  for that device is destroyed).
+- Still-only `AcquisitionSession` realization is not yet implemented.
+- Providers must not fabricate `AcquisitionSession` lifecycle events solely from
+  still-capture callback notifications when no concrete session object exists.
 
 ---
 
@@ -394,7 +404,7 @@ When adding a new provider, including future platform-backed providers:
 2. define provider-type defaults in `StreamTemplate`
 3. route all provider → Core facts through the provider strand
 4. report native-object lifecycles truthfully
-5. pass the provider compliance verifier / harness
+5. pass the provider compliance verifier
 6. contain backend quirks inside the provider adapter layer
 
 Do **not**:
