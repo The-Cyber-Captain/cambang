@@ -147,7 +147,7 @@ Rules:
 
 - `api/` defines semantic contract and provider-agnostic datatypes
 - `platform/` contains platform-backed providers; platform headers must not leak into Core
-- `stub/` is smoke-only; the smoke harness remains stub-provider-only
+- `stub/` is smoke-only; the smoke verifier target remains stub-provider-only
 - `broker/` is the naming surface for the Core-bound façade term and does not
   imply multi-provider runtime arbitration
 
@@ -246,7 +246,7 @@ Primary location:
 src/smoke/core_spine_smoke.cpp
 ```
 
-The smoke harness must remain independent of `provider=...` platform selection.
+The smoke verifier target must remain independent of `provider=...` platform selection.
 
 Smoke-only code paths are gated behind:
 
@@ -273,7 +273,7 @@ Utilities must remain platform-neutral.
 
 ## 8. `tests/`
 
-Test harness and deterministic integration tests.
+Test suites and deterministic integration tests.
 
 Illustrative layout:
 

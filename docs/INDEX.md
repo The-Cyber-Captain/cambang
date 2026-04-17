@@ -156,7 +156,7 @@ These documents must clearly state when code is:
 ### Additional provider-discipline note
 
 Provider semantics are defined by the canonical architecture, the
-reference providers, and the compliance verifier / harness.
+reference providers, and the compliance verifier / verification cases.
 
 Platform-backed providers are adapters to that contract. They must not
 redefine lifecycle, defaulting, registry, snapshot, or timestamp

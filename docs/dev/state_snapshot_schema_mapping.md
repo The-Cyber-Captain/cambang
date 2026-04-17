@@ -22,7 +22,7 @@ This layer defines:
 
 ### B. Canonical machine-readable schema (wire shape/type contract)
 Primary artifact:
-- `schema/state_snapshot/v1/state_snapshot.schema.json`
+- `schema/state_snapshot/v1/state_snapshot_schema.json`
 
 This layer defines:
 - exact JSON object/array shape
@@ -42,7 +42,7 @@ for example:
 - cross-record ownership and lifecycle interpretation
 - “no fabricated truth” requirements
 
-These are validated by runtime behavior, review, and tests/harnesses — not by
+These are validated by runtime behavior, review, and verification tests/cases — not by
 schema alone.
 
 ### D. Panel lightweight checks (UI/tool-side sanity checks)
@@ -53,15 +53,15 @@ Consumer-side checks should remain cheap and non-authoritative, e.g.:
 - obvious header monotonicity from last seen snapshot
 
 These checks improve UX/diagnostics but do not replace schema validation or
-runtime/harness verification.
+runtime/verifier validation.
 
-### E. Harness validation (authoritative behavioral verification)
-Higher-confidence validation (integration/verification-case harness) should verify:
+### E. Verifier validation (authoritative behavioral verification)
+Higher-confidence validation (integration/verification-case verifier) should verify:
 - boundary semantics (baseline publish, stop NIL window, restart generation)
 - tick-bounded coalescing behavior
 - semantic invariants that are cross-snapshot/cross-record
 
-Harness-level assertions are where semantic/runtime rules are enforced.
+Verifier-level assertions are where semantic/runtime rules are enforced.
 
 ---
 
@@ -73,9 +73,14 @@ Harness-level assertions are where semantic/runtime rules are enforced.
 - `schema_version` is present and fixed to `1`.
 - Header fields are present with integer type/range:
   - `gen`, `version`, `topology_version`, `timestamp_ns`, `imaging_spec_version`.
-- `rigs`, `devices`, `streams`, `native_objects`, `detached_root_ids` are present arrays.
+- `rigs`, `devices`, `acquisition_sessions`, `streams`, `native_objects`,
+  `detached_root_ids` are present arrays.
 - Every record object type is closed (`additionalProperties: false`) and has a
   frozen required field set.
+- `AcquisitionSessionState` participates in the same closed-record required-field
+  contract as other top-level state records.
+- `NativeObjectRecord` requires `owner_acquisition_session_id` (uint64; `0` for
+  none/unknown).
 - Field scalar types are fixed (`uint32`/`uint64`/`int32`/`boolean`/`string`).
 - Enum domains are fixed for wire-encoded integers:
   - lifecycle `phase`
@@ -100,6 +105,10 @@ Harness-level assertions are where semantic/runtime rules are enforced.
   - no fabricated values,
   - unknown remains zero/empty/NIL until runtime truth exists.
 - Cross-record/cross-field logic:
+  - top-level `acquisition_sessions[]` is authoritative for current/live
+    `AcquisitionSession` truth,
+  - historical teardown diagnosis remains available through retained
+    `native_objects` history,
   - detached-root interpretation from owner/end-state relationships,
   - ownership/linkage consistency,
   - optional semantic rules like “at most one active repeating stream per device”.
@@ -147,6 +156,15 @@ fully exercised in the current scaffolding slice.
 
 6. Schema fixes shape/type/enums only; it intentionally permits runtime-legal zero
    values (`0`, empty arrays/strings where documented) for not-yet-known truth.
+
+7. `AcquisitionSession` naming in v1 is shared across:
+   - contract/state shape: `AcquisitionSessionState`,
+   - id fields: `acquisition_session_id`,
+   - native ownership linkage: `owner_acquisition_session_id`.
+
+8. Current implementation scope note: the concrete implemented
+   `AcquisitionSession` seam is stream-backed in `SyntheticProvider`; a
+   still-only realization is not yet implemented.
 
 These allowances are intentional to keep the v1 contract stable while runtime
 coverage and retained truth fidelity continue to mature.
