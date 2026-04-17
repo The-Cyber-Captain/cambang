@@ -184,6 +184,11 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         }
     }
 
+    // Acquisition sessions
+    // Tranche-2 plumbing only: no retained AcquisitionSession source is wired
+    // into SnapshotBuilder inputs yet, so publish truthful empty-array state.
+    snap.acquisition_sessions.clear();
+
     // Streams
     if (in.streams) {
         snap.streams.reserve(in.streams->all().size());
