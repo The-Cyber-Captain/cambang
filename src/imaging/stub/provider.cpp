@@ -542,8 +542,8 @@ ProviderResult StubProvider::trigger_capture(const CaptureRequest& req) {
   }
 
   // No frames emitted; just lifecycle notifications.
-  strand_.post_capture_started(req.capture_id);
-  strand_.post_capture_completed(req.capture_id);
+  strand_.post_capture_started(req.capture_id, req.device_instance_id);
+  strand_.post_capture_completed(req.capture_id, req.device_instance_id);
   return ProviderResult::success();
 }
 

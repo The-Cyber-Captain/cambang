@@ -230,24 +230,26 @@ void ProviderCallbackIngress::on_stream_stopped(uint64_t stream_id, ProviderErro
   post_command(std::move(cmd));
 }
 
-void ProviderCallbackIngress::on_capture_started(uint64_t capture_id) {
+void ProviderCallbackIngress::on_capture_started(uint64_t capture_id, uint64_t device_instance_id) {
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
-  cmd.payload = CmdProviderCaptureStarted{capture_id};
+  cmd.payload = CmdProviderCaptureStarted{capture_id, device_instance_id};
   post_command(std::move(cmd));
 }
 
-void ProviderCallbackIngress::on_capture_completed(uint64_t capture_id) {
+void ProviderCallbackIngress::on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED;
-  cmd.payload = CmdProviderCaptureCompleted{capture_id};
+  cmd.payload = CmdProviderCaptureCompleted{capture_id, device_instance_id};
   post_command(std::move(cmd));
 }
 
-void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id, ProviderError error) {
+void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id,
+                                                uint64_t device_instance_id,
+                                                ProviderError error) {
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED;
-  cmd.payload = CmdProviderCaptureFailed{capture_id, static_cast<uint32_t>(error)};
+  cmd.payload = CmdProviderCaptureFailed{capture_id, device_instance_id, static_cast<uint32_t>(error)};
   post_command(std::move(cmd));
 }
 

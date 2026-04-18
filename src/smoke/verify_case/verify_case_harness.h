@@ -1249,14 +1249,14 @@ private:
       record_("stream_stopped", id);
       if (delegate_) delegate_->on_stream_stopped(id, error);
     }
-    void on_capture_started(uint64_t id) override {
-      if (delegate_) delegate_->on_capture_started(id);
+    void on_capture_started(uint64_t id, uint64_t device_instance_id) override {
+      if (delegate_) delegate_->on_capture_started(id, device_instance_id);
     }
-    void on_capture_completed(uint64_t id) override {
-      if (delegate_) delegate_->on_capture_completed(id);
+    void on_capture_completed(uint64_t id, uint64_t device_instance_id) override {
+      if (delegate_) delegate_->on_capture_completed(id, device_instance_id);
     }
-    void on_capture_failed(uint64_t id, ProviderError error) override {
-      if (delegate_) delegate_->on_capture_failed(id, error);
+    void on_capture_failed(uint64_t id, uint64_t device_instance_id, ProviderError error) override {
+      if (delegate_) delegate_->on_capture_failed(id, device_instance_id, error);
     }
     void on_frame(const FrameView& frame) override {
       if (delegate_) {

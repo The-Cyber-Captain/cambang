@@ -81,14 +81,17 @@ struct CmdProviderStreamStopped {
 
 struct CmdProviderCaptureStarted {
   uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
 };
 
 struct CmdProviderCaptureCompleted {
   uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
 };
 
 struct CmdProviderCaptureFailed {
   uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
   uint32_t error_code = 0;
 };
 
