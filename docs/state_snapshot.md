@@ -161,7 +161,8 @@ transitions are:
   `topology_version += 1`)
 - started/producing seam → frameproducer realized (`version += 1`,
   `topology_version` may remain unchanged if the observable topology signature
-  does not change)
+  does not change); this seam may be stream-owned or acquisition-session-owned
+  for still-capture production when truthfully realized
 
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
@@ -565,6 +566,20 @@ NativeObjectRecord {
   buffers_in_use: uint32                 // 0 if not applicable
 }
 ```
+
+Ownership interpretation note:
+
+- Native `Stream` means a truthfully realized provider/native stream-like resource.
+- Native `FrameProducer` means a truthfully realized frame-production seam.
+- `FrameProducer` ownership may be represented as either:
+  - `owner_stream_id != 0`, or
+  - `owner_acquisition_session_id != 0` with `owner_stream_id = 0`.
+- Native-object truth is not constrained to 1:1 public-object parity.
+- Additional provider-owned native resources may also surface through
+  `native_objects` when their lifetimes matter for ownership diagnostics,
+  leak prevention, queue health, teardown correctness, or
+  retained-result/backing-resource truth.
+
 ## Lifecycle registry truth model
 
 The lifecycle registry records the **actual lifecycle of native

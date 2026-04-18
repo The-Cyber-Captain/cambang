@@ -1,7 +1,12 @@
 # CamBANG Naming and Terminology
 
 This document defines the canonical names used by CamBANG in its public
-Godot-facing API, configuration concepts, and diagnostics/introspection.
+Godot-facing API, configuration concepts, lifecycle/native truth surfaces,
+and diagnostics/introspection.
+
+It is intentionally broader than a simple glossary. In addition to naming,
+it preserves compact semantic guardrails where terminology drift would
+otherwise create architecture or implementation confusion.
 
 ------------------------------------------------------------------------
 
@@ -26,9 +31,14 @@ To prevent cross-layer ambiguity:
   by tests or tooling. A fixture may be consumed by a verification case, but the
   terms are not interchangeable.
 
+This distinction is important because scenario semantics belong to
+SyntheticProvider timeline execution, while verification cases are
+maintainer-authored validation procedures.
+
 ------------------------------------------------------------------------
 
 ## 1. Godot-facing API objects
+
 ### CamBANG prefix rule (normative)
 
 `CamBANG*` naming is reserved for **Godot-facing API classes**.
@@ -47,32 +57,32 @@ This naming rule does **not** imply approval of a new Godot-facing
 `CamBANGAcquisitionSession*` class. Variant-compatible snapshot data remains the
 default Godot-facing representation unless explicitly documented otherwise.
 
-
 ### `CamBANGServer`
 
-Singleton service/registry/factory for CamBANG. Responsibilities include
-device enumeration, rig creation, global shutdown, and access to the
-latest published state snapshot.
+Singleton service/registry/factory for CamBANG.
 
-CamBANGServer is Engine singleton; explicit start()/stop(); get_state_snapshot() returns NIL before first publish;
-state_published(gen, version, topology_version) begins at version/topology_version 0/0 for each new gen.
+Responsibilities include:
 
-`get_state_snapshot()` refers to the latest published snapshot of the currently
-active generation. After a completed `stop()`, no active generation snapshot is
-exposed and the getter returns `NIL` until the first publish of the next
-generation.
+- runtime start / stop
+- access to the latest published snapshot
+- provider selection/startup surface
+- global lifecycle management
+- singleton-hosted Godot-facing signal emission
 
-Generation exists to disambiguate identity and lifecycle across restart
-boundaries; it does not imply that prior-generation live state remains visible
-through the current generation's parameter-less snapshot API.
+Observable boundary contract:
+
+- `CamBANGServer.start()`
+- `CamBANGServer.stop()`
+- `CamBANGServer.get_state_snapshot()`
+- `signal state_published(gen, version, topology_version)`
+
+`get_state_snapshot()` returns `NIL` before the first baseline publish of
+a generation, and again after a completed stop.
 
 The full behavioural contract for the Godot-facing runtime boundary
 (start semantics, restart generation rules, snapshot visibility, and
-tick-bounded publication) is documented in: docs/architecture/godot_boundary_contract.md
-This document defines the canonical observable behaviour expected by
-Godot consumers.
-
-------------------------------------------------------------------------
+tick-bounded publication) is documented in:
+`docs/architecture/godot_boundary_contract.md`.
 
 ### `CamBANGRig`
 
@@ -81,13 +91,11 @@ capture across multiple devices.
 
 Primary lifecycle controls:
 
-- `arm()` / `disarm()` --- place the rig into a capture-ready state or remove it from that state.
-- `trigger_sync_capture()` --- initiate a synchronised capture across rig members.
+- `arm()` / `disarm()`
+- `trigger_sync_capture()`
 
 Rig-triggered sync capture has priority over standalone activity on
 member devices when conflicts arise.
-
-------------------------------------------------------------------------
 
 ### `CamBANGDevice`
 
@@ -96,14 +104,14 @@ on platform).
 
 Primary lifecycle controls:
 
-- `engage()` / `disengage()` --- begin or cease engagement with underlying camera resources (subject to warm policy).
-- `set_warm_policy(...)` --- define resource retention behaviour when not actively capturing.
-- `set_still_capture_profile(profile)` --- define configuration used for device-triggered still capture.
-- `trigger_capture()` --- perform a single-device still capture.
+- `engage()` / `disengage()`
+- `set_warm_policy(...)`
+- `set_still_capture_profile(profile)`
+- `trigger_capture()`
 
-Devices may operate standalone or as members of a rig.
-
-------------------------------------------------------------------------
+`CamBANGDevice` is the public Godot-facing control point for device-level
+still capture. That public surface does not imply any required 1:1 parity
+with provider-internal or native-object execution details.
 
 ### `CamBANGStream`
 
@@ -112,15 +120,19 @@ instance.
 
 Primary controls:
 
-- `start()` / `stop()` --- begin or cease the repeating flow of frames.
+- `start()` / `stop()`
 
 Each device supports at most one active repeating stream at a time
-(i.e., a stream with `phase=LIVE` and `mode != STOPPED`).
+(i.e. a stream with `phase=LIVE` and `mode != STOPPED`).
 
 Streams are created with a `StreamIntent`:
 
-- `PREVIEW` --- low-latency, disposable, repeating feed intended for framing and UX.
-- `VIEWFINDER` --- higher-fidelity repeating feed with best-effort throughput, subject to arbitration policy.
+- `PREVIEW`
+- `VIEWFINDER`
+
+`CamBANGStream` is a public/runtime-visible user-semantic object.
+It must not be conflated with every native/provider stream-like resource
+that may appear in native-object truth.
 
 ------------------------------------------------------------------------
 
@@ -128,7 +140,7 @@ Streams are created with a `StreamIntent`:
 
 CamBANG uses the term **Capture Profile** to describe fidelity and
 throughput configuration for image production. The valid fields of a
-profile depend on intent (e.g., repeating stream vs still capture).
+profile depend on intent (e.g. repeating stream vs still capture).
 
 Two primary uses exist:
 
@@ -236,7 +248,7 @@ devices are not actively engaged with hardware resources and there is no
 in-flight synchronised capture that depends on them.
 
 The precise definition of "safe" is governed by core arbitration and
-warm scheduling policy as defined in core_runtime_model.md.
+warm scheduling policy as defined in `core_runtime_model.md`.
 
 ------------------------------------------------------------------------
 
@@ -252,11 +264,12 @@ and exposed for polling/inspection.
 
 ### Snapshot record types
 
-Records inside the snapshot that correspond to user-facing objects:
+Records inside the snapshot that correspond to user-facing/runtime-facing state:
 
 - `CamBANGRigState`
 - `CamBANGDeviceState`
 - `CamBANGStreamState`
+- `AcquisitionSessionState`
 
 Native/core objects created by the provider on behalf of CamBANG are tracked as registry records:
 
@@ -264,100 +277,57 @@ Native/core objects created by the provider on behalf of CamBANG are tracked as 
 
 ### Publication counters
 
-These counter names are **preserved**, but their definitions are from the
-**Godot-facing tick-bounded** perspective (observable truth):
+These counter names are preserved, but their definitions are from the
+Godot-facing tick-bounded perspective (observable truth):
 
-- `gen` identifies the current runtime generation
-- `version` counts observable changes within that generation
-- `topology_version` counts observable topology changes within that generation
-- when `gen` changes, both `version` and `topology_version` reset to zero for the new baseline
+- `gen`
+- `version`
+- `topology_version`
 
-- `gen`: zero-indexed and advances by +1 on each successful
-  `CamBANGServer.start()` that transitions from stopped → running.
-  For each new `gen`, `version` and `topology_version` reset to 0.
+#### `gen`
 
-- `version`: increments by +1 for each emitted `state_published(...)` within the
-  current `gen`. It is contiguous (no gaps).
+Identifies the current runtime generation and advances by +1 on each successful
+`CamBANGServer.start()` that transitions from stopped → running.
 
-- `topology_version`: increments by +1 only on ticks where the observed topology
-  differs from the topology at the previous emission. It never changes without
-  `version` also changing.
+#### `version`
+
+Counts observable state changes within a generation and increments by +1 on
+each emitted `state_published(...)` within that generation.
+
+#### `topology_version`
+
+Counts observable topology changes within a generation and increments only
+when the observable structure changes.
+
+When `gen` changes, both `version` and `topology_version` reset to zero for
+the new baseline.
 
 ### Timestamp fields and time domains
 
-CamBANG uses multiple timestamp *domains* for different purposes. Field names must
+CamBANG uses multiple timestamp domains for different purposes. Field names must
 make the domain and units unambiguous.
 
-**Snapshot publish time (schema v1)**
+#### Snapshot publish time (schema v1)
 
 - `CamBANGStateSnapshot.timestamp_ns` is a **monotonic publish timestamp** produced by core at snapshot assembly time.
-- It is **generation-relative** (monotonic since a core-defined epoch, e.g. core loop start for the current `gen`).
+- It is **generation-relative**.
 - It is **not wall-clock** and must not be interpreted as UNIX epoch time.
 
-**Capture time (provider → core frame metadata)**
+#### Capture time (provider → core frame metadata)
 
 Providers must tag frames with a provider-agnostic capture timestamp representation:
 
-- `CaptureTimestamp.value` (integer ticks)
-- `CaptureTimestamp.tick_ns` (tick period in nanoseconds; e.g. `1` for ns, `100` for 100ns)
-- `CaptureTimestamp.domain` (declared semantics / comparability)
+- `CaptureTimestamp.value`
+- `CaptureTimestamp.tick_ns`
+- `CaptureTimestamp.domain`
 
-The `domain` is semantic and provider-agnostic. v1 domains:
+Capture timestamps describe image-capture time, not snapshot publication time.
 
-- `PROVIDER_MONOTONIC` — monotonic and comparable across streams produced by this provider instance.
-- `CORE_MONOTONIC` — already mapped into core's monotonic timebase (generation-relative).
-- `DOMAIN_OPAQUE` — ordering-only; provider cannot guarantee meaningful cross-stream comparability.
+------------------------------------------------------------------------
 
-**Provider boundary rule**
+## 6. Native object registry naming
 
-Platform/provider-specific timestamp concepts (e.g. Media Foundation sample time,
-Android camera timestamp source enums) must remain **provider-internal** and must not
-appear in core/shared types, schema fields, or generic logs. Prefer generic names
-like `capture_timestamp`, `tick_ns`, and `domain`.
-
-### Signals
-
-- `state_published(gen, version, topology_version)` --- emitted by `CamBANGServer` when a new snapshot is published.
-
-## Core structural nouns
-
-Within the CamBANG core architecture the following nouns have
-canonical meanings.
-
-| Term | Meaning |
-|-----|--------|
-| **Provider** | Backend implementation controlling a camera API |
-| **Device** | Opened camera hardware instance |
-| **AcquisitionSession** | Provider-reported acquisition seam truth category |
-| **Stream** | Configured capture pipeline producing frames |
-
-These terms are provider-agnostic abstractions.
-
-Platform terminology such as:
-
-- reader
-- pipeline
-- track
-
-remains provider-internal. `AcquisitionSession` is now a canonical shared term
-in CamBANG runtime/snapshot/native vocabulary.
-
-### Godot-facing naming
-
-Godot-facing classes are prefixed with `CamBANG` to avoid collisions
-with generic engine terminology.
-
-Examples:
-
-| Core concept | Godot class |
-|-------------|-------------|
-| Device | `CamBANGDevice` |
-| Stream | `CamBANGStream` |
-| Rig | `CamBANGRig` |
-
-### Native object registry naming
-
-Native object registry types use the same canonical nouns:
+Native object registry types use the same canonical structural nouns:
 
 - `Provider`
 - `Device`
@@ -365,227 +335,90 @@ Native object registry types use the same canonical nouns:
 - `Stream`
 - `FrameProducer`
 
-These names represent ownership structure rather than specific
-platform objects.
+These names represent the preferred CamBANG viewing structure for
+lifecycle-significant native truth. They do **not** imply that native truth
+is limited only to those categories, and they do **not** promise 1:1 parity
+with public Godot-facing objects.
+
+In particular:
+
+- `Stream` in native-object truth means a truthfully realized
+  provider/native stream-like resource
+- `FrameProducer` means a truthfully realized provider/native
+  frame-production seam
+- a `FrameProducer` may be owned by a `Stream` or directly by an
+  `AcquisitionSession`
+- native-object truth may therefore contain `Stream` / `FrameProducer`
+  records that do not correspond to user-created `CamBANGStream` objects
+
+This distinction is intentional:
+
+- public Godot-facing API expresses user/runtime semantics
+- native-object truth expresses provider-owned lifecycle and resource truth
+
+Additional provider-owned native resources may also surface through
+native-object reporting when their lifetime matters for:
+
+- ownership diagnostics
+- leak prevention
+- queue health
+- teardown correctness
+- retained-resource truth
+
+The canonical structural nouns are therefore a preferred cross-provider
+organizing model, not a limit on what native truth may contain.
 
 ------------------------------------------------------------------------
 
-## 6. Image access API
+## 7. Structural hierarchy vs native truth breadth
 
-CamBANG distinguishes between the published snapshot / introspection model
-and the Godot-facing API used to obtain image-bearing runtime outputs.
+CamBANG imposes a small cross-provider viewing structure for intelligibility.
+That structure is useful, but it must not be mistaken for a claim that:
 
-- Snapshot terminology describes immutable published runtime truth.
-- Image access terminology describes image-bearing outputs that users may
-  retrieve, inspect, process, display, or save.
+- underlying platform APIs are hierarchical in the same way, or
+- only those canonical categories are permitted to surface in native truth
 
-These concepts are related at the application level but are not the same API surface.
+This distinction matters especially for:
 
-### Result vocabulary
+- provider-owned resource-bearing native objects
+- retained samples / acquired images
+- mapped or attached buffers
+- short-lived stream-like resources used to service still capture
+- other leak-relevant provider-owned native handles or leases
 
-The canonical Godot-facing result nouns are:
-
-- **Stream Result** — the image-bearing result exposed for a repeating stream
-- **Capture Result** — the image-bearing result of a device still capture
-- **Capture Result Set** — the grouped result returned from a rig-triggered
-  capture, containing the subset of device capture results that were actually realized
-
-These terms describe user-facing/runtime-visible outputs.
-They do **not** define sink/storage mechanics by themselves.
-
-### Rig capture result-set rule
-
-`CamBANGRig.trigger_sync_capture()` is conceptually a grouped still-capture
-operation across rig members.
-
-The intuitive Godot-facing output is therefore a **Capture Result Set**
-containing the subset of member-device **Capture Result** objects that
-successfully realized for that trigger.
-
-This avoids introducing a parallel rig-owned pixel artifact model when
-the useful results are already device-associated still-capture outputs.
-
-### Internal sink terminology
-
-Within implementation/architecture discussions, the umbrella sink category remains:
-
-- **Frame Sink**
-
-Where stream-specific and still-specific sink paths need to be distinguished,
-prefer:
-
-- **Stream Sink**
-- **Capture Sink**
-
-Avoid introducing new public/API terminology that exposes temporary
-mailbox-oriented implementation details.
-
-### Mailbox terminology rule
-
-For image-delivery/image-access architecture, avoid using **mailbox** as the
-primary public-facing concept.
-
-Rationale:
-
-- the current `LatestFrameMailbox` is development-only visibility scaffolding
-- release image access should be expressed in result-oriented/API terms
-- the codebase already uses mailbox terminology in other internal contexts,
-  so reusing it for release image access would increase ambiguity
-
-
-### Initial release-facing model
-
-The initial release-facing image-access model is intentionally narrow and
-result-oriented.
-
-It exists to provide non-dev image access without promoting temporary
-development-only mailbox semantics into the public API.
-
-#### Stream Result
-
-In the initial release-facing model, **Stream Result** is
-**latest-result-oriented**.
-
-This means:
-
-- it represents the latest retained repeating-stream image output made
-  available through the image access API
-- it is a user-facing/runtime-visible result concept, not a sink/storage
-  implementation term
-- it does not imply that every produced stream frame is retained
-- it does not by itself define the final storage, upload, or fanout strategy
-
-This model therefore provides a non-dev way to retrieve, inspect,
-process, display, or save the latest available repeating-stream image
-output without committing the public API to mailbox-shaped semantics.
-
-#### Capture Result
-
-In the initial release-facing model, **Capture Result** is the discrete
-image-bearing runtime output of a device still capture.
-
-Unlike repeating-stream output, still-capture output is not modeled as a
-continuously replaced repeating result.
-
-#### Capture Result Set
-
-In the initial release-facing model, **Capture Result Set** is the grouped
-output of a rig-triggered capture.
-
-It contains the subset of device-associated **Capture Result** objects that
-were actually realized for that trigger.
-
-This preserves the device association of realized still captures rather
-than introducing a separate rig-owned pixel artifact model.
-
-### Initial scope
-
-Included in the initial release-facing image-access model:
-
-- latest-result-oriented repeating-stream access
-- device still-capture result access
-- rig-triggered grouped capture result access
-
-Not implied by the initial release-facing image-access model:
-
-- sequence / broadcast / video-recording APIs
-- final GPU-native presentation architecture
-- full third-party hand-off architecture
-- guarantees that every flowing stream frame is retained or externally exposed
-
-These may be added later without redefining the meanings of
-**Stream Result**, **Capture Result**, or **Capture Result Set**.
-
-### Payload-kind vs engine-realization vocabulary
-
-CamBANG payload kinds such as `GPU_SURFACE` are provider/core/result-facing
-runtime concepts.
-
-Engine-specific realization objects used at the Godot boundary (for example
-texture or rendering resources) are adapter artifacts rather than payload-kind
-vocabulary.
+A provider may therefore report native `Stream` or `FrameProducer` truth
+without creating a matching public `CamBANGStream`, and may also report
+additional provider-owned native resources when their lifetime matters.
 
 ------------------------------------------------------------------------
 
-## 7. Lifecycle `phase` vs operational `mode`
-
-To avoid ambiguity, CamBANG uses separate fields for lifecycle and
-operational posture.
-
-### `phase` (lifecycle)
-
-Lifecycle phases refer only to existence and teardown:
-
-- `CREATED`
-- `LIVE`
-- `TEARING_DOWN`
-- `DESTROYED`
-
-### `mode` (operational posture)
-
-Operational mode describes what an entity is currently doing.
-
-Rig mode examples:
-
-- `OFF`, `ARMED`, `TRIGGERING`, `COLLECTING`, `ERROR`
-
-Device mode examples:
-
-- `IDLE`, `STREAMING`, `CAPTURING`, `ERROR`
-- `engaged: bool` indicates whether underlying camera resources are currently held.
-
-Stream mode examples:
-
-- `STOPPED`, `FLOWING`, `STARVED`, `ERROR`
-
-`StreamIntent` defines purpose (`PREVIEW` or `VIEWFINDER`) separately
-from operational mode.
-
-`NativeObjectRecord` always has a `phase`. Native objects do not expose an operational `mode` in schema v1.
-
-### Provider mode (capture origin)
-
-The core capture origin is selected via:
-
-`provider_mode`
-
-Allowed values:
-
-- `platform_backed`
-- `synthetic`
-
-Exactly one provider instance is bound to Core at core.
-
-The term `hardware` must not be used as a core mode alias in code, documentation, or configuration.  
-(Use `hardware_*` only for identity/spec concepts such as `hardware_id` and hardware-reported specifications.)
-
-Behavioural semantics and determinism guarantees are defined in `provider_architecture.md`.
-
-### Synthetic configuration axes
+## 8. Synthetic configuration axes
 
 When `provider_mode = synthetic`, two additional configuration axes apply:
 
-`synthetic_role`
+### `synthetic_role`
 
 Allowed values:
 
 - `nominal`
 - `timeline`
 
-`timing_driver`
+### `timing_driver`
 
 Allowed values:
 
 - `virtual_time`
 - `real_time`
 
-These axes are orthogonal and define behavioural intent and time-advancement semantics for SyntheticProvider.
+These axes are orthogonal and define behavioural intent and
+time-advancement semantics for SyntheticProvider.
 
-Behavioural semantics and determinism guarantees are defined in `provider_architecture.md`.
+Behavioural semantics and determinism guarantees are defined in
+`provider_architecture.md`.
 
 ------------------------------------------------------------------------
 
-## 8. Identity and lineage
+## 9. Identity and lineage
 
 To support reliable diagnostics (including "old teardown + new live"
 scenarios), CamBANG separates stable hardware identity from core
@@ -600,23 +433,43 @@ but still present due to teardown or retention policies.
 
 ------------------------------------------------------------------------
 
-## 9. Internal naming (for contributors)
+## 10. Internal naming (for contributors)
 
 These names appear in the native/core implementation, build system, and
 debugging logs.
 
-- `ICameraProvider`: platform backend interface (e.g., Android camera2 provider, stub provider, synthetic provider).
-- `CBLifecycleRegistry`: tracks CamBANG-owned native/core object lifecycles and retains recently destroyed records for inspection.
-- `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot` and performs retention sweeps.
+- `ICameraProvider`: platform backend interface
+- `CBLifecycleRegistry`: tracks CamBANG-owned native/core object lifecycles and retains recently destroyed records for inspection
+- `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot` and performs retention sweeps
 
-- Timestamp conventions:
-  - Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
-  - Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
-  - Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
+### Timestamp conventions
+
+- Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
+- Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
+- Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
 
 ------------------------------------------------------------------------
 
-## 10. Glossary (quick reference)
+## 11. Release-facing image/result naming discipline
+
+Public/runtime-visible image-bearing nouns remain:
+
+- **Stream Result**
+- **Capture Result**
+- **Capture Result Set**
+
+These are distinct from:
+
+- internal sink vocabulary (`Stream Sink`, `Capture Sink`)
+- provider-facing payload vocabulary
+- native-object registry categories
+
+The fact that native truth may contain `Stream` / `FrameProducer` records
+does not redefine the Godot-facing result/object vocabulary.
+
+------------------------------------------------------------------------
+
+## 12. Glossary (quick reference)
 
 - **Spec**: hardware-reported truth (with optional user corrections).
 - **Config**: user intent (choices made by the developer/app).
@@ -627,3 +480,4 @@ debugging logs.
 - **Mode**: operational posture of an entity.
 - **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
 - **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
+- **FrameProducer**: optional provider-reported frame-production seam, owned by `Stream` or directly by `AcquisitionSession`.

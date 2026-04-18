@@ -346,33 +346,61 @@ Shutdown teardown must still be truthful:
 Providers report creation and destruction of CamBANG-owned native
 objects to Core.
 
-At minimum, implemented providers normally report:
+The minimum commonly reported canonical structural nouns remain:
 
 - `Provider`
 - `Device`
-- `AcquisitionSession` (when the provider concretely realizes it)
+- `AcquisitionSession`
 - `Stream`
 - `FrameProducer`
+
+These canonical nouns define CamBANG's preferred cross-provider viewing
+structure. They do **not** limit native truth to only those categories,
+and they do not assert that a platform API uses the same hierarchy.
 
 Creation must be reported when the resource is actually acquired.
 
 Destruction must be reported only when the resource is actually
 released.
 
+`FrameProducer` is reported when a lifecycle-significant
+frame-production seam is concretely realized. A native `FrameProducer`
+may be owned by a `Stream` (repeating-flow production) or directly by
+an `AcquisitionSession` (still-capture production).
+
+Native `Stream` / `FrameProducer` truth does not automatically imply a
+matching public Godot-facing object. Providers may truthfully use
+stream-like native resources to service device-level still capture
+without promoting those resources into public `CamBANGStream`
+semantics.
+
+Implementation-scope note (current verified state):
+
+- `SyntheticProvider` currently reports a truthful **stream-backed**
+  `AcquisitionSession`.
+- That concrete realization is created on first successful `create_stream(...)`
+  for the device and destroyed when the last stream for that device is destroyed.
+- **Still-only `AcquisitionSession` realization is not yet implemented** in the
+  current verified scope.
+- Providers must not fabricate `AcquisitionSession` lifecycle events from
+  still-capture callbacks alone when no concrete acquisition-session seam has
+  actually been realized.
+
+Providers must also report and retire provider-owned native resources
+truthfully whenever resource lifetime matters for runtime truth,
+ownership diagnostics, leak prevention, queue health, teardown
+correctness, or retained-result / backing-resource truth.
+
+This includes retained samples, acquired images, mapped or attached
+buffers, shared-buffer references, and similar resource-bearing native
+objects or leases whose release is not safely and wholly subsumed by
+parent destruction alone.
+
 Providers must not collapse ownership boundaries merely to make the
 registry look tidy.
 
 The registry / snapshot model depends on truthful object history,
 including diagnostically useful ordering failures.
-
-Implementation status note (current):
-
-- `SyntheticProvider` now reports a truthful stream-backed `AcquisitionSession` seam
-  (created on first successful `create_stream(...)`, destroyed when the last stream
-  for that device is destroyed).
-- Still-only `AcquisitionSession` realization is not yet implemented.
-- Providers must not fabricate `AcquisitionSession` lifecycle events solely from
-  still-capture callback notifications when no concrete session object exists.
 
 ---
 
