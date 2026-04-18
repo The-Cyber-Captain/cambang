@@ -371,6 +371,11 @@ lifecycle-significant native truth. They do not imply that native truth
 is limited only to those categories, and they do not promise 1:1 parity
 with public Godot-facing objects.
 
+Additional provider-owned native resources may also surface through
+native-object reporting when their lifetimes matter for ownership
+diagnostics, leak prevention, queue health, teardown correctness, or
+retained-resource truth.
+
 `FrameProducer` may be owned by a `Stream` or directly by an
 `AcquisitionSession`. Native-object truth may therefore contain `Stream`
 and/or `FrameProducer` records that do not correspond to user-created

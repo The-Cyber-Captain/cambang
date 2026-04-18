@@ -24,9 +24,7 @@ Provider
      └─ AcquisitionSession
          ├─ Stream
          │   └─ FrameProducer (optional)
-         │       └─ Frame (repeated samples)
          └─ FrameProducer (optional)
-             └─ Frame (still-capture production)
 ```
 
 Meaning of each level:
@@ -38,9 +36,8 @@ Meaning of each level:
 | AcquisitionSession | Provider-reported acquisition seam for that device lineage |
 | Stream | Provider owns a configured capture pipeline |
 | FrameProducer | Optional provider-reported frame-production seam (stream-owned or acquisition-session-owned) |
-| Frame | Individual frame sample delivered to Core |
 
-`FrameProducer` is optional and used for diagnostics, synthetic testing, and meaningful platform-backed lifecycle boundaries. It may be owned by a `Stream` or directly by an `AcquisitionSession`.
+`FrameProducer` is an optional, truthfully reported frame-production seam. It may be owned by a `Stream` or directly by an `AcquisitionSession`, and is reported when such a seam is concretely realized.
 
 Implementation status (current repo truth):
 
@@ -52,6 +49,8 @@ Implementation status (current repo truth):
 This hierarchy is a CamBANG viewing/modeling structure imposed for cross-provider intelligibility. It is not a claim that each underlying platform API exposes the same hierarchy.
 
 Native truth is broader than this structural view: providers must also report provider-owned resource-bearing native objects/leases whenever their lifetimes matter for runtime truth, ownership diagnostics, leak prevention, queue health, teardown correctness, or retained-result/backing-resource truth.
+
+Frame/sample delivery is related but separate: frames are delivered events/results, not structural hierarchy nodes in this ownership model.
 
 This hierarchy is reflected in:
 
@@ -295,7 +294,7 @@ IDLE ── enable ──> PRODUCING
   └──── disable ─────┘
 ```
 
-`FrameProducer` is an optional provider-reported frame-production seam. It may be owned by a `Stream` or directly by an `AcquisitionSession`.
+`FrameProducer` is an optional, truthfully reported frame-production seam. It may be owned by a `Stream` or directly by an `AcquisitionSession`, and is reported when that seam is concretely realized.
 
 Examples:
 
@@ -304,7 +303,7 @@ Examples:
 | Camera2 | repeating capture request |
 | Media Foundation | `ReadSample` loop active |
 | V4L2 | `STREAMON` |
-| Synthetic | pattern generator producing |
+| Synthetic | provider-owned pattern-generation seam active |
 | Stub | deterministic synthetic emitter |
 
 Providers should avoid fabricated per-frame churn, but provider-owned resource-bearing native objects/leases must still be reported when their lifetime is diagnostically or operationally significant.

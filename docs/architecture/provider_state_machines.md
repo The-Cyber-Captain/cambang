@@ -125,11 +125,12 @@ Examples:
 | Media Foundation | active ReadSample loop |
 | Camera2 | repeating capture request |
 | V4L2 | STREAMON |
-| Synthetic | pattern renderer active |
+| Synthetic | provider-owned pattern-generation seam realized and active |
 
 FrameProducer may be owned by either a `Stream` or an `AcquisitionSession` and may transition between `IDLE` and `PRODUCING` multiple times while its owning lifecycle remains live.
 
 A `FrameProducer` must not be fabricated merely because a frame was observed.
+When a lifecycle-significant frame-production seam is concretely realized, it must not be suppressed from native truth reporting.
 
 ---
 
