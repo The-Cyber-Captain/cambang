@@ -22,9 +22,11 @@ CamBANG standardises camera-stack ownership into a provider-agnostic model:
 Provider
  └─ Device
      └─ AcquisitionSession
-         └─ Stream
-             └─ FrameProducer (optional)
-                 └─ Frame (repeated samples)
+         ├─ Stream
+         │   └─ FrameProducer (optional)
+         │       └─ Frame (repeated samples)
+         └─ FrameProducer (optional)
+             └─ Frame (still-capture production)
 ```
 
 Meaning of each level:
@@ -35,17 +37,21 @@ Meaning of each level:
 | Device | Provider owns an opened camera device handle |
 | AcquisitionSession | Provider-reported acquisition seam for that device lineage |
 | Stream | Provider owns a configured capture pipeline |
-| FrameProducer | Stream is actively producing frames |
+| FrameProducer | Optional provider-reported frame-production seam (stream-owned or acquisition-session-owned) |
 | Frame | Individual frame sample delivered to Core |
 
-`FrameProducer` is optional and used primarily for diagnostics,
-synthetic testing, and meaningful platform-backed lifecycle boundaries.
+`FrameProducer` is optional and used for diagnostics, synthetic testing, and meaningful platform-backed lifecycle boundaries. It may be owned by a `Stream` or directly by an `AcquisitionSession`.
 
 Implementation status (current repo truth):
 
 - Concrete `AcquisitionSession` realization is stream-backed in `SyntheticProvider`
   (first successful `create_stream(...)` to last stream destroy for that device).
 - Still-only `AcquisitionSession` realization is not yet implemented.
+
+
+This hierarchy is a CamBANG viewing/modeling structure imposed for cross-provider intelligibility. It is not a claim that each underlying platform API exposes the same hierarchy.
+
+Native truth is broader than this structural view: providers must also report provider-owned resource-bearing native objects/leases whenever their lifetimes matter for runtime truth, ownership diagnostics, leak prevention, queue health, teardown correctness, or retained-result/backing-resource truth.
 
 This hierarchy is reflected in:
 
@@ -289,7 +295,7 @@ IDLE ── enable ──> PRODUCING
   └──── disable ─────┘
 ```
 
-`FrameProducer` is the active production loop for a stream.
+`FrameProducer` is an optional provider-reported frame-production seam. It may be owned by a `Stream` or directly by an `AcquisitionSession`.
 
 Examples:
 
@@ -301,7 +307,7 @@ Examples:
 | Synthetic | pattern generator producing |
 | Stub | deterministic synthetic emitter |
 
-Per-frame resources are **not** tracked as individual native objects.
+Providers should avoid fabricated per-frame churn, but provider-owned resource-bearing native objects/leases must still be reported when their lifetime is diagnostically or operationally significant.
 
 ---
 
@@ -412,10 +418,9 @@ Even though synthetic streams do not map to physical devices, they must still:
 
 1. open a device instance
 2. create streams owned by that device
-3. start frame production through a `FrameProducer`
+3. start frame production through an optional `FrameProducer` seam
 
-This preserves identical lifecycle semantics, native-object reporting,
-and diagnostic expectations across provider types.
+This preserves identical lifecycle semantics, native-object reporting, and diagnostic expectations across provider types. Still-capture servicing may truthfully realize native `Stream` and/or `FrameProducer` resources without requiring creation of a corresponding public `CamBANGStream`.
 
 Synthetic timing drivers may vary (`virtual_time`, `real_time`), but all
 observable facts still pass through the provider strand.

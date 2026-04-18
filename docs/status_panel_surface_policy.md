@@ -86,13 +86,15 @@ A field is traceably represented through one of:
 
 ### 3.1 Current implemented hierarchy note
 
-Current StatusPanel projection is AcquisitionSession-aware and reconstructs
-ancestry as:
+Current StatusPanel projection is AcquisitionSession-aware and uses CamBANG's imposed viewing structure for intelligibility over provider-reported native truth.
+
+Current ancestry reconstruction includes:
 
 - `Provider -> Device -> AcquisitionSession -> Stream -> optional FrameProducer`
+- `Provider -> Device -> AcquisitionSession -> optional FrameProducer`
 
 Rows of the form `acquisition_session/<id>` are first-class projection entries.
-`owner_acquisition_session_id` is used in ancestry reconstruction for native rows.
+`owner_acquisition_session_id` is used in ancestry reconstruction for native rows, including legitimate acquisition-session-owned `FrameProducer` rows with no intermediate `Stream` ownership.
 
 When descendants survive beyond an ended controlling AcquisitionSession seam,
 the panel must preserve explicit **Acquisition Session boundary breach**

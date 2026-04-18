@@ -112,7 +112,7 @@ Frame production is controlled by the **FrameProducer** state.
 
 # 5. FrameProducer state machine
 
-FrameProducer describes **active frame generation** for a stream.
+FrameProducer describes an optional provider-reported frame-production seam.
 
 IDLE ── enable ──> PRODUCING
   ▲                   │
@@ -127,7 +127,9 @@ Examples:
 | V4L2 | STREAMON |
 | Synthetic | pattern renderer active |
 
-FrameProducer events may occur many times within a single stream lifecycle.
+FrameProducer may be owned by either a `Stream` or an `AcquisitionSession` and may transition between `IDLE` and `PRODUCING` multiple times while its owning lifecycle remains live.
+
+A `FrameProducer` must not be fabricated merely because a frame was observed.
 
 ---
 
@@ -218,7 +220,11 @@ Stream object exists but may not yet be producing.
 ### Frame Production State
 
 IDLE
-Stream exists but no frames are being produced.
+A realized `FrameProducer` seam exists but is not currently producing frames.
 
 PRODUCING
-Frames are actively being emitted.
+The realized `FrameProducer` seam is actively producing frames.
+
+Ownership:
+- `FrameProducer` may be stream-owned, or
+- acquisition-session-owned for still-capture production.

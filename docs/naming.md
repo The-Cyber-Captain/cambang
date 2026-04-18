@@ -330,6 +330,7 @@ canonical meanings.
 | **Device** | Opened camera hardware instance |
 | **AcquisitionSession** | Provider-reported acquisition seam truth category |
 | **Stream** | Configured capture pipeline producing frames |
+| **FrameProducer** | Optional provider-reported frame-production seam (stream-owned or acquisition-session-owned) |
 
 These terms are provider-agnostic abstractions.
 
@@ -357,7 +358,7 @@ Examples:
 
 ### Native object registry naming
 
-Native object registry types use the same canonical nouns:
+Native object registry nouns remain:
 
 - `Provider`
 - `Device`
@@ -365,8 +366,15 @@ Native object registry types use the same canonical nouns:
 - `Stream`
 - `FrameProducer`
 
-These names represent ownership structure rather than specific
-platform objects.
+These nouns represent CamBANG's preferred viewing structure and
+lifecycle-significant native truth. They do not imply that native truth
+is limited only to those categories, and they do not promise 1:1 parity
+with public Godot-facing objects.
+
+`FrameProducer` may be owned by a `Stream` or directly by an
+`AcquisitionSession`. Native-object truth may therefore contain `Stream`
+and/or `FrameProducer` records that do not correspond to user-created
+`CamBANGStream` objects.
 
 ------------------------------------------------------------------------
 
