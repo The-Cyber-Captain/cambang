@@ -374,6 +374,18 @@ stream-like native resources to service device-level still capture
 without promoting those resources into public `CamBANGStream`
 semantics.
 
+Implementation-scope note (current verified state):
+
+- `SyntheticProvider` currently reports a truthful **stream-backed**
+  `AcquisitionSession`.
+- That concrete realization is created on first successful `create_stream(...)`
+  for the device and destroyed when the last stream for that device is destroyed.
+- **Still-only `AcquisitionSession` realization is not yet implemented** in the
+  current verified scope.
+- Providers must not fabricate `AcquisitionSession` lifecycle events from
+  still-capture callbacks alone when no concrete acquisition-session seam has
+  actually been realized.
+
 Providers must also report and retire provider-owned native resources
 truthfully whenever resource lifetime matters for runtime truth,
 ownership diagnostics, leak prevention, queue health, teardown
@@ -389,15 +401,6 @@ registry look tidy.
 
 The registry / snapshot model depends on truthful object history,
 including diagnostically useful ordering failures.
-
-Implementation status note (current):
-
-- `SyntheticProvider` now reports a truthful stream-backed `AcquisitionSession` seam
-  (created on first successful `create_stream(...)`, destroyed when the last stream
-  for that device is destroyed).
-- Still-only `AcquisitionSession` realization is not yet implemented.
-- Providers must not fabricate `AcquisitionSession` lifecycle events solely from
-  still-capture callback notifications when no concrete session object exists.
 
 ---
 
