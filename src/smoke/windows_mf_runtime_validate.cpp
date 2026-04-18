@@ -24,9 +24,9 @@ struct RuntimeCallbacks final : IProviderCallbacks {
   void on_stream_destroyed(uint64_t) override {}
   void on_stream_started(uint64_t) override {}
   void on_stream_stopped(uint64_t, ProviderError) override {}
-  void on_capture_started(uint64_t) override {}
-  void on_capture_completed(uint64_t) override {}
-  void on_capture_failed(uint64_t, ProviderError) override {}
+  void on_capture_started(uint64_t, uint64_t) override {}
+  void on_capture_completed(uint64_t, uint64_t) override {}
+  void on_capture_failed(uint64_t, uint64_t, ProviderError) override {}
   void on_frame(const FrameView&) override {}
   void on_device_error(uint64_t, ProviderError) override { ++device_errors; }
   void on_stream_error(uint64_t, ProviderError) override { ++stream_errors; }

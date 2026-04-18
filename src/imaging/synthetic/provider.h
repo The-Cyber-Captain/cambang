@@ -137,6 +137,7 @@ private:
     uint64_t native_id = 0;
     uint64_t acquisition_session_native_id = 0;
     uint32_t acquisition_session_stream_refs = 0;
+    uint32_t acquisition_session_capture_refs = 0;
     PictureConfig capture_picture{};
   };
 
@@ -181,7 +182,10 @@ private:
   void emit_native_destroy_(uint64_t native_id);
   uint64_t ensure_native_acquisition_session_(DeviceState& d);
   void retain_native_acquisition_session_for_stream_(DeviceState& d);
+  void retain_native_acquisition_session_for_capture_(DeviceState& d);
   void release_native_acquisition_session_for_stream_(uint64_t device_instance_id);
+  void release_native_acquisition_session_for_capture_(uint64_t device_instance_id);
+  void release_native_acquisition_session_if_unheld_(DeviceState& d);
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);

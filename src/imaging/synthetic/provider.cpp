@@ -545,6 +545,23 @@ void SyntheticProvider::retain_native_acquisition_session_for_stream_(DeviceStat
   ++d.acquisition_session_stream_refs;
 }
 
+void SyntheticProvider::retain_native_acquisition_session_for_capture_(DeviceState& d) {
+  if (ensure_native_acquisition_session_(d) == 0) {
+    return;
+  }
+  ++d.acquisition_session_capture_refs;
+}
+
+void SyntheticProvider::release_native_acquisition_session_if_unheld_(DeviceState& d) {
+  if (d.acquisition_session_stream_refs != 0 || d.acquisition_session_capture_refs != 0) {
+    return;
+  }
+  if (d.acquisition_session_native_id != 0) {
+    emit_native_destroy_(d.acquisition_session_native_id);
+    d.acquisition_session_native_id = 0;
+  }
+}
+
 void SyntheticProvider::release_native_acquisition_session_for_stream_(uint64_t device_instance_id) {
   auto dit = devices_.find(device_instance_id);
   if (dit == devices_.end()) {
@@ -555,13 +572,20 @@ void SyntheticProvider::release_native_acquisition_session_for_stream_(uint64_t 
     return;
   }
   --d.acquisition_session_stream_refs;
-  if (d.acquisition_session_stream_refs != 0) {
+  release_native_acquisition_session_if_unheld_(d);
+}
+
+void SyntheticProvider::release_native_acquisition_session_for_capture_(uint64_t device_instance_id) {
+  auto dit = devices_.find(device_instance_id);
+  if (dit == devices_.end()) {
     return;
   }
-  if (d.acquisition_session_native_id != 0) {
-    emit_native_destroy_(d.acquisition_session_native_id);
-    d.acquisition_session_native_id = 0;
+  DeviceState& d = dit->second;
+  if (d.acquisition_session_capture_refs == 0) {
+    return;
   }
+  --d.acquisition_session_capture_refs;
+  release_native_acquisition_session_if_unheld_(d);
 }
 
 ProviderResult SyntheticProvider::open_device(
@@ -617,6 +641,7 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
     emit_native_destroy_(it->second.acquisition_session_native_id);
     it->second.acquisition_session_native_id = 0;
     it->second.acquisition_session_stream_refs = 0;
+    it->second.acquisition_session_capture_refs = 0;
   }
   strand_.post_device_closed(device_instance_id);
   emit_native_destroy_(it->second.native_id);
@@ -934,9 +959,15 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = lease;
 
-  strand_.post_capture_started(req.capture_id);
+  retain_native_acquisition_session_for_capture_(dev_it->second);
+  if (dev_it->second.acquisition_session_capture_refs == 0) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  strand_.post_capture_started(req.capture_id, req.device_instance_id);
   strand_.post_frame(fv);
-  strand_.post_capture_completed(req.capture_id);
+  strand_.post_capture_completed(req.capture_id, req.device_instance_id);
+  release_native_acquisition_session_for_capture_(req.device_instance_id);
   return ProviderResult::success();
 }
 
@@ -1001,6 +1032,7 @@ void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::i
     emit_native_destroy_(it->second.acquisition_session_native_id);
     it->second.acquisition_session_native_id = 0;
     it->second.acquisition_session_stream_refs = 0;
+    it->second.acquisition_session_capture_refs = 0;
   }
   it->second.open = false;
   strand_.post_device_closed(it->second.device_instance_id);

@@ -44,9 +44,9 @@ public:
   virtual void on_stream_stopped(uint64_t stream_id, ProviderError error_or_ok) = 0;
 
   // ---- Still capture lifecycle ----
-  virtual void on_capture_started(uint64_t capture_id) = 0;
-  virtual void on_capture_completed(uint64_t capture_id) = 0;
-  virtual void on_capture_failed(uint64_t capture_id, ProviderError error) = 0;
+  virtual void on_capture_started(uint64_t capture_id, uint64_t device_instance_id) = 0;
+  virtual void on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) = 0;
+  virtual void on_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error) = 0;
 
   // ---- Frame delivery ----
   virtual void on_frame(const FrameView& frame) = 0;

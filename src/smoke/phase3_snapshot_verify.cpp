@@ -952,6 +952,77 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
   return 0;
 }
 
+static int test_capture_lifecycle_updates_live_acquisition_session_only() {
+  CoreStreamRegistry streams;
+  CoreAcquisitionSessionRegistry acquisition_sessions;
+  CoreDeviceRegistry devices;
+  CoreNativeObjectRegistry native_objects;
+  uint64_t gen = 0;
+  uint64_t now_ns = 10'000;
+
+  CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {
+    return now_ns++;
+  });
+
+  (void)devices.retain_capture_profile(500, 640, 480, FOURCC_RGBA, 77);
+
+  ProviderToCoreCommand capture_without_session{};
+  capture_without_session.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
+  capture_without_session.payload = CmdProviderCaptureStarted{9001, 500};
+  dispatcher.dispatch(std::move(capture_without_session));
+  if (!acquisition_sessions.all().empty()) {
+    std::cerr << "FAIL: capture lifecycle fabricated acquisition session without native realization\n";
+    return 1;
+  }
+
+  ProviderToCoreCommand create_session{};
+  create_session.type = ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED;
+  create_session.payload = CmdProviderNativeObjectCreated{
+      7001,
+      static_cast<uint32_t>(NativeObjectType::AcquisitionSession),
+      0,
+      500,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      false,
+      0,
+  };
+  dispatcher.dispatch(std::move(create_session));
+
+  ProviderToCoreCommand capture_started{};
+  capture_started.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
+  capture_started.payload = CmdProviderCaptureStarted{9002, 500};
+  dispatcher.dispatch(std::move(capture_started));
+
+  ProviderToCoreCommand capture_completed{};
+  capture_completed.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED;
+  capture_completed.payload = CmdProviderCaptureCompleted{9002, 500};
+  dispatcher.dispatch(std::move(capture_completed));
+
+  const auto& all_sessions = acquisition_sessions.all();
+  auto it = all_sessions.find(7001);
+  if (it == all_sessions.end()) {
+    std::cerr << "FAIL: acquisition session missing after native realization\n";
+    return 1;
+  }
+  const auto& rec = it->second;
+  if (rec.captures_triggered != 1 || rec.captures_completed != 1 || rec.captures_failed != 0 ||
+      rec.last_capture_id != 9002 || rec.capture_profile_version != 77 ||
+      rec.capture_width != 640 || rec.capture_height != 480 || rec.capture_format != FOURCC_RGBA) {
+    std::cerr << "FAIL: capture lifecycle counters/profile did not integrate into acquisition session truth\n";
+    return 1;
+  }
+  if (rec.last_capture_latency_ns == 0) {
+    std::cerr << "FAIL: expected non-zero capture latency from integration-side timestamps\n";
+    return 1;
+  }
+  return 0;
+}
+
 } // namespace
 
 int main() {
@@ -960,6 +1031,7 @@ int main() {
   if (int r = test_live_session_retirement_expiry_publication()) return r;
   if (int r = test_timestamp_preservation_and_fallback()) return r;
   if (int r = test_no_sink_delivered_vs_dropped_accounting()) return r;
+  if (int r = test_capture_lifecycle_updates_live_acquisition_session_only()) return r;
   if (int r = test_visibility_diagnostics_snapshot_truth()) return r;
   if (int r = test_still_capture_profile_visibility_audit_truth()) return r;
 

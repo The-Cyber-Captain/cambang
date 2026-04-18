@@ -83,9 +83,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_stream_destroyed(uint64_t id) override { events.push_back({"stream_destroyed", id}); }
   void on_stream_started(uint64_t id) override { events.push_back({"stream_started", id}); }
   void on_stream_stopped(uint64_t id, ProviderError) override { events.push_back({"stream_stopped", id}); }
-  void on_capture_started(uint64_t id) override { events.push_back({"capture_started", id}); }
-  void on_capture_completed(uint64_t id) override { events.push_back({"capture_completed", id}); }
-  void on_capture_failed(uint64_t id, ProviderError) override { events.push_back({"capture_failed", id}); }
+  void on_capture_started(uint64_t id, uint64_t) override { events.push_back({"capture_started", id}); }
+  void on_capture_completed(uint64_t id, uint64_t) override { events.push_back({"capture_completed", id}); }
+  void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { events.push_back({"capture_failed", id}); }
 
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
@@ -145,6 +145,16 @@ int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) 
     }
   }
   return -1;
+}
+
+int count_events_by_tag_and_type(const std::vector<EventRec>& events, const char* tag, uint32_t type) {
+  int count = 0;
+  for (const auto& e : events) {
+    if (e.tag == tag && e.type == type) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 bool assert_native_balance(const std::vector<EventRec>& events, const char* name) {
@@ -1204,6 +1214,126 @@ bool run_synthetic_provider_direct_sanity_check() {
   return assert_native_balance(cb.events, "synthetic_direct");
 }
 
+bool run_synthetic_still_only_acquisition_session_truth_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  if (!provider.initialize(&cb).ok() || !provider.open_device("synthetic:0", 41, 4101).ok()) {
+    std::cerr << "FAIL synthetic still-only setup failed\n";
+    return false;
+  }
+
+  CaptureRequest cap{};
+  cap.capture_id = 8001;
+  cap.device_instance_id = 41;
+  cap.width = 64;
+  cap.height = 64;
+  cap.format_fourcc = FOURCC_RGBA;
+  if (!provider.trigger_capture(cap).ok()) {
+    std::cerr << "FAIL synthetic still-only trigger_capture failed\n";
+    return false;
+  }
+
+  if (!provider.close_device(41).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic still-only teardown failed\n";
+    return false;
+  }
+
+  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
+  const int acq_native_id =
+      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+
+  if (capture_started_ix < 0 || capture_completed_ix < 0 || acq_native_id < 0 ||
+      acq_create_ix < 0 || acq_destroy_ix < 0) {
+    std::cerr << "FAIL synthetic still-only missing capture/session evidence\n";
+    return false;
+  }
+  if (!(acq_create_ix < capture_started_ix && capture_started_ix < capture_completed_ix &&
+        capture_completed_ix < acq_destroy_ix)) {
+    std::cerr << "FAIL synthetic still-only lifecycle ordering invalid\n";
+    return false;
+  }
+  if (count_events_by_tag_and_type(
+          cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
+    std::cerr << "FAIL synthetic still-only unexpectedly realized stream native object\n";
+    return false;
+  }
+  return assert_native_balance(cb.events, "synthetic_still_only");
+}
+
+bool run_synthetic_stream_plus_still_single_session_truth_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  StreamRequest req{};
+  req.stream_id = 72;
+  req.device_instance_id = 42;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile.width = 64;
+  req.profile.height = 64;
+  req.profile.format_fourcc = FOURCC_RGBA;
+  req.profile.target_fps_min = 30;
+  req.profile.target_fps_max = 30;
+
+  CaptureRequest cap{};
+  cap.capture_id = 8002;
+  cap.device_instance_id = req.device_instance_id;
+  cap.width = 64;
+  cap.height = 64;
+  cap.format_fourcc = FOURCC_RGBA;
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", req.device_instance_id, 4201).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(req.stream_id, req.profile, req.picture).ok() ||
+      !provider.trigger_capture(cap).ok() ||
+      !provider.stop_stream(req.stream_id).ok() ||
+      !provider.destroy_stream(req.stream_id).ok() ||
+      !provider.close_device(req.device_instance_id).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic stream+still setup/teardown failed\n";
+    return false;
+  }
+
+  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
+  const int stream_destroy_ix = find_event_index(cb.events, "stream_destroyed", req.stream_id);
+  const int acq_native_id =
+      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+  const int acq_create_count = count_events_by_tag_and_type(
+      cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+
+  if (capture_started_ix < 0 || capture_completed_ix < 0 || stream_destroy_ix < 0 ||
+      acq_native_id < 0 || acq_destroy_ix < 0) {
+    std::cerr << "FAIL synthetic stream+still missing evidence\n";
+    return false;
+  }
+  if (acq_create_count != 1) {
+    std::cerr << "FAIL synthetic stream+still realized multiple acquisition sessions for one device\n";
+    return false;
+  }
+  if (!(capture_started_ix < capture_completed_ix && capture_completed_ix < stream_destroy_ix &&
+        stream_destroy_ix < acq_destroy_ix)) {
+    std::cerr << "FAIL synthetic stream+still ordering invalid\n";
+    return false;
+  }
+  return assert_native_balance(cb.events, "synthetic_stream_plus_still");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1237,6 +1367,8 @@ int main(int argc, char** argv) {
   // Additional provider direct sanity coverage retained.
   if (!run_stub_provider_sanity_check()) return 1;
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
+  if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
+  if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
   // 7) External scenario file path (first-class, optional input).
   if (!opt.external_scenario_file.empty()) {
