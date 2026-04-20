@@ -964,9 +964,31 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
+  uint64_t still_frame_producer_native_id = 0;
+  if (callbacks_) {
+    still_frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
+    if (still_frame_producer_native_id != 0) {
+      NativeObjectCreateInfo info{};
+      info.native_id = still_frame_producer_native_id;
+      info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
+      info.root_id = dev_it->second.root_id;
+      info.owner_device_instance_id = req.device_instance_id;
+      info.owner_acquisition_session_id = dev_it->second.acquisition_session_native_id;
+      info.owner_stream_id = 0;
+      info.owner_provider_native_id = provider_native_id_;
+      info.owner_rig_id = 0;
+      info.has_created_ns = true;
+      info.created_ns = clock_.now_ns();
+      strand_.post_native_object_created(info);
+    }
+  }
+
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
   strand_.post_frame(fv);
   strand_.post_capture_completed(req.capture_id, req.device_instance_id);
+  if (still_frame_producer_native_id != 0) {
+    emit_native_destroy_(still_frame_producer_native_id);
+  }
   release_native_acquisition_session_for_capture_(req.device_instance_id);
   return ProviderResult::success();
 }
@@ -1538,6 +1560,15 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   if (!initialized_ || shutting_down_) {
     return;
   }
+
+  // For timeline-role synthetic operation, a host pause must be a true
+  // scenario-time pause. Advancing the virtual clock while paused causes due
+  // events to accumulate and then burst on unpause, which breaks checkpointed
+  // host/timeline synchronization.
+  if (cfg_.synthetic_role == SyntheticRole::Timeline && timeline_running_ && timeline_paused_) {
+    return;
+  }
+
   // v1: only VirtualTime is implemented.
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {

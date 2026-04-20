@@ -65,6 +65,7 @@ struct EventRec {
   std::string tag;
   uint64_t id = 0;
   uint32_t type = 0;
+  uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint32_t pixel_sig = 0;
   CaptureTimestamp ts{};
@@ -106,7 +107,11 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_device_error(uint64_t id, ProviderError) override { events.push_back({"device_error", id}); }
   void on_stream_error(uint64_t id, ProviderError) override { events.push_back({"stream_error", id}); }
   void on_native_object_created(const NativeObjectCreateInfo& info) override {
-    events.push_back({"native_created", info.native_id, info.type, info.owner_stream_id});
+    EventRec ev{"native_created", info.native_id};
+    ev.type = info.type;
+    ev.owner_acquisition_session_id = info.owner_acquisition_session_id;
+    ev.owner_stream_id = info.owner_stream_id;
+    events.push_back(ev);
   }
   void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override {
     events.push_back({"native_destroyed", info.native_id});
@@ -123,6 +128,21 @@ int find_event_index(const std::vector<EventRec>& events, const char* tag, uint6
 int find_native_create_id(const std::vector<EventRec>& events, uint32_t type, uint64_t owner_stream_id) {
   for (const auto& e : events) {
     if (e.tag == "native_created" && e.type == type && e.owner_stream_id == owner_stream_id) {
+      return static_cast<int>(e.id);
+    }
+  }
+  return -1;
+}
+
+int find_native_create_id_with_owners(const std::vector<EventRec>& events,
+                                      uint32_t type,
+                                      uint64_t owner_acquisition_session_id,
+                                      uint64_t owner_stream_id) {
+  for (const auto& e : events) {
+    if (e.tag == "native_created" &&
+        e.type == type &&
+        e.owner_acquisition_session_id == owner_acquisition_session_id &&
+        e.owner_stream_id == owner_stream_id) {
       return static_cast<int>(e.id);
     }
   }
@@ -1248,16 +1268,27 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
   const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
   const int acq_native_id =
       find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int still_fp_native_id =
+      find_native_create_id_with_owners(
+          cb.events,
+          static_cast<uint32_t>(NativeObjectType::FrameProducer),
+          static_cast<uint64_t>(acq_native_id),
+          0);
   const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int still_fp_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(still_fp_native_id));
+  const int still_fp_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(still_fp_native_id));
   const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
 
-  if (capture_started_ix < 0 || capture_completed_ix < 0 || acq_native_id < 0 ||
-      acq_create_ix < 0 || acq_destroy_ix < 0) {
-    std::cerr << "FAIL synthetic still-only missing capture/session evidence\n";
+  if (capture_started_ix < 0 || capture_completed_ix < 0 || acq_native_id < 0 || still_fp_native_id < 0 ||
+      acq_create_ix < 0 || still_fp_create_ix < 0 || still_fp_destroy_ix < 0 || acq_destroy_ix < 0) {
+    std::cerr << "FAIL synthetic still-only missing capture/session/producer evidence\n";
     return false;
   }
-  if (!(acq_create_ix < capture_started_ix && capture_started_ix < capture_completed_ix &&
-        capture_completed_ix < acq_destroy_ix)) {
+  if (!(acq_create_ix < still_fp_create_ix &&
+        still_fp_create_ix < capture_started_ix &&
+        capture_started_ix < capture_completed_ix &&
+        capture_completed_ix < still_fp_destroy_ix &&
+        still_fp_destroy_ix < acq_destroy_ix)) {
     std::cerr << "FAIL synthetic still-only lifecycle ordering invalid\n";
     return false;
   }
@@ -1313,12 +1344,23 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
   const int stream_destroy_ix = find_event_index(cb.events, "stream_destroyed", req.stream_id);
   const int acq_native_id =
       find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int stream_fp_native_id =
+      find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::FrameProducer), req.stream_id);
+  const int still_fp_native_id =
+      find_native_create_id_with_owners(
+          cb.events,
+          static_cast<uint32_t>(NativeObjectType::FrameProducer),
+          static_cast<uint64_t>(acq_native_id),
+          0);
+  const int still_fp_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(still_fp_native_id));
+  const int still_fp_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(still_fp_native_id));
   const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
   const int acq_create_count = count_events_by_tag_and_type(
       cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
 
   if (capture_started_ix < 0 || capture_completed_ix < 0 || stream_destroy_ix < 0 ||
-      acq_native_id < 0 || acq_destroy_ix < 0) {
+      acq_native_id < 0 || stream_fp_native_id < 0 || still_fp_native_id < 0 ||
+      still_fp_create_ix < 0 || still_fp_destroy_ix < 0 || acq_destroy_ix < 0) {
     std::cerr << "FAIL synthetic stream+still missing evidence\n";
     return false;
   }
@@ -1326,8 +1368,15 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     std::cerr << "FAIL synthetic stream+still realized multiple acquisition sessions for one device\n";
     return false;
   }
-  if (!(capture_started_ix < capture_completed_ix && capture_completed_ix < stream_destroy_ix &&
-        stream_destroy_ix < acq_destroy_ix)) {
+  if (stream_fp_native_id == still_fp_native_id) {
+    std::cerr << "FAIL synthetic stream+still reused stream producer as still producer\n";
+    return false;
+  }
+
+  if (!(still_fp_create_ix < capture_started_ix &&
+      capture_started_ix < capture_completed_ix &&
+      capture_completed_ix < still_fp_destroy_ix &&
+      still_fp_destroy_ix < acq_destroy_ix)) {
     std::cerr << "FAIL synthetic stream+still ordering invalid\n";
     return false;
   }

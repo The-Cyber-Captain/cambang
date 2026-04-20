@@ -1,0 +1,230 @@
+[gd_scene load_steps=5 format=3 uid="uid://ivpbahi8ebr3"]
+
+[ext_resource type="Script" uid="uid://dx3sskx5qygcb" path="res://scripts/71_capture_session_matrix_v3.gd" id="1"]
+[ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="2"]
+
+[sub_resource type="Theme" id="Theme_hs8ao"]
+default_font_size = 12
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_hs8ao"]
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[node name="71_CaptureSessionMatrixRunner" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="RootMargin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 35
+theme_override_constants/margin_top = 75
+theme_override_constants/margin_right = 35
+theme_override_constants/margin_bottom = 50
+
+[node name="MainColumn" type="VBoxContainer" parent="RootMargin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="RootMargin/MainColumn"]
+layout_mode = 2
+text = "Scene 71 — Capture / Stream Matrix Confidence Harness"
+
+[node name="Instructions" type="RichTextLabel" parent="RootMargin/MainColumn"]
+custom_minimum_size = Vector2(0, 72)
+layout_mode = 2
+bbcode_enabled = true
+text = "[b]Space / Enter[/b]: perform current checkpoint action
+Manual virtual-time advancement. The runner advances the timeline until the next checkpoint."
+fit_content = true
+scroll_active = false
+
+[node name="HBoxContainer" type="HBoxContainer" parent="RootMargin/MainColumn"]
+layout_mode = 2
+
+[node name="Grid" type="GridContainer" parent="RootMargin/MainColumn/HBoxContainer"]
+layout_mode = 2
+theme = SubResource("Theme_hs8ao")
+theme_override_constants/h_separation = 5
+theme_override_constants/v_separation = 5
+columns = 3
+
+[node name="CaptureAPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid"]
+custom_minimum_size = Vector2(320, 220)
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureAPanel"]
+layout_mode = 2
+
+[node name="Header" type="Label" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureAPanel/VBox"]
+layout_mode = 2
+text = "Capture A"
+
+[node name="Texture" type="TextureRect" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureAPanel/VBox"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Facts" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureAPanel/VBox"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+text = "Awaiting Capture A"
+fit_content = true
+scroll_active = false
+
+[node name="PreviewAPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid"]
+custom_minimum_size = Vector2(320, 220)
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewAPanel"]
+layout_mode = 2
+
+[node name="Header" type="Label" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewAPanel/VBox"]
+layout_mode = 2
+text = "Preview A"
+
+[node name="Texture" type="TextureRect" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewAPanel/VBox"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Facts" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewAPanel/VBox"]
+custom_minimum_size = Vector2(0, 48)
+layout_mode = 2
+text = "Awaiting Preview A"
+fit_content = true
+scroll_active = false
+
+[node name="ViewfinderAPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid"]
+custom_minimum_size = Vector2(320, 220)
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderAPanel"]
+layout_mode = 2
+
+[node name="Header" type="Label" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderAPanel/VBox"]
+layout_mode = 2
+text = "Viewfinder A"
+
+[node name="Texture" type="TextureRect" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderAPanel/VBox"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Facts" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderAPanel/VBox"]
+custom_minimum_size = Vector2(0, 48)
+layout_mode = 2
+text = "Awaiting Viewfinder A"
+fit_content = true
+scroll_active = false
+
+[node name="CaptureBPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid"]
+custom_minimum_size = Vector2(320, 220)
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureBPanel"]
+layout_mode = 2
+
+[node name="Header" type="Label" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureBPanel/VBox"]
+layout_mode = 2
+text = "Capture B"
+
+[node name="Texture" type="TextureRect" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureBPanel/VBox"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Facts" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/Grid/CaptureBPanel/VBox"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+text = "Awaiting Capture B"
+fit_content = true
+scroll_active = false
+
+[node name="PreviewBPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid"]
+custom_minimum_size = Vector2(320, 220)
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewBPanel"]
+layout_mode = 2
+
+[node name="Header" type="Label" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewBPanel/VBox"]
+layout_mode = 2
+text = "Preview B"
+
+[node name="Texture" type="TextureRect" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewBPanel/VBox"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Facts" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/Grid/PreviewBPanel/VBox"]
+custom_minimum_size = Vector2(0, 48)
+layout_mode = 2
+text = "Awaiting Preview B"
+fit_content = true
+scroll_active = false
+
+[node name="ViewfinderBPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid"]
+custom_minimum_size = Vector2(320, 220)
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderBPanel"]
+layout_mode = 2
+
+[node name="Header" type="Label" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderBPanel/VBox"]
+layout_mode = 2
+text = "Viewfinder B"
+
+[node name="Texture" type="TextureRect" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderBPanel/VBox"]
+custom_minimum_size = Vector2(640, 360)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Facts" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/Grid/ViewfinderBPanel/VBox"]
+custom_minimum_size = Vector2(0, 48)
+layout_mode = 2
+text = "Awaiting Viewfinder B"
+fit_content = true
+scroll_active = false
+
+[node name="LogPanel" type="PanelContainer" parent="RootMargin/MainColumn/HBoxContainer"]
+custom_minimum_size = Vector2(0, 140)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="LogVBox" type="VBoxContainer" parent="RootMargin/MainColumn/HBoxContainer/LogPanel"]
+layout_mode = 2
+
+[node name="LogHeader" type="Label" parent="RootMargin/MainColumn/HBoxContainer/LogPanel/LogVBox"]
+layout_mode = 2
+text = "Runner Log"
+
+[node name="Log" type="RichTextLabel" parent="RootMargin/MainColumn/HBoxContainer/LogPanel/LogVBox"]
+custom_minimum_size = Vector2(0, 120)
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="StatusPanel" type="PanelContainer" parent="RootMargin/MainColumn"]
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_hs8ao")
+script = ExtResource("2")

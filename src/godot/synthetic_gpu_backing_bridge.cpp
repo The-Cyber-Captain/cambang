@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include <godot_cpp/core/class_db.hpp>
+
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/image.hpp>
@@ -20,7 +22,17 @@
 namespace cambang {
 namespace {
 
+class RenderThreadDrainHelper : public godot::RefCounted {
+  GDCLASS(RenderThreadDrainHelper, godot::RefCounted);
+
+public:
+  static void _bind_methods() {}
+
+  void drain_pending_releases_on_render_thread();
+};
+
 void enqueue_pending_release(const godot::RID& rid);
+void request_pending_release_drain();
 
 struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
@@ -40,27 +52,22 @@ struct RetainedSyntheticGpuBacking final {
         return;
       }
       released = true;
+
+      // The bridge owns rd_texture only until it is handed to Texture2DRD.
+      // Once display_texture exists, do not manually free its RID here.
       if (rd_texture.is_valid()) {
         rid = rd_texture;
         rd_texture = godot::RID();
-      } else if (display_texture.is_valid()) {
-        rid = display_texture->get_texture_rd_rid();
       }
+
       display_texture.unref();
     }
 
     if (!rid.is_valid()) {
       return;
     }
-    godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-    godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
-    if (rd) {
-      // Deterministic immediate release is the primary lifetime model.
-      rd->free_rid(rid);
-      return;
-    }
-    // Fallback only: if RD access is unavailable at this instant, defer free.
     enqueue_pending_release(rid);
+    request_pending_release_drain();
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -69,47 +76,89 @@ struct RetainedSyntheticGpuBacking final {
 };
 
 std::mutex g_pending_release_mutex;
-// Narrow fallback queue only. Normal lifetime is deterministic immediate
-// release in release_now() when a RenderingDevice is available.
+// RIDs that must be released from the render thread.
 std::vector<godot::RID> g_pending_releases;
+bool g_pending_release_drain_scheduled = false;
+godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
+
+RenderThreadDrainHelper* get_render_thread_drain_helper() {
+  if (g_render_thread_drain_helper.is_null()) {
+    g_render_thread_drain_helper.instantiate();
+  }
+  return g_render_thread_drain_helper.ptr();
+}
 
 void enqueue_pending_release(const godot::RID& rid) {
+  if (!rid.is_valid()) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   g_pending_releases.push_back(rid);
 }
 
-void drain_pending_releases() {
+void request_pending_release_drain() {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return;
+  }
+
+  bool should_schedule = false;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+      g_pending_release_drain_scheduled = true;
+      should_schedule = true;
+    }
+  }
+  if (!should_schedule) {
+    return;
+  }
+
+  RenderThreadDrainHelper* helper = get_render_thread_drain_helper();
+  if (!helper) {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    g_pending_release_drain_scheduled = false;
+    return;
+  }
+
+  rs->call_on_render_thread(callable_mp(helper, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+}
+
+void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (g_pending_releases.empty()) {
-      return;
-    }
     pending.swap(g_pending_releases);
+    g_pending_release_drain_scheduled = false;
+  }
+  if (pending.empty()) {
+    return;
   }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (!rs) {
-    // Fallback remains pending until a later point with RD access.
-    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    for (godot::RID& rid : pending) {
-      g_pending_releases.push_back(std::move(rid));
-    }
-    return;
-  }
-  godot::RenderingDevice* rd = rs->get_rendering_device();
+  godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
   if (!rd) {
-    // Fallback remains pending until a later point with RD access.
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    for (godot::RID& rid : pending) {
+    for (godot::RID &rid : pending) {
       g_pending_releases.push_back(std::move(rid));
+    }
+    if (rs && !g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+      g_pending_release_drain_scheduled = true;
+      rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
     }
     return;
   }
-  for (const godot::RID& rid : pending) {
+
+  for (const godot::RID &rid : pending) {
     if (rid.is_valid()) {
       rd->free_rid(rid);
     }
+  }
+
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+    g_pending_release_drain_scheduled = true;
+    rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
   }
 }
 
@@ -252,7 +301,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
-  drain_pending_releases();
+  request_pending_release_drain();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return {};
@@ -300,7 +349,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   if (width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
-  drain_pending_releases();
+  request_pending_release_drain();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return {};
@@ -351,7 +400,7 @@ bool update_stream_live_gpu_backing_rgba8(
   if (!backing || !src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return false;
   }
-  drain_pending_releases();
+  request_pending_release_drain();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return false;
@@ -391,9 +440,6 @@ bool update_stream_live_gpu_backing_rgba8(
     std::memcpy(retained->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
     rd->texture_update(texture_rid, 0, retained->upload_bytes);
   }
-  // Godot's RD texture_update path used here does not provide explicit success/failure.
-  // This helper can only report precondition/runtime-availability failures directly.
-  // Provider-side recreate+retry therefore triggers only when those observable checks fail.
   return true;
 }
 
@@ -421,19 +467,17 @@ const SyntheticGpuBackingRuntimeOps kOps{
 } // namespace
 
 void install_synthetic_gpu_backing_godot_bridge() {
-  drain_pending_releases();
   set_synthetic_gpu_backing_runtime_ops(&kOps);
   trace_gpu("bridge_install runtime_ops_registered=true");
 }
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
-  drain_pending_releases();
   clear_synthetic_gpu_backing_runtime_ops();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
-  drain_pending_releases();
+  request_pending_release_drain();
   if (!backing) {
     return {};
   }
@@ -471,7 +515,7 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
-  drain_pending_releases();
+  request_pending_release_drain();
   if (!backing) {
     return false;
   }
@@ -489,7 +533,7 @@ bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>&
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
-  drain_pending_releases();
+  request_pending_release_drain();
   if (!backing) {
     return {};
   }
