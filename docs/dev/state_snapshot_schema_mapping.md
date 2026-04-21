@@ -162,9 +162,10 @@ fully exercised in the current scaffolding slice.
    - id fields: `acquisition_session_id`,
    - native ownership linkage: `owner_acquisition_session_id`.
 
-8. Current implementation scope note: the concrete implemented
-   `AcquisitionSession` seam is stream-backed in `SyntheticProvider`; a
-   still-only realization is not yet implemented.
+8. Current implementation scope note: `SyntheticProvider` now realizes the
+   concrete `AcquisitionSession` seam for both stream-backed and capture-only
+   paths; this seam remains provider/runtime truth rather than a scenario-owned
+   object.
 
 These allowances are intentional to keep the v1 contract stable while runtime
 coverage and retained truth fidelity continue to mature.

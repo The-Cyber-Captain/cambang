@@ -73,9 +73,9 @@ backend API uses the same noun or hierarchy natively.
 
 Implementation-scope reminder:
 
-- the currently implemented concrete realization in `SyntheticProvider` is
-  stream-backed
-- still-only AcquisitionSession realization is not yet implemented
+- `SyntheticProvider` currently realizes `AcquisitionSession` truth for both
+  stream-backed and capture-only paths
+- the seam is retained while stream and/or capture references remain live
 
 ------------------------------------------------------------------------
 
@@ -304,8 +304,9 @@ the device lineage.
 
 Current implementation reminder:
 
-- concrete realization is stream-backed in `SyntheticProvider`
-- still-only realization is not yet implemented
+- `SyntheticProvider` realizes `AcquisitionSession` truth for both
+  stream-backed and capture-only paths
+- a capture-only `AcquisitionSession` does not require a public `CamBANGStream`
 
 Destroyed-retained session history may remain visible in `native_objects`, while
 top-level `acquisition_sessions[]` remains authoritative for current/live session

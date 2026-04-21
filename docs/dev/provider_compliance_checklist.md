@@ -96,11 +96,12 @@ Audit that:
 
 Current implementation reminder:
 
-- Current concrete `AcquisitionSession` realization path is stream-backed in
-  `SyntheticProvider`.
-- Still-only `AcquisitionSession` realization is not yet implemented.
+- `SyntheticProvider` now realizes concrete `AcquisitionSession` truth for both
+  stream-backed and capture-only paths.
+- Capture-only truth may also realize an acquisition-session-owned
+  `FrameProducer` without fabricating a public stream.
 - Still capture callbacks alone do not satisfy retained AcquisitionSession truth
-  obligations.
+  obligations when no concrete session seam has been realized.
 
 ---
 

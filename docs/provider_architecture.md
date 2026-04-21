@@ -376,15 +376,15 @@ semantics.
 
 Implementation-scope note (current verified state):
 
-- `SyntheticProvider` currently reports a truthful **stream-backed**
-  `AcquisitionSession`.
-- That concrete realization is created on first successful `create_stream(...)`
-  for the device and destroyed when the last stream for that device is destroyed.
-- **Still-only `AcquisitionSession` realization is not yet implemented** in the
-  current verified scope.
+- `SyntheticProvider` reports truthful `AcquisitionSession` realization for both
+  stream-backed and capture-only paths.
+- The concrete seam is retained while the device has active stream and/or
+  capture references, and is retired when those references are released.
 - Providers must not fabricate `AcquisitionSession` lifecycle events from
   still-capture callbacks alone when no concrete acquisition-session seam has
   actually been realized.
+- Capture-side `FrameProducer` truth may therefore appear under an
+  `AcquisitionSession` without implying a public `CamBANGStream`.
 
 Providers must also report and retire provider-owned native resources
 truthfully whenever resource lifetime matters for runtime truth,

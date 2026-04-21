@@ -115,8 +115,9 @@ DESTROYED
 Constraints:
 
 - AcquisitionSession lifecycle must be reported from actual provider native-object truth.
-- Current implemented concrete realization is stream-backed in `SyntheticProvider`.
-- Still-only AcquisitionSession realization is not yet implemented.
+- `SyntheticProvider` currently realizes `AcquisitionSession` truth for both
+  stream-backed and capture-only paths.
+- Capture-only realization does not require fabrication of a public stream.
 
 ------------------------------------------------------------------------
 
@@ -293,8 +294,9 @@ Meaning:
 
 Current implementation note:
 
-- concrete realization is stream-backed in `SyntheticProvider`
-- still-only AcquisitionSession realization is not yet implemented
+- `SyntheticProvider` realizes `AcquisitionSession` truth for both
+  stream-backed and capture-only paths
+- session presence remains provider/native truth rather than scenario-authored truth
 
 ### 10.4 Stream Presence State
 

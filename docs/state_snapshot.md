@@ -155,8 +155,9 @@ transitions are:
 
 - provider-only → device realized (`version += 1`, `topology_version += 1`)
 - device realized → acquisition session realized (`version += 1`,
-  `topology_version += 1`) when the first successful `create_stream(...)`
-  realizes the current stream-backed `AcquisitionSession`
+  `topology_version += 1`) when provider truth first realizes an
+  `AcquisitionSession` seam for that device (for example through stream-backed
+  realization or a capture-only path)
 - acquisition session realized → stream realized (`version += 1`,
   `topology_version += 1`)
 - started/producing seam → frameproducer realized (`version += 1`,
@@ -447,10 +448,14 @@ scenario-authored object.
 
 Implementation-status clarification (current repo truth):
 
-- Current concrete AcquisitionSession realization is stream-backed in `SyntheticProvider`.
-- Still-only AcquisitionSession realization is **not yet implemented**.
+- `AcquisitionSession` is runtime/provider-originated truth and is not a directly
+  scenario-authored object.
+- `SyntheticProvider` now realizes truthful `AcquisitionSession` state for both
+  stream-backed and capture-only paths.
+- Capture activity/counters in `AcquisitionSessionState` reflect retained session
+  truth when a live session seam exists.
 - Still capture callbacks alone must not be treated as retained AcquisitionSession
-  realization in core state.
+  realization in core state when no concrete session seam has been realized.
 
 ``` text
 AcquisitionSessionState {

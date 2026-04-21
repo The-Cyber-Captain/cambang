@@ -35,7 +35,8 @@ Example:
 
 Core start
 Device discovered
-AcquisitionSession created (stream-backed, on first successful create_stream)
+AcquisitionSession created (when provider truth first realizes the session seam,
+for example on stream creation or a capture-only path)
 Stream created
 
 Observable publications:

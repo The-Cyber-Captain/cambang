@@ -32,10 +32,11 @@ Lifecycle, native-object, and error events must always preserve ordering.
 Topology change is not a separate event class. It is an effect reflected by
 lifecycle and native-object truth, and later by snapshot `topology_version`.
 
-Current concrete reminder for synthetic realization: `AcquisitionSession` is
-currently stream-backed (created on first successful stream creation and
-destroyed when the last stream for the device is destroyed). Still-only
-`AcquisitionSession` realization is not yet implemented.
+Current concrete reminder for synthetic realization: `SyntheticProvider` now
+realizes truthful `AcquisitionSession` seams for both stream-backed and
+capture-only paths. The seam is created when provider truth first requires it
+for the device and is destroyed when both stream and capture references have
+been released.
 
 ## Backpressure
 

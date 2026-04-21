@@ -180,8 +180,9 @@ this vocabulary slice.
 
 Scenario events do not include direct AcquisitionSession create/destroy commands.
 Any AcquisitionSession realization remains provider runtime truth. Current
-implemented concrete realization in SyntheticProvider is stream-backed rather
-than still-only.
+`SyntheticProvider` truth includes both stream-backed and capture-only
+AcquisitionSession realization, but that realization is still provider-owned
+rather than directly scenario-authored.
 
 ### 7.1 Verified primitive lifecycle status
 

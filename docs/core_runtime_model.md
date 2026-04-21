@@ -137,9 +137,11 @@ Core maintains explicit state machines for:
 -   **Stream core state** (STOPPED/FLOWING/STARVED/ERROR + intent)
 
 AcquisitionSession seam is provider/native-object truth and is retained in
-snapshot state via `acquisition_sessions`. Current implementation status is
-stream-backed realization (SyntheticProvider); still-only AcquisitionSession
-realization is not yet implemented.
+snapshot state via `acquisition_sessions`. Current implementation status in
+`SyntheticProvider` includes both stream-backed realization and capture-only
+realization. The provider retains a truthful `AcquisitionSession` seam while
+stream and/or capture references exist, and does not require a transient public
+`CamBANGStream` for capture-only truth.
 
 State transitions occur only on the core thread and must be
 deterministic.
