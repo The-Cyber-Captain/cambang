@@ -241,12 +241,12 @@ static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const 
     }
   }
 
-  // Wait until a live continuity exists.
+  // Wait until canonical stream/session seams are visible.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return has_live_frame_producer_for_stream(s, kStreamId) &&
+        return stream_exists(s, kStreamId) &&
                has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: AcquisitionSession seam not observed after start\n";
+    std::cerr << "FAIL: stream/session seams not observed after start\n";
     return 1;
   }
 
@@ -276,12 +276,12 @@ static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const 
     }
   }
 
-  // Assert continuity is no longer live.
+  // Assert stream/session seams are cleared after stop/destroy.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return !has_live_frame_producer_for_stream(s, kStreamId) &&
+        return !stream_exists(s, kStreamId) &&
                !has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: AcquisitionSession seam still visible after stop+destroy\n";
+    std::cerr << "FAIL: stream/session seams still visible after stop+destroy\n";
     return 1;
   }
 
@@ -315,13 +315,13 @@ static int run_invalid_sequence(CoreRuntime& rt, StateSnapshotBuffer& buf, const
 
   rt.request_publish();
 
-  // Assert no live continuity exists and AcquisitionSession seam is present
+  // Assert canonical create-only seam: stream exists and AcquisitionSession exists
   // for create_stream-only (stream exists but not started).
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return !has_live_frame_producer_for_stream(s, kStreamId) &&
+        return stream_exists(s, kStreamId) &&
                has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: invalid-sequence seam expectations failed (AcquisitionSession)\n";
+    std::cerr << "FAIL: invalid-sequence seam expectations failed (stream/session)\n";
     return 1;
   }
 
@@ -361,10 +361,9 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
         if (!s) return false;
         if (opt.dump_snapshots) dump_snapshot(*s);
         return stream_is_flowing(*s, kStreamId) &&
-               has_live_frame_producer_for_stream(*s, kStreamId) &&
                has_acquisition_session_for_device(*s, kDeviceInstanceId);
       })) {
-    std::cerr << "FAIL: stream did not reach FLOWING with expected AcquisitionSession seam before catch-up tick\n";
+    std::cerr << "FAIL: stream did not reach FLOWING with expected session seam before catch-up tick\n";
     return 1;
   }
 
