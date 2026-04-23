@@ -146,7 +146,6 @@ private:
     bool created = false;
     bool started = false;
     bool producing = false;
-    uint64_t frame_producer_native_id = 0;
     uint64_t next_due_ns = 0;
     uint64_t native_id = 0;
     uint64_t acquisition_session_native_id = 0;

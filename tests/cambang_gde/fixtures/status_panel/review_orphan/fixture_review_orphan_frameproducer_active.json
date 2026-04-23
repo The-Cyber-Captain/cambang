@@ -15,12 +15,12 @@
       "device/3001",
       "stream/3100",
       "provider/3000/orphaned_native_objects",
-      "frameproducer/3201",
+      "native_object/3201",
       "acquisition_session/3001"
     ],
     "required_visible_row_ids": [
       "provider/3000/orphaned_native_objects",
-      "frameproducer/3201"
+      "native_object/3201"
     ],
     "required_badges_by_row": {
       "server/main": [
@@ -29,7 +29,7 @@
       ]
     },
     "required_info_substrings_by_row": {
-      "frameproducer/3201": [
+      "native_object/3201": [
         "owner_stream_id=3999"
       ]
     }
@@ -138,7 +138,7 @@
       },
       {
         "native_id": 3201,
-        "type": "frameproducer",
+        "type": "stream",
         "owner_stream_id": 3999,
         "phase": "LIVE",
         "root_id": 9201,

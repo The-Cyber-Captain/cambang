@@ -17,13 +17,13 @@
       "provider/4000/orphaned_native_objects",
       "native_object/4101",
       "native_object/4201",
-      "frameproducer/4301"
+      "native_object/4301"
     ],
     "required_visible_row_ids": [
       "provider/4000/orphaned_native_objects",
       "native_object/4101",
       "native_object/4201",
-      "frameproducer/4301"
+      "native_object/4301"
     ],
     "required_badges_by_row": {
       "server/main": [
@@ -97,7 +97,7 @@
       },
       {
         "native_id": 4301,
-        "type": "frameproducer",
+        "type": "stream",
         "owner_stream_id": 4201,
         "phase": "LIVE",
         "root_id": 9301,

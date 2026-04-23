@@ -11,13 +11,13 @@
       "provider/100",
       "device/1",
       "stream/1",
-      "frameproducer/103",
+      "native_object/103",
       "rig/7",
       "rig/7/device/synthetic:0",
       "acquisition_session/1"
     ],
     "required_visible_row_ids": [
-      "frameproducer/103"
+      "native_object/103"
     ],
     "required_counters_by_row": {
       "device/1": [
@@ -74,7 +74,7 @@
       }
     },
     "required_info_substrings_by_row": {
-      "frameproducer/103": [
+      "native_object/103": [
         "owner_stream_id=1",
         "creation_gen=2"
       ]
@@ -220,7 +220,7 @@
       },
       {
         "native_id": 103,
-        "type": "frameproducer",
+        "type": "stream",
         "owner_device_instance_id": 1,
         "owner_stream_id": 1,
         "phase": "LIVE",

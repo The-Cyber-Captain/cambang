@@ -4273,13 +4273,6 @@ func _build_native_object_entry(
 	if is_provider_native:
 		row_id = "provider/%d" % native_id
 		row_label = "provider/%d" % native_id
-	elif native_type_key == "frameproducer":
-		row_id = "frameproducer/%d" % native_id
-		row_label = "frameproducer/%d" % native_id
-		if owner_stream_id > 0:
-			info_lines.append("owner_stream_id=%d" % owner_stream_id)
-		if rec.has("creation_gen"):
-			info_lines.append("creation_gen=%d" % int(rec.get("creation_gen", 0)))
 	elif native_type_key == "acquisition_session":
 		row_id = "acquisition_session/%d" % native_id
 		row_label = "acquisition_session/%d" % native_id
@@ -4328,8 +4321,6 @@ func _visual_object_class_for_native_type(native_type_key: String) -> String:
 			return "stream"
 		"rig":
 			return "rig"
-		"frameproducer":
-			return "native_object"
 		_:
 			return "native_object"
 
@@ -5183,7 +5174,7 @@ func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
 		return "acquisition_session"
 	if visual == "rig":
 		return "rig"
-	if _is_native_object_entry(entry) or _is_frameproducer_entry(entry):
+	if _is_native_object_entry(entry):
 		return "native_object"
 	return "generic"
 
@@ -5470,14 +5461,6 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 		return "core"
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
 		return "core"
-	if _is_frameproducer_entry(entry):
-		match counter.name:
-			"buffers":
-				return "summary"
-			"bytes":
-				return "detail"
-			_:
-				return "summary"
 	if _is_native_object_entry(entry):
 		match counter.name:
 			"buffers":
@@ -5496,11 +5479,6 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 		_:
 			return "summary"
 
-
-func _is_frameproducer_entry(entry: StatusEntryModel) -> bool:
-	if entry == null:
-		return false
-	return entry.id.begins_with("frameproducer/") or entry.id.contains("/frameproducer/")
 
 
 func _is_native_object_entry(entry: StatusEntryModel) -> bool:
@@ -5521,7 +5499,6 @@ func _entry_kind(entry: StatusEntryModel) -> String:
 			return "contract_gap"
 	if (
 		entry.id.begins_with("native_object/")
-		or entry.id.begins_with("frameproducer/")
 		or entry.id.contains("orphaned_native_objects")
 		or _has_badge_label(entry, "detached")
 		or _has_badge_label(entry, "orphaned")
@@ -5546,7 +5523,7 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			4:
 				return "stream"
 			5:
-				return "frameproducer"
+				return ""
 			_:
 				return ""
 	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
@@ -5560,8 +5537,6 @@ func _native_object_type_key(rec: Dictionary) -> String:
 				return "acquisition_session"
 			"stream":
 				return "stream"
-			"frameproducer", "frame_producer", "frame producer":
-				return "frameproducer"
 			_:
 				return ""
 	return ""

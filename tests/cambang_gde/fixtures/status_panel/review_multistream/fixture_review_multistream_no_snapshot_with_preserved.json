@@ -146,7 +146,7 @@
       },
       {
         "native_id": 1201,
-        "type": "frameproducer",
+        "type": "stream",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1101,
         "phase": "LIVE",
@@ -162,7 +162,7 @@
       },
       {
         "native_id": 1202,
-        "type": "frameproducer",
+        "type": "stream",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1102,
         "phase": "DESTROYED",
@@ -221,8 +221,8 @@
       "retained_presentation/prior_authoritative/subtree/0/gen_55/device/1001",
       "retained_presentation/prior_authoritative/subtree/0/gen_55/stream/1101",
       "retained_presentation/prior_authoritative/subtree/0/gen_55/stream/1102",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/frameproducer/1201",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/frameproducer/1202",
+      "retained_presentation/prior_authoritative/subtree/0/gen_55/native_object/1201",
+      "retained_presentation/prior_authoritative/subtree/0/gen_55/native_object/1202",
       "retained_presentation/prior_authoritative/subtree/0/gen_55/acquisition_session/1001"
     ],
     "required_badges_by_row": {

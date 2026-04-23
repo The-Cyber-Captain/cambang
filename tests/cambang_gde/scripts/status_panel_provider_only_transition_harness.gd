@@ -77,7 +77,7 @@ func _initialize() -> void:
 	_assert_rows(
 		panel.get("_last_panel_model"),
 		["server/main", "server/main/provider_pending"],
-		["provider/500", "device/1", "stream/1", "frameproducer/103"]
+		["provider/500", "device/1", "stream/1", "native_object/103"]
 	)
 
 	await _refresh_panel_with_snapshot(panel, server, _provider_only_snapshot(10, 500))
@@ -96,13 +96,13 @@ func _initialize() -> void:
 	_assert_rows(
 		panel.get("_last_panel_model"),
 		["server/main", "provider/500"],
-		["server/main/provider_pending", "device/1", "stream/1", "frameproducer/103"]
+		["server/main/provider_pending", "device/1", "stream/1", "native_object/103"]
 	)
 
 	await _refresh_panel_with_snapshot(panel, server, _realized_snapshot(10, 500))
 	_assert_rows(
 		panel.get("_last_panel_model"),
-		["server/main", "provider/500", "device/1", "acquisition_session/1", "stream/1", "frameproducer/103"],
+		["server/main", "provider/500", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
 		["server/main/provider_pending"]
 	)
 	if _retained_generation_list(panel) != []:
@@ -115,7 +115,7 @@ func _initialize() -> void:
 		return
 	_assert_rows(
 		panel.get("_last_panel_model"),
-		["server/main", "provider/600", "device/1", "acquisition_session/1", "stream/1", "frameproducer/103"],
+		["server/main", "provider/600", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
 		["server/main/provider_pending"]
 	)
 	if _retained_history_contains_provider_pending(panel):
@@ -302,7 +302,7 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 			},
 			{
 				"native_id": 103,
-				"type": "frameproducer",
+				"type": "stream",
 				"owner_device_instance_id": 1,
 				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,

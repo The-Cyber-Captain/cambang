@@ -524,8 +524,7 @@
         "provider",
         "device",
         "acquisition_session",
-        "stream",
-        "frameproducer"
+        "stream"
       ],
       "description": "Canonical native object type tokens."
     },
