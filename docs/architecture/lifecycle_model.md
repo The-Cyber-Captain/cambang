@@ -131,6 +131,16 @@ This includes resource-bearing native objects or leases such as:
 A native object may therefore be truthfully reported without becoming a new
 first-class structural category in the CamBANG viewing hierarchy.
 
+Resource-bearing native truth beyond the structural hierarchy is grouped by
+calling context rather than by `FrameProducer`:
+
+- stream-originated resource-bearing truth beneath `Stream`
+- capture-originated resource-bearing truth beneath `AcquisitionSession`
+
+This preserves the distinction between structural seams, production-seam
+truth, and additional provider-owned resource/buffer truth whose lifetime
+matters independently.
+
 ------------------------------------------------------------------------
 
 ## 5. Lifecycle phases

@@ -542,6 +542,31 @@ CamBANGStreamState {
 **Invariant (v1):** - At most one stream per `device_instance_id` may be
 `phase=LIVE` and `mode != STOPPED`.
 
+### Context placement for resource-bearing native truth
+
+CamBANG distinguishes structural context from additional provider-owned
+resource-bearing native truth.
+
+Boundary direction remains:
+
+- Device remains the hardware/resource posture boundary.
+- Stream remains the repeating-flow boundary.
+- AcquisitionSession remains the acquisition-session truth boundary.
+
+For additional provider-owned native resources whose lifetime matters beyond
+ordinary parent destruction:
+
+- **stream-originated** resource-bearing native truth is interpreted beneath
+  the owning `Stream` context
+- **capture-originated** resource-bearing native truth is interpreted beneath
+  the owning `AcquisitionSession` context
+
+This rule applies whether or not a `FrameProducer` row is present.
+
+The snapshot does not require a public-object analogue for such native truth.
+Native placement and interpretation are based on provider-owned runtime truth,
+not on 1:1 parity with public Godot-facing objects.
+
 ### 6.5 `NativeObjectRecord`
 
 Native/core objects created by the provider on behalf of CamBANG
@@ -579,6 +604,11 @@ Ownership interpretation note:
 - `FrameProducer` ownership may be represented as either:
   - `owner_stream_id != 0`, or
   - `owner_acquisition_session_id != 0` with `owner_stream_id = 0`.
+- For resource-bearing native truth associated with repeating flow,
+  `owner_stream_id != 0` is the primary placement signal.
+- For capture-originated resource-bearing native truth with no repeating-stream
+  context, `owner_acquisition_session_id != 0` is the primary placement signal.
+- `FrameProducer` presence is not required for either placement rule.
 - Native-object truth is not constrained to 1:1 public-object parity.
 - Additional provider-owned native resources may also surface through
   `native_objects` when their lifetimes matter for ownership diagnostics,

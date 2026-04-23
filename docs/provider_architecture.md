@@ -397,6 +397,32 @@ Placement and projection of such resource-bearing native truth is defined
 separately from the decision to retain or remove `FrameProducer` as a
 first-class structural noun.
 
+
+### Context placement of resource-bearing native truth
+
+Provider-owned resource-bearing native truth is grouped by the context that
+called it into being.
+
+Placement rules:
+
+- **stream-originated** resource-bearing native truth belongs beneath the
+  owning `Stream` context
+- **capture-originated** resource-bearing native truth belongs beneath the
+  owning `AcquisitionSession` context
+
+This rule applies to provider-owned native resources or leases whose
+lifetime/release significance is not safely subsumed by parent destruction
+alone, including cases such as retained samples, acquired images, mapped
+buffers, attached GPU/native backings, shared-buffer references, and similar
+resource-bearing native truth.
+
+This placement rule does not require a public `CamBANGStream` to exist for
+capture-originated truth, and it does not depend on whether `FrameProducer`
+is ultimately retained or removed as a first-class structural noun.
+
+`FrameProducer`, if realized, remains separate from this placement rule.
+It is not the parent category for resource-bearing native truth.
+
 Native `Stream` / `FrameProducer` truth does not automatically imply a
 matching public Godot-facing object. Providers may truthfully use
 stream-like native resources to service device-level still capture

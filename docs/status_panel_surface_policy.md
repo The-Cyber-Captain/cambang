@@ -117,6 +117,22 @@ Visible anomaly vocabulary should remain compact:
 
 More specific causal distinctions may remain internal or detail-only.
 
+### Context placement for resource-bearing native truth
+
+When snapshot truth includes additional provider-owned resource-bearing native
+rows, the panel should group them by the context that called them into being.
+
+Preferred placement:
+
+- beneath the owning `Stream` context for stream-originated resource truth
+- beneath the owning `AcquisitionSession` context for capture-originated
+  resource truth
+
+This grouping does not depend on `FrameProducer`.
+If normal live-parent placement is unavailable, the panel may fall back to
+orphaned placement and, where appropriate, preserve a compact
+boundary-breach indication.
+
 ## 4) Optional field handling
 
 - If a field is present in snapshot truth, it must satisfy its tier obligation.
