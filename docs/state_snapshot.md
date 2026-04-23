@@ -593,7 +593,7 @@ producer row.
 ``` text
 NativeObjectRecord {
   native_id: uint64
-  type: provider | device | acquisition_session | stream | frameproducer  // frameproducer is legacy-compatible, not canonical in this tranche
+  type: provider | device | acquisition_session | stream | support_resource
 
   phase: phase
 

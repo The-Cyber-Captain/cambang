@@ -118,6 +118,10 @@ static inline godot::String native_object_type_token(uint32_t raw_type) {
       return "acquisition_session";
     case NativeObjectType::Stream:
       return "stream";
+    case NativeObjectType::FrameBufferLease:
+      return "frame_buffer_lease";
+    case NativeObjectType::GpuBacking:
+      return "gpu_backing";
     default:
       godot::UtilityFunctions::push_warning(
           "CamBANG export_snapshot_to_godot: unknown native object type; emitting unknown");

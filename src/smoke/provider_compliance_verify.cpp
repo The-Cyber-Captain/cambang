@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "imaging/broker/provider_broker.h"
@@ -74,6 +75,8 @@ struct EventRec {
 struct RecorderCallbacks final : IProviderCallbacks {
   uint64_t next_native_id = 1;
   std::vector<EventRec> events;
+  std::unordered_map<uint64_t, uint32_t> native_type_by_id;
+  std::unordered_map<uint64_t, uint64_t> native_owner_stream_by_id;
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
@@ -111,10 +114,21 @@ struct RecorderCallbacks final : IProviderCallbacks {
     ev.type = info.type;
     ev.owner_acquisition_session_id = info.owner_acquisition_session_id;
     ev.owner_stream_id = info.owner_stream_id;
+    native_type_by_id[info.native_id] = info.type;
+    native_owner_stream_by_id[info.native_id] = info.owner_stream_id;
     events.push_back(ev);
   }
   void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override {
-    events.push_back({"native_destroyed", info.native_id});
+    EventRec ev{"native_destroyed", info.native_id};
+    auto type_it = native_type_by_id.find(info.native_id);
+    if (type_it != native_type_by_id.end()) {
+      ev.type = type_it->second;
+    }
+    auto owner_stream_it = native_owner_stream_by_id.find(info.native_id);
+    if (owner_stream_it != native_owner_stream_by_id.end()) {
+      ev.owner_stream_id = owner_stream_it->second;
+    }
+    events.push_back(ev);
   }
 };
 
@@ -171,6 +185,19 @@ int count_events_by_tag_and_type(const std::vector<EventRec>& events, const char
   int count = 0;
   for (const auto& e : events) {
     if (e.tag == tag && e.type == type) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+int count_events_by_tag_type_and_owner_stream(const std::vector<EventRec>& events,
+                                              const char* tag,
+                                              uint32_t type,
+                                              uint64_t owner_stream_id) {
+  int count = 0;
+  for (const auto& e : events) {
+    if (e.tag == tag && e.type == type && e.owner_stream_id == owner_stream_id) {
       ++count;
     }
   }
@@ -1223,10 +1250,38 @@ bool run_synthetic_provider_direct_sanity_check() {
   const int acquisition_session_native_id =
       find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
   const int device_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Device), 0);
+  const int gpu_backing_created = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_created",
+      static_cast<uint32_t>(NativeObjectType::GpuBacking),
+      req.stream_id);
+  const int gpu_backing_destroyed = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_destroyed",
+      static_cast<uint32_t>(NativeObjectType::GpuBacking),
+      req.stream_id);
+  const int frame_buffer_lease_created = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_created",
+      static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
+      req.stream_id);
+  const int frame_buffer_lease_destroyed = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_destroyed",
+      static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
+      req.stream_id);
 
   if (stopped < 0 || destroyed < 0 || closed < 0 ||
       stream_native_id < 0 || acquisition_session_native_id < 0 || device_native_id < 0) {
     std::cerr << "FAIL synthetic direct sanity missing callback/native evidence\n";
+    return false;
+  }
+  if (gpu_backing_created <= 0 || gpu_backing_destroyed <= 0) {
+    std::cerr << "FAIL synthetic direct sanity missing gpu backing native support lifecycle\n";
+    return false;
+  }
+  if (frame_buffer_lease_created <= 0 || frame_buffer_lease_destroyed <= 0) {
+    std::cerr << "FAIL synthetic direct sanity missing frame buffer lease native support lifecycle\n";
     return false;
   }
 
