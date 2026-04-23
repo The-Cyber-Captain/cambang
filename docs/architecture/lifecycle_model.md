@@ -23,9 +23,7 @@ viewing/modeling structure:
 Provider
  └─ Device
      └─ AcquisitionSession
-         ├─ Stream
-         │   └─ FrameProducer (optional)
-         └─ FrameProducer (optional)
+         └─ Stream
 ```
 
 Meaning of each level:
@@ -36,7 +34,6 @@ Meaning of each level:
 | Device | Provider owns an opened camera device-handle lineage |
 | AcquisitionSession | Provider-reported acquisition seam for that device lineage |
 | Stream | Provider owns a configured repeating capture pipeline when such a pipeline exists |
-| FrameProducer | Optional provider-reported frame-production seam beneath a `Stream` or directly beneath an `AcquisitionSession` |
 
 Important clarifications:
 
@@ -79,28 +76,17 @@ Implementation-scope reminder:
 
 ------------------------------------------------------------------------
 
-## 3. Why `FrameProducer` exists
+## 3. Production interpretation without a producer row
 
-`FrameProducer` is an optional provider-reported frame-production seam.
+Production is not a first-class structural noun in the canonical CamBANG
+model for this tranche.
 
-It is used when the provider truthfully realizes a lifecycle-significant
-production boundary responsible for emitting frames.
+CamBANG keeps a smaller structural hierarchy: `Provider`, `Device`,
+`AcquisitionSession`, and `Stream`.
 
-A `FrameProducer` may be owned by:
-
-- a `Stream`, for repeating-flow production, or
-- an `AcquisitionSession`, for still-capture production
-
-`FrameProducer` must not be fabricated merely because a frame was observed.
-
-`FrameProducer` must also not be suppressed when the provider has actually
-realized such a production seam.
-
-This preserves the distinction between:
-
-- **stream/session structure**
-- **production seam truth**
-- **individual frame/sample delivery**
+Production is interpreted through structural context, payload delivery truth,
+and provider-owned native support entities. This avoids using a separate
+producer row as a catch-all for production or payload-support truth.
 
 ------------------------------------------------------------------------
 
@@ -130,6 +116,16 @@ This includes resource-bearing native objects or leases such as:
 
 A native object may therefore be truthfully reported without becoming a new
 first-class structural category in the CamBANG viewing hierarchy.
+
+Resource-bearing native truth beyond the structural hierarchy is grouped by
+calling context rather than by a separate producer row:
+
+- stream-originated resource-bearing truth beneath `Stream`
+- capture-originated resource-bearing truth beneath `AcquisitionSession`
+
+This preserves the distinction between structural seams, production-seam
+truth, and additional provider-owned resource/buffer truth whose lifetime
+matters independently.
 
 ------------------------------------------------------------------------
 
@@ -225,7 +221,7 @@ Provider facts fall into four broad classes:
 | Event class | Examples | Delivery policy |
 |---|---|---|
 | Lifecycle | device add/remove, stream start/stop, acquisition-session create/destroy | must never be dropped |
-| Native-object | provider/device/acquisition-session/stream/frame-producer create/destroy | must never be dropped |
+| Native-object | provider/device/acquisition-session/stream/native-support create/destroy | must never be dropped |
 | Error | provider, device, stream, or session errors | must never be dropped |
 | Frame | repeating frame delivery, capture frame delivery | may be coalesced or dropped |
 
@@ -254,7 +250,7 @@ DESTROYED
 
 Ordering rule:
 
-- Provider destruction must occur **after** owned device/session/stream/producer
+- Provider destruction must occur **after** owned device/session/stream/support
   resources are actually released.
 
 ------------------------------------------------------------------------
@@ -333,8 +329,9 @@ A `Stream` represents an owned repeating capture pipeline.
 
 Important distinction:
 
-- stream existence does **not** imply active frame production
-- frame production is controlled by the `FrameProducer` state axis
+- stream existence does **not** by itself imply ongoing payload delivery
+- payload delivery and provider-owned native support truth are interpreted
+  separately from stream structural existence
 
 Core also preserves the invariant:
 
@@ -345,37 +342,17 @@ Multiple stream records may exist, but only one may be active
 
 ------------------------------------------------------------------------
 
-## 14. FrameProducer lifecycle
+## 14. Production and support truth interpretation
 
-```text
-IDLE ── enable ──> PRODUCING
-  ^                  │
-  └──── disable ─────┘
-```
+Production truth is interpreted from context and payload delivery, not from a
+separate structural producer row.
 
-`FrameProducer` is the optional, truthfully reported frame-production seam that
-is actively responsible for frame emission when the provider concretely realizes
-such a seam.
+Provider-owned native support entities may appear beneath `Stream` for
+stream-originated truth and beneath `AcquisitionSession` for
+capture-originated truth.
 
-Ownership shapes:
-
-- **stream-owned** — repeating-flow production
-- **acquisition-session-owned** — still-capture production when the provider
-  concretely realizes such a production seam there
-
-Examples:
-
-| Platform / provider | FrameProducer meaning |
-|---|---|
-| Camera2 | concretely realized frame-production seam such as repeating request production |
-| Media Foundation | concretely realized sample-production seam |
-| V4L2 | concretely realized production seam such as `STREAMON` / dequeue |
-| Synthetic | concretely realized provider-owned pattern-generation seam |
-| Stub | concretely realized deterministic production seam |
-
-Per-frame sample delivery is **not** itself modeled as a `FrameProducer`
-lifecycle. `FrameProducer` represents the production seam, not the existence of
-individual delivered frames.
+These support entities remain distinct from the structural spine and remain
+essential for truthful lifetime/release diagnostics.
 
 ------------------------------------------------------------------------
 
@@ -387,7 +364,7 @@ Examples:
 
 - a `Stream` may be `LIVE` as a lifecycle/native-object record while operationally
   stopped
-- a `FrameProducer` may exist but be operationally `IDLE`
+- payload delivery may be idle while structural rows remain LIVE
 - an `AcquisitionSession` may be `LIVE` while not currently producing frames
 
 Lifecycle phase answers:
@@ -415,8 +392,6 @@ Examples:
 | stream destroyed | pipeline released |
 | acquisition session created | acquisition seam realized |
 | acquisition session destroyed | acquisition seam released |
-| frameproducer created | production seam actually enabled / realized |
-| frameproducer destroyed | production seam actually disabled / released |
 
 Providers must **not** fabricate lifecycle events merely to tidy state.
 
@@ -478,13 +453,13 @@ Example failure scenario:
 
 ```text
 Stream destroyed
-FrameProducer not destroyed
+Native support entity not destroyed
 ```
 
 Result:
 
 ```text
-FrameProducer (detached root)
+Native support entity (detached root)
 ```
 
 Detached roots are intentional and diagnostically useful. They help reveal:
@@ -501,9 +476,9 @@ They are therefore a feature of truthfulness, not an error in the registry.
 
 ## 19. Still capture and public-object parity
 
-Providers may truthfully realize native `Stream` and/or `FrameProducer`
-objects while servicing a device-level still capture request when that is how
-the backend actually works.
+Providers may truthfully realize native `Stream` and additional provider-owned
+native support entities while servicing a device-level still capture request
+when that is how the backend actually works.
 
 This does **not** require creation of a corresponding user-addressable
 `CamBANGStream`.
@@ -559,8 +534,10 @@ Lifecycle refactors must therefore preserve:
 
 - lifecycle/native-object truth is provider-reported and must be truthful
 - canonical structural nouns define the preferred viewing structure, not the full limit of native truth
-- `FrameProducer` is an optional production seam, not a synonym for frame delivery itself
-- `FrameProducer` may be stream-owned or acquisition-session-owned
+- production is interpreted through context and payload delivery rather than a
+  separate producer structural noun
+- provider-owned native support truth is grouped by stream-originated vs
+  capture-originated context
 - frame/sample delivery is conceptually distinct from structural/native-object hierarchy
 - platform-backed providers must adapt to this model rather than redefining it
 - detached roots are expected and diagnostically useful

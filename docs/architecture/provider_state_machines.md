@@ -15,8 +15,8 @@ Canonical lifecycle phase values remain:
 - `TEARING_DOWN`
 - `DESTROYED`
 
-Operational states such as `BOUND`, `OPEN`, or `PRODUCING` are separate axes
-that describe resource-specific runtime conditions.
+Operational states such as `BOUND`, `OPEN`, or payload-active are separate
+axes that describe resource-specific runtime conditions.
 
 ------------------------------------------------------------------------
 
@@ -64,7 +64,7 @@ DESTROYED
 Rules:
 
 - Provider lifecycle events must be reported truthfully.
-- Provider destruction must occur **after all owned device/session/stream/producer
+- Provider destruction must occur **after all owned device/session/stream/support
   resources are released**.
 - Providers must not emit fabricated destroy events to tidy state.
 
@@ -141,50 +141,20 @@ DESTROYED
 Important distinction:
 
 - stream existence does **not** imply active frame production
-- frame production is controlled by the **FrameProducer** state axis
+- stream existence does not by itself imply ongoing payload delivery
+- payload delivery and provider-owned native support truth are interpreted
+  separately from stream structural existence
 
 ------------------------------------------------------------------------
 
-## 6. FrameProducer state machine
+## 6. Payload delivery and native support interpretation
 
-FrameProducer describes an optional **provider-reported frame-production seam**.
+CamBANG no longer treats FrameProducer as a canonical state-machine axis in
+this tranche.
 
-It is used when the provider truthfully realizes a lifecycle-significant
-production boundary responsible for emitting frames.
-
-A `FrameProducer` may be owned by:
-
-- a `Stream`, for repeating-flow production, or
-- an `AcquisitionSession`, for still-capture production
-
-State axis:
-
-```text
-IDLE ── enable ──> PRODUCING
-  ▲                   │
-  └──── disable ──────┘
-```
-
-Rules:
-
-- `FrameProducer` must not be fabricated merely because a frame was observed.
-- `FrameProducer` must not be suppressed when such a seam is actually realized.
-- `FrameProducer` state transitions may occur many times within a single
-  `Stream` or `AcquisitionSession` lifetime, depending on how the provider
-  realizes production.
-
-Examples:
-
-| Platform / provider | Meaning |
-|---|---|
-| Media Foundation | concretely realized sample-production seam |
-| Camera2 | concretely realized frame-production seam such as repeating request production |
-| V4L2 | concretely realized production seam such as `STREAMON` / dequeue |
-| Synthetic | concretely realized provider-owned pattern-generation seam |
-| Stub | concretely realized deterministic production seam |
-
-These examples describe the **production seam**, not a generic algorithm call or
-the mere existence of delivered frames.
+Payload delivery is interpreted from delivery truth, while provider-owned native
+support entities are interpreted from ownership/context truth beneath
+`Stream` (stream-originated) or `AcquisitionSession` (capture-originated).
 
 ------------------------------------------------------------------------
 
@@ -195,7 +165,7 @@ Provider facts fall into four broad classes:
 | Event class | Example | Delivery policy |
 |---|---|---|
 | Lifecycle | device add/remove, acquisition-session create/destroy, stream start/stop | must never be dropped |
-| Native-object | provider/device/acquisition-session/stream/frame-producer create/destroy reports | must never be dropped |
+| Native-object | provider/device/acquisition-session/stream/native-support create/destroy reports | must never be dropped |
 | Error | provider, device, or stream error reports | must never be dropped |
 | Frame | video frame delivery / capture frame delivery | may be coalesced or dropped under backpressure |
 
@@ -235,7 +205,7 @@ Rules:
 |---|---|
 | Lifecycle phase | registry/native-object truth (`CREATED` → `DESTROYED`) |
 | Operational state | provider/device/acquisition-session/stream runtime posture |
-| FrameProducer state | production-seam enablement (`IDLE` / `PRODUCING`) |
+| Context placement / support interpretation | stream-originated vs capture-originated native support truth |
 
 These axes must not be collapsed into a single state machine.
 
@@ -310,23 +280,22 @@ Meaning:
 - `ABSENT` — no stream exists
 - `PRESENT` — stream object exists but may not yet be producing
 
-### 10.5 Frame Production State
+### 10.5 Payload delivery interpretation
 
 ```text
 IDLE
-PRODUCING
+DELIVERING
 ```
 
 Meaning:
 
-- `IDLE` — a truthfully realized `FrameProducer` exists but is not currently emitting frames
-- `PRODUCING` — a truthfully realized `FrameProducer` is actively emitting frames
+- `IDLE` — no current payload delivery is being observed
+- `DELIVERING` — payload delivery is being observed
 
-Ownership note:
+Context placement note:
 
-- repeating-flow `FrameProducer` is typically stream-owned
-- still-capture `FrameProducer`, when concretely realized, may be
-  acquisition-session-owned
+- stream-originated native support truth is interpreted beneath `Stream`
+- capture-originated native support truth is interpreted beneath `AcquisitionSession`
 
 ------------------------------------------------------------------------
 
