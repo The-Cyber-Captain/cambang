@@ -84,11 +84,13 @@ private:
   CBProviderStrand strand_;
   struct DeviceState {
     std::string hardware_id;
+    uint64_t device_instance_id = 0;
     uint64_t root_id = 0;
     bool open = false;
     // Core enforces 1 repeating stream per device instance; we track the current one (0 if none).
     uint64_t stream_id = 0;
     uint64_t native_id = 0;
+    uint64_t acquisition_session_native_id = 0;
     PictureConfig capture_picture{};
   };
 
@@ -98,7 +100,7 @@ private:
     bool started = false;
     uint64_t frame_index = 0;
     uint64_t native_id = 0;
-    uint64_t frame_producer_native_id = 0;
+    uint64_t acquisition_session_native_id = 0;
 
     // virtual_time scheduling (ns)
     uint64_t period_ns = 0;
@@ -143,8 +145,10 @@ static constexpr const char* kStubHardwareId = "stub0";
   bool is_known_hardware_id(const std::string& hardware_id) const;
 
   uint64_t alloc_native_id_(NativeObjectType type) const;
-  void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_stream_id, uint64_t owner_provider_native_id, uint64_t owner_rig_id);
+  void emit_native_created_(uint64_t native_id, NativeObjectType type, uint64_t root_id, uint64_t owner_device_id, uint64_t owner_acquisition_session_id, uint64_t owner_stream_id, uint64_t owner_provider_native_id, uint64_t owner_rig_id);
   void emit_native_destroyed_(uint64_t native_id);
+  uint64_t ensure_native_acquisition_session_(DeviceState& dev);
+  void release_native_acquisition_session_(DeviceState& dev);
 
   uint64_t provider_native_id_ = 0;
 };

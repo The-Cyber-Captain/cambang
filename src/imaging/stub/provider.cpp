@@ -55,6 +55,7 @@ void StubProvider::emit_native_created_(
     NativeObjectType type,
     uint64_t root_id,
     uint64_t owner_device_id,
+    uint64_t owner_acquisition_session_id,
     uint64_t owner_stream_id,
     uint64_t owner_provider_native_id,
     uint64_t owner_rig_id) {
@@ -66,6 +67,7 @@ void StubProvider::emit_native_created_(
   info.type = static_cast<uint32_t>(type);
   info.root_id = root_id;
   info.owner_device_instance_id = owner_device_id;
+  info.owner_acquisition_session_id = owner_acquisition_session_id;
   info.owner_stream_id = owner_stream_id;
   info.owner_provider_native_id = owner_provider_native_id;
   info.owner_rig_id = owner_rig_id;
@@ -83,6 +85,33 @@ void StubProvider::emit_native_destroyed_(uint64_t native_id) {
   info.has_destroyed_ns = true;
   info.destroyed_ns = 0;
   strand_.post_native_object_destroyed(info);
+}
+
+uint64_t StubProvider::ensure_native_acquisition_session_(DeviceState& dev) {
+  if (dev.acquisition_session_native_id != 0) {
+    return dev.acquisition_session_native_id;
+  }
+  dev.acquisition_session_native_id = alloc_native_id_(NativeObjectType::AcquisitionSession);
+  if (dev.acquisition_session_native_id == 0) {
+    return 0;
+  }
+  emit_native_created_(dev.acquisition_session_native_id,
+                       NativeObjectType::AcquisitionSession,
+                       dev.root_id,
+                       dev.device_instance_id,
+                       0,
+                       0,
+                       provider_native_id_,
+                       0);
+  return dev.acquisition_session_native_id;
+}
+
+void StubProvider::release_native_acquisition_session_(DeviceState& dev) {
+  if (dev.acquisition_session_native_id == 0) {
+    return;
+  }
+  emit_native_destroyed_(dev.acquisition_session_native_id);
+  dev.acquisition_session_native_id = 0;
 }
 
 void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
@@ -105,7 +134,7 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   callbacks_ = callbacks;
   strand_.start(callbacks_, "stub_provider");
   provider_native_id_ = alloc_native_id_(NativeObjectType::Provider);
-  emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0, 0, 0);
+  emit_native_created_(provider_native_id_, NativeObjectType::Provider, 0, 0, 0, 0, 0, 0);
   initialized_ = true;
   shutting_down_ = false;
   now_ns_ = 1;
@@ -143,13 +172,14 @@ ProviderResult StubProvider::open_device(
   }
 
   dev.hardware_id = hardware_id;
+  dev.device_instance_id = device_instance_id;
   dev.root_id = root_id;
   dev.open = true;
   dev.stream_id = 0;
   dev.native_id = alloc_native_id_(NativeObjectType::Device);
   dev.capture_picture = capture_template().picture;
 
-  emit_native_created_(dev.native_id, NativeObjectType::Device, root_id, device_instance_id, 0, provider_native_id_, 0);
+  emit_native_created_(dev.native_id, NativeObjectType::Device, root_id, device_instance_id, 0, 0, provider_native_id_, 0);
   strand_.post_device_opened(device_instance_id);
   return ProviderResult::success();
 }
@@ -170,6 +200,7 @@ ProviderResult StubProvider::close_device(uint64_t device_instance_id) {
   }
 
   it->second.open = false;
+  release_native_acquisition_session_(it->second);
   const uint64_t native_id = it->second.native_id;
   strand_.post_device_closed(device_instance_id);
   emit_native_destroyed_(native_id);
@@ -205,13 +236,13 @@ ProviderResult StubProvider::create_stream(const StreamRequest& req) {
   st.started = false;
   st.frame_index = 0;
   st.native_id = alloc_native_id_(NativeObjectType::Stream);
-  st.frame_producer_native_id = 0;
+  st.acquisition_session_native_id = ensure_native_acquisition_session_(dev_it->second);
   st.pool.clear();
   st.pool_cursor = 0;
 
   dev_it->second.stream_id = req.stream_id;
 
-  emit_native_created_(st.native_id, NativeObjectType::Stream, dev_it->second.root_id, req.device_instance_id, req.stream_id, provider_native_id_, 0);
+  emit_native_created_(st.native_id, NativeObjectType::Stream, dev_it->second.root_id, req.device_instance_id, st.acquisition_session_native_id, req.stream_id, provider_native_id_, 0);
   strand_.post_stream_created(req.stream_id);
   return ProviderResult::success();
 }
@@ -233,10 +264,6 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   if (st_it->second.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  if (st_it->second.frame_producer_native_id != 0) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-  }
-
   // Clear device link.
   const uint64_t dev_id = st_it->second.req.device_instance_id;
   auto dev_it = devices_.find(dev_id);
@@ -248,6 +275,9 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   streams_.erase(st_it);
   strand_.post_stream_destroyed(stream_id);
   emit_native_destroyed_(native_id);
+  if (dev_it != devices_.end()) {
+    release_native_acquisition_session_(dev_it->second);
+  }
   return ProviderResult::success();
 }
 
@@ -301,20 +331,6 @@ ProviderResult StubProvider::start_stream(
   }
 
   st.started = true;
-  uint64_t root_id = 0;
-  auto dev_it = devices_.find(st.req.device_instance_id);
-  if (dev_it != devices_.end()) {
-    root_id = dev_it->second.root_id;
-  }
-  st.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
-  emit_native_created_(
-      st.frame_producer_native_id,
-      NativeObjectType::FrameProducer,
-      root_id,
-      st.req.device_instance_id,
-      stream_id,
-      provider_native_id_,
-      0);
   strand_.post_stream_started(stream_id);
 
   uint32_t fps = profile.target_fps_max;
@@ -493,8 +509,6 @@ ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
 
   st_it->second.started = false;
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
-  emit_native_destroyed_(st_it->second.frame_producer_native_id);
-  st_it->second.frame_producer_native_id = 0;
   return ProviderResult::success();
 }
 
@@ -591,8 +605,6 @@ ProviderResult StubProvider::shutdown() {
     if (st.started) {
       st.started = false;
       strand_.post_stream_stopped(stream_id, ProviderError::OK);
-      emit_native_destroyed_(st.frame_producer_native_id);
-      st.frame_producer_native_id = 0;
     }
   }
 
@@ -610,6 +622,9 @@ ProviderResult StubProvider::shutdown() {
     it = streams_.erase(it);
     strand_.post_stream_destroyed(stream_id);
     emit_native_destroyed_(native_id);
+    if (dev_it != devices_.end()) {
+      release_native_acquisition_session_(dev_it->second);
+    }
   }
 
   // Close all devices.

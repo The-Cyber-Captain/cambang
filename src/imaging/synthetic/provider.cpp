@@ -791,24 +791,6 @@ ProviderResult SyntheticProvider::start_stream(
 
   s.started = true;
   s.producing = true;
-  s.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
-  // Report FrameProducer native object (PRODUCING) for introspection.
-  if (callbacks_) {
-    NativeObjectCreateInfo info{};
-    // root_id is device lineage root_id.
-    const auto dit = devices_.find(s.req.device_instance_id);
-    info.root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
-    info.native_id = s.frame_producer_native_id;
-    info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
-    info.owner_device_instance_id = s.req.device_instance_id;
-    info.owner_acquisition_session_id = s.acquisition_session_native_id;
-    info.owner_stream_id = s.req.stream_id;
-    info.owner_provider_native_id = provider_native_id_;
-    info.owner_rig_id = 0;
-    info.has_created_ns = true;
-    info.created_ns = clock_.now_ns();
-    strand_.post_native_object_created(info);
-  }
 
   // First capture timestamp is scheduled (not wall-clock).
   s.next_due_ns = clock_.now_ns() + cfg_.nominal.start_stream_warmup_ns;
@@ -835,9 +817,7 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   s.started = false;
   if (s.producing) {
     // Production has stopped immediately in this provider.
-    emit_native_destroy_(s.frame_producer_native_id);
     s.producing = false;
-    s.frame_producer_native_id = 0;
   }
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
   release_stream_live_gpu_backing_(s);
@@ -964,31 +944,9 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  uint64_t still_frame_producer_native_id = 0;
-  if (callbacks_) {
-    still_frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
-    if (still_frame_producer_native_id != 0) {
-      NativeObjectCreateInfo info{};
-      info.native_id = still_frame_producer_native_id;
-      info.type = static_cast<uint32_t>(NativeObjectType::FrameProducer);
-      info.root_id = dev_it->second.root_id;
-      info.owner_device_instance_id = req.device_instance_id;
-      info.owner_acquisition_session_id = dev_it->second.acquisition_session_native_id;
-      info.owner_stream_id = 0;
-      info.owner_provider_native_id = provider_native_id_;
-      info.owner_rig_id = 0;
-      info.has_created_ns = true;
-      info.created_ns = clock_.now_ns();
-      strand_.post_native_object_created(info);
-    }
-  }
-
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
   strand_.post_frame(fv);
   strand_.post_capture_completed(req.capture_id, req.device_instance_id);
-  if (still_frame_producer_native_id != 0) {
-    emit_native_destroy_(still_frame_producer_native_id);
-  }
   release_native_acquisition_session_for_capture_(req.device_instance_id);
   return ProviderResult::success();
 }
@@ -1031,9 +989,7 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   const uint64_t stream_id = s.req.stream_id;
   const uint64_t device_instance_id = s.req.device_instance_id;
   if (s.producing) {
-    emit_native_destroy_(s.frame_producer_native_id);
     s.producing = false;
-    s.frame_producer_native_id = 0;
   }
   if (emit_stop_event && had_started) {
     strand_.post_stream_stopped(stream_id, stop_error);
@@ -1127,9 +1083,7 @@ ProviderResult SyntheticProvider::fail_stream_for_test(uint64_t stream_id, Provi
   }
 
   if (it->second.producing) {
-    emit_native_destroy_(it->second.frame_producer_native_id);
     it->second.producing = false;
-    it->second.frame_producer_native_id = 0;
   }
   strand_.post_stream_error(stream_id, error);
   if (it->second.started) {
