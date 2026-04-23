@@ -15,7 +15,7 @@
       "acquisition_session/1001"
     ],
     "forbidden_row_ids": [
-      "frameproducer/1201"
+      "native_object/1201"
     ],
     "required_badges_by_row": {
       "server/main": [

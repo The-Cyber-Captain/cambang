@@ -525,7 +525,7 @@
         "device",
         "acquisition_session",
         "stream",
-        "frameproducer"
+        "legacy_frameproducer"
       ],
       "description": "Canonical native object type tokens."
     },

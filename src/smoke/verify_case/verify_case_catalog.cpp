@@ -84,7 +84,7 @@ const char* restart_churn_cut_point_name(RestartChurnCutPoint cut_point) {
     case RestartChurnCutPoint::DeviceNative: return "device_native";
     case RestartChurnCutPoint::AcquisitionSessionVisible: return "acquisition_session_visible";
     case RestartChurnCutPoint::StreamVisible: return "stream_visible";
-    case RestartChurnCutPoint::Complete: return "complete";
+    case RestartChurnCutPoint::StreamVisible: return "complete";
   }
   return "unknown";
 }
@@ -95,7 +95,7 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
 
   bool device_native = false;
   bool acquisition_session_visible = false;
-  bool frameproducer_visible = false;
+  bool continuity_visible = false;
   for (const auto& rec : snap.native_objects) {
     if (rec.creation_gen != current_gen) {
       continue;
@@ -110,12 +110,12 @@ RestartChurnCutPoint observed_restart_churn_stage(const CamBANGStateSnapshot& sn
     if (rec.type == static_cast<uint32_t>(NativeObjectType::FrameProducer) &&
         rec.owner_device_instance_id == VerifyCaseHarness::kDeviceId &&
         rec.owner_stream_id == VerifyCaseHarness::kStreamId) {
-      frameproducer_visible = true;
+      continuity_visible = true;
     }
   }
 
-  if (frameproducer_visible) {
-    return RestartChurnCutPoint::Complete;
+  if (continuity_visible) {
+    return RestartChurnCutPoint::StreamVisible;
   }
   if (!snap.streams.empty()) {
     return RestartChurnCutPoint::StreamVisible;
@@ -560,7 +560,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
            count_native_type(s, NativeObjectType::Device) == 1 &&
            count_native_type(s, NativeObjectType::AcquisitionSession) == 1 &&
            count_native_type(s, NativeObjectType::Stream) == 1 &&
-           count_native_type(s, NativeObjectType::FrameProducer) == 1;
+           count_native_type(s, NativeObjectType::FrameProducer) == 0;
   };
 
   if (!h.start_runtime(error)) {
@@ -723,7 +723,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .device_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .expect_frameproducer(false)
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -857,7 +857,7 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
       RestartChurnCutPoint::DeviceNative,
       RestartChurnCutPoint::AcquisitionSessionVisible,
       RestartChurnCutPoint::StreamVisible,
-      RestartChurnCutPoint::Complete,
+      RestartChurnCutPoint::StreamVisible,
   };
 
   auto require_boundary_tick = [&](const char* message) -> bool {
@@ -1050,7 +1050,7 @@ int restart_churn_realization(VerifyCaseProviderKind provider_kind,
     }
 
     if (!observe_stage_at_least(want_gen,
-                                RestartChurnCutPoint::Complete,
+                                RestartChurnCutPoint::StreamVisible,
                                 "timed out waiting for observable completion during restart churn")) {
       return 1;
     }
@@ -1079,20 +1079,20 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
     bool device_identity = false;
     bool device_native = false;
     bool stream_visible = false;
-    bool frameproducer_visible = false;
+    bool continuity_visible = false;
     bool progressed_after_churn = false;
     RestartChurnCutPoint last_stage = RestartChurnCutPoint::ProviderVisible;
   };
 
   auto settle_stage_name = [](RestartChurnCutPoint stage) {
-    if (stage == RestartChurnCutPoint::Complete) {
-      return "frameproducer_visible";
+    if (stage == RestartChurnCutPoint::StreamVisible) {
+      return "continuity_visible";
     }
     return restart_churn_cut_point_name(stage);
   };
 
   auto classify_final_status = [&](const FinalSettleState& state, uint64_t latest_timestamp_ns) {
-    if (state.frameproducer_visible) {
+    if (state.continuity_visible) {
       return "COMPLETE";
     }
     const uint64_t publish_delta = state.observed_publishes_since_provider;
@@ -1333,8 +1333,8 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
     if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::StreamVisible)) {
       settle_state.stream_visible = true;
     }
-    if (stage == RestartChurnCutPoint::Complete) {
-      settle_state.frameproducer_visible = true;
+    if (stage == RestartChurnCutPoint::StreamVisible) {
+      settle_state.continuity_visible = true;
     }
   };
 
@@ -1365,7 +1365,7 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
   }
   record_settle_snapshot();
 
-  while (!settle_state.frameproducer_visible) {
+  while (!settle_state.continuity_visible) {
     const uint64_t time_delta_ns = h.observed().raw->timestamp_ns - settle_begin_timestamp_ns;
     if (settle_state.observed_publishes_since_provider >= kSettlePublishWindow || time_delta_ns >= kSettleTimeNs) {
       break;
@@ -1393,7 +1393,7 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
   cli::line("  device_identity_appeared = ", settle_state.device_identity ? "true" : "false");
   cli::line("  device_native_appeared = ", settle_state.device_native ? "true" : "false");
   cli::line("  stream_visible_appeared = ", settle_state.stream_visible ? "true" : "false");
-  cli::line("  frameproducer_visible_appeared = ", settle_state.frameproducer_visible ? "true" : "false");
+  cli::line("  continuity_visible_appeared = ", settle_state.continuity_visible ? "true" : "false");
   if (settle_state.first_descendant_timestamp_ns != 0) {
     cli::line("  first_descendant_delta_ns = ", settle_state.first_descendant_timestamp_ns - settle_state.provider_timestamp_ns);
   } else {
@@ -1421,20 +1421,20 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
     bool device_identity = false;
     bool device_native = false;
     bool stream_visible = false;
-    bool frameproducer_visible = false;
+    bool continuity_visible = false;
     bool progressed_after_churn = false;
     RestartChurnCutPoint last_stage = RestartChurnCutPoint::ProviderVisible;
   };
 
   auto settle_stage_name = [](RestartChurnCutPoint stage) {
-    if (stage == RestartChurnCutPoint::Complete) {
-      return "frameproducer_visible";
+    if (stage == RestartChurnCutPoint::StreamVisible) {
+      return "continuity_visible";
     }
     return restart_churn_cut_point_name(stage);
   };
 
   auto classify_final_status = [&](const FinalSettleState& state, uint64_t latest_timestamp_ns) {
-    if (state.frameproducer_visible) {
+    if (state.continuity_visible) {
       return "COMPLETE";
     }
     const uint64_t publish_delta = state.publish_count_during_settle;
@@ -1680,8 +1680,8 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
     if (static_cast<int>(stage) >= static_cast<int>(RestartChurnCutPoint::StreamVisible)) {
       settle_state.stream_visible = true;
     }
-    if (stage == RestartChurnCutPoint::Complete) {
-      settle_state.frameproducer_visible = true;
+    if (stage == RestartChurnCutPoint::StreamVisible) {
+      settle_state.continuity_visible = true;
     }
   };
 
@@ -1712,7 +1712,7 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
   }
   record_settle_snapshot();
 
-  while (!settle_state.frameproducer_visible) {
+  while (!settle_state.continuity_visible) {
     const uint64_t time_delta_ns = h.observed().raw->timestamp_ns - settle_begin_timestamp_ns;
     if (settle_state.publish_count_during_settle >= settle_publish_window || time_delta_ns >= settle_time_ns) {
       break;
@@ -1741,7 +1741,7 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
   cli::line("  device_identity_appeared = ", settle_state.device_identity ? "true" : "false");
   cli::line("  device_native_appeared = ", settle_state.device_native ? "true" : "false");
   cli::line("  stream_visible_appeared = ", settle_state.stream_visible ? "true" : "false");
-  cli::line("  frameproducer_visible_appeared = ", settle_state.frameproducer_visible ? "true" : "false");
+  cli::line("  continuity_visible_appeared = ", settle_state.continuity_visible ? "true" : "false");
   if (settle_state.first_descendant_timestamp_ns != 0) {
     cli::line("  first_descendant_delta_ns = ", settle_state.first_descendant_timestamp_ns - settle_state.provider_timestamp_ns);
   } else {
@@ -1942,7 +1942,7 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -1960,7 +1960,7 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2519,13 +2519,12 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(1)
                       .expect_acquisition_session(true)
-                      .expect_frameproducer(true),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
 
   uint64_t acquisition_session_native_id = 0;
-  uint64_t frameproducer_native_id = 0;
   if (!h.observed().raw) {
     fail_step(2, "missing raw snapshot while capturing disconnect seam ids");
     return 1;
@@ -2536,18 +2535,14 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
     }
     if (rec.type == static_cast<uint32_t>(NativeObjectType::AcquisitionSession)) {
       acquisition_session_native_id = rec.native_id;
-    } else if (rec.type == static_cast<uint32_t>(NativeObjectType::FrameProducer) &&
-               rec.owner_stream_id == VerifyCaseHarness::kStreamId) {
-      frameproducer_native_id = rec.native_id;
     }
   }
-  if (acquisition_session_native_id == 0 || frameproducer_native_id == 0) {
-    fail_step(2, "missing acquisition-session/frameproducer native seam ids before disconnect");
+  if (acquisition_session_native_id == 0) {
+    fail_step(2, "missing acquisition-session native seam id before disconnect");
     return 1;
   }
 
   if (!h.inject_provider_stream_stop(VerifyCaseHarness::kStreamId, ProviderError::ERR_PROVIDER_FAILED, error) ||
-      !h.inject_provider_native_object_destroyed(frameproducer_native_id, error) ||
       !h.inject_provider_native_object_destroyed(acquisition_session_native_id, error) ||
       !h.inject_provider_stream_destroyed(VerifyCaseHarness::kStreamId, error) ||
       !h.inject_provider_device_closed(VerifyCaseHarness::kDeviceId, error)) {
@@ -2601,7 +2596,7 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2619,7 +2614,7 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2680,7 +2675,7 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(1)
                       .expect_acquisition_session(true)
-                      .expect_frameproducer(true),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2770,7 +2765,7 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2789,7 +2784,7 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2834,7 +2829,7 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
                       .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      .expect_frameproducer(provider_kind == VerifyCaseProviderKind::Synthetic),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2925,7 +2920,7 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
                       .stream_count(2)
                       .acquisition_session_count(2)
                       .expect_acquisition_session(true)
-                      .expect_frameproducer(true),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }
@@ -2945,7 +2940,7 @@ int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
                       .stream_count(1)
                       .acquisition_session_count(1)
                       .expect_acquisition_session(true)
-                      .expect_frameproducer(true),
+                      .expect_frameproducer(false),
                   h.observed())) {
     return 1;
   }

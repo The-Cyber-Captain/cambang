@@ -773,8 +773,6 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if (
 		model.id.begins_with("native_object/")
 		or model.id.contains("/native_object/")
-		or model.id.begins_with("frameproducer/")
-		or model.id.contains("/frameproducer/")
 	):
 		return "native_object"
 	return "generic"

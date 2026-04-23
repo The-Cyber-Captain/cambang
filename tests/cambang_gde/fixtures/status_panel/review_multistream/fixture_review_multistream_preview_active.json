@@ -12,11 +12,11 @@
       "device/1001",
       "stream/1101",
       "stream/1102",
-      "frameproducer/1201",
+      "native_object/1201",
       "acquisition_session/1001"
     ],
     "required_visible_row_ids": [
-      "frameproducer/1201"
+      "native_object/1201"
     ],
     "required_badges_by_row": {
       "server/main": [
@@ -25,7 +25,7 @@
       ]
     },
     "required_info_substrings_by_row": {
-      "frameproducer/1201": [
+      "native_object/1201": [
         "owner_stream_id=1101"
       ]
     }
@@ -173,7 +173,7 @@
       },
       {
         "native_id": 1201,
-        "type": "frameproducer",
+        "type": "legacy_frameproducer",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1101,
         "phase": "LIVE",

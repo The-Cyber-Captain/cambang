@@ -8,7 +8,7 @@ Purpose
 Deterministically verifies SyntheticProvider Timeline behaviour and Core registry
 truth using scheduled verification-case events and virtual time.
 
-This utility validates lifecycle reporting, FrameProducer tracking, capture
+This utility validates lifecycle reporting, continuity tracking, capture
 timestamp semantics, and event ordering. It is intended for maintainer
 verification and CI regression checks.
 
@@ -158,15 +158,6 @@ static bool assert_unique_native_ids(const CamBANGStateSnapshot& s) {
   return true;
 }
 
-static bool has_live_frame_producer_for_stream(const CamBANGStateSnapshot& s, uint64_t stream_id) {
-  for (const auto& no : s.native_objects) {
-    if (no.owner_stream_id != stream_id) continue;
-    if (no.type != static_cast<uint32_t>(NativeObjectType::FrameProducer)) continue;
-    if (no.destroyed_ns == 0) return true;
-  }
-  return false;
-}
-
 static bool has_acquisition_session_for_device(const CamBANGStateSnapshot& s, uint64_t device_instance_id) {
   for (const auto& acq : s.acquisition_sessions) {
     if (acq.device_instance_id == device_instance_id) {
@@ -250,12 +241,12 @@ static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const 
     }
   }
 
-  // Wait until a live FrameProducer exists.
+  // Wait until a live continuity exists.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
         return has_live_frame_producer_for_stream(s, kStreamId) &&
                has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: FrameProducer/AcquisitionSession seam not observed after start\n";
+    std::cerr << "FAIL: AcquisitionSession seam not observed after start\n";
     return 1;
   }
 
@@ -285,12 +276,12 @@ static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const 
     }
   }
 
-  // Assert FrameProducer is no longer live.
+  // Assert continuity is no longer live.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
         return !has_live_frame_producer_for_stream(s, kStreamId) &&
                !has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: FrameProducer/AcquisitionSession seam still visible after stop+destroy\n";
+    std::cerr << "FAIL: AcquisitionSession seam still visible after stop+destroy\n";
     return 1;
   }
 
@@ -324,13 +315,13 @@ static int run_invalid_sequence(CoreRuntime& rt, StateSnapshotBuffer& buf, const
 
   rt.request_publish();
 
-  // Assert no live FrameProducer exists and AcquisitionSession seam is present
+  // Assert no live continuity exists and AcquisitionSession seam is present
   // for create_stream-only (stream exists but not started).
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
         return !has_live_frame_producer_for_stream(s, kStreamId) &&
                has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: invalid-sequence seam expectations failed (FrameProducer/AcquisitionSession)\n";
+    std::cerr << "FAIL: invalid-sequence seam expectations failed (AcquisitionSession)\n";
     return 1;
   }
 
@@ -373,7 +364,7 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
                has_live_frame_producer_for_stream(*s, kStreamId) &&
                has_acquisition_session_for_device(*s, kDeviceInstanceId);
       })) {
-    std::cerr << "FAIL: stream did not reach FLOWING with expected FrameProducer/AcquisitionSession seam before catch-up tick\n";
+    std::cerr << "FAIL: stream did not reach FLOWING with expected AcquisitionSession seam before catch-up tick\n";
     return 1;
   }
 

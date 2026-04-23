@@ -119,7 +119,7 @@ static inline godot::String native_object_type_token(uint32_t raw_type) {
     case NativeObjectType::Stream:
       return "stream";
     case NativeObjectType::FrameProducer:
-      return "frameproducer";
+      return "legacy_frameproducer";
     default:
       godot::UtilityFunctions::push_warning(
           "CamBANG export_snapshot_to_godot: unknown native object type; emitting unknown");
