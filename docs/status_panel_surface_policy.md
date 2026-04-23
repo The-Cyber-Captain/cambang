@@ -215,7 +215,7 @@ The health summary badge is additive and does not replace detailed badges, count
 The health summary badge is not a simple reduction of technical liveness or engineering purity.
 
 - Non-live does not automatically mean non-OK.
-- Preserved, retained, or destroyed rows may still be OK when coherent and expected in context.
+- Continuity-only or destroyed rows may still be OK when coherent and expected in context.
 - Derivation must emphasize coherence, expectedness, and viewer concern/attention-worthiness rather than mere deviation from an ideal live state.
 
 ### Canonical provisional label set
@@ -311,7 +311,7 @@ This registry is presentation logic, not snapshot schema truth, and should remai
 
 ## 6) Known Tier 3 Issues
 
-- Terminology overlap across continuity-only/orphaned continuity contexts still increases cognitive load.
+- Cognitive load remains high where continuity-only and orphaned states coincide.
 - Density is high in continuity-only/orphan subtree diagnostics (multiple badges + counters + reason text at once).
 - Reinforcement boundaries are not fully standardized (when structure-only is enough vs when explicit line-level reinforcement is preferred).
 
