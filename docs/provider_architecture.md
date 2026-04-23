@@ -352,7 +352,6 @@ The minimum commonly reported canonical structural nouns remain:
 - `Device`
 - `AcquisitionSession`
 - `Stream`
-- `FrameProducer`
 
 These canonical nouns define CamBANG's preferred cross-provider viewing
 structure. They do **not** limit native truth to only those categories,
@@ -363,15 +362,18 @@ Creation must be reported when the resource is actually acquired.
 Destruction must be reported only when the resource is actually
 released.
 
-`FrameProducer` is reported when a lifecycle-significant
-frame-production seam is concretely realized. A native `FrameProducer`
-may be owned by a `Stream` (repeating-flow production) or directly by
-an `AcquisitionSession` (still-capture production).
+CamBANG no longer treats `FrameProducer` as a first-class structural noun in
+the canonical model.
+
+Production is interpreted through structural context, payload-delivery truth,
+and provider-owned native support entities whose lifetime/release matters.
+Providers may still realize production seams internally in backend-specific
+ways, but those seams are not modeled as separate first-class structural rows.
 
 ### Resource-bearing native truth beyond the structural spine
 
-Provider-owned resource-bearing native truth must not depend on
-`FrameProducer` for its right to surface.
+Provider-owned resource-bearing native truth must not depend on a separate
+producer row for its right to surface.
 
 When provider-owned native resources or leases have lifetime/release
 significance not safely subsumed by parent destruction alone, providers
@@ -386,17 +388,7 @@ Examples may include:
 - shared-buffer references
 - similar provider-owned resource-bearing leases
 
-These rows remain separate from the structural production-seam role of
-`FrameProducer`.
-
-`FrameProducer`, if realized, remains a narrow production-seam noun only.
-It is not the parent category for provider-owned resource-bearing native
-truth.
-
-Placement and projection of such resource-bearing native truth is defined
-separately from the decision to retain or remove `FrameProducer` as a
-first-class structural noun.
-
+These rows remain separate from the canonical structural spine.
 
 ### Context placement of resource-bearing native truth
 
@@ -417,17 +409,26 @@ buffers, attached GPU/native backings, shared-buffer references, and similar
 resource-bearing native truth.
 
 This placement rule does not require a public `CamBANGStream` to exist for
-capture-originated truth, and it does not depend on whether `FrameProducer`
-is ultimately retained or removed as a first-class structural noun.
+capture-originated truth, and it does not depend on any `FrameProducer` row.
 
-`FrameProducer`, if realized, remains separate from this placement rule.
-It is not the parent category for resource-bearing native truth.
+Native Payload Support is interpreted through this placement rule and is not
+parented by a producer-row concept.
 
-Native `Stream` / `FrameProducer` truth does not automatically imply a
-matching public Godot-facing object. Providers may truthfully use
-stream-like native resources to service device-level still capture
-without promoting those resources into public `CamBANGStream`
-semantics.
+### Native Payload Support as a projection grouping concept
+
+Native Payload Support is the canonical projection grouping concept for
+provider-owned native support entities whose lifetime/release matters
+independently and which support image-bearing payload/backing truth.
+
+It is not, in this tranche, a required provider-reported native-object type.
+Providers continue to report the actual support entities as native truth rows.
+Projection/UI may group them beneath a Native Payload Support row within the
+relevant `Stream` or `AcquisitionSession` context.
+
+Native `Stream` truth does not automatically imply a matching public
+Godot-facing object. Providers may truthfully use stream-like native
+resources to service device-level still capture without promoting those
+resources into public `CamBANGStream` semantics.
 
 Implementation-scope note (current verified state):
 
@@ -438,7 +439,7 @@ Implementation-scope note (current verified state):
 - Providers must not fabricate `AcquisitionSession` lifecycle events from
   still-capture callbacks alone when no concrete acquisition-session seam has
   actually been realized.
-- Capture-side `FrameProducer` truth may therefore appear under an
+- Capture-originated native support truth may therefore appear under an
   `AcquisitionSession` without implying a public `CamBANGStream`.
 
 Providers must also report and retire provider-owned native resources

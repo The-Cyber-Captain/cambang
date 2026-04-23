@@ -333,7 +333,6 @@ Native object registry types use the same canonical structural nouns:
 - `Device`
 - `AcquisitionSession`
 - `Stream`
-- `FrameProducer`
 
 These names represent the preferred CamBANG viewing structure for
 lifecycle-significant native truth. They do **not** imply that native truth
@@ -344,12 +343,11 @@ In particular:
 
 - `Stream` in native-object truth means a truthfully realized
   provider/native stream-like resource
-- `FrameProducer` means a truthfully realized provider/native
-  frame-production seam
-- a `FrameProducer` may be owned by a `Stream` or directly by an
-  `AcquisitionSession`
-- native-object truth may therefore contain `Stream` / `FrameProducer`
-  records that do not correspond to user-created `CamBANGStream` objects
+- production is interpreted through structural context, payload delivery
+  truth, and provider-owned native support entities
+- native-object truth may therefore contain `Stream` and additional
+  provider-owned native support rows that do not correspond to user-created
+  `CamBANGStream` objects
 
 This distinction is intentional:
 
@@ -364,6 +362,8 @@ native-object reporting when their lifetime matters for:
 - queue health
 - teardown correctness
 - retained-resource truth
+
+FrameProducer is no longer part of the canonical CamBANG structural noun set.
 
 The canonical structural nouns are therefore a preferred cross-provider
 organizing model, not a limit on what native truth may contain.
@@ -402,6 +402,19 @@ Visible anomaly vocabulary should remain compact and conservative.
 More specific causal distinctions may remain internal or detail-only
 unless broader surfacing is clearly justified.
 
+### Native Payload Support
+
+Native Payload Support is the canonical projection grouping term for
+provider-owned native support entities whose lifetime/release matters
+independently and which support image-bearing payload/backing truth.
+
+Examples include acquired images, retained samples, mapped buffers,
+attached GPU/native backings, shared-buffer references, and similar
+provider-owned support entities.
+
+Native Payload Support is a projection grouping term, not a required
+provider-reported native-object type in this tranche.
+
 ------------------------------------------------------------------------
 
 ## 7. Structural hierarchy vs native truth breadth
@@ -420,9 +433,9 @@ This distinction matters especially for:
 - short-lived stream-like resources used to service still capture
 - other leak-relevant provider-owned native handles or leases
 
-A provider may therefore report native `Stream` or `FrameProducer` truth
-without creating a matching public `CamBANGStream`, and may also report
-additional provider-owned native resources when their lifetime matters.
+A provider may therefore report native `Stream` truth without creating a
+matching public `CamBANGStream`, and may also report additional provider-owned
+native resources when their lifetime matters.
 
 ------------------------------------------------------------------------
 
@@ -498,8 +511,8 @@ These are distinct from:
 - provider-facing payload vocabulary
 - native-object registry categories
 
-The fact that native truth may contain `Stream` / `FrameProducer` records
-does not redefine the Godot-facing result/object vocabulary.
+The fact that native truth may contain `Stream` and provider-owned native
+support records does not redefine the Godot-facing result/object vocabulary.
 
 ------------------------------------------------------------------------
 
@@ -514,4 +527,4 @@ does not redefine the Godot-facing result/object vocabulary.
 - **Mode**: operational posture of an entity.
 - **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
 - **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
-- **FrameProducer**: optional provider-reported frame-production seam, owned by `Stream` or directly by `AcquisitionSession`.
+- **Native Payload Support**: projection grouping concept for provider-owned native support entities whose lifetime/release matters for payload/backing truth.

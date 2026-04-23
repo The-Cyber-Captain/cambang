@@ -138,7 +138,7 @@ the first published baseline may legitimately contain:
 - one current-generation provider native object
 - zero devices
 - zero streams
-- no frameproducer subtree
+- no producer-row subtree requirement
 
 This is a contract-valid transient of startup/restart truth, not an incomplete
 or fabricated snapshot.
@@ -160,10 +160,9 @@ transitions are:
   realization or a capture-only path)
 - acquisition session realized → stream realized (`version += 1`,
   `topology_version += 1`)
-- started/producing seam → frameproducer realized (`version += 1`,
-  `topology_version` may remain unchanged if the observable topology signature
-  does not change); this seam may be stream-owned or acquisition-session-owned
-  for still-capture production when truthfully realized
+- started/producing activity → payload/native-support truth updates
+  (`version += 1`, `topology_version` may remain unchanged when structural
+  ancestry is unchanged)
 
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
@@ -561,21 +560,40 @@ ordinary parent destruction:
 - **capture-originated** resource-bearing native truth is interpreted beneath
   the owning `AcquisitionSession` context
 
-This rule applies whether or not a `FrameProducer` row is present.
+This rule applies without requiring any `FrameProducer` row.
 
 The snapshot does not require a public-object analogue for such native truth.
 Native placement and interpretation are based on provider-owned runtime truth,
 not on 1:1 parity with public Godot-facing objects.
+
+### Native Payload Support projection grouping
+
+Native Payload Support is a projection grouping concept.
+
+It is not a required top-level snapshot category.
+It is not a required provider-reported native-object type.
+
+Grouping is derived from existing ownership/context truth:
+
+- within `Stream` for stream-originated support entities
+- within `AcquisitionSession` for capture-originated support entities
+
+This remains valid without any `FrameProducer` row.
 
 ### 6.5 `NativeObjectRecord`
 
 Native/core objects created by the provider on behalf of CamBANG
 are tracked as registry records.
 
+FrameProducer is not part of the canonical structural snapshot model in this
+tranche. Production is interpreted through structural context, payload
+delivery, and provider-owned native support truth rather than a separate
+producer row.
+
 ``` text
 NativeObjectRecord {
   native_id: uint64
-  type: provider | device | acquisition_session | stream | frameproducer
+  type: provider | device | acquisition_session | stream | frameproducer  // frameproducer is legacy-compatible, not canonical in this tranche
 
   phase: phase
 
@@ -600,10 +618,8 @@ NativeObjectRecord {
 Ownership interpretation note:
 
 - Native `Stream` means a truthfully realized provider/native stream-like resource.
-- Native `FrameProducer` means a truthfully realized frame-production seam.
-- `FrameProducer` ownership may be represented as either:
-  - `owner_stream_id != 0`, or
-  - `owner_acquisition_session_id != 0` with `owner_stream_id = 0`.
+- Production is interpreted through structural context, payload delivery,
+  and provider-owned native support truth rather than a separate producer row.
 - For resource-bearing native truth associated with repeating flow,
   `owner_stream_id != 0` is the primary placement signal.
 - For capture-originated resource-bearing native truth with no repeating-stream
