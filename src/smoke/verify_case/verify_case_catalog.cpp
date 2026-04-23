@@ -226,6 +226,7 @@ bool observe_provider_only_authoritative_start(VerifyCaseHarness& h,
                                                uint64_t& settled_version,
                                                const char* no_publish_message,
                                                const char* not_provider_only_message) {
+  (void)error;
   if (!h.tick()) {
     fail_step(step_index, no_publish_message);
     return false;
@@ -1055,7 +1056,8 @@ int restart_churn_then_settle(VerifyCaseProviderKind provider_kind,
     bool device_identity = false;
     bool device_native = false;
     bool stream_visible = false;
-      bool progressed_after_churn = false;
+    bool continuity_visible = false;
+    bool progressed_after_churn = false;
     RestartChurnCutPoint last_stage = RestartChurnCutPoint::ProviderVisible;
   };
 
@@ -1396,7 +1398,8 @@ int restart_churn_then_settle_variant(const char* verify_case_label,
     bool device_identity = false;
     bool device_native = false;
     bool stream_visible = false;
-      bool progressed_after_churn = false;
+    bool continuity_visible = false;
+    bool progressed_after_churn = false;
     RestartChurnCutPoint last_stage = RestartChurnCutPoint::ProviderVisible;
   };
 
