@@ -173,7 +173,7 @@
       },
       {
         "native_id": 1202,
-        "type": "legacy_frameproducer",
+        "type": "stream",
         "owner_device_instance_id": 1001,
         "owner_stream_id": 1102,
         "phase": "LIVE",

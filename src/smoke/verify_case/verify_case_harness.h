@@ -65,7 +65,6 @@ struct RealizationProfilerOptions {
   uint64_t target_device_id = 0;
   uint64_t target_stream_id = 0;
   bool expect_acquisition_session = false;
-  bool expect_frameproducer = false;
 };
 
 class RealizationProfiler final {
@@ -512,11 +511,6 @@ public:
     expect_acquisition_session_ = value;
     return *this;
   }
-  SnapshotExpectation& expect_frameproducer(bool value) {
-    expect_frameproducer_ = value;
-    return *this;
-  }
-
   bool matches(const ObservedSnapshot& observed, std::string& error) const {
     std::ostringstream oss;
     bool ok = true;
@@ -573,8 +567,6 @@ private:
   std::optional<size_t> stream_count_;
   std::optional<size_t> acquisition_session_count_;
   std::optional<bool> expect_acquisition_session_;
-  // legacy compatibility toggle retained in builder API; no longer enforced.
-  std::optional<bool> expect_frameproducer_;
 
 };
 

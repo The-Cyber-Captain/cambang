@@ -1337,8 +1337,6 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
   const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
   const int acq_create_count = count_events_by_tag_and_type(
       cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int frameproducer_create_count = count_events_by_tag_and_type(
-      cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::FrameProducer));
 
   if (capture_started_ix < 0 || capture_completed_ix < 0 || stream_destroy_ix < 0 ||
       acq_native_id < 0 || acq_create_ix < 0 || acq_destroy_ix < 0) {
@@ -1349,11 +1347,6 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     std::cerr << "FAIL synthetic stream+still realized multiple acquisition sessions for one device\n";
     return false;
   }
-  if (frameproducer_create_count != 0) {
-    std::cerr << "FAIL synthetic stream+still unexpectedly reported frameproducer natives\n";
-    return false;
-  }
-
   if (!(acq_create_ix < capture_started_ix &&
       capture_started_ix < capture_completed_ix &&
       capture_completed_ix < acq_destroy_ix)) {

@@ -97,7 +97,7 @@
       },
       {
         "native_id": 4301,
-        "type": "legacy_frameproducer",
+        "type": "stream",
         "owner_stream_id": 4201,
         "phase": "LIVE",
         "root_id": 9301,

@@ -273,7 +273,7 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 			},
 			{
 				"native_id": 103,
-				"type": "legacy_frameproducer",
+				"type": "stream",
 				"owner_device_instance_id": 1,
 				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,

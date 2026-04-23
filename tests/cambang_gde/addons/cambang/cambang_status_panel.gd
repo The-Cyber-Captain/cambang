@@ -5537,8 +5537,6 @@ func _native_object_type_key(rec: Dictionary) -> String:
 				return "acquisition_session"
 			"stream":
 				return "stream"
-			"frameproducer", "frame_producer", "frame producer", "legacy_frameproducer":
-				return ""
 			_:
 				return ""
 	return ""

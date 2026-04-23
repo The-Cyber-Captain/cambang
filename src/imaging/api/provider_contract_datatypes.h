@@ -78,7 +78,7 @@ struct ProviderResult {
 
 // Native object type vocabulary (core-owned).
 //
-// Canonical nouns: Provider, Device, AcquisitionSession, Stream, FrameProducer.
+// Canonical nouns: Provider, Device, AcquisitionSession, Stream.
 // See docs/provider_architecture.md and docs/state_snapshot.md.
 //
 // NOTE: In the current scaffolding slice, providers fill `NativeObjectCreateInfo.type`
@@ -89,7 +89,6 @@ enum class NativeObjectType : uint32_t {
   Device = 2,
   AcquisitionSession = 3,
   Stream = 4,
-  FrameProducer = 5,
 };
 
 // -----------------------------------------------------------------------------

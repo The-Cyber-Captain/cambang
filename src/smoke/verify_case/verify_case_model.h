@@ -46,7 +46,6 @@ struct VerifyCaseExpectation {
   std::uint32_t stream_count = 0; // Flowing stream count in this tranche.
   std::uint32_t acquisition_session_count = 0;
   bool expect_acquisition_session = false;
-  bool expect_frameproducer = false;
   bool require_topology_change = false;
 };
 
@@ -96,7 +95,6 @@ struct VerifyCase {
            stream_count,
            0,
            false,
-           false,
            require_topology_change});
       return *this;
     }
@@ -105,7 +103,6 @@ struct VerifyCase {
                                   std::uint32_t stream_count,
                                   std::uint32_t acquisition_session_count,
                                   bool expect_acquisition_session,
-                                  bool expect_frameproducer,
                                   bool require_topology_change = false) {
       verify_case->expectations.push_back(
           {at,
@@ -113,7 +110,6 @@ struct VerifyCase {
            stream_count,
            acquisition_session_count,
            expect_acquisition_session,
-           expect_frameproducer,
            require_topology_change});
       return *this;
     }
