@@ -84,7 +84,8 @@ classes, typically including:
 - `Device`
 - `AcquisitionSession` (when concretely realized)
 - `Stream`
-- `FrameProducer`
+- stream/capture support resources whose lifetime/release matters (for example
+  frame buffer leases, GPU backings, retained samples, mapped buffers)
 
 Audit that:
 
@@ -98,8 +99,8 @@ Current implementation reminder:
 
 - `SyntheticProvider` now realizes concrete `AcquisitionSession` truth for both
   stream-backed and capture-only paths.
-- Capture-only truth may also realize an acquisition-session-owned
-  `FrameProducer` without fabricating a public stream.
+- Capture-only truth may realize acquisition-session-owned support resources
+  without fabricating a public stream.
 - Still capture callbacks alone do not satisfy retained AcquisitionSession truth
   obligations when no concrete session seam has been realized.
 

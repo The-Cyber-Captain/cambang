@@ -68,7 +68,7 @@ redefine canonical rules.
 | Document | Purpose |
 |---|---|
 | lifecycle_model.md | Explains lifecycle hierarchy and event flow across provider → core → Godot. |
-| provider_state_machines.md | Defines provider/device/acquisition-session/stream/frame-producer state machines and valid transitions. |
+| provider_state_machines.md | Defines provider/device/acquisition-session/stream state machines and valid transitions. |
 | provider_strand_model.md | Clarifies provider-strand delivery rules and event-class guarantees. |
 | publication_model.md | Describes tick-bounded publication and Godot-visible snapshot behaviour. |
 | publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`. |

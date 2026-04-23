@@ -89,6 +89,8 @@ enum class NativeObjectType : uint32_t {
   Device = 2,
   AcquisitionSession = 3,
   Stream = 4,
+  FrameBufferLease = 5,
+  GpuBacking = 6,
 };
 
 // -----------------------------------------------------------------------------

@@ -23,7 +23,7 @@ Provider facts fall into four broad classes:
 | Event Class | Example | Delivery Policy |
 |---|---|---|
 | Lifecycle | device add/remove, acquisition-session create/destroy, stream start/stop | must never be dropped |
-| Native-object | provider/device/acquisition-session/stream/frame-producer object create/destroy reports | must never be dropped |
+| Native-object | provider/device/acquisition-session/stream/support-resource object create/destroy reports | must never be dropped |
 | Error | provider, device, or stream error reports | must never be dropped |
 | Frame | video frame delivery | may be coalesced or dropped under backpressure |
 
