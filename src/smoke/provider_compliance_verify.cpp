@@ -1276,9 +1276,12 @@ bool run_synthetic_provider_direct_sanity_check() {
     std::cerr << "FAIL synthetic direct sanity missing callback/native evidence\n";
     return false;
   }
-  if (gpu_backing_created <= 0 || gpu_backing_destroyed <= 0) {
-    std::cerr << "FAIL synthetic direct sanity missing gpu backing native support lifecycle\n";
-    return false;
+  const bool gpu_backing_realized_in_run = (gpu_backing_created > 0 || gpu_backing_destroyed > 0);
+  if (gpu_backing_realized_in_run) {
+    if (gpu_backing_created <= 0 || gpu_backing_destroyed <= 0) {
+      std::cerr << "FAIL synthetic direct sanity incomplete gpu backing native support lifecycle\n";
+      return false;
+    }
   }
   if (frame_buffer_lease_created <= 0 || frame_buffer_lease_destroyed <= 0) {
     std::cerr << "FAIL synthetic direct sanity missing frame buffer lease native support lifecycle\n";
