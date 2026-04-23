@@ -100,6 +100,23 @@ When descendants survive beyond an ended controlling AcquisitionSession seam,
 the panel must preserve explicit **Acquisition Session boundary breach**
 classification rather than collapsing that condition into a generic stream breach.
 
+### Orphaned placement and boundary-breach indication
+
+Rows that cannot be shown beneath an expected live parent may require
+orphan-style placement.
+
+When that condition exists because a descendant survived beyond a
+meaningful controlling seam, the panel should preserve an explicit
+boundary-breach indication rather than collapsing the condition into
+generic orphan handling alone.
+
+Visible anomaly vocabulary should remain compact:
+
+- **orphaned** expresses the grouping/placement consequence
+- **boundary breach** expresses the specific diagnostic subtype
+
+More specific causal distinctions may remain internal or detail-only.
+
 ## 4) Optional field handling
 
 - If a field is present in snapshot truth, it must satisfy its tier obligation.
@@ -133,14 +150,32 @@ Rule: verbose Tier 3 metadata should be eligible for detail-only display.
 
 ### 5.4 Terminology normalization
 
-Use controlled vocabulary with one canonical term per concept family.
+Use one canonical term per concept family.
 
-Required distinctions:
-- root vs non-root
-- orphaned vs detached
-- continuity-only vs active
+Preferred distinctions:
 
-Rule: no overlapping synonyms for the same concept.
+- **continuity-only** — a row is shown for continuity rather than as
+  current active truth
+- **detached** — structural/topology separation from expected live structure
+- **orphaned** — projection/grouping consequence when a row cannot be
+  shown beneath its expected live parent
+- **boundary breach** — explicit diagnostic subtype for survival beyond a
+  meaningful controlling seam
+
+Rules:
+
+- **continuity-only** is the single preferred continuity term in both
+  surfaced panel truth and panel/projection logic.
+- **retained** should not be used as the preferred continuity-state term
+  in panel vocabulary where **continuity-only** is intended.
+- **orphaned** is not itself the full diagnosis; it is a
+  projection/grouping consequence.
+- **boundary breach** is not a generic synonym for **orphaned**.
+- A row may be orphaned without being a boundary breach.
+- A boundary breach may require orphan-style placement, but the two
+  terms are not interchangeable.
+- Exact seam identity may remain internal or detail-only unless broader
+  surfacing is clearly justified.
 
 ### 5.5 Badge vs label vs info rule
 
@@ -276,8 +311,8 @@ This registry is presentation logic, not snapshot schema truth, and should remai
 
 ## 6) Known Tier 3 Issues
 
-- Terminology overlap across retained/preserved/orphaned continuity contexts still increases cognitive load.
-- Density is high in retained/orphan subtree diagnostics (multiple badges + counters + reason text at once).
+- Terminology overlap across continuity-only/orphaned continuity contexts still increases cognitive load.
+- Density is high in continuity-only/orphan subtree diagnostics (multiple badges + counters + reason text at once).
 - Reinforcement boundaries are not fully standardized (when structure-only is enough vs when explicit line-level reinforcement is preferred).
 
 ---

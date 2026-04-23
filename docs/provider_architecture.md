@@ -368,6 +368,35 @@ frame-production seam is concretely realized. A native `FrameProducer`
 may be owned by a `Stream` (repeating-flow production) or directly by
 an `AcquisitionSession` (still-capture production).
 
+### Resource-bearing native truth beyond the structural spine
+
+Provider-owned resource-bearing native truth must not depend on
+`FrameProducer` for its right to surface.
+
+When provider-owned native resources or leases have lifetime/release
+significance not safely subsumed by parent destruction alone, providers
+may report that truth directly.
+
+Examples may include:
+
+- acquired images
+- retained samples
+- mapped buffers
+- attached GPU/native backings
+- shared-buffer references
+- similar provider-owned resource-bearing leases
+
+These rows remain separate from the structural production-seam role of
+`FrameProducer`.
+
+`FrameProducer`, if realized, remains a narrow production-seam noun only.
+It is not the parent category for provider-owned resource-bearing native
+truth.
+
+Placement and projection of such resource-bearing native truth is defined
+separately from the decision to retain or remove `FrameProducer` as a
+first-class structural noun.
+
 Native `Stream` / `FrameProducer` truth does not automatically imply a
 matching public Godot-facing object. Providers may truthfully use
 stream-like native resources to service device-level still capture

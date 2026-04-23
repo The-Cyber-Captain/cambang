@@ -368,6 +368,40 @@ native-object reporting when their lifetime matters for:
 The canonical structural nouns are therefore a preferred cross-provider
 organizing model, not a limit on what native truth may contain.
 
+
+### Structural anomaly and continuity vocabulary
+
+CamBANG distinguishes continuity presentation, structural separation,
+projection fallback, and explicit boundary-survival diagnostics.
+
+Preferred terms:
+
+- **continuity-only** — a row is shown for continuity rather than as
+  current active truth
+- **detached** — structural/topology separation from expected live structure
+- **orphaned** — projection/grouping consequence when a row cannot be
+  shown beneath its expected live parent
+- **boundary breach** — diagnostic subtype indicating survival beyond a
+  meaningful controlling boundary and that fact must remain explicit
+
+Terminology rules:
+
+- **continuity-only** is the single preferred term for this concept
+  family in both presentation and panel/projection logic.
+- **retained** remains the preferred term for runtime/resource/result
+  retention semantics and should not be used as the preferred
+  panel/projection continuity term where **continuity-only** is intended.
+- **orphaned** is not itself the full diagnosis; it is the
+  projection/grouping consequence of failed normal live-parent placement.
+- **boundary breach** is not a synonym for **orphaned**.
+  A row may be orphaned without being a boundary breach.
+  A boundary breach may require orphan-style placement, but the terms are
+  not interchangeable.
+
+Visible anomaly vocabulary should remain compact and conservative.
+More specific causal distinctions may remain internal or detail-only
+unless broader surfacing is clearly justified.
+
 ------------------------------------------------------------------------
 
 ## 7. Structural hierarchy vs native truth breadth
