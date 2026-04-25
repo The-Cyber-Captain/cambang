@@ -18,6 +18,31 @@ namespace cambang {
 namespace {
 
 constexpr const char* kHardwareIdPrefix = "synthetic:";
+constexpr uint64_t kTriageLogIntervalNs = 1'000'000'000ull;
+
+bool env_flag_enabled(const char* name) {
+  const char* value = std::getenv(name);
+  if (!value) {
+    return false;
+  }
+  return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
+}
+
+uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
+  const char* value = std::getenv(name);
+  if (!value || value[0] == '\0') {
+    return fallback;
+  }
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (end == value || (end && *end != '\0')) {
+    return fallback;
+  }
+  if (parsed > std::numeric_limits<uint32_t>::max()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+  return static_cast<uint32_t>(parsed);
+}
 
 uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   if (fps_num == 0 || fps_den == 0) {
@@ -40,6 +65,8 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   }
   completion_gated_destructive_sequencing_enabled_ =
       (cfg_.timeline_reconciliation == TimelineReconciliation::CompletionGated);
+  triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
+  triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -1344,6 +1371,9 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
       s.live_gpu_stride_bytes == stride) {
     return true;
   }
+  if (s.live_gpu_backing) {
+    ++triage_gpu_backing_recreate_total_;
+  }
   release_stream_live_gpu_backing_(s);
   // Create and recreate share the same runtime helper so usage flags remain
   // identical for initial allocation and retry allocation.
@@ -1376,6 +1406,9 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
 }
 
 void SyntheticProvider::release_stream_live_gpu_backing_(StreamState& s) {
+  if (s.live_gpu_backing) {
+    ++triage_gpu_backing_release_total_;
+  }
   if (!s.live_gpu_backing) {
     if (s.live_gpu_backing_native_id != 0) {
       emit_native_destroy_(s.live_gpu_backing_native_id);
@@ -1454,6 +1487,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   std::shared_ptr<void> gpu_backing;
   if (s.prefer_gpu_backing) {
     if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+      ++triage_gpu_update_attempts_total_;
       gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
           s.live_gpu_backing,
           s.gpu_staging.data(),
@@ -1461,16 +1495,23 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
           h,
           stride);
       if (!gpu_ok) {
+        ++triage_gpu_update_failures_total_;
+        ++triage_gpu_update_retries_total_;
         // Preserve current provider hardening shape: one release/recreate and
         // one retry if the in-place live-backing update reports failure.
+        ++triage_gpu_backing_recreate_total_;
         release_stream_live_gpu_backing_(s);
         if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+          ++triage_gpu_update_attempts_total_;
           gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
               s.live_gpu_backing,
               s.gpu_staging.data(),
               w,
               h,
               stride);
+          if (!gpu_ok) {
+            ++triage_gpu_update_failures_total_;
+          }
         }
       }
       if (gpu_ok) {
@@ -1527,13 +1568,67 @@ void SyntheticProvider::emit_due_frames_() {
     if (!s.created || !s.started) {
       continue;
     }
+    const bool behind = (s.next_due_ns <= now);
+    if (behind) {
+      ++s.consecutive_behind_ticks;
+      if (s.consecutive_behind_ticks > 1) {
+        ++triage_falling_behind_repeat_total_;
+      }
+    } else {
+      s.consecutive_behind_ticks = 0;
+    }
+
     // Emit as many frames as are due (catch-up) in virtual time.
+    uint32_t emitted_this_tick = 0;
     while (s.next_due_ns <= now) {
+      if (triage_catchup_cap_per_tick_ > 0 && emitted_this_tick >= triage_catchup_cap_per_tick_) {
+        ++triage_catchup_ticks_capped_total_;
+        while (s.next_due_ns <= now) {
+          s.next_due_ns += period;
+          ++triage_catchup_frames_dropped_total_;
+        }
+        break;
+      }
       const uint64_t scheduled = s.next_due_ns;
       emit_one_frame_(s, scheduled);
       s.next_due_ns += period;
+      ++emitted_this_tick;
+      ++triage_frames_emitted_total_;
+    }
+    if (emitted_this_tick > 0) {
+      ++triage_catchup_bursts_total_;
+      triage_catchup_max_frames_in_tick_ = std::max(triage_catchup_max_frames_in_tick_, emitted_this_tick);
     }
   }
+  emit_triage_trace_if_due_();
+}
+
+void SyntheticProvider::emit_triage_trace_if_due_() {
+  if (!triage_trace_enabled_) {
+    return;
+  }
+  const uint64_t now = clock_.now_ns();
+  if (triage_next_log_ns_ != 0 && now < triage_next_log_ns_) {
+    return;
+  }
+  triage_next_log_ns_ = now + kTriageLogIntervalNs;
+  std::fprintf(stderr,
+               "[cambang][synth-triage] frames_emitted=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
+               "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
+               "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+               "gpu_backing_recreates=%llu gpu_backing_releases=%llu\n",
+               static_cast<unsigned long long>(triage_frames_emitted_total_),
+               static_cast<unsigned long long>(triage_catchup_bursts_total_),
+               triage_catchup_max_frames_in_tick_,
+               static_cast<unsigned long long>(triage_falling_behind_repeat_total_),
+               triage_catchup_cap_per_tick_,
+               static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
+               static_cast<unsigned long long>(triage_catchup_frames_dropped_total_),
+               static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
+               static_cast<unsigned long long>(triage_gpu_update_failures_total_),
+               static_cast<unsigned long long>(triage_gpu_update_retries_total_),
+               static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
+               static_cast<unsigned long long>(triage_gpu_backing_release_total_));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
