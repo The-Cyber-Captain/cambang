@@ -4267,6 +4267,7 @@ func _build_native_object_entry(
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
+	_append_native_traceability_info_lines(info_lines, rec)
 
 	var row_id := "native_object/%d" % native_id
 	var row_label := "native_object/%d" % native_id
@@ -4276,6 +4277,10 @@ func _build_native_object_entry(
 	elif native_type_key == "acquisition_session":
 		row_id = "acquisition_session/%d" % native_id
 		row_label = "acquisition_session/%d" % native_id
+	elif native_type_key == "frame_buffer_lease":
+		row_label = "frame_buffer_lease/%d" % native_id
+	elif native_type_key == "gpu_backing":
+		row_label = "gpu_backing/%d" % native_id
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))]
@@ -5523,7 +5528,9 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			4:
 				return "stream"
 			5:
-				return ""
+				return "frame_buffer_lease"
+			6:
+				return "gpu_backing"
 			_:
 				return ""
 	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
@@ -5537,9 +5544,35 @@ func _native_object_type_key(rec: Dictionary) -> String:
 				return "acquisition_session"
 			"stream":
 				return "stream"
+			"frame_buffer_lease", "framebufferlease", "frame buffer lease":
+				return "frame_buffer_lease"
+			"gpu_backing", "gpubacking", "gpu backing":
+				return "gpu_backing"
 			_:
 				return ""
 	return ""
+
+
+func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dictionary) -> void:
+	if rec.has("type"):
+		info_lines.append("concrete type=%s" % str(rec.get("type")))
+
+	var native_traceability_specs := [
+		["owner_stream_id", "owner_stream_id", "int"],
+		["owner_acquisition_session_id", "owner_acquisition_session_id", "int"],
+		["owner_device_instance_id", "owner_device_instance_id", "int"],
+		["root_id", "root_id", "int"],
+		["creation_gen", "creation_gen", "int"],
+		["created_ns", "created_ns", "int"],
+		["destroyed_ns", "destroyed_ns", "int"],
+		["bytes_allocated", "bytes_allocated", "int"],
+		["buffers_in_use", "buffers_in_use", "int"],
+	]
+	for spec in native_traceability_specs:
+		var source_field := str(spec[0])
+		if not rec.has(source_field):
+			continue
+		info_lines.append("%s=%s" % [str(spec[1]), str(rec.get(source_field))])
 
 
 func _format_fourcc_with_raw(value: int) -> String:
