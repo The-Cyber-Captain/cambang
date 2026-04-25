@@ -172,9 +172,6 @@ private:
   struct FrameReleaseLease {
     std::shared_ptr<StreamState::BufferSlot> slot;
     std::shared_ptr<std::vector<std::uint8_t>> bytes;
-    uint64_t native_id = 0;
-    CBProviderStrand* strand = nullptr;
-    SyntheticVirtualClock* clock = nullptr;
   };
 
   static void release_frame_(void* user, const FrameView* frame);

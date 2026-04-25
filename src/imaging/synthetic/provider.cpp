@@ -1327,14 +1327,6 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   if (!lease) {
     return;
   }
-  if (lease->native_id != 0 && lease->strand) {
-    NativeObjectDestroyInfo info{};
-    info.native_id = lease->native_id;
-    info.has_destroyed_ns = (lease->clock != nullptr);
-    info.destroyed_ns = lease->clock ? lease->clock->now_ns() : 0;
-    lease->strand->post_native_object_destroyed(info);
-    lease->native_id = 0;
-  }
   if (lease->slot) {
     lease->slot->in_use.store(false, std::memory_order_release);
   }
@@ -1517,28 +1509,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
   auto* lease = new FrameReleaseLease();
   lease->slot = slot;
-  lease->strand = &strand_;
-  lease->clock = &clock_;
-  if (callbacks_) {
-    const uint64_t lease_native_id = alloc_native_id_(NativeObjectType::FrameBufferLease);
-    if (lease_native_id != 0) {
-      const auto dit = devices_.find(s.req.device_instance_id);
-      const uint64_t root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
-      NativeObjectCreateInfo info{};
-      info.native_id = lease_native_id;
-      info.type = static_cast<uint32_t>(NativeObjectType::FrameBufferLease);
-      info.root_id = root_id;
-      info.owner_device_instance_id = s.req.device_instance_id;
-      info.owner_acquisition_session_id = s.acquisition_session_native_id;
-      info.owner_stream_id = s.req.stream_id;
-      info.owner_provider_native_id = provider_native_id_;
-      info.owner_rig_id = 0;
-      info.has_created_ns = true;
-      info.created_ns = clock_.now_ns();
-      strand_.post_native_object_created(info);
-      lease->native_id = lease_native_id;
-    }
-  }
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = lease;
 
