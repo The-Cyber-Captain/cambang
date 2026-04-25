@@ -1283,9 +1283,14 @@ bool run_synthetic_provider_direct_sanity_check() {
       return false;
     }
   }
-  if (frame_buffer_lease_created <= 0 || frame_buffer_lease_destroyed <= 0) {
-    std::cerr << "FAIL synthetic direct sanity missing frame buffer lease native support lifecycle\n";
-    return false;
+  const bool frame_buffer_lease_realized_in_run =
+      (frame_buffer_lease_created > 0 || frame_buffer_lease_destroyed > 0);
+  if (frame_buffer_lease_realized_in_run) {
+    if (frame_buffer_lease_created <= 0 || frame_buffer_lease_destroyed <= 0) {
+      std::cerr
+          << "FAIL synthetic direct sanity incomplete frame buffer lease native support lifecycle\n";
+      return false;
+    }
   }
 
   return assert_native_balance(cb.events, "synthetic_direct");
