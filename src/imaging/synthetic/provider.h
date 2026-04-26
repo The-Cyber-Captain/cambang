@@ -242,6 +242,8 @@ private:
   uint64_t triage_gpu_update_retries_total_ = 0;
   uint64_t triage_gpu_backing_recreate_total_ = 0;
   uint64_t triage_gpu_backing_release_total_ = 0;
+  bool triage_timeline_path_banner_emitted_ = false;
+  bool triage_nominal_path_banner_emitted_ = false;
 
   std::atomic<uint64_t> invalid_preset_requests_{0};
 };

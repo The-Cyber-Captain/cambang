@@ -1664,8 +1664,16 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
+    if (!triage_timeline_path_banner_emitted_) {
+      std::fprintf(stderr, "[CamBANG][SyntheticTriage] timeline-advance-path-reached\n");
+      triage_timeline_path_banner_emitted_ = true;
+    }
     emit_triage_trace_if_due_();
   } else {
+    if (!triage_nominal_path_banner_emitted_) {
+      std::fprintf(stderr, "[CamBANG][SyntheticTriage] nominal-advance-path-reached\n");
+      triage_nominal_path_banner_emitted_ = true;
+    }
     emit_due_frames_();
   }
   // Keep virtual-time advances deterministic from the harness perspective:
