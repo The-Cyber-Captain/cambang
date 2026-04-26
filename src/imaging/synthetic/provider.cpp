@@ -2,16 +2,24 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
+#if __has_include(<godot_cpp/classes/utility_functions.hpp>)
+#include <godot_cpp/classes/utility_functions.hpp>
+#define CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT 1
+#else
+#define CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT 0
+#endif
 
 namespace cambang {
 
@@ -19,6 +27,23 @@ namespace {
 
 constexpr const char* kHardwareIdPrefix = "synthetic:";
 constexpr uint64_t kTriageLogIntervalNs = 1'000'000'000ull;
+
+void synthetic_triage_print_line(const std::string& line) {
+#if CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT
+  godot::UtilityFunctions::print(line.c_str());
+#else
+  std::fprintf(stdout, "%s\n", line.c_str());
+#endif
+}
+
+void synthetic_triage_printf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  synthetic_triage_print_line(buffer);
+}
 
 bool env_flag_enabled(const char* name) {
   const char* value = std::getenv(name);
@@ -197,10 +222,9 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
   triage_next_log_ns_ = 0;
-  std::fprintf(stdout,
-               "[CamBANG][SyntheticTriage] enabled=%s catchup_cap=%u\n",
-               triage_trace_enabled_ ? "true" : "false",
-               triage_catchup_cap_per_tick_);
+  synthetic_triage_printf("[CamBANG][SyntheticTriage] enabled=%s catchup_cap=%u",
+                          triage_trace_enabled_ ? "true" : "false",
+                          triage_catchup_cap_per_tick_);
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Backward-compatibility baseline for Timeline-role synthetic operation:
@@ -1628,23 +1652,23 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
     return;
   }
   triage_next_log_ns_ = now + kTriageLogIntervalNs;
-  std::fprintf(stdout,
-               "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
-               "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
-               "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
-               "gpu_backing_recreates=%llu gpu_backing_releases=%llu\n",
-               static_cast<unsigned long long>(triage_frames_emitted_total_),
-               static_cast<unsigned long long>(triage_catchup_bursts_total_),
-               triage_catchup_max_frames_in_tick_,
-               static_cast<unsigned long long>(triage_falling_behind_repeat_total_),
-               triage_catchup_cap_per_tick_,
-               static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
-               static_cast<unsigned long long>(triage_catchup_frames_dropped_total_),
-               static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
-               static_cast<unsigned long long>(triage_gpu_update_failures_total_),
-               static_cast<unsigned long long>(triage_gpu_update_retries_total_),
-               static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
-               static_cast<unsigned long long>(triage_gpu_backing_release_total_));
+  synthetic_triage_printf(
+      "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
+      "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
+      "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "gpu_backing_recreates=%llu gpu_backing_releases=%llu",
+      static_cast<unsigned long long>(triage_frames_emitted_total_),
+      static_cast<unsigned long long>(triage_catchup_bursts_total_),
+      triage_catchup_max_frames_in_tick_,
+      static_cast<unsigned long long>(triage_falling_behind_repeat_total_),
+      triage_catchup_cap_per_tick_,
+      static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
+      static_cast<unsigned long long>(triage_catchup_frames_dropped_total_),
+      static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
+      static_cast<unsigned long long>(triage_gpu_update_failures_total_),
+      static_cast<unsigned long long>(triage_gpu_update_retries_total_),
+      static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
+      static_cast<unsigned long long>(triage_gpu_backing_release_total_));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
@@ -1665,13 +1689,13 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
     if (!triage_timeline_path_banner_emitted_) {
-      std::fprintf(stdout, "[CamBANG][SyntheticTriage] timeline-advance-path-reached\n");
+      synthetic_triage_printf("[CamBANG][SyntheticTriage] timeline-advance-path-reached");
       triage_timeline_path_banner_emitted_ = true;
     }
     emit_triage_trace_if_due_();
   } else {
     if (!triage_nominal_path_banner_emitted_) {
-      std::fprintf(stdout, "[CamBANG][SyntheticTriage] nominal-advance-path-reached\n");
+      synthetic_triage_printf("[CamBANG][SyntheticTriage] nominal-advance-path-reached");
       triage_nominal_path_banner_emitted_ = true;
     }
     emit_due_frames_();
