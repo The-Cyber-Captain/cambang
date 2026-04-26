@@ -167,14 +167,12 @@ private:
     };
     std::vector<std::shared_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
+    uint32_t consecutive_behind_ticks = 0;
   };
 
   struct FrameReleaseLease {
     std::shared_ptr<StreamState::BufferSlot> slot;
     std::shared_ptr<std::vector<std::uint8_t>> bytes;
-    uint64_t native_id = 0;
-    CBProviderStrand* strand = nullptr;
-    SyntheticVirtualClock* clock = nullptr;
   };
 
   static void release_frame_(void* user, const FrameView* frame);
@@ -194,6 +192,7 @@ private:
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
   bool ensure_stream_live_gpu_backing_(StreamState& s, uint32_t width, uint32_t height, uint32_t stride);
   void release_stream_live_gpu_backing_(StreamState& s);
+  void emit_triage_trace_if_due_();
   static uint64_t generator_frame_ordinal_from_ns_(uint64_t timestamp_ns, const PictureConfig& picture) noexcept;
 
   void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
@@ -227,6 +226,24 @@ private:
       timeline_q_;
   std::vector<SyntheticScheduledEvent> timeline_pending_destructive_;
   TimelineRequestDispatchHook timeline_request_dispatch_hook_{};
+
+  // Triage-only stream scheduling/GPU-path instrumentation.
+  bool triage_trace_enabled_ = false;
+  uint32_t triage_catchup_cap_per_tick_ = 0;
+  uint64_t triage_next_log_ns_ = 0;
+  uint64_t triage_frames_emitted_total_ = 0;
+  uint64_t triage_catchup_bursts_total_ = 0;
+  uint64_t triage_catchup_ticks_capped_total_ = 0;
+  uint64_t triage_catchup_frames_dropped_total_ = 0;
+  uint32_t triage_catchup_max_frames_in_tick_ = 0;
+  uint64_t triage_falling_behind_repeat_total_ = 0;
+  uint64_t triage_gpu_update_attempts_total_ = 0;
+  uint64_t triage_gpu_update_failures_total_ = 0;
+  uint64_t triage_gpu_update_retries_total_ = 0;
+  uint64_t triage_gpu_backing_recreate_total_ = 0;
+  uint64_t triage_gpu_backing_release_total_ = 0;
+  bool triage_timeline_path_banner_emitted_ = false;
+  bool triage_nominal_path_banner_emitted_ = false;
 
   std::atomic<uint64_t> invalid_preset_requests_{0};
 };

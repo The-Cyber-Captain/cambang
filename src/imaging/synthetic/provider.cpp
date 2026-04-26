@@ -2,22 +2,72 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
+#if __has_include(<godot_cpp/classes/utility_functions.hpp>)
+#include <godot_cpp/classes/utility_functions.hpp>
+#define CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT 1
+#else
+#define CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT 0
+#endif
 
 namespace cambang {
 
 namespace {
 
 constexpr const char* kHardwareIdPrefix = "synthetic:";
+constexpr uint64_t kTriageLogIntervalNs = 1'000'000'000ull;
+
+void synthetic_triage_print_line(const std::string& line) {
+#if CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT
+  godot::UtilityFunctions::print(line.c_str());
+#else
+  std::fprintf(stdout, "%s\n", line.c_str());
+#endif
+}
+
+void synthetic_triage_printf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  synthetic_triage_print_line(buffer);
+}
+
+bool env_flag_enabled(const char* name) {
+  const char* value = std::getenv(name);
+  if (!value) {
+    return false;
+  }
+  return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
+}
+
+uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
+  const char* value = std::getenv(name);
+  if (!value || value[0] == '\0') {
+    return fallback;
+  }
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (end == value || (end && *end != '\0')) {
+    return fallback;
+  }
+  if (parsed > std::numeric_limits<uint32_t>::max()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+  return static_cast<uint32_t>(parsed);
+}
 
 uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   if (fps_num == 0 || fps_den == 0) {
@@ -40,6 +90,8 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   }
   completion_gated_destructive_sequencing_enabled_ =
       (cfg_.timeline_reconciliation == TimelineReconciliation::CompletionGated);
+  triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
+  triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -169,6 +221,10 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
+  triage_next_log_ns_ = 0;
+  synthetic_triage_printf("[CamBANG][SyntheticTriage] enabled=%s catchup_cap=%u",
+                          triage_trace_enabled_ ? "true" : "false",
+                          triage_catchup_cap_per_tick_);
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Backward-compatibility baseline for Timeline-role synthetic operation:
@@ -359,6 +415,7 @@ void SyntheticProvider::timeline_pump_() {
     return;
   }
 
+  uint32_t emitted_this_pump = 0;
   while (!timeline_q_.empty()) {
     const SyntheticScheduledEvent ev = timeline_q_.top();
     if (ev.at_ns > now) {
@@ -379,6 +436,11 @@ void SyntheticProvider::timeline_pump_() {
         // Execute the same frame emission path as nominal, but driven by explicit
         // scheduled event timestamps.
         emit_one_frame_(s, ev.at_ns);
+        ++triage_frames_emitted_total_;
+        ++emitted_this_pump;
+        if (ev.at_ns < now) {
+          ++triage_falling_behind_repeat_total_;
+        }
         s.next_due_ns = ev.at_ns + period;
         // Deterministic continuation: schedule the next frame.
         timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
@@ -424,6 +486,11 @@ void SyntheticProvider::timeline_pump_() {
         break;
       }
     }
+  }
+
+  if (emitted_this_pump > 0) {
+    ++triage_catchup_bursts_total_;
+    triage_catchup_max_frames_in_tick_ = std::max(triage_catchup_max_frames_in_tick_, emitted_this_pump);
   }
 
   if (!completion_gated_destructive_sequencing_enabled_ || timeline_pending_destructive_.empty()) {
@@ -1327,14 +1394,6 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   if (!lease) {
     return;
   }
-  if (lease->native_id != 0 && lease->strand) {
-    NativeObjectDestroyInfo info{};
-    info.native_id = lease->native_id;
-    info.has_destroyed_ns = (lease->clock != nullptr);
-    info.destroyed_ns = lease->clock ? lease->clock->now_ns() : 0;
-    lease->strand->post_native_object_destroyed(info);
-    lease->native_id = 0;
-  }
   if (lease->slot) {
     lease->slot->in_use.store(false, std::memory_order_release);
   }
@@ -1351,6 +1410,9 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
       s.live_gpu_height == height &&
       s.live_gpu_stride_bytes == stride) {
     return true;
+  }
+  if (s.live_gpu_backing) {
+    ++triage_gpu_backing_recreate_total_;
   }
   release_stream_live_gpu_backing_(s);
   // Create and recreate share the same runtime helper so usage flags remain
@@ -1384,6 +1446,9 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
 }
 
 void SyntheticProvider::release_stream_live_gpu_backing_(StreamState& s) {
+  if (s.live_gpu_backing) {
+    ++triage_gpu_backing_release_total_;
+  }
   if (!s.live_gpu_backing) {
     if (s.live_gpu_backing_native_id != 0) {
       emit_native_destroy_(s.live_gpu_backing_native_id);
@@ -1462,6 +1527,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   std::shared_ptr<void> gpu_backing;
   if (s.prefer_gpu_backing) {
     if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+      ++triage_gpu_update_attempts_total_;
       gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
           s.live_gpu_backing,
           s.gpu_staging.data(),
@@ -1469,16 +1535,23 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
           h,
           stride);
       if (!gpu_ok) {
+        ++triage_gpu_update_failures_total_;
+        ++triage_gpu_update_retries_total_;
         // Preserve current provider hardening shape: one release/recreate and
         // one retry if the in-place live-backing update reports failure.
+        ++triage_gpu_backing_recreate_total_;
         release_stream_live_gpu_backing_(s);
         if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+          ++triage_gpu_update_attempts_total_;
           gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
               s.live_gpu_backing,
               s.gpu_staging.data(),
               w,
               h,
               stride);
+          if (!gpu_ok) {
+            ++triage_gpu_update_failures_total_;
+          }
         }
       }
       if (gpu_ok) {
@@ -1517,28 +1590,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
   auto* lease = new FrameReleaseLease();
   lease->slot = slot;
-  lease->strand = &strand_;
-  lease->clock = &clock_;
-  if (callbacks_) {
-    const uint64_t lease_native_id = alloc_native_id_(NativeObjectType::FrameBufferLease);
-    if (lease_native_id != 0) {
-      const auto dit = devices_.find(s.req.device_instance_id);
-      const uint64_t root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
-      NativeObjectCreateInfo info{};
-      info.native_id = lease_native_id;
-      info.type = static_cast<uint32_t>(NativeObjectType::FrameBufferLease);
-      info.root_id = root_id;
-      info.owner_device_instance_id = s.req.device_instance_id;
-      info.owner_acquisition_session_id = s.acquisition_session_native_id;
-      info.owner_stream_id = s.req.stream_id;
-      info.owner_provider_native_id = provider_native_id_;
-      info.owner_rig_id = 0;
-      info.has_created_ns = true;
-      info.created_ns = clock_.now_ns();
-      strand_.post_native_object_created(info);
-      lease->native_id = lease_native_id;
-    }
-  }
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = lease;
 
@@ -1557,13 +1608,67 @@ void SyntheticProvider::emit_due_frames_() {
     if (!s.created || !s.started) {
       continue;
     }
+    const bool behind = (s.next_due_ns <= now);
+    if (behind) {
+      ++s.consecutive_behind_ticks;
+      if (s.consecutive_behind_ticks > 1) {
+        ++triage_falling_behind_repeat_total_;
+      }
+    } else {
+      s.consecutive_behind_ticks = 0;
+    }
+
     // Emit as many frames as are due (catch-up) in virtual time.
+    uint32_t emitted_this_tick = 0;
     while (s.next_due_ns <= now) {
+      if (triage_catchup_cap_per_tick_ > 0 && emitted_this_tick >= triage_catchup_cap_per_tick_) {
+        ++triage_catchup_ticks_capped_total_;
+        while (s.next_due_ns <= now) {
+          s.next_due_ns += period;
+          ++triage_catchup_frames_dropped_total_;
+        }
+        break;
+      }
       const uint64_t scheduled = s.next_due_ns;
       emit_one_frame_(s, scheduled);
       s.next_due_ns += period;
+      ++emitted_this_tick;
+      ++triage_frames_emitted_total_;
+    }
+    if (emitted_this_tick > 0) {
+      ++triage_catchup_bursts_total_;
+      triage_catchup_max_frames_in_tick_ = std::max(triage_catchup_max_frames_in_tick_, emitted_this_tick);
     }
   }
+  emit_triage_trace_if_due_();
+}
+
+void SyntheticProvider::emit_triage_trace_if_due_() {
+  if (!triage_trace_enabled_) {
+    return;
+  }
+  const uint64_t now = clock_.now_ns();
+  if (triage_next_log_ns_ != 0 && now < triage_next_log_ns_) {
+    return;
+  }
+  triage_next_log_ns_ = now + kTriageLogIntervalNs;
+  synthetic_triage_printf(
+      "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
+      "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
+      "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "gpu_backing_recreates=%llu gpu_backing_releases=%llu",
+      static_cast<unsigned long long>(triage_frames_emitted_total_),
+      static_cast<unsigned long long>(triage_catchup_bursts_total_),
+      triage_catchup_max_frames_in_tick_,
+      static_cast<unsigned long long>(triage_falling_behind_repeat_total_),
+      triage_catchup_cap_per_tick_,
+      static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
+      static_cast<unsigned long long>(triage_catchup_frames_dropped_total_),
+      static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
+      static_cast<unsigned long long>(triage_gpu_update_failures_total_),
+      static_cast<unsigned long long>(triage_gpu_update_retries_total_),
+      static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
+      static_cast<unsigned long long>(triage_gpu_backing_release_total_));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
@@ -1583,7 +1688,16 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
+    if (!triage_timeline_path_banner_emitted_) {
+      synthetic_triage_printf("[CamBANG][SyntheticTriage] timeline-advance-path-reached");
+      triage_timeline_path_banner_emitted_ = true;
+    }
+    emit_triage_trace_if_due_();
   } else {
+    if (!triage_nominal_path_banner_emitted_) {
+      synthetic_triage_printf("[CamBANG][SyntheticTriage] nominal-advance-path-reached");
+      triage_nominal_path_banner_emitted_ = true;
+    }
     emit_due_frames_();
   }
   // Keep virtual-time advances deterministic from the harness perspective:
