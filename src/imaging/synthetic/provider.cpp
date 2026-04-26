@@ -391,6 +391,7 @@ void SyntheticProvider::timeline_pump_() {
     return;
   }
 
+  uint32_t emitted_this_pump = 0;
   while (!timeline_q_.empty()) {
     const SyntheticScheduledEvent ev = timeline_q_.top();
     if (ev.at_ns > now) {
@@ -411,6 +412,11 @@ void SyntheticProvider::timeline_pump_() {
         // Execute the same frame emission path as nominal, but driven by explicit
         // scheduled event timestamps.
         emit_one_frame_(s, ev.at_ns);
+        ++triage_frames_emitted_total_;
+        ++emitted_this_pump;
+        if (ev.at_ns < now) {
+          ++triage_falling_behind_repeat_total_;
+        }
         s.next_due_ns = ev.at_ns + period;
         // Deterministic continuation: schedule the next frame.
         timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
@@ -456,6 +462,11 @@ void SyntheticProvider::timeline_pump_() {
         break;
       }
     }
+  }
+
+  if (emitted_this_pump > 0) {
+    ++triage_catchup_bursts_total_;
+    triage_catchup_max_frames_in_tick_ = std::max(triage_catchup_max_frames_in_tick_, emitted_this_pump);
   }
 
   if (!completion_gated_destructive_sequencing_enabled_ || timeline_pending_destructive_.empty()) {
@@ -1653,6 +1664,7 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
+    emit_triage_trace_if_due_();
   } else {
     emit_due_frames_();
   }
