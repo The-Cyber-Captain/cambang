@@ -416,6 +416,7 @@ void SyntheticProvider::timeline_pump_() {
   }
 
   uint32_t emitted_this_pump = 0;
+  bool catchup_tick_capped = false;
   while (!timeline_q_.empty()) {
     const SyntheticScheduledEvent ev = timeline_q_.top();
     if (ev.at_ns > now) {
@@ -431,6 +432,16 @@ void SyntheticProvider::timeline_pump_() {
         }
         StreamState& s = it->second;
         if (!s.created || !s.started) {
+          break;
+        }
+        if (triage_catchup_cap_per_tick_ > 0 && emitted_this_pump >= triage_catchup_cap_per_tick_) {
+          if (!catchup_tick_capped) {
+            ++triage_catchup_ticks_capped_total_;
+            catchup_tick_capped = true;
+          }
+          ++triage_catchup_frames_dropped_total_;
+          s.next_due_ns = ev.at_ns + period;
+          timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
           break;
         }
         // Execute the same frame emission path as nominal, but driven by explicit
