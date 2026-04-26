@@ -196,6 +196,11 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
+  triage_next_log_ns_ = 0;
+  std::fprintf(stderr,
+               "[CamBANG][SyntheticTriage] enabled=%s catchup_cap=%u\n",
+               triage_trace_enabled_ ? "true" : "false",
+               triage_catchup_cap_per_tick_);
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Backward-compatibility baseline for Timeline-role synthetic operation:
@@ -1613,7 +1618,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
   }
   triage_next_log_ns_ = now + kTriageLogIntervalNs;
   std::fprintf(stderr,
-               "[cambang][synth-triage] frames_emitted=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
+               "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
                "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
                "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
                "gpu_backing_recreates=%llu gpu_backing_releases=%llu\n",
