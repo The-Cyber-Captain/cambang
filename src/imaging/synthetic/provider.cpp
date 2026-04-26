@@ -197,7 +197,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
   triage_next_log_ns_ = 0;
-  std::fprintf(stderr,
+  std::fprintf(stdout,
                "[CamBANG][SyntheticTriage] enabled=%s catchup_cap=%u\n",
                triage_trace_enabled_ ? "true" : "false",
                triage_catchup_cap_per_tick_);
@@ -1628,7 +1628,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
     return;
   }
   triage_next_log_ns_ = now + kTriageLogIntervalNs;
-  std::fprintf(stderr,
+  std::fprintf(stdout,
                "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
                "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
                "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
@@ -1665,13 +1665,13 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
     if (!triage_timeline_path_banner_emitted_) {
-      std::fprintf(stderr, "[CamBANG][SyntheticTriage] timeline-advance-path-reached\n");
+      std::fprintf(stdout, "[CamBANG][SyntheticTriage] timeline-advance-path-reached\n");
       triage_timeline_path_banner_emitted_ = true;
     }
     emit_triage_trace_if_due_();
   } else {
     if (!triage_nominal_path_banner_emitted_) {
-      std::fprintf(stderr, "[CamBANG][SyntheticTriage] nominal-advance-path-reached\n");
+      std::fprintf(stdout, "[CamBANG][SyntheticTriage] nominal-advance-path-reached\n");
       triage_nominal_path_banner_emitted_ = true;
     }
     emit_due_frames_();
