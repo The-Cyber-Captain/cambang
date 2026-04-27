@@ -1,0 +1,48 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/72_stream_load_isolation.gd" id="1_script"]
+
+[node name="72_StreamLoadIsolation" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="RootMargin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 12
+
+[node name="MainColumn" type="VBoxContainer" parent="RootMargin"]
+layout_mode = 2
+
+[node name="Status" type="RichTextLabel" parent="RootMargin/MainColumn"]
+custom_minimum_size = Vector2(0, 180)
+layout_mode = 2
+bbcode_enabled = false
+scroll_active = true
+
+[node name="Streams" type="HBoxContainer" parent="RootMargin/MainColumn"]
+layout_mode = 2
+
+[node name="StreamA" type="TextureRect" parent="RootMargin/MainColumn/Streams"]
+custom_minimum_size = Vector2(320, 180)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 6
+
+[node name="StreamB" type="TextureRect" parent="RootMargin/MainColumn/Streams"]
+custom_minimum_size = Vector2(320, 180)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 6
