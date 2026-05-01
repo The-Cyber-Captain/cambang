@@ -24,6 +24,30 @@ var _done := false
 
 var _latched_stream_ids: Array[int] = []
 
+var _process_total_sec := 0.0
+var _process_max_sec := 0.0
+var _process_calls := 0
+
+var _advance_total_sec := 0.0
+var _advance_max_sec := 0.0
+var _advance_calls := 0
+
+var _latch_total_sec := 0.0
+var _latch_max_sec := 0.0
+var _latch_calls := 0
+
+var _poll_total_sec := 0.0
+var _poll_max_sec := 0.0
+var _poll_calls := 0
+
+var _display_total_sec := 0.0
+var _display_max_sec := 0.0
+var _display_calls := 0
+
+var _log_total_sec := 0.0
+var _log_max_sec := 0.0
+var _log_calls := 0
+
 
 func _ready() -> void:
 	_status.clear()
@@ -76,6 +100,7 @@ func _bootstrap() -> void:
 
 
 func _process(delta: float) -> void:
+	var process_start_usec := Time.get_ticks_usec()
 	if _done:
 		return
 
@@ -90,23 +115,57 @@ func _process(delta: float) -> void:
 	_min_fps = min(_min_fps, fps)
 	_worst_frame_sec = max(_worst_frame_sec, delta)
 
+	_advance_calls += 1
+	_advance_total_sec += 0.0
+	_advance_max_sec = max(_advance_max_sec, 0.0)
+
 	if _latched_stream_ids.is_empty():
+		var latch_start_usec := Time.get_ticks_usec()
 		_latch_stream_ids_from_snapshot()
+		var latch_sec := _elapsed_sec_from_ticks(latch_start_usec)
+		_latch_total_sec += latch_sec
+		_latch_max_sec = max(_latch_max_sec, latch_sec)
+		_latch_calls += 1
 
 	if _poll_results:
-		_poll_stream_results()
+		var poll_start_usec := Time.get_ticks_usec()
+		var display_sec := _poll_stream_results()
+		var poll_sec := _elapsed_sec_from_ticks(poll_start_usec)
+		_poll_total_sec += poll_sec
+		_poll_max_sec = max(_poll_max_sec, poll_sec)
+		_poll_calls += 1
+		_display_total_sec += display_sec
+		_display_max_sec = max(_display_max_sec, display_sec)
+		_display_calls += 1
 
 	if _accum_sec >= 1.0:
 		var stream_count := _latched_stream_ids.size()
-		_log("t=%ss fps=%.1f streams=%d" % [
+		var per_sec_message := "t=%ss fps=%.1f streams=%d process_max_ms=%.3f advance_max_ms=%.3f latch_max_ms=%.3f poll_max_ms=%.3f display_max_ms=%.3f log_max_ms=%.3f" % [
 			String.num(_elapsed_sec, PRINT_DECIMALS),
 			fps,
-			stream_count
-		])
+			stream_count,
+			_process_max_sec * 1000.0,
+			_advance_max_sec * 1000.0,
+			_latch_max_sec * 1000.0,
+			_poll_max_sec * 1000.0,
+			_display_max_sec * 1000.0,
+			_log_max_sec * 1000.0
+		]
+		var log_start_usec := Time.get_ticks_usec()
+		_log(per_sec_message)
+		var log_sec := _elapsed_sec_from_ticks(log_start_usec)
+		_log_total_sec += log_sec
+		_log_max_sec = max(_log_max_sec, log_sec)
+		_log_calls += 1
 		_accum_sec = 0.0
 
 	if _elapsed_sec >= _duration_sec:
 		_print_summary_and_quit()
+
+	var process_sec := _elapsed_sec_from_ticks(process_start_usec)
+	_process_total_sec += process_sec
+	_process_max_sec = max(_process_max_sec, process_sec)
+	_process_calls += 1
 
 
 func _latch_stream_ids_from_snapshot() -> void:
@@ -131,7 +190,8 @@ func _latch_stream_ids_from_snapshot() -> void:
 		_log("latched stream_ids=%s" % str(_latched_stream_ids))
 
 
-func _poll_stream_results() -> void:
+func _poll_stream_results() -> float:
+	var display_sec := 0.0
 	for i: int in range(_latched_stream_ids.size()):
 		var stream_id := _latched_stream_ids[i]
 		var stream_result: Variant = CamBANGServer.get_latest_stream_result(stream_id)
@@ -141,12 +201,15 @@ func _poll_stream_results() -> void:
 		if not _bind_display:
 			continue
 
+		var display_start_usec := Time.get_ticks_usec()
 		var display_view: Variant = stream_result.get_display_view()
 		if display_view is Texture2D:
 			if i == 0:
 				_stream_a.texture = display_view
 			elif i == 1:
 				_stream_b.texture = display_view
+		display_sec += _elapsed_sec_from_ticks(display_start_usec)
+	return display_sec
 
 
 func _print_summary_and_quit() -> void:
@@ -160,6 +223,26 @@ func _print_summary_and_quit() -> void:
 		min_fps,
 		_worst_frame_sec * 1000.0,
 		_elapsed_sec
+	])
+	_log("SUMMARY_TIMING process_max_ms=%.3f process_total_ms=%.3f process_calls=%d advance_max_ms=%.3f advance_total_ms=%.3f advance_calls=%d latch_max_ms=%.3f latch_total_ms=%.3f latch_calls=%d poll_max_ms=%.3f poll_total_ms=%.3f poll_calls=%d display_max_ms=%.3f display_total_ms=%.3f display_calls=%d log_max_ms=%.3f log_total_ms=%.3f log_calls=%d" % [
+		_process_max_sec * 1000.0,
+		_process_total_sec * 1000.0,
+		_process_calls,
+		_advance_max_sec * 1000.0,
+		_advance_total_sec * 1000.0,
+		_advance_calls,
+		_latch_max_sec * 1000.0,
+		_latch_total_sec * 1000.0,
+		_latch_calls,
+		_poll_max_sec * 1000.0,
+		_poll_total_sec * 1000.0,
+		_poll_calls,
+		_display_max_sec * 1000.0,
+		_display_total_sec * 1000.0,
+		_display_calls,
+		_log_max_sec * 1000.0,
+		_log_total_sec * 1000.0,
+		_log_calls
 	])
 	CamBANGServer.stop()
 	get_tree().quit(0)
@@ -188,6 +271,10 @@ func _env_float(name: String, default_value: float) -> float:
 	if not raw.is_valid_float():
 		return default_value
 	return max(0.1, raw.to_float())
+
+
+func _elapsed_sec_from_ticks(start_usec: int) -> float:
+	return float(Time.get_ticks_usec() - start_usec) / 1000000.0
 
 
 func _log(message: String) -> void:

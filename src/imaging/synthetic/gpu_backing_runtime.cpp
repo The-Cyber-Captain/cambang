@@ -125,7 +125,8 @@ bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_max_ns,
     uint64_t& texture_update_calls,
     uint64_t& texture_update_total_ns,
-    uint64_t& texture_update_max_ns) noexcept {
+    uint64_t& texture_update_max_ns,
+    uint64_t& texture_update_skipped) noexcept {
   const SyntheticGpuBackingRuntimeOps* ops = g_ops.load(std::memory_order_acquire);
   if (!ops || !ops->take_update_timing_stats) {
     return false;
@@ -136,7 +137,8 @@ bool synthetic_gpu_backing_take_update_timing_stats(
       upload_copy_max_ns,
       texture_update_calls,
       texture_update_total_ns,
-      texture_update_max_ns);
+      texture_update_max_ns,
+      texture_update_skipped);
 }
 #else
 std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
@@ -170,13 +172,15 @@ bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_max_ns,
     uint64_t& texture_update_calls,
     uint64_t& texture_update_total_ns,
-    uint64_t& texture_update_max_ns) noexcept {
+    uint64_t& texture_update_max_ns,
+    uint64_t& texture_update_skipped) noexcept {
   (void)upload_copy_calls;
   (void)upload_copy_total_ns;
   (void)upload_copy_max_ns;
   (void)texture_update_calls;
   (void)texture_update_total_ns;
   (void)texture_update_max_ns;
+  (void)texture_update_skipped;
   return false;
 }
 #endif

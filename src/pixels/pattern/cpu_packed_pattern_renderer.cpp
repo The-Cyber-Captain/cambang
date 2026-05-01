@@ -1,9 +1,17 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <cstdlib>
 
 namespace cambang {
+namespace {
+bool reuse_rendered_frame_enabled() {
+  const char* v = std::getenv("CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME");
+  return v && v[0] != '\0' && v[0] != '0';
+}
+}
 
 void CpuPackedPatternRenderer::configure(const PatternSpec& spec) {
   // Dynamic-base algos render the base per-frame; no base-cache precompute needed.
@@ -54,7 +62,12 @@ void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
 
   // Cacheable-base path: render into tight internal cache buffer.
   PatternOverlayData overlay{};
+  const auto t0 = std::chrono::steady_clock::now();
   render_base_into(base_pixels_.data(), base_stride_bytes_, spec, key, overlay);
+  const auto t1 = std::chrono::steady_clock::now();
+  const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+  debug_stats_.base_render_total_ns += ns;
+  debug_stats_.base_render_max_ns = std::max(debug_stats_.base_render_max_ns, ns);
 }
 
 void CpuPackedPatternRenderer::render_into(
@@ -70,20 +83,77 @@ void CpuPackedPatternRenderer::render_into(
   }
 
   if (spec.dynamic_base) {
+    ++debug_stats_.base_cache_miss_count;
     // Dynamic-base path: bypass base cache and render the base into the destination each frame.
     const PatternBaseKey key = PatternBaseKey::from_spec(spec);
+    const auto t0 = std::chrono::steady_clock::now();
     render_base_into(static_cast<uint8_t*>(dst.data), dst.stride_bytes, spec, key, overlay);
+    const auto t1 = std::chrono::steady_clock::now();
+    const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    debug_stats_.base_render_total_ns += ns;
+    debug_stats_.base_render_max_ns = std::max(debug_stats_.base_render_max_ns, ns);
+    rendered_target_valid_ = false;
   } else {
+    const PatternBaseKey key = PatternBaseKey::from_spec(spec);
+    const bool base_cache_hit = (base_valid_ && key == base_key_);
+    if (base_cache_hit) {
+      ++debug_stats_.base_cache_hit_count;
+    } else {
+      ++debug_stats_.base_cache_miss_count;
+    }
     ensure_base(spec);
-    copy_base_to(dst);
+    const bool no_meaningful_overlay_update = !spec.overlay_frame_index_offsets && !spec.overlay_moving_bar;
+    const bool target_identity_unchanged =
+        rendered_target_valid_ &&
+        rendered_target_ptr_ == dst.data &&
+        rendered_target_width_ == dst.width &&
+        rendered_target_height_ == dst.height &&
+        rendered_target_stride_bytes_ == dst.stride_bytes &&
+        rendered_target_format_ == dst.format;
+    const bool rendered_target_has_correct_base =
+        rendered_target_valid_ &&
+        rendered_target_base_key_ == key;
+    const bool normal_safe_reuse =
+        base_cache_hit &&
+        no_meaningful_overlay_update &&
+        target_identity_unchanged &&
+        rendered_target_has_correct_base;
+    const bool diagnostic_forced_reuse =
+        reuse_rendered_frame_enabled() && has_rendered_frame_ && no_meaningful_overlay_update;
+    const bool can_reuse_frame = normal_safe_reuse || diagnostic_forced_reuse;
+    if (can_reuse_frame) {
+      ++debug_stats_.base_copy_skipped_count;
+    } else {
+      const auto copy_t0 = std::chrono::steady_clock::now();
+      copy_base_to(dst);
+      const auto copy_t1 = std::chrono::steady_clock::now();
+      const uint64_t copy_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+      debug_stats_.base_copy_total_ns += copy_ns;
+      debug_stats_.base_copy_max_ns = std::max(debug_stats_.base_copy_max_ns, copy_ns);
+    }
+    rendered_target_valid_ = true;
+    rendered_target_base_key_ = key;
+    rendered_target_ptr_ = dst.data;
+    rendered_target_width_ = dst.width;
+    rendered_target_height_ = dst.height;
+    rendered_target_stride_bytes_ = dst.stride_bytes;
+    rendered_target_format_ = dst.format;
   }
 
+  const auto overlay_t0 = std::chrono::steady_clock::now();
   if (spec.overlay_frame_index_offsets) {
     apply_frame_index_offsets(spec, dst, overlay.frame_index);
   }
   if (spec.overlay_moving_bar) {
     apply_moving_bar(spec, dst, overlay.frame_index);
   }
+  const auto overlay_t1 = std::chrono::steady_clock::now();
+  const uint64_t overlay_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(overlay_t1 - overlay_t0).count());
+  debug_stats_.overlay_total_ns += overlay_ns;
+  debug_stats_.overlay_max_ns = std::max(debug_stats_.overlay_max_ns, overlay_ns);
+  has_rendered_frame_ = true;
 }
 
 void CpuPackedPatternRenderer::render_base_xy_xor(

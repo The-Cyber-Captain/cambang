@@ -54,6 +54,10 @@ bool env_flag_enabled(const char* name) {
   return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
 }
 
+bool env_gpu_update_only_when_display_requested_enabled() {
+  return env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED");
+}
+
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
   const char* value = std::getenv(name);
   if (!value || value[0] == '\0') {
@@ -81,6 +85,12 @@ uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
 
 double ns_to_ms(uint64_t ns) {
   return static_cast<double>(ns) / 1'000'000.0;
+}
+
+void record_timing_sample(uint64_t sample_ns, uint64_t& calls, uint64_t& total_ns, uint64_t& max_ns) {
+  ++calls;
+  total_ns += sample_ns;
+  max_ns = std::max(max_ns, sample_ns);
 }
 
 } // namespace
@@ -411,6 +421,24 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
 }
 
 void SyntheticProvider::timeline_pump_() {
+  const auto pump_t0 = std::chrono::steady_clock::now();
+  struct PumpTimingScope final {
+    SyntheticProvider* self = nullptr;
+    std::chrono::steady_clock::time_point t0{};
+    ~PumpTimingScope() {
+      if (!self) {
+        return;
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      const uint64_t pump_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+      record_timing_sample(
+          pump_ns,
+          self->triage_timeline_pump_calls_,
+          self->triage_timeline_pump_total_ns_,
+          self->triage_timeline_pump_max_ns_);
+    }
+  } pump_timing_scope{this, pump_t0};
   if (!timeline_running_ || timeline_paused_) {
     return;
   }
@@ -428,9 +456,11 @@ void SyntheticProvider::timeline_pump_() {
       break;
     }
     timeline_q_.pop();
+    const auto event_t0 = std::chrono::steady_clock::now();
 
     switch (ev.type) {
       case SyntheticEventType::EmitFrame: {
+        const auto emit_event_t0 = std::chrono::steady_clock::now();
         auto it = streams_.find(ev.stream_id);
         if (it == streams_.end()) {
           break;
@@ -460,6 +490,14 @@ void SyntheticProvider::timeline_pump_() {
         s.next_due_ns = ev.at_ns + period;
         // Deterministic continuation: schedule the next frame.
         timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
+        const auto emit_event_t1 = std::chrono::steady_clock::now();
+        const uint64_t emit_event_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(emit_event_t1 - emit_event_t0).count());
+        record_timing_sample(
+            emit_event_ns,
+            triage_timeline_emit_event_calls_,
+            triage_timeline_emit_event_total_ns_,
+            triage_timeline_emit_event_max_ns_);
         break;
       }
 
@@ -502,6 +540,14 @@ void SyntheticProvider::timeline_pump_() {
         break;
       }
     }
+    const auto event_t1 = std::chrono::steady_clock::now();
+    const uint64_t event_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(event_t1 - event_t0).count());
+    record_timing_sample(
+        event_ns,
+        triage_timeline_event_exec_calls_,
+        triage_timeline_event_exec_total_ns_,
+        triage_timeline_event_exec_max_ns_);
   }
 
   if (emitted_this_pump > 0) {
@@ -1487,6 +1533,7 @@ void SyntheticProvider::release_stream_live_gpu_backing_(StreamState& s) {
 }
 
 void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns) {
+  const auto emit_t0 = std::chrono::steady_clock::now();
   if (!callbacks_) {
     return;
   }
@@ -1520,11 +1567,18 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
 
   bool preset_valid = true;
+  const auto spec_t0 = std::chrono::steady_clock::now();
   PatternSpec spec = to_pattern_spec(s.picture, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  const auto spec_t1 = std::chrono::steady_clock::now();
+  const uint64_t spec_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(spec_t1 - spec_t0).count());
+  triage_render_spec_build_total_ns_ += spec_ns;
+  triage_render_spec_build_max_ns_ = std::max(triage_render_spec_build_max_ns_, spec_ns);
   if (!preset_valid) {
     invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  const auto target_t0 = std::chrono::steady_clock::now();
   PatternRenderTarget dst{};
   dst.data = s.gpu_staging.data();
   dst.size_bytes = s.gpu_staging.size();
@@ -1532,13 +1586,23 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   dst.height = h;
   dst.stride_bytes = stride;
   dst.format = PatternSpec::PackedFormat::RGBA8;
+  const auto target_t1 = std::chrono::steady_clock::now();
+  const uint64_t target_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(target_t1 - target_t0).count());
+  triage_render_target_prepare_total_ns_ += target_ns;
+  triage_render_target_prepare_max_ns_ = std::max(triage_render_target_prepare_max_ns_, target_ns);
 
   PatternOverlayData ov{};
   ov.frame_index = generator_frame_ordinal_from_ns_(scheduled_capture_ns, s.picture);
   ov.timestamp_ns = scheduled_capture_ns;
   ov.stream_id = s.req.stream_id;
 
+  const auto render_t0 = std::chrono::steady_clock::now();
   s.renderer.render_into(spec, dst, ov);
+  const auto render_t1 = std::chrono::steady_clock::now();
+  const uint64_t render_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(render_t1 - render_t0).count());
+  record_timing_sample(render_ns, triage_frame_render_calls_, triage_frame_render_total_ns_, triage_frame_render_max_ns_);
   bool gpu_ok = false;
   std::shared_ptr<void> gpu_backing;
   if (s.prefer_gpu_backing) {
@@ -1551,21 +1615,33 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     triage_gpu_ensure_backing_total_ns_ += ensure_ns;
     triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
     if (ensured_backing) {
-      ++triage_gpu_update_attempts_total_;
-      ++triage_gpu_update_total_calls_;
-      const auto update_total_t0 = std::chrono::steady_clock::now();
-      gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
-          s.live_gpu_backing,
-          s.gpu_staging.data(),
-          w,
-          h,
-          stride);
-      const auto update_total_t1 = std::chrono::steady_clock::now();
-      const uint64_t update_total_ns = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(update_total_t1 - update_total_t0).count());
-      triage_gpu_update_total_ns_ += update_total_ns;
-      triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_total_ns);
-      if (!gpu_ok) {
+      const bool only_when_display_requested = env_gpu_update_only_when_display_requested_enabled();
+      const bool provider_has_display_demand_signal = false;
+      const bool display_demand_active = false;
+      const bool skip_gpu_update_for_demand =
+          only_when_display_requested &&
+          (!provider_has_display_demand_signal || !display_demand_active);
+      bool attempted_gpu_update = false;
+      if (skip_gpu_update_for_demand) {
+        ++triage_gpu_update_demand_skipped_total_;
+      } else {
+        attempted_gpu_update = true;
+        ++triage_gpu_update_attempts_total_;
+        ++triage_gpu_update_total_calls_;
+        const auto update_total_t0 = std::chrono::steady_clock::now();
+        gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+            s.live_gpu_backing,
+            s.gpu_staging.data(),
+            w,
+            h,
+            stride);
+        const auto update_total_t1 = std::chrono::steady_clock::now();
+        const uint64_t update_total_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(update_total_t1 - update_total_t0).count());
+        triage_gpu_update_total_ns_ += update_total_ns;
+        triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_total_ns);
+      }
+      if (attempted_gpu_update && !gpu_ok) {
         ++triage_gpu_update_failures_total_;
         ++triage_gpu_update_retries_total_;
         // Preserve current provider hardening shape: one release/recreate and
@@ -1608,7 +1684,12 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   if (!gpu_ok) {
     // Intentional current-slice behavior: renderer output stages in CPU memory
     // each frame, then uploads to the stream-owned live GPU backing when used.
+    const auto copy_t0 = std::chrono::steady_clock::now();
     std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    const uint64_t copy_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+    record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
   }
 
   FrameView fv{};
@@ -1639,7 +1720,16 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = lease;
 
+  const auto post_t0 = std::chrono::steady_clock::now();
   strand_.post_frame(fv);
+  const auto post_t1 = std::chrono::steady_clock::now();
+  const uint64_t post_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(post_t1 - post_t0).count());
+  record_timing_sample(post_ns, triage_post_frame_calls_, triage_post_frame_total_ns_, triage_post_frame_max_ns_);
+  const auto emit_t1 = std::chrono::steady_clock::now();
+  const uint64_t emit_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(emit_t1 - emit_t0).count());
+  record_timing_sample(emit_ns, triage_emit_frame_calls_, triage_emit_frame_total_ns_, triage_emit_frame_max_ns_);
 }
 
 void SyntheticProvider::emit_due_frames_() {
@@ -1704,32 +1794,59 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
   uint64_t gpu_texture_update_calls = 0;
   uint64_t gpu_texture_update_total_ns = 0;
   uint64_t gpu_texture_update_max_ns = 0;
+  uint64_t gpu_texture_update_skipped = 0;
+  uint64_t pattern_base_cache_hit_count = 0;
+  uint64_t pattern_base_cache_miss_count = 0;
+  uint64_t pattern_base_render_total_ns = 0;
+  uint64_t pattern_base_render_max_ns = 0;
+  uint64_t pattern_base_copy_total_ns = 0;
+  uint64_t pattern_base_copy_max_ns = 0;
+  uint64_t pattern_base_copy_skipped_count = 0;
+  uint64_t pattern_overlay_total_ns = 0;
+  uint64_t pattern_overlay_max_ns = 0;
+  for (const auto& kv : streams_) {
+    const auto& stats = kv.second.renderer.debug_stats();
+    pattern_base_cache_hit_count += stats.base_cache_hit_count;
+    pattern_base_cache_miss_count += stats.base_cache_miss_count;
+    pattern_base_render_total_ns += stats.base_render_total_ns;
+    pattern_base_render_max_ns = std::max(pattern_base_render_max_ns, stats.base_render_max_ns);
+    pattern_base_copy_total_ns += stats.base_copy_total_ns;
+    pattern_base_copy_max_ns = std::max(pattern_base_copy_max_ns, stats.base_copy_max_ns);
+    pattern_base_copy_skipped_count += stats.base_copy_skipped_count;
+    pattern_overlay_total_ns += stats.overlay_total_ns;
+    pattern_overlay_max_ns = std::max(pattern_overlay_max_ns, stats.overlay_max_ns);
+  }
   const bool has_gpu_subbucket_stats = synthetic_gpu_backing_take_update_timing_stats(
       gpu_upload_copy_calls,
       gpu_upload_copy_total_ns,
       gpu_upload_copy_max_ns,
       gpu_texture_update_calls,
       gpu_texture_update_total_ns,
-      gpu_texture_update_max_ns);
+      gpu_texture_update_max_ns,
+      gpu_texture_update_skipped);
   synthetic_triage_printf(
       "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
-      "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
-      "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
-      "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
-      "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
-      "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
-      "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
-      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f",
+      "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu",
       static_cast<unsigned long long>(triage_frames_emitted_total_),
       static_cast<unsigned long long>(triage_catchup_bursts_total_),
       triage_catchup_max_frames_in_tick_,
       static_cast<unsigned long long>(triage_falling_behind_repeat_total_),
       triage_catchup_cap_per_tick_,
       static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
-      static_cast<unsigned long long>(triage_catchup_frames_dropped_total_),
+      static_cast<unsigned long long>(triage_catchup_frames_dropped_total_));
+  synthetic_triage_printf(
+      "[cambang][synth-gpu] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "gpu_update_demand_skipped=%llu "
+      "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
+      "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
+      "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
+      "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
+      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f "
+      "gpu_texture_update_skipped=%llu",
       static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
       static_cast<unsigned long long>(triage_gpu_update_failures_total_),
       static_cast<unsigned long long>(triage_gpu_update_retries_total_),
+      static_cast<unsigned long long>(triage_gpu_update_demand_skipped_total_),
       static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
       static_cast<unsigned long long>(triage_gpu_backing_release_total_),
       static_cast<unsigned long long>(triage_gpu_ensure_backing_calls_total_),
@@ -1743,7 +1860,63 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_max_ns : 0),
       static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_calls : 0),
       ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0),
-      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0));
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_skipped : 0));
+  synthetic_triage_printf(
+      "[cambang][synth-timeline] timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
+      "timeline_event_exec_calls=%llu timeline_event_exec_total_ms=%.3f timeline_event_exec_max_ms=%.3f "
+      "timeline_emit_event_calls=%llu timeline_emit_event_total_ms=%.3f timeline_emit_event_max_ms=%.3f "
+      "emit_frame_calls=%llu emit_frame_total_ms=%.3f emit_frame_max_ms=%.3f "
+      "frame_copy_calls=%llu frame_copy_total_ms=%.3f frame_copy_max_ms=%.3f "
+      "post_frame_calls=%llu post_frame_total_ms=%.3f post_frame_max_ms=%.3f "
+      "strand_flush_calls=%llu strand_flush_total_ms=%.3f strand_flush_max_ms=%.3f",
+      static_cast<unsigned long long>(triage_timeline_pump_calls_),
+      ns_to_ms(triage_timeline_pump_total_ns_),
+      ns_to_ms(triage_timeline_pump_max_ns_),
+      static_cast<unsigned long long>(triage_timeline_event_exec_calls_),
+      ns_to_ms(triage_timeline_event_exec_total_ns_),
+      ns_to_ms(triage_timeline_event_exec_max_ns_),
+      static_cast<unsigned long long>(triage_timeline_emit_event_calls_),
+      ns_to_ms(triage_timeline_emit_event_total_ns_),
+      ns_to_ms(triage_timeline_emit_event_max_ns_),
+      static_cast<unsigned long long>(triage_emit_frame_calls_),
+      ns_to_ms(triage_emit_frame_total_ns_),
+      ns_to_ms(triage_emit_frame_max_ns_),
+      static_cast<unsigned long long>(triage_frame_copy_calls_),
+      ns_to_ms(triage_frame_copy_total_ns_),
+      ns_to_ms(triage_frame_copy_max_ns_),
+      static_cast<unsigned long long>(triage_post_frame_calls_),
+      ns_to_ms(triage_post_frame_total_ns_),
+      ns_to_ms(triage_post_frame_max_ns_),
+      static_cast<unsigned long long>(triage_strand_flush_calls_),
+      ns_to_ms(triage_strand_flush_total_ns_),
+      ns_to_ms(triage_strand_flush_max_ns_));
+  synthetic_triage_printf(
+      "[cambang][synth-render] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
+      "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
+      "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
+      "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f pattern_base_copy_skipped_count=%llu "
+      "pattern_overlay_total_ms=%.3f pattern_overlay_max_ms=%.3f "
+      "render_spec_build_total_ms=%.3f render_spec_build_max_ms=%.3f "
+      "render_target_prepare_total_ms=%.3f render_target_prepare_max_ms=%.3f "
+      "render_allocation_or_resize_count=%llu",
+      static_cast<unsigned long long>(triage_frame_render_calls_),
+      ns_to_ms(triage_frame_render_total_ns_),
+      ns_to_ms(triage_frame_render_max_ns_),
+      static_cast<unsigned long long>(pattern_base_cache_hit_count),
+      static_cast<unsigned long long>(pattern_base_cache_miss_count),
+      ns_to_ms(pattern_base_render_total_ns),
+      ns_to_ms(pattern_base_render_max_ns),
+      ns_to_ms(pattern_base_copy_total_ns),
+      ns_to_ms(pattern_base_copy_max_ns),
+      static_cast<unsigned long long>(pattern_base_copy_skipped_count),
+      ns_to_ms(pattern_overlay_total_ns),
+      ns_to_ms(pattern_overlay_max_ns),
+      ns_to_ms(triage_render_spec_build_total_ns_),
+      ns_to_ms(triage_render_spec_build_max_ns_),
+      ns_to_ms(triage_render_target_prepare_total_ns_),
+      ns_to_ms(triage_render_target_prepare_max_ns_),
+      static_cast<unsigned long long>(triage_render_allocation_or_resize_count_));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
@@ -1778,7 +1951,16 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   // Keep virtual-time advances deterministic from the harness perspective:
   // deliver all provider->core callbacks generated by this advance before
   // returning so publish-only checks do not race queued frame delivery.
+  const auto flush_t0 = std::chrono::steady_clock::now();
   strand_.flush();
+  const auto flush_t1 = std::chrono::steady_clock::now();
+  const uint64_t flush_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(flush_t1 - flush_t0).count());
+  record_timing_sample(
+      flush_ns,
+      triage_strand_flush_calls_,
+      triage_strand_flush_total_ns_,
+      triage_strand_flush_max_ns_);
 }
 
 } // namespace cambang

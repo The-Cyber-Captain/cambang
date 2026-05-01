@@ -36,7 +36,8 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint64_t& upload_copy_max_ns,
       uint64_t& texture_update_calls,
       uint64_t& texture_update_total_ns,
-      uint64_t& texture_update_max_ns) noexcept = nullptr;
+      uint64_t& texture_update_max_ns,
+      uint64_t& texture_update_skipped) noexcept = nullptr;
 };
 
 void set_synthetic_gpu_backing_runtime_ops(const SyntheticGpuBackingRuntimeOps* ops) noexcept;
@@ -73,6 +74,7 @@ bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_max_ns,
     uint64_t& texture_update_calls,
     uint64_t& texture_update_total_ns,
-    uint64_t& texture_update_max_ns) noexcept;
+    uint64_t& texture_update_max_ns,
+    uint64_t& texture_update_skipped) noexcept;
 
 } // namespace cambang

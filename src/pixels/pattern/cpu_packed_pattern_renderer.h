@@ -14,6 +14,17 @@ namespace cambang {
 // - Per-frame overlays applied without allocations.
 class CpuPackedPatternRenderer final : public IPatternRenderer {
 public:
+  struct DebugStats final {
+    uint64_t base_cache_hit_count = 0;
+    uint64_t base_cache_miss_count = 0;
+    uint64_t base_render_total_ns = 0;
+    uint64_t base_render_max_ns = 0;
+    uint64_t base_copy_total_ns = 0;
+    uint64_t base_copy_max_ns = 0;
+    uint64_t base_copy_skipped_count = 0;
+    uint64_t overlay_total_ns = 0;
+    uint64_t overlay_max_ns = 0;
+  };
   CpuPackedPatternRenderer() = default;
   ~CpuPackedPatternRenderer() override = default;
 
@@ -23,6 +34,7 @@ public:
       const PatternSpec& spec,
       const PatternRenderTarget& dst,
       const PatternOverlayData& overlay) override;
+  const DebugStats& debug_stats() const { return debug_stats_; }
 
 private:
   void ensure_base(const PatternSpec& spec);
@@ -69,9 +81,18 @@ private:
 private:
   PatternBaseKey base_key_{};
   bool base_valid_ = false;
+  bool rendered_target_valid_ = false;
+  PatternBaseKey rendered_target_base_key_{};
+  const void* rendered_target_ptr_ = nullptr;
+  uint32_t rendered_target_width_ = 0;
+  uint32_t rendered_target_height_ = 0;
+  uint32_t rendered_target_stride_bytes_ = 0;
+  PatternSpec::PackedFormat rendered_target_format_ = PatternSpec::PackedFormat::RGBA8;
 
   uint32_t base_stride_bytes_ = 0; // tight
   std::vector<uint8_t> base_pixels_;
+  bool has_rendered_frame_ = false;
+  DebugStats debug_stats_{};
 };
 
 } // namespace cambang
