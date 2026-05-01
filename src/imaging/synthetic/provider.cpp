@@ -418,6 +418,23 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
 
 void SyntheticProvider::timeline_pump_() {
   const auto pump_t0 = std::chrono::steady_clock::now();
+  struct PumpTimingScope final {
+    SyntheticProvider* self = nullptr;
+    std::chrono::steady_clock::time_point t0{};
+    ~PumpTimingScope() {
+      if (!self) {
+        return;
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      const uint64_t pump_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+      record_timing_sample(
+          pump_ns,
+          self->triage_timeline_pump_calls_,
+          self->triage_timeline_pump_total_ns_,
+          self->triage_timeline_pump_max_ns_);
+    }
+  } pump_timing_scope{this, pump_t0};
   if (!timeline_running_ || timeline_paused_) {
     return;
   }
@@ -549,14 +566,6 @@ void SyntheticProvider::timeline_pump_() {
     timeline_activate_or_dispatch_(ev, /*allow_pending=*/false);
   }
   timeline_pending_destructive_.swap(still_pending);
-  const auto pump_t1 = std::chrono::steady_clock::now();
-  const uint64_t pump_ns = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(pump_t1 - pump_t0).count());
-  record_timing_sample(
-      pump_ns,
-      triage_timeline_pump_calls_,
-      triage_timeline_pump_total_ns_,
-      triage_timeline_pump_max_ns_);
 }
 
 void SyntheticProvider::set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook) {
