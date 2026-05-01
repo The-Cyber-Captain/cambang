@@ -54,6 +54,10 @@ bool env_flag_enabled(const char* name) {
   return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
 }
 
+bool env_gpu_update_only_when_display_requested_enabled() {
+  return env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED");
+}
+
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
   const char* value = std::getenv(name);
   if (!value || value[0] == '\0') {
@@ -1611,21 +1615,33 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     triage_gpu_ensure_backing_total_ns_ += ensure_ns;
     triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
     if (ensured_backing) {
-      ++triage_gpu_update_attempts_total_;
-      ++triage_gpu_update_total_calls_;
-      const auto update_total_t0 = std::chrono::steady_clock::now();
-      gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
-          s.live_gpu_backing,
-          s.gpu_staging.data(),
-          w,
-          h,
-          stride);
-      const auto update_total_t1 = std::chrono::steady_clock::now();
-      const uint64_t update_total_ns = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(update_total_t1 - update_total_t0).count());
-      triage_gpu_update_total_ns_ += update_total_ns;
-      triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_total_ns);
-      if (!gpu_ok) {
+      const bool only_when_display_requested = env_gpu_update_only_when_display_requested_enabled();
+      const bool provider_has_display_demand_signal = false;
+      const bool display_demand_active = false;
+      const bool skip_gpu_update_for_demand =
+          only_when_display_requested &&
+          (!provider_has_display_demand_signal || !display_demand_active);
+      bool attempted_gpu_update = false;
+      if (skip_gpu_update_for_demand) {
+        ++triage_gpu_update_demand_skipped_total_;
+      } else {
+        attempted_gpu_update = true;
+        ++triage_gpu_update_attempts_total_;
+        ++triage_gpu_update_total_calls_;
+        const auto update_total_t0 = std::chrono::steady_clock::now();
+        gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
+            s.live_gpu_backing,
+            s.gpu_staging.data(),
+            w,
+            h,
+            stride);
+        const auto update_total_t1 = std::chrono::steady_clock::now();
+        const uint64_t update_total_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(update_total_t1 - update_total_t0).count());
+        triage_gpu_update_total_ns_ += update_total_ns;
+        triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_total_ns);
+      }
+      if (attempted_gpu_update && !gpu_ok) {
         ++triage_gpu_update_failures_total_;
         ++triage_gpu_update_retries_total_;
         // Preserve current provider hardening shape: one release/recreate and
@@ -1820,6 +1836,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_catchup_frames_dropped_total_));
   synthetic_triage_printf(
       "[cambang][synth-gpu] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "gpu_update_demand_skipped=%llu "
       "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
       "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
       "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
@@ -1829,6 +1846,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
       static_cast<unsigned long long>(triage_gpu_update_failures_total_),
       static_cast<unsigned long long>(triage_gpu_update_retries_total_),
+      static_cast<unsigned long long>(triage_gpu_update_demand_skipped_total_),
       static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
       static_cast<unsigned long long>(triage_gpu_backing_release_total_),
       static_cast<unsigned long long>(triage_gpu_ensure_backing_calls_total_),

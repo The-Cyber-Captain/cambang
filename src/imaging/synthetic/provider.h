@@ -238,6 +238,7 @@ private:
   uint32_t triage_catchup_max_frames_in_tick_ = 0;
   uint64_t triage_falling_behind_repeat_total_ = 0;
   uint64_t triage_gpu_update_attempts_total_ = 0;
+  uint64_t triage_gpu_update_demand_skipped_total_ = 0;
   uint64_t triage_gpu_update_failures_total_ = 0;
   uint64_t triage_gpu_update_retries_total_ = 0;
   uint64_t triage_gpu_backing_recreate_total_ = 0;
