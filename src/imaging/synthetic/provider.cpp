@@ -15,8 +15,8 @@
 #include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
-#if __has_include(<godot_cpp/classes/utility_functions.hpp>)
-#include <godot_cpp/classes/utility_functions.hpp>
+#if __has_include(<godot_cpp/variant/utility_functions.hpp>)
+#include <godot_cpp/variant/utility_functions.hpp>
 #define CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT 1
 #else
 #define CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT 0
