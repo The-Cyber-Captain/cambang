@@ -30,6 +30,13 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint32_t height,
       uint32_t stride_bytes) noexcept = nullptr;
   void (*release_stream_live_gpu_backing)(std::shared_ptr<void>& backing) noexcept = nullptr;
+  bool (*take_update_timing_stats)(
+      uint64_t& upload_copy_calls,
+      uint64_t& upload_copy_total_ns,
+      uint64_t& upload_copy_max_ns,
+      uint64_t& texture_update_calls,
+      uint64_t& texture_update_total_ns,
+      uint64_t& texture_update_max_ns) noexcept = nullptr;
 };
 
 void set_synthetic_gpu_backing_runtime_ops(const SyntheticGpuBackingRuntimeOps* ops) noexcept;
@@ -60,5 +67,12 @@ bool synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
     uint32_t height,
     uint32_t stride_bytes) noexcept;
 void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept;
+bool synthetic_gpu_backing_take_update_timing_stats(
+    uint64_t& upload_copy_calls,
+    uint64_t& upload_copy_total_ns,
+    uint64_t& upload_copy_max_ns,
+    uint64_t& texture_update_calls,
+    uint64_t& texture_update_total_ns,
+    uint64_t& texture_update_max_ns) noexcept;
 
 } // namespace cambang

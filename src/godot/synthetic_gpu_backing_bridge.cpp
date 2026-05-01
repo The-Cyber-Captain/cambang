@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <mutex>
+#include <chrono>
 #include <utility>
 #include <vector>
 
@@ -165,6 +166,26 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
   return value && value[0] != '\0' && value[0] != '0';
+}
+
+struct GpuUpdateTimingStats final {
+  uint64_t upload_copy_calls = 0;
+  uint64_t upload_copy_total_ns = 0;
+  uint64_t upload_copy_max_ns = 0;
+  uint64_t texture_update_calls = 0;
+  uint64_t texture_update_total_ns = 0;
+  uint64_t texture_update_max_ns = 0;
+};
+
+std::mutex g_gpu_update_timing_stats_mutex;
+GpuUpdateTimingStats g_gpu_update_timing_stats;
+
+void record_update_timing(uint64_t& max_ns, uint64_t& total_ns, uint64_t& calls, uint64_t sample_ns) {
+  total_ns += sample_ns;
+  ++calls;
+  if (sample_ns > max_ns) {
+    max_ns = sample_ns;
+  }
 }
 
 void trace_gpu(const char* message) {
@@ -437,9 +458,45 @@ bool update_stream_live_gpu_backing_rgba8(
     if (retained->upload_bytes.size() != frame_bytes) {
       retained->upload_bytes.resize(frame_bytes);
     }
+    const auto copy_t0 = std::chrono::steady_clock::now();
     std::memcpy(retained->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    const auto update_t0 = copy_t1;
     rd->texture_update(texture_rid, 0, retained->upload_bytes);
+    const auto update_t1 = std::chrono::steady_clock::now();
+    const uint64_t copy_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+    const uint64_t update_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(update_t1 - update_t0).count());
+    std::lock_guard<std::mutex> timing_lock(g_gpu_update_timing_stats_mutex);
+    record_update_timing(
+        g_gpu_update_timing_stats.upload_copy_max_ns,
+        g_gpu_update_timing_stats.upload_copy_total_ns,
+        g_gpu_update_timing_stats.upload_copy_calls,
+        copy_ns);
+    record_update_timing(
+        g_gpu_update_timing_stats.texture_update_max_ns,
+        g_gpu_update_timing_stats.texture_update_total_ns,
+        g_gpu_update_timing_stats.texture_update_calls,
+        update_ns);
   }
+  return true;
+}
+
+bool take_update_timing_stats(
+    uint64_t& upload_copy_calls,
+    uint64_t& upload_copy_total_ns,
+    uint64_t& upload_copy_max_ns,
+    uint64_t& texture_update_calls,
+    uint64_t& texture_update_total_ns,
+    uint64_t& texture_update_max_ns) noexcept {
+  std::lock_guard<std::mutex> lock(g_gpu_update_timing_stats_mutex);
+  upload_copy_calls = g_gpu_update_timing_stats.upload_copy_calls;
+  upload_copy_total_ns = g_gpu_update_timing_stats.upload_copy_total_ns;
+  upload_copy_max_ns = g_gpu_update_timing_stats.upload_copy_max_ns;
+  texture_update_calls = g_gpu_update_timing_stats.texture_update_calls;
+  texture_update_total_ns = g_gpu_update_timing_stats.texture_update_total_ns;
+  texture_update_max_ns = g_gpu_update_timing_stats.texture_update_max_ns;
   return true;
 }
 
@@ -462,6 +519,7 @@ const SyntheticGpuBackingRuntimeOps kOps{
     &create_stream_live_gpu_backing_rgba8,
     &update_stream_live_gpu_backing_rgba8,
     &release_stream_live_gpu_backing,
+    &take_update_timing_stats,
 };
 
 } // namespace

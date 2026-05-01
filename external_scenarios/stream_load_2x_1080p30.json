@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "devices": [
+    { "key": "cam0", "endpoint_index": 0 },
+    { "key": "cam1", "endpoint_index": 1 }
+  ],
+  "streams": [
+    {
+      "key": "preview0",
+      "device_key": "cam0",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1920,
+        "height": 1080,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    },
+    {
+      "key": "preview1",
+      "device_key": "cam1",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1920,
+        "height": 1080,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    }
+  ],
+  "timeline": [
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "cam0" },
+    { "at_ns": 0, "type": "OpenDevice", "device_key": "cam1" },
+    { "at_ns": 0, "type": "CreateStream", "stream_key": "preview0" },
+    { "at_ns": 0, "type": "CreateStream", "stream_key": "preview1" },
+    {
+      "at_ns": 0,
+      "type": "UpdateStreamPicture",
+      "stream_key": "preview0",
+      "picture": {
+        "preset": "checker",
+        "seed": 401,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    {
+      "at_ns": 0,
+      "type": "UpdateStreamPicture",
+      "stream_key": "preview1",
+      "picture": {
+        "preset": "checker",
+        "seed": 402,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    { "at_ns": 0, "type": "StartStream", "stream_key": "preview0" },
+    { "at_ns": 0, "type": "StartStream", "stream_key": "preview1" },
+    { "at_ns": 600000000000, "type": "StopStream", "stream_key": "preview0" },
+    { "at_ns": 600000000000, "type": "StopStream", "stream_key": "preview1" },
+    { "at_ns": 600000000001, "type": "DestroyStream", "stream_key": "preview0" },
+    { "at_ns": 600000000001, "type": "DestroyStream", "stream_key": "preview1" },
+    { "at_ns": 600000000002, "type": "CloseDevice", "device_key": "cam0" },
+    { "at_ns": 600000000002, "type": "CloseDevice", "device_key": "cam1" }
+  ]
+}
