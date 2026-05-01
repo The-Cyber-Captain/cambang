@@ -1704,13 +1704,15 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
   uint64_t gpu_texture_update_calls = 0;
   uint64_t gpu_texture_update_total_ns = 0;
   uint64_t gpu_texture_update_max_ns = 0;
+  uint64_t gpu_texture_update_skipped = 0;
   const bool has_gpu_subbucket_stats = synthetic_gpu_backing_take_update_timing_stats(
       gpu_upload_copy_calls,
       gpu_upload_copy_total_ns,
       gpu_upload_copy_max_ns,
       gpu_texture_update_calls,
       gpu_texture_update_total_ns,
-      gpu_texture_update_max_ns);
+      gpu_texture_update_max_ns,
+      gpu_texture_update_skipped);
   synthetic_triage_printf(
       "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
       "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
@@ -1719,7 +1721,8 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
       "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
       "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
-      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f",
+      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f "
+      "gpu_texture_update_skipped=%llu",
       static_cast<unsigned long long>(triage_frames_emitted_total_),
       static_cast<unsigned long long>(triage_catchup_bursts_total_),
       triage_catchup_max_frames_in_tick_,
@@ -1743,7 +1746,8 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_max_ns : 0),
       static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_calls : 0),
       ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0),
-      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0));
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_skipped : 0));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
