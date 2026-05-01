@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -76,6 +77,10 @@ uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   // period = 1s * den / num
   const uint64_t one_sec = 1'000'000'000ull;
   return (one_sec * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
+}
+
+double ns_to_ms(uint64_t ns) {
+  return static_cast<double>(ns) / 1'000'000.0;
 }
 
 } // namespace
@@ -1537,14 +1542,29 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   bool gpu_ok = false;
   std::shared_ptr<void> gpu_backing;
   if (s.prefer_gpu_backing) {
-    if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+    const auto ensure_t0 = std::chrono::steady_clock::now();
+    const bool ensured_backing = ensure_stream_live_gpu_backing_(s, w, h, stride);
+    const auto ensure_t1 = std::chrono::steady_clock::now();
+    const uint64_t ensure_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ensure_t1 - ensure_t0).count());
+    ++triage_gpu_ensure_backing_calls_total_;
+    triage_gpu_ensure_backing_total_ns_ += ensure_ns;
+    triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
+    if (ensured_backing) {
       ++triage_gpu_update_attempts_total_;
+      ++triage_gpu_update_total_calls_;
+      const auto update_total_t0 = std::chrono::steady_clock::now();
       gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
           s.live_gpu_backing,
           s.gpu_staging.data(),
           w,
           h,
           stride);
+      const auto update_total_t1 = std::chrono::steady_clock::now();
+      const uint64_t update_total_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(update_total_t1 - update_total_t0).count());
+      triage_gpu_update_total_ns_ += update_total_ns;
+      triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_total_ns);
       if (!gpu_ok) {
         ++triage_gpu_update_failures_total_;
         ++triage_gpu_update_retries_total_;
@@ -1552,14 +1572,29 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
         // one retry if the in-place live-backing update reports failure.
         ++triage_gpu_backing_recreate_total_;
         release_stream_live_gpu_backing_(s);
-        if (ensure_stream_live_gpu_backing_(s, w, h, stride)) {
+        const auto ensure_retry_t0 = std::chrono::steady_clock::now();
+        const bool ensured_retry = ensure_stream_live_gpu_backing_(s, w, h, stride);
+        const auto ensure_retry_t1 = std::chrono::steady_clock::now();
+        const uint64_t ensure_retry_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(ensure_retry_t1 - ensure_retry_t0).count());
+        ++triage_gpu_ensure_backing_calls_total_;
+        triage_gpu_ensure_backing_total_ns_ += ensure_retry_ns;
+        triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_retry_ns);
+        if (ensured_retry) {
           ++triage_gpu_update_attempts_total_;
+          ++triage_gpu_update_total_calls_;
+          const auto update_retry_t0 = std::chrono::steady_clock::now();
           gpu_ok = synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
               s.live_gpu_backing,
               s.gpu_staging.data(),
               w,
               h,
               stride);
+          const auto update_retry_t1 = std::chrono::steady_clock::now();
+          const uint64_t update_retry_ns = static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(update_retry_t1 - update_retry_t0).count());
+          triage_gpu_update_total_ns_ += update_retry_ns;
+          triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_retry_ns);
           if (!gpu_ok) {
             ++triage_gpu_update_failures_total_;
           }
@@ -1663,11 +1698,28 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
     return;
   }
   triage_next_log_ns_ = now + kTriageLogIntervalNs;
+  uint64_t gpu_upload_copy_calls = 0;
+  uint64_t gpu_upload_copy_total_ns = 0;
+  uint64_t gpu_upload_copy_max_ns = 0;
+  uint64_t gpu_texture_update_calls = 0;
+  uint64_t gpu_texture_update_total_ns = 0;
+  uint64_t gpu_texture_update_max_ns = 0;
+  const bool has_gpu_subbucket_stats = synthetic_gpu_backing_take_update_timing_stats(
+      gpu_upload_copy_calls,
+      gpu_upload_copy_total_ns,
+      gpu_upload_copy_max_ns,
+      gpu_texture_update_calls,
+      gpu_texture_update_total_ns,
+      gpu_texture_update_max_ns);
   synthetic_triage_printf(
       "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
       "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
       "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
-      "gpu_backing_recreates=%llu gpu_backing_releases=%llu",
+      "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
+      "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
+      "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
+      "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
+      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f",
       static_cast<unsigned long long>(triage_frames_emitted_total_),
       static_cast<unsigned long long>(triage_catchup_bursts_total_),
       triage_catchup_max_frames_in_tick_,
@@ -1679,7 +1731,19 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_gpu_update_failures_total_),
       static_cast<unsigned long long>(triage_gpu_update_retries_total_),
       static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
-      static_cast<unsigned long long>(triage_gpu_backing_release_total_));
+      static_cast<unsigned long long>(triage_gpu_backing_release_total_),
+      static_cast<unsigned long long>(triage_gpu_ensure_backing_calls_total_),
+      ns_to_ms(triage_gpu_ensure_backing_total_ns_),
+      ns_to_ms(triage_gpu_ensure_backing_max_ns_),
+      static_cast<unsigned long long>(triage_gpu_update_total_calls_),
+      ns_to_ms(triage_gpu_update_total_ns_),
+      ns_to_ms(triage_gpu_update_total_max_ns_),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_upload_copy_calls : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_total_ns : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_max_ns : 0),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_calls : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {

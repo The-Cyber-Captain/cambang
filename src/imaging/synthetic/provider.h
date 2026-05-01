@@ -242,6 +242,12 @@ private:
   uint64_t triage_gpu_update_retries_total_ = 0;
   uint64_t triage_gpu_backing_recreate_total_ = 0;
   uint64_t triage_gpu_backing_release_total_ = 0;
+  uint64_t triage_gpu_ensure_backing_calls_total_ = 0;
+  uint64_t triage_gpu_ensure_backing_total_ns_ = 0;
+  uint64_t triage_gpu_ensure_backing_max_ns_ = 0;
+  uint64_t triage_gpu_update_total_calls_ = 0;
+  uint64_t triage_gpu_update_total_ns_ = 0;
+  uint64_t triage_gpu_update_total_max_ns_ = 0;
   bool triage_timeline_path_banner_emitted_ = false;
   bool triage_nominal_path_banner_emitted_ = false;
 
