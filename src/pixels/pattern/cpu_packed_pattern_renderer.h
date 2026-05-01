@@ -81,6 +81,13 @@ private:
 private:
   PatternBaseKey base_key_{};
   bool base_valid_ = false;
+  bool rendered_target_valid_ = false;
+  PatternBaseKey rendered_target_base_key_{};
+  const void* rendered_target_ptr_ = nullptr;
+  uint32_t rendered_target_width_ = 0;
+  uint32_t rendered_target_height_ = 0;
+  uint32_t rendered_target_stride_bytes_ = 0;
+  PatternSpec::PackedFormat rendered_target_format_ = PatternSpec::PackedFormat::RGBA8;
 
   uint32_t base_stride_bytes_ = 0; // tight
   std::vector<uint8_t> base_pixels_;

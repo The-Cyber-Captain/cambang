@@ -92,16 +92,35 @@ void CpuPackedPatternRenderer::render_into(
     const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
     debug_stats_.base_render_total_ns += ns;
     debug_stats_.base_render_max_ns = std::max(debug_stats_.base_render_max_ns, ns);
+    rendered_target_valid_ = false;
   } else {
     const PatternBaseKey key = PatternBaseKey::from_spec(spec);
-    if (base_valid_ && key == base_key_) {
+    const bool base_cache_hit = (base_valid_ && key == base_key_);
+    if (base_cache_hit) {
       ++debug_stats_.base_cache_hit_count;
     } else {
       ++debug_stats_.base_cache_miss_count;
     }
     ensure_base(spec);
     const bool no_meaningful_overlay_update = !spec.overlay_frame_index_offsets && !spec.overlay_moving_bar;
-    const bool can_reuse_frame = reuse_rendered_frame_enabled() && has_rendered_frame_ && no_meaningful_overlay_update;
+    const bool target_identity_unchanged =
+        rendered_target_valid_ &&
+        rendered_target_ptr_ == dst.data &&
+        rendered_target_width_ == dst.width &&
+        rendered_target_height_ == dst.height &&
+        rendered_target_stride_bytes_ == dst.stride_bytes &&
+        rendered_target_format_ == dst.format;
+    const bool rendered_target_has_correct_base =
+        rendered_target_valid_ &&
+        rendered_target_base_key_ == key;
+    const bool normal_safe_reuse =
+        base_cache_hit &&
+        no_meaningful_overlay_update &&
+        target_identity_unchanged &&
+        rendered_target_has_correct_base;
+    const bool diagnostic_forced_reuse =
+        reuse_rendered_frame_enabled() && has_rendered_frame_ && no_meaningful_overlay_update;
+    const bool can_reuse_frame = normal_safe_reuse || diagnostic_forced_reuse;
     if (can_reuse_frame) {
       ++debug_stats_.base_copy_skipped_count;
     } else {
@@ -113,6 +132,13 @@ void CpuPackedPatternRenderer::render_into(
       debug_stats_.base_copy_total_ns += copy_ns;
       debug_stats_.base_copy_max_ns = std::max(debug_stats_.base_copy_max_ns, copy_ns);
     }
+    rendered_target_valid_ = true;
+    rendered_target_base_key_ = key;
+    rendered_target_ptr_ = dst.data;
+    rendered_target_width_ = dst.width;
+    rendered_target_height_ = dst.height;
+    rendered_target_stride_bytes_ = dst.stride_bytes;
+    rendered_target_format_ = dst.format;
   }
 
   const auto overlay_t0 = std::chrono::steady_clock::now();
