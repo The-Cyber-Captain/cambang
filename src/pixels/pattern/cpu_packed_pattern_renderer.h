@@ -21,6 +21,7 @@ public:
     uint64_t base_render_max_ns = 0;
     uint64_t base_copy_total_ns = 0;
     uint64_t base_copy_max_ns = 0;
+    uint64_t base_copy_skipped_count = 0;
     uint64_t overlay_total_ns = 0;
     uint64_t overlay_max_ns = 0;
   };
@@ -83,6 +84,7 @@ private:
 
   uint32_t base_stride_bytes_ = 0; // tight
   std::vector<uint8_t> base_pixels_;
+  bool has_rendered_frame_ = false;
   DebugStats debug_stats_{};
 };
 

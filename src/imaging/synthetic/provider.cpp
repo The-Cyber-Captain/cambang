@@ -1785,6 +1785,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
   uint64_t pattern_base_render_max_ns = 0;
   uint64_t pattern_base_copy_total_ns = 0;
   uint64_t pattern_base_copy_max_ns = 0;
+  uint64_t pattern_base_copy_skipped_count = 0;
   uint64_t pattern_overlay_total_ns = 0;
   uint64_t pattern_overlay_max_ns = 0;
   for (const auto& kv : streams_) {
@@ -1795,6 +1796,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
     pattern_base_render_max_ns = std::max(pattern_base_render_max_ns, stats.base_render_max_ns);
     pattern_base_copy_total_ns += stats.base_copy_total_ns;
     pattern_base_copy_max_ns = std::max(pattern_base_copy_max_ns, stats.base_copy_max_ns);
+    pattern_base_copy_skipped_count += stats.base_copy_skipped_count;
     pattern_overlay_total_ns += stats.overlay_total_ns;
     pattern_overlay_max_ns = std::max(pattern_overlay_max_ns, stats.overlay_max_ns);
   }
@@ -1875,7 +1877,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       "[cambang][synth-render] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
       "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
       "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
-      "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f "
+      "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f pattern_base_copy_skipped_count=%llu "
       "pattern_overlay_total_ms=%.3f pattern_overlay_max_ms=%.3f "
       "render_spec_build_total_ms=%.3f render_spec_build_max_ms=%.3f "
       "render_target_prepare_total_ms=%.3f render_target_prepare_max_ms=%.3f "
@@ -1889,6 +1891,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(pattern_base_render_max_ns),
       ns_to_ms(pattern_base_copy_total_ns),
       ns_to_ms(pattern_base_copy_max_ns),
+      static_cast<unsigned long long>(pattern_base_copy_skipped_count),
       ns_to_ms(pattern_overlay_total_ns),
       ns_to_ms(pattern_overlay_max_ns),
       ns_to_ms(triage_render_spec_build_total_ns_),

@@ -3,8 +3,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 
 namespace cambang {
+namespace {
+bool reuse_rendered_frame_enabled() {
+  const char* v = std::getenv("CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME");
+  return v && v[0] != '\0' && v[0] != '0';
+}
+}
 
 void CpuPackedPatternRenderer::configure(const PatternSpec& spec) {
   // Dynamic-base algos render the base per-frame; no base-cache precompute needed.
@@ -93,13 +100,19 @@ void CpuPackedPatternRenderer::render_into(
       ++debug_stats_.base_cache_miss_count;
     }
     ensure_base(spec);
-    const auto copy_t0 = std::chrono::steady_clock::now();
-    copy_base_to(dst);
-    const auto copy_t1 = std::chrono::steady_clock::now();
-    const uint64_t copy_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
-    debug_stats_.base_copy_total_ns += copy_ns;
-    debug_stats_.base_copy_max_ns = std::max(debug_stats_.base_copy_max_ns, copy_ns);
+    const bool no_meaningful_overlay_update = !spec.overlay_frame_index_offsets && !spec.overlay_moving_bar;
+    const bool can_reuse_frame = reuse_rendered_frame_enabled() && has_rendered_frame_ && no_meaningful_overlay_update;
+    if (can_reuse_frame) {
+      ++debug_stats_.base_copy_skipped_count;
+    } else {
+      const auto copy_t0 = std::chrono::steady_clock::now();
+      copy_base_to(dst);
+      const auto copy_t1 = std::chrono::steady_clock::now();
+      const uint64_t copy_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+      debug_stats_.base_copy_total_ns += copy_ns;
+      debug_stats_.base_copy_max_ns = std::max(debug_stats_.base_copy_max_ns, copy_ns);
+    }
   }
 
   const auto overlay_t0 = std::chrono::steady_clock::now();
@@ -114,6 +127,7 @@ void CpuPackedPatternRenderer::render_into(
       std::chrono::duration_cast<std::chrono::nanoseconds>(overlay_t1 - overlay_t0).count());
   debug_stats_.overlay_total_ns += overlay_ns;
   debug_stats_.overlay_max_ns = std::max(debug_stats_.overlay_max_ns, overlay_ns);
+  has_rendered_frame_ = true;
 }
 
 void CpuPackedPatternRenderer::render_base_xy_xor(
