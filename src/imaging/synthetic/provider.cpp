@@ -1808,36 +1808,22 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       gpu_texture_update_skipped);
   synthetic_triage_printf(
       "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
-      "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu "
-      "gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
-      "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
-      "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
-      "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
-      "timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
-      "timeline_event_exec_calls=%llu timeline_event_exec_total_ms=%.3f timeline_event_exec_max_ms=%.3f "
-      "timeline_emit_event_calls=%llu timeline_emit_event_total_ms=%.3f timeline_emit_event_max_ms=%.3f "
-      "emit_frame_calls=%llu emit_frame_total_ms=%.3f emit_frame_max_ms=%.3f "
-      "frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
-      "frame_copy_calls=%llu frame_copy_total_ms=%.3f frame_copy_max_ms=%.3f "
-      "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
-      "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
-      "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f "
-      "pattern_overlay_total_ms=%.3f pattern_overlay_max_ms=%.3f "
-      "render_spec_build_total_ms=%.3f render_spec_build_max_ms=%.3f "
-      "render_target_prepare_total_ms=%.3f render_target_prepare_max_ms=%.3f "
-      "render_allocation_or_resize_count=%llu "
-      "post_frame_calls=%llu post_frame_total_ms=%.3f post_frame_max_ms=%.3f "
-      "strand_flush_calls=%llu strand_flush_total_ms=%.3f strand_flush_max_ms=%.3f "
-      "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
-      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f "
-      "gpu_texture_update_skipped=%llu",
+      "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu",
       static_cast<unsigned long long>(triage_frames_emitted_total_),
       static_cast<unsigned long long>(triage_catchup_bursts_total_),
       triage_catchup_max_frames_in_tick_,
       static_cast<unsigned long long>(triage_falling_behind_repeat_total_),
       triage_catchup_cap_per_tick_,
       static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
-      static_cast<unsigned long long>(triage_catchup_frames_dropped_total_),
+      static_cast<unsigned long long>(triage_catchup_frames_dropped_total_));
+  synthetic_triage_printf(
+      "[cambang][synth-gpu] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
+      "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
+      "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
+      "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
+      "gpu_texture_update_calls=%llu gpu_texture_update_total_ms=%.3f gpu_texture_update_max_ms=%.3f "
+      "gpu_texture_update_skipped=%llu",
       static_cast<unsigned long long>(triage_gpu_update_attempts_total_),
       static_cast<unsigned long long>(triage_gpu_update_failures_total_),
       static_cast<unsigned long long>(triage_gpu_update_retries_total_),
@@ -1849,6 +1835,21 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_gpu_update_total_calls_),
       ns_to_ms(triage_gpu_update_total_ns_),
       ns_to_ms(triage_gpu_update_total_max_ns_),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_upload_copy_calls : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_total_ns : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_max_ns : 0),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_calls : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0),
+      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0),
+      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_skipped : 0));
+  synthetic_triage_printf(
+      "[cambang][synth-timeline] timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
+      "timeline_event_exec_calls=%llu timeline_event_exec_total_ms=%.3f timeline_event_exec_max_ms=%.3f "
+      "timeline_emit_event_calls=%llu timeline_emit_event_total_ms=%.3f timeline_emit_event_max_ms=%.3f "
+      "emit_frame_calls=%llu emit_frame_total_ms=%.3f emit_frame_max_ms=%.3f "
+      "frame_copy_calls=%llu frame_copy_total_ms=%.3f frame_copy_max_ms=%.3f "
+      "post_frame_calls=%llu post_frame_total_ms=%.3f post_frame_max_ms=%.3f "
+      "strand_flush_calls=%llu strand_flush_total_ms=%.3f strand_flush_max_ms=%.3f",
       static_cast<unsigned long long>(triage_timeline_pump_calls_),
       ns_to_ms(triage_timeline_pump_total_ns_),
       ns_to_ms(triage_timeline_pump_max_ns_),
@@ -1861,12 +1862,27 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_emit_frame_calls_),
       ns_to_ms(triage_emit_frame_total_ns_),
       ns_to_ms(triage_emit_frame_max_ns_),
-      static_cast<unsigned long long>(triage_frame_render_calls_),
-      ns_to_ms(triage_frame_render_total_ns_),
-      ns_to_ms(triage_frame_render_max_ns_),
       static_cast<unsigned long long>(triage_frame_copy_calls_),
       ns_to_ms(triage_frame_copy_total_ns_),
       ns_to_ms(triage_frame_copy_max_ns_),
+      static_cast<unsigned long long>(triage_post_frame_calls_),
+      ns_to_ms(triage_post_frame_total_ns_),
+      ns_to_ms(triage_post_frame_max_ns_),
+      static_cast<unsigned long long>(triage_strand_flush_calls_),
+      ns_to_ms(triage_strand_flush_total_ns_),
+      ns_to_ms(triage_strand_flush_max_ns_));
+  synthetic_triage_printf(
+      "[cambang][synth-render] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
+      "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
+      "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
+      "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f "
+      "pattern_overlay_total_ms=%.3f pattern_overlay_max_ms=%.3f "
+      "render_spec_build_total_ms=%.3f render_spec_build_max_ms=%.3f "
+      "render_target_prepare_total_ms=%.3f render_target_prepare_max_ms=%.3f "
+      "render_allocation_or_resize_count=%llu",
+      static_cast<unsigned long long>(triage_frame_render_calls_),
+      ns_to_ms(triage_frame_render_total_ns_),
+      ns_to_ms(triage_frame_render_max_ns_),
       static_cast<unsigned long long>(pattern_base_cache_hit_count),
       static_cast<unsigned long long>(pattern_base_cache_miss_count),
       ns_to_ms(pattern_base_render_total_ns),
@@ -1879,20 +1895,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(triage_render_spec_build_max_ns_),
       ns_to_ms(triage_render_target_prepare_total_ns_),
       ns_to_ms(triage_render_target_prepare_max_ns_),
-      static_cast<unsigned long long>(triage_render_allocation_or_resize_count_),
-      static_cast<unsigned long long>(triage_post_frame_calls_),
-      ns_to_ms(triage_post_frame_total_ns_),
-      ns_to_ms(triage_post_frame_max_ns_),
-      static_cast<unsigned long long>(triage_strand_flush_calls_),
-      ns_to_ms(triage_strand_flush_total_ns_),
-      ns_to_ms(triage_strand_flush_max_ns_),
-      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_upload_copy_calls : 0),
-      ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_total_ns : 0),
-      ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_max_ns : 0),
-      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_calls : 0),
-      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0),
-      ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0),
-      static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_skipped : 0));
+      static_cast<unsigned long long>(triage_render_allocation_or_resize_count_));
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
