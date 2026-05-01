@@ -1,6 +1,7 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 namespace cambang {
@@ -54,7 +55,12 @@ void CpuPackedPatternRenderer::ensure_base(const PatternSpec& spec) {
 
   // Cacheable-base path: render into tight internal cache buffer.
   PatternOverlayData overlay{};
+  const auto t0 = std::chrono::steady_clock::now();
   render_base_into(base_pixels_.data(), base_stride_bytes_, spec, key, overlay);
+  const auto t1 = std::chrono::steady_clock::now();
+  const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+  debug_stats_.base_render_total_ns += ns;
+  debug_stats_.base_render_max_ns = std::max(debug_stats_.base_render_max_ns, ns);
 }
 
 void CpuPackedPatternRenderer::render_into(
@@ -70,20 +76,44 @@ void CpuPackedPatternRenderer::render_into(
   }
 
   if (spec.dynamic_base) {
+    ++debug_stats_.base_cache_miss_count;
     // Dynamic-base path: bypass base cache and render the base into the destination each frame.
     const PatternBaseKey key = PatternBaseKey::from_spec(spec);
+    const auto t0 = std::chrono::steady_clock::now();
     render_base_into(static_cast<uint8_t*>(dst.data), dst.stride_bytes, spec, key, overlay);
+    const auto t1 = std::chrono::steady_clock::now();
+    const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    debug_stats_.base_render_total_ns += ns;
+    debug_stats_.base_render_max_ns = std::max(debug_stats_.base_render_max_ns, ns);
   } else {
+    const PatternBaseKey key = PatternBaseKey::from_spec(spec);
+    if (base_valid_ && key == base_key_) {
+      ++debug_stats_.base_cache_hit_count;
+    } else {
+      ++debug_stats_.base_cache_miss_count;
+    }
     ensure_base(spec);
+    const auto copy_t0 = std::chrono::steady_clock::now();
     copy_base_to(dst);
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    const uint64_t copy_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+    debug_stats_.base_copy_total_ns += copy_ns;
+    debug_stats_.base_copy_max_ns = std::max(debug_stats_.base_copy_max_ns, copy_ns);
   }
 
+  const auto overlay_t0 = std::chrono::steady_clock::now();
   if (spec.overlay_frame_index_offsets) {
     apply_frame_index_offsets(spec, dst, overlay.frame_index);
   }
   if (spec.overlay_moving_bar) {
     apply_moving_bar(spec, dst, overlay.frame_index);
   }
+  const auto overlay_t1 = std::chrono::steady_clock::now();
+  const uint64_t overlay_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(overlay_t1 - overlay_t0).count());
+  debug_stats_.overlay_total_ns += overlay_ns;
+  debug_stats_.overlay_max_ns = std::max(debug_stats_.overlay_max_ns, overlay_ns);
 }
 
 void CpuPackedPatternRenderer::render_base_xy_xor(

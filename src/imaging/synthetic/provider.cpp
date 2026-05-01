@@ -1563,11 +1563,18 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
 
   bool preset_valid = true;
+  const auto spec_t0 = std::chrono::steady_clock::now();
   PatternSpec spec = to_pattern_spec(s.picture, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
+  const auto spec_t1 = std::chrono::steady_clock::now();
+  const uint64_t spec_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(spec_t1 - spec_t0).count());
+  triage_render_spec_build_total_ns_ += spec_ns;
+  triage_render_spec_build_max_ns_ = std::max(triage_render_spec_build_max_ns_, spec_ns);
   if (!preset_valid) {
     invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  const auto target_t0 = std::chrono::steady_clock::now();
   PatternRenderTarget dst{};
   dst.data = s.gpu_staging.data();
   dst.size_bytes = s.gpu_staging.size();
@@ -1575,6 +1582,11 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   dst.height = h;
   dst.stride_bytes = stride;
   dst.format = PatternSpec::PackedFormat::RGBA8;
+  const auto target_t1 = std::chrono::steady_clock::now();
+  const uint64_t target_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(target_t1 - target_t0).count());
+  triage_render_target_prepare_total_ns_ += target_ns;
+  triage_render_target_prepare_max_ns_ = std::max(triage_render_target_prepare_max_ns_, target_ns);
 
   PatternOverlayData ov{};
   ov.frame_index = generator_frame_ordinal_from_ns_(scheduled_capture_ns, s.picture);
@@ -1767,6 +1779,25 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
   uint64_t gpu_texture_update_total_ns = 0;
   uint64_t gpu_texture_update_max_ns = 0;
   uint64_t gpu_texture_update_skipped = 0;
+  uint64_t pattern_base_cache_hit_count = 0;
+  uint64_t pattern_base_cache_miss_count = 0;
+  uint64_t pattern_base_render_total_ns = 0;
+  uint64_t pattern_base_render_max_ns = 0;
+  uint64_t pattern_base_copy_total_ns = 0;
+  uint64_t pattern_base_copy_max_ns = 0;
+  uint64_t pattern_overlay_total_ns = 0;
+  uint64_t pattern_overlay_max_ns = 0;
+  for (const auto& kv : streams_) {
+    const auto& stats = kv.second.renderer.debug_stats();
+    pattern_base_cache_hit_count += stats.base_cache_hit_count;
+    pattern_base_cache_miss_count += stats.base_cache_miss_count;
+    pattern_base_render_total_ns += stats.base_render_total_ns;
+    pattern_base_render_max_ns = std::max(pattern_base_render_max_ns, stats.base_render_max_ns);
+    pattern_base_copy_total_ns += stats.base_copy_total_ns;
+    pattern_base_copy_max_ns = std::max(pattern_base_copy_max_ns, stats.base_copy_max_ns);
+    pattern_overlay_total_ns += stats.overlay_total_ns;
+    pattern_overlay_max_ns = std::max(pattern_overlay_max_ns, stats.overlay_max_ns);
+  }
   const bool has_gpu_subbucket_stats = synthetic_gpu_backing_take_update_timing_stats(
       gpu_upload_copy_calls,
       gpu_upload_copy_total_ns,
@@ -1788,6 +1819,13 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       "emit_frame_calls=%llu emit_frame_total_ms=%.3f emit_frame_max_ms=%.3f "
       "frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
       "frame_copy_calls=%llu frame_copy_total_ms=%.3f frame_copy_max_ms=%.3f "
+      "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
+      "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
+      "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f "
+      "pattern_overlay_total_ms=%.3f pattern_overlay_max_ms=%.3f "
+      "render_spec_build_total_ms=%.3f render_spec_build_max_ms=%.3f "
+      "render_target_prepare_total_ms=%.3f render_target_prepare_max_ms=%.3f "
+      "render_allocation_or_resize_count=%llu "
       "post_frame_calls=%llu post_frame_total_ms=%.3f post_frame_max_ms=%.3f "
       "strand_flush_calls=%llu strand_flush_total_ms=%.3f strand_flush_max_ms=%.3f "
       "gpu_upload_copy_calls=%llu gpu_upload_copy_total_ms=%.3f gpu_upload_copy_max_ms=%.3f "
@@ -1829,6 +1867,19 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_frame_copy_calls_),
       ns_to_ms(triage_frame_copy_total_ns_),
       ns_to_ms(triage_frame_copy_max_ns_),
+      static_cast<unsigned long long>(pattern_base_cache_hit_count),
+      static_cast<unsigned long long>(pattern_base_cache_miss_count),
+      ns_to_ms(pattern_base_render_total_ns),
+      ns_to_ms(pattern_base_render_max_ns),
+      ns_to_ms(pattern_base_copy_total_ns),
+      ns_to_ms(pattern_base_copy_max_ns),
+      ns_to_ms(pattern_overlay_total_ns),
+      ns_to_ms(pattern_overlay_max_ns),
+      ns_to_ms(triage_render_spec_build_total_ns_),
+      ns_to_ms(triage_render_spec_build_max_ns_),
+      ns_to_ms(triage_render_target_prepare_total_ns_),
+      ns_to_ms(triage_render_target_prepare_max_ns_),
+      static_cast<unsigned long long>(triage_render_allocation_or_resize_count_),
       static_cast<unsigned long long>(triage_post_frame_calls_),
       ns_to_ms(triage_post_frame_total_ns_),
       ns_to_ms(triage_post_frame_max_ns_),

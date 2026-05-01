@@ -263,6 +263,11 @@ private:
   uint64_t triage_frame_render_calls_ = 0;
   uint64_t triage_frame_render_total_ns_ = 0;
   uint64_t triage_frame_render_max_ns_ = 0;
+  uint64_t triage_render_spec_build_total_ns_ = 0;
+  uint64_t triage_render_spec_build_max_ns_ = 0;
+  uint64_t triage_render_target_prepare_total_ns_ = 0;
+  uint64_t triage_render_target_prepare_max_ns_ = 0;
+  uint64_t triage_render_allocation_or_resize_count_ = 0;
   uint64_t triage_frame_copy_calls_ = 0;
   uint64_t triage_frame_copy_total_ns_ = 0;
   uint64_t triage_frame_copy_max_ns_ = 0;
