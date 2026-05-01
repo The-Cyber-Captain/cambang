@@ -57,6 +57,25 @@ var _known_stream_ids_by_device: Dictionary = {
 	DEVICE_B_KEY: []
 }
 var _pending_captures: Array = []
+var _timing_process_total_sec := 0.0
+var _timing_process_max_sec := 0.0
+var _timing_process_calls := 0
+var _timing_checkpoint_total_sec := 0.0
+var _timing_checkpoint_max_sec := 0.0
+var _timing_checkpoint_calls := 0
+var _timing_poll_total_sec := 0.0
+var _timing_poll_max_sec := 0.0
+var _timing_poll_calls := 0
+var _timing_display_total_sec := 0.0
+var _timing_display_max_sec := 0.0
+var _timing_display_calls := 0
+var _timing_status_total_sec := 0.0
+var _timing_status_max_sec := 0.0
+var _timing_status_calls := 0
+var _timing_log_total_sec := 0.0
+var _timing_log_max_sec := 0.0
+var _timing_log_calls := 0
+var _summary_timing_logged := false
 
 
 func _ready() -> void:
@@ -97,8 +116,23 @@ func _bootstrap() -> void:
 
 
 func _process(delta: float) -> void:
+	var process_start_usec := Time.get_ticks_usec()
+	var status_start_usec := Time.get_ticks_usec()
 	_latch_snapshot_state()
-	_poll_pending_captures()
+	var status_sec := _elapsed_sec_from_ticks(status_start_usec)
+	_timing_status_total_sec += status_sec
+	_timing_status_max_sec = max(_timing_status_max_sec, status_sec)
+	_timing_status_calls += 1
+
+	var poll_start_usec := Time.get_ticks_usec()
+	var display_sec := _poll_pending_captures()
+	var poll_sec := _elapsed_sec_from_ticks(poll_start_usec)
+	_timing_poll_total_sec += poll_sec
+	_timing_poll_max_sec = max(_timing_poll_max_sec, poll_sec)
+	_timing_poll_calls += 1
+	_timing_display_total_sec += display_sec
+	_timing_display_max_sec = max(_timing_display_max_sec, display_sec)
+	_timing_display_calls += 1
 
 	if _awaiting_capture_results:
 		if _all_pending_captures_bound():
@@ -106,15 +140,19 @@ func _process(delta: float) -> void:
 			_waiting_for_user = false
 			_append_log("Capture checkpoint complete")
 			_advance_checkpoint()
+		_record_process_timing(process_start_usec)
 		return
 
 	if _waiting_for_user:
+		_record_process_timing(process_start_usec)
 		return
 
 	if _checkpoint_index >= CHECKPOINTS.size():
 		if not _scenario_complete_logged:
 			_append_log("All checkpoints complete; awaiting authored teardown")
 			_scenario_complete_logged = true
+			_log_summary_timing_once()
+		_record_process_timing(process_start_usec)
 		return
 
 	_virtual_time_s += delta
@@ -123,16 +161,25 @@ func _process(delta: float) -> void:
 	var cp: Dictionary = CHECKPOINTS[_checkpoint_index]
 	var target_s: float = float(cp.get("time_s", 0.0))
 	if _virtual_time_s + LOG_SECOND_EPS < target_s:
+		_record_process_timing(process_start_usec)
 		return
 
+	var checkpoint_start_usec := Time.get_ticks_usec()
 	if not _checkpoint_prereq_satisfied(cp):
+		_record_process_timing(process_start_usec)
 		return
+	var checkpoint_sec := _elapsed_sec_from_ticks(checkpoint_start_usec)
+	_timing_checkpoint_total_sec += checkpoint_sec
+	_timing_checkpoint_max_sec = max(_timing_checkpoint_max_sec, checkpoint_sec)
+	_timing_checkpoint_calls += 1
 
 	_current_checkpoint = cp
 	_waiting_for_user = true
 	_pause_timeline(true)
 	_update_instruction()
 	_append_log("Checkpoint %d ready at t=%.2fs: %s" % [int(cp.get("id", 0)), _virtual_time_s, str(cp.get("desc", ""))])
+	_maybe_log_timing_per_second()
+	_record_process_timing(process_start_usec)
 
 
 func _input(event: InputEvent) -> void:
@@ -223,7 +270,8 @@ func _trigger_capture_for_device(device_key: String) -> bool:
 	return true
 
 
-func _poll_pending_captures() -> void:
+func _poll_pending_captures() -> float:
+	var display_sec := 0.0
 	for i: int in range(_pending_captures.size()):
 		var item: Dictionary = _pending_captures[i]
 		if bool(item.get("bound", false)):
@@ -242,6 +290,7 @@ func _poll_pending_captures() -> void:
 		var tex: ImageTexture = ImageTexture.create_from_image(image)
 		var device_key: String = str(item.get("device", ""))
 
+		var display_start_usec := Time.get_ticks_usec()
 		if device_key == DEVICE_A_KEY:
 			_capture_a_rect.texture = tex
 			_capture_a_facts.text = "Capture A\ncapture_id=%d\ndevice_instance_id=%d\nsize=%dx%d" % [
@@ -256,6 +305,8 @@ func _poll_pending_captures() -> void:
 		item["bound"] = true
 		_pending_captures[i] = item
 		_append_log("Capture bound %s id=%d" % [device_key, capture_id])
+		display_sec += _elapsed_sec_from_ticks(display_start_usec)
+	return display_sec
 
 
 func _all_pending_captures_bound() -> bool:
@@ -401,11 +452,53 @@ func _maybe_log_virtual_time() -> void:
 	if whole_second > _last_logged_second:
 		_last_logged_second = whole_second
 		_append_log("virtual_time_s=%.1f" % _virtual_time_s)
+		_maybe_log_timing_per_second()
 
 
 func _append_log(msg: String) -> void:
+	var log_start_usec := Time.get_ticks_usec()
 	_log.text += msg + "\n"
 	_log.scroll_to_line(_log.get_line_count())
+	var log_sec := _elapsed_sec_from_ticks(log_start_usec)
+	_timing_log_total_sec += log_sec
+	_timing_log_max_sec = max(_timing_log_max_sec, log_sec)
+	_timing_log_calls += 1
+
+
+func _maybe_log_timing_per_second() -> void:
+	_append_log("TIMING scene_process_max_ms=%.3f checkpoint_max_ms=%.3f poll_max_ms=%.3f display_max_ms=%.3f status_max_ms=%.3f log_max_ms=%.3f" % [
+		_timing_process_max_sec * 1000.0,
+		_timing_checkpoint_max_sec * 1000.0,
+		_timing_poll_max_sec * 1000.0,
+		_timing_display_max_sec * 1000.0,
+		_timing_status_max_sec * 1000.0,
+		_timing_log_max_sec * 1000.0
+	])
+
+
+func _elapsed_sec_from_ticks(start_usec: int) -> float:
+	return float(Time.get_ticks_usec() - start_usec) / 1000000.0
+
+
+func _record_process_timing(process_start_usec: int) -> void:
+	var process_sec := _elapsed_sec_from_ticks(process_start_usec)
+	_timing_process_total_sec += process_sec
+	_timing_process_max_sec = max(_timing_process_max_sec, process_sec)
+	_timing_process_calls += 1
+
+
+func _log_summary_timing_once() -> void:
+	if _summary_timing_logged:
+		return
+	_summary_timing_logged = true
+	_append_log("SUMMARY_TIMING scene_process_max_ms=%.3f scene_process_total_ms=%.3f scene_process_calls=%d checkpoint_max_ms=%.3f checkpoint_total_ms=%.3f checkpoint_calls=%d poll_max_ms=%.3f poll_total_ms=%.3f poll_calls=%d display_max_ms=%.3f display_total_ms=%.3f display_calls=%d status_max_ms=%.3f status_total_ms=%.3f status_calls=%d log_max_ms=%.3f log_total_ms=%.3f log_calls=%d" % [
+		_timing_process_max_sec * 1000.0, _timing_process_total_sec * 1000.0, _timing_process_calls,
+		_timing_checkpoint_max_sec * 1000.0, _timing_checkpoint_total_sec * 1000.0, _timing_checkpoint_calls,
+		_timing_poll_max_sec * 1000.0, _timing_poll_total_sec * 1000.0, _timing_poll_calls,
+		_timing_display_max_sec * 1000.0, _timing_display_total_sec * 1000.0, _timing_display_calls,
+		_timing_status_max_sec * 1000.0, _timing_status_total_sec * 1000.0, _timing_status_calls,
+		_timing_log_max_sec * 1000.0, _timing_log_total_sec * 1000.0, _timing_log_calls
+	])
 
 
 func _require(cond: bool, msg: String) -> void:
@@ -416,3 +509,4 @@ func _require(cond: bool, msg: String) -> void:
 func _fail(msg: String) -> void:
 	push_error(msg)
 	_append_log("FAIL: " + msg)
+	_log_summary_timing_once()
