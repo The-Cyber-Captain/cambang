@@ -80,6 +80,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
+  bool is_stream_display_demand_active(uint64_t) override { return false; }
 
   void on_device_opened(uint64_t id) override { events.push_back({"device_opened", id}); }
   void on_device_closed(uint64_t id) override { events.push_back({"device_closed", id}); }

@@ -69,6 +69,11 @@ CoreRuntime::CoreRuntime()
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+      }, [this](uint64_t stream_id) -> bool {
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+        return result_store_.is_stream_display_demand_active(stream_id, now_ns);
       }) {
   dispatcher_.set_result_store(&result_store_);
   const bool result_routing_enabled = !disable_result_routing_requested();

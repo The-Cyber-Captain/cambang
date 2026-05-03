@@ -29,6 +29,11 @@ public:
   // This call is synchronous and must be safe to invoke from any provider thread.
   virtual uint64_t core_monotonic_now_ns() = 0;
 
+  // Stream display-demand lease query (diagnostic-gated synthetic GPU update policy).
+  // Returns true when a recent display-view access lease is active for stream_id.
+  // This call is synchronous and must be safe to invoke from any provider thread.
+  virtual bool is_stream_display_demand_active(uint64_t stream_id) = 0;
+
   // ---- Device lifecycle confirmations ----
   virtual void on_device_opened(uint64_t device_instance_id) = 0;
   virtual void on_device_closed(uint64_t device_instance_id) = 0;

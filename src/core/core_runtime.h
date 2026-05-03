@@ -215,6 +215,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const {
     return result_store_.get_capture_result_set(capture_id);
   }
+  void mark_stream_display_demand(uint64_t stream_id) {
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+    result_store_.mark_stream_display_demand(stream_id, now_ns);
+  }
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
   const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }

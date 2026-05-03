@@ -93,6 +93,7 @@ public:
   godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   godot::Ref<CamBANGCaptureResultSet> get_capture_result_set(uint64_t capture_id) const;
+  void mark_stream_display_demand(uint64_t stream_id);
   uint64_t trigger_device_capture(uint64_t device_instance_id);
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)

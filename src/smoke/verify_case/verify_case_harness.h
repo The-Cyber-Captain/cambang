@@ -1185,6 +1185,9 @@ private:
     uint64_t core_monotonic_now_ns() override {
       return delegate_ ? delegate_->core_monotonic_now_ns() : 0;
     }
+    bool is_stream_display_demand_active(uint64_t stream_id) override {
+      return delegate_ ? delegate_->is_stream_display_demand_active(stream_id) : false;
+    }
 
     void on_device_opened(uint64_t id) override {
       record_("device_opened", id);
