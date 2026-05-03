@@ -219,6 +219,22 @@ current retained stream state at the time of the call.
 `get_display_view()` must not silently behave like “always convert to CPU-backed
 storage.”
 
+### 6.6.1 Freshness-policy clarification for synthetic stream live GPU backing
+
+This note clarifies stream display-view freshness policy and does not declare a
+new default runtime behavior by itself.
+
+- Stream display-view freshness is tied to display-oriented access.
+- Polling latest `StreamResult` alone does not imply display demand.
+- For synthetic stream live GPU backing, no-display operation may legitimately
+  avoid per-frame live GPU-backing updates.
+- `get_display_view()` is the demand-establishing path for stream live-view
+  freshness.
+
+This clarification is intentionally scoped to synthetic stream live GPU backing
+and stream display-view freshness. It is not a global “GPU updates are optional”
+statement, and it is not an AcquisitionSession/lifecycle change.
+
 A `display_view` is a live view over stream-owned live backing, not a detached materialized
 image artifact. Consumers that bind it into UI/display objects are responsible
 for dropping those bindings before stopping/destroying the owning runtime or
