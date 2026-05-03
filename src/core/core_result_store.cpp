@@ -154,6 +154,15 @@ std::vector<SharedCaptureResultData> CoreResultStore::get_capture_result_set(uin
   return out;
 }
 
+void CoreResultStore::remove_stream_result(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  latest_stream_results_.erase(stream_id);
+  stream_display_demand_last_seen_ns_.erase(stream_id);
+}
+
 void CoreResultStore::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   latest_stream_results_.clear();

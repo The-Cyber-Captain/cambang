@@ -72,6 +72,9 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_destroyed(p.stream_id);
     }
+    if (result_store_) {
+      result_store_->remove_stream_result(p.stream_id);
+    }
     relevant_state_changed_ = true;
     break;
   }
