@@ -44,7 +44,8 @@ public:
   // It is responsible for consuming the ProviderToCoreCommand (e.g., dispatching).
   ProviderCallbackIngress(CoreThread* core_thread,
                           std::function<void(ProviderToCoreCommand&&)> sink,
-                          std::function<uint64_t()> core_monotonic_now_ns);
+                          std::function<uint64_t()> core_monotonic_now_ns,
+                          std::function<bool(uint64_t)> is_stream_display_demand_active);
   ~ProviderCallbackIngress() override = default;
 
   ProviderCallbackIngress(const ProviderCallbackIngress&) = delete;
@@ -56,6 +57,7 @@ public:
   // IProviderCallbacks (core-issued services)
   uint64_t allocate_native_id(NativeObjectType type) override;
   uint64_t core_monotonic_now_ns() override;
+  bool is_stream_display_demand_active(uint64_t stream_id) override;
 
   // IProviderCallbacks
   void on_device_opened(uint64_t device_instance_id) override;
@@ -88,6 +90,7 @@ private:
   CoreThread* core_thread_ = nullptr; // non-owning
   std::function<void(ProviderToCoreCommand&&)> sink_;
   std::function<uint64_t()> core_monotonic_now_ns_;
+  std::function<bool(uint64_t)> is_stream_display_demand_active_;
 
   std::atomic<uint64_t> native_id_seq_{1};
 

@@ -6,6 +6,7 @@
 namespace cambang {
 
 namespace {
+constexpr uint64_t kDisplayDemandLeaseNs = 250'000'000ull;
 
 bool checked_mul_size_t(size_t a, size_t b, size_t& out) {
   if (a != 0 && b > (std::numeric_limits<size_t>::max() / a)) {
@@ -157,6 +158,31 @@ void CoreResultStore::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   latest_stream_results_.clear();
   capture_results_by_capture_id_.clear();
+  stream_display_demand_last_seen_ns_.clear();
+}
+
+void CoreResultStore::mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  stream_display_demand_last_seen_ns_[stream_id] = now_ns;
+}
+
+bool CoreResultStore::is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const {
+  if (stream_id == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = stream_display_demand_last_seen_ns_.find(stream_id);
+  if (it == stream_display_demand_last_seen_ns_.end()) {
+    return false;
+  }
+  const uint64_t last_seen_ns = it->second;
+  if (now_ns < last_seen_ns) {
+    return true;
+  }
+  return (now_ns - last_seen_ns) <= kDisplayDemandLeaseNs;
 }
 
 bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out) {

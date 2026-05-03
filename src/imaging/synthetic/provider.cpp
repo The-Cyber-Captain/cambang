@@ -1616,8 +1616,9 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
     if (ensured_backing) {
       const bool only_when_display_requested = env_gpu_update_only_when_display_requested_enabled();
-      const bool provider_has_display_demand_signal = false;
-      const bool display_demand_active = false;
+      const bool provider_has_display_demand_signal = true;
+      const bool display_demand_active =
+          callbacks_ ? callbacks_->is_stream_display_demand_active(s.req.stream_id) : false;
       const bool skip_gpu_update_for_demand =
           only_when_display_requested &&
           (!provider_has_display_demand_signal || !display_demand_active);

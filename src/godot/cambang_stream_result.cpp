@@ -12,6 +12,7 @@
 
 #include "core/core_runtime.h"
 #include "godot/cambang_result_convert.h"
+#include "godot/cambang_server.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 
 namespace cambang {
@@ -253,6 +254,11 @@ int CamBANGStreamResult::can_to_image() const {
 godot::Variant CamBANGStreamResult::get_display_view() const {
   if (!data_) {
     return godot::Variant();
+  }
+  if (data_->stream_id != 0) {
+    if (CamBANGServer* server = CamBANGServer::get_singleton()) {
+      server->mark_stream_display_demand(data_->stream_id);
+    }
   }
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
     if (data_->retained_gpu_backing) {

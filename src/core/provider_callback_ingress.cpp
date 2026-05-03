@@ -39,10 +39,12 @@ void ProviderCallbackIngress::on_frame_ingress_dispatched_(uint64_t stream_id) {
 
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
                                                  std::function<void(ProviderToCoreCommand&&)> sink,
-                                                 std::function<uint64_t()> core_monotonic_now_ns)
+                                                 std::function<uint64_t()> core_monotonic_now_ns,
+                                                 std::function<bool(uint64_t)> is_stream_display_demand_active)
     : core_thread_(core_thread),
       sink_(std::move(sink)),
-      core_monotonic_now_ns_(std::move(core_monotonic_now_ns)) {}
+      core_monotonic_now_ns_(std::move(core_monotonic_now_ns)),
+      is_stream_display_demand_active_(std::move(is_stream_display_demand_active)) {}
 
 uint64_t ProviderCallbackIngress::allocate_native_id(NativeObjectType /*type*/) {
   // Core-issued, globally unique for this process/session.
@@ -55,6 +57,13 @@ uint64_t ProviderCallbackIngress::core_monotonic_now_ns() {
     return core_monotonic_now_ns_();
   }
   return 0;
+}
+
+bool ProviderCallbackIngress::is_stream_display_demand_active(uint64_t stream_id) {
+  if (!is_stream_display_demand_active_) {
+    return false;
+  }
+  return is_stream_display_demand_active_(stream_id);
 }
 
 ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexcept {
