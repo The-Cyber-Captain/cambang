@@ -175,6 +175,11 @@ void CoreResultStore::mark_stream_display_demand(uint64_t stream_id, uint64_t no
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  const auto result_it = latest_stream_results_.find(stream_id);
+  if (result_it == latest_stream_results_.end()) {
+    stream_display_demand_last_seen_ns_.erase(stream_id);
+    return;
+  }
   stream_display_demand_last_seen_ns_[stream_id] = now_ns;
 }
 
