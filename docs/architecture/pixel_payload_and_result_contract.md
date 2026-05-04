@@ -549,7 +549,12 @@ providers/paths.
 - Polling latest `StreamResult` state alone does not imply display demand and
   does not by itself require per-frame live GPU-backing refresh.
 - For synthetic stream live GPU backing, no-display operation may legitimately
-  avoid per-frame live GPU-backing updates.
+  avoid per-frame live GPU-backing updates. In current implementation this
+  publishes those no-demand frames as CPU-primary with current CPU bytes.
+- When display demand is active and GPU update succeeds, frames may publish as
+  GPU-primary (`GPU_SURFACE`).
+- Payload kind may therefore vary across successive stream frames under
+  display-demanded policy, while remaining truthful per retained frame.
 - `get_display_view()` is the demand-establishing access path for stream
   display-view freshness.
 
@@ -580,7 +585,8 @@ CPU-backed storage.
 For synthetic stream GPU-primary/live-backing paths, `to_image()` must remain an
 explicit materialization outcome and must not silently return stale content:
 
-- use a current retained CPU/auxiliary payload when available, or
+- use a current retained CPU/auxiliary payload when available (current
+  synthetic `to_image()` path preference), or
 - perform/require explicit supported materialization from a fresh source, or
 - report unsupported/expensive rather than presenting stale image content as
   current materialization truth.

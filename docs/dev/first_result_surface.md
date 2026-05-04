@@ -227,7 +227,12 @@ new default runtime behavior by itself.
 - Stream display-view freshness is tied to display-oriented access.
 - Polling latest `StreamResult` alone does not imply display demand.
 - For synthetic stream live GPU backing, no-display operation may legitimately
-  avoid per-frame live GPU-backing updates.
+  avoid per-frame live GPU-backing updates. In current implementation this
+  publishes those no-demand frames as CPU-primary with current CPU bytes.
+- When display demand is active and GPU update succeeds, frames may publish as
+  GPU-primary (`GPU_SURFACE`).
+- Payload kind may therefore vary across successive stream frames under
+  display-demanded policy, while remaining truthful per retained frame.
 - `get_display_view()` is the demand-establishing path for stream live-view
   freshness.
 
