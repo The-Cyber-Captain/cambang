@@ -74,8 +74,8 @@ StreamGpuUpdatePolicy env_stream_gpu_update_policy() {
       warned_deprecated_alias = true;
       synthetic_triage_print_line(
           "[cambang][synth] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
-          "CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY now defaults to display_demanded; "
-          "the deprecated alias is no longer needed");
+          "display_demanded is now the default. Use CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY for explicit "
+          "policy control; set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always for eager-update comparison.");
     }
     return StreamGpuUpdatePolicy::DisplayDemanded;
   }
