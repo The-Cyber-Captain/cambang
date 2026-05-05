@@ -74,12 +74,13 @@ StreamGpuUpdatePolicy env_stream_gpu_update_policy() {
       warned_deprecated_alias = true;
       synthetic_triage_print_line(
           "[cambang][synth] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
-          "prefer CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=display_demanded");
+          "CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY now defaults to display_demanded; "
+          "the deprecated alias is no longer needed");
     }
     return StreamGpuUpdatePolicy::DisplayDemanded;
   }
 
-  return StreamGpuUpdatePolicy::Always;
+  return StreamGpuUpdatePolicy::DisplayDemanded;
 }
 
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
