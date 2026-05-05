@@ -1,4 +1,5 @@
 #include "imaging/synthetic/gpu_backing_runtime.h"
+#include "godot/synthetic_gpu_backing_bridge_internal.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -22,25 +23,14 @@
 
 namespace cambang {
 
-class RenderThreadDrainHelper : public godot::RefCounted {
-  GDCLASS(RenderThreadDrainHelper, godot::RefCounted);
-
-public:
-  static void _bind_methods() {}
-
-  void drain_pending_releases_on_render_thread();
-};
-
 void register_synthetic_gpu_backing_internal_classes() {
   // Internal-only helper: registered only so Ref<RenderThreadDrainHelper>::instantiate()
   // can resolve through ClassDB. This is not a user-facing CamBANG API class.
   godot::ClassDB::register_class<RenderThreadDrainHelper>();
 }
 
-namespace {
-
-void enqueue_pending_release(const godot::RID& rid);
-void request_pending_release_drain();
+static void enqueue_pending_release(const godot::RID& rid);
+static void request_pending_release_drain();
 
 struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
@@ -83,20 +73,20 @@ struct RetainedSyntheticGpuBacking final {
   }
 };
 
-std::mutex g_pending_release_mutex;
+static std::mutex g_pending_release_mutex;
 // RIDs that must be released from the render thread.
-std::vector<godot::RID> g_pending_releases;
-bool g_pending_release_drain_scheduled = false;
-godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
+static std::vector<godot::RID> g_pending_releases;
+static bool g_pending_release_drain_scheduled = false;
+static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
 
-RenderThreadDrainHelper* get_render_thread_drain_helper() {
+static RenderThreadDrainHelper* get_render_thread_drain_helper() {
   if (g_render_thread_drain_helper.is_null()) {
     g_render_thread_drain_helper.instantiate();
   }
   return g_render_thread_drain_helper.ptr();
 }
 
-void enqueue_pending_release(const godot::RID& rid) {
+static void enqueue_pending_release(const godot::RID& rid) {
   if (!rid.is_valid()) {
     return;
   }
@@ -104,7 +94,7 @@ void enqueue_pending_release(const godot::RID& rid) {
   g_pending_releases.push_back(rid);
 }
 
-void request_pending_release_drain() {
+static void request_pending_release_drain() {
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return;
@@ -169,6 +159,9 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
   }
 }
+
+
+namespace {
 
 bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
