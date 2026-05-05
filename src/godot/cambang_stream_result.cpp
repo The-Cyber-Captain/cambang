@@ -251,6 +251,19 @@ int CamBANGStreamResult::can_to_image() const {
   return CAPABILITY_UNSUPPORTED;
 }
 
+int CamBANGStreamResult::get_display_view_path_kind() const {
+  if (!data_) {
+    return DISPLAY_PATH_NONE;
+  }
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
+    return DISPLAY_PATH_RETAINED_GPU_BACKING;
+  }
+  if (ensure_live_cpu_display_view(data_).is_valid()) {
+    return DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW;
+  }
+  return DISPLAY_PATH_NONE;
+}
+
 godot::Variant CamBANGStreamResult::get_display_view() const {
   if (!data_) {
     return godot::Variant();
@@ -319,6 +332,7 @@ void CamBANGStreamResult::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGStreamResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGStreamResult::can_to_image);
 
+  godot::ClassDB::bind_method(godot::D_METHOD("get_display_view_path_kind"), &CamBANGStreamResult::get_display_view_path_kind);
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_view"), &CamBANGStreamResult::get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("to_image"), &CamBANGStreamResult::to_image);
 
@@ -326,6 +340,10 @@ void CamBANGStreamResult::_bind_methods() {
   BIND_CONSTANT(CAPABILITY_CHEAP);
   BIND_CONSTANT(CAPABILITY_EXPENSIVE);
   BIND_CONSTANT(CAPABILITY_UNSUPPORTED);
+
+  BIND_CONSTANT(DISPLAY_PATH_NONE);
+  BIND_CONSTANT(DISPLAY_PATH_RETAINED_GPU_BACKING);
+  BIND_CONSTANT(DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW);
 }
 
 void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntime& runtime) {
