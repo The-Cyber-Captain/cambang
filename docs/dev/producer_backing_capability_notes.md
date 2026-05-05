@@ -74,3 +74,31 @@ CPU fallback availability also does not imply eager auxiliary CPU retention for
 GPU-primary results.
 It does imply that CPU and GPU backing should not be treated as perfectly
 symmetric choices.
+
+
+## 7. Synthetic stream GPU update env-control inventory
+
+### 7.1 Active policy control
+
+- `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=display_demanded|always`
+  - default: `display_demanded`
+  - `always` is the maintainer eager-update comparison override
+
+### 7.2 Retained performance instrumentation
+
+- `CAMBANG_DEV_SYNTH_TRIAGE_TRACE`
+- `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
+- `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE`
+- `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N`
+
+### 7.3 Temporary maintainer diagnostics
+
+- `CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE`
+- `CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME`
+
+### 7.4 Deprecated compatibility alias
+
+- `CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED`
+  - retained temporarily for compatibility
+  - deprecated and redundant now that `display_demanded` is the default
+  - if both variables are set, `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` wins

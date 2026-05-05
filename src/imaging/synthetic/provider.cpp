@@ -54,8 +54,33 @@ bool env_flag_enabled(const char* name) {
   return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
 }
 
-bool env_gpu_update_only_when_display_requested_enabled() {
-  return env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED");
+enum class StreamGpuUpdatePolicy {
+  Always,
+  DisplayDemanded,
+};
+
+StreamGpuUpdatePolicy env_stream_gpu_update_policy() {
+  const char* explicit_value = std::getenv("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY");
+  if (explicit_value && explicit_value[0] != '\0') {
+    if (std::strcmp(explicit_value, "display_demanded") == 0) {
+      return StreamGpuUpdatePolicy::DisplayDemanded;
+    }
+    return StreamGpuUpdatePolicy::Always;
+  }
+
+  if (env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED")) {
+    static bool warned_deprecated_alias = false;
+    if (!warned_deprecated_alias) {
+      warned_deprecated_alias = true;
+      synthetic_triage_print_line(
+          "[cambang][synth] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
+          "display_demanded is now the default. Use CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY for explicit "
+          "policy control; set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always for eager-update comparison.");
+    }
+    return StreamGpuUpdatePolicy::DisplayDemanded;
+  }
+
+  return StreamGpuUpdatePolicy::DisplayDemanded;
 }
 
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
@@ -1615,12 +1640,12 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     triage_gpu_ensure_backing_total_ns_ += ensure_ns;
     triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
     if (ensured_backing) {
-      const bool only_when_display_requested = env_gpu_update_only_when_display_requested_enabled();
+      const StreamGpuUpdatePolicy gpu_update_policy = env_stream_gpu_update_policy();
       const bool provider_has_display_demand_signal = true;
       const bool display_demand_active =
           callbacks_ ? callbacks_->is_stream_display_demand_active(s.req.stream_id) : false;
       const bool skip_gpu_update_for_demand =
-          only_when_display_requested &&
+          gpu_update_policy == StreamGpuUpdatePolicy::DisplayDemanded &&
           (!provider_has_display_demand_signal || !display_demand_active);
       bool attempted_gpu_update = false;
       if (skip_gpu_update_for_demand) {
