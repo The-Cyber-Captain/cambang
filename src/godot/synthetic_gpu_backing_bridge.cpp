@@ -21,7 +21,6 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 
 namespace cambang {
-namespace {
 
 class RenderThreadDrainHelper : public godot::RefCounted {
   GDCLASS(RenderThreadDrainHelper, godot::RefCounted);
@@ -31,6 +30,14 @@ public:
 
   void drain_pending_releases_on_render_thread();
 };
+
+void register_synthetic_gpu_backing_internal_classes() {
+  // Internal-only helper: registered only so Ref<RenderThreadDrainHelper>::instantiate()
+  // can resolve through ClassDB. This is not a user-facing CamBANG API class.
+  godot::ClassDB::register_class<RenderThreadDrainHelper>();
+}
+
+namespace {
 
 void enqueue_pending_release(const godot::RID& rid);
 void request_pending_release_drain();
