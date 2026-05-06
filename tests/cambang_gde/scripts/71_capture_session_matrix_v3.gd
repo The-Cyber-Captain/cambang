@@ -76,10 +76,12 @@ var _timing_log_total_sec := 0.0
 var _timing_log_max_sec := 0.0
 var _timing_log_calls := 0
 var _summary_timing_logged := false
+var _display_demand_trace := false
 
 
 func _ready() -> void:
 	set_process_input(true)
+	_display_demand_trace = OS.get_environment("CAMBANG_DEV_DISPLAY_DEMAND_TRACE") != ""
 	_bootstrap()
 
 
@@ -335,6 +337,15 @@ func _bind_stream_slot(slot: String) -> bool:
 	if view == null:
 		_append_log("WARN: display view unavailable for %s" % slot)
 		return false
+
+	if _display_demand_trace:
+		var path_kind: int = -1
+		if result.has_method("get_display_view_path_kind"):
+			path_kind = int(result.get_display_view_path_kind())
+		var tex_id: int = -1
+		if view is Object:
+			tex_id = int((view as Object).get_instance_id())
+		_append_log("DemandTrace bind slot=%s stream_id=%d path_kind=%d texture_id=%d" % [slot, stream_id, path_kind, tex_id])
 
 	match slot:
 		SLOT_PREVIEW_A:

@@ -1,5 +1,7 @@
 #include "core/core_result_store.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -7,6 +9,10 @@ namespace cambang {
 
 namespace {
 constexpr uint64_t kDisplayDemandLeaseNs = 250'000'000ull;
+bool display_demand_trace_enabled() {
+  const char* v = std::getenv("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
+  return v && v[0] != '\0' && v[0] != '0';
+}
 
 bool checked_mul_size_t(size_t a, size_t b, size_t& out) {
   if (a != 0 && b > (std::numeric_limits<size_t>::max() / a)) {
@@ -197,6 +203,11 @@ void CoreResultStore::retain_stream_display_demand(uint64_t stream_id) {
   if (refs != std::numeric_limits<uint32_t>::max()) {
     refs += 1u;
   }
+  if (display_demand_trace_enabled()) {
+    std::printf("[CamBANG][DemandTrace] retain stream_id=%llu refcount=%u\n",
+                static_cast<unsigned long long>(stream_id),
+                refs);
+  }
 }
 
 void CoreResultStore::release_stream_display_demand(uint64_t stream_id) {
@@ -209,30 +220,53 @@ void CoreResultStore::release_stream_display_demand(uint64_t stream_id) {
     return;
   }
   if (it->second <= 1u) {
+    if (display_demand_trace_enabled()) {
+      std::printf("[CamBANG][DemandTrace] release stream_id=%llu refcount=0\n",
+                  static_cast<unsigned long long>(stream_id));
+    }
     stream_display_demand_refcounts_.erase(it);
     return;
   }
   it->second -= 1u;
+  if (display_demand_trace_enabled()) {
+    std::printf("[CamBANG][DemandTrace] release stream_id=%llu refcount=%u\n",
+                static_cast<unsigned long long>(stream_id),
+                it->second);
+  }
 }
 
 bool CoreResultStore::is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const {
+  return get_stream_display_demand_state(stream_id, now_ns).active;
+}
+
+CoreResultStore::DisplayDemandState CoreResultStore::get_stream_display_demand_state(
+    uint64_t stream_id,
+    uint64_t now_ns) const {
+  DisplayDemandState state{};
   if (stream_id == 0) {
-    return false;
+    return state;
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto it = stream_display_demand_last_seen_ns_.find(stream_id);
   const auto ref_it = stream_display_demand_refcounts_.find(stream_id);
   if (ref_it != stream_display_demand_refcounts_.end() && ref_it->second > 0u) {
-    return true;
+    state.active = true;
+    state.reason = DisplayDemandReason::PERSISTENT_REFCOUNT;
+    state.refcount = ref_it->second;
+    return state;
   }
+  const auto it = stream_display_demand_last_seen_ns_.find(stream_id);
   if (it == stream_display_demand_last_seen_ns_.end()) {
-    return false;
+    return state;
   }
   const uint64_t last_seen_ns = it->second;
   if (now_ns < last_seen_ns) {
-    return true;
+    state.active = true;
+    state.reason = DisplayDemandReason::LEASE;
+    return state;
   }
-  return (now_ns - last_seen_ns) <= kDisplayDemandLeaseNs;
+  state.active = (now_ns - last_seen_ns) <= kDisplayDemandLeaseNs;
+  state.reason = state.active ? DisplayDemandReason::LEASE : DisplayDemandReason::NONE;
+  return state;
 }
 
 bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out) {

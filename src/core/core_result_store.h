@@ -70,6 +70,17 @@ using SharedCaptureResultData = std::shared_ptr<const CoreCaptureResultData>;
 
 class CoreResultStore final {
 public:
+  enum class DisplayDemandReason : uint8_t {
+    NONE = 0,
+    PERSISTENT_REFCOUNT = 1,
+    LEASE = 2,
+  };
+  struct DisplayDemandState {
+    bool active = false;
+    DisplayDemandReason reason = DisplayDemandReason::NONE;
+    uint32_t refcount = 0;
+  };
+
   CoreResultStore() = default;
   ~CoreResultStore() = default;
 
@@ -85,6 +96,7 @@ public:
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
   bool is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const;
+  DisplayDemandState get_stream_display_demand_state(uint64_t stream_id, uint64_t now_ns) const;
   void clear();
 
 private:
