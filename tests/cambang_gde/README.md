@@ -1,5 +1,21 @@
 # CamBANG Godot dev scenes
 
+## Shared maintainer exercise selector
+
+Maintainer harnesses in this folder use a shared selector:
+
+- `CAMBANG_EXERCISE`
+
+An **exercise** is a named maintainer validation configuration/mode for a harness.
+It is **not** product API configuration, **not** capture profile configuration, and
+**not** scenario data.
+
+Harnesses should:
+
+- document supported exercise names,
+- document default exercise when `CAMBANG_EXERCISE` is unset,
+- fail clearly on unsupported exercise values (do not silently fall back).
+
 ## Tranche 4 boundary-hardening scenes
 
 These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary.
@@ -33,8 +49,18 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Expected pass string: `OK: result_retrieval_verification passed`
 - `scenes/71_capture_session_matrix_v3.tscn`
   - Capture/session matrix confidence harness covering staged stream-result binding and capture-result checkpoints.
+  - Supported exercises: `display_oneshot`
+  - Default when `CAMBANG_EXERCISE` is unset: `display_oneshot`
+  - This default represents the current customer/API confirmation behavior: one-shot `get_display_view()` binding.
 - `scenes/72_stream_load_isolation.tscn`
   - Stream-load isolation/regression harness with retained display-path diagnostics and timing summaries.
+  - Supported exercises:
+    - `display_oneshot` (default)
+    - `display_latest`
+    - `no_display_default`
+    - `no_display_eager`
+  - `display_oneshot` is default because it represents the intended Godot-facing API contract:
+    bind once and remain live without repeated `get_display_view()` refresh burden.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -85,6 +111,13 @@ Notes:
 - `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
   builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
   for bounded CLI execution.
+- For Scene 72, prefer `CAMBANG_EXERCISE` for normal validation shape selection.
+  Low-level env knobs remain supported as maintainer escape hatches:
+  - `CAMBANG_STREAM_LOAD_POLL_RESULTS`
+  - `CAMBANG_STREAM_LOAD_BIND_DISPLAY`
+  - `CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE`
+  - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
+  - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY`
 
 ## Shared status panel and editor dock
 
