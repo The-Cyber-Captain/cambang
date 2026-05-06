@@ -99,10 +99,12 @@ func _resolve_exercise_or_fail() -> bool:
 		push_error("[CamBANG][Scene71] exercise=%s supported=false supported_exercises=%s" % [exercise_raw, EXERCISE_DISPLAY_ONESHOT])
 		get_tree().quit(2)
 		return false
-	_append_log("[CamBANG][Scene71] exercise=%s default=%s supported=true behavior=current_one_shot_display_contract" % [
+	var resolved_line := "[CamBANG][Scene71] exercise=%s default=%s supported=true behavior=current_one_shot_display_contract" % [
 		exercise,
 		str(defaulted)
-	])
+	]
+	print(resolved_line)
+	_append_log(resolved_line)
 	return true
 
 
