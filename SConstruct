@@ -209,7 +209,6 @@ if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'} platform_validate={'yes' if env['platform_validate'] else 'no'}")
 print(f"  synthetic={'yes' if env['synthetic'] else 'no'}")
-print(f"  dev_nodes={'yes' if env['dev_nodes'] else 'no'}")
 
 # Output dirs
 out_dir = "out"
