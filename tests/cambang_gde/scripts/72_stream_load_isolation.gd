@@ -52,6 +52,17 @@ var _log_total_sec := 0.0
 var _log_max_sec := 0.0
 var _log_calls := 0
 
+var _display_path_trace_enabled := false
+var _display_path_retained_gpu_backing_count := 0
+var _display_path_stream_live_cpu_display_view_count := 0
+var _display_path_none_count := 0
+var _display_path_transition_count := 0
+var _display_path_longest_gpu_streak := 0
+var _display_path_longest_cpu_streak := 0
+var _display_path_current_gpu_streak := 0
+var _display_path_current_cpu_streak := 0
+var _display_path_last_kind := -1
+
 
 func _ready() -> void:
 	_status.clear()
@@ -66,6 +77,7 @@ func _config_from_env() -> void:
 	_bind_display = _env_bool("CAMBANG_STREAM_LOAD_BIND_DISPLAY", DEFAULT_BIND_DISPLAY)
 	_frame_spike_trace_enabled = _env_bool("CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE", false)
 	_frame_spike_top_n = int(_env_float("CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N", 10.0))
+	_display_path_trace_enabled = _env_bool("CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE", false)
 	if _frame_spike_top_n < 1:
 		_frame_spike_top_n = 1
 
@@ -220,6 +232,8 @@ func _poll_stream_results() -> float:
 			continue
 
 		var display_start_usec := Time.get_ticks_usec()
+		if _display_path_trace_enabled and stream_result.has_method("get_display_view_path_kind"):
+			_record_display_path_kind(int(stream_result.get_display_view_path_kind()))
 		var display_view: Variant = stream_result.get_display_view()
 		if display_view is Texture2D:
 			if i == 0:
@@ -228,6 +242,26 @@ func _poll_stream_results() -> float:
 				_stream_b.texture = display_view
 		display_sec += _elapsed_sec_from_ticks(display_start_usec)
 	return display_sec
+
+
+func _record_display_path_kind(path_kind: int) -> void:
+	if path_kind == CamBANGStreamResult.DISPLAY_PATH_RETAINED_GPU_BACKING:
+		_display_path_retained_gpu_backing_count += 1
+		_display_path_current_gpu_streak += 1
+		_display_path_current_cpu_streak = 0
+		_display_path_longest_gpu_streak = max(_display_path_longest_gpu_streak, _display_path_current_gpu_streak)
+	elif path_kind == CamBANGStreamResult.DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW:
+		_display_path_stream_live_cpu_display_view_count += 1
+		_display_path_current_cpu_streak += 1
+		_display_path_current_gpu_streak = 0
+		_display_path_longest_cpu_streak = max(_display_path_longest_cpu_streak, _display_path_current_cpu_streak)
+	else:
+		_display_path_none_count += 1
+		_display_path_current_gpu_streak = 0
+		_display_path_current_cpu_streak = 0
+	if _display_path_last_kind != -1 and _display_path_last_kind != path_kind:
+		_display_path_transition_count += 1
+	_display_path_last_kind = path_kind
 
 
 func _print_summary_and_quit() -> void:
@@ -242,6 +276,15 @@ func _print_summary_and_quit() -> void:
 		_worst_frame_sec * 1000.0,
 		_elapsed_sec
 	])
+	if _display_path_trace_enabled and _bind_display:
+		_log("SUMMARY_DISPLAY_PATH display_path_retained_gpu_backing_count=%d display_path_stream_live_cpu_display_view_count=%d display_path_none_count=%d display_path_transition_count=%d display_path_longest_gpu_streak=%d display_path_longest_cpu_streak=%d" % [
+			_display_path_retained_gpu_backing_count,
+			_display_path_stream_live_cpu_display_view_count,
+			_display_path_none_count,
+			_display_path_transition_count,
+			_display_path_longest_gpu_streak,
+			_display_path_longest_cpu_streak
+		])
 	_log("SUMMARY_TIMING process_max_ms=%.3f process_total_ms=%.3f process_calls=%d advance_max_ms=%.3f advance_total_ms=%.3f advance_calls=%d latch_max_ms=%.3f latch_total_ms=%.3f latch_calls=%d poll_max_ms=%.3f poll_total_ms=%.3f poll_calls=%d display_max_ms=%.3f display_total_ms=%.3f display_calls=%d log_max_ms=%.3f log_total_ms=%.3f log_calls=%d" % [
 		_process_max_sec * 1000.0,
 		_process_total_sec * 1000.0,

@@ -17,6 +17,7 @@
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
+#include "godot/synthetic_gpu_backing_bridge_internal.h"
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
 #include "godot/dev/cambang_dev_node.h"
@@ -34,6 +35,8 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     godot::ClassDB::register_class<cambang::CamBANGStreamResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResultSet>();
+    // Scene-level class registration phase (RefCounted/Object classes).
+    cambang::register_synthetic_gpu_backing_internal_classes();
     cambang::install_synthetic_gpu_backing_godot_bridge();
 
 #if defined(CAMBANG_ENABLE_DEV_NODES)
