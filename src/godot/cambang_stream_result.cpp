@@ -15,6 +15,7 @@
 #include "godot/cambang_result_convert.h"
 #include "godot/cambang_server.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
+#include "godot/cambang_stream_result_internal.h"
 
 namespace cambang {
 
@@ -87,31 +88,6 @@ bool upload_live_cpu_rgba_bytes(
 std::mutex g_live_cpu_display_views_mutex;
 std::map<uint64_t, LiveCpuDisplayViewEntry> g_live_cpu_display_views;
 constexpr const char* kDisplayDemandTokenMetaKey = "__cambang_display_demand_token";
-
-class DisplayDemandToken final : public godot::RefCounted {
-  GDCLASS(DisplayDemandToken, godot::RefCounted)
-public:
-  ~DisplayDemandToken() override {
-    if (stream_id_ != 0) {
-      if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-        server->release_stream_display_demand(stream_id_);
-      }
-    }
-  }
-
-  void init(uint64_t stream_id) {
-    stream_id_ = stream_id;
-    if (stream_id_ != 0) {
-      if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-        server->retain_stream_display_demand(stream_id_);
-      }
-    }
-  }
-
-private:
-  static void _bind_methods() {}
-  uint64_t stream_id_ = 0;
-};
 
 void attach_display_demand_token(const godot::Ref<godot::Texture2D>& texture, uint64_t stream_id) {
   if (texture.is_null() || stream_id == 0) {
