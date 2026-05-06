@@ -218,6 +218,12 @@ enum class TryCloseDeviceStatus : uint8_t {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
     result_store_.mark_stream_display_demand(stream_id, now_ns);
   }
+  void retain_stream_display_demand(uint64_t stream_id) {
+    result_store_.retain_stream_display_demand(stream_id);
+  }
+  void release_stream_display_demand(uint64_t stream_id) {
+    result_store_.release_stream_display_demand(stream_id);
+  }
 
 
   void attach_provider(ICameraProvider* provider) noexcept {

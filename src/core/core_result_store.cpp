@@ -161,6 +161,7 @@ void CoreResultStore::remove_stream_result(uint64_t stream_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   latest_stream_results_.erase(stream_id);
   stream_display_demand_last_seen_ns_.erase(stream_id);
+  stream_display_demand_refcounts_.erase(stream_id);
 }
 
 void CoreResultStore::clear() {
@@ -168,6 +169,7 @@ void CoreResultStore::clear() {
   latest_stream_results_.clear();
   capture_results_by_capture_id_.clear();
   stream_display_demand_last_seen_ns_.clear();
+  stream_display_demand_refcounts_.clear();
 }
 
 void CoreResultStore::mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns) {
@@ -183,12 +185,46 @@ void CoreResultStore::mark_stream_display_demand(uint64_t stream_id, uint64_t no
   stream_display_demand_last_seen_ns_[stream_id] = now_ns;
 }
 
+void CoreResultStore::retain_stream_display_demand(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (latest_stream_results_.find(stream_id) == latest_stream_results_.end()) {
+    return;
+  }
+  uint32_t& refs = stream_display_demand_refcounts_[stream_id];
+  if (refs != std::numeric_limits<uint32_t>::max()) {
+    refs += 1u;
+  }
+}
+
+void CoreResultStore::release_stream_display_demand(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = stream_display_demand_refcounts_.find(stream_id);
+  if (it == stream_display_demand_refcounts_.end()) {
+    return;
+  }
+  if (it->second <= 1u) {
+    stream_display_demand_refcounts_.erase(it);
+    return;
+  }
+  it->second -= 1u;
+}
+
 bool CoreResultStore::is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const {
   if (stream_id == 0) {
     return false;
   }
   std::lock_guard<std::mutex> lock(mutex_);
   const auto it = stream_display_demand_last_seen_ns_.find(stream_id);
+  const auto ref_it = stream_display_demand_refcounts_.find(stream_id);
+  if (ref_it != stream_display_demand_refcounts_.end() && ref_it->second > 0u) {
+    return true;
+  }
   if (it == stream_display_demand_last_seen_ns_.end()) {
     return false;
   }

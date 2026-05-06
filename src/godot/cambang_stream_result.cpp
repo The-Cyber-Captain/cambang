@@ -9,6 +9,7 @@
 
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/variant/string_name.hpp>
 
 #include "core/core_runtime.h"
 #include "godot/cambang_result_convert.h"
@@ -85,6 +86,45 @@ bool upload_live_cpu_rgba_bytes(
 
 std::mutex g_live_cpu_display_views_mutex;
 std::map<uint64_t, LiveCpuDisplayViewEntry> g_live_cpu_display_views;
+constexpr const char* kDisplayDemandTokenMetaKey = "__cambang_display_demand_token";
+
+class DisplayDemandToken final : public godot::RefCounted {
+  GDCLASS(DisplayDemandToken, godot::RefCounted)
+public:
+  ~DisplayDemandToken() override {
+    if (stream_id_ != 0) {
+      if (CamBANGServer* server = CamBANGServer::get_singleton()) {
+        server->release_stream_display_demand(stream_id_);
+      }
+    }
+  }
+
+  void init(uint64_t stream_id) {
+    stream_id_ = stream_id;
+    if (stream_id_ != 0) {
+      if (CamBANGServer* server = CamBANGServer::get_singleton()) {
+        server->retain_stream_display_demand(stream_id_);
+      }
+    }
+  }
+
+private:
+  static void _bind_methods() {}
+  uint64_t stream_id_ = 0;
+};
+
+void attach_display_demand_token(const godot::Ref<godot::Texture2D>& texture, uint64_t stream_id) {
+  if (texture.is_null() || stream_id == 0) {
+    return;
+  }
+  godot::Ref<DisplayDemandToken> token;
+  token.instantiate();
+  if (token.is_null()) {
+    return;
+  }
+  token->init(stream_id);
+  texture->set_meta(godot::StringName(kDisplayDemandTokenMetaKey), token);
+}
 
 bool refresh_live_cpu_display_view_entry(
     LiveCpuDisplayViewEntry& entry,
@@ -277,6 +317,7 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
     if (data_->retained_gpu_backing) {
       godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing);
       if (retained.is_valid()) {
+        attach_display_demand_token(retained, data_->stream_id);
         trace_stream_display_path("retained_gpu_backing");
         return retained;
       }
@@ -285,6 +326,7 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   }
   godot::Ref<godot::Texture2D> live_cpu = ensure_live_cpu_display_view(data_);
   if (live_cpu.is_valid()) {
+    attach_display_demand_token(live_cpu, data_->stream_id);
     trace_stream_display_path("stream_live_cpu_display_view");
     return live_cpu;
   }
