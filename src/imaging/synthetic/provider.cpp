@@ -1727,6 +1727,11 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       }
       if (gpu_ok) {
         gpu_backing = s.live_gpu_backing;
+      } else if (s.live_gpu_backing) {
+        // Expose the stable stream-live GPU backing object even before the
+        // first successful update so one-shot display binding can attach to a
+        // direct retained-GPU view that becomes live on subsequent updates.
+        gpu_backing = s.live_gpu_backing;
       }
     }
   }
@@ -1748,7 +1753,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.width = w;
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
-  fv.primary_backing_kind = gpu_ok ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
+  fv.primary_backing_kind = gpu_backing ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
   fv.primary_backing_artifact = std::move(gpu_backing);
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
