@@ -397,12 +397,6 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   return capture_id;
 }
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-ProviderBroker* CamBANGServer::provider_broker_for_dev() const noexcept {
-  return dynamic_cast<ProviderBroker*>(provider_.get());
-}
-#endif
-
 void CamBANGServer::_ensure_tick_connected() {
   if (tick_connected_) {
     return;

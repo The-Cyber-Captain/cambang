@@ -146,12 +146,6 @@ vars.Add(BoolVariable(
     True,
 ))
 
-vars.Add(BoolVariable(
-    "dev_nodes",
-    "Build dev-only Godot scaffolding nodes (CAMBANG_ENABLE_DEV_NODES).",
-    False,
-))
-
 tmp_env = Environment(variables=vars)
 Help(vars.GenerateHelpText(tmp_env))
 
@@ -515,13 +509,6 @@ if env["gde"]:
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
         os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]
-
-    if env["dev_nodes"]:
-        gde_env.Append(CPPDEFINES=["CAMBANG_ENABLE_DEV_NODES=1"])
-        gde_sources += [
-            os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_node.cpp"),
-            os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_frameview_node.cpp"),
-        ]
 
     # Output base name (SCons appends .dll/.so/.dylib automatically).
     # These names are designed to match your cambang_dev.gdextension mapping.

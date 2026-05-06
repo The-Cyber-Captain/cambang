@@ -30,7 +30,6 @@ is covered by dedicated Godot scene checks.
 
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
-#include "core/latest_frame_mailbox.h"
 #include "core/provider_to_core_commands.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_runtime.h"
@@ -123,20 +122,18 @@ static bool has_acquisition_session_for_device(const CamBANGStateSnapshot& s, ui
   return false;
 }
 
-class MailboxSink final : public ICoreFrameSink {
+class VisibilitySink final : public ICoreFrameSink {
 public:
-  explicit MailboxSink(LatestFrameMailbox* mailbox) : mailbox_(mailbox) {}
-
   CoreVisibilityPath on_frame(FrameView frame) override {
-    if (!mailbox_) {
+    if (frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA) {
       frame.release_now();
-      return CoreVisibilityPath::NONE;
+      return (frame.format_fourcc == FOURCC_RGBA)
+                 ? CoreVisibilityPath::RGBA_DIRECT
+                 : CoreVisibilityPath::BGRA_SWIZZLED;
     }
-    return mailbox_->write_from_core(std::move(frame));
+    frame.release_now();
+    return CoreVisibilityPath::REJECTED_UNSUPPORTED;
   }
-
-private:
-  LatestFrameMailbox* mailbox_ = nullptr;
 };
 
 struct OwnedFrame {
@@ -178,8 +175,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
   CoreAcquisitionSessionRegistry acquisition_sessions;
   CoreStreamRegistry streams;
   CoreNativeObjectRegistry native_objects;
-  LatestFrameMailbox mailbox;
-  MailboxSink sink(&mailbox);
+  VisibilitySink sink;
   uint64_t gen = 0;
   uint64_t now_ns = 1000;
   CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {

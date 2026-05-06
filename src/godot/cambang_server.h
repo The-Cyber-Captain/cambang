@@ -96,15 +96,6 @@ public:
   void mark_stream_display_demand(uint64_t stream_id);
   uint64_t trigger_device_capture(uint64_t device_instance_id);
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  // Dev-only escape hatch: allow dev scaffolding nodes to drive provider bring-up.
-  CoreRuntime* runtime_for_dev() noexcept { return &runtime_; }
-
-  // Dev-only access to the currently latched provider broker (if present).
-  // Not bound to Godot.
-  class ProviderBroker* provider_broker_for_dev() const noexcept;
-#endif
-
 protected:
   static void _bind_methods();
 

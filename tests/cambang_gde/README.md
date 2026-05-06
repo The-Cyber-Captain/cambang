@@ -31,6 +31,30 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Verifies Godot-facing tranche-1 result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
   - Expected pass string: `OK: result_retrieval_verification passed`
+- `scenes/71_capture_session_matrix_v3.tscn`
+  - Capture/session matrix confidence harness covering staged stream-result binding and capture-result checkpoints.
+- `scenes/72_stream_load_isolation.tscn`
+  - Stream-load isolation/regression harness with retained display-path diagnostics and timing summaries.
+
+## Dev-node/mailbox scene retirement (May 2026)
+
+The following legacy dev-node/mailbox scenes were retired:
+
+- `scenes/00_extension_load.tscn`
+- `scenes/10_lifecycle_smoke.tscn`
+- `scenes/20_frameview_smoke.tscn`
+- `scenes/25_frameview_smoke_with_singleton_snapshots.tscn`
+- `scenes/40_frameview_mf_stress_test.tscn`
+- `scenes/50_frameview_cycling_patterns_chose_provider.tscn`
+- `scenes/51_heavy_probe_registry.tscn`
+
+Migration guidance:
+
+- `25_frameview_smoke_with_singleton_snapshots` → use `70_result_retrieval_verification` for modern result retrieval/materialization and `60-63` for snapshot/boundary confidence.
+- `40_frameview_mf_stress_test` → use `72_stream_load_isolation` for load/perf isolation and `60_restart_boundary_abuse` for restart semantics.
+- `50_frameview_cycling_patterns_chose_provider` → use `66_status_panel_scenario_runtime` for server-driven scenario/runtime observation.
+- `51_heavy_probe_registry` → use `63_snapshot_observer_minimal` for lightweight snapshot diagnostics plus `65_public_boundary_verify` for boundary contract checks.
+- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60-66` for boundary/status/snapshot confidence, `70` for result retrieval, `71` for capture/session matrix, and `72` for stream-load isolation.
 
 
 ## Running

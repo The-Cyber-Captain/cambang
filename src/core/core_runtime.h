@@ -23,9 +23,6 @@
 
 #include "core/snapshot/snapshot_builder.h"
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-#include "core/latest_frame_mailbox.h"
-#endif
 
 #include "imaging/api/icamera_provider.h"
 #if !defined(CAMBANG_INTERNAL_SMOKE)
@@ -222,9 +219,6 @@ enum class TryCloseDeviceStatus : uint8_t {
     result_store_.mark_stream_display_demand(stream_id, now_ns);
   }
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
-#endif
 
   void attach_provider(ICameraProvider* provider) noexcept {
     provider_.store(provider, std::memory_order_release);
@@ -313,25 +307,6 @@ private:
 
   // Core-defined epoch for snapshot timestamp_ns (session-relative monotonic).
   std::chrono::steady_clock::time_point epoch_;
-
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  LatestFrameMailbox latest_frame_mailbox_;
-  class LatestFrameMailboxSink final : public ICoreFrameSink {
-  public:
-    explicit LatestFrameMailboxSink(LatestFrameMailbox* mb) : mb_(mb) {}
-    CoreVisibilityPath on_frame(FrameView frame) override {
-      if (mb_) {
-        return mb_->write_from_core(std::move(frame));
-      } else {
-        frame.release_now();
-        return CoreVisibilityPath::NONE;
-      }
-    }
-  private:
-    LatestFrameMailbox* mb_ = nullptr;
-  };
-  LatestFrameMailboxSink latest_frame_sink_{&latest_frame_mailbox_};
-#endif
 
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;

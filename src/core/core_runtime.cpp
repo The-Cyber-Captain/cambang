@@ -78,10 +78,6 @@ CoreRuntime::CoreRuntime()
   dispatcher_.set_result_store(&result_store_);
   const bool result_routing_enabled = !disable_result_routing_requested();
   dispatcher_.set_result_routing_enabled(result_routing_enabled);
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  // Dev-only latest-frame sink (core thread dispatch path).
-  dispatcher_.set_frame_sink(&latest_frame_sink_);
-#endif
 }
 
 CoreRuntime::~CoreRuntime() {

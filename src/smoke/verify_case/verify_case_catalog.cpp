@@ -2374,7 +2374,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   // NOTE: verify-case smoke builds do not have a dedicated frame-copy observer
-  // exposed at this layer (CoreRuntime latest_frame_mailbox accessor is dev-node scoped).
+  // exposed at this layer (dev-node mailbox surface removed; verify via snapshot counters).
   // We therefore assert update request dispatch + post-update frame progression
   // rather than pixel signatures in this runtime/harness verification.
 
