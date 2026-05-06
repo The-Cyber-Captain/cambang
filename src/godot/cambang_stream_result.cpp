@@ -164,6 +164,31 @@ bool refresh_live_cpu_display_view_entry(
   return true;
 }
 
+bool refresh_live_cpu_display_view_from_image(
+    LiveCpuDisplayViewEntry& entry,
+    const godot::Ref<godot::Image>& image) {
+  if (image.is_null() || image->is_empty()) {
+    return false;
+  }
+  const uint32_t width = static_cast<uint32_t>(image->get_width());
+  const uint32_t height = static_cast<uint32_t>(image->get_height());
+  const bool need_recreate =
+      entry.texture.is_null() ||
+      entry.width != width ||
+      entry.height != height;
+  if (need_recreate) {
+    entry.texture = godot::ImageTexture::create_from_image(image);
+    if (entry.texture.is_null()) {
+      return false;
+    }
+  } else {
+    entry.texture->update(image);
+  }
+  entry.width = width;
+  entry.height = height;
+  return true;
+}
+
 godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResultData& data) {
   if (!data || data->stream_id == 0 || !has_retained_cpu_payload(data)) {
     return {};
@@ -388,7 +413,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
 
   for (uint64_t stream_id : stream_ids) {
     SharedStreamResultData data = runtime.get_latest_stream_result(stream_id);
-    if (!data || data->payload_kind != ResultPayloadKind::CPU_PACKED || !has_retained_cpu_payload(data)) {
+    if (!data) {
       continue;
     }
     std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
@@ -396,7 +421,21 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     if (it == g_live_cpu_display_views.end()) {
       continue;
     }
-    (void)refresh_live_cpu_display_view_entry(it->second, data);
+    if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_retained_cpu_payload(data)) {
+      (void)refresh_live_cpu_display_view_entry(it->second, data);
+      continue;
+    }
+    if (data->payload_kind == ResultPayloadKind::GPU_SURFACE && data->retained_gpu_backing) {
+      godot::Ref<godot::Image> frame_image =
+          synthetic_gpu_backing_materialize_to_image(data->retained_gpu_backing);
+      if (refresh_live_cpu_display_view_from_image(it->second, frame_image) && display_demand_trace_enabled()) {
+        godot::UtilityFunctions::print(
+            "[CamBANG][DemandTrace] cpu_live_adapter_from_gpu stream_id=",
+            (long long)stream_id,
+            " width=", (long long)it->second.width,
+            " height=", (long long)it->second.height);
+      }
+    }
   }
 }
 
