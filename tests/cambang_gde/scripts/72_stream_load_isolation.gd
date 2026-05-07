@@ -76,13 +76,16 @@ var _display_path_last_kind := -1
 
 func _ready() -> void:
 	_status.clear()
-	_config_from_env()
+	if not _config_from_env():
+		return
 	_bootstrap()
 	set_process(true)
 
 
-func _config_from_env() -> void:
+func _config_from_env() -> bool:
 	_resolve_exercise_or_fail()
+	if _done:
+		return false
 	_duration_sec = _env_float("CAMBANG_STREAM_LOAD_DURATION_SEC", DEFAULT_DURATION_SEC)
 	_apply_exercise_defaults()
 	_poll_results = _env_bool("CAMBANG_STREAM_LOAD_POLL_RESULTS", _poll_results)
@@ -94,6 +97,7 @@ func _config_from_env() -> void:
 		_frame_spike_top_n = 1
 	_bind_mode_latest = (_exercise == EXERCISE_DISPLAY_LATEST)
 	_resolve_effective_gpu_policy_or_fail()
+	return not _done
 
 
 func _resolve_exercise_or_fail() -> void:
@@ -114,6 +118,7 @@ func _resolve_exercise_or_fail() -> void:
 				EXERCISE_NO_DISPLAY_DEFAULT,
 				EXERCISE_NO_DISPLAY_EAGER
 			])
+			_done = true
 			get_tree().quit(2)
 
 
@@ -143,7 +148,11 @@ func _resolve_effective_gpu_policy_or_fail() -> void:
 	else:
 		_effective_gpu_policy = raw
 	if _exercise == EXERCISE_NO_DISPLAY_EAGER and _effective_gpu_policy != "always":
-		push_error("[CamBANG][Scene72] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always to be set before provider initialization; current policy is %s. Set it in the launch environment and rerun." % _effective_gpu_policy)
+		print("[CamBANG][Scene72][ERROR] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
+		print("[CamBANG][Scene72][ERROR] requested_policy=always effective_policy=%s." % _effective_gpu_policy)
+		print("[CamBANG][Scene72][ERROR] Set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always in the launch environment and rerun.")
+		push_error("[CamBANG][Scene72] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
+		_done = true
 		get_tree().quit(2)
 
 

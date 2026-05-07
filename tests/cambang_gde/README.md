@@ -120,6 +120,11 @@ Notes:
   - `CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE`
   - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
   - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY`
+  - `no_display_eager` requires pre-launch eager policy; example:
+    - default/no-display comparison:
+      - `CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
+    - eager/no-display comparison:
+      - `CAMBANG_EXERCISE=no_display_eager CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
 
 ## Shared status panel and editor dock
 
