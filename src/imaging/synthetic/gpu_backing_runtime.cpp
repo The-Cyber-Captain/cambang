@@ -18,7 +18,7 @@ void trace_line(const char* message) {
   if (!gpu_trace_enabled()) {
     return;
   }
-  std::fprintf(stdout, "[CamBANG][SyntheticGPU] %s\n", message);
+  std::fprintf(stdout, "[CamBANG][SyntheticGpu] %s\n", message);
   std::fflush(stdout);
 }
 

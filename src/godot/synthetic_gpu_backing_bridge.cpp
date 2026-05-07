@@ -198,7 +198,7 @@ void trace_gpu(const char* message) {
   if (!gpu_trace_enabled()) {
     return;
   }
-  godot::UtilityFunctions::print("[CamBANG][SyntheticGPU] ", message);
+  godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] ", message);
 }
 
 void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
@@ -206,7 +206,7 @@ void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
     return;
   }
   godot::UtilityFunctions::print(
-      "[CamBANG][SyntheticGPU] runtime_query global_rd_ptr=",
+      "[CamBANG][SyntheticGpu] runtime_query global_rd_ptr=",
       global_rd_ptr,
       " runtime_truth_gpu_available=",
       runtime_truth_gpu_available);

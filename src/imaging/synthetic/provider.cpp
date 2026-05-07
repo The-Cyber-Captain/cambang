@@ -61,7 +61,7 @@ void maybe_warn_deprecated_gpu_policy_alias() {
     if (!warned_deprecated_alias) {
       warned_deprecated_alias = true;
       synthetic_triage_print_line(
-          "[cambang][synth] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
+          "[CamBANG][SyntheticTriage] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
           "display_demanded is now the default. Use CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY for explicit "
           "policy control; set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always for eager-update comparison.");
     }
