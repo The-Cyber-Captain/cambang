@@ -612,6 +612,7 @@ func _log_summary_timing_once() -> void:
 		_timing_status_max_sec * 1000.0, _timing_status_total_sec * 1000.0, _timing_status_calls,
 		_timing_log_max_sec * 1000.0, _timing_log_total_sec * 1000.0, _timing_log_calls
 	])
+	print("[CamBANG][Scene71] completed=true quitting=true")
 	_append_log("[CamBANG][Scene71] completed=true quitting=true")
 	CamBANGServer.stop()
 	get_tree().quit(0)

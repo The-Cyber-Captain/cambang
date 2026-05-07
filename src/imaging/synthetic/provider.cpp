@@ -1969,6 +1969,13 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   SyntheticMetricsSnapshot out{};
   uint64_t pattern_base_copy_total_ns = 0;
   uint64_t pattern_overlay_total_ns = 0;
+  uint64_t gpu_upload_copy_calls = 0;
+  uint64_t gpu_upload_copy_total_ns = 0;
+  uint64_t gpu_upload_copy_max_ns = 0;
+  uint64_t gpu_texture_update_calls = 0;
+  uint64_t gpu_texture_update_total_ns = 0;
+  uint64_t gpu_texture_update_max_ns = 0;
+  uint64_t gpu_texture_update_skipped = 0;
   for (const auto& kv : streams_) {
     const auto& stats = kv.second.renderer.debug_stats();
     pattern_base_copy_total_ns += stats.base_copy_total_ns;
@@ -1977,17 +1984,25 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   out.total_emitted_frames = triage_frames_emitted_total_;
   out.gpu_update_attempts = triage_gpu_update_attempts_total_;
   out.gpu_update_demand_skipped = triage_gpu_update_demand_skipped_total_;
-  // GPU upload/texture update subbucket timing counters are only surfaced via
-  // synthetic_gpu_backing_take_update_timing_stats(...), which is destructive
-  // ("take") and therefore unsuitable for read-only snapshot access.
-  out.gpu_texture_update_calls = 0;
+  const bool has_gpu_subbucket_stats = synthetic_gpu_backing_peek_update_timing_stats(
+      gpu_upload_copy_calls,
+      gpu_upload_copy_total_ns,
+      gpu_upload_copy_max_ns,
+      gpu_texture_update_calls,
+      gpu_texture_update_total_ns,
+      gpu_texture_update_max_ns,
+      gpu_texture_update_skipped);
+  (void)gpu_upload_copy_max_ns;
+  (void)gpu_texture_update_max_ns;
+  (void)gpu_texture_update_skipped;
+  out.gpu_texture_update_calls = has_gpu_subbucket_stats ? gpu_texture_update_calls : 0;
   out.frame_copy_calls = triage_frame_copy_calls_;
   out.frame_render_total_ms = ns_to_ms(triage_frame_render_total_ns_);
   out.pattern_overlay_total_ms = ns_to_ms(pattern_overlay_total_ns);
   out.pattern_base_copy_total_ms = ns_to_ms(pattern_base_copy_total_ns);
   out.gpu_update_total_total_ms = ns_to_ms(triage_gpu_update_total_ns_);
-  out.gpu_upload_copy_total_ms = 0.0;
-  out.gpu_texture_update_total_ms = 0.0;
+  out.gpu_upload_copy_total_ms = ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_total_ns : 0);
+  out.gpu_texture_update_total_ms = ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0);
   out.catchup_ticks_capped = triage_catchup_ticks_capped_total_;
   out.catchup_frames_dropped = triage_catchup_frames_dropped_total_;
   return out;

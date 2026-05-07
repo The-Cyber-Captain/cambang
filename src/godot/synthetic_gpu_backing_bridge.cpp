@@ -514,6 +514,24 @@ bool take_update_timing_stats(
   return true;
 }
 
+bool peek_update_timing_stats(
+    uint64_t& upload_copy_calls,
+    uint64_t& upload_copy_total_ns,
+    uint64_t& upload_copy_max_ns,
+    uint64_t& texture_update_calls,
+    uint64_t& texture_update_total_ns,
+    uint64_t& texture_update_max_ns,
+    uint64_t& texture_update_skipped) noexcept {
+  return take_update_timing_stats(
+      upload_copy_calls,
+      upload_copy_total_ns,
+      upload_copy_max_ns,
+      texture_update_calls,
+      texture_update_total_ns,
+      texture_update_max_ns,
+      texture_update_skipped);
+}
+
 void release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept {
   if (!backing) {
     return;
@@ -534,6 +552,7 @@ const SyntheticGpuBackingRuntimeOps kOps{
     &update_stream_live_gpu_backing_rgba8,
     &release_stream_live_gpu_backing,
     &take_update_timing_stats,
+    &peek_update_timing_stats,
 };
 
 } // namespace
