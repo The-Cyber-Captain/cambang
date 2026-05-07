@@ -142,18 +142,20 @@ func _resolve_effective_gpu_policy_or_fail() -> void:
 	_requested_gpu_policy = ""
 	if _exercise == EXERCISE_NO_DISPLAY_EAGER:
 		_requested_gpu_policy = "always"
-	var raw := OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges()
-	if raw == "":
-		_effective_gpu_policy = "display_demanded"
+	var explicit_policy := OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges()
+	if explicit_policy != "":
+		_effective_gpu_policy = explicit_policy
+		if _exercise == EXERCISE_NO_DISPLAY_EAGER and explicit_policy != "always":
+			print("[CamBANG][Scene72][ERROR] configuration conflict: exercise=no_display_eager requested_policy=always explicit_policy=%s." % explicit_policy)
+			print("[CamBANG][Scene72][ERROR] no_display_eager requires effective CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always.")
+			push_error("[CamBANG][Scene72] configuration conflict: exercise=no_display_eager with CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=%s" % explicit_policy)
+			_done = true
+			get_tree().quit(2)
+		return
+	if _exercise == EXERCISE_NO_DISPLAY_EAGER:
+		_effective_gpu_policy = "always"
 	else:
-		_effective_gpu_policy = raw
-	if _exercise == EXERCISE_NO_DISPLAY_EAGER and _effective_gpu_policy != "always":
-		print("[CamBANG][Scene72][ERROR] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
-		print("[CamBANG][Scene72][ERROR] requested_policy=always effective_policy=%s." % _effective_gpu_policy)
-		print("[CamBANG][Scene72][ERROR] Set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always in the launch environment and rerun.")
-		push_error("[CamBANG][Scene72] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
-		_done = true
-		get_tree().quit(2)
+		_effective_gpu_policy = "display_demanded"
 
 
 func _bootstrap() -> void:

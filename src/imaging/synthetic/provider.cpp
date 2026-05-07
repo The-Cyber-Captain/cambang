@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
+#include "imaging/synthetic/gpu_update_policy_resolver.h"
 #include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
@@ -54,20 +55,7 @@ bool env_flag_enabled(const char* name) {
   return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
 }
 
-enum class StreamGpuUpdatePolicy {
-  Always,
-  DisplayDemanded,
-};
-
-StreamGpuUpdatePolicy env_stream_gpu_update_policy() {
-  const char* explicit_value = std::getenv("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY");
-  if (explicit_value && explicit_value[0] != '\0') {
-    if (std::strcmp(explicit_value, "display_demanded") == 0) {
-      return StreamGpuUpdatePolicy::DisplayDemanded;
-    }
-    return StreamGpuUpdatePolicy::Always;
-  }
-
+void maybe_warn_deprecated_gpu_policy_alias() {
   if (env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED")) {
     static bool warned_deprecated_alias = false;
     if (!warned_deprecated_alias) {
@@ -77,10 +65,7 @@ StreamGpuUpdatePolicy env_stream_gpu_update_policy() {
           "display_demanded is now the default. Use CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY for explicit "
           "policy control; set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always for eager-update comparison.");
     }
-    return StreamGpuUpdatePolicy::DisplayDemanded;
   }
-
-  return StreamGpuUpdatePolicy::DisplayDemanded;
 }
 
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
@@ -133,6 +118,7 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
   display_demand_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
   triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
+  maybe_warn_deprecated_gpu_policy_alias();
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -256,6 +242,11 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::success();
   }
   if (!callbacks) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  const StreamGpuUpdatePolicyResolution gpu_policy_resolution = resolve_synthetic_stream_gpu_update_policy();
+  if (gpu_policy_resolution.has_conflict) {
+    synthetic_triage_printf("[CamBANG][SyntheticProvider][ERROR] %s", gpu_policy_resolution.error_message.c_str());
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   callbacks_ = callbacks;
@@ -1641,7 +1632,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     triage_gpu_ensure_backing_total_ns_ += ensure_ns;
     triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
     if (ensured_backing) {
-      const StreamGpuUpdatePolicy gpu_update_policy = env_stream_gpu_update_policy();
+      const StreamGpuUpdatePolicy gpu_update_policy = resolve_synthetic_stream_gpu_update_policy().policy;
       const bool provider_has_display_demand_signal = true;
       const bool display_demand_active =
           callbacks_ ? callbacks_->is_stream_display_demand_active(s.req.stream_id) : false;
@@ -1655,7 +1646,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
               "[CamBANG][DemandTrace] provider_demand_transition stream_id=%llu active=%d policy=%s\n",
               static_cast<unsigned long long>(s.req.stream_id),
               display_demand_active ? 1 : 0,
-              gpu_update_policy == StreamGpuUpdatePolicy::DisplayDemanded ? "display_demanded" : "always");
+              to_string(gpu_update_policy));
           display_demand_last_active_by_stream_[s.req.stream_id] = display_demand_active;
         }
       }

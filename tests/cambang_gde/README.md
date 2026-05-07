@@ -61,8 +61,9 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     - `no_display_eager`
   - `display_oneshot` is default because it represents the intended Godot-facing API contract:
     bind once and remain live without repeated `get_display_view()` refresh burden.
-  - `no_display_eager` requires `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always` to be set
-    in the launch environment before provider initialization; otherwise the harness fails clearly.
+  - `no_display_eager` is self-contained via `CAMBANG_EXERCISE`: it implies effective GPU update policy `always` when no explicit low-level policy is set.
+  - Precedence: explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` > exercise-derived (`no_display_eager` => `always`) > default (`display_demanded`).
+  - Conflict: `CAMBANG_EXERCISE=no_display_eager` with explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` not equal to `always` fails clearly.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -119,12 +120,14 @@ Notes:
   - `CAMBANG_STREAM_LOAD_BIND_DISPLAY`
   - `CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE`
   - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
-  - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY`
-  - `no_display_eager` requires pre-launch eager policy; example:
+  - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` (maintainer override/comparison escape hatch)
+  - `no_display_eager` no longer requires setting the low-level env separately; examples:
     - default/no-display comparison:
       - `CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
-    - eager/no-display comparison:
-      - `CAMBANG_EXERCISE=no_display_eager CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
+    - eager/no-display comparison via exercise only:
+      - `CAMBANG_EXERCISE=no_display_eager godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
+    - explicit low-level override comparison (still supported):
+      - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
 
 ## Shared status panel and editor dock
 
