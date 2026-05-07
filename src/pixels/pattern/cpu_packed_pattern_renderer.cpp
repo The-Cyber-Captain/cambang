@@ -461,22 +461,27 @@ void CpuPackedPatternRenderer::apply_frame_index_offsets(
   const uint8_t go = static_cast<uint8_t>((frame_index >> 1) & 0xFFu);
   const uint8_t bo = static_cast<uint8_t>((frame_index >> 2) & 0xFFu);
 
-  const bool rgba = (spec.format == PatternSpec::PackedFormat::RGBA8);
+  if (spec.format == PatternSpec::PackedFormat::RGBA8) {
+    for (uint32_t y = 0; y < dst.height; ++y) {
+      uint8_t* p = dst.row_ptr(y);
+      for (uint32_t x = 0; x < dst.width; ++x) {
+        p[0] = static_cast<uint8_t>(p[0] + ro);
+        p[1] = static_cast<uint8_t>(p[1] + go);
+        p[2] = static_cast<uint8_t>(p[2] + bo);
+        p += 4u;
+      }
+    }
+    return;
+  }
 
   for (uint32_t y = 0; y < dst.height; ++y) {
     uint8_t* row = dst.row_ptr(y);
     for (uint32_t x = 0; x < dst.width; ++x) {
       uint8_t* p = row + static_cast<size_t>(x) * 4u;
-      if (rgba) {
-        p[0] = static_cast<uint8_t>(p[0] + ro);
-        p[1] = static_cast<uint8_t>(p[1] + go);
-        p[2] = static_cast<uint8_t>(p[2] + bo);
-      } else {
-        // BGRA layout: [b,g,r,a]
-        p[2] = static_cast<uint8_t>(p[2] + ro);
-        p[1] = static_cast<uint8_t>(p[1] + go);
-        p[0] = static_cast<uint8_t>(p[0] + bo);
-      }
+      // BGRA layout: [b,g,r,a]
+      p[2] = static_cast<uint8_t>(p[2] + ro);
+      p[1] = static_cast<uint8_t>(p[1] + go);
+      p[0] = static_cast<uint8_t>(p[0] + bo);
     }
   }
 }
