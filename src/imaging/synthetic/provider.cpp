@@ -1967,17 +1967,27 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
 
 SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() const {
   SyntheticMetricsSnapshot out{};
+  uint64_t pattern_base_copy_total_ns = 0;
+  uint64_t pattern_overlay_total_ns = 0;
+  for (const auto& kv : streams_) {
+    const auto& stats = kv.second.renderer.debug_stats();
+    pattern_base_copy_total_ns += stats.base_copy_total_ns;
+    pattern_overlay_total_ns += stats.overlay_total_ns;
+  }
   out.total_emitted_frames = triage_frames_emitted_total_;
   out.gpu_update_attempts = triage_gpu_update_attempts_total_;
   out.gpu_update_demand_skipped = triage_gpu_update_demand_skipped_total_;
-  out.gpu_texture_update_calls = gpu_texture_update_calls_total_.load(std::memory_order_relaxed);
+  // GPU upload/texture update subbucket timing counters are only surfaced via
+  // synthetic_gpu_backing_take_update_timing_stats(...), which is destructive
+  // ("take") and therefore unsuitable for read-only snapshot access.
+  out.gpu_texture_update_calls = 0;
   out.frame_copy_calls = triage_frame_copy_calls_;
   out.frame_render_total_ms = ns_to_ms(triage_frame_render_total_ns_);
-  out.pattern_overlay_total_ms = ns_to_ms(pattern_overlay_total_ns_.load(std::memory_order_relaxed));
-  out.pattern_base_copy_total_ms = ns_to_ms(pattern_base_copy_total_ns_.load(std::memory_order_relaxed));
+  out.pattern_overlay_total_ms = ns_to_ms(pattern_overlay_total_ns);
+  out.pattern_base_copy_total_ms = ns_to_ms(pattern_base_copy_total_ns);
   out.gpu_update_total_total_ms = ns_to_ms(triage_gpu_update_total_ns_);
-  out.gpu_upload_copy_total_ms = ns_to_ms(gpu_upload_copy_total_ns_.load(std::memory_order_relaxed));
-  out.gpu_texture_update_total_ms = ns_to_ms(gpu_texture_update_total_ns_.load(std::memory_order_relaxed));
+  out.gpu_upload_copy_total_ms = 0.0;
+  out.gpu_texture_update_total_ms = 0.0;
   out.catchup_ticks_capped = triage_catchup_ticks_capped_total_;
   out.catchup_frames_dropped = triage_catchup_frames_dropped_total_;
   return out;
