@@ -229,6 +229,9 @@ private:
 
   // Triage-only stream scheduling/GPU-path instrumentation.
   bool triage_trace_enabled_ = false;
+  bool display_demand_trace_enabled_ = false;
+  std::map<uint64_t, bool> display_demand_last_active_by_stream_;
+  std::map<uint64_t, bool> display_demand_last_skip_by_stream_;
   uint32_t triage_catchup_cap_per_tick_ = 0;
   uint64_t triage_next_log_ns_ = 0;
   uint64_t triage_frames_emitted_total_ = 0;

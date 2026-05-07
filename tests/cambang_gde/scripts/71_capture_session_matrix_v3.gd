@@ -11,6 +11,7 @@ const HW_A: String = "synthetic:0"
 const HW_B: String = "synthetic:1"
 const SCENARIO_PATH: String = "res://scenarios/capture_session_matrix_v3.json"
 const LOG_SECOND_EPS: float = 0.05
+const EXERCISE_DISPLAY_ONESHOT := "display_oneshot"
 
 const CHECKPOINTS: Array = [
 	{"time_s": 1.0,  "kind": "capture",         "id": 1,  "device": DEVICE_A_KEY,    "desc": "Capture-only on CameraA"},
@@ -76,11 +77,35 @@ var _timing_log_total_sec := 0.0
 var _timing_log_max_sec := 0.0
 var _timing_log_calls := 0
 var _summary_timing_logged := false
+var _display_demand_trace := false
 
 
 func _ready() -> void:
 	set_process_input(true)
+	_display_demand_trace = OS.get_environment("CAMBANG_DEV_DISPLAY_DEMAND_TRACE") != ""
+	if not _resolve_exercise_or_fail():
+		return
 	_bootstrap()
+
+
+func _resolve_exercise_or_fail() -> bool:
+	var exercise_raw := OS.get_environment("CAMBANG_EXERCISE").strip_edges()
+	var defaulted := false
+	var exercise := exercise_raw
+	if exercise == "":
+		exercise = EXERCISE_DISPLAY_ONESHOT
+		defaulted = true
+	if exercise != EXERCISE_DISPLAY_ONESHOT:
+		push_error("[CamBANG][Scene71] exercise=%s supported=false supported_exercises=%s" % [exercise_raw, EXERCISE_DISPLAY_ONESHOT])
+		get_tree().quit(2)
+		return false
+	var resolved_line := "[CamBANG][Scene71] exercise=%s default=%s supported=true behavior=current_one_shot_display_contract" % [
+		exercise,
+		str(defaulted)
+	]
+	print(resolved_line)
+	_append_log(resolved_line)
+	return true
 
 
 func _bootstrap() -> void:
@@ -335,6 +360,15 @@ func _bind_stream_slot(slot: String) -> bool:
 	if view == null:
 		_append_log("WARN: display view unavailable for %s" % slot)
 		return false
+
+	if _display_demand_trace:
+		var path_kind: int = -1
+		if result.has_method("get_display_view_path_kind"):
+			path_kind = int(result.get_display_view_path_kind())
+		var tex_id: int = -1
+		if view is Object:
+			tex_id = int((view as Object).get_instance_id())
+		_append_log("DemandTrace bind slot=%s stream_id=%d path_kind=%d texture_id=%d" % [slot, stream_id, path_kind, tex_id])
 
 	match slot:
 		SLOT_PREVIEW_A:

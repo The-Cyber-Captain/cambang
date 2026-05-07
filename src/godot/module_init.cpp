@@ -16,13 +16,10 @@
 #include "godot/cambang_capture_result.h"
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_stream_result.h"
+#include "godot/cambang_stream_result_internal.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-#include "godot/dev/cambang_dev_node.h"
-#include "godot/dev/cambang_dev_frameview_node.h"
-#endif
 
 static cambang::CamBANGServer* g_server = nullptr;
 static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
@@ -36,13 +33,9 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
     godot::ClassDB::register_class<cambang::CamBANGCaptureResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResultSet>();
     // Scene-level class registration phase (RefCounted/Object classes).
+    cambang::register_stream_result_internal_classes();
     cambang::register_synthetic_gpu_backing_internal_classes();
     cambang::install_synthetic_gpu_backing_godot_bridge();
-
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-    godot::ClassDB::register_class<cambang::CamBANGDevNode>();
-    godot::ClassDB::register_class<cambang::CamBANGDevFrameViewNode>();
-#endif
 
     // Create and register the Engine singleton.
     // Note: Engine singletons are not part of the scene tree; they do not receive _process.

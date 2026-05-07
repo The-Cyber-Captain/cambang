@@ -1,5 +1,21 @@
 # CamBANG Godot dev scenes
 
+## Shared maintainer exercise selector
+
+Maintainer harnesses in this folder use a shared selector:
+
+- `CAMBANG_EXERCISE`
+
+An **exercise** is a named maintainer validation configuration/mode for a harness.
+It is **not** product API configuration, **not** capture profile configuration, and
+**not** scenario data.
+
+Harnesses should:
+
+- document supported exercise names,
+- document default exercise when `CAMBANG_EXERCISE` is unset,
+- fail clearly on unsupported exercise values (do not silently fall back).
+
 ## Tranche 4 boundary-hardening scenes
 
 These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary.
@@ -31,6 +47,42 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Verifies Godot-facing tranche-1 result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
   - Expected pass string: `OK: result_retrieval_verification passed`
+- `scenes/71_capture_session_matrix_v3.tscn`
+  - Capture/session matrix confidence harness covering staged stream-result binding and capture-result checkpoints.
+  - Supported exercises: `display_oneshot`
+  - Default when `CAMBANG_EXERCISE` is unset: `display_oneshot`
+  - This default represents the current customer/API confirmation behavior: one-shot `get_display_view()` binding.
+- `scenes/72_stream_load_isolation.tscn`
+  - Stream-load isolation/regression harness with retained display-path diagnostics and timing summaries.
+  - Supported exercises:
+    - `display_oneshot` (default)
+    - `display_latest`
+    - `no_display_default`
+    - `no_display_eager`
+  - `display_oneshot` is default because it represents the intended Godot-facing API contract:
+    bind once and remain live without repeated `get_display_view()` refresh burden.
+  - `no_display_eager` requires `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always` to be set
+    in the launch environment before provider initialization; otherwise the harness fails clearly.
+
+## Dev-node/mailbox scene retirement (May 2026)
+
+The following legacy dev-node/mailbox scenes were retired:
+
+- `scenes/00_extension_load.tscn`
+- `scenes/10_lifecycle_smoke.tscn`
+- `scenes/20_frameview_smoke.tscn`
+- `scenes/25_frameview_smoke_with_singleton_snapshots.tscn`
+- `scenes/40_frameview_mf_stress_test.tscn`
+- `scenes/50_frameview_cycling_patterns_chose_provider.tscn`
+- `scenes/51_heavy_probe_registry.tscn`
+
+Migration guidance:
+
+- `25_frameview_smoke_with_singleton_snapshots` → use `70_result_retrieval_verification` for modern result retrieval/materialization and `60-63` for snapshot/boundary confidence.
+- `40_frameview_mf_stress_test` → use `72_stream_load_isolation` for load/perf isolation and `60_restart_boundary_abuse` for restart semantics.
+- `50_frameview_cycling_patterns_chose_provider` → use `66_status_panel_scenario_runtime` for server-driven scenario/runtime observation.
+- `51_heavy_probe_registry` → use `63_snapshot_observer_minimal` for lightweight snapshot diagnostics plus `65_public_boundary_verify` for boundary contract checks.
+- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60-66` for boundary/status/snapshot confidence, `70` for result retrieval, `71` for capture/session matrix, and `72` for stream-load isolation.
 
 
 ## Running
@@ -61,6 +113,18 @@ Notes:
 - `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
   builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
   for bounded CLI execution.
+- For Scene 72, prefer `CAMBANG_EXERCISE` for normal validation shape selection.
+  Low-level env knobs remain supported as maintainer escape hatches:
+  - `CAMBANG_STREAM_LOAD_POLL_RESULTS`
+  - `CAMBANG_STREAM_LOAD_BIND_DISPLAY`
+  - `CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE`
+  - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
+  - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY`
+  - `no_display_eager` requires pre-launch eager policy; example:
+    - default/no-display comparison:
+      - `CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
+    - eager/no-display comparison:
+      - `CAMBANG_EXERCISE=no_display_eager CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
 
 ## Shared status panel and editor dock
 

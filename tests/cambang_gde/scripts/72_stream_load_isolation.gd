@@ -4,6 +4,10 @@ const DEFAULT_SCENARIO_FILE := "stream_load_2x_720p30.json"
 const DEFAULT_DURATION_SEC := 20.0
 const DEFAULT_POLL_RESULTS := true
 const DEFAULT_BIND_DISPLAY := true
+const EXERCISE_DISPLAY_ONESHOT := "display_oneshot"
+const EXERCISE_DISPLAY_LATEST := "display_latest"
+const EXERCISE_NO_DISPLAY_DEFAULT := "no_display_default"
+const EXERCISE_NO_DISPLAY_EAGER := "no_display_eager"
 const PRINT_DECIMALS := 2
 
 @onready var _status: RichTextLabel = $RootMargin/MainColumn/Status
@@ -13,6 +17,12 @@ const PRINT_DECIMALS := 2
 var _duration_sec := DEFAULT_DURATION_SEC
 var _poll_results := DEFAULT_POLL_RESULTS
 var _bind_display := DEFAULT_BIND_DISPLAY
+var _exercise := EXERCISE_DISPLAY_ONESHOT
+var _exercise_defaulted := true
+var _bind_mode_latest := false
+var _display_bound_once := false
+var _requested_gpu_policy := ""
+var _effective_gpu_policy := ""
 
 var _elapsed_sec := 0.0
 var _accum_sec := 0.0
@@ -66,20 +76,84 @@ var _display_path_last_kind := -1
 
 func _ready() -> void:
 	_status.clear()
-	_config_from_env()
+	if not _config_from_env():
+		return
 	_bootstrap()
 	set_process(true)
 
 
-func _config_from_env() -> void:
+func _config_from_env() -> bool:
+	_resolve_exercise_or_fail()
+	if _done:
+		return false
 	_duration_sec = _env_float("CAMBANG_STREAM_LOAD_DURATION_SEC", DEFAULT_DURATION_SEC)
-	_poll_results = _env_bool("CAMBANG_STREAM_LOAD_POLL_RESULTS", DEFAULT_POLL_RESULTS)
-	_bind_display = _env_bool("CAMBANG_STREAM_LOAD_BIND_DISPLAY", DEFAULT_BIND_DISPLAY)
+	_apply_exercise_defaults()
+	_poll_results = _env_bool("CAMBANG_STREAM_LOAD_POLL_RESULTS", _poll_results)
+	_bind_display = _env_bool("CAMBANG_STREAM_LOAD_BIND_DISPLAY", _bind_display)
 	_frame_spike_trace_enabled = _env_bool("CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE", false)
 	_frame_spike_top_n = int(_env_float("CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N", 10.0))
 	_display_path_trace_enabled = _env_bool("CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE", false)
 	if _frame_spike_top_n < 1:
 		_frame_spike_top_n = 1
+	_bind_mode_latest = (_exercise == EXERCISE_DISPLAY_LATEST)
+	_resolve_effective_gpu_policy_or_fail()
+	return not _done
+
+
+func _resolve_exercise_or_fail() -> void:
+	var exercise_raw := OS.get_environment("CAMBANG_EXERCISE").strip_edges()
+	if exercise_raw == "":
+		_exercise = EXERCISE_DISPLAY_ONESHOT
+		_exercise_defaulted = true
+		return
+	_exercise_defaulted = false
+	match exercise_raw:
+		EXERCISE_DISPLAY_ONESHOT, EXERCISE_DISPLAY_LATEST, EXERCISE_NO_DISPLAY_DEFAULT, EXERCISE_NO_DISPLAY_EAGER:
+			_exercise = exercise_raw
+		_:
+			push_error("[CamBANG][Scene72] exercise=%s supported=false supported_exercises=%s,%s,%s,%s" % [
+				exercise_raw,
+				EXERCISE_DISPLAY_ONESHOT,
+				EXERCISE_DISPLAY_LATEST,
+				EXERCISE_NO_DISPLAY_DEFAULT,
+				EXERCISE_NO_DISPLAY_EAGER
+			])
+			_done = true
+			get_tree().quit(2)
+
+
+func _apply_exercise_defaults() -> void:
+	match _exercise:
+		EXERCISE_DISPLAY_ONESHOT:
+			_bind_display = true
+			_poll_results = true
+		EXERCISE_DISPLAY_LATEST:
+			_bind_display = true
+			_poll_results = true
+		EXERCISE_NO_DISPLAY_DEFAULT:
+			_bind_display = false
+			_poll_results = false
+		EXERCISE_NO_DISPLAY_EAGER:
+			_bind_display = false
+			_poll_results = false
+
+
+func _resolve_effective_gpu_policy_or_fail() -> void:
+	_requested_gpu_policy = ""
+	if _exercise == EXERCISE_NO_DISPLAY_EAGER:
+		_requested_gpu_policy = "always"
+	var raw := OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges()
+	if raw == "":
+		_effective_gpu_policy = "display_demanded"
+	else:
+		_effective_gpu_policy = raw
+	if _exercise == EXERCISE_NO_DISPLAY_EAGER and _effective_gpu_policy != "always":
+		print("[CamBANG][Scene72][ERROR] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
+		print("[CamBANG][Scene72][ERROR] requested_policy=always effective_policy=%s." % _effective_gpu_policy)
+		print("[CamBANG][Scene72][ERROR] Set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always in the launch environment and rerun.")
+		push_error("[CamBANG][Scene72] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
+		_done = true
+		get_tree().quit(2)
 
 
 func _bootstrap() -> void:
@@ -111,6 +185,17 @@ func _bootstrap() -> void:
 		_require(pause_err == OK, "set_timeline_paused(false) failed: %d" % pause_err)
 
 	_log("RUN: stream_load_isolation")
+	_log("[CamBANG][Scene72] exercise=%s default=%s supported=true scenario=%s poll=%s display=%s bind=%s requested_policy=%s effective_policy=%s cap=%s" % [
+		_exercise,
+		str(_exercise_defaulted),
+		scenario_file,
+		str(_poll_results),
+		str(_bind_display),
+		("latest" if _bind_mode_latest else "oneshot"),
+		_requested_gpu_policy,
+		_effective_gpu_policy,
+		OS.get_environment("CAMBANG_DEV_SYNTH_CATCHUP_CAP")
+	])
 	_log("scenario=%s duration_sec=%.1f poll_results=%s bind_display=%s" % [
 		scenario_file,
 		_duration_sec,
@@ -236,11 +321,19 @@ func _poll_stream_results() -> float:
 			_record_display_path_kind(int(stream_result.get_display_view_path_kind()))
 		var display_view: Variant = stream_result.get_display_view()
 		if display_view is Texture2D:
-			if i == 0:
-				_stream_a.texture = display_view
-			elif i == 1:
-				_stream_b.texture = display_view
+			if _bind_mode_latest:
+				if i == 0:
+					_stream_a.texture = display_view
+				elif i == 1:
+					_stream_b.texture = display_view
+			elif not _display_bound_once:
+				if i == 0:
+					_stream_a.texture = display_view
+				elif i == 1:
+					_stream_b.texture = display_view
 		display_sec += _elapsed_sec_from_ticks(display_start_usec)
+	if _bind_display and not _bind_mode_latest:
+		_display_bound_once = true
 	return display_sec
 
 

@@ -1,6 +1,7 @@
 #include "godot/cambang_stream_result.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <map>
@@ -9,11 +10,13 @@
 
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/variant/string_name.hpp>
 
 #include "core/core_runtime.h"
 #include "godot/cambang_result_convert.h"
 #include "godot/cambang_server.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
+#include "godot/cambang_stream_result_internal.h"
 
 namespace cambang {
 
@@ -29,6 +32,10 @@ void trace_stream_display_path(const char* path) {
     return;
   }
   godot::UtilityFunctions::print("[CamBANG][StreamResult] display_view_path=", path);
+}
+bool display_demand_trace_enabled() {
+  const char* value = std::getenv("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
+  return value && value[0] != '\0' && value[0] != '0';
 }
 
 bool has_retained_cpu_payload(const SharedStreamResultData& data) {
@@ -48,6 +55,7 @@ struct LiveCpuDisplayViewEntry final {
   uint64_t last_capture_timestamp_ns = 0;
   uint32_t width = 0;
   uint32_t height = 0;
+  bool sourced_from_gpu_last = false;
 };
 
 bool upload_live_cpu_rgba_bytes(
@@ -85,6 +93,27 @@ bool upload_live_cpu_rgba_bytes(
 
 std::mutex g_live_cpu_display_views_mutex;
 std::map<uint64_t, LiveCpuDisplayViewEntry> g_live_cpu_display_views;
+constexpr const char* kDisplayDemandTokenMetaKey = "__cambang_display_demand_token";
+
+void attach_display_demand_token(const godot::Ref<godot::Texture2D>& texture, uint64_t stream_id, const char* path_kind) {
+  if (texture.is_null() || stream_id == 0) {
+    return;
+  }
+  godot::Ref<DisplayDemandToken> token;
+  token.instantiate();
+  if (token.is_null()) {
+    return;
+  }
+  token->init(stream_id);
+  texture->set_meta(godot::StringName(kDisplayDemandTokenMetaKey), token);
+  if (display_demand_trace_enabled()) {
+    const uint64_t tex_id = texture->get_instance_id();
+    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_attach stream_id=", (long long)stream_id,
+                                   " token_ptr=", (uint64_t)(uintptr_t)token.ptr(),
+                                   " texture_id=", (long long)tex_id,
+                                   " path=", path_kind);
+  }
+}
 
 bool refresh_live_cpu_display_view_entry(
     LiveCpuDisplayViewEntry& entry,
@@ -133,6 +162,33 @@ bool refresh_live_cpu_display_view_entry(
   entry.last_capture_timestamp_ns = data->capture_timestamp_ns;
   entry.width = width;
   entry.height = height;
+  entry.sourced_from_gpu_last = false;
+  return true;
+}
+
+bool refresh_live_cpu_display_view_from_image(
+    LiveCpuDisplayViewEntry& entry,
+    const godot::Ref<godot::Image>& image) {
+  if (image.is_null() || image->is_empty()) {
+    return false;
+  }
+  const uint32_t width = static_cast<uint32_t>(image->get_width());
+  const uint32_t height = static_cast<uint32_t>(image->get_height());
+  const bool need_recreate =
+      entry.texture.is_null() ||
+      entry.width != width ||
+      entry.height != height;
+  if (need_recreate) {
+    entry.texture = godot::ImageTexture::create_from_image(image);
+    if (entry.texture.is_null()) {
+      return false;
+    }
+  } else {
+    entry.texture->update(image);
+  }
+  entry.width = width;
+  entry.height = height;
+  entry.sourced_from_gpu_last = true;
   return true;
 }
 
@@ -277,6 +333,7 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
     if (data_->retained_gpu_backing) {
       godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing);
       if (retained.is_valid()) {
+        attach_display_demand_token(retained, data_->stream_id, "retained_gpu_backing");
         trace_stream_display_path("retained_gpu_backing");
         return retained;
       }
@@ -285,6 +342,7 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   }
   godot::Ref<godot::Texture2D> live_cpu = ensure_live_cpu_display_view(data_);
   if (live_cpu.is_valid()) {
+    attach_display_demand_token(live_cpu, data_->stream_id, "stream_live_cpu_display_view");
     trace_stream_display_path("stream_live_cpu_display_view");
     return live_cpu;
   }
@@ -358,7 +416,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
 
   for (uint64_t stream_id : stream_ids) {
     SharedStreamResultData data = runtime.get_latest_stream_result(stream_id);
-    if (!data || data->payload_kind != ResultPayloadKind::CPU_PACKED || !has_retained_cpu_payload(data)) {
+    if (!data) {
       continue;
     }
     std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
@@ -366,7 +424,28 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     if (it == g_live_cpu_display_views.end()) {
       continue;
     }
-    (void)refresh_live_cpu_display_view_entry(it->second, data);
+    if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_retained_cpu_payload(data)) {
+      const bool was_gpu = it->second.sourced_from_gpu_last;
+      (void)refresh_live_cpu_display_view_entry(it->second, data);
+      if (display_demand_trace_enabled() && was_gpu && !it->second.sourced_from_gpu_last) {
+        godot::UtilityFunctions::print(
+            "[CamBANG][DemandTrace] cpu_live_adapter_source_transition stream_id=",
+            (long long)stream_id,
+            " source=cpu");
+      }
+      continue;
+    }
+    if (data->payload_kind == ResultPayloadKind::GPU_SURFACE && data->retained_gpu_backing) {
+      const bool was_gpu = it->second.sourced_from_gpu_last;
+      godot::Ref<godot::Image> frame_image =
+          synthetic_gpu_backing_materialize_to_image(data->retained_gpu_backing);
+      if (refresh_live_cpu_display_view_from_image(it->second, frame_image) && display_demand_trace_enabled() && !was_gpu) {
+        godot::UtilityFunctions::print(
+            "[CamBANG][DemandTrace] cpu_live_adapter_source_transition stream_id=",
+            (long long)stream_id,
+            " source=gpu");
+      }
+    }
   }
 }
 

@@ -131,6 +131,7 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   completion_gated_destructive_sequencing_enabled_ =
       (cfg_.timeline_reconciliation == TimelineReconciliation::CompletionGated);
   triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
+  display_demand_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
   triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
 }
 
@@ -1647,6 +1648,17 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       const bool skip_gpu_update_for_demand =
           gpu_update_policy == StreamGpuUpdatePolicy::DisplayDemanded &&
           (!provider_has_display_demand_signal || !display_demand_active);
+      if (display_demand_trace_enabled_) {
+        const bool prev_active = display_demand_last_active_by_stream_[s.req.stream_id];
+        if (prev_active != display_demand_active) {
+          std::printf(
+              "[CamBANG][DemandTrace] provider_demand_transition stream_id=%llu active=%d policy=%s\n",
+              static_cast<unsigned long long>(s.req.stream_id),
+              display_demand_active ? 1 : 0,
+              gpu_update_policy == StreamGpuUpdatePolicy::DisplayDemanded ? "display_demanded" : "always");
+          display_demand_last_active_by_stream_[s.req.stream_id] = display_demand_active;
+        }
+      }
       bool attempted_gpu_update = false;
       if (skip_gpu_update_for_demand) {
         ++triage_gpu_update_demand_skipped_total_;
@@ -1666,6 +1678,17 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
             std::chrono::duration_cast<std::chrono::nanoseconds>(update_total_t1 - update_total_t0).count());
         triage_gpu_update_total_ns_ += update_total_ns;
         triage_gpu_update_total_max_ns_ = std::max(triage_gpu_update_total_max_ns_, update_total_ns);
+      }
+      if (display_demand_trace_enabled_) {
+        const bool prev_skip = display_demand_last_skip_by_stream_[s.req.stream_id];
+        if (prev_skip != skip_gpu_update_for_demand) {
+          std::printf(
+              "[CamBANG][DemandTrace] provider_gpu_decision_transition stream_id=%llu demand_active=%d decision=%s\n",
+              static_cast<unsigned long long>(s.req.stream_id),
+              display_demand_active ? 1 : 0,
+              skip_gpu_update_for_demand ? "demand_skipped" : "gpu_update_attempt");
+          display_demand_last_skip_by_stream_[s.req.stream_id] = skip_gpu_update_for_demand;
+        }
       }
       if (attempted_gpu_update && !gpu_ok) {
         ++triage_gpu_update_failures_total_;
@@ -1704,6 +1727,11 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       }
       if (gpu_ok) {
         gpu_backing = s.live_gpu_backing;
+      } else if (s.live_gpu_backing) {
+        // Expose the stable stream-live GPU backing object even before the
+        // first successful update so one-shot display binding can attach to a
+        // direct retained-GPU view that becomes live on subsequent updates.
+        gpu_backing = s.live_gpu_backing;
       }
     }
   }
@@ -1725,7 +1753,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.width = w;
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
-  fv.primary_backing_kind = gpu_ok ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
+  fv.primary_backing_kind = gpu_backing ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
   fv.primary_backing_artifact = std::move(gpu_backing);
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;

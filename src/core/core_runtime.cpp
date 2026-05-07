@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <map>
 
 #include <utility>
 
@@ -42,6 +43,11 @@ static bool disable_result_routing_requested() noexcept {
   return (v && v[0] == '1' && v[1] == '\0');
 }
 
+static bool display_demand_trace_enabled() noexcept {
+  const char* v = std::getenv("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
+  return v && v[0] != '\0' && v[0] != '0';
+}
+
 CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
@@ -69,19 +75,33 @@ CoreRuntime::CoreRuntime()
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
-      }, [this](uint64_t stream_id) -> bool {
+      }, [this, demand_last = std::map<uint64_t, bool>{}](uint64_t stream_id) mutable -> bool {
         const auto now = std::chrono::steady_clock::now();
         const uint64_t now_ns = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
-        return result_store_.is_stream_display_demand_active(stream_id, now_ns);
+        const auto state = result_store_.get_stream_display_demand_state(stream_id, now_ns);
+        if (display_demand_trace_enabled()) {
+          const bool prev = demand_last[stream_id];
+          if (prev != state.active) {
+            const char* reason = "none";
+            if (state.reason == CoreResultStore::DisplayDemandReason::PERSISTENT_REFCOUNT) {
+              reason = "persistent_refcount";
+            } else if (state.reason == CoreResultStore::DisplayDemandReason::LEASE) {
+              reason = "lease";
+            }
+            std::printf("[CamBANG][DemandTrace] demand_transition stream_id=%llu active=%d reason=%s refcount=%u\n",
+                        static_cast<unsigned long long>(stream_id),
+                        state.active ? 1 : 0,
+                        reason,
+                        state.refcount);
+            demand_last[stream_id] = state.active;
+          }
+        }
+        return state.active;
       }) {
   dispatcher_.set_result_store(&result_store_);
   const bool result_routing_enabled = !disable_result_routing_requested();
   dispatcher_.set_result_routing_enabled(result_routing_enabled);
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  // Dev-only latest-frame sink (core thread dispatch path).
-  dispatcher_.set_frame_sink(&latest_frame_sink_);
-#endif
 }
 
 CoreRuntime::~CoreRuntime() {
