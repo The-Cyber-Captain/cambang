@@ -108,6 +108,16 @@ func _resolve_exercise_or_fail() -> bool:
 	return true
 
 
+
+
+func _phase_marker(phase: String, checkpoint_id: int = -1, detail: String = "") -> void:
+	var line := "[CamBANG][Scene71Phase] phase=%s" % phase
+	if checkpoint_id >= 0:
+		line += " checkpoint=%d" % checkpoint_id
+	if detail != "":
+		line += " detail=%s" % detail
+	_append_log(line)
+
 func _bootstrap() -> void:
 	CamBANGServer.stop()
 
@@ -138,6 +148,9 @@ func _bootstrap() -> void:
 
 	_update_instruction()
 	_append_log("Started scenario; timeline running")
+	_phase_marker("runtime_start")
+	if not CamBANGServer.has_method("get_synthetic_metrics_snapshot"):
+		_phase_marker("metrics_accessor_missing", -1, "missing_method=get_synthetic_metrics_snapshot")
 
 
 func _process(delta: float) -> void:
@@ -164,6 +177,7 @@ func _process(delta: float) -> void:
 			_awaiting_capture_results = false
 			_waiting_for_user = false
 			_append_log("Capture checkpoint complete")
+			_phase_marker("capture_checkpoint_complete", int(_current_checkpoint.get("id", -1)))
 			_advance_checkpoint()
 		_record_process_timing(process_start_usec)
 		return
@@ -175,6 +189,7 @@ func _process(delta: float) -> void:
 	if _checkpoint_index >= CHECKPOINTS.size():
 		if not _scenario_complete_logged:
 			_append_log("All checkpoints complete; awaiting authored teardown")
+			_phase_marker("checkpoint_sequence_complete")
 			_scenario_complete_logged = true
 			_log_summary_timing_once()
 		_record_process_timing(process_start_usec)
@@ -202,6 +217,7 @@ func _process(delta: float) -> void:
 	_waiting_for_user = true
 	_pause_timeline(true)
 	_update_instruction()
+	_phase_marker("checkpoint_ready", int(cp.get("id", -1)), "kind=%s t=%.2f" % [str(cp.get("kind", "")), _virtual_time_s])
 	_append_log("Checkpoint %d ready at t=%.2fs: %s" % [int(cp.get("id", 0)), _virtual_time_s, str(cp.get("desc", ""))])
 	_maybe_log_timing_per_second()
 	_record_process_timing(process_start_usec)
@@ -214,6 +230,7 @@ func _input(event: InputEvent) -> void:
 		var key_event: InputEventKey = event
 		if key_event.keycode == KEY_SPACE or key_event.keycode == KEY_ENTER or key_event.keycode == KEY_KP_ENTER:
 			_append_log("Input accepted at checkpoint %d" % int(_current_checkpoint.get("id", 0)))
+			_phase_marker("checkpoint_action_begin", int(_current_checkpoint.get("id", -1)), "kind=%s" % str(_current_checkpoint.get("kind", "")))
 			_perform_checkpoint_action()
 			get_viewport().set_input_as_handled()
 
@@ -292,6 +309,7 @@ func _trigger_capture_for_device(device_key: String) -> bool:
 		"bound": false
 	})
 	_append_log("Capture requested %s id=%d" % [device_key, capture_id])
+	_phase_marker("capture_requested", int(_current_checkpoint.get("id", -1)), "device=%s capture_id=%d" % [device_key, capture_id])
 	return true
 
 
@@ -387,6 +405,7 @@ func _bind_stream_slot(slot: String) -> bool:
 			return false
 
 	_append_log("Stream bound %s id=%d" % [slot, stream_id])
+	_phase_marker("stream_display_bound", int(_current_checkpoint.get("id", -1)), "slot=%s stream_id=%d" % [slot, stream_id])
 	return true
 
 
@@ -400,6 +419,7 @@ func _release_stream_bindings() -> void:
 	_preview_b_facts.text = "Preview B released"
 	_viewfinder_b_facts.text = "Viewfinder B released"
 	_append_log("Released stream display_view bindings")
+	_phase_marker("stream_bindings_released", int(_current_checkpoint.get("id", -1)))
 
 
 func _latch_snapshot_state() -> void:
@@ -467,6 +487,7 @@ func _pause_timeline(paused: bool) -> void:
 	if CamBANGServer.has_method("set_timeline_paused"):
 		var err: int = int(CamBANGServer.set_timeline_paused(paused))
 		_append_log("set_timeline_paused(%s) -> %d" % [str(paused), err])
+		_phase_marker("timeline_pause_toggle", int(_current_checkpoint.get("id", -1)), "paused=%s err=%d" % [str(paused), err])
 		_require(err == OK, "set_timeline_paused(%s) failed: %d" % [str(paused), err])
 
 
@@ -525,6 +546,7 @@ func _log_summary_timing_once() -> void:
 	if _summary_timing_logged:
 		return
 	_summary_timing_logged = true
+	_phase_marker("teardown_summary")
 	_append_log("SUMMARY_TIMING scene_process_max_ms=%.3f scene_process_total_ms=%.3f scene_process_calls=%d checkpoint_max_ms=%.3f checkpoint_total_ms=%.3f checkpoint_calls=%d poll_max_ms=%.3f poll_total_ms=%.3f poll_calls=%d display_max_ms=%.3f display_total_ms=%.3f display_calls=%d status_max_ms=%.3f status_total_ms=%.3f status_calls=%d log_max_ms=%.3f log_total_ms=%.3f log_calls=%d" % [
 		_timing_process_max_sec * 1000.0, _timing_process_total_sec * 1000.0, _timing_process_calls,
 		_timing_checkpoint_max_sec * 1000.0, _timing_checkpoint_total_sec * 1000.0, _timing_checkpoint_calls,
