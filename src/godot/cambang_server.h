@@ -75,6 +75,7 @@ public:
   bool is_running() const;
 
   godot::Variant get_active_provider_config() const;
+  godot::Variant get_synthetic_metrics_snapshot() const;
 
   godot::Error select_builtin_scenario(const godot::String& scenario_name);
   godot::Error load_external_scenario(const godot::String& json_text);

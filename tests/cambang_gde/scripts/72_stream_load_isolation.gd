@@ -20,7 +20,8 @@ var _bind_display := DEFAULT_BIND_DISPLAY
 var _exercise := EXERCISE_DISPLAY_ONESHOT
 var _exercise_defaulted := true
 var _bind_mode_latest := false
-var _display_bound_once := false
+var _display_bound_by_slot: Dictionary = {}
+var _display_bind_failed_logged_by_slot: Dictionary = {}
 var _requested_gpu_policy := ""
 var _effective_gpu_policy := ""
 
@@ -142,18 +143,20 @@ func _resolve_effective_gpu_policy_or_fail() -> void:
 	_requested_gpu_policy = ""
 	if _exercise == EXERCISE_NO_DISPLAY_EAGER:
 		_requested_gpu_policy = "always"
-	var raw := OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges()
-	if raw == "":
-		_effective_gpu_policy = "display_demanded"
+	var explicit_policy := OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges()
+	if explicit_policy != "":
+		_effective_gpu_policy = explicit_policy
+		if _exercise == EXERCISE_NO_DISPLAY_EAGER and explicit_policy != "always":
+			print("[CamBANG][Scene72][ERROR] configuration conflict: exercise=no_display_eager requested_policy=always explicit_policy=%s." % explicit_policy)
+			print("[CamBANG][Scene72][ERROR] no_display_eager requires effective CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always.")
+			push_error("[CamBANG][Scene72] configuration conflict: exercise=no_display_eager with CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=%s" % explicit_policy)
+			_done = true
+			get_tree().quit(2)
+		return
+	if _exercise == EXERCISE_NO_DISPLAY_EAGER:
+		_effective_gpu_policy = "always"
 	else:
-		_effective_gpu_policy = raw
-	if _exercise == EXERCISE_NO_DISPLAY_EAGER and _effective_gpu_policy != "always":
-		print("[CamBANG][Scene72][ERROR] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
-		print("[CamBANG][Scene72][ERROR] requested_policy=always effective_policy=%s." % _effective_gpu_policy)
-		print("[CamBANG][Scene72][ERROR] Set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always in the launch environment and rerun.")
-		push_error("[CamBANG][Scene72] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always before provider initialization.")
-		_done = true
-		get_tree().quit(2)
+		_effective_gpu_policy = "display_demanded"
 
 
 func _bootstrap() -> void:
@@ -319,21 +322,36 @@ func _poll_stream_results() -> float:
 		var display_start_usec := Time.get_ticks_usec()
 		if _display_path_trace_enabled and stream_result.has_method("get_display_view_path_kind"):
 			_record_display_path_kind(int(stream_result.get_display_view_path_kind()))
-		var display_view: Variant = stream_result.get_display_view()
-		if display_view is Texture2D:
-			if _bind_mode_latest:
+
+		var slot_bound := bool(_display_bound_by_slot.get(i, false))
+		if _bind_mode_latest or not slot_bound:
+			var display_view: Variant = stream_result.get_display_view()
+			var texture_valid := (display_view is Texture2D)
+			if texture_valid:
 				if i == 0:
 					_stream_a.texture = display_view
 				elif i == 1:
 					_stream_b.texture = display_view
-			elif not _display_bound_once:
-				if i == 0:
-					_stream_a.texture = display_view
-				elif i == 1:
-					_stream_b.texture = display_view
+				_display_bound_by_slot[i] = true
+				if bool(_display_bind_failed_logged_by_slot.get(i, false)):
+					_display_bind_failed_logged_by_slot[i] = false
+				if not slot_bound:
+					_log("[CamBANG][Scene72] display_bind slot=%d stream_id=%d bind=%s result_valid=true texture_valid=true path=%d" % [
+						i,
+						stream_id,
+						("latest" if _bind_mode_latest else "oneshot"),
+						(int(stream_result.get_display_view_path_kind()) if stream_result.has_method("get_display_view_path_kind") else -1)
+					])
+			else:
+				if not bool(_display_bind_failed_logged_by_slot.get(i, false)):
+					_display_bind_failed_logged_by_slot[i] = true
+					_log("[CamBANG][Scene72] display_bind slot=%d stream_id=%d bind=%s result_valid=true texture_valid=false path=%d" % [
+						i,
+						stream_id,
+						("latest" if _bind_mode_latest else "oneshot"),
+						(int(stream_result.get_display_view_path_kind()) if stream_result.has_method("get_display_view_path_kind") else -1)
+					])
 		display_sec += _elapsed_sec_from_ticks(display_start_usec)
-	if _bind_display and not _bind_mode_latest:
-		_display_bound_once = true
 	return display_sec
 
 

@@ -78,6 +78,8 @@ var _timing_log_max_sec := 0.0
 var _timing_log_calls := 0
 var _summary_timing_logged := false
 var _display_demand_trace := false
+var _resolved_exercise := EXERCISE_DISPLAY_ONESHOT
+var _last_phase_metrics_snapshot: Dictionary = {}
 
 
 func _ready() -> void:
@@ -95,6 +97,7 @@ func _resolve_exercise_or_fail() -> bool:
 	if exercise == "":
 		exercise = EXERCISE_DISPLAY_ONESHOT
 		defaulted = true
+	_resolved_exercise = exercise
 	if exercise != EXERCISE_DISPLAY_ONESHOT:
 		push_error("[CamBANG][Scene71] exercise=%s supported=false supported_exercises=%s" % [exercise_raw, EXERCISE_DISPLAY_ONESHOT])
 		get_tree().quit(2)
@@ -106,6 +109,72 @@ func _resolve_exercise_or_fail() -> bool:
 	print(resolved_line)
 	_append_log(resolved_line)
 	return true
+
+
+
+
+func _phase_marker(phase: String, checkpoint_id: int = -1, detail: String = "") -> void:
+	var line := "[CamBANG][Scene71Phase] phase=%s" % phase
+	if checkpoint_id >= 0:
+		line += " checkpoint=%d" % checkpoint_id
+	if detail != "":
+		line += " detail=%s" % detail
+	print(line)
+	_append_log(line)
+	_emit_phase_metrics(phase, checkpoint_id)
+
+
+func _metric_delta_u64(curr: Dictionary, key: String, reset: Array) -> int:
+	var c := int(curr.get(key, 0))
+	var p := int(_last_phase_metrics_snapshot.get(key, 0))
+	if c < p:
+		reset[0] = true
+		return c
+	return c - p
+
+
+func _metric_delta_f(curr: Dictionary, key: String, reset: Array) -> float:
+	var c := float(curr.get(key, 0.0))
+	var p := float(_last_phase_metrics_snapshot.get(key, 0.0))
+	if c < p:
+		reset[0] = true
+		return c
+	return c - p
+
+
+func _emit_phase_metrics(phase: String, checkpoint_id: int) -> void:
+	if not CamBANGServer.has_method("get_synthetic_metrics_snapshot"):
+		return
+	var snap: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+	if typeof(snap) != TYPE_DICTIONARY:
+		return
+	var curr: Dictionary = snap
+	if _last_phase_metrics_snapshot.is_empty():
+		_last_phase_metrics_snapshot = curr.duplicate(true)
+		return
+	var reset := [false]
+	var line := "[CamBANG][Scene71PhaseMetrics] phase=%s" % phase
+	if checkpoint_id >= 0:
+		line += " checkpoint=%d" % checkpoint_id
+	line += " reset_detected=%s" % str(bool(reset[0]))
+	line += " frames_delta=%d" % _metric_delta_u64(curr, "total_emitted_frames", reset)
+	line += " gpu_update_attempts_delta=%d" % _metric_delta_u64(curr, "gpu_update_attempts", reset)
+	line += " gpu_update_demand_skipped_delta=%d" % _metric_delta_u64(curr, "gpu_update_demand_skipped", reset)
+	line += " gpu_texture_update_calls_delta=%d" % _metric_delta_u64(curr, "gpu_texture_update_calls", reset)
+	line += " frame_copy_calls_delta=%d" % _metric_delta_u64(curr, "frame_copy_calls", reset)
+	line += " frame_render_total_ms_delta=%.3f" % _metric_delta_f(curr, "frame_render_total_ms", reset)
+	line += " pattern_overlay_total_ms_delta=%.3f" % _metric_delta_f(curr, "pattern_overlay_total_ms", reset)
+	line += " pattern_base_copy_total_ms_delta=%.3f" % _metric_delta_f(curr, "pattern_base_copy_total_ms", reset)
+	line += " gpu_update_total_total_ms_delta=%.3f" % _metric_delta_f(curr, "gpu_update_total_total_ms", reset)
+	line += " gpu_upload_copy_total_ms_delta=%.3f" % _metric_delta_f(curr, "gpu_upload_copy_total_ms", reset)
+	line += " gpu_texture_update_total_ms_delta=%.3f" % _metric_delta_f(curr, "gpu_texture_update_total_ms", reset)
+	line += " catchup_ticks_capped_delta=%d" % _metric_delta_u64(curr, "catchup_ticks_capped", reset)
+	line += " catchup_frames_dropped_delta=%d" % _metric_delta_u64(curr, "catchup_frames_dropped", reset)
+	if bool(reset[0]):
+		line = line.replace("reset_detected=False", "reset_detected=True")
+	print(line)
+	_append_log(line)
+	_last_phase_metrics_snapshot = curr.duplicate(true)
 
 
 func _bootstrap() -> void:
@@ -138,6 +207,7 @@ func _bootstrap() -> void:
 
 	_update_instruction()
 	_append_log("Started scenario; timeline running")
+	_phase_marker("runtime_start", -1, "exercise=%s" % _resolved_exercise)
 
 
 func _process(delta: float) -> void:
@@ -164,6 +234,7 @@ func _process(delta: float) -> void:
 			_awaiting_capture_results = false
 			_waiting_for_user = false
 			_append_log("Capture checkpoint complete")
+			_phase_marker("capture_checkpoint_complete", int(_current_checkpoint.get("id", -1)))
 			_advance_checkpoint()
 		_record_process_timing(process_start_usec)
 		return
@@ -175,6 +246,7 @@ func _process(delta: float) -> void:
 	if _checkpoint_index >= CHECKPOINTS.size():
 		if not _scenario_complete_logged:
 			_append_log("All checkpoints complete; awaiting authored teardown")
+			_phase_marker("checkpoint_sequence_complete")
 			_scenario_complete_logged = true
 			_log_summary_timing_once()
 		_record_process_timing(process_start_usec)
@@ -202,6 +274,7 @@ func _process(delta: float) -> void:
 	_waiting_for_user = true
 	_pause_timeline(true)
 	_update_instruction()
+	_phase_marker("checkpoint_ready", int(cp.get("id", -1)), "index=%d kind=%s t=%.2f" % [_checkpoint_index, str(cp.get("kind", "")), _virtual_time_s])
 	_append_log("Checkpoint %d ready at t=%.2fs: %s" % [int(cp.get("id", 0)), _virtual_time_s, str(cp.get("desc", ""))])
 	_maybe_log_timing_per_second()
 	_record_process_timing(process_start_usec)
@@ -214,6 +287,7 @@ func _input(event: InputEvent) -> void:
 		var key_event: InputEventKey = event
 		if key_event.keycode == KEY_SPACE or key_event.keycode == KEY_ENTER or key_event.keycode == KEY_KP_ENTER:
 			_append_log("Input accepted at checkpoint %d" % int(_current_checkpoint.get("id", 0)))
+			_phase_marker("checkpoint_action_begin", int(_current_checkpoint.get("id", -1)), "index=%d action=%s" % [_checkpoint_index, str(_current_checkpoint.get("kind", ""))])
 			_perform_checkpoint_action()
 			get_viewport().set_input_as_handled()
 
@@ -292,6 +366,7 @@ func _trigger_capture_for_device(device_key: String) -> bool:
 		"bound": false
 	})
 	_append_log("Capture requested %s id=%d" % [device_key, capture_id])
+	_phase_marker("capture_requested", int(_current_checkpoint.get("id", -1)), "device=%s capture_id=%d" % [device_key, capture_id])
 	return true
 
 
@@ -387,6 +462,7 @@ func _bind_stream_slot(slot: String) -> bool:
 			return false
 
 	_append_log("Stream bound %s id=%d" % [slot, stream_id])
+	_phase_marker("stream_display_bound", int(_current_checkpoint.get("id", -1)), "slot=%s stream_id=%d" % [slot, stream_id])
 	return true
 
 
@@ -400,6 +476,7 @@ func _release_stream_bindings() -> void:
 	_preview_b_facts.text = "Preview B released"
 	_viewfinder_b_facts.text = "Viewfinder B released"
 	_append_log("Released stream display_view bindings")
+	_phase_marker("stream_bindings_released", int(_current_checkpoint.get("id", -1)), "reason=checkpoint_action" )
 
 
 func _latch_snapshot_state() -> void:
@@ -467,6 +544,7 @@ func _pause_timeline(paused: bool) -> void:
 	if CamBANGServer.has_method("set_timeline_paused"):
 		var err: int = int(CamBANGServer.set_timeline_paused(paused))
 		_append_log("set_timeline_paused(%s) -> %d" % [str(paused), err])
+		_phase_marker("timeline_pause_toggle", int(_current_checkpoint.get("id", -1)), "paused=%s err=%d" % [str(paused), err])
 		_require(err == OK, "set_timeline_paused(%s) failed: %d" % [str(paused), err])
 
 
@@ -525,6 +603,7 @@ func _log_summary_timing_once() -> void:
 	if _summary_timing_logged:
 		return
 	_summary_timing_logged = true
+	_phase_marker("teardown_summary")
 	_append_log("SUMMARY_TIMING scene_process_max_ms=%.3f scene_process_total_ms=%.3f scene_process_calls=%d checkpoint_max_ms=%.3f checkpoint_total_ms=%.3f checkpoint_calls=%d poll_max_ms=%.3f poll_total_ms=%.3f poll_calls=%d display_max_ms=%.3f display_total_ms=%.3f display_calls=%d status_max_ms=%.3f status_total_ms=%.3f status_calls=%d log_max_ms=%.3f log_total_ms=%.3f log_calls=%d" % [
 		_timing_process_max_sec * 1000.0, _timing_process_total_sec * 1000.0, _timing_process_calls,
 		_timing_checkpoint_max_sec * 1000.0, _timing_checkpoint_total_sec * 1000.0, _timing_checkpoint_calls,
@@ -533,12 +612,15 @@ func _log_summary_timing_once() -> void:
 		_timing_status_max_sec * 1000.0, _timing_status_total_sec * 1000.0, _timing_status_calls,
 		_timing_log_max_sec * 1000.0, _timing_log_total_sec * 1000.0, _timing_log_calls
 	])
+	print("[CamBANG][Scene71] completed=true quitting=true")
+	_append_log("[CamBANG][Scene71] completed=true quitting=true")
+	CamBANGServer.stop()
+	get_tree().quit(0)
 
 
 func _require(cond: bool, msg: String) -> void:
 	if not cond:
 		_fail(msg)
-
 
 func _fail(msg: String) -> void:
 	push_error(msg)

@@ -20,6 +20,23 @@
 
 namespace cambang {
 
+
+struct SyntheticMetricsSnapshot {
+  uint64_t total_emitted_frames = 0;
+  uint64_t gpu_update_attempts = 0;
+  uint64_t gpu_update_demand_skipped = 0;
+  uint64_t gpu_texture_update_calls = 0;
+  uint64_t frame_copy_calls = 0;
+  double frame_render_total_ms = 0.0;
+  double pattern_overlay_total_ms = 0.0;
+  double pattern_base_copy_total_ms = 0.0;
+  double gpu_update_total_total_ms = 0.0;
+  double gpu_upload_copy_total_ms = 0.0;
+  double gpu_texture_update_total_ms = 0.0;
+  uint64_t catchup_ticks_capped = 0;
+  uint64_t catchup_frames_dropped = 0;
+};
+
 class SyntheticProvider final : public ICameraProvider {
 public:
   using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
@@ -99,6 +116,7 @@ public:
   ProviderResult advance_timeline_for_host(uint64_t dt_ns);
   ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
+  SyntheticMetricsSnapshot get_metrics_snapshot_for_host() const;
 
 private:
   CBProviderStrand strand_;

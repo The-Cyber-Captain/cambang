@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "imaging/synthetic/scenario_loader.h"
+#include "imaging/synthetic/gpu_update_policy_resolver.h"
 #include "imaging/api/timeline_teardown_trace.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
@@ -54,33 +55,17 @@ bool env_flag_enabled(const char* name) {
   return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
 }
 
-enum class StreamGpuUpdatePolicy {
-  Always,
-  DisplayDemanded,
-};
-
-StreamGpuUpdatePolicy env_stream_gpu_update_policy() {
-  const char* explicit_value = std::getenv("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY");
-  if (explicit_value && explicit_value[0] != '\0') {
-    if (std::strcmp(explicit_value, "display_demanded") == 0) {
-      return StreamGpuUpdatePolicy::DisplayDemanded;
-    }
-    return StreamGpuUpdatePolicy::Always;
-  }
-
+void maybe_warn_deprecated_gpu_policy_alias() {
   if (env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED")) {
     static bool warned_deprecated_alias = false;
     if (!warned_deprecated_alias) {
       warned_deprecated_alias = true;
       synthetic_triage_print_line(
-          "[cambang][synth] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
+          "[CamBANG][SyntheticTriage] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
           "display_demanded is now the default. Use CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY for explicit "
           "policy control; set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always for eager-update comparison.");
     }
-    return StreamGpuUpdatePolicy::DisplayDemanded;
   }
-
-  return StreamGpuUpdatePolicy::DisplayDemanded;
 }
 
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
@@ -133,6 +118,7 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
   display_demand_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
   triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
+  maybe_warn_deprecated_gpu_policy_alias();
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -256,6 +242,11 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     return ProviderResult::success();
   }
   if (!callbacks) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  const StreamGpuUpdatePolicyResolution gpu_policy_resolution = resolve_synthetic_stream_gpu_update_policy();
+  if (gpu_policy_resolution.has_conflict) {
+    synthetic_triage_printf("[CamBANG][SyntheticProvider][ERROR] %s", gpu_policy_resolution.error_message.c_str());
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   callbacks_ = callbacks;
@@ -1641,7 +1632,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     triage_gpu_ensure_backing_total_ns_ += ensure_ns;
     triage_gpu_ensure_backing_max_ns_ = std::max(triage_gpu_ensure_backing_max_ns_, ensure_ns);
     if (ensured_backing) {
-      const StreamGpuUpdatePolicy gpu_update_policy = env_stream_gpu_update_policy();
+      const StreamGpuUpdatePolicy gpu_update_policy = resolve_synthetic_stream_gpu_update_policy().policy;
       const bool provider_has_display_demand_signal = true;
       const bool display_demand_active =
           callbacks_ ? callbacks_->is_stream_display_demand_active(s.req.stream_id) : false;
@@ -1655,7 +1646,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
               "[CamBANG][DemandTrace] provider_demand_transition stream_id=%llu active=%d policy=%s\n",
               static_cast<unsigned long long>(s.req.stream_id),
               display_demand_active ? 1 : 0,
-              gpu_update_policy == StreamGpuUpdatePolicy::DisplayDemanded ? "display_demanded" : "always");
+              to_string(gpu_update_policy));
           display_demand_last_active_by_stream_[s.req.stream_id] = display_demand_active;
         }
       }
@@ -1879,7 +1870,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       gpu_texture_update_max_ns,
       gpu_texture_update_skipped);
   synthetic_triage_printf(
-      "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
+      "[CamBANG][SyntheticTriageMetrics] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
       "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu",
       static_cast<unsigned long long>(triage_frames_emitted_total_),
       static_cast<unsigned long long>(triage_catchup_bursts_total_),
@@ -1889,7 +1880,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
       static_cast<unsigned long long>(triage_catchup_frames_dropped_total_));
   synthetic_triage_printf(
-      "[cambang][synth-gpu] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "[CamBANG][SyntheticGpuMetrics] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
       "gpu_update_demand_skipped=%llu "
       "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
       "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
@@ -1917,7 +1908,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0),
       static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_skipped : 0));
   synthetic_triage_printf(
-      "[cambang][synth-timeline] timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
+      "[CamBANG][SyntheticTimelineMetrics] timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
       "timeline_event_exec_calls=%llu timeline_event_exec_total_ms=%.3f timeline_event_exec_max_ms=%.3f "
       "timeline_emit_event_calls=%llu timeline_emit_event_total_ms=%.3f timeline_emit_event_max_ms=%.3f "
       "emit_frame_calls=%llu emit_frame_total_ms=%.3f emit_frame_max_ms=%.3f "
@@ -1946,7 +1937,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(triage_strand_flush_total_ns_),
       ns_to_ms(triage_strand_flush_max_ns_));
   synthetic_triage_printf(
-      "[cambang][synth-render] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
+      "[CamBANG][SyntheticRenderMetrics] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
       "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
       "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
       "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f pattern_base_copy_skipped_count=%llu "
@@ -1971,6 +1962,50 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(triage_render_target_prepare_total_ns_),
       ns_to_ms(triage_render_target_prepare_max_ns_),
       static_cast<unsigned long long>(triage_render_allocation_or_resize_count_));
+}
+
+
+SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() const {
+  SyntheticMetricsSnapshot out{};
+  uint64_t pattern_base_copy_total_ns = 0;
+  uint64_t pattern_overlay_total_ns = 0;
+  uint64_t gpu_upload_copy_calls = 0;
+  uint64_t gpu_upload_copy_total_ns = 0;
+  uint64_t gpu_upload_copy_max_ns = 0;
+  uint64_t gpu_texture_update_calls = 0;
+  uint64_t gpu_texture_update_total_ns = 0;
+  uint64_t gpu_texture_update_max_ns = 0;
+  uint64_t gpu_texture_update_skipped = 0;
+  for (const auto& kv : streams_) {
+    const auto& stats = kv.second.renderer.debug_stats();
+    pattern_base_copy_total_ns += stats.base_copy_total_ns;
+    pattern_overlay_total_ns += stats.overlay_total_ns;
+  }
+  out.total_emitted_frames = triage_frames_emitted_total_;
+  out.gpu_update_attempts = triage_gpu_update_attempts_total_;
+  out.gpu_update_demand_skipped = triage_gpu_update_demand_skipped_total_;
+  const bool has_gpu_subbucket_stats = synthetic_gpu_backing_peek_update_timing_stats(
+      gpu_upload_copy_calls,
+      gpu_upload_copy_total_ns,
+      gpu_upload_copy_max_ns,
+      gpu_texture_update_calls,
+      gpu_texture_update_total_ns,
+      gpu_texture_update_max_ns,
+      gpu_texture_update_skipped);
+  (void)gpu_upload_copy_max_ns;
+  (void)gpu_texture_update_max_ns;
+  (void)gpu_texture_update_skipped;
+  out.gpu_texture_update_calls = has_gpu_subbucket_stats ? gpu_texture_update_calls : 0;
+  out.frame_copy_calls = triage_frame_copy_calls_;
+  out.frame_render_total_ms = ns_to_ms(triage_frame_render_total_ns_);
+  out.pattern_overlay_total_ms = ns_to_ms(pattern_overlay_total_ns);
+  out.pattern_base_copy_total_ms = ns_to_ms(pattern_base_copy_total_ns);
+  out.gpu_update_total_total_ms = ns_to_ms(triage_gpu_update_total_ns_);
+  out.gpu_upload_copy_total_ms = ns_to_ms(has_gpu_subbucket_stats ? gpu_upload_copy_total_ns : 0);
+  out.gpu_texture_update_total_ms = ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0);
+  out.catchup_ticks_capped = triage_catchup_ticks_capped_total_;
+  out.catchup_frames_dropped = triage_catchup_frames_dropped_total_;
+  return out;
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
