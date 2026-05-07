@@ -1870,7 +1870,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       gpu_texture_update_max_ns,
       gpu_texture_update_skipped);
   synthetic_triage_printf(
-      "[cambang][synth-triage] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
+      "[CamBANG][SyntheticTriageMetrics] total_emitted_frames=%llu catchup_bursts=%llu catchup_max_per_tick=%u "
       "falling_behind_repeats=%llu catchup_cap=%u catchup_ticks_capped=%llu catchup_frames_dropped=%llu",
       static_cast<unsigned long long>(triage_frames_emitted_total_),
       static_cast<unsigned long long>(triage_catchup_bursts_total_),
@@ -1880,7 +1880,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_catchup_ticks_capped_total_),
       static_cast<unsigned long long>(triage_catchup_frames_dropped_total_));
   synthetic_triage_printf(
-      "[cambang][synth-gpu] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
+      "[CamBANG][SyntheticGpuMetrics] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
       "gpu_update_demand_skipped=%llu "
       "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
       "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
@@ -1908,7 +1908,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_max_ns : 0),
       static_cast<unsigned long long>(has_gpu_subbucket_stats ? gpu_texture_update_skipped : 0));
   synthetic_triage_printf(
-      "[cambang][synth-timeline] timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
+      "[CamBANG][SyntheticTimelineMetrics] timeline_pump_calls=%llu timeline_pump_total_ms=%.3f timeline_pump_max_ms=%.3f "
       "timeline_event_exec_calls=%llu timeline_event_exec_total_ms=%.3f timeline_event_exec_max_ms=%.3f "
       "timeline_emit_event_calls=%llu timeline_emit_event_total_ms=%.3f timeline_emit_event_max_ms=%.3f "
       "emit_frame_calls=%llu emit_frame_total_ms=%.3f emit_frame_max_ms=%.3f "
@@ -1937,7 +1937,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       ns_to_ms(triage_strand_flush_total_ns_),
       ns_to_ms(triage_strand_flush_max_ns_));
   synthetic_triage_printf(
-      "[cambang][synth-render] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
+      "[CamBANG][SyntheticRenderMetrics] frame_render_calls=%llu frame_render_total_ms=%.3f frame_render_max_ms=%.3f "
       "pattern_base_cache_hit_count=%llu pattern_base_cache_miss_count=%llu "
       "pattern_base_render_total_ms=%.3f pattern_base_render_max_ms=%.3f "
       "pattern_base_copy_total_ms=%.3f pattern_base_copy_max_ms=%.3f pattern_base_copy_skipped_count=%llu "
