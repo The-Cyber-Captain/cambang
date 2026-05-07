@@ -61,6 +61,8 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     - `no_display_eager`
   - `display_oneshot` is default because it represents the intended Godot-facing API contract:
     bind once and remain live without repeated `get_display_view()` refresh burden.
+  - `no_display_eager` requires `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always` to be set
+    in the launch environment before provider initialization; otherwise the harness fails clearly.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 

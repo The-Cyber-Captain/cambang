@@ -21,6 +21,8 @@ var _exercise := EXERCISE_DISPLAY_ONESHOT
 var _exercise_defaulted := true
 var _bind_mode_latest := false
 var _display_bound_once := false
+var _requested_gpu_policy := ""
+var _effective_gpu_policy := ""
 
 var _elapsed_sec := 0.0
 var _accum_sec := 0.0
@@ -91,6 +93,7 @@ func _config_from_env() -> void:
 	if _frame_spike_top_n < 1:
 		_frame_spike_top_n = 1
 	_bind_mode_latest = (_exercise == EXERCISE_DISPLAY_LATEST)
+	_resolve_effective_gpu_policy_or_fail()
 
 
 func _resolve_exercise_or_fail() -> void:
@@ -128,8 +131,20 @@ func _apply_exercise_defaults() -> void:
 		EXERCISE_NO_DISPLAY_EAGER:
 			_bind_display = false
 			_poll_results = false
-			if OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges() == "":
-				OS.set_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY", "always")
+
+
+func _resolve_effective_gpu_policy_or_fail() -> void:
+	_requested_gpu_policy = ""
+	if _exercise == EXERCISE_NO_DISPLAY_EAGER:
+		_requested_gpu_policy = "always"
+	var raw := OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY").strip_edges()
+	if raw == "":
+		_effective_gpu_policy = "display_demanded"
+	else:
+		_effective_gpu_policy = raw
+	if _exercise == EXERCISE_NO_DISPLAY_EAGER and _effective_gpu_policy != "always":
+		push_error("[CamBANG][Scene72] exercise=no_display_eager requires CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always to be set before provider initialization; current policy is %s. Set it in the launch environment and rerun." % _effective_gpu_policy)
+		get_tree().quit(2)
 
 
 func _bootstrap() -> void:
@@ -161,14 +176,15 @@ func _bootstrap() -> void:
 		_require(pause_err == OK, "set_timeline_paused(false) failed: %d" % pause_err)
 
 	_log("RUN: stream_load_isolation")
-	_log("[CamBANG][Scene72] exercise=%s default=%s supported=true scenario=%s poll=%s display=%s bind=%s gpu_policy=%s cap=%s" % [
+	_log("[CamBANG][Scene72] exercise=%s default=%s supported=true scenario=%s poll=%s display=%s bind=%s requested_policy=%s effective_policy=%s cap=%s" % [
 		_exercise,
 		str(_exercise_defaulted),
 		scenario_file,
 		str(_poll_results),
 		str(_bind_display),
 		("latest" if _bind_mode_latest else "oneshot"),
-		OS.get_environment("CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY"),
+		_requested_gpu_policy,
+		_effective_gpu_policy,
 		OS.get_environment("CAMBANG_DEV_SYNTH_CATCHUP_CAP")
 	])
 	_log("scenario=%s duration_sec=%.1f poll_results=%s bind_display=%s" % [
