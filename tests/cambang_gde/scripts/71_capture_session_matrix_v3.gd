@@ -79,6 +79,7 @@ var _timing_log_calls := 0
 var _summary_timing_logged := false
 var _display_demand_trace := false
 var _resolved_exercise := EXERCISE_DISPLAY_ONESHOT
+var _last_phase_metrics_snapshot: Dictionary = {}
 
 
 func _ready() -> void:
@@ -120,6 +121,61 @@ func _phase_marker(phase: String, checkpoint_id: int = -1, detail: String = "") 
 		line += " detail=%s" % detail
 	print(line)
 	_append_log(line)
+	_emit_phase_metrics(phase, checkpoint_id)
+
+
+func _metric_delta_u64(curr: Dictionary, key: String, reset: Array) -> int:
+	var c := int(curr.get(key, 0))
+	var p := int(_last_phase_metrics_snapshot.get(key, 0))
+	if c < p:
+		reset[0] = true
+		return c
+	return c - p
+
+
+func _metric_delta_f(curr: Dictionary, key: String, reset: Array) -> float:
+	var c := float(curr.get(key, 0.0))
+	var p := float(_last_phase_metrics_snapshot.get(key, 0.0))
+	if c < p:
+		reset[0] = true
+		return c
+	return c - p
+
+
+func _emit_phase_metrics(phase: String, checkpoint_id: int) -> void:
+	if not CamBANGServer.has_method("get_synthetic_metrics_snapshot"):
+		return
+	var snap: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+	if typeof(snap) != TYPE_DICTIONARY:
+		return
+	var curr: Dictionary = snap
+	if _last_phase_metrics_snapshot.is_empty():
+		_last_phase_metrics_snapshot = curr.duplicate(true)
+		return
+	var reset := [false]
+	var line := "[CamBANG][Scene71PhaseMetrics] phase=%s" % phase
+	if checkpoint_id >= 0:
+		line += " checkpoint=%d" % checkpoint_id
+	line += " reset_detected=%s" % str(bool(reset[0]))
+	line += " frames_delta=%d" % _metric_delta_u64(curr, "total_emitted_frames", reset)
+	line += " gpu_update_attempts_delta=%d" % _metric_delta_u64(curr, "gpu_update_attempts", reset)
+	line += " gpu_update_demand_skipped_delta=%d" % _metric_delta_u64(curr, "gpu_update_demand_skipped", reset)
+	line += " gpu_texture_update_calls_delta=%d" % _metric_delta_u64(curr, "gpu_texture_update_calls", reset)
+	line += " frame_copy_calls_delta=%d" % _metric_delta_u64(curr, "frame_copy_calls", reset)
+	line += " frame_render_total_ms_delta=%.3f" % _metric_delta_f(curr, "frame_render_total_ms", reset)
+	line += " pattern_overlay_total_ms_delta=%.3f" % _metric_delta_f(curr, "pattern_overlay_total_ms", reset)
+	line += " pattern_base_copy_total_ms_delta=%.3f" % _metric_delta_f(curr, "pattern_base_copy_total_ms", reset)
+	line += " gpu_update_total_total_ms_delta=%.3f" % _metric_delta_f(curr, "gpu_update_total_total_ms", reset)
+	line += " gpu_upload_copy_total_ms_delta=%.3f" % _metric_delta_f(curr, "gpu_upload_copy_total_ms", reset)
+	line += " gpu_texture_update_total_ms_delta=%.3f" % _metric_delta_f(curr, "gpu_texture_update_total_ms", reset)
+	line += " catchup_ticks_capped_delta=%d" % _metric_delta_u64(curr, "catchup_ticks_capped", reset)
+	line += " catchup_frames_dropped_delta=%d" % _metric_delta_u64(curr, "catchup_frames_dropped", reset)
+	if bool(reset[0]):
+		line = line.replace("reset_detected=False", "reset_detected=True")
+	print(line)
+	_append_log(line)
+	_last_phase_metrics_snapshot = curr.duplicate(true)
+
 
 func _bootstrap() -> void:
 	CamBANGServer.stop()
@@ -152,8 +208,6 @@ func _bootstrap() -> void:
 	_update_instruction()
 	_append_log("Started scenario; timeline running")
 	_phase_marker("runtime_start", -1, "exercise=%s" % _resolved_exercise)
-	if not CamBANGServer.has_method("get_synthetic_metrics_snapshot"):
-		_phase_marker("metrics_accessor_missing", -1, "missing_method=get_synthetic_metrics_snapshot")
 
 
 func _process(delta: float) -> void:
@@ -558,12 +612,14 @@ func _log_summary_timing_once() -> void:
 		_timing_status_max_sec * 1000.0, _timing_status_total_sec * 1000.0, _timing_status_calls,
 		_timing_log_max_sec * 1000.0, _timing_log_total_sec * 1000.0, _timing_log_calls
 	])
+	_append_log("[CamBANG][Scene71] completed=true quitting=true")
+	CamBANGServer.stop()
+	get_tree().quit(0)
 
 
 func _require(cond: bool, msg: String) -> void:
 	if not cond:
 		_fail(msg)
-
 
 func _fail(msg: String) -> void:
 	push_error(msg)

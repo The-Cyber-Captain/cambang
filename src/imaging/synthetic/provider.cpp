@@ -1964,6 +1964,25 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_render_allocation_or_resize_count_));
 }
 
+
+SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() const {
+  SyntheticMetricsSnapshot out{};
+  out.total_emitted_frames = triage_frames_emitted_total_;
+  out.gpu_update_attempts = triage_gpu_update_attempts_total_;
+  out.gpu_update_demand_skipped = triage_gpu_update_demand_skipped_total_;
+  out.gpu_texture_update_calls = gpu_texture_update_calls_total_.load(std::memory_order_relaxed);
+  out.frame_copy_calls = triage_frame_copy_calls_;
+  out.frame_render_total_ms = ns_to_ms(triage_frame_render_total_ns_);
+  out.pattern_overlay_total_ms = ns_to_ms(pattern_overlay_total_ns_.load(std::memory_order_relaxed));
+  out.pattern_base_copy_total_ms = ns_to_ms(pattern_base_copy_total_ns_.load(std::memory_order_relaxed));
+  out.gpu_update_total_total_ms = ns_to_ms(triage_gpu_update_total_ns_);
+  out.gpu_upload_copy_total_ms = ns_to_ms(gpu_upload_copy_total_ns_.load(std::memory_order_relaxed));
+  out.gpu_texture_update_total_ms = ns_to_ms(gpu_texture_update_total_ns_.load(std::memory_order_relaxed));
+  out.catchup_ticks_capped = triage_catchup_ticks_capped_total_;
+  out.catchup_frames_dropped = triage_catchup_frames_dropped_total_;
+  return out;
+}
+
 void SyntheticProvider::advance(uint64_t dt_ns) {
   if (!initialized_ || shutting_down_) {
     return;
