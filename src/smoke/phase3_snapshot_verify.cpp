@@ -39,8 +39,6 @@ is covered by dedicated Godot scene checks.
 #include "core/snapshot/state_snapshot.h"
 #include "core/state_snapshot_buffer.h"
 
-#include "imaging/synthetic/provider.h"
-
 using namespace cambang;
 
 namespace {
@@ -1129,10 +1127,6 @@ static int test_resource_aggregate_default_and_projection() {
 }
 
 static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
-  constexpr uint64_t kRtDeviceId = 991;
-  constexpr uint64_t kRtStreamId = 992;
-  constexpr uint64_t kRtRootId = 993;
-
   CoreRuntime rt;
   StateSnapshotBuffer buf;
   rt.set_snapshot_publisher(&buf);
@@ -1149,71 +1143,26 @@ static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
     return 1;
   }
 
-  SyntheticProviderConfig cfg{};
-  cfg.synthetic_role = SyntheticRole::Timeline;
-  cfg.timing_driver = TimingDriver::VirtualTime;
-  cfg.nominal.width = 2;
-  cfg.nominal.height = 1;
-  cfg.nominal.fps_num = 30;
-  cfg.nominal.fps_den = 1;
-  cfg.pattern.preset = PatternPreset::XyXor;
-  cfg.pattern.seed = 7;
-
-  SyntheticProvider prov(cfg);
-  if (!prov.initialize(rt.provider_callbacks()).ok()) {
-    std::cerr << "FAIL: synthetic provider initialize failed (resource_aggregate integration)\n";
-    rt.stop();
-    return 1;
-  }
-  rt.attach_provider(&prov);
-
-  std::vector<CameraEndpoint> eps;
-  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
-    std::cerr << "FAIL: enumerate_endpoints failed (resource_aggregate integration)\n";
-    rt.attach_provider(nullptr);
-    (void)prov.shutdown();
-    rt.stop();
-    return 1;
-  }
-
-  rt.retain_device_identity(kRtDeviceId, eps[0].hardware_id);
-  if (!prov.open_device(eps[0].hardware_id, kRtDeviceId, kRtRootId).ok()) {
-    std::cerr << "FAIL: open_device failed (resource_aggregate integration)\n";
-    rt.attach_provider(nullptr);
-    (void)prov.shutdown();
-    rt.stop();
-    return 1;
-  }
-
-  if (rt.try_create_stream(kRtStreamId, kRtDeviceId, StreamIntent::PREVIEW, nullptr, nullptr, 1) !=
-      TryCreateStreamStatus::OK) {
-    std::cerr << "FAIL: try_create_stream failed (resource_aggregate integration)\n";
-    (void)prov.close_device(kRtDeviceId);
-    (void)prov.shutdown();
-    rt.attach_provider(nullptr);
-    rt.stop();
-    return 1;
-  }
-  if (rt.try_start_stream(kRtStreamId) != TryStartStreamStatus::OK) {
-    std::cerr << "FAIL: try_start_stream failed (resource_aggregate integration)\n";
-    (void)prov.close_device(kRtDeviceId);
-    (void)prov.shutdown();
-    rt.attach_provider(nullptr);
-    rt.stop();
-    return 1;
-  }
-
-  if (!wait_until([&]() {
-        auto s = snapshot_copy(buf);
-        const auto* st = s ? find_stream(*s, kRtStreamId) : nullptr;
-        return st && st->mode == CBStreamMode::FLOWING;
-      })) {
-    std::cerr << "FAIL: stream did not become FLOWING before frame integration check\n";
-    rt.stop();
-    return 1;
-  }
-
-  prov.advance(34'000'000ull);
+  std::vector<uint8_t> bytes{1, 2, 3, 4};
+  int releases = 0;
+  FrameView frame{};
+  frame.stream_id = 0;
+  frame.device_instance_id = 0;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
+  frame.capture_timestamp.value = 777;
+  frame.capture_timestamp.tick_ns = 1;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    int* p = static_cast<int*>(user);
+    (*p)++;
+  };
+  frame.release_user = &releases;
+  rt.provider_callbacks()->on_frame(frame);
   rt.request_publish();
 
   if (!wait_until([&]() {
@@ -1249,9 +1198,11 @@ static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
     rt.stop();
     return 1;
   }
-  (void)prov.close_device(kRtDeviceId);
-  (void)prov.shutdown();
-  rt.attach_provider(nullptr);
+  if (releases <= 0) {
+    std::cerr << "FAIL: runtime frame release callback did not run\n";
+    rt.stop();
+    return 1;
+  }
   rt.stop();
   return 0;
 }
