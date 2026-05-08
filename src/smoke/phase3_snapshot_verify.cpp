@@ -1126,10 +1126,127 @@ static int test_resource_aggregate_default_and_projection() {
   return 0;
 }
 
+static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
+  constexpr uint64_t kRtDeviceId = 991;
+  constexpr uint64_t kRtStreamId = 992;
+
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start (resource_aggregate integration)\n";
+    return 1;
+  }
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->version == 0;
+      })) {
+    std::cerr << "FAIL: missing baseline snapshot (resource_aggregate integration)\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.retain_device_identity(kRtDeviceId, "resource-aggregate-integration-device");
+  rt.provider_callbacks()->on_device_opened(kRtDeviceId);
+
+  CaptureProfile profile{};
+  profile.width = 2;
+  profile.height = 1;
+  profile.format_fourcc = FOURCC_RGBA;
+  profile.target_fps_min = 30;
+  profile.target_fps_max = 30;
+
+  if (rt.try_create_stream(kRtStreamId, kRtDeviceId, StreamIntent::PREVIEW, &profile, nullptr, 0) !=
+      TryCreateStreamStatus::OK) {
+    std::cerr << "FAIL: try_create_stream failed (resource_aggregate integration)\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_start_stream(kRtStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "FAIL: try_start_stream failed (resource_aggregate integration)\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        const auto* st = s ? find_stream(*s, kRtStreamId) : nullptr;
+        return st && st->mode == CBStreamMode::FLOWING;
+      })) {
+    std::cerr << "FAIL: stream did not become FLOWING before frame integration check\n";
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<uint8_t> bytes{1, 2, 3, 4, 5, 6, 7, 8};
+  int releases = 0;
+  FrameView frame{};
+  frame.stream_id = kRtStreamId;
+  frame.device_instance_id = kRtDeviceId;
+  frame.width = 2;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
+  frame.capture_timestamp.value = 777;
+  frame.capture_timestamp.tick_ns = 1;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 8;
+  frame.release = [](void* user, const FrameView*) {
+    int* p = static_cast<int*>(user);
+    (*p)++;
+  };
+  frame.release_user = &releases;
+  rt.provider_callbacks()->on_frame(frame);
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        if (!s) return false;
+        const auto& a = s->resource_aggregate;
+        return a.framebuffer_lease_total_created > 0 &&
+               a.framebuffer_lease_total_released > 0 &&
+               a.framebuffer_lease_peak_current > 0;
+      })) {
+    std::cerr << "FAIL: resource_aggregate framebuffer lease totals/peak did not move in runtime path\n";
+    auto s = snapshot_copy(buf);
+    if (s) {
+      (void)verify_resource_aggregate_invariants(s->resource_aggregate, "runtime framebuffer integration");
+    }
+    rt.stop();
+    return 1;
+  }
+
+  auto observed = snapshot_copy(buf);
+  if (!observed) {
+    std::cerr << "FAIL: missing observed snapshot for resource_aggregate integration\n";
+    rt.stop();
+    return 1;
+  }
+  if (!verify_resource_aggregate_invariants(observed->resource_aggregate, "runtime framebuffer integration")) {
+    rt.stop();
+    return 1;
+  }
+  if (observed->resource_aggregate.framebuffer_lease_current != 0) {
+    std::cerr << "FAIL: expected framebuffer_lease_current==0 after deterministic release path"
+              << " current=" << observed->resource_aggregate.framebuffer_lease_current << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (releases <= 0) {
+    std::cerr << "FAIL: runtime frame release callback did not run\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 } // namespace
 
 int main() {
   if (int r = test_resource_aggregate_default_and_projection()) return r;
+  if (int r = test_resource_aggregate_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;
   if (int r = test_destroyed_retention_does_not_cross_generation_baseline()) return r;
   if (int r = test_live_session_retirement_expiry_publication()) return r;
