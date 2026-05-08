@@ -330,6 +330,20 @@ godot::Dictionary export_snapshot_to_godot(const CamBANGStateSnapshot& snap,
     out["detached_root_ids"] = detached;
   }
 
+
+  {
+    godot::Dictionary agg;
+    agg["framebuffer_lease_current"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_current);
+    agg["framebuffer_lease_total_created"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_total_created);
+    agg["framebuffer_lease_total_released"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_total_released);
+    agg["framebuffer_lease_peak_current"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_peak_current);
+    agg["retained_gpu_backing_current"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_current);
+    agg["retained_gpu_backing_total_created"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_total_created);
+    agg["retained_gpu_backing_total_released"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_total_released);
+    agg["retained_gpu_backing_peak_current"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_peak_current);
+    out["resource_aggregate"] = agg;
+  }
+
   return out;
 }
 

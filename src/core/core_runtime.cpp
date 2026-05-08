@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "imaging/broker/banner_info.h"
+#include "core/resource_aggregate_telemetry.h"
 #include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
@@ -383,6 +384,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;
     in.spec_state = &spec_state_;
+    in.resource_aggregate = &global_resource_aggregate_telemetry();
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 

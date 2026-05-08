@@ -91,8 +91,15 @@ symmetric choices.
   - enables SyntheticTriage startup/path markers and `Synthetic*TriageMetrics` output
 - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
   - default: `0` (uncapped catchup)
-  - maintainer harness control for virtual-time catchup shaping; `2` is used for
-    two-stream due-together tests to avoid intentionally lossy single-frame catchup
+  - maintainer-only virtual-time catchup shaping control (not product/user perf config)
+  - intended normal SyntheticProvider runtime: **unset** (use default uncapped behavior)
+  - Scene 71 (`capture_session_matrix_v3`) normal/example runs: **unset**
+  - Scene 71 may set `2` only for bounded perf-regression investigation
+  - Scene 72 (`stream_load_isolation`) is a stream-load/perf isolation harness and may
+    recommend/default to `2` for bounded two-stream runs
+  - `2` is the smallest cap that preserves the common two-stream due-together case
+  - `1` is intentionally lossy for dual-stream steady flow and should be treated as
+    stress/loss diagnostics only
 - `CAMBANG_DEV_DISPLAY_DEMAND_TRACE`
   - default: off
   - maintainer-only demand lifetime tracing for display-demand activation/deactivation
@@ -108,6 +115,15 @@ symmetric choices.
   - preferred harness-level exercise selector (not product API config)
   - includes Scene 71/72 maintainer exercises such as `display_oneshot`,
     `display_latest`, `no_display_default`, and `no_display_eager`
+  - `display_oneshot` is the default Scene 71/72 exercise when unset
+  - `display_latest` is the repeated latest-binding stress exercise (Scene 72)
+  - `no_display_eager` resolves to effective `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always`
+    via exercise selection unless an explicit conflicting low-level policy is set
+
+Aggregate telemetry note:
+- Per-frame `FrameBufferLease` native-object create/destroy snapshot rows remain removed.
+- High-frequency lease/backing observability is surfaced via `resource_aggregate` counters,
+  while long-lived identity-bearing native resources remain in `native_objects`.
 
 ### 7.4 Removed temporary knobs
 

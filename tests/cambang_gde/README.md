@@ -121,6 +121,11 @@ Notes:
   - `CAMBANG_STREAM_LOAD_DISPLAY_PATH_TRACE`
   - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
   - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` (maintainer override/comparison escape hatch)
+  - `CAMBANG_DEV_SYNTH_CATCHUP_CAP` guidance:
+    - normal SyntheticProvider runtime and Scene 71 runs: leave unset
+    - Scene 72 (stream-load/perf isolation) may use `2` as bounded two-stream setting
+    - `2` preserves common two-stream due-together correctness
+    - `1` is intentionally lossy for dual-stream steady flow (stress diagnostics only)
   - `no_display_eager` no longer requires setting the low-level env separately; examples:
     - default/no-display comparison:
       - `CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
