@@ -91,8 +91,15 @@ symmetric choices.
   - enables SyntheticTriage startup/path markers and `Synthetic*TriageMetrics` output
 - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
   - default: `0` (uncapped catchup)
-  - maintainer harness control for virtual-time catchup shaping; `2` is used for
-    two-stream due-together tests to avoid intentionally lossy single-frame catchup
+  - maintainer-only virtual-time catchup shaping control (not product/user perf config)
+  - intended normal SyntheticProvider runtime: **unset** (use default uncapped behavior)
+  - Scene 71 (`capture_session_matrix_v3`) normal/example runs: **unset**
+  - Scene 71 may set `2` only for bounded perf-regression investigation
+  - Scene 72 (`stream_load_isolation`) is a stream-load/perf isolation harness and may
+    recommend/default to `2` for bounded two-stream runs
+  - `2` is the smallest cap that preserves the common two-stream due-together case
+  - `1` is intentionally lossy for dual-stream steady flow and should be treated as
+    stress/loss diagnostics only
 - `CAMBANG_DEV_DISPLAY_DEMAND_TRACE`
   - default: off
   - maintainer-only demand lifetime tracing for display-demand activation/deactivation
