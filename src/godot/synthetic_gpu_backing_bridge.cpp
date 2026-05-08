@@ -31,6 +31,7 @@ void register_synthetic_gpu_backing_internal_classes() {
 
 static void enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
+static bool gpu_trace_enabled() noexcept;
 
 struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
@@ -51,11 +52,14 @@ struct RetainedSyntheticGpuBacking final {
       }
       released = true;
 
-      // The bridge owns rd_texture only until it is handed to Texture2DRD.
-      // Once display_texture exists, do not manually free its RID here.
       if (rd_texture.is_valid()) {
         rid = rd_texture;
         rd_texture = godot::RID();
+      } else if (display_texture.is_valid()) {
+        // Texture2DRD wraps an existing RD texture RID for display-view and does
+        // not transfer RID lifetime ownership. The bridge retains ownership of
+        // this RID and must free it deterministically on release.
+        rid = display_texture->get_texture_rd_rid();
       }
 
       display_texture.unref();
@@ -149,6 +153,9 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   for (const godot::RID &rid : pending) {
     if (rid.is_valid()) {
+      if (gpu_trace_enabled()) {
+        godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_free rid=", rid.get_id());
+      }
       rd->free_rid(rid);
     }
   }
@@ -361,6 +368,11 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   if (!texture.is_valid()) {
     return {};
   }
+  if (gpu_trace_enabled()) {
+    godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=retain_primary rid=", texture.get_id(),
+                                   " w=", (long long)width,
+                                   " h=", (long long)height);
+  }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->rd_texture = texture;
@@ -408,6 +420,11 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   const godot::RID texture = rd->texture_create(format, view, data);
   if (!texture.is_valid()) {
     return {};
+  }
+  if (gpu_trace_enabled()) {
+    godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=stream_live rid=", texture.get_id(),
+                                   " w=", (long long)width,
+                                   " h=", (long long)height);
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
