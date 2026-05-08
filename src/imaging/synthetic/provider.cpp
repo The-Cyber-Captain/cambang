@@ -254,9 +254,10 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   initialized_ = true;
   shutting_down_ = false;
   triage_next_log_ns_ = 0;
-  synthetic_triage_printf("[CamBANG][SyntheticTriage] enabled=%s catchup_cap=%u",
-                          triage_trace_enabled_ ? "true" : "false",
-                          triage_catchup_cap_per_tick_);
+  if (triage_trace_enabled_) {
+    synthetic_triage_printf("[CamBANG][SyntheticTriage] enabled=true catchup_cap=%u",
+                            triage_catchup_cap_per_tick_);
+  }
 
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     // Backward-compatibility baseline for Timeline-role synthetic operation:
