@@ -55,19 +55,6 @@ bool env_flag_enabled(const char* name) {
   return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
 }
 
-void maybe_warn_deprecated_gpu_policy_alias() {
-  if (env_flag_enabled("CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED")) {
-    static bool warned_deprecated_alias = false;
-    if (!warned_deprecated_alias) {
-      warned_deprecated_alias = true;
-      synthetic_triage_print_line(
-          "[CamBANG][SyntheticTriage] CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED is deprecated; "
-          "display_demanded is now the default. Use CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY for explicit "
-          "policy control; set CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always for eager-update comparison.");
-    }
-  }
-}
-
 uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
   const char* value = std::getenv(name);
   if (!value || value[0] == '\0') {
@@ -118,7 +105,6 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
   display_demand_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
   triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
-  maybe_warn_deprecated_gpu_policy_alias();
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {

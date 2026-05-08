@@ -84,21 +84,33 @@ symmetric choices.
   - default: `display_demanded`
   - `always` is the maintainer eager-update comparison override
 
-### 7.2 Retained performance instrumentation
+### 7.2 Maintainer diagnostics (retained)
 
 - `CAMBANG_DEV_SYNTH_TRIAGE_TRACE`
+  - default: off
+  - enables SyntheticTriage startup/path markers and `Synthetic*TriageMetrics` output
 - `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
+  - default: `0` (uncapped catchup)
+  - maintainer harness control for virtual-time catchup shaping; `2` is used for
+    two-stream due-together tests to avoid intentionally lossy single-frame catchup
+- `CAMBANG_DEV_DISPLAY_DEMAND_TRACE`
+  - default: off
+  - maintainer-only demand lifetime tracing for display-demand activation/deactivation
+- `CAMBANG_DEV_SYNTH_GPU_TRACE`
+  - default: off
+  - maintainer-only retained-GPU allocation/free and runtime truth tracing
 - `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE`
 - `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N`
 
-### 7.3 Temporary maintainer diagnostics
+### 7.3 Maintainer harness selector
 
-- `CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE`
-- `CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME`
+- `CAMBANG_EXERCISE`
+  - preferred harness-level exercise selector (not product API config)
+  - includes Scene 71/72 maintainer exercises such as `display_oneshot`,
+    `display_latest`, `no_display_default`, and `no_display_eager`
 
-### 7.4 Deprecated compatibility alias
+### 7.4 Removed temporary knobs
 
-- `CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED`
-  - retained temporarily for compatibility
-  - deprecated and redundant now that `display_demanded` is the default
-  - if both variables are set, `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` wins
+- `CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED` (deprecated alias removed)
+- `CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE` (diagnostic bypass removed)
+- `CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME` (diagnostic forced-reuse removed)
