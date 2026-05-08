@@ -466,11 +466,17 @@ func _bind_stream_slot(slot: String) -> bool:
 	return true
 
 
-func _release_stream_bindings() -> void:
+func _clear_display_bindings_for_teardown() -> void:
 	_preview_a_rect.texture = null
 	_viewfinder_a_rect.texture = null
 	_preview_b_rect.texture = null
 	_viewfinder_b_rect.texture = null
+	_capture_a_rect.texture = null
+	_capture_b_rect.texture = null
+
+
+func _release_stream_bindings() -> void:
+	_clear_display_bindings_for_teardown()
 	_preview_a_facts.text = "Preview A released"
 	_viewfinder_a_facts.text = "Viewfinder A released"
 	_preview_b_facts.text = "Preview B released"
@@ -614,6 +620,8 @@ func _log_summary_timing_once() -> void:
 	])
 	print("[CamBANG][Scene71] completed=true quitting=true")
 	_append_log("[CamBANG][Scene71] completed=true quitting=true")
+	_clear_display_bindings_for_teardown()
+	_pending_captures.clear()
 	CamBANGServer.stop()
 	get_tree().quit(0)
 
