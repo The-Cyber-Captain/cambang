@@ -27,6 +27,16 @@
     "streams": [],
     "native_objects": [],
     "detached_root_ids": [],
-    "acquisition_sessions": []
+    "acquisition_sessions": [],
+    "resource_aggregate": {
+      "framebuffer_lease_current": 0,
+      "framebuffer_lease_total_created": 0,
+      "framebuffer_lease_total_released": 0,
+      "framebuffer_lease_peak_current": 0,
+      "retained_gpu_backing_current": 0,
+      "retained_gpu_backing_total_created": 0,
+      "retained_gpu_backing_total_released": 0,
+      "retained_gpu_backing_peak_current": 0
+    }
   }
 }

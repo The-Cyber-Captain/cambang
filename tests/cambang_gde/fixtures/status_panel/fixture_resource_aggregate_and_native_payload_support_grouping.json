@@ -1,0 +1,59 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "provider/100/resource_aggregate",
+      "stream/1/native_payload_support",
+      "native_object/103"
+    ],
+    "required_counter_values_by_row": {
+      "provider/100/resource_aggregate": {
+        "fbl_cur": 2,
+        "gpu_peak": 9
+      }
+    },
+    "required_info_substrings_by_row": {
+      "stream/1": [
+        "visibility_last_path=RGBA_DIRECT (1)"
+      ],
+      "native_object/103": [
+        "owner_provider_native_id=100",
+        "owner_rig_id=9"
+      ]
+    }
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 1,
+    "version": 1,
+    "topology_version": 1,
+    "timestamp_ns": 1,
+    "imaging_spec_version": 1,
+    "resource_aggregate": {
+      "framebuffer_lease_current": 2,
+      "framebuffer_lease_total_created": 10,
+      "framebuffer_lease_total_released": 8,
+      "framebuffer_lease_peak_current": 4,
+      "retained_gpu_backing_current": 3,
+      "retained_gpu_backing_total_created": 12,
+      "retained_gpu_backing_total_released": 9,
+      "retained_gpu_backing_peak_current": 9
+    },
+    "rigs": [],
+    "devices": [{"instance_id":1,"hardware_id":"synthetic:0","phase":"LIVE","mode":"STREAMING","errors_count":0,"engaged":false,"rig_id":0,"camera_spec_version":0,"capture_profile_version":0,"capture_width":0,"capture_height":0,"capture_format":0,"warm_hold_ms":0,"warm_remaining_ms":0,"rebuild_count":0,"last_error_code":0}],
+    "acquisition_sessions": [{"acquisition_session_id":1,"device_instance_id":1,"phase":"LIVE","capture_profile_version":0,"capture_width":0,"capture_height":0,"capture_format":0,"captures_triggered":0,"captures_completed":0,"captures_failed":0,"last_capture_id":0,"last_capture_latency_ns":0,"error_code":0}],
+    "streams": [{"stream_id":1,"device_instance_id":1,"phase":"LIVE","mode":"FLOWING","intent":"PREVIEW","stop_reason":"NONE","target_fps_max":30,"frames_received":1,"width":640,"height":480,"format":0,"target_fps_min":24,"profile_version":1,"frames_delivered":1,"frames_dropped":0,"queue_depth":0,"last_frame_ts_ns":1,"visibility_frames_presented":1,"visibility_frames_rejected_unsupported":0,"visibility_frames_rejected_invalid":0,"visibility_last_path":1}],
+    "native_objects": [
+      {"native_id":100,"type":"provider","phase":"LIVE","creation_gen":1,"owner_device_instance_id":0,"owner_acquisition_session_id":0,"owner_stream_id":0,"owner_provider_native_id":0,"owner_rig_id":0,"root_id":0,"created_ns":0,"destroyed_ns":0,"bytes_allocated":0,"buffers_in_use":0},
+      {"native_id":101,"type":"device","phase":"LIVE","creation_gen":1,"owner_device_instance_id":1,"owner_acquisition_session_id":0,"owner_stream_id":0,"owner_provider_native_id":0,"owner_rig_id":0,"root_id":0,"created_ns":0,"destroyed_ns":0,"bytes_allocated":0,"buffers_in_use":0},
+      {"native_id":102,"type":"stream","phase":"LIVE","creation_gen":1,"owner_device_instance_id":1,"owner_acquisition_session_id":1,"owner_stream_id":1,"owner_provider_native_id":0,"owner_rig_id":0,"root_id":0,"created_ns":0,"destroyed_ns":0,"bytes_allocated":0,"buffers_in_use":0},
+      {"native_id":103,"type":"gpu_backing","phase":"LIVE","creation_gen":1,"owner_device_instance_id":1,"owner_acquisition_session_id":1,"owner_stream_id":1,"owner_provider_native_id":100,"owner_rig_id":9,"root_id":0,"created_ns":0,"destroyed_ns":0,"bytes_allocated":100,"buffers_in_use":1}
+    ],
+    "detached_root_ids": []
+  }
+}

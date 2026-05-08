@@ -221,6 +221,16 @@
         "last_capture_latency_ns": 0,
         "error_code": 0
       }
-    ]
+    ],
+    "resource_aggregate": {
+      "framebuffer_lease_current": 0,
+      "framebuffer_lease_total_created": 0,
+      "framebuffer_lease_total_released": 0,
+      "framebuffer_lease_peak_current": 0,
+      "retained_gpu_backing_current": 0,
+      "retained_gpu_backing_total_created": 0,
+      "retained_gpu_backing_total_released": 0,
+      "retained_gpu_backing_peak_current": 0
+    }
   }
 }
