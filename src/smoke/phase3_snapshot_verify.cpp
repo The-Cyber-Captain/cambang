@@ -33,6 +33,7 @@ is covered by dedicated Godot scene checks.
 #include "core/provider_to_core_commands.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_runtime.h"
+#include "core/resource_aggregate_telemetry.h"
 #include "core/core_stream_registry.h"
 #include "core/snapshot/snapshot_builder.h"
 #include "core/snapshot/state_snapshot.h"
@@ -1039,9 +1040,96 @@ static int test_capture_lifecycle_updates_live_acquisition_session_only() {
   return 0;
 }
 
+static bool verify_resource_aggregate_invariants(const ResourceAggregateState& a, const char* context) {
+  auto fail = [&](const char* msg) {
+    std::cerr << "FAIL: " << context << " " << msg
+              << " lease(current=" << a.framebuffer_lease_current
+              << " created=" << a.framebuffer_lease_total_created
+              << " released=" << a.framebuffer_lease_total_released
+              << " peak=" << a.framebuffer_lease_peak_current
+              << ") retained(current=" << a.retained_gpu_backing_current
+              << " created=" << a.retained_gpu_backing_total_created
+              << " released=" << a.retained_gpu_backing_total_released
+              << " peak=" << a.retained_gpu_backing_peak_current << ")\n";
+    return false;
+  };
+
+  if (a.framebuffer_lease_current > a.framebuffer_lease_total_created) {
+    return fail("invariant framebuffer_lease_current <= framebuffer_lease_total_created violated");
+  }
+  if (a.framebuffer_lease_total_released > a.framebuffer_lease_total_created) {
+    return fail("invariant framebuffer_lease_total_released <= framebuffer_lease_total_created violated");
+  }
+  if (a.framebuffer_lease_peak_current < a.framebuffer_lease_current) {
+    return fail("invariant framebuffer_lease_peak_current >= framebuffer_lease_current violated");
+  }
+  if (a.retained_gpu_backing_current > a.retained_gpu_backing_total_created) {
+    return fail("invariant retained_gpu_backing_current <= retained_gpu_backing_total_created violated");
+  }
+  if (a.retained_gpu_backing_total_released > a.retained_gpu_backing_total_created) {
+    return fail("invariant retained_gpu_backing_total_released <= retained_gpu_backing_total_created violated");
+  }
+  if (a.retained_gpu_backing_peak_current < a.retained_gpu_backing_current) {
+    return fail("invariant retained_gpu_backing_peak_current >= retained_gpu_backing_current violated");
+  }
+  return true;
+}
+
+static int test_resource_aggregate_default_and_projection() {
+  SnapshotBuilder builder;
+  ResourceAggregateTelemetry telemetry;
+  SnapshotBuilder::Inputs in;
+  in.resource_aggregate = &telemetry;
+
+  const CamBANGStateSnapshot zero = builder.build(in, 0, 0, 0, 1);
+  const ResourceAggregateState& a0 = zero.resource_aggregate;
+  if (a0.framebuffer_lease_current != 0 ||
+      a0.framebuffer_lease_total_created != 0 ||
+      a0.framebuffer_lease_total_released != 0 ||
+      a0.framebuffer_lease_peak_current != 0 ||
+      a0.retained_gpu_backing_current != 0 ||
+      a0.retained_gpu_backing_total_created != 0 ||
+      a0.retained_gpu_backing_total_released != 0 ||
+      a0.retained_gpu_backing_peak_current != 0) {
+    std::cerr << "FAIL: resource_aggregate default-zero shape mismatch\n";
+    (void)verify_resource_aggregate_invariants(a0, "resource_aggregate default snapshot");
+    return 1;
+  }
+  if (!verify_resource_aggregate_invariants(a0, "resource_aggregate default snapshot")) {
+    return 1;
+  }
+
+  telemetry.lease_created();
+  telemetry.lease_created();
+  telemetry.lease_released();
+  telemetry.retained_gpu_backing_created();
+  telemetry.retained_gpu_backing_released();
+
+  const CamBANGStateSnapshot projected = builder.build(in, 0, 1, 0, 2);
+  const ResourceAggregateState& a1 = projected.resource_aggregate;
+  if (a1.framebuffer_lease_total_created != 2 ||
+      a1.framebuffer_lease_total_released != 1 ||
+      a1.framebuffer_lease_current != 1 ||
+      a1.framebuffer_lease_peak_current != 2 ||
+      a1.retained_gpu_backing_total_created != 1 ||
+      a1.retained_gpu_backing_total_released != 1 ||
+      a1.retained_gpu_backing_current != 0 ||
+      a1.retained_gpu_backing_peak_current != 1) {
+    std::cerr << "FAIL: resource_aggregate projected values mismatch\n";
+    (void)verify_resource_aggregate_invariants(a1, "resource_aggregate projected snapshot");
+    return 1;
+  }
+  if (!verify_resource_aggregate_invariants(a1, "resource_aggregate projected snapshot")) {
+    return 1;
+  }
+
+  return 0;
+}
+
 } // namespace
 
 int main() {
+  if (int r = test_resource_aggregate_default_and_projection()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;
   if (int r = test_destroyed_retention_does_not_cross_generation_baseline()) return r;
   if (int r = test_live_session_retirement_expiry_publication()) return r;
