@@ -11,6 +11,7 @@
 #include "core/core_spec_state.h"
 #include "core/core_stream_registry.h"
 #include "core/provider_callback_ingress.h"
+#include "core/resource_aggregate_telemetry.h"
 
 namespace cambang {
 
@@ -300,6 +301,18 @@ if (in.native_objects) {
 
     const std::set<uint64_t> detached_roots = compute_detached_roots(in);
     snap.detached_root_ids.assign(detached_roots.begin(), detached_roots.end());
+}
+
+if (in.resource_aggregate) {
+    const ResourceAggregateSnapshot agg = in.resource_aggregate->snapshot();
+    snap.resource_aggregate.framebuffer_lease_current = agg.framebuffer_lease_current;
+    snap.resource_aggregate.framebuffer_lease_total_created = agg.framebuffer_lease_total_created;
+    snap.resource_aggregate.framebuffer_lease_total_released = agg.framebuffer_lease_total_released;
+    snap.resource_aggregate.framebuffer_lease_peak_current = agg.framebuffer_lease_peak_current;
+    snap.resource_aggregate.retained_gpu_backing_current = agg.retained_gpu_backing_current;
+    snap.resource_aggregate.retained_gpu_backing_total_created = agg.retained_gpu_backing_total_created;
+    snap.resource_aggregate.retained_gpu_backing_total_released = agg.retained_gpu_backing_total_released;
+    snap.resource_aggregate.retained_gpu_backing_peak_current = agg.retained_gpu_backing_peak_current;
 }
 
 return snap;

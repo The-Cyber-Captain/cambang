@@ -13,6 +13,7 @@ class CoreStreamRegistry;
 class ProviderCallbackIngress;
 class CoreNativeObjectRegistry;
 class CoreSpecState;
+class ResourceAggregateTelemetry;
 
 // Minimal deterministic builder for schema v1 state snapshot.
 // Populates implemented fields from current registries; all others use
@@ -28,6 +29,7 @@ public:
         const ProviderCallbackIngress* ingress = nullptr;
         const CoreNativeObjectRegistry* native_objects = nullptr;
         const CoreSpecState* spec_state = nullptr;
+        const ResourceAggregateTelemetry* resource_aggregate = nullptr;
     };
 
     CamBANGStateSnapshot build(const Inputs& in,

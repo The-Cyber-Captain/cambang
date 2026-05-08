@@ -181,6 +181,17 @@ struct NativeObjectRecord {
     uint32_t buffers_in_use = 0;
 };
 
+struct ResourceAggregateState {
+    uint64_t framebuffer_lease_current = 0;
+    uint64_t framebuffer_lease_total_created = 0;
+    uint64_t framebuffer_lease_total_released = 0;
+    uint64_t framebuffer_lease_peak_current = 0;
+    uint64_t retained_gpu_backing_current = 0;
+    uint64_t retained_gpu_backing_total_created = 0;
+    uint64_t retained_gpu_backing_total_released = 0;
+    uint64_t retained_gpu_backing_peak_current = 0;
+};
+
 struct CamBANGStateSnapshot {
     static constexpr uint32_t kSchemaVersion = 1;
 
@@ -199,4 +210,5 @@ struct CamBANGStateSnapshot {
 
     std::vector<NativeObjectRecord> native_objects;
     std::vector<uint64_t> detached_root_ids;
+    ResourceAggregateState resource_aggregate;
 };
