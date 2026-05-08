@@ -281,7 +281,26 @@ CamBANGStateSnapshot {
 
   native_objects: Array<NativeObjectRecord>
 
+  resource_aggregate: ResourceAggregateState
+
   detached_root_ids: Array<uint64> // computed by core (see §7)
+}
+```
+
+`resource_aggregate` is aggregate counter telemetry for high-frequency resources.
+It does not imply per-frame `native_objects[]` churn.
+
+```text
+ResourceAggregateState {
+  framebuffer_lease_current: uint64
+  framebuffer_lease_total_created: uint64
+  framebuffer_lease_total_released: uint64
+  framebuffer_lease_peak_current: uint64
+
+  retained_gpu_backing_current: uint64
+  retained_gpu_backing_total_created: uint64
+  retained_gpu_backing_total_released: uint64
+  retained_gpu_backing_peak_current: uint64
 }
 ```
 ### 5.1 `acquisition_sessions` truth scope (v1)
