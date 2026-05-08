@@ -2026,7 +2026,7 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
-    if (!triage_timeline_path_banner_emitted_) {
+    if (triage_trace_enabled_ && !triage_timeline_path_banner_emitted_) {
       synthetic_triage_printf("[CamBANG][SyntheticTriage] timeline-advance-path-reached");
       triage_timeline_path_banner_emitted_ = true;
     }
