@@ -78,19 +78,36 @@ class DisplayTextureRidOwner : public godot::RefCounted {
 public:
   static void _bind_methods() {}
 
-  void init(const std::shared_ptr<RetainedSyntheticGpuBacking>& backing) {
-    backing_ = backing;
+  void init(const godot::RID& rid) {
+    rid_ = rid;
   }
 
   ~DisplayTextureRidOwner() override {
-    if (backing_) {
-      backing_->release_now();
-      backing_.reset();
+    release_now();
+  }
+
+  void release_now() {
+    godot::RID rid;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (released_) {
+        return;
+      }
+      released_ = true;
+      rid = rid_;
+      rid_ = godot::RID();
     }
+    if (!rid.is_valid()) {
+      return;
+    }
+    enqueue_pending_release(rid);
+    request_pending_release_drain();
   }
 
 private:
-  std::shared_ptr<RetainedSyntheticGpuBacking> backing_;
+  std::mutex mutex_{};
+  godot::RID rid_{};
+  bool released_ = false;
 };
 
 void register_synthetic_gpu_backing_internal_classes() {
@@ -635,10 +652,11 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     // Display view is a live wrapper over stream-owned backing. Texture2DRD
     // does not own/free this RID; lifetime is carried by attached metadata.
     texture->set_texture_rd_rid(retained->rd_texture);
+    const godot::RID display_rid = retained->rd_texture;
     godot::Ref<DisplayTextureRidOwner> rid_owner;
     rid_owner.instantiate();
     if (rid_owner.is_valid()) {
-      rid_owner->init(retained);
+      rid_owner->init(display_rid);
       texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
     }
     retained->rd_texture = godot::RID();
