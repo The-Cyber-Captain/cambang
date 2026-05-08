@@ -20,17 +20,18 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/string_name.hpp>
 
 namespace cambang {
 
-void register_synthetic_gpu_backing_internal_classes() {
-  // Internal-only helper: registered only so Ref<RenderThreadDrainHelper>::instantiate()
-  // can resolve through ClassDB. This is not a user-facing CamBANG API class.
-  godot::ClassDB::register_class<RenderThreadDrainHelper>();
-}
+void register_synthetic_gpu_backing_internal_classes();
 
 static void enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
+static bool gpu_trace_enabled() noexcept {
+  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
+  return value && value[0] != '\0' && value[0] != '0';
+}
 
 struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
@@ -51,8 +52,6 @@ struct RetainedSyntheticGpuBacking final {
       }
       released = true;
 
-      // The bridge owns rd_texture only until it is handed to Texture2DRD.
-      // Once display_texture exists, do not manually free its RID here.
       if (rd_texture.is_valid()) {
         rid = rd_texture;
         rd_texture = godot::RID();
@@ -72,6 +71,51 @@ struct RetainedSyntheticGpuBacking final {
     release_now();
   }
 };
+
+class DisplayTextureRidOwner : public godot::RefCounted {
+  GDCLASS(DisplayTextureRidOwner, godot::RefCounted);
+
+public:
+  static void _bind_methods() {}
+
+  void init(const godot::RID& rid) {
+    rid_ = rid;
+  }
+
+  ~DisplayTextureRidOwner() override {
+    release_now();
+  }
+
+  void release_now() {
+    godot::RID rid;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (released_) {
+        return;
+      }
+      released_ = true;
+      rid = rid_;
+      rid_ = godot::RID();
+    }
+    if (!rid.is_valid()) {
+      return;
+    }
+    enqueue_pending_release(rid);
+    request_pending_release_drain();
+  }
+
+private:
+  std::mutex mutex_{};
+  godot::RID rid_{};
+  bool released_ = false;
+};
+
+void register_synthetic_gpu_backing_internal_classes() {
+  // Internal-only helpers: registered only so Ref<...>::instantiate() can
+  // resolve through ClassDB. These are not user-facing CamBANG API classes.
+  godot::ClassDB::register_class<RenderThreadDrainHelper>();
+  godot::ClassDB::register_class<DisplayTextureRidOwner>();
+}
 
 static std::mutex g_pending_release_mutex;
 // RIDs that must be released from the render thread.
@@ -149,6 +193,9 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   for (const godot::RID &rid : pending) {
     if (rid.is_valid()) {
+      if (gpu_trace_enabled()) {
+        godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_free rid=", rid.get_id());
+      }
       rd->free_rid(rid);
     }
   }
@@ -162,11 +209,6 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
 
 namespace {
-
-bool gpu_trace_enabled() noexcept {
-  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
-  return value && value[0] != '\0' && value[0] != '0';
-}
 
 bool skip_gpu_texture_update_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE");
@@ -361,6 +403,11 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   if (!texture.is_valid()) {
     return {};
   }
+  if (gpu_trace_enabled()) {
+    godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=retain_primary rid=", texture.get_id(),
+                                   " w=", (long long)width,
+                                   " h=", (long long)height);
+  }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->rd_texture = texture;
@@ -408,6 +455,11 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   const godot::RID texture = rd->texture_create(format, view, data);
   if (!texture.is_valid()) {
     return {};
+  }
+  if (gpu_trace_enabled()) {
+    godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=stream_live rid=", texture.get_id(),
+                                   " w=", (long long)width,
+                                   " h=", (long long)height);
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
@@ -568,6 +620,7 @@ void uninstall_synthetic_gpu_backing_godot_bridge() {
 }
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
+  constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
   request_pending_release_drain();
   if (!backing) {
     return {};
@@ -597,8 +650,15 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
       return {};
     }
     // Display view is a live wrapper over stream-owned backing. Texture2DRD
-    // assumes ownership of this RID after binding.
+    // does not own/free this RID; lifetime is carried by attached metadata.
     texture->set_texture_rd_rid(retained->rd_texture);
+    const godot::RID display_rid = retained->rd_texture;
+    godot::Ref<DisplayTextureRidOwner> rid_owner;
+    rid_owner.instantiate();
+    if (rid_owner.is_valid()) {
+      rid_owner->init(display_rid);
+      texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
+    }
     retained->rd_texture = godot::RID();
     retained->display_texture = texture;
   }
