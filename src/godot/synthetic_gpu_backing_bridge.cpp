@@ -31,7 +31,10 @@ void register_synthetic_gpu_backing_internal_classes() {
 
 static void enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
-static bool gpu_trace_enabled() noexcept;
+static bool gpu_trace_enabled() noexcept {
+  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
+  return value && value[0] != '\0' && value[0] != '0';
+}
 
 struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
@@ -169,11 +172,6 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
 
 namespace {
-
-bool gpu_trace_enabled() noexcept {
-  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
-  return value && value[0] != '\0' && value[0] != '0';
-}
 
 bool skip_gpu_texture_update_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE");
