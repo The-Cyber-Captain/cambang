@@ -108,6 +108,15 @@ symmetric choices.
   - preferred harness-level exercise selector (not product API config)
   - includes Scene 71/72 maintainer exercises such as `display_oneshot`,
     `display_latest`, `no_display_default`, and `no_display_eager`
+  - `display_oneshot` is the default Scene 71/72 exercise when unset
+  - `display_latest` is the repeated latest-binding stress exercise (Scene 72)
+  - `no_display_eager` resolves to effective `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always`
+    via exercise selection unless an explicit conflicting low-level policy is set
+
+Aggregate telemetry note:
+- Per-frame `FrameBufferLease` native-object create/destroy snapshot rows remain removed.
+- High-frequency lease/backing observability is surfaced via `resource_aggregate` counters,
+  while long-lived identity-bearing native resources remain in `native_objects`.
 
 ### 7.4 Removed temporary knobs
 

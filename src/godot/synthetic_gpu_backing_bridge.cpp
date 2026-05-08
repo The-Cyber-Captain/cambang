@@ -1,5 +1,6 @@
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
+#include "core/resource_aggregate_telemetry.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -51,6 +52,7 @@ struct RetainedSyntheticGpuBacking final {
         return;
       }
       released = true;
+      global_resource_aggregate_telemetry().retained_gpu_backing_released();
 
       if (rd_texture.is_valid()) {
         rid = rd_texture;
@@ -405,6 +407,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  global_resource_aggregate_telemetry().retained_gpu_backing_created();
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
   retained_backing->height = height;
@@ -458,6 +461,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  global_resource_aggregate_telemetry().retained_gpu_backing_created();
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
   retained_backing->height = height;

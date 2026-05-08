@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "imaging/api/timeline_teardown_trace.h"
+#include "core/resource_aggregate_telemetry.h"
 
 namespace cambang {
 
@@ -111,6 +112,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     fail_frame = frame_payload.frame;
     frame_stream_id = frame_payload.frame.stream_id;
     has_fail_frame = true;
+    global_resource_aggregate_telemetry().lease_created();
   }
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
@@ -159,6 +161,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::QueueFull:
         frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
+        global_resource_aggregate_telemetry().lease_released();
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
@@ -166,6 +169,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::Closed:
         frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
+        global_resource_aggregate_telemetry().lease_released();
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
@@ -173,6 +177,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::AllocFail:
         frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
+        global_resource_aggregate_telemetry().lease_released();
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);
