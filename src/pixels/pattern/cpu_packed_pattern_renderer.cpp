@@ -3,15 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <cstdlib>
 
 namespace cambang {
-namespace {
-bool reuse_rendered_frame_enabled() {
-  const char* v = std::getenv("CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME");
-  return v && v[0] != '\0' && v[0] != '0';
-}
-}
 
 void CpuPackedPatternRenderer::configure(const PatternSpec& spec) {
   // Dynamic-base algos render the base per-frame; no base-cache precompute needed.
@@ -118,9 +111,7 @@ void CpuPackedPatternRenderer::render_into(
         no_meaningful_overlay_update &&
         target_identity_unchanged &&
         rendered_target_has_correct_base;
-    const bool diagnostic_forced_reuse =
-        reuse_rendered_frame_enabled() && has_rendered_frame_ && no_meaningful_overlay_update;
-    const bool can_reuse_frame = normal_safe_reuse || diagnostic_forced_reuse;
+    const bool can_reuse_frame = normal_safe_reuse;
     if (can_reuse_frame) {
       ++debug_stats_.base_copy_skipped_count;
     } else {

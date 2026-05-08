@@ -124,8 +124,28 @@ static bool has_acquisition_session_for_device(const CamBANGStateSnapshot& s, ui
 
 class VisibilitySink final : public ICoreFrameSink {
 public:
+  static bool valid_buffer_shape(const FrameView& frame) {
+    if (frame.width == 0 || frame.height == 0) return false;
+    if (frame.data == nullptr || frame.size_bytes == 0) return false;
+
+    const size_t row_bytes = static_cast<size_t>(frame.width) * 4u;
+    const size_t stride = (frame.stride_bytes == 0) ? row_bytes : static_cast<size_t>(frame.stride_bytes);
+    if (stride < row_bytes) return false;
+
+    const size_t rows_minus_one = static_cast<size_t>(frame.height - 1u);
+    if (rows_minus_one > (std::numeric_limits<size_t>::max() / stride)) return false;
+    const size_t offset = rows_minus_one * stride;
+    if (offset > (std::numeric_limits<size_t>::max() - row_bytes)) return false;
+    const size_t needed = offset + row_bytes;
+    return frame.size_bytes >= needed;
+  }
+
   CoreVisibilityPath on_frame(FrameView frame) override {
     if (frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA) {
+      if (!valid_buffer_shape(frame)) {
+        frame.release_now();
+        return CoreVisibilityPath::REJECTED_INVALID;
+      }
       frame.release_now();
       return (frame.format_fourcc == FOURCC_RGBA)
                  ? CoreVisibilityPath::RGBA_DIRECT

@@ -210,11 +210,6 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
 namespace {
 
-bool skip_gpu_texture_update_enabled() noexcept {
-  const char* value = std::getenv("CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE");
-  return value && value[0] != '\0' && value[0] != '0';
-}
-
 struct GpuUpdateTimingStats final {
   uint64_t upload_copy_calls = 0;
   uint64_t upload_copy_total_ns = 0;
@@ -520,10 +515,7 @@ bool update_stream_live_gpu_backing_rgba8(
     std::memcpy(retained->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
     const auto copy_t1 = std::chrono::steady_clock::now();
     const auto update_t0 = copy_t1;
-    const bool skip_texture_update = skip_gpu_texture_update_enabled();
-    if (!skip_texture_update) {
-      rd->texture_update(texture_rid, 0, retained->upload_bytes);
-    }
+    rd->texture_update(texture_rid, 0, retained->upload_bytes);
     const auto update_t1 = std::chrono::steady_clock::now();
     const uint64_t copy_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
@@ -540,9 +532,6 @@ bool update_stream_live_gpu_backing_rgba8(
         g_gpu_update_timing_stats.texture_update_total_ns,
         g_gpu_update_timing_stats.texture_update_calls,
         update_ns);
-    if (skip_texture_update) {
-      ++g_gpu_update_timing_stats.texture_update_skipped;
-    }
   }
   return true;
 }
