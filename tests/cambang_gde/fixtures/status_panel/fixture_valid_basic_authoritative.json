@@ -89,7 +89,7 @@
         "mode=STREAMING"
       ],
       "stream/1": [
-        "ATTN",
+        "BAD",
         "mode=FLOWING"
       ]
     }
