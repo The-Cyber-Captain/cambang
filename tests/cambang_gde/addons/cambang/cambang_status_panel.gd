@@ -737,7 +737,7 @@ func _coverage_missing_native_detail_line(coverage: Dictionary) -> String:
 	var detail_parts: Array[String] = []
 	var cap := min(missing_details.size(), 6)
 	for i in range(cap):
-		var detail := missing_details[i]
+		var detail: Variant = missing_details[i]
 		if typeof(detail) != TYPE_DICTIONARY:
 			continue
 		var native_id := int((detail as Dictionary).get("native_id", 0))
