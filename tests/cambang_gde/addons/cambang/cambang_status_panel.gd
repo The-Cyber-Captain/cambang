@@ -3599,11 +3599,20 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						current_non_live_device_native_matches_by_instance[owner_instance_id] = []
 					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
 		elif native_type_key == "acquisition_session":
+			var acquisition_session_match_keys := {}
 			var owner_acquisition_session_id := int(native_rec.get("owner_acquisition_session_id", 0))
 			if owner_acquisition_session_id > 0:
-				if not current_acquisition_session_native_matches_by_session_id.has(owner_acquisition_session_id):
-					current_acquisition_session_native_matches_by_session_id[owner_acquisition_session_id] = []
-				current_acquisition_session_native_matches_by_session_id[owner_acquisition_session_id].append(native_rec)
+				acquisition_session_match_keys[owner_acquisition_session_id] = true
+			var acquisition_session_id := int(native_rec.get("acquisition_session_id", 0))
+			if acquisition_session_id > 0:
+				acquisition_session_match_keys[acquisition_session_id] = true
+			for session_key in acquisition_session_match_keys.keys():
+				var session_id := int(session_key)
+				if session_id <= 0:
+					continue
+				if not current_acquisition_session_native_matches_by_session_id.has(session_id):
+					current_acquisition_session_native_matches_by_session_id[session_id] = []
+				current_acquisition_session_native_matches_by_session_id[session_id].append(native_rec)
 		elif native_type_key == "stream":
 			var owner_stream_id := int(native_rec.get("owner_stream_id", 0))
 			if owner_stream_id > 0:
