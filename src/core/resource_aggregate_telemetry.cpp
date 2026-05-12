@@ -66,7 +66,7 @@ void ResourceAggregateTelemetry::retained_gpu_backing_released(const ScopedResou
 }
 
 std::vector<ScopedResourceTelemetryKey> ResourceAggregateTelemetry::snapshot() const noexcept {
-  std::vector<ScopedResourceTelemetry> out;
+  std::vector<ScopedResourceTelemetryKey> out;
   std::lock_guard<std::mutex> lock(mutex_);
   out.reserve(buckets_.size());
   for (const auto& [key, b] : buckets_) {
@@ -90,14 +90,14 @@ std::vector<ScopedResourceTelemetryKey> ResourceAggregateTelemetry::snapshot() c
 }
 
 ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept {
-  ScopedResourceTelemetry key;
+  ScopedResourceTelemetryKey key;
   key.telemetry_scope = stream_id == 0 ? TelemetryScope::UNKNOWN : TelemetryScope::STREAM;
   key.stream_id = stream_id;
   return key;
 }
 
 ScopedResourceTelemetryKey make_unknown_scoped_resource_telemetry() noexcept {
-  ScopedResourceTelemetry key;
+  ScopedResourceTelemetryKey key;
   key.telemetry_scope = TelemetryScope::UNKNOWN;
   return key;
 }
