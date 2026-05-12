@@ -3158,7 +3158,7 @@ func _check_snapshot_runtime_compat(snapshot: Dictionary) -> Dictionary:
 	_check_required_array_field(snapshot, "streams", contract_gaps)
 	_check_required_array_field(snapshot, "native_objects", contract_gaps)
 	_check_required_array_field(snapshot, "detached_root_ids", contract_gaps)
-	_check_required_dictionary_field(snapshot, "resource_aggregate", contract_gaps)
+	_check_required_array_field(snapshot, "scoped_resource_telemetry", contract_gaps)
 
 	return {
 		"ok": contract_gaps.is_empty() and projection_gaps.is_empty(),
@@ -3568,33 +3568,32 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	)
 	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
-	if snapshot.has("resource_aggregate") and typeof(snapshot.get("resource_aggregate")) == TYPE_DICTIONARY:
-		var aggregate := snapshot.get("resource_aggregate", {})
+	var scoped_resource_telemetry := _safe_array(snapshot.get("scoped_resource_telemetry", []), issues, "scoped_resource_telemetry")
+	for i in range(scoped_resource_telemetry.size()):
+		var telemetry := _safe_dict(scoped_resource_telemetry[i], issues, "scoped_resource_telemetry[%d]" % i)
+		if telemetry.is_empty():
+			continue
+		var scope := str(telemetry.get("telemetry_scope", "UNKNOWN"))
+		var row_parent := "%s/native_payload_support" % provider_id
+		if scope == "STREAM":
+			row_parent = "stream/%d/native_payload_support" % int(telemetry.get("stream_id", 0))
+		elif scope == "ACQUISITION_SESSION":
+			row_parent = "acquisition_session/%d/native_payload_support" % int(telemetry.get("acquisition_session_id", 0))
+		elif scope == "DEVICE":
+			row_parent = "device/%d/native_payload_support" % int(telemetry.get("device_instance_id", 0))
+		elif scope == "PROVIDER":
+			row_parent = "provider/%d/native_payload_support" % int(telemetry.get("provider_native_id", 0))
 		panel.entries.append(_entry(
-			"%s/resource_aggregate" % provider_id,
-			provider_id,
-			2,
-			"resource_aggregate",
+			"%s/resource_telemetry" % row_parent,
+			row_parent,
+			_depth_for_parent(row_parent),
+			"Resource Telemetry",
 			true,
 			false,
 			[],
-			_counters_from_record(
-				aggregate,
-				[
-					["fbl_cur", "framebuffer_lease_current", 3],
-					["fbl_total_new", "framebuffer_lease_total_created", 3],
-					["fbl_total_rel", "framebuffer_lease_total_released", 3],
-					["fbl_peak", "framebuffer_lease_peak_current", 3],
-					["gpu_cur", "retained_gpu_backing_current", 3],
-					["gpu_total_new", "retained_gpu_backing_total_created", 3],
-					["gpu_total_rel", "retained_gpu_backing_total_released", 3],
-					["gpu_peak", "retained_gpu_backing_peak_current", 3],
-				],
-				[],
-				"resource_aggregate"
-			),
+			_counters_from_record(telemetry, [["fbl_cur","framebuffer_lease_current",3],["fbl_total_new","framebuffer_lease_total_created",3],["fbl_total_rel","framebuffer_lease_total_released",3],["fbl_peak","framebuffer_lease_peak_current",3],["gpu_cur","retained_gpu_backing_current",3],["gpu_total_new","retained_gpu_backing_total_created",3],["gpu_total_rel","retained_gpu_backing_total_released",3],["gpu_peak","retained_gpu_backing_peak_current",3]], [], "resource_telemetry"),
 			[],
-			"resource_aggregate"
+			"resource_telemetry"
 		))
 
 	var promoted_native_ids := {}

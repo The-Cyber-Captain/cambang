@@ -29,7 +29,7 @@ public:
         const ProviderCallbackIngress* ingress = nullptr;
         const CoreNativeObjectRegistry* native_objects = nullptr;
         const CoreSpecState* spec_state = nullptr;
-        const ResourceAggregateTelemetry* resource_aggregate = nullptr;
+        const ResourceAggregateTelemetry* scoped_resource_telemetry = nullptr;
     };
 
     CamBANGStateSnapshot build(const Inputs& in,

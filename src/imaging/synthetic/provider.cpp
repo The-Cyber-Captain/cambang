@@ -1483,7 +1483,7 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
   release_stream_live_gpu_backing_(s);
   // Create and recreate share the same runtime helper so usage flags remain
   // identical for initial allocation and retry allocation.
-  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(width, height, stride);
+  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(stream_id, width, height, stride);
   if (!s.live_gpu_backing) {
     return false;
   }

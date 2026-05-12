@@ -122,7 +122,7 @@ symmetric choices.
 
 Aggregate telemetry note:
 - Per-frame `FrameBufferLease` native-object create/destroy snapshot rows remain removed.
-- High-frequency lease/backing observability is surfaced via `resource_aggregate` counters,
+- High-frequency lease/backing observability is surfaced via `scoped_resource_telemetry` counters,
   while long-lived identity-bearing native resources remain in `native_objects`.
 
 ### 7.4 Removed temporary knobs

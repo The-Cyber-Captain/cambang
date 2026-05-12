@@ -287,7 +287,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       p.frame.release_user = nullptr;
       const CoreVisibilityPath visibility_path = frame_sink_->on_frame(std::move(frame));
       stats_.frames_released++;
-      global_resource_aggregate_telemetry().lease_released();
+      global_resource_aggregate_telemetry().lease_released(make_stream_scoped_resource_telemetry(sid));
       if (streams_) {
         streams_->on_frame_released(sid);
         if (streams_->on_visibility_path(sid, visibility_path)) {
@@ -299,7 +299,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       // If result retention already accepted this frame, it is not counted as dropped.
       p.frame.release_now();
       stats_.frames_released++;
-      global_resource_aggregate_telemetry().lease_released();
+      global_resource_aggregate_telemetry().lease_released(make_stream_scoped_resource_telemetry(sid));
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
       if (streams_) {
