@@ -464,7 +464,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
-  retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
+  retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
