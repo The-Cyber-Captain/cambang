@@ -3485,7 +3485,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[],
 				"resource_aggregate"
 			),
-			[]
+			[],
+			"resource_aggregate"
 		))
 
 	var promoted_native_ids := {}
@@ -4371,6 +4372,8 @@ func _visual_object_class_for_native_type(native_type_key: String) -> String:
 			return "stream"
 		"rig":
 			return "rig"
+		"gpu_backing", "frame_buffer_lease":
+			return "native_support_resource_detail"
 		_:
 			return "native_object"
 
@@ -5657,7 +5660,7 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 		if _entry_exists(panel.entries, stream_parent_id):
 			var stream_group_id := "%s/native_payload_support" % stream_parent_id
 			if not _entry_exists(panel.entries, stream_group_id):
-				panel.entries.append(_entry(stream_group_id, stream_parent_id, _depth_for_parent(stream_parent_id), "Native Payload Support", true, true, [], [], []))
+				panel.entries.append(_entry(stream_group_id, stream_parent_id, _depth_for_parent(stream_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
 			return
 	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
 	if owner_acquisition_session_id > 0:
@@ -5665,7 +5668,7 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 		if _entry_exists(panel.entries, acquisition_session_parent_id):
 			var acquisition_group_id := "%s/native_payload_support" % acquisition_session_parent_id
 			if not _entry_exists(panel.entries, acquisition_group_id):
-				panel.entries.append(_entry(acquisition_group_id, acquisition_session_parent_id, _depth_for_parent(acquisition_session_parent_id), "Native Payload Support", true, true, [], [], []))
+				panel.entries.append(_entry(acquisition_group_id, acquisition_session_parent_id, _depth_for_parent(acquisition_session_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
 
 
 func _format_fourcc_with_raw(value: int) -> String:
