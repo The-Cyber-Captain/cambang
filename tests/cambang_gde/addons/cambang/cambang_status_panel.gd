@@ -5622,9 +5622,10 @@ func _is_anomaly_info_line(line: String) -> bool:
 		or line.begins_with("Projection invariant:")
 		or line.begins_with("Projection gap:")
 		or line.begins_with("Runtime payload")
+		or line.begins_with("unsupported:")
+		or line.begins_with("malformed:")
+		or line.begins_with("error:")
 		or line.find("contradiction") >= 0
-		or line.find("unsupported") >= 0
-		or line.find("malformed") >= 0
 	)
 
 
