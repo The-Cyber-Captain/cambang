@@ -704,6 +704,8 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 			continue
 		if line.begins_with("Projection gap: native coverage"):
 			continue
+		if line.begins_with("Projection gap: missing native ids:"):
+			continue
 		next_info_lines.append(line)
 
 	var state := str(coverage.get("state", "UNKNOWN"))
@@ -722,7 +724,32 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 				missing_native,
 			]
 		)
+		var missing_details := _coverage_missing_native_detail_line(coverage)
+		if not missing_details.is_empty():
+			next_info_lines.append(missing_details)
 	return next_info_lines
+
+
+func _coverage_missing_native_detail_line(coverage: Dictionary) -> String:
+	var missing_details: Array = coverage.get("missing_details", [])
+	if typeof(missing_details) != TYPE_ARRAY or missing_details.is_empty():
+		return ""
+	var detail_parts: Array[String] = []
+	var cap := min(missing_details.size(), 6)
+	for i in range(cap):
+		var detail: Variant = missing_details[i]
+		if typeof(detail) != TYPE_DICTIONARY:
+			continue
+		var native_id := int((detail as Dictionary).get("native_id", 0))
+		var native_type := str((detail as Dictionary).get("type", "unknown"))
+		var phase := str((detail as Dictionary).get("phase", "UNKNOWN")).to_upper()
+		detail_parts.append("%d:%s:%s" % [native_id, native_type, phase])
+	if detail_parts.is_empty():
+		return ""
+	var suffix := ""
+	if missing_details.size() > cap:
+		suffix = ", +%d more" % (missing_details.size() - cap)
+	return "Projection gap: missing native ids: %s%s" % [", ".join(detail_parts), suffix]
 
 
 func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
@@ -933,13 +960,78 @@ func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 		var next_health_label := _derive_stream_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		var next_info_lines := _stream_info_lines_with_bad_reason(entry.info_lines, health_facts, next_health_label)
 		_observe_stream_health_state(entry.id, health_facts)
-		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+		if _badge_labels(next_badges) == _badge_labels(entry.badges) and next_info_lines == entry.info_lines:
 			continue
 		entry.badges = next_badges
+		entry.info_lines = next_info_lines
 		_apply_detail_policy_to_entry(entry)
 		changed = true
 	return changed
+
+
+func _stream_info_lines_with_bad_reason(existing_info_lines: Array[String], health_facts: Dictionary, health_label: String) -> Array[String]:
+	var next_info_lines: Array[String] = []
+	for line in existing_info_lines:
+		if line.begins_with("Health reason:"):
+			continue
+		next_info_lines.append(line)
+	if health_label != "BAD":
+		return next_info_lines
+	for reason in _stream_bad_reason_lines(health_facts):
+		next_info_lines.append(reason)
+	return next_info_lines
+
+
+func _stream_bad_reason_lines(health_facts: Dictionary) -> Array[String]:
+	var reasons: Array[String] = []
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		var contract_reason := str(health_facts.get("contract_or_projection_failure_reason", "")).strip_edges()
+		if contract_reason.is_empty():
+			reasons.append("Health reason: contract/projection failure.")
+		else:
+			reasons.append("Health reason: contract/projection failure: %s" % contract_reason)
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		reasons.append("Health reason: lifecycle contradiction.")
+	if str(health_facts.get("mode", "")) == "ERROR":
+		reasons.append("Health reason: stream mode ERROR.")
+	_append_stream_growth_reason_if_exceeded(
+		reasons,
+		"drop",
+		float(health_facts.get("drop_growth_rate_per_sec", 0.0)),
+		stream_drop_growth_rate_bad_threshold_per_sec
+	)
+	_append_stream_growth_reason_if_exceeded(
+		reasons,
+		"rej_fmt",
+		float(health_facts.get("rej_fmt_growth_rate_per_sec", 0.0)),
+		stream_rej_fmt_growth_rate_bad_threshold_per_sec
+	)
+	_append_stream_growth_reason_if_exceeded(
+		reasons,
+		"rej_inv",
+		float(health_facts.get("rej_inv_growth_rate_per_sec", 0.0)),
+		stream_rej_inv_growth_rate_bad_threshold_per_sec
+	)
+	return reasons
+
+
+func _append_stream_growth_reason_if_exceeded(
+		reasons: Array[String],
+		counter_name: String,
+		growth_rate: float,
+		threshold_setting: float
+	) -> void:
+	var threshold := max(threshold_setting, 0.0)
+	if is_zero_approx(threshold):
+		return
+	if growth_rate <= threshold:
+		return
+	reasons.append(
+		"Health reason: %s growth %.3f/s exceeds threshold %.3f/s."
+		% [counter_name, growth_rate, threshold]
+	)
 
 
 func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
@@ -1016,6 +1108,7 @@ func _derive_stream_health_facts(
 	var stop_reason := _stream_stop_reason_label(stream_entry)
 	return {
 		"has_contract_or_projection_failure": _stream_has_contract_or_projection_failure(model, stream_entry),
+		"contract_or_projection_failure_reason": _stream_contract_or_projection_failure_reason(model, stream_entry),
 		"has_lifecycle_contradiction": _stream_has_lifecycle_contradiction(stream_entry),
 		"has_insufficient_local_truth": _stream_has_insufficient_local_truth(stream_entry, mode),
 		"is_preserved": _stream_is_preserved(stream_entry),
@@ -1743,6 +1836,21 @@ func _stream_has_contract_or_projection_failure(model: PanelModel, stream_entry:
 		if _is_anomaly_info_line(line):
 			return true
 	return false
+
+
+func _stream_contract_or_projection_failure_reason(model: PanelModel, stream_entry: StatusEntryModel) -> String:
+	if _stream_has_badge_label(stream_entry, "contract-gap"):
+		return "contract-gap badge."
+	if _stream_has_badge_label(stream_entry, "CONTRACT GAP"):
+		return "CONTRACT GAP badge."
+	if _stream_has_badge_label(stream_entry, "snapshot-incompatible"):
+		return "snapshot-incompatible badge."
+	if _entry_exists(model.entries, "%s/contract_gaps" % stream_entry.id):
+		return "contract_gaps child row."
+	for line in stream_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return line
+	return ""
 
 
 func _device_has_counter_inconsistency(device_entry: StatusEntryModel, current_errors: int) -> bool:
@@ -3485,7 +3593,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				[],
 				"resource_aggregate"
 			),
-			[]
+			[],
+			"resource_aggregate"
 		))
 
 	var promoted_native_ids := {}
@@ -3510,11 +3619,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						current_non_live_device_native_matches_by_instance[owner_instance_id] = []
 					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
 		elif native_type_key == "acquisition_session":
+			var acquisition_session_match_keys := {}
+			var native_id := int(native_rec.get("native_id", 0))
+			if native_id > 0:
+				acquisition_session_match_keys[native_id] = true
 			var owner_acquisition_session_id := int(native_rec.get("owner_acquisition_session_id", 0))
 			if owner_acquisition_session_id > 0:
-				if not current_acquisition_session_native_matches_by_session_id.has(owner_acquisition_session_id):
-					current_acquisition_session_native_matches_by_session_id[owner_acquisition_session_id] = []
-				current_acquisition_session_native_matches_by_session_id[owner_acquisition_session_id].append(native_rec)
+				acquisition_session_match_keys[owner_acquisition_session_id] = true
+			var acquisition_session_id := int(native_rec.get("acquisition_session_id", 0))
+			if acquisition_session_id > 0:
+				acquisition_session_match_keys[acquisition_session_id] = true
+			for session_key in acquisition_session_match_keys.keys():
+				var session_id := int(session_key)
+				if session_id <= 0:
+					continue
+				if not current_acquisition_session_native_matches_by_session_id.has(session_id):
+					current_acquisition_session_native_matches_by_session_id[session_id] = []
+				current_acquisition_session_native_matches_by_session_id[session_id].append(native_rec)
 		elif native_type_key == "stream":
 			var owner_stream_id := int(native_rec.get("owner_stream_id", 0))
 			if owner_stream_id > 0:
@@ -4100,7 +4221,8 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 	var missing_prior := 0
 	var missing_destroyed := 0
 	var missing_non_destroyed := 0
-	for native_id in snapshot_native_records.keys():
+	var missing_details: Array[Dictionary] = []
+	for native_id in _sorted_int_keys(snapshot_native_records.keys()):
 		if observed_native_id_set.has(native_id):
 			observed_snapshot_native_count += 1
 			continue
@@ -4117,6 +4239,11 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 			missing_destroyed += 1
 		else:
 			missing_non_destroyed += 1
+		missing_details.append({
+			"native_id": int(native_id),
+			"type": _native_object_type_key(rec),
+			"phase": _phase_display_label(rec.get("phase", -1)),
+		})
 
 	var missing_count := snapshot_native_records.size() - observed_snapshot_native_count
 	var coverage_state := "OK"
@@ -4135,6 +4262,7 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 		"missing_prior": missing_prior,
 		"missing_destroyed": missing_destroyed,
 		"missing_non_destroyed": missing_non_destroyed,
+		"missing_details": missing_details,
 	}
 
 
@@ -4371,6 +4499,8 @@ func _visual_object_class_for_native_type(native_type_key: String) -> String:
 			return "stream"
 		"rig":
 			return "rig"
+		"gpu_backing", "frame_buffer_lease":
+			return "native_support_resource_detail"
 		_:
 			return "native_object"
 
@@ -5492,9 +5622,10 @@ func _is_anomaly_info_line(line: String) -> bool:
 		or line.begins_with("Projection invariant:")
 		or line.begins_with("Projection gap:")
 		or line.begins_with("Runtime payload")
+		or line.begins_with("unsupported:")
+		or line.begins_with("malformed:")
+		or line.begins_with("error:")
 		or line.find("contradiction") >= 0
-		or line.find("unsupported") >= 0
-		or line.find("malformed") >= 0
 	)
 
 
@@ -5657,7 +5788,7 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 		if _entry_exists(panel.entries, stream_parent_id):
 			var stream_group_id := "%s/native_payload_support" % stream_parent_id
 			if not _entry_exists(panel.entries, stream_group_id):
-				panel.entries.append(_entry(stream_group_id, stream_parent_id, _depth_for_parent(stream_parent_id), "Native Payload Support", true, true, [], [], []))
+				panel.entries.append(_entry(stream_group_id, stream_parent_id, _depth_for_parent(stream_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
 			return
 	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
 	if owner_acquisition_session_id > 0:
@@ -5665,7 +5796,7 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 		if _entry_exists(panel.entries, acquisition_session_parent_id):
 			var acquisition_group_id := "%s/native_payload_support" % acquisition_session_parent_id
 			if not _entry_exists(panel.entries, acquisition_group_id):
-				panel.entries.append(_entry(acquisition_group_id, acquisition_session_parent_id, _depth_for_parent(acquisition_session_parent_id), "Native Payload Support", true, true, [], [], []))
+				panel.entries.append(_entry(acquisition_group_id, acquisition_session_parent_id, _depth_for_parent(acquisition_session_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
 
 
 func _format_fourcc_with_raw(value: int) -> String:
