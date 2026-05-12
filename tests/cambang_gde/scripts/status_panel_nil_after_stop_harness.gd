@@ -198,6 +198,7 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 		"topology_version": topology_version,
 		"timestamp_ns": 40096504700,
 		"imaging_spec_version": 1,
+		"resource_aggregate": _zero_resource_aggregate(),
 		"rigs": [],
 		"devices": [
 			{
@@ -282,6 +283,19 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 			}
 		],
 		"detached_root_ids": []
+	}
+
+
+func _zero_resource_aggregate() -> Dictionary:
+	return {
+		"framebuffer_lease_current": 0,
+		"framebuffer_lease_total_created": 0,
+		"framebuffer_lease_total_released": 0,
+		"framebuffer_lease_peak_current": 0,
+		"retained_gpu_backing_current": 0,
+		"retained_gpu_backing_total_created": 0,
+		"retained_gpu_backing_total_released": 0,
+		"retained_gpu_backing_peak_current": 0
 	}
 
 

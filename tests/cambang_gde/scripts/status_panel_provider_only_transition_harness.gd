@@ -185,6 +185,7 @@ func _provider_pending_snapshot() -> Dictionary:
 		"topology_version": 0,
 		"timestamp_ns": 100,
 		"imaging_spec_version": 1,
+		"resource_aggregate": _zero_resource_aggregate(),
 		"rigs": [],
 		"devices": [],
 		"acquisition_sessions": [],
@@ -202,6 +203,7 @@ func _provider_only_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"topology_version": 0,
 		"timestamp_ns": 200,
 		"imaging_spec_version": 1,
+		"resource_aggregate": _zero_resource_aggregate(),
 		"rigs": [],
 		"devices": [],
 		"acquisition_sessions": [],
@@ -227,6 +229,7 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"topology_version": 2,
 		"timestamp_ns": 300,
 		"imaging_spec_version": 1,
+		"resource_aggregate": _zero_resource_aggregate(),
 		"rigs": [],
 		"devices": [
 			{
@@ -311,6 +314,19 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 			}
 		],
 		"detached_root_ids": []
+	}
+
+
+func _zero_resource_aggregate() -> Dictionary:
+	return {
+		"framebuffer_lease_current": 0,
+		"framebuffer_lease_total_created": 0,
+		"framebuffer_lease_total_released": 0,
+		"framebuffer_lease_peak_current": 0,
+		"retained_gpu_backing_current": 0,
+		"retained_gpu_backing_total_created": 0,
+		"retained_gpu_backing_total_released": 0,
+		"retained_gpu_backing_peak_current": 0
 	}
 
 
