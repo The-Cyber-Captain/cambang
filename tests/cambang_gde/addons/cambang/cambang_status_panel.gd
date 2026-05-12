@@ -5437,6 +5437,21 @@ func _format_info_value(raw_value: Variant, formatter: String) -> String:
 		"fourcc":
 			return _format_fourcc_with_raw(int(raw_value))
 		"visibility_path":
+			if typeof(raw_value) == TYPE_STRING or typeof(raw_value) == TYPE_STRING_NAME:
+				var token := str(raw_value).strip_edges().to_upper()
+				match token:
+					"NONE":
+						return _visibility_path_display(0)
+					"RGBA_DIRECT":
+						return _visibility_path_display(1)
+					"BGRA_SWIZZLED":
+						return _visibility_path_display(2)
+					"REJECTED_UNSUPPORTED":
+						return _visibility_path_display(3)
+					"REJECTED_INVALID":
+						return _visibility_path_display(4)
+					_:
+						return token
 			return _visibility_path_display(int(raw_value))
 		_:
 			return str(int(raw_value))
