@@ -987,7 +987,11 @@ func _stream_info_lines_with_bad_reason(existing_info_lines: Array[String], heal
 func _stream_bad_reason_lines(health_facts: Dictionary) -> Array[String]:
 	var reasons: Array[String] = []
 	if bool(health_facts.get("has_contract_or_projection_failure", false)):
-		reasons.append("Health reason: contract/projection failure.")
+		var contract_reason := str(health_facts.get("contract_or_projection_failure_reason", "")).strip_edges()
+		if contract_reason.is_empty():
+			reasons.append("Health reason: contract/projection failure.")
+		else:
+			reasons.append("Health reason: contract/projection failure: %s" % contract_reason)
 	if bool(health_facts.get("has_lifecycle_contradiction", false)):
 		reasons.append("Health reason: lifecycle contradiction.")
 	if str(health_facts.get("mode", "")) == "ERROR":
@@ -1104,6 +1108,7 @@ func _derive_stream_health_facts(
 	var stop_reason := _stream_stop_reason_label(stream_entry)
 	return {
 		"has_contract_or_projection_failure": _stream_has_contract_or_projection_failure(model, stream_entry),
+		"contract_or_projection_failure_reason": _stream_contract_or_projection_failure_reason(model, stream_entry),
 		"has_lifecycle_contradiction": _stream_has_lifecycle_contradiction(stream_entry),
 		"has_insufficient_local_truth": _stream_has_insufficient_local_truth(stream_entry, mode),
 		"is_preserved": _stream_is_preserved(stream_entry),
@@ -1831,6 +1836,21 @@ func _stream_has_contract_or_projection_failure(model: PanelModel, stream_entry:
 		if _is_anomaly_info_line(line):
 			return true
 	return false
+
+
+func _stream_contract_or_projection_failure_reason(model: PanelModel, stream_entry: StatusEntryModel) -> String:
+	if _stream_has_badge_label(stream_entry, "contract-gap"):
+		return "contract-gap badge."
+	if _stream_has_badge_label(stream_entry, "CONTRACT GAP"):
+		return "CONTRACT GAP badge."
+	if _stream_has_badge_label(stream_entry, "snapshot-incompatible"):
+		return "snapshot-incompatible badge."
+	if _entry_exists(model.entries, "%s/contract_gaps" % stream_entry.id):
+		return "contract_gaps child row."
+	for line in stream_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return line
+	return ""
 
 
 func _device_has_counter_inconsistency(device_entry: StatusEntryModel, current_errors: int) -> bool:
