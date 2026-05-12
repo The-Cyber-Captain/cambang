@@ -17,7 +17,7 @@ enum class TelemetryScope : uint32_t {
   UNKNOWN = 4,
 };
 
-struct ScopedResourceTelemetry final {
+struct ScopedResourceTelemetryKey final {
   TelemetryScope telemetry_scope = TelemetryScope::UNKNOWN;
   uint64_t provider_native_id = 0;
   uint64_t device_instance_id = 0;
@@ -36,11 +36,11 @@ struct ScopedResourceTelemetry final {
 
 class ResourceAggregateTelemetry final {
 public:
-  void lease_created(const ScopedResourceTelemetry& key) noexcept;
-  void lease_released(const ScopedResourceTelemetry& key) noexcept;
-  void retained_gpu_backing_created(const ScopedResourceTelemetry& key) noexcept;
-  void retained_gpu_backing_released(const ScopedResourceTelemetry& key) noexcept;
-  std::vector<ScopedResourceTelemetry> snapshot() const noexcept;
+  void lease_created(const ScopedResourceTelemetryKey& key) noexcept;
+  void lease_released(const ScopedResourceTelemetryKey& key) noexcept;
+  void retained_gpu_backing_created(const ScopedResourceTelemetryKey& key) noexcept;
+  void retained_gpu_backing_released(const ScopedResourceTelemetryKey& key) noexcept;
+  std::vector<ScopedResourceTelemetryKey> snapshot() const noexcept;
 
 private:
   struct Key final {
@@ -64,7 +64,7 @@ private:
     std::atomic<uint64_t> retained_gpu_backing_peak_current{0};
   };
 
-  static Key make_key(const ScopedResourceTelemetry& key) noexcept;
+  static Key make_key(const ScopedResourceTelemetryKey& key) noexcept;
   static void update_peak(std::atomic<uint64_t>& peak, uint64_t current) noexcept;
   static void decrement_if_positive(std::atomic<uint64_t>& current) noexcept;
   Bucket& get_or_create_bucket(const Key& key) noexcept;
@@ -73,8 +73,8 @@ private:
   std::map<Key, Bucket> buckets_;
 };
 
-ScopedResourceTelemetry make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept;
-ScopedResourceTelemetry make_unknown_scoped_resource_telemetry() noexcept;
+ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept;
+ScopedResourceTelemetryKey make_unknown_scoped_resource_telemetry() noexcept;
 ResourceAggregateTelemetry& global_resource_aggregate_telemetry() noexcept;
 
 } // namespace cambang

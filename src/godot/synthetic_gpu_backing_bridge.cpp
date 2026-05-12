@@ -43,7 +43,7 @@ struct RetainedSyntheticGpuBacking final {
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
   bool released = false;
-  ScopedResourceTelemetry telemetry_key{};
+  ScopedResourceTelemetryKey telemetry_key{};
 
   void release_now() {
     godot::RID rid;

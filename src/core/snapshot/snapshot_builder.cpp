@@ -307,7 +307,7 @@ if (in.scoped_resource_telemetry) {
     const auto entries = in.scoped_resource_telemetry->snapshot();
     snap.scoped_resource_telemetry.reserve(entries.size());
     for (const auto& entry : entries) {
-        cambang::ScopedResourceTelemetry out;
+        ::ScopedResourceTelemetry out;
         out.telemetry_scope = static_cast<uint32_t>(entry.telemetry_scope);
         out.provider_native_id = entry.provider_native_id;
         out.device_instance_id = entry.device_instance_id;

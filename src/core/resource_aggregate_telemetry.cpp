@@ -18,7 +18,7 @@ bool ResourceAggregateTelemetry::Key::operator<(const Key& other) const noexcept
   return stream_id < other.stream_id;
 }
 
-ResourceAggregateTelemetry::Key ResourceAggregateTelemetry::make_key(const ScopedResourceTelemetry& key) noexcept {
+ResourceAggregateTelemetry::Key ResourceAggregateTelemetry::make_key(const ScopedResourceTelemetryKey& key) noexcept {
   return Key{key.telemetry_scope, key.provider_native_id, key.device_instance_id, key.acquisition_session_id, key.stream_id};
 }
 
@@ -39,38 +39,38 @@ ResourceAggregateTelemetry::Bucket& ResourceAggregateTelemetry::get_or_create_bu
   return buckets_[key];
 }
 
-void ResourceAggregateTelemetry::lease_created(const ScopedResourceTelemetry& key) noexcept {
+void ResourceAggregateTelemetry::lease_created(const ScopedResourceTelemetryKey& key) noexcept {
   Bucket& bucket = get_or_create_bucket(make_key(key));
   const uint64_t current = bucket.framebuffer_lease_current.fetch_add(1, std::memory_order_relaxed) + 1;
   bucket.framebuffer_lease_total_created.fetch_add(1, std::memory_order_relaxed);
   update_peak(bucket.framebuffer_lease_peak_current, current);
 }
 
-void ResourceAggregateTelemetry::lease_released(const ScopedResourceTelemetry& key) noexcept {
+void ResourceAggregateTelemetry::lease_released(const ScopedResourceTelemetryKey& key) noexcept {
   Bucket& bucket = get_or_create_bucket(make_key(key));
   decrement_if_positive(bucket.framebuffer_lease_current);
   bucket.framebuffer_lease_total_released.fetch_add(1, std::memory_order_relaxed);
 }
 
-void ResourceAggregateTelemetry::retained_gpu_backing_created(const ScopedResourceTelemetry& key) noexcept {
+void ResourceAggregateTelemetry::retained_gpu_backing_created(const ScopedResourceTelemetryKey& key) noexcept {
   Bucket& bucket = get_or_create_bucket(make_key(key));
   const uint64_t current = bucket.retained_gpu_backing_current.fetch_add(1, std::memory_order_relaxed) + 1;
   bucket.retained_gpu_backing_total_created.fetch_add(1, std::memory_order_relaxed);
   update_peak(bucket.retained_gpu_backing_peak_current, current);
 }
 
-void ResourceAggregateTelemetry::retained_gpu_backing_released(const ScopedResourceTelemetry& key) noexcept {
+void ResourceAggregateTelemetry::retained_gpu_backing_released(const ScopedResourceTelemetryKey& key) noexcept {
   Bucket& bucket = get_or_create_bucket(make_key(key));
   decrement_if_positive(bucket.retained_gpu_backing_current);
   bucket.retained_gpu_backing_total_released.fetch_add(1, std::memory_order_relaxed);
 }
 
-std::vector<ScopedResourceTelemetry> ResourceAggregateTelemetry::snapshot() const noexcept {
+std::vector<ScopedResourceTelemetryKey> ResourceAggregateTelemetry::snapshot() const noexcept {
   std::vector<ScopedResourceTelemetry> out;
   std::lock_guard<std::mutex> lock(mutex_);
   out.reserve(buckets_.size());
   for (const auto& [key, b] : buckets_) {
-    ScopedResourceTelemetry s;
+    ScopedResourceTelemetryKey s;
     s.telemetry_scope = key.telemetry_scope;
     s.provider_native_id = key.provider_native_id;
     s.device_instance_id = key.device_instance_id;
@@ -89,14 +89,14 @@ std::vector<ScopedResourceTelemetry> ResourceAggregateTelemetry::snapshot() cons
   return out;
 }
 
-ScopedResourceTelemetry make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept {
+ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept {
   ScopedResourceTelemetry key;
   key.telemetry_scope = stream_id == 0 ? TelemetryScope::UNKNOWN : TelemetryScope::STREAM;
   key.stream_id = stream_id;
   return key;
 }
 
-ScopedResourceTelemetry make_unknown_scoped_resource_telemetry() noexcept {
+ScopedResourceTelemetryKey make_unknown_scoped_resource_telemetry() noexcept {
   ScopedResourceTelemetry key;
   key.telemetry_scope = TelemetryScope::UNKNOWN;
   return key;
