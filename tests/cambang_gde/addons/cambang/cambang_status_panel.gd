@@ -3600,6 +3600,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
 		elif native_type_key == "acquisition_session":
 			var acquisition_session_match_keys := {}
+			var native_id := int(native_rec.get("native_id", 0))
+			if native_id > 0:
+				acquisition_session_match_keys[native_id] = true
 			var owner_acquisition_session_id := int(native_rec.get("owner_acquisition_session_id", 0))
 			if owner_acquisition_session_id > 0:
 				acquisition_session_match_keys[owner_acquisition_session_id] = true
