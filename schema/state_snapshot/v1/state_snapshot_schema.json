@@ -552,7 +552,9 @@
         "provider",
         "device",
         "acquisition_session",
-        "stream"
+        "stream",
+        "frame_buffer_lease",
+        "gpu_backing"
       ],
       "description": "Canonical native object type tokens."
     },
