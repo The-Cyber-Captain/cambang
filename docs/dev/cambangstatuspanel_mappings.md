@@ -49,6 +49,15 @@ classification when a descendant survives beyond its controlling AcquisitionSess
 - Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
   are not coupled to Device-vs-AcquisitionSession demotion policy.
 
+## Hierarchy expansion vs detail visibility
+
+- Row disclosure expand/collapse controls hierarchy only: it determines whether
+  descendant rows are visible.
+- Row detail visibility is independently toggled and controls only detail
+  counters/info lines on the current row.
+- Detail hints/buttons must not use expansion wording; expansion is reserved for
+  hierarchy semantics.
+
 ---
 
 ## Lifecycle badge phase parsing

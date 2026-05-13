@@ -29,6 +29,7 @@ class StatusEntryModel extends RefCounted:
 	var is_in_orphan_native_branch: bool = false
 	var is_below_line: bool = false
 	var expanded: bool = false
+	var detail_visible: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
 	var counters: Array[CounterModel] = []
@@ -127,6 +128,7 @@ var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _expanded_by_row_id: Dictionary = {}
+var _detail_visible_by_row_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _row_nodes_by_id: Dictionary = {}
 var _server: Object = null
@@ -4784,6 +4786,7 @@ func _reconcile_row_nodes(
 		if entry_model == null:
 			continue
 		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
+		entry_model.detail_visible = _resolved_entry_detail_visible_state(entry_model)
 		var row_visible := _is_entry_visible(entry_model)
 		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
@@ -4796,6 +4799,8 @@ func _reconcile_row_nodes(
 			created = true
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+			if entry.has_signal("detail_toggled") and not entry.detail_toggled.is_connected(_on_entry_detail_toggled):
+				entry.detail_toggled.connect(_on_entry_detail_toggled)
 
 		var bound_row_id: String = str(entry.get_entry_id())
 		if bound_row_id != "" and bound_row_id != row_id:
@@ -4817,6 +4822,8 @@ func _reconcile_row_nodes(
 			created = true
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+			if entry.has_signal("detail_toggled") and not entry.detail_toggled.is_connected(_on_entry_detail_toggled):
+				entry.detail_toggled.connect(_on_entry_detail_toggled)
 
 		if entry.get_parent() != _status_rows:
 			_status_rows.add_child(entry)
@@ -4889,6 +4896,15 @@ func _on_entry_disclosure_toggled(entry_id: String, _expanded: bool) -> void:
 		_render_panel_model(_build_fake_panel_model())
 
 
+func _on_entry_detail_toggled(entry_id: String, _detail_visible: bool) -> void:
+	var next_detail_visible := not _current_detail_visible_state_for_row(entry_id)
+	_detail_visible_by_row_id[entry_id] = next_detail_visible
+	if _last_panel_model != null:
+		_render_panel_model(_last_panel_model)
+	else:
+		_render_panel_model(_build_fake_panel_model())
+
+
 func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
 	if entry_model == null:
 		return false
@@ -4899,8 +4915,22 @@ func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
 	return entry_model.expanded
 
 
+func _resolved_entry_detail_visible_state(entry_model: StatusEntryModel) -> bool:
+	if entry_model == null:
+		return false
+	if _detail_visible_by_row_id.has(entry_model.id):
+		return bool(_detail_visible_by_row_id[entry_model.id])
+	return false
+
+
 func _current_expanded_state_for_row(entry_id: String) -> bool:
 	return _resolved_expanded_state_for_row_id(entry_id)
+
+
+func _current_detail_visible_state_for_row(entry_id: String) -> bool:
+	if _detail_visible_by_row_id.has(entry_id):
+		return bool(_detail_visible_by_row_id[entry_id])
+	return false
 
 
 func _resolved_expanded_state_for_row_id(entry_id: String) -> bool:

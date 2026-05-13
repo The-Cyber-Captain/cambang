@@ -349,6 +349,10 @@ This registry is presentation logic, not snapshot schema truth, and should remai
 
 ## 8) Schema → UI surface audit (current renderer/scene projection, read-only)
 
+Expansion semantics note:
+- hierarchy expand/collapse controls descendant row visibility only.
+- detail show/hide controls detail counters/info lines on the current row only.
+
 Legend:
 - Surfaced?: `yes` / `traceable` / `no`
 - Surface Type: `badge` / `counter` / `info line` / `structural` / `derived` / `missing`
