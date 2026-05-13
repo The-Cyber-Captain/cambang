@@ -277,6 +277,7 @@ struct FrameView {
   // Correlation
   uint64_t device_instance_id = 0;
   uint64_t stream_id = 0;    // 0 if this frame belongs only to a still capture
+  uint64_t acquisition_session_id = 0; // 0 if unavailable/unknown
   uint64_t capture_id = 0;   // 0 if this is a repeating stream frame
 
   // Image metadata

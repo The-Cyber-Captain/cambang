@@ -1056,6 +1056,7 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   FrameView fv{};
   fv.device_instance_id = req.device_instance_id;
   fv.stream_id = 0;
+  fv.acquisition_session_id = dev_it->second.acquisition_session_native_id;
   fv.capture_id = req.capture_id;
   fv.width = req.width;
   fv.height = req.height;
@@ -1727,6 +1728,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
   fv.stream_id = s.req.stream_id;
+  fv.acquisition_session_id = s.acquisition_session_native_id;
   fv.capture_id = 0;
   fv.width = w;
   fv.height = h;

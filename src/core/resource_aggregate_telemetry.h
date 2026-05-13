@@ -74,7 +74,11 @@ private:
 };
 
 ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept;
+ScopedResourceTelemetryKey make_acquisition_session_scoped_resource_telemetry(uint64_t acquisition_session_id) noexcept;
 ScopedResourceTelemetryKey make_unknown_scoped_resource_telemetry() noexcept;
+ScopedResourceTelemetryKey make_framebuffer_lease_scoped_resource_telemetry_key(
+    uint64_t stream_id,
+    uint64_t acquisition_session_id) noexcept;
 ResourceAggregateTelemetry& global_resource_aggregate_telemetry() noexcept;
 
 } // namespace cambang

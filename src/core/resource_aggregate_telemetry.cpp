@@ -96,6 +96,25 @@ ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream
   return key;
 }
 
+ScopedResourceTelemetryKey make_acquisition_session_scoped_resource_telemetry(uint64_t acquisition_session_id) noexcept {
+  ScopedResourceTelemetryKey key;
+  key.telemetry_scope = acquisition_session_id == 0 ? TelemetryScope::UNKNOWN : TelemetryScope::ACQUISITION_SESSION;
+  key.acquisition_session_id = acquisition_session_id;
+  return key;
+}
+
+ScopedResourceTelemetryKey make_framebuffer_lease_scoped_resource_telemetry_key(
+    uint64_t stream_id,
+    uint64_t acquisition_session_id) noexcept {
+  if (stream_id != 0) {
+    return make_stream_scoped_resource_telemetry(stream_id);
+  }
+  if (acquisition_session_id != 0) {
+    return make_acquisition_session_scoped_resource_telemetry(acquisition_session_id);
+  }
+  return make_unknown_scoped_resource_telemetry();
+}
+
 ScopedResourceTelemetryKey make_unknown_scoped_resource_telemetry() noexcept {
   ScopedResourceTelemetryKey key;
   key.telemetry_scope = TelemetryScope::UNKNOWN;
