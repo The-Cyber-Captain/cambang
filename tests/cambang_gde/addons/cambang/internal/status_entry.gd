@@ -376,7 +376,7 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 	var detail_hint := _ensure_counter_detail_hint()
 	if not expanded and hidden_detail_count > 0:
 		detail_hint.visible = true
-		detail_hint.text = "EXPAND +%d" % hidden_detail_count
+		detail_hint.text = "DETAIL +%d" % hidden_detail_count
 		detail_hint.label_settings = _state_label_settings()
 	else:
 		detail_hint.visible = false

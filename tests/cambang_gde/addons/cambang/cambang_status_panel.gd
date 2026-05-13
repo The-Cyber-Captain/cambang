@@ -3697,10 +3697,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["rebuild_count", "rebuild_count", 2],
 						["warm_hold_ms", "warm_hold_ms", 3],
 						["warm_remaining_ms", "warm_remaining_ms", 3],
-						["still_w", "capture_width", 4],
-						["still_h", "capture_height", 4],
-						["still_fmt", "capture_format", 4],
-						["still_prof", "capture_profile_version", 2],
+						["capture_w", "capture_width", 4],
+						["capture_h", "capture_height", 4],
+						["capture_fmt", "capture_format", 4],
+						["capture_prof", "capture_profile_version", 2],
 					],
 					[],
 					"device"
@@ -4005,8 +4005,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_counters_from_record(
 					rec,
 					[
-						["still_w", "capture_width", 4],
-						["still_h", "capture_height", 4],
+						["capture_w", "capture_width", 4],
+						["capture_h", "capture_height", 4],
 					],
 					[
 						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
@@ -4589,8 +4589,10 @@ func _ensure_expandability(panel: PanelModel) -> void:
 	for e in panel.entries:
 		var child_count := int(child_counts.get(e.id, 0))
 		e.can_expand = child_count > 0
-		if child_count > 0 and _should_default_expand_entry(e):
-			e.expanded = true
+		if child_count > 0:
+			e.expanded = _should_default_expand_entry(e)
+		else:
+			e.expanded = false
 
 
 func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
@@ -4867,7 +4869,7 @@ func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
 
 	var current_parent := entry_model.parent_id
 	while current_parent != "":
-		if not bool(_expanded_by_row_id.get(current_parent, true)):
+		if not _resolved_expanded_state_for_row_id(current_parent):
 			return false
 		current_parent = _find_parent_id(current_parent)
 	return true
@@ -4898,6 +4900,10 @@ func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
 
 
 func _current_expanded_state_for_row(entry_id: String) -> bool:
+	return _resolved_expanded_state_for_row_id(entry_id)
+
+
+func _resolved_expanded_state_for_row_id(entry_id: String) -> bool:
 	if _expanded_by_row_id.has(entry_id):
 		return bool(_expanded_by_row_id[entry_id])
 	if _last_panel_model == null:
@@ -5130,10 +5136,10 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"rebuild_count": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"warm_hold_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"warm_remaining_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
-				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"stream":
 			return {
@@ -5168,8 +5174,8 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 		"rig":
 			return {
 				"members": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
-				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"native_object":
 			return {
@@ -5376,7 +5382,7 @@ func _counter_preference_table() -> Dictionary:
 			"derived_aggregate": ["rigs", "devices", "acquisition_sessions", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
 		},
 		"device": {
-			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt"],
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof"],
 		},
 		"stream": {
 			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
@@ -5389,7 +5395,7 @@ func _counter_preference_table() -> Dictionary:
 			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
 		},
 		"rig": {
-			"configuration": ["still_w", "still_h"],
+			"configuration": ["capture_w", "capture_h"],
 			"derived_aggregate": ["members"],
 		},
 		"native_object": {
@@ -5511,10 +5517,10 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 	return "NONE"
 
 
-func _build_still_profile_info_line(rec: Dictionary) -> String:
+func _build_capture_profile_info_line(rec: Dictionary) -> String:
 	return _build_info_line_from_parts(
 		rec,
-		"still",
+		"capture",
 		[
 			["capture_width", "capture_width", "int"],
 			["capture_height", "capture_height", "int"],
@@ -5662,7 +5668,7 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "still_w", "still_h", "native_all", "native_cur", "buffers", "source_version":
+		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "capture_w", "capture_h", "capture_fmt", "capture_prof", "native_all", "native_cur", "buffers", "source_version":
 			return "summary"
 		"frames", "bytes", "native_prev", "native_dead", "source_topology":
 			return "detail"
