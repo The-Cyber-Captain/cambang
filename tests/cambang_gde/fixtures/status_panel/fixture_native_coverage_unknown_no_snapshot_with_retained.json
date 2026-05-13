@@ -10,16 +10,6 @@
     "topology_version": 0,
     "timestamp_ns": 123456789,
     "imaging_spec_version": 1,
-    "resource_aggregate": {
-      "framebuffer_lease_current": 0,
-      "framebuffer_lease_total_created": 0,
-      "framebuffer_lease_total_released": 0,
-      "framebuffer_lease_peak_current": 0,
-      "retained_gpu_backing_current": 0,
-      "retained_gpu_backing_total_created": 0,
-      "retained_gpu_backing_total_released": 0,
-      "retained_gpu_backing_peak_current": 0
-    },
     "rigs": [],
     "devices": [],
     "streams": [],
@@ -42,7 +32,8 @@
       }
     ],
     "detached_root_ids": [],
-    "acquisition_sessions": []
+    "acquisition_sessions": [],
+    "scoped_resource_telemetry": []
   },
   "expected_panel_outcome": {
     "contract_gap_count": 0,

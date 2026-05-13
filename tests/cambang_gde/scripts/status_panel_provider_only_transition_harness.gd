@@ -185,7 +185,7 @@ func _provider_pending_snapshot() -> Dictionary:
 		"topology_version": 0,
 		"timestamp_ns": 100,
 		"imaging_spec_version": 1,
-		"resource_aggregate": _zero_resource_aggregate(),
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [],
 		"acquisition_sessions": [],
@@ -203,7 +203,7 @@ func _provider_only_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"topology_version": 0,
 		"timestamp_ns": 200,
 		"imaging_spec_version": 1,
-		"resource_aggregate": _zero_resource_aggregate(),
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [],
 		"acquisition_sessions": [],
@@ -229,7 +229,7 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"topology_version": 2,
 		"timestamp_ns": 300,
 		"imaging_spec_version": 1,
-		"resource_aggregate": _zero_resource_aggregate(),
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [
 			{
@@ -315,44 +315,3 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		],
 		"detached_root_ids": []
 	}
-
-
-func _zero_resource_aggregate() -> Dictionary:
-	return {
-		"framebuffer_lease_current": 0,
-		"framebuffer_lease_total_created": 0,
-		"framebuffer_lease_total_released": 0,
-		"framebuffer_lease_peak_current": 0,
-		"retained_gpu_backing_current": 0,
-		"retained_gpu_backing_total_created": 0,
-		"retained_gpu_backing_total_released": 0,
-		"retained_gpu_backing_peak_current": 0
-	}
-
-
-func _collect_entry_ids(model: Variant) -> Array[String]:
-	var ids: Array[String] = []
-	if model == null:
-		return ids
-	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
-	for entry in entries:
-		if entry == null:
-			continue
-		ids.append(str(entry.get("id")))
-	return ids
-
-
-func _fail(message: String) -> void:
-	push_error(message)
-	printerr(message)
-	_quit_with_cleanup(1)
-
-
-func _quit_with_cleanup(code: int) -> void:
-	if _panel != null and is_instance_valid(_panel):
-		_panel.queue_free()
-	if _server != null and is_instance_valid(_server):
-		_server.queue_free()
-	if _window != null and is_instance_valid(_window):
-		_window.queue_free()
-	quit(code)

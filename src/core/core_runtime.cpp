@@ -384,7 +384,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;
     in.spec_state = &spec_state_;
-    in.resource_aggregate = &global_resource_aggregate_telemetry();
+    in.scoped_resource_telemetry = &global_resource_aggregate_telemetry();
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 

@@ -1056,6 +1056,7 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   FrameView fv{};
   fv.device_instance_id = req.device_instance_id;
   fv.stream_id = 0;
+  fv.acquisition_session_id = dev_it->second.acquisition_session_native_id;
   fv.capture_id = req.capture_id;
   fv.width = req.width;
   fv.height = req.height;
@@ -1483,7 +1484,7 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
   release_stream_live_gpu_backing_(s);
   // Create and recreate share the same runtime helper so usage flags remain
   // identical for initial allocation and retry allocation.
-  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(width, height, stride);
+  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(s.req.stream_id, width, height, stride);
   if (!s.live_gpu_backing) {
     return false;
   }
@@ -1727,6 +1728,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
   fv.stream_id = s.req.stream_id;
+  fv.acquisition_session_id = s.acquisition_session_native_id;
   fv.capture_id = 0;
   fv.width = w;
   fv.height = h;

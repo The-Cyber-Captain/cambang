@@ -11,7 +11,7 @@
     "topology_version",
     "timestamp_ns",
     "imaging_spec_version",
-    "resource_aggregate",
+    "scoped_resource_telemetry",
     "rigs",
     "devices",
     "acquisition_sessions",
@@ -39,9 +39,6 @@
     },
     "imaging_spec_version": {
       "$ref": "#/$defs/uint64"
-    },
-    "resource_aggregate": {
-      "$ref": "#/$defs/ResourceAggregateState"
     },
     "rigs": {
       "type": "array",
@@ -77,6 +74,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/uint64"
+      }
+    },
+    "scoped_resource_telemetry": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ScopedResourceTelemetry"
       }
     }
   },
@@ -232,30 +235,6 @@
         "capture_format": {
           "$ref": "#/$defs/uint32"
         }
-      }
-    },
-    "ResourceAggregateState": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "framebuffer_lease_current",
-        "framebuffer_lease_total_created",
-        "framebuffer_lease_total_released",
-        "framebuffer_lease_peak_current",
-        "retained_gpu_backing_current",
-        "retained_gpu_backing_total_created",
-        "retained_gpu_backing_total_released",
-        "retained_gpu_backing_peak_current"
-      ],
-      "properties": {
-        "framebuffer_lease_current": {"$ref": "#/$defs/uint64"},
-        "framebuffer_lease_total_created": {"$ref": "#/$defs/uint64"},
-        "framebuffer_lease_total_released": {"$ref": "#/$defs/uint64"},
-        "framebuffer_lease_peak_current": {"$ref": "#/$defs/uint64"},
-        "retained_gpu_backing_current": {"$ref": "#/$defs/uint64"},
-        "retained_gpu_backing_total_created": {"$ref": "#/$defs/uint64"},
-        "retained_gpu_backing_total_released": {"$ref": "#/$defs/uint64"},
-        "retained_gpu_backing_peak_current": {"$ref": "#/$defs/uint64"}
       }
     },
     "CamBANGDeviceState": {
@@ -568,6 +547,76 @@
         "REJECTED_INVALID"
       ],
       "description": "Canonical retained visibility-path disposition tokens."
+    },
+    "telemetry_scope": {
+      "type": "string",
+      "enum": [
+        "STREAM",
+        "ACQUISITION_SESSION",
+        "DEVICE",
+        "PROVIDER",
+        "UNKNOWN"
+      ]
+    },
+    "ScopedResourceTelemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "telemetry_scope",
+        "provider_native_id",
+        "device_instance_id",
+        "acquisition_session_id",
+        "stream_id",
+        "framebuffer_lease_current",
+        "framebuffer_lease_total_created",
+        "framebuffer_lease_total_released",
+        "framebuffer_lease_peak_current",
+        "retained_gpu_backing_current",
+        "retained_gpu_backing_total_created",
+        "retained_gpu_backing_total_released",
+        "retained_gpu_backing_peak_current"
+      ],
+      "properties": {
+        "telemetry_scope": {
+          "$ref": "#/$defs/telemetry_scope"
+        },
+        "provider_native_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "acquisition_session_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_total_created": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_total_released": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_peak_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_total_created": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_total_released": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_peak_current": {
+          "$ref": "#/$defs/uint64"
+        }
+      }
     }
   }
 }

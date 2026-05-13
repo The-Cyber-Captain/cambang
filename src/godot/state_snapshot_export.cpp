@@ -148,6 +148,34 @@ static inline godot::String visibility_last_path_token(CBVisibilityLastPath path
   }
 }
 
+static inline godot::String telemetry_scope_token(uint32_t scope) {
+  switch (scope) {
+    case 0: return "STREAM";
+    case 1: return "ACQUISITION_SESSION";
+    case 2: return "DEVICE";
+    case 3: return "PROVIDER";
+    default: return "UNKNOWN";
+  }
+}
+
+static godot::Dictionary export_scoped_resource_telemetry(const ScopedResourceTelemetry& t) {
+  godot::Dictionary d;
+  d["telemetry_scope"] = telemetry_scope_token(t.telemetry_scope);
+  d["provider_native_id"] = static_cast<uint64_t>(t.provider_native_id);
+  d["device_instance_id"] = static_cast<uint64_t>(t.device_instance_id);
+  d["acquisition_session_id"] = static_cast<uint64_t>(t.acquisition_session_id);
+  d["stream_id"] = static_cast<uint64_t>(t.stream_id);
+  d["framebuffer_lease_current"] = static_cast<uint64_t>(t.framebuffer_lease_current);
+  d["framebuffer_lease_total_created"] = static_cast<uint64_t>(t.framebuffer_lease_total_created);
+  d["framebuffer_lease_total_released"] = static_cast<uint64_t>(t.framebuffer_lease_total_released);
+  d["framebuffer_lease_peak_current"] = static_cast<uint64_t>(t.framebuffer_lease_peak_current);
+  d["retained_gpu_backing_current"] = static_cast<uint64_t>(t.retained_gpu_backing_current);
+  d["retained_gpu_backing_total_created"] = static_cast<uint64_t>(t.retained_gpu_backing_total_created);
+  d["retained_gpu_backing_total_released"] = static_cast<uint64_t>(t.retained_gpu_backing_total_released);
+  d["retained_gpu_backing_peak_current"] = static_cast<uint64_t>(t.retained_gpu_backing_peak_current);
+  return d;
+}
+
 static godot::Dictionary export_rig(const CamBANGRigState& r) {
   godot::Dictionary d;
   d["rig_id"] = static_cast<uint64_t>(r.rig_id);
@@ -331,18 +359,16 @@ godot::Dictionary export_snapshot_to_godot(const CamBANGStateSnapshot& snap,
   }
 
 
-  {
-    godot::Dictionary agg;
-    agg["framebuffer_lease_current"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_current);
-    agg["framebuffer_lease_total_created"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_total_created);
-    agg["framebuffer_lease_total_released"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_total_released);
-    agg["framebuffer_lease_peak_current"] = static_cast<uint64_t>(snap.resource_aggregate.framebuffer_lease_peak_current);
-    agg["retained_gpu_backing_current"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_current);
-    agg["retained_gpu_backing_total_created"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_total_created);
-    agg["retained_gpu_backing_total_released"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_total_released);
-    agg["retained_gpu_backing_peak_current"] = static_cast<uint64_t>(snap.resource_aggregate.retained_gpu_backing_peak_current);
-    out["resource_aggregate"] = agg;
+    {
+    godot::Array scoped;
+    scoped.resize(static_cast<int>(snap.scoped_resource_telemetry.size()));
+    for (size_t i = 0; i < snap.scoped_resource_telemetry.size(); ++i) {
+      scoped[static_cast<int>(i)] = export_scoped_resource_telemetry(snap.scoped_resource_telemetry[i]);
+    }
+    out["scoped_resource_telemetry"] = scoped;
   }
+
+
 
   return out;
 }

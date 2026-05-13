@@ -1040,7 +1040,7 @@ static int test_capture_lifecycle_updates_live_acquisition_session_only() {
   return 0;
 }
 
-static bool verify_resource_aggregate_invariants(const ResourceAggregateState& a, const char* context) {
+static bool verify_scoped_resource_telemetry_invariants(const ScopedResourceTelemetry& a, const char* context) {
   auto fail = [&](const char* msg) {
     std::cerr << "FAIL: " << context << " " << msg
               << " lease(current=" << a.framebuffer_lease_current
@@ -1075,70 +1075,77 @@ static bool verify_resource_aggregate_invariants(const ResourceAggregateState& a
   return true;
 }
 
-static int test_resource_aggregate_default_and_projection() {
+
+static const ScopedResourceTelemetry* find_scoped_resource_telemetry_entry(
+    const std::vector<ScopedResourceTelemetry>& entries,
+    uint32_t telemetry_scope,
+    uint64_t stream_id) {
+  for (const auto& entry : entries) {
+    if (entry.telemetry_scope == telemetry_scope && entry.stream_id == stream_id) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+static int test_scoped_resource_telemetry_default_and_projection() {
   SnapshotBuilder builder;
   ResourceAggregateTelemetry telemetry;
   SnapshotBuilder::Inputs in;
-  in.resource_aggregate = &telemetry;
+  in.scoped_resource_telemetry = &telemetry;
 
   const CamBANGStateSnapshot zero = builder.build(in, 0, 0, 0, 1);
-  const ResourceAggregateState& a0 = zero.resource_aggregate;
-  if (a0.framebuffer_lease_current != 0 ||
-      a0.framebuffer_lease_total_created != 0 ||
-      a0.framebuffer_lease_total_released != 0 ||
-      a0.framebuffer_lease_peak_current != 0 ||
-      a0.retained_gpu_backing_current != 0 ||
-      a0.retained_gpu_backing_total_created != 0 ||
-      a0.retained_gpu_backing_total_released != 0 ||
-      a0.retained_gpu_backing_peak_current != 0) {
-    std::cerr << "FAIL: resource_aggregate default-zero shape mismatch\n";
-    (void)verify_resource_aggregate_invariants(a0, "resource_aggregate default snapshot");
-    return 1;
-  }
-  if (!verify_resource_aggregate_invariants(a0, "resource_aggregate default snapshot")) {
+  if (!zero.scoped_resource_telemetry.empty()) {
+    std::cerr << "FAIL: scoped_resource_telemetry default snapshot must be empty\n";
     return 1;
   }
 
-  telemetry.lease_created();
-  telemetry.lease_created();
-  telemetry.lease_released();
-  telemetry.retained_gpu_backing_created();
-  telemetry.retained_gpu_backing_released();
+  const auto key = cambang::make_stream_scoped_resource_telemetry(30001);
+  telemetry.lease_created(key);
+  telemetry.lease_created(key);
+  telemetry.lease_released(key);
+  telemetry.retained_gpu_backing_created(key);
+  telemetry.retained_gpu_backing_released(key);
 
   const CamBANGStateSnapshot projected = builder.build(in, 0, 1, 0, 2);
-  const ResourceAggregateState& a1 = projected.resource_aggregate;
-  if (a1.framebuffer_lease_total_created != 2 ||
-      a1.framebuffer_lease_total_released != 1 ||
-      a1.framebuffer_lease_current != 1 ||
-      a1.framebuffer_lease_peak_current != 2 ||
-      a1.retained_gpu_backing_total_created != 1 ||
-      a1.retained_gpu_backing_total_released != 1 ||
-      a1.retained_gpu_backing_current != 0 ||
-      a1.retained_gpu_backing_peak_current != 1) {
-    std::cerr << "FAIL: resource_aggregate projected values mismatch\n";
-    (void)verify_resource_aggregate_invariants(a1, "resource_aggregate projected snapshot");
+  const ScopedResourceTelemetry* a1 =
+      find_scoped_resource_telemetry_entry(projected.scoped_resource_telemetry, 0u, 30001);
+  if (a1 == nullptr) {
+    std::cerr << "FAIL: expected STREAM scoped_resource_telemetry entry for stream_id=30001\n";
     return 1;
   }
-  if (!verify_resource_aggregate_invariants(a1, "resource_aggregate projected snapshot")) {
+  if (a1->framebuffer_lease_total_created != 2 ||
+      a1->framebuffer_lease_total_released != 1 ||
+      a1->framebuffer_lease_current != 1 ||
+      a1->framebuffer_lease_peak_current != 2 ||
+      a1->retained_gpu_backing_total_created != 1 ||
+      a1->retained_gpu_backing_total_released != 1 ||
+      a1->retained_gpu_backing_current != 0 ||
+      a1->retained_gpu_backing_peak_current != 1) {
+    std::cerr << "FAIL: scoped_resource_telemetry projected values mismatch\n";
+    (void)verify_scoped_resource_telemetry_invariants(*a1, "scoped_resource_telemetry projected snapshot");
+    return 1;
+  }
+  if (!verify_scoped_resource_telemetry_invariants(*a1, "scoped_resource_telemetry projected snapshot")) {
     return 1;
   }
 
   return 0;
 }
 
-static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
+static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration() {
   CoreRuntime rt;
   StateSnapshotBuffer buf;
   rt.set_snapshot_publisher(&buf);
   if (!rt.start()) {
-    std::cerr << "FAIL: runtime start (resource_aggregate integration)\n";
+    std::cerr << "FAIL: runtime start (scoped_resource_telemetry integration)\n";
     return 1;
   }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         return s && s->version == 0;
       })) {
-    std::cerr << "FAIL: missing baseline snapshot (resource_aggregate integration)\n";
+    std::cerr << "FAIL: missing baseline snapshot (scoped_resource_telemetry integration)\n";
     rt.stop();
     return 1;
   }
@@ -1146,7 +1153,7 @@ static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
   std::vector<uint8_t> bytes{1, 2, 3, 4};
   int releases = 0;
   FrameView frame{};
-  frame.stream_id = 0;
+  frame.stream_id = 30001;
   frame.device_instance_id = 0;
   frame.width = 1;
   frame.height = 1;
@@ -1168,15 +1175,20 @@ static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         if (!s) return false;
-        const auto& a = s->resource_aggregate;
-        return a.framebuffer_lease_total_created > 0 &&
-               a.framebuffer_lease_total_released > 0 &&
-               a.framebuffer_lease_peak_current > 0;
+        for (const auto& a : s->scoped_resource_telemetry) {
+          if (a.telemetry_scope == 0u &&
+              a.framebuffer_lease_total_created > 0 &&
+              a.framebuffer_lease_total_released > 0 &&
+              a.framebuffer_lease_peak_current > 0) {
+            return true;
+          }
+        }
+        return false;
       })) {
-    std::cerr << "FAIL: resource_aggregate framebuffer lease totals/peak did not move in runtime path\n";
+    std::cerr << "FAIL: scoped_resource_telemetry framebuffer lease totals/peak did not move in runtime path\n";
     auto s = snapshot_copy(buf);
     if (s) {
-      (void)verify_resource_aggregate_invariants(s->resource_aggregate, "runtime framebuffer integration");
+      for (const auto& a : s->scoped_resource_telemetry) { (void)verify_scoped_resource_telemetry_invariants(a, "runtime framebuffer integration"); }
     }
     rt.stop();
     return 1;
@@ -1184,17 +1196,24 @@ static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
 
   auto observed = snapshot_copy(buf);
   if (!observed) {
-    std::cerr << "FAIL: missing observed snapshot for resource_aggregate integration\n";
+    std::cerr << "FAIL: missing observed snapshot for scoped_resource_telemetry integration\n";
     rt.stop();
     return 1;
   }
-  if (!verify_resource_aggregate_invariants(observed->resource_aggregate, "runtime framebuffer integration")) {
+  const ScopedResourceTelemetry* observed_stream_entry =
+      find_scoped_resource_telemetry_entry(observed->scoped_resource_telemetry, 0u, 30001);
+  if (observed_stream_entry == nullptr) {
+    std::cerr << "FAIL: missing STREAM scoped_resource_telemetry entry for runtime framebuffer integration\n";
     rt.stop();
     return 1;
   }
-  if (observed->resource_aggregate.framebuffer_lease_current != 0) {
+  if (!verify_scoped_resource_telemetry_invariants(*observed_stream_entry, "runtime framebuffer integration")) {
+    rt.stop();
+    return 1;
+  }
+  if (observed_stream_entry->framebuffer_lease_current != 0) {
     std::cerr << "FAIL: expected framebuffer_lease_current==0 after deterministic release path"
-              << " current=" << observed->resource_aggregate.framebuffer_lease_current << "\n";
+              << " current=" << observed_stream_entry->framebuffer_lease_current << "\n";
     rt.stop();
     return 1;
   }
@@ -1210,8 +1229,8 @@ static int test_resource_aggregate_runtime_framebuffer_lease_integration() {
 } // namespace
 
 int main() {
-  if (int r = test_resource_aggregate_default_and_projection()) return r;
-  if (int r = test_resource_aggregate_runtime_framebuffer_lease_integration()) return r;
+  if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
+  if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;
   if (int r = test_destroyed_retention_does_not_cross_generation_baseline()) return r;
   if (int r = test_live_session_retirement_expiry_publication()) return r;

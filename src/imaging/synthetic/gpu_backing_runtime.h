@@ -20,6 +20,7 @@ struct SyntheticGpuBackingRuntimeOps final {
       uint32_t height,
       uint32_t stride_bytes) noexcept = nullptr;
   std::shared_ptr<void> (*create_stream_live_gpu_backing_rgba8)(
+      uint64_t stream_id,
       uint32_t width,
       uint32_t height,
       uint32_t stride_bytes) noexcept = nullptr;
@@ -66,6 +67,7 @@ std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
     uint32_t stride_bytes) noexcept;
 
 std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
+    uint64_t stream_id,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept;

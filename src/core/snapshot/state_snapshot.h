@@ -181,7 +181,7 @@ struct NativeObjectRecord {
     uint32_t buffers_in_use = 0;
 };
 
-struct ResourceAggregateState {
+struct ScopedResourceTelemetry {
     uint64_t framebuffer_lease_current = 0;
     uint64_t framebuffer_lease_total_created = 0;
     uint64_t framebuffer_lease_total_released = 0;
@@ -190,6 +190,12 @@ struct ResourceAggregateState {
     uint64_t retained_gpu_backing_total_created = 0;
     uint64_t retained_gpu_backing_total_released = 0;
     uint64_t retained_gpu_backing_peak_current = 0;
+
+    uint32_t telemetry_scope = 4; // UNKNOWN
+    uint64_t provider_native_id = 0;
+    uint64_t device_instance_id = 0;
+    uint64_t acquisition_session_id = 0;
+    uint64_t stream_id = 0;
 };
 
 struct CamBANGStateSnapshot {
@@ -210,5 +216,5 @@ struct CamBANGStateSnapshot {
 
     std::vector<NativeObjectRecord> native_objects;
     std::vector<uint64_t> detached_root_ids;
-    ResourceAggregateState resource_aggregate;
+    std::vector<ScopedResourceTelemetry> scoped_resource_telemetry;
 };

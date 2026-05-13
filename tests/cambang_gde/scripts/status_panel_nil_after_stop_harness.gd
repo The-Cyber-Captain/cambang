@@ -198,7 +198,7 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 		"topology_version": topology_version,
 		"timestamp_ns": 40096504700,
 		"imaging_spec_version": 1,
-		"resource_aggregate": _zero_resource_aggregate(),
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [
 			{
@@ -284,74 +284,3 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 		],
 		"detached_root_ids": []
 	}
-
-
-func _zero_resource_aggregate() -> Dictionary:
-	return {
-		"framebuffer_lease_current": 0,
-		"framebuffer_lease_total_created": 0,
-		"framebuffer_lease_total_released": 0,
-		"framebuffer_lease_peak_current": 0,
-		"retained_gpu_backing_current": 0,
-		"retained_gpu_backing_total_created": 0,
-		"retained_gpu_backing_total_released": 0,
-		"retained_gpu_backing_peak_current": 0
-	}
-
-
-func _collect_entry_ids(model: Variant) -> Array[String]:
-	var ids: Array[String] = []
-	if model == null:
-		return ids
-	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
-	for entry in entries:
-		if entry == null:
-			continue
-		ids.append(str(entry.get("id")))
-	return ids
-
-
-func _find_entry(model: Variant, wanted_id: String) -> Variant:
-	if model == null:
-		return null
-	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
-	for entry in entries:
-		if entry == null:
-			continue
-		if str(entry.get("id")) == wanted_id:
-			return entry
-	return null
-
-
-func _entry_has_badge(entry: Variant, badge_label: String) -> bool:
-	if entry == null:
-		return false
-	for badge in entry.get("badges"):
-		if badge != null and str(badge.get("label")) == badge_label:
-			return true
-	return false
-
-
-func _entry_info_contains(entry: Variant, needle: String) -> bool:
-	if entry == null:
-		return false
-	for line in entry.get("info_lines"):
-		if str(line).find(needle) != -1:
-			return true
-	return false
-
-
-func _fail(message: String) -> void:
-	push_error(message)
-	printerr(message)
-	_quit_with_cleanup(1)
-
-
-func _quit_with_cleanup(code: int) -> void:
-	if _panel != null and is_instance_valid(_panel):
-		_panel.queue_free()
-	if _server != null and is_instance_valid(_server):
-		_server.queue_free()
-	if _window != null and is_instance_valid(_window):
-		_window.queue_free()
-	quit(code)

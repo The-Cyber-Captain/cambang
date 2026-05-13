@@ -112,7 +112,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     fail_frame = frame_payload.frame;
     frame_stream_id = frame_payload.frame.stream_id;
     has_fail_frame = true;
-    global_resource_aggregate_telemetry().lease_created();
+    global_resource_aggregate_telemetry().lease_created(make_framebuffer_lease_scoped_resource_telemetry_key(
+        frame_payload.frame.stream_id,
+        frame_payload.frame.acquisition_session_id));
   }
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
@@ -161,7 +163,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::QueueFull:
         frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
-        global_resource_aggregate_telemetry().lease_released();
+        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+            frame.stream_id,
+            frame.acquisition_session_id));
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
@@ -169,7 +173,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::Closed:
         frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
-        global_resource_aggregate_telemetry().lease_released();
+        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+            frame.stream_id,
+            frame.acquisition_session_id));
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
@@ -177,7 +183,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::AllocFail:
         frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
-        global_resource_aggregate_telemetry().lease_released();
+        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+            frame.stream_id,
+            frame.acquisition_session_id));
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);

@@ -748,7 +748,7 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		"acquisition_session",
 		"stream",
 		"rig",
-		"resource_aggregate",
+		"resource_telemetry",
 		"native_payload_support_group",
 		"native_support_resource_detail",
 		"native_object",
@@ -795,8 +795,8 @@ func _class_color(object_class: String) -> Color:
 			return _resolve_class_theme_color("status_row_stream_accent", Color(0.63, 0.70, 0.97, 0.96))
 		"rig":
 			return _resolve_class_theme_color("status_row_rig_accent", Color(0.83, 0.68, 0.96, 0.96))
-		"resource_aggregate":
-			return _resolve_class_theme_color("status_row_resource_aggregate_accent", Color(0.45, 0.88, 0.74, 0.96))
+		"resource_telemetry":
+			return _resolve_class_theme_color("status_row_resource_telemetry_accent", Color(0.45, 0.88, 0.74, 0.96))
 		"native_payload_support_group":
 			return _resolve_class_theme_color("status_row_native_payload_support_group_accent", Color(0.96, 0.62, 0.84, 0.96))
 		"native_support_resource_detail":

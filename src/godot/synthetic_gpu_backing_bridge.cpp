@@ -43,6 +43,7 @@ struct RetainedSyntheticGpuBacking final {
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
   bool released = false;
+  ScopedResourceTelemetryKey telemetry_key{};
 
   void release_now() {
     godot::RID rid;
@@ -52,7 +53,7 @@ struct RetainedSyntheticGpuBacking final {
         return;
       }
       released = true;
-      global_resource_aggregate_telemetry().retained_gpu_backing_released();
+      global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
 
       if (rd_texture.is_valid()) {
         rid = rd_texture;
@@ -407,7 +408,8 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
-  global_resource_aggregate_telemetry().retained_gpu_backing_created();
+  retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
+  global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
   retained_backing->height = height;
@@ -415,6 +417,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
 }
 
 std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
+    uint64_t stream_id,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
@@ -461,7 +464,8 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
-  global_resource_aggregate_telemetry().retained_gpu_backing_created();
+  retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
+  global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
   retained_backing->height = height;

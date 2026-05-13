@@ -303,16 +303,26 @@ if (in.native_objects) {
     snap.detached_root_ids.assign(detached_roots.begin(), detached_roots.end());
 }
 
-if (in.resource_aggregate) {
-    const ResourceAggregateSnapshot agg = in.resource_aggregate->snapshot();
-    snap.resource_aggregate.framebuffer_lease_current = agg.framebuffer_lease_current;
-    snap.resource_aggregate.framebuffer_lease_total_created = agg.framebuffer_lease_total_created;
-    snap.resource_aggregate.framebuffer_lease_total_released = agg.framebuffer_lease_total_released;
-    snap.resource_aggregate.framebuffer_lease_peak_current = agg.framebuffer_lease_peak_current;
-    snap.resource_aggregate.retained_gpu_backing_current = agg.retained_gpu_backing_current;
-    snap.resource_aggregate.retained_gpu_backing_total_created = agg.retained_gpu_backing_total_created;
-    snap.resource_aggregate.retained_gpu_backing_total_released = agg.retained_gpu_backing_total_released;
-    snap.resource_aggregate.retained_gpu_backing_peak_current = agg.retained_gpu_backing_peak_current;
+if (in.scoped_resource_telemetry) {
+    const auto entries = in.scoped_resource_telemetry->snapshot();
+    snap.scoped_resource_telemetry.reserve(entries.size());
+    for (const auto& entry : entries) {
+        ::ScopedResourceTelemetry out;
+        out.telemetry_scope = static_cast<uint32_t>(entry.telemetry_scope);
+        out.provider_native_id = entry.provider_native_id;
+        out.device_instance_id = entry.device_instance_id;
+        out.acquisition_session_id = entry.acquisition_session_id;
+        out.stream_id = entry.stream_id;
+        out.framebuffer_lease_current = entry.framebuffer_lease_current;
+        out.framebuffer_lease_total_created = entry.framebuffer_lease_total_created;
+        out.framebuffer_lease_total_released = entry.framebuffer_lease_total_released;
+        out.framebuffer_lease_peak_current = entry.framebuffer_lease_peak_current;
+        out.retained_gpu_backing_current = entry.retained_gpu_backing_current;
+        out.retained_gpu_backing_total_created = entry.retained_gpu_backing_total_created;
+        out.retained_gpu_backing_total_released = entry.retained_gpu_backing_total_released;
+        out.retained_gpu_backing_peak_current = entry.retained_gpu_backing_peak_current;
+        snap.scoped_resource_telemetry.push_back(out);
+    }
 }
 
 return snap;
