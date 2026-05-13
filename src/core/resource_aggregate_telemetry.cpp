@@ -195,6 +195,11 @@ std::optional<uint64_t> ResourceAggregateTelemetry::next_retirement_delay_ns(uin
   return min_delay;
 }
 
+void ResourceAggregateTelemetry::clear() noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  buckets_.clear();
+}
+
 ScopedResourceTelemetryKey make_stream_scoped_resource_telemetry(uint64_t stream_id) noexcept {
   ScopedResourceTelemetryKey key;
   key.telemetry_scope = stream_id == 0 ? TelemetryScope::UNKNOWN : TelemetryScope::STREAM;

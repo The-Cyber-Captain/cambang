@@ -209,6 +209,7 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
+  global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
@@ -350,7 +351,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
   global_resource_aggregate_telemetry().reconcile_lifecycle(
       now_ns,
-      current_gen_.load(std::memory_order_relaxed),
+      current_gen_,
       &streams_,
       &acquisition_sessions_,
       &devices_,
@@ -574,7 +575,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
         (void)native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         global_resource_aggregate_telemetry().reconcile_lifecycle(
             now_ns,
-            current_gen_.load(std::memory_order_relaxed),
+            current_gen_,
             &streams_,
             &acquisition_sessions_,
             &devices_,
@@ -604,6 +605,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
         // They remain truthfully retained while the generation is live and through
         // final prior-generation publication, then are quarantined before exit.
         (void)native_objects_.clear_destroyed();
+        global_resource_aggregate_telemetry().clear();
         set_phase(ShutdownPhase::EXIT);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -631,6 +633,7 @@ void CoreRuntime::on_core_stop() {
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
+  global_resource_aggregate_telemetry().clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }

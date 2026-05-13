@@ -56,6 +56,7 @@ public:
                            const CoreNativeObjectRegistry* native_objects) noexcept;
   size_t retire_destroyed_older_than(uint64_t now_ns, uint64_t retention_window_ns) noexcept;
   std::optional<uint64_t> next_retirement_delay_ns(uint64_t now_ns, uint64_t retention_window_ns) const noexcept;
+  void clear() noexcept;
 
 private:
   struct Key final {
