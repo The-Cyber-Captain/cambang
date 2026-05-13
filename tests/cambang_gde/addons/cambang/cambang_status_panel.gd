@@ -3569,6 +3569,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
 	var scoped_resource_telemetry := _safe_array(snapshot.get("scoped_resource_telemetry", []), issues, "scoped_resource_telemetry")
+	var scoped_resource_telemetry_row_ids := {}
 	for i in range(scoped_resource_telemetry.size()):
 		var telemetry := _safe_dict(scoped_resource_telemetry[i], issues, "scoped_resource_telemetry[%d]" % i)
 		if telemetry.is_empty():
@@ -3583,8 +3584,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			row_parent = "device/%d/native_payload_support" % int(telemetry.get("device_instance_id", 0))
 		elif scope == "PROVIDER":
 			row_parent = "provider/%d/native_payload_support" % int(telemetry.get("provider_native_id", 0))
+		_ensure_native_payload_support_group_row_id(panel, row_parent)
+		var telemetry_row_id := "%s/resource_telemetry" % row_parent
+		if scoped_resource_telemetry_row_ids.has(telemetry_row_id):
+			issues.append("Contract ambiguity: duplicate scoped_resource_telemetry row id %s (index=%d)." % [telemetry_row_id, i])
+			continue
+		scoped_resource_telemetry_row_ids[telemetry_row_id] = true
 		panel.entries.append(_entry(
-			"%s/resource_telemetry" % row_parent,
+			telemetry_row_id,
 			row_parent,
 			_depth_for_parent(row_parent),
 			"Resource Telemetry",
@@ -5775,6 +5782,18 @@ func _native_type_is_payload_support(native_type_key: String) -> bool:
 	return native_type_key == "gpu_backing" or native_type_key == "frame_buffer_lease"
 
 
+func _ensure_native_payload_support_group_row_id(panel: PanelModel, group_id: String) -> void:
+	if panel == null or group_id == "":
+		return
+	if _entry_exists(panel.entries, group_id):
+		return
+	var parent_id := ""
+	var suffix := "/native_payload_support"
+	if group_id.ends_with(suffix):
+		parent_id = group_id.substr(0, group_id.length() - suffix.length())
+	panel.entries.append(_entry(group_id, parent_id, _depth_for_parent(parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+
+
 func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary) -> void:
 	if panel == null:
 		return
@@ -5786,16 +5805,14 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 		var stream_parent_id := "stream/%d" % owner_stream_id
 		if _entry_exists(panel.entries, stream_parent_id):
 			var stream_group_id := "%s/native_payload_support" % stream_parent_id
-			if not _entry_exists(panel.entries, stream_group_id):
-				panel.entries.append(_entry(stream_group_id, stream_parent_id, _depth_for_parent(stream_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+			_ensure_native_payload_support_group_row_id(panel, stream_group_id)
 			return
 	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
 	if owner_acquisition_session_id > 0:
 		var acquisition_session_parent_id := "acquisition_session/%d" % owner_acquisition_session_id
 		if _entry_exists(panel.entries, acquisition_session_parent_id):
 			var acquisition_group_id := "%s/native_payload_support" % acquisition_session_parent_id
-			if not _entry_exists(panel.entries, acquisition_group_id):
-				panel.entries.append(_entry(acquisition_group_id, acquisition_session_parent_id, _depth_for_parent(acquisition_session_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+			_ensure_native_payload_support_group_row_id(panel, acquisition_group_id)
 
 
 func _format_fourcc_with_raw(value: int) -> String:
