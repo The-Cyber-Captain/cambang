@@ -5,7 +5,10 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <vector>
+
+namespace cambang { class CoreStreamRegistry; class CoreAcquisitionSessionRegistry; class CoreDeviceRegistry; class CoreNativeObjectRegistry; }
 
 namespace cambang {
 
@@ -18,6 +21,10 @@ enum class TelemetryScope : uint32_t {
 };
 
 struct ScopedResourceTelemetryKey final {
+  uint32_t phase = 1; // LIVE
+  uint64_t creation_gen = 0;
+  uint64_t created_ns = 0;
+  uint64_t destroyed_ns = 0;
   TelemetryScope telemetry_scope = TelemetryScope::UNKNOWN;
   uint64_t provider_native_id = 0;
   uint64_t device_instance_id = 0;
@@ -41,6 +48,14 @@ public:
   void retained_gpu_backing_created(const ScopedResourceTelemetryKey& key) noexcept;
   void retained_gpu_backing_released(const ScopedResourceTelemetryKey& key) noexcept;
   std::vector<ScopedResourceTelemetryKey> snapshot() const noexcept;
+  void reconcile_lifecycle(uint64_t now_ns,
+                           uint64_t current_gen,
+                           const CoreStreamRegistry* streams,
+                           const CoreAcquisitionSessionRegistry* acquisition_sessions,
+                           const CoreDeviceRegistry* devices,
+                           const CoreNativeObjectRegistry* native_objects) noexcept;
+  size_t retire_destroyed_older_than(uint64_t now_ns, uint64_t retention_window_ns) noexcept;
+  std::optional<uint64_t> next_retirement_delay_ns(uint64_t now_ns, uint64_t retention_window_ns) const noexcept;
 
 private:
   struct Key final {
@@ -62,6 +77,11 @@ private:
     std::atomic<uint64_t> retained_gpu_backing_total_created{0};
     std::atomic<uint64_t> retained_gpu_backing_total_released{0};
     std::atomic<uint64_t> retained_gpu_backing_peak_current{0};
+    uint32_t phase = 1; // LIVE
+    uint64_t creation_gen = 0;
+    uint64_t created_ns = 0;
+    uint64_t destroyed_ns = 0;
+    uint64_t destroyed_integration_ns = 0;
   };
 
   static Key make_key(const ScopedResourceTelemetryKey& key) noexcept;

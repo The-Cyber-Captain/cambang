@@ -348,7 +348,16 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
   const size_t retired_count =
       native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-  if (retired_count > 0) {
+  global_resource_aggregate_telemetry().reconcile_lifecycle(
+      now_ns,
+      current_gen_.load(std::memory_order_relaxed),
+      &streams_,
+      &acquisition_sessions_,
+      &devices_,
+      &native_objects_);
+  const size_t retired_telemetry_count =
+      global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+  if (retired_count > 0 || retired_telemetry_count > 0) {
     request_publish_from_core_unchecked();
   }
 
@@ -359,6 +368,14 @@ if (dispatcher_.consume_relevant_state_changed()) {
       next_retirement_delay_ns.has_value()) {
     has_next_deadline_delay = true;
     next_deadline_delay_ns = *next_retirement_delay_ns;
+  }
+  if (const auto next_telemetry_retirement_delay_ns =
+          global_resource_aggregate_telemetry().next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+      next_telemetry_retirement_delay_ns.has_value()) {
+    if (!has_next_deadline_delay || *next_telemetry_retirement_delay_ns < next_deadline_delay_ns) {
+      has_next_deadline_delay = true;
+      next_deadline_delay_ns = *next_telemetry_retirement_delay_ns;
+    }
   }
   if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
     has_next_deadline_delay = true;
@@ -555,6 +572,14 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
       case ShutdownPhase::FINAL_RETENTION_SWEEP: {
         (void)native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+        global_resource_aggregate_telemetry().reconcile_lifecycle(
+            now_ns,
+            current_gen_.load(std::memory_order_relaxed),
+            &streams_,
+            &acquisition_sessions_,
+            &devices_,
+            &native_objects_);
+        (void)global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         set_phase(ShutdownPhase::FINAL_PUBLISH);
         shutdown_wait_ticks_ = 0;
         // fallthrough

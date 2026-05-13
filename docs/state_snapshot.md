@@ -292,6 +292,11 @@ It does not imply per-frame `native_objects[]` churn.
 
 ```text
 ScopedResourceTelemetry {
+  phase: phase                        // LIVE | DESTROYED
+  creation_gen: uint64
+  created_ns: uint64
+  destroyed_ns: uint64                // 0 unless phase=DESTROYED
+
   framebuffer_lease_current: uint64
   framebuffer_lease_total_created: uint64
   framebuffer_lease_total_released: uint64
@@ -303,6 +308,9 @@ ScopedResourceTelemetry {
   retained_gpu_backing_peak_current: uint64
 }
 ```
+
+Scoped resource telemetry is lifecycle-bearing but intentionally only exposes
+`LIVE` and `DESTROYED` in v1.
 ### 5.1 `acquisition_sessions` truth scope (v1)
 
 `acquisition_sessions` is a top-level snapshot category in schema version **1**.

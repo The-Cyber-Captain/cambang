@@ -132,6 +132,7 @@ Additional provider-owned native support entities are grouped by context
 through Native Payload Support projection rows.
 Native Payload Support is a projection grouping row, not a required
 provider-reported native-object type.
+Scoped resource telemetry counters are projected on that grouping row.
 This grouping does not depend on `FrameProducer`.
 If normal live-parent placement is unavailable, the panel may fall back to
 orphaned placement and, where appropriate, preserve a compact

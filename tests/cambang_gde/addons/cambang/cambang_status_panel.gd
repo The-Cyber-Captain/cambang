@@ -5786,10 +5786,10 @@ func _apply_scoped_resource_telemetry_to_native_payload_support_group(panel: Pan
 				break
 		if not replaced:
 			group_row.counters.append(counter)
-	_apply_native_payload_support_group_telemetry_health(group_row)
+	_apply_native_payload_support_group_telemetry_health(panel, group_row)
 
 
-func _apply_native_payload_support_group_telemetry_health(group_row: StatusEntryModel) -> void:
+func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, group_row: StatusEntryModel) -> void:
 	if group_row == null:
 		return
 	var fbl_cur := _counter_value_by_name(group_row, "fbl_cur", 0)
@@ -5813,12 +5813,29 @@ func _apply_native_payload_support_group_telemetry_health(group_row: StatusEntry
 		health_reasons.append("Health reason: framebuffer lease current does not match total_created-total_released.")
 	if gpu_cur != (gpu_total_new - gpu_total_rel):
 		health_reasons.append("Health reason: gpu backing current does not match total_created-total_released.")
+	var parent_row := _find_panel_entry_by_id(panel, str(group_row.parent_id))
+	if _entry_phase_is_non_live_or_destroyed(parent_row) and (fbl_cur > 0 or gpu_cur > 0):
+		health_reasons.append("Health reason: owner ended with current native payload support resources.")
 	if health_reasons.is_empty():
 		return
 	group_row.badges = _with_health_badge(group_row.badges, "warning", "BAD")
 	for reason in health_reasons:
 		if not group_row.anomaly_info_lines.has(reason):
 			group_row.anomaly_info_lines.append(reason)
+
+
+func _entry_phase_is_non_live_or_destroyed(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+	for badge in entry.badges:
+		if badge == null:
+			continue
+		var phase_label := _phase_label_from_badge_label(str(badge.label))
+		if phase_label == "DESTROYED" or phase_label == "TEARING_DOWN" or phase_label == "CREATED":
+			return true
+		if phase_label == "LIVE":
+			return false
+	return false
 
 
 func _ensure_native_payload_support_group_row_id(panel: PanelModel, group_id: String) -> void:

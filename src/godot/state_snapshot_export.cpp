@@ -160,6 +160,10 @@ static inline godot::String telemetry_scope_token(uint32_t scope) {
 
 static godot::Dictionary export_scoped_resource_telemetry(const ScopedResourceTelemetry& t) {
   godot::Dictionary d;
+  d["phase"] = lifecycle_phase_token(t.phase);
+  d["creation_gen"] = static_cast<uint64_t>(t.creation_gen);
+  d["created_ns"] = static_cast<uint64_t>(t.created_ns);
+  d["destroyed_ns"] = static_cast<uint64_t>(t.destroyed_ns);
   d["telemetry_scope"] = telemetry_scope_token(t.telemetry_scope);
   d["provider_native_id"] = static_cast<uint64_t>(t.provider_native_id);
   d["device_instance_id"] = static_cast<uint64_t>(t.device_instance_id);

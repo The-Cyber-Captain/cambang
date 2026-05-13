@@ -351,6 +351,9 @@ Provider-owned native support entities may appear beneath `Stream` for
 stream-originated truth and beneath `AcquisitionSession` for
 capture-originated truth.
 
+Scoped resource telemetry follows the same context ownership and carries
+lifecycle phase limited to `LIVE` and `DESTROYED` for release-facing truth.
+
 These support entities remain distinct from the structural spine and remain
 essential for truthful lifetime/release diagnostics.
 
