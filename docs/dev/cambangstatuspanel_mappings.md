@@ -541,6 +541,7 @@ A threshold value of `0` disables that specific temporal growth rule.
 ### Freshness additions
 - `server/main` now surfaces `imaging_spec_version` as a compact header counter.
 - top-level `scoped_resource_telemetry[]` projects onto scope-specific `.../native_payload_support` grouping rows (no dedicated resource_telemetry child row).
+- when present, scoped telemetry lifecycle phase (`LIVE`/`DESTROYED`) is surfaced as the NPS row `phase=...` badge using normal lifecycle badge grammar.
 - Stream rows surface `visibility_last_path` via `visibility:` info line alongside visibility counters.
 - Native support types (`gpu_backing`, `frame_buffer_lease`) are grouped under projection row `<stream|acquisition_session>/<id>/native_payload_support` when owners are present.
 - Native info lines now include non-zero `owner_provider_native_id` and `owner_rig_id` for ownership traceability.

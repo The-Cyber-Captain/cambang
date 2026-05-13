@@ -5776,6 +5776,7 @@ func _apply_scoped_resource_telemetry_to_native_payload_support_group(panel: Pan
 	var group_row := _find_panel_entry_by_id(panel, group_id)
 	if group_row == null:
 		return
+	_apply_native_payload_support_group_phase_badge(group_row, str(telemetry.get("phase", "LIVE")))
 	var telemetry_counters := _counters_from_record(telemetry, [["fbl_cur","framebuffer_lease_current",3],["fbl_total_new","framebuffer_lease_total_created",3],["fbl_total_rel","framebuffer_lease_total_released",3],["fbl_peak","framebuffer_lease_peak_current",3],["gpu_cur","retained_gpu_backing_current",3],["gpu_total_new","retained_gpu_backing_total_created",3],["gpu_total_rel","retained_gpu_backing_total_released",3],["gpu_peak","retained_gpu_backing_peak_current",3]], [], "resource_telemetry")
 	for counter in telemetry_counters:
 		var replaced := false
@@ -5816,6 +5817,9 @@ func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, gro
 	var parent_row := _find_panel_entry_by_id(panel, str(group_row.parent_id))
 	if _entry_phase_is_non_live_or_destroyed(parent_row) and (fbl_cur > 0 or gpu_cur > 0):
 		health_reasons.append("Health reason: owner ended with current native payload support resources.")
+	var telemetry_phase := _phase_label_from_badge_label(_first_badge_label(group_row.badges, ["LIVE", "DESTROYED"]))
+	if telemetry_phase == "DESTROYED" and _native_payload_support_has_live_concrete_child(panel, str(group_row.id)):
+		health_reasons.append("Health reason: destroyed native payload support group has LIVE concrete child resource.")
 	if health_reasons.is_empty():
 		return
 	group_row.badges = _with_health_badge(group_row.badges, "warning", "BAD")
@@ -5824,18 +5828,76 @@ func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, gro
 			group_row.anomaly_info_lines.append(reason)
 
 
+func _apply_native_payload_support_group_phase_badge(group_row: StatusEntryModel, telemetry_phase: String) -> void:
+	if group_row == null:
+		return
+	var normalized := telemetry_phase.strip_edges().to_upper()
+	if normalized != "LIVE" and normalized != "DESTROYED":
+		return
+	var phase_label := "phase=%s" % normalized
+	var next_badges: Array[BadgeModel] = []
+	var inserted := false
+	for badge in group_row.badges:
+		if badge == null:
+			continue
+		if badge.kind == "health":
+			next_badges.append(_badge(badge.role, badge.label, badge.kind))
+			if not inserted:
+				next_badges.append(_badge("neutral", phase_label))
+				inserted = true
+			continue
+		var parsed := _phase_label_from_badge_label(str(badge.label))
+		if parsed == "LIVE" or parsed == "DESTROYED":
+			if not inserted:
+				next_badges.append(_badge("neutral", phase_label))
+				inserted = true
+			continue
+		next_badges.append(_badge(badge.role, badge.label, badge.kind))
+	if not inserted:
+		next_badges.append(_badge("neutral", phase_label))
+	group_row.badges = _normalize_badges(next_badges)
+
+
 func _entry_phase_is_non_live_or_destroyed(entry: StatusEntryModel) -> bool:
 	if entry == null:
 		return false
-	for badge in entry.badges:
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			var phase_label := _phase_label_from_badge_label(str(badge.label))
+			if phase_label == "DESTROYED" or phase_label == "TEARING_DOWN" or phase_label == "CREATED":
+				return true
+			if phase_label == "LIVE":
+				return false
+	return false
+
+
+func _native_payload_support_has_live_concrete_child(panel: PanelModel, group_id: String) -> bool:
+	if panel == null or group_id == "":
+		return false
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if str(entry.parent_id) != group_id:
+			continue
+		if str(entry.visual_object_class) != "native_support_resource_detail":
+			continue
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			if _phase_label_from_badge_label(str(badge.label)) == "LIVE":
+				return true
+	return false
+
+
+func _first_badge_label(badges: Array[BadgeModel], phase_candidates: Array[String]) -> String:
+	for badge in badges:
 		if badge == null:
 			continue
-		var phase_label := _phase_label_from_badge_label(str(badge.label))
-		if phase_label == "DESTROYED" or phase_label == "TEARING_DOWN" or phase_label == "CREATED":
-			return true
-		if phase_label == "LIVE":
-			return false
-	return false
+		var phase := _phase_label_from_badge_label(str(badge.label))
+		if phase_candidates.has(phase):
+			return str(badge.label)
+	return ""
 
 
 func _ensure_native_payload_support_group_row_id(panel: PanelModel, group_id: String) -> void:
