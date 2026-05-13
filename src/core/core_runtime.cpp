@@ -209,6 +209,7 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
+  global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
@@ -348,7 +349,16 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
   const size_t retired_count =
       native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-  if (retired_count > 0) {
+  global_resource_aggregate_telemetry().reconcile_lifecycle(
+      now_ns,
+      current_gen_,
+      &streams_,
+      &acquisition_sessions_,
+      &devices_,
+      &native_objects_);
+  const size_t retired_telemetry_count =
+      global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+  if (retired_count > 0 || retired_telemetry_count > 0) {
     request_publish_from_core_unchecked();
   }
 
@@ -359,6 +369,14 @@ if (dispatcher_.consume_relevant_state_changed()) {
       next_retirement_delay_ns.has_value()) {
     has_next_deadline_delay = true;
     next_deadline_delay_ns = *next_retirement_delay_ns;
+  }
+  if (const auto next_telemetry_retirement_delay_ns =
+          global_resource_aggregate_telemetry().next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+      next_telemetry_retirement_delay_ns.has_value()) {
+    if (!has_next_deadline_delay || *next_telemetry_retirement_delay_ns < next_deadline_delay_ns) {
+      has_next_deadline_delay = true;
+      next_deadline_delay_ns = *next_telemetry_retirement_delay_ns;
+    }
   }
   if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
     has_next_deadline_delay = true;
@@ -555,6 +573,14 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
       case ShutdownPhase::FINAL_RETENTION_SWEEP: {
         (void)native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+        global_resource_aggregate_telemetry().reconcile_lifecycle(
+            now_ns,
+            current_gen_,
+            &streams_,
+            &acquisition_sessions_,
+            &devices_,
+            &native_objects_);
+        (void)global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         set_phase(ShutdownPhase::FINAL_PUBLISH);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -579,6 +605,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
         // They remain truthfully retained while the generation is live and through
         // final prior-generation publication, then are quarantined before exit.
         (void)native_objects_.clear_destroyed();
+        global_resource_aggregate_telemetry().clear();
         set_phase(ShutdownPhase::EXIT);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -606,6 +633,7 @@ void CoreRuntime::on_core_stop() {
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
+  global_resource_aggregate_telemetry().clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }

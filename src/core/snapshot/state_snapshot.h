@@ -182,6 +182,11 @@ struct NativeObjectRecord {
 };
 
 struct ScopedResourceTelemetry {
+    CBLifecyclePhase phase = CBLifecyclePhase::LIVE;
+    uint64_t creation_gen = 0;
+    uint64_t created_ns = 0;
+    uint64_t destroyed_ns = 0;
+
     uint64_t framebuffer_lease_current = 0;
     uint64_t framebuffer_lease_total_created = 0;
     uint64_t framebuffer_lease_total_released = 0;

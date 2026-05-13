@@ -308,6 +308,10 @@ if (in.scoped_resource_telemetry) {
     snap.scoped_resource_telemetry.reserve(entries.size());
     for (const auto& entry : entries) {
         ::ScopedResourceTelemetry out;
+        out.phase = static_cast<CBLifecyclePhase>(entry.phase == 3 ? 3 : 1);
+        out.creation_gen = entry.creation_gen;
+        out.created_ns = entry.created_ns;
+        out.destroyed_ns = entry.destroyed_ns;
         out.telemetry_scope = static_cast<uint32_t>(entry.telemetry_scope);
         out.provider_native_id = entry.provider_native_id;
         out.device_instance_id = entry.device_instance_id;

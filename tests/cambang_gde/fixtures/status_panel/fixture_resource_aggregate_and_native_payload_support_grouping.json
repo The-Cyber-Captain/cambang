@@ -7,12 +7,12 @@
     "contract_gap_count": 0,
     "projection_gap_count": 0,
     "required_row_ids": [
-      "provider/100/resource_telemetry",
+      "provider/100/native_payload_support",
       "stream/1/native_payload_support",
       "native_object/103"
     ],
     "required_counter_values_by_row": {
-      "provider/100/resource_telemetry": {
+      "provider/100/native_payload_support": {
         "fbl_cur": 2,
         "gpu_peak": 9
       }

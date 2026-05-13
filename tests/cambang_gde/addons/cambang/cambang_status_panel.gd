@@ -3569,6 +3569,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
 	var scoped_resource_telemetry := _safe_array(snapshot.get("scoped_resource_telemetry", []), issues, "scoped_resource_telemetry")
+	var scoped_resource_telemetry_group_ids := {}
 	for i in range(scoped_resource_telemetry.size()):
 		var telemetry := _safe_dict(scoped_resource_telemetry[i], issues, "scoped_resource_telemetry[%d]" % i)
 		if telemetry.is_empty():
@@ -3583,18 +3584,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			row_parent = "device/%d/native_payload_support" % int(telemetry.get("device_instance_id", 0))
 		elif scope == "PROVIDER":
 			row_parent = "provider/%d/native_payload_support" % int(telemetry.get("provider_native_id", 0))
-		panel.entries.append(_entry(
-			"%s/resource_telemetry" % row_parent,
-			row_parent,
-			_depth_for_parent(row_parent),
-			"Resource Telemetry",
-			true,
-			false,
-			[],
-			_counters_from_record(telemetry, [["fbl_cur","framebuffer_lease_current",3],["fbl_total_new","framebuffer_lease_total_created",3],["fbl_total_rel","framebuffer_lease_total_released",3],["fbl_peak","framebuffer_lease_peak_current",3],["gpu_cur","retained_gpu_backing_current",3],["gpu_total_new","retained_gpu_backing_total_created",3],["gpu_total_rel","retained_gpu_backing_total_released",3],["gpu_peak","retained_gpu_backing_peak_current",3]], [], "resource_telemetry"),
-			[],
-			"resource_telemetry"
-		))
+		_ensure_native_payload_support_group_row_id(panel, row_parent)
+		if scoped_resource_telemetry_group_ids.has(row_parent):
+			issues.append("Contract ambiguity: duplicate scoped_resource_telemetry group id %s (index=%d)." % [row_parent, i])
+			continue
+		scoped_resource_telemetry_group_ids[row_parent] = true
+		_apply_scoped_resource_telemetry_to_native_payload_support_group(panel, row_parent, telemetry)
 
 	var promoted_native_ids := {}
 	var current_device_native_matches_by_instance := {}
@@ -5775,6 +5770,148 @@ func _native_type_is_payload_support(native_type_key: String) -> bool:
 	return native_type_key == "gpu_backing" or native_type_key == "frame_buffer_lease"
 
 
+func _apply_scoped_resource_telemetry_to_native_payload_support_group(panel: PanelModel, group_id: String, telemetry: Dictionary) -> void:
+	if panel == null or group_id == "":
+		return
+	var group_row := _find_panel_entry_by_id(panel, group_id)
+	if group_row == null:
+		return
+	_apply_native_payload_support_group_phase_badge(group_row, str(telemetry.get("phase", "LIVE")))
+	var telemetry_counters := _counters_from_record(telemetry, [["fbl_cur","framebuffer_lease_current",3],["fbl_total_new","framebuffer_lease_total_created",3],["fbl_total_rel","framebuffer_lease_total_released",3],["fbl_peak","framebuffer_lease_peak_current",3],["gpu_cur","retained_gpu_backing_current",3],["gpu_total_new","retained_gpu_backing_total_created",3],["gpu_total_rel","retained_gpu_backing_total_released",3],["gpu_peak","retained_gpu_backing_peak_current",3]], [], "resource_telemetry")
+	for counter in telemetry_counters:
+		var replaced := false
+		for idx in range(group_row.counters.size()):
+			if group_row.counters[idx].name == counter.name:
+				group_row.counters[idx] = counter
+				replaced = true
+				break
+		if not replaced:
+			group_row.counters.append(counter)
+	_apply_native_payload_support_group_telemetry_health(panel, group_row)
+
+
+func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, group_row: StatusEntryModel) -> void:
+	if group_row == null:
+		return
+	var fbl_cur := _counter_value_by_name(group_row, "fbl_cur", 0)
+	var fbl_peak := _counter_value_by_name(group_row, "fbl_peak", 0)
+	var fbl_total_new := _counter_value_by_name(group_row, "fbl_total_new", 0)
+	var fbl_total_rel := _counter_value_by_name(group_row, "fbl_total_rel", 0)
+	var gpu_cur := _counter_value_by_name(group_row, "gpu_cur", 0)
+	var gpu_peak := _counter_value_by_name(group_row, "gpu_peak", 0)
+	var gpu_total_new := _counter_value_by_name(group_row, "gpu_total_new", 0)
+	var gpu_total_rel := _counter_value_by_name(group_row, "gpu_total_rel", 0)
+	var health_reasons: Array[String] = []
+	if fbl_total_rel > fbl_total_new:
+		health_reasons.append("Health reason: framebuffer lease total_released exceeds total_created.")
+	if gpu_total_rel > gpu_total_new:
+		health_reasons.append("Health reason: gpu backing total_released exceeds total_created.")
+	if fbl_cur > fbl_peak:
+		health_reasons.append("Health reason: framebuffer lease current exceeds peak.")
+	if gpu_cur > gpu_peak:
+		health_reasons.append("Health reason: gpu backing current exceeds peak.")
+	if fbl_cur != (fbl_total_new - fbl_total_rel):
+		health_reasons.append("Health reason: framebuffer lease current does not match total_created-total_released.")
+	if gpu_cur != (gpu_total_new - gpu_total_rel):
+		health_reasons.append("Health reason: gpu backing current does not match total_created-total_released.")
+	var parent_row := _find_panel_entry_by_id(panel, str(group_row.parent_id))
+	if _entry_phase_is_non_live_or_destroyed(parent_row) and (fbl_cur > 0 or gpu_cur > 0):
+		health_reasons.append("Health reason: owner ended with current native payload support resources.")
+	var telemetry_phase := _phase_label_from_badge_label(_first_badge_label(group_row.badges, ["LIVE", "DESTROYED"]))
+	if telemetry_phase == "DESTROYED" and _native_payload_support_has_live_concrete_child(panel, str(group_row.id)):
+		health_reasons.append("Health reason: destroyed native payload support group has LIVE concrete child resource.")
+	if health_reasons.is_empty():
+		return
+	group_row.badges = _with_health_badge(group_row.badges, "warning", "BAD")
+	for reason in health_reasons:
+		if not group_row.anomaly_info_lines.has(reason):
+			group_row.anomaly_info_lines.append(reason)
+
+
+func _apply_native_payload_support_group_phase_badge(group_row: StatusEntryModel, telemetry_phase: String) -> void:
+	if group_row == null:
+		return
+	var normalized := telemetry_phase.strip_edges().to_upper()
+	if normalized != "LIVE" and normalized != "DESTROYED":
+		return
+	var phase_label := "phase=%s" % normalized
+	var next_badges: Array[BadgeModel] = []
+	var inserted := false
+	for badge in group_row.badges:
+		if badge == null:
+			continue
+		if badge.kind == "health":
+			next_badges.append(_badge(badge.role, badge.label, badge.kind))
+			if not inserted:
+				next_badges.append(_badge("neutral", phase_label))
+				inserted = true
+			continue
+		var parsed := _phase_label_from_badge_label(str(badge.label))
+		if parsed == "LIVE" or parsed == "DESTROYED":
+			if not inserted:
+				next_badges.append(_badge("neutral", phase_label))
+				inserted = true
+			continue
+		next_badges.append(_badge(badge.role, badge.label, badge.kind))
+	if not inserted:
+		next_badges.append(_badge("neutral", phase_label))
+	group_row.badges = _normalize_badges(next_badges)
+
+
+func _entry_phase_is_non_live_or_destroyed(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			var phase_label := _phase_label_from_badge_label(str(badge.label))
+			if phase_label == "DESTROYED" or phase_label == "TEARING_DOWN" or phase_label == "CREATED":
+				return true
+			if phase_label == "LIVE":
+				return false
+	return false
+
+
+func _native_payload_support_has_live_concrete_child(panel: PanelModel, group_id: String) -> bool:
+	if panel == null or group_id == "":
+		return false
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if str(entry.parent_id) != group_id:
+			continue
+		if str(entry.visual_object_class) != "native_support_resource_detail":
+			continue
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			if _phase_label_from_badge_label(str(badge.label)) == "LIVE":
+				return true
+	return false
+
+
+func _first_badge_label(badges: Array[BadgeModel], phase_candidates: Array[String]) -> String:
+	for badge in badges:
+		if badge == null:
+			continue
+		var phase := _phase_label_from_badge_label(str(badge.label))
+		if phase_candidates.has(phase):
+			return str(badge.label)
+	return ""
+
+
+func _ensure_native_payload_support_group_row_id(panel: PanelModel, group_id: String) -> void:
+	if panel == null or group_id == "":
+		return
+	if _entry_exists(panel.entries, group_id):
+		return
+	var parent_id := ""
+	var suffix := "/native_payload_support"
+	if group_id.ends_with(suffix):
+		parent_id = group_id.substr(0, group_id.length() - suffix.length())
+	panel.entries.append(_entry(group_id, parent_id, _depth_for_parent(parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+
+
 func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary) -> void:
 	if panel == null:
 		return
@@ -5786,16 +5923,14 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 		var stream_parent_id := "stream/%d" % owner_stream_id
 		if _entry_exists(panel.entries, stream_parent_id):
 			var stream_group_id := "%s/native_payload_support" % stream_parent_id
-			if not _entry_exists(panel.entries, stream_group_id):
-				panel.entries.append(_entry(stream_group_id, stream_parent_id, _depth_for_parent(stream_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+			_ensure_native_payload_support_group_row_id(panel, stream_group_id)
 			return
 	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
 	if owner_acquisition_session_id > 0:
 		var acquisition_session_parent_id := "acquisition_session/%d" % owner_acquisition_session_id
 		if _entry_exists(panel.entries, acquisition_session_parent_id):
 			var acquisition_group_id := "%s/native_payload_support" % acquisition_session_parent_id
-			if not _entry_exists(panel.entries, acquisition_group_id):
-				panel.entries.append(_entry(acquisition_group_id, acquisition_session_parent_id, _depth_for_parent(acquisition_session_parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+			_ensure_native_payload_support_group_row_id(panel, acquisition_group_id)
 
 
 func _format_fourcc_with_raw(value: int) -> String:

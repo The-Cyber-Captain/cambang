@@ -563,6 +563,10 @@
       "additionalProperties": false,
       "required": [
         "telemetry_scope",
+        "destroyed_ns",
+        "created_ns",
+        "creation_gen",
+        "phase",
         "provider_native_id",
         "device_instance_id",
         "acquisition_session_id",
@@ -614,6 +618,18 @@
           "$ref": "#/$defs/uint64"
         },
         "retained_gpu_backing_peak_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "creation_gen": {
+          "$ref": "#/$defs/uint64"
+        },
+        "created_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "destroyed_ns": {
           "$ref": "#/$defs/uint64"
         }
       }

@@ -1053,10 +1053,20 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     }
   }
 
+  retain_native_acquisition_session_for_capture_(dev_it->second);
+  if (dev_it->second.acquisition_session_capture_refs == 0) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  const uint64_t capture_acquisition_session_id = dev_it->second.acquisition_session_native_id;
+  if (capture_acquisition_session_id == 0) {
+    release_native_acquisition_session_for_capture_(req.device_instance_id);
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
   FrameView fv{};
   fv.device_instance_id = req.device_instance_id;
   fv.stream_id = 0;
-  fv.acquisition_session_id = dev_it->second.acquisition_session_native_id;
+  fv.acquisition_session_id = capture_acquisition_session_id;
   fv.capture_id = req.capture_id;
   fv.width = req.width;
   fv.height = req.height;
@@ -1072,11 +1082,6 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   lease->bytes = bytes;
   fv.release = &SyntheticProvider::release_frame_;
   fv.release_user = lease;
-
-  retain_native_acquisition_session_for_capture_(dev_it->second);
-  if (dev_it->second.acquisition_session_capture_refs == 0) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-  }
 
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
   strand_.post_frame(fv);
