@@ -38,6 +38,17 @@ stream-level fallback where session ownership is available.
 The projection logic preserves explicit **Acquisition Session boundary breach**
 classification when a descendant survives beyond its controlling AcquisitionSession seam.
 
+## Capture profile counter surfacing policy (current implementation)
+
+- Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
+  inspectable retained device-bound capture profile truth, but these counters are
+  detail-level in panel visibility.
+- AcquisitionSession rows surface `capture_prof`, `capture_w`, `capture_h`, and
+  `capture_fmt` at summary level as the preferred session-context capture profile
+  surface.
+- Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
+  are not coupled to Device-vs-AcquisitionSession demotion policy.
+
 ---
 
 ## Lifecycle badge phase parsing
