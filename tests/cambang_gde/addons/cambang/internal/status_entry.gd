@@ -387,7 +387,6 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_v
 			else:
 				detail_hint.text = "SHOW +%d" % hidden_detail_count
 				detail_hint.tooltip_text = "Show hidden row detail counters/info."
-			detail_hint.label_settings = _state_label_settings()
 		else:
 			detail_hint.visible = false
 			detail_hint.tooltip_text = ""
@@ -427,7 +426,7 @@ func _ensure_counter_widget(index: int) -> VBoxContainer:
 	return counter_widget
 
 
-func _ensure_counter_detail_hint() -> Button:
+func _ensure_counter_detail_hint():
 	if _counter_detail_hint != null:
 		return _counter_detail_hint
 	if _counter_segment == null:
@@ -439,7 +438,6 @@ func _ensure_counter_detail_hint() -> Button:
 	hint.focus_mode = Control.FOCUS_NONE
 	hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	hint.label_settings = _state_label_settings()
 	if not hint.pressed.is_connected(_on_detail_hint_pressed):
 		hint.pressed.connect(_on_detail_hint_pressed)
 	_counter_segment.add_child(hint)
