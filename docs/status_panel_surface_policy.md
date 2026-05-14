@@ -349,6 +349,10 @@ This registry is presentation logic, not snapshot schema truth, and should remai
 
 ## 8) Schema → UI surface audit (current renderer/scene projection, read-only)
 
+Expansion semantics note:
+- hierarchy expand/collapse controls descendant row visibility only.
+- detail show/hide controls detail counters/info lines on the current row only.
+
 Legend:
 - Surfaced?: `yes` / `traceable` / `no`
 - Surface Type: `badge` / `counter` / `info line` / `structural` / `derived` / `missing`
@@ -369,14 +373,14 @@ Legend:
 | rig | phase | 1 | yes | badge | no | correct | none |
 | rig | mode | 1 | yes (when present) | badge | no | correct | none |
 | rig | member_hardware_ids | 3 | traceable | structural child rows + `members` counter | no | correct | keep traceable |
-| rig | capture_width/capture_height | 2 | yes | counters (`still_w`/`still_h`) | no | correct | none |
+| rig | capture_width/capture_height | 2 | yes | counters (`capture_w`/`capture_h`) | no | correct | none |
 | rig | capture_format/capture_profile_version | 2 | no | missing | n/a | missing | add direct surface |
 | rig | active_capture_id/captures_*/last_capture_*/last_sync_skew_ns/error_code | 2 | no | missing | n/a | missing | add direct surface |
 | device | phase | 1 | yes | badge | no | correct | none |
 | device | mode | 1 | yes | badge | no | correct | none |
 | device | errors_count | 1/2 | yes | counter (`errors`) | no | correct | none |
-| device | capture_width/capture_height | 2 | yes | counters (`still_w`/`still_h`) | no | correct | none |
-| device | capture_format/capture_profile_version | 2 | yes | counters (`still_fmt`/`still_prof`) | no | correct | none |
+| device | capture_width/capture_height | 2 | yes | counters (`capture_w`/`capture_h`) | no | correct | none |
+| device | capture_format/capture_profile_version | 2 | yes | counters (`capture_fmt`/`capture_prof`) | no | correct | none |
 | device | engaged/rig_id/hardware_id linkage | 3 | traceable | structural + label | no | correct | keep traceable |
 | device | camera_spec_version/warm_hold_ms/warm_remaining_ms/rebuild_count/last_error_code | 2 | no | missing | n/a | missing | add direct surface |
 | stream | phase | 1 | yes | badge | no | correct | none |

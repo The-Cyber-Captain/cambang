@@ -11,6 +11,13 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
+# TEMP DEBUG EXPANSION TRACE
+const DEBUG_EXPANSION_TRACE := false
+const DEBUG_EXPANSION_WATCH_ROW_IDS := [
+	"server/main",
+	"stream/30001",
+	"provider/synthetic/timeline/completion-gated",
+]
 
 
 class PanelModel extends RefCounted:
@@ -29,6 +36,7 @@ class StatusEntryModel extends RefCounted:
 	var is_in_orphan_native_branch: bool = false
 	var is_below_line: bool = false
 	var expanded: bool = false
+	var detail_visible: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
 	var counters: Array[CounterModel] = []
@@ -127,6 +135,7 @@ var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _expanded_by_row_id: Dictionary = {}
+var _detail_visible_by_row_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _row_nodes_by_id: Dictionary = {}
 var _server: Object = null
@@ -3697,10 +3706,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["rebuild_count", "rebuild_count", 2],
 						["warm_hold_ms", "warm_hold_ms", 3],
 						["warm_remaining_ms", "warm_remaining_ms", 3],
-						["still_w", "capture_width", 4],
-						["still_h", "capture_height", 4],
-						["still_fmt", "capture_format", 4],
-						["still_prof", "capture_profile_version", 2],
+						["capture_w", "capture_width", 4],
+						["capture_h", "capture_height", 4],
+						["capture_fmt", "capture_format", 4],
+						["capture_prof", "capture_profile_version", 2],
 					],
 					[],
 					"device"
@@ -4005,8 +4014,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_counters_from_record(
 					rec,
 					[
-						["still_w", "capture_width", 4],
-						["still_h", "capture_height", 4],
+						["capture_w", "capture_width", 4],
+						["capture_h", "capture_height", 4],
 					],
 					[
 						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
@@ -4588,9 +4597,44 @@ func _ensure_expandability(panel: PanelModel) -> void:
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
 		var child_count := int(child_counts.get(e.id, 0))
+		var can_expand_before := e.can_expand
+		var expanded_before := e.expanded
+		var has_override := _expanded_by_row_id.has(e.id)
+		var override_value := bool(_expanded_by_row_id.get(e.id, false))
+		var default_expand := _should_default_expand_entry(e)
 		e.can_expand = child_count > 0
-		if child_count > 0 and _should_default_expand_entry(e):
+		if has_override:
+			_debug_expansion_trace(
+				"_ensure_expandability",
+				{
+					"entry_id": e.id,
+					"child_count": child_count,
+					"can_expand_before": can_expand_before,
+					"can_expand_after": e.can_expand,
+					"has_override": has_override,
+					"override_value": override_value,
+					"default_expand": default_expand,
+					"expanded_before": expanded_before,
+					"expanded_after": e.expanded,
+				}
+			)
+			continue
+		if child_count > 0 and default_expand:
 			e.expanded = true
+		_debug_expansion_trace(
+			"_ensure_expandability",
+			{
+				"entry_id": e.id,
+				"child_count": child_count,
+				"can_expand_before": can_expand_before,
+				"can_expand_after": e.can_expand,
+				"has_override": has_override,
+				"override_value": override_value,
+				"default_expand": default_expand,
+				"expanded_before": expanded_before,
+				"expanded_after": e.expanded,
+			}
+		)
 
 
 func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
@@ -4781,7 +4825,11 @@ func _reconcile_row_nodes(
 		var entry_model: StatusEntryModel = model.entries[index]
 		if entry_model == null:
 			continue
+		var expanded_before_resolve := entry_model.expanded
+		var has_override := _expanded_by_row_id.has(entry_model.id)
+		var override_value := bool(_expanded_by_row_id.get(entry_model.id, false))
 		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
+		entry_model.detail_visible = _resolved_entry_detail_visible_state(entry_model)
 		var row_visible := _is_entry_visible(entry_model)
 		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
@@ -4794,6 +4842,8 @@ func _reconcile_row_nodes(
 			created = true
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+			if entry.has_signal("detail_toggled") and not entry.detail_toggled.is_connected(_on_entry_detail_toggled):
+				entry.detail_toggled.connect(_on_entry_detail_toggled)
 
 		var bound_row_id: String = str(entry.get_entry_id())
 		if bound_row_id != "" and bound_row_id != row_id:
@@ -4815,6 +4865,8 @@ func _reconcile_row_nodes(
 			created = true
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+			if entry.has_signal("detail_toggled") and not entry.detail_toggled.is_connected(_on_entry_detail_toggled):
+				entry.detail_toggled.connect(_on_entry_detail_toggled)
 
 		if entry.get_parent() != _status_rows:
 			_status_rows.add_child(entry)
@@ -4822,6 +4874,20 @@ func _reconcile_row_nodes(
 			_status_rows.move_child(entry, index)
 
 		entry.set_style(style)
+		_debug_expansion_trace(
+			"_reconcile_row_nodes.pre_set_model",
+			{
+				"entry_id": entry_model.id,
+				"parent_id": entry_model.parent_id,
+				"can_expand": entry_model.can_expand,
+				"expanded_before_resolve": expanded_before_resolve,
+				"resolved_expanded": entry_model.expanded,
+				"has_override": has_override,
+				"override_value": override_value,
+				"row_node_instance_id": entry.get_instance_id(),
+				"row_visible": row_visible,
+			}
+		)
 		entry.set_model(entry_model)
 		entry.visible = row_visible
 		_debug_log_row_lifecycle(entry_model, entry, created, update_category)
@@ -4866,10 +4932,33 @@ func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
 		return true
 
 	var current_parent := entry_model.parent_id
+	var parent_chain: Array[String] = []
+	var hidden_by := ""
 	while current_parent != "":
-		if not bool(_expanded_by_row_id.get(current_parent, true)):
+		parent_chain.append(current_parent)
+		var parent_expanded := _resolved_expanded_state_for_row_id(current_parent)
+		if not parent_expanded:
+			hidden_by = current_parent
+			_debug_expansion_trace(
+				"_is_entry_visible.hidden",
+				{
+					"entry_id": entry_model.id,
+					"parent_chain": parent_chain,
+					"hidden_by": hidden_by,
+					"stream_30001_expanded": _resolved_expanded_state_for_row_id("stream/30001"),
+				}
+			)
 			return false
 		current_parent = _find_parent_id(current_parent)
+	_debug_expansion_trace(
+		"_is_entry_visible.visible",
+		{
+			"entry_id": entry_model.id,
+			"parent_chain": parent_chain,
+			"hidden_by": hidden_by,
+			"stream_30001_expanded": _resolved_expanded_state_for_row_id("stream/30001"),
+		}
+	)
 	return true
 
 
@@ -4877,10 +4966,59 @@ func _find_parent_id(entry_id: String) -> String:
 	return str(_dev_parent_by_id.get(entry_id, ""))
 
 
-func _on_entry_disclosure_toggled(entry_id: String, _expanded: bool) -> void:
-	var next_expanded := not _current_expanded_state_for_row(entry_id)
+func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
+	var next_expanded := bool(expanded)
+	var had_previous := _expanded_by_row_id.has(entry_id)
+	var previous_value := bool(_expanded_by_row_id.get(entry_id, false))
 	_debug_log_disclosure_click(entry_id, next_expanded)
 	_expanded_by_row_id[entry_id] = next_expanded
+	_debug_expansion_trace(
+		"_on_entry_disclosure_toggled",
+		{
+			"entry_id": entry_id,
+			"emitted_expanded": expanded,
+			"had_previous_override": had_previous,
+			"previous_override_value": previous_value,
+			"new_override_value": bool(_expanded_by_row_id.get(entry_id, false)),
+			"snapshot_gen": _last_snapshot_meta.get("gen", "?"),
+			"snapshot_version": _last_snapshot_meta.get("version", "?"),
+			"snapshot_topology": _last_snapshot_meta.get("topology_version", "?"),
+		}
+	)
+	if _last_panel_model != null:
+		_render_panel_model(_last_panel_model)
+	else:
+		_render_panel_model(_build_fake_panel_model())
+
+
+func _should_trace_expansion_for_row(entry_id: String) -> bool:
+	if not DEBUG_EXPANSION_TRACE:
+		return false
+	if entry_id == "":
+		return false
+	for watched in DEBUG_EXPANSION_WATCH_ROW_IDS:
+		var watched_id := str(watched)
+		if watched_id == "":
+			continue
+		if entry_id == watched_id:
+			return true
+		if watched_id == "stream/30001" and entry_id.begins_with("stream/30001/"):
+			return true
+	return false
+
+
+func _debug_expansion_trace(context: String, payload: Dictionary) -> void:
+	if not DEBUG_EXPANSION_TRACE:
+		return
+	var entry_id := str(payload.get("entry_id", ""))
+	if not _should_trace_expansion_for_row(entry_id):
+		return
+	print("[TEMP DEBUG EXPANSION TRACE] context=%s payload=%s" % [context, JSON.stringify(payload)])
+
+
+func _on_entry_detail_toggled(entry_id: String, _detail_visible: bool) -> void:
+	var next_detail_visible := not _current_detail_visible_state_for_row(entry_id)
+	_detail_visible_by_row_id[entry_id] = next_detail_visible
 	if _last_panel_model != null:
 		_render_panel_model(_last_panel_model)
 	else:
@@ -4897,7 +5035,25 @@ func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
 	return entry_model.expanded
 
 
+func _resolved_entry_detail_visible_state(entry_model: StatusEntryModel) -> bool:
+	if entry_model == null:
+		return false
+	if _detail_visible_by_row_id.has(entry_model.id):
+		return bool(_detail_visible_by_row_id[entry_model.id])
+	return false
+
+
 func _current_expanded_state_for_row(entry_id: String) -> bool:
+	return _resolved_expanded_state_for_row_id(entry_id)
+
+
+func _current_detail_visible_state_for_row(entry_id: String) -> bool:
+	if _detail_visible_by_row_id.has(entry_id):
+		return bool(_detail_visible_by_row_id[entry_id])
+	return false
+
+
+func _resolved_expanded_state_for_row_id(entry_id: String) -> bool:
 	if _expanded_by_row_id.has(entry_id):
 		return bool(_expanded_by_row_id[entry_id])
 	if _last_panel_model == null:
@@ -5130,10 +5286,10 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"rebuild_count": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"warm_hold_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"warm_remaining_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
-				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"stream":
 			return {
@@ -5168,8 +5324,8 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 		"rig":
 			return {
 				"members": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
-				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"native_object":
 			return {
@@ -5376,7 +5532,7 @@ func _counter_preference_table() -> Dictionary:
 			"derived_aggregate": ["rigs", "devices", "acquisition_sessions", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
 		},
 		"device": {
-			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt"],
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof"],
 		},
 		"stream": {
 			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
@@ -5389,7 +5545,7 @@ func _counter_preference_table() -> Dictionary:
 			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
 		},
 		"rig": {
-			"configuration": ["still_w", "still_h"],
+			"configuration": ["capture_w", "capture_h"],
 			"derived_aggregate": ["members"],
 		},
 		"native_object": {
@@ -5511,10 +5667,10 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 	return "NONE"
 
 
-func _build_still_profile_info_line(rec: Dictionary) -> String:
+func _build_capture_profile_info_line(rec: Dictionary) -> String:
 	return _build_info_line_from_parts(
 		rec,
-		"still",
+		"capture",
 		[
 			["capture_width", "capture_width", "int"],
 			["capture_height", "capture_height", "int"],
@@ -5662,9 +5818,17 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "still_w", "still_h", "native_all", "native_cur", "buffers", "source_version":
+		"capture_prof", "capture_w", "capture_h", "capture_fmt":
+			if entry.visual_object_class == "device":
+				return "detail"
 			return "summary"
-		"frames", "bytes", "native_prev", "native_dead", "source_topology":
+		"native_prev", "native_dead":
+			if entry.visual_object_class == "provider":
+				return "summary"
+			return "detail"
+		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "capture_w", "capture_h", "capture_fmt", "capture_prof", "native_all", "native_cur", "buffers", "source_version":
+			return "summary"
+		"frames", "bytes", "source_topology":
 			return "detail"
 		_:
 			return "summary"
