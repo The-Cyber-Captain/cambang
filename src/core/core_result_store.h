@@ -57,11 +57,25 @@ struct CoreStreamResultData {
 };
 
 struct CoreCaptureResultData {
+  struct DefaultImageData {
+    uint64_t capture_timestamp_ns = 0;
+    CoreResultPayloadCpuPacked payload{};
+
+    bool has_capture_attributes = false;
+    ResultCaptureAttributesFacts capture_attributes{};
+    ResultCaptureAttributesProvenance capture_attributes_provenance{};
+  };
+
   uint64_t capture_id = 0;
   uint64_t device_instance_id = 0;
-  uint64_t capture_timestamp_ns = 0;
+
+  uint32_t image_width = 0;
+  uint32_t image_height = 0;
+  uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
-  CoreResultPayloadCpuPacked payload{};
+
+  DefaultImageData default_image{};
+
   CoreImageFactBundle facts{};
 };
 

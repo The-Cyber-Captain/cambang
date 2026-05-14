@@ -4,18 +4,18 @@
 
 namespace cambang {
 
-uint32_t CamBANGCaptureResult::get_width() const { return data_ ? data_->payload.width : 0; }
-uint32_t CamBANGCaptureResult::get_height() const { return data_ ? data_->payload.height : 0; }
-uint32_t CamBANGCaptureResult::get_format() const { return data_ ? data_->payload.format_fourcc : 0; }
+uint32_t CamBANGCaptureResult::get_width() const { return data_ ? data_->image_width : 0; }
+uint32_t CamBANGCaptureResult::get_height() const { return data_ ? data_->image_height : 0; }
+uint32_t CamBANGCaptureResult::get_format() const { return data_ ? data_->image_format_fourcc : 0; }
 int CamBANGCaptureResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }
-uint64_t CamBANGCaptureResult::get_capture_timestamp() const { return data_ ? data_->capture_timestamp_ns : 0; }
+uint64_t CamBANGCaptureResult::get_capture_timestamp() const { return data_ ? data_->default_image.capture_timestamp_ns : 0; }
 uint64_t CamBANGCaptureResult::get_device_instance_id() const { return data_ ? data_->device_instance_id : 0; }
 uint64_t CamBANGCaptureResult::get_capture_id() const { return data_ ? data_->capture_id : 0; }
 
 bool CamBANGCaptureResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }
-bool CamBANGCaptureResult::has_capture_attributes() const { return data_ && data_->facts.has_capture_attributes; }
+bool CamBANGCaptureResult::has_capture_attributes() const { return data_ && data_->default_image.has_capture_attributes; }
 bool CamBANGCaptureResult::has_location_attributes() const { return data_ && data_->facts.has_location_attributes; }
 bool CamBANGCaptureResult::has_optical_calibration() const { return data_ && data_->facts.has_optical_calibration; }
 
@@ -23,7 +23,7 @@ godot::Dictionary CamBANGCaptureResult::get_image_properties() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_capture_attributes() const {
-  return has_capture_attributes() ? to_dict(data_->facts.capture_attributes) : godot::Dictionary();
+  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_location_attributes() const {
   return has_location_attributes() ? to_dict(data_->facts.location_attributes) : godot::Dictionary();
@@ -36,7 +36,7 @@ godot::Dictionary CamBANGCaptureResult::get_image_properties_provenance() const 
   return has_image_properties() ? to_dict(data_->facts.image_properties_provenance) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_capture_attributes_provenance() const {
-  return has_capture_attributes() ? to_dict(data_->facts.capture_attributes_provenance) : godot::Dictionary();
+  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes_provenance) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_location_attributes_provenance() const {
   return has_location_attributes() ? to_dict(data_->facts.location_attributes_provenance) : godot::Dictionary();
@@ -65,7 +65,7 @@ godot::Ref<godot::Image> CamBANGCaptureResult::to_image() const {
   if (!data_) {
     return godot::Ref<godot::Image>();
   }
-  return payload_to_image(data_->payload);
+  return payload_to_image(data_->default_image.payload);
 }
 
 godot::PackedByteArray CamBANGCaptureResult::get_encoded_bytes() const {

@@ -114,10 +114,16 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     auto capture_result = std::make_shared<CoreCaptureResultData>();
     capture_result->capture_id = frame.capture_id;
     capture_result->device_instance_id = frame.device_instance_id;
-    capture_result->capture_timestamp_ns = capture_timestamp_ns;
+    capture_result->image_width = payload.width;
+    capture_result->image_height = payload.height;
+    capture_result->image_format_fourcc = payload.format_fourcc;
     capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
-    capture_result->payload = payload;
+    capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
+    capture_result->default_image.payload = payload;
     facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
+    facts.has_capture_attributes = false;
+    facts.capture_attributes = ResultCaptureAttributesFacts{};
+    facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
     capture_result->facts = facts;
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
