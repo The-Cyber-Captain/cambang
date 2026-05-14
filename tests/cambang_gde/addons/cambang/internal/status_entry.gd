@@ -376,17 +376,23 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_v
 		_counter_widgets[i].visible = false
 
 	var detail_hint := _ensure_counter_detail_hint()
-	if hidden_detail_count > 0:
-		detail_hint.visible = true
-		if detail_visible:
-			detail_hint.text = "HIDE DETAIL"
+	var detail_hint_visible := false
+	if detail_hint != null:
+		if hidden_detail_count > 0:
+			detail_hint.visible = true
+			detail_hint_visible = true
+			if detail_visible:
+				detail_hint.text = "HIDE DETAIL"
+				detail_hint.tooltip_text = "Hide row detail counters/info."
+			else:
+				detail_hint.text = "SHOW +%d" % hidden_detail_count
+				detail_hint.tooltip_text = "Show hidden row detail counters/info."
+			detail_hint.label_settings = _state_label_settings()
 		else:
-			detail_hint.text = "SHOW +%d" % hidden_detail_count
-		detail_hint.label_settings = _state_label_settings()
-	else:
-		detail_hint.visible = false
+			detail_hint.visible = false
+			detail_hint.tooltip_text = ""
 
-	_counter_segment.visible = not visible_counters.is_empty() or detail_hint.visible
+	_counter_segment.visible = not visible_counters.is_empty() or detail_hint_visible
 
 
 func _format_counter_name(counter: CamBANGStatusPanel.CounterModel) -> String:
@@ -424,13 +430,15 @@ func _ensure_counter_widget(index: int) -> VBoxContainer:
 func _ensure_counter_detail_hint() -> Button:
 	if _counter_detail_hint != null:
 		return _counter_detail_hint
+	if _counter_segment == null:
+		return null
 
 	var hint := Button.new()
 	hint.visible = false
 	hint.flat = true
 	hint.focus_mode = Control.FOCUS_NONE
 	hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hint.label_settings = _state_label_settings()
 	if not hint.pressed.is_connected(_on_detail_hint_pressed):
 		hint.pressed.connect(_on_detail_hint_pressed)
@@ -1132,5 +1140,6 @@ func _bind_nodes() -> void:
 	_disclosure_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_row_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ensure_counter_detail_hint()
 	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):
 		_disclosure_button.pressed.connect(_on_disclosure_pressed)
