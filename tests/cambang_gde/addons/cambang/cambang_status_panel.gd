@@ -11,6 +11,13 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
+# TEMP DEBUG EXPANSION TRACE
+const DEBUG_EXPANSION_TRACE := false
+const DEBUG_EXPANSION_WATCH_ROW_IDS := [
+	"server/main",
+	"stream/30001",
+	"provider/synthetic/timeline/completion-gated",
+]
 
 
 class PanelModel extends RefCounted:
@@ -4590,11 +4597,44 @@ func _ensure_expandability(panel: PanelModel) -> void:
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
 		var child_count := int(child_counts.get(e.id, 0))
+		var can_expand_before := e.can_expand
+		var expanded_before := e.expanded
+		var has_override := _expanded_by_row_id.has(e.id)
+		var override_value := bool(_expanded_by_row_id.get(e.id, false))
+		var default_expand := _should_default_expand_entry(e)
 		e.can_expand = child_count > 0
-		if _expanded_by_row_id.has(e.id):
+		if has_override:
+			_debug_expansion_trace(
+				"_ensure_expandability",
+				{
+					"entry_id": e.id,
+					"child_count": child_count,
+					"can_expand_before": can_expand_before,
+					"can_expand_after": e.can_expand,
+					"has_override": has_override,
+					"override_value": override_value,
+					"default_expand": default_expand,
+					"expanded_before": expanded_before,
+					"expanded_after": e.expanded,
+				}
+			)
 			continue
-		if child_count > 0 and _should_default_expand_entry(e):
+		if child_count > 0 and default_expand:
 			e.expanded = true
+		_debug_expansion_trace(
+			"_ensure_expandability",
+			{
+				"entry_id": e.id,
+				"child_count": child_count,
+				"can_expand_before": can_expand_before,
+				"can_expand_after": e.can_expand,
+				"has_override": has_override,
+				"override_value": override_value,
+				"default_expand": default_expand,
+				"expanded_before": expanded_before,
+				"expanded_after": e.expanded,
+			}
+		)
 
 
 func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
@@ -4785,6 +4825,9 @@ func _reconcile_row_nodes(
 		var entry_model: StatusEntryModel = model.entries[index]
 		if entry_model == null:
 			continue
+		var expanded_before_resolve := entry_model.expanded
+		var has_override := _expanded_by_row_id.has(entry_model.id)
+		var override_value := bool(_expanded_by_row_id.get(entry_model.id, false))
 		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
 		entry_model.detail_visible = _resolved_entry_detail_visible_state(entry_model)
 		var row_visible := _is_entry_visible(entry_model)
@@ -4831,6 +4874,20 @@ func _reconcile_row_nodes(
 			_status_rows.move_child(entry, index)
 
 		entry.set_style(style)
+		_debug_expansion_trace(
+			"_reconcile_row_nodes.pre_set_model",
+			{
+				"entry_id": entry_model.id,
+				"parent_id": entry_model.parent_id,
+				"can_expand": entry_model.can_expand,
+				"expanded_before_resolve": expanded_before_resolve,
+				"resolved_expanded": entry_model.expanded,
+				"has_override": has_override,
+				"override_value": override_value,
+				"row_node_instance_id": entry.get_instance_id(),
+				"row_visible": row_visible,
+			}
+		)
 		entry.set_model(entry_model)
 		entry.visible = row_visible
 		_debug_log_row_lifecycle(entry_model, entry, created, update_category)
@@ -4875,10 +4932,33 @@ func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
 		return true
 
 	var current_parent := entry_model.parent_id
+	var parent_chain: Array[String] = []
+	var hidden_by := ""
 	while current_parent != "":
-		if not _resolved_expanded_state_for_row_id(current_parent):
+		parent_chain.append(current_parent)
+		var parent_expanded := _resolved_expanded_state_for_row_id(current_parent)
+		if not parent_expanded:
+			hidden_by = current_parent
+			_debug_expansion_trace(
+				"_is_entry_visible.hidden",
+				{
+					"entry_id": entry_model.id,
+					"parent_chain": parent_chain,
+					"hidden_by": hidden_by,
+					"stream_30001_expanded": _resolved_expanded_state_for_row_id("stream/30001"),
+				}
+			)
 			return false
 		current_parent = _find_parent_id(current_parent)
+	_debug_expansion_trace(
+		"_is_entry_visible.visible",
+		{
+			"entry_id": entry_model.id,
+			"parent_chain": parent_chain,
+			"hidden_by": hidden_by,
+			"stream_30001_expanded": _resolved_expanded_state_for_row_id("stream/30001"),
+		}
+	)
 	return true
 
 
@@ -4888,12 +4968,52 @@ func _find_parent_id(entry_id: String) -> String:
 
 func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
 	var next_expanded := bool(expanded)
+	var had_previous := _expanded_by_row_id.has(entry_id)
+	var previous_value := bool(_expanded_by_row_id.get(entry_id, false))
 	_debug_log_disclosure_click(entry_id, next_expanded)
 	_expanded_by_row_id[entry_id] = next_expanded
+	_debug_expansion_trace(
+		"_on_entry_disclosure_toggled",
+		{
+			"entry_id": entry_id,
+			"emitted_expanded": expanded,
+			"had_previous_override": had_previous,
+			"previous_override_value": previous_value,
+			"new_override_value": bool(_expanded_by_row_id.get(entry_id, false)),
+			"snapshot_gen": _last_snapshot_meta.get("gen", "?"),
+			"snapshot_version": _last_snapshot_meta.get("version", "?"),
+			"snapshot_topology": _last_snapshot_meta.get("topology_version", "?"),
+		}
+	)
 	if _last_panel_model != null:
 		_render_panel_model(_last_panel_model)
 	else:
 		_render_panel_model(_build_fake_panel_model())
+
+
+func _should_trace_expansion_for_row(entry_id: String) -> bool:
+	if not DEBUG_EXPANSION_TRACE:
+		return false
+	if entry_id == "":
+		return false
+	for watched in DEBUG_EXPANSION_WATCH_ROW_IDS:
+		var watched_id := str(watched)
+		if watched_id == "":
+			continue
+		if entry_id == watched_id:
+			return true
+		if watched_id == "stream/30001" and entry_id.begins_with("stream/30001/"):
+			return true
+	return false
+
+
+func _debug_expansion_trace(context: String, payload: Dictionary) -> void:
+	if not DEBUG_EXPANSION_TRACE:
+		return
+	var entry_id := str(payload.get("entry_id", ""))
+	if not _should_trace_expansion_for_row(entry_id):
+		return
+	print("[TEMP DEBUG EXPANSION TRACE] context=%s payload=%s" % [context, JSON.stringify(payload)])
 
 
 func _on_entry_detail_toggled(entry_id: String, _detail_visible: bool) -> void:

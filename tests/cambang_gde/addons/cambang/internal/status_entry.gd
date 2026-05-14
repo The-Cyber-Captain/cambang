@@ -3,6 +3,12 @@ extends MarginContainer
 
 signal disclosure_toggled(entry_id: String, expanded: bool)
 signal detail_toggled(entry_id: String, detail_visible: bool)
+const DEBUG_EXPANSION_TRACE := false
+const DEBUG_EXPANSION_WATCH_ROW_IDS := [
+	"server/main",
+	"stream/30001",
+	"provider/synthetic/timeline/completion-gated",
+]
 
 const INDENT_WIDTH := 14.0
 const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
@@ -80,6 +86,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_disclosure_button.set_pressed_no_signal(model.expanded if is_expandable else false)
 	_disclosure_indicator.set_expanded(effective_expanded)
 	_disclosure_button.tooltip_text = _disclosure_tooltip_for_model(model)
+	_debug_expansion_trace_set_model(model, effective_expanded)
 
 	_apply_row_palette(model)
 	_render_badges(_badges_for_render(model))
@@ -1139,6 +1146,39 @@ func _on_disclosure_pressed() -> void:
 		return
 	_disclosure_indicator.set_expanded(_disclosure_button.button_pressed)
 	disclosure_toggled.emit(_entry_id, _disclosure_button.button_pressed)
+
+
+func _should_trace_expansion_for_row(entry_id: String) -> bool:
+	if not DEBUG_EXPANSION_TRACE:
+		return false
+	if entry_id == "":
+		return false
+	for watched in DEBUG_EXPANSION_WATCH_ROW_IDS:
+		var watched_id := str(watched)
+		if watched_id == "":
+			continue
+		if entry_id == watched_id:
+			return true
+		if watched_id == "stream/30001" and entry_id.begins_with("stream/30001/"):
+			return true
+	return false
+
+
+func _debug_expansion_trace_set_model(model: CamBANGStatusPanel.StatusEntryModel, effective_expanded: bool) -> void:
+	if model == null or not _should_trace_expansion_for_row(model.id):
+		return
+	print(
+		"[TEMP DEBUG EXPANSION TRACE] context=StatusEntry.set_model payload=%s"
+		% JSON.stringify(
+			{
+				"entry_id": model.id,
+				"can_expand": model.can_expand,
+				"model_expanded": model.expanded,
+				"button_pressed": _disclosure_button.button_pressed if _disclosure_button != null else null,
+				"indicator_expanded": effective_expanded,
+			}
+		)
+	)
 
 
 func _on_detail_hint_pressed() -> void:
