@@ -4886,8 +4886,8 @@ func _find_parent_id(entry_id: String) -> String:
 	return str(_dev_parent_by_id.get(entry_id, ""))
 
 
-func _on_entry_disclosure_toggled(entry_id: String, _expanded: bool) -> void:
-	var next_expanded := not _current_expanded_state_for_row(entry_id)
+func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
+	var next_expanded := bool(expanded)
 	_debug_log_disclosure_click(entry_id, next_expanded)
 	_expanded_by_row_id[entry_id] = next_expanded
 	if _last_panel_model != null:
