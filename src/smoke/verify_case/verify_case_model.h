@@ -44,6 +44,8 @@ struct VerifyCaseExpectation {
   VerifyCaseTime at = 0;
   std::uint32_t device_count = 0;
   std::uint32_t stream_count = 0; // Flowing stream count in this tranche.
+  std::uint32_t acquisition_session_count = 0;
+  bool expect_acquisition_session = false;
   bool require_topology_change = false;
 };
 
@@ -87,7 +89,28 @@ struct VerifyCase {
     AtBuilder& expect(std::uint32_t device_count,
                       std::uint32_t stream_count,
                       bool require_topology_change = false) {
-      verify_case->expectations.push_back({at, device_count, stream_count, require_topology_change});
+      verify_case->expectations.push_back(
+          {at,
+           device_count,
+           stream_count,
+           0,
+           false,
+           require_topology_change});
+      return *this;
+    }
+
+    AtBuilder& expect_with_native(std::uint32_t device_count,
+                                  std::uint32_t stream_count,
+                                  std::uint32_t acquisition_session_count,
+                                  bool expect_acquisition_session,
+                                  bool require_topology_change = false) {
+      verify_case->expectations.push_back(
+          {at,
+           device_count,
+           stream_count,
+           acquisition_session_count,
+           expect_acquisition_session,
+           require_topology_change});
       return *this;
     }
   };

@@ -18,6 +18,7 @@
 #include "imaging/synthetic/builtin_scenario_library.h"
 #include "imaging/synthetic/scenario_model.h"
 #include "imaging/synthetic/scenario.h"
+#include "imaging/synthetic/provider.h"
 
 namespace cambang {
 
@@ -104,6 +105,7 @@ public:
   ProviderResult advance_timeline_for_host(uint64_t dt_ns);
   ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_synthetic_timeline_request_dispatch_hook(std::function<void(const SyntheticScheduledEvent&)> hook);
+  bool get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSnapshot& out) const;
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
   SyntheticRole synthetic_role_latched() const noexcept { return synthetic_role_latched_; }

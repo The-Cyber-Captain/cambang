@@ -81,14 +81,17 @@ struct CmdProviderStreamStopped {
 
 struct CmdProviderCaptureStarted {
   uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
 };
 
 struct CmdProviderCaptureCompleted {
   uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
 };
 
 struct CmdProviderCaptureFailed {
   uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
   uint32_t error_code = 0;
 };
 
@@ -111,6 +114,7 @@ struct CmdProviderNativeObjectCreated {
   uint32_t type = 0;
   uint64_t root_id = 0;
   uint64_t owner_device_instance_id = 0;
+  uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint64_t owner_provider_native_id = 0;
   uint64_t owner_rig_id = 0;

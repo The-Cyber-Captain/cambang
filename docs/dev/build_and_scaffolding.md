@@ -248,7 +248,7 @@ headers are already available.
 
 ## 10. SCons object separation (`VariantDir`)
 
-Both the smoke harness and GDE build compile shared `src/` sources with
+Both the smoke verifier target and GDE build compile shared `src/` sources with
 different flags.
 
 Without separated object directories, SCons may fail with collisions such as:

@@ -138,7 +138,7 @@ the first published baseline may legitimately contain:
 - one current-generation provider native object
 - zero devices
 - zero streams
-- no frameproducer subtree
+- no producer-row subtree requirement
 
 This is a contract-valid transient of startup/restart truth, not an incomplete
 or fabricated snapshot.
@@ -154,9 +154,15 @@ In scenarios that explicitly realize descendants, the expected next observable
 transitions are:
 
 - provider-only → device realized (`version += 1`, `topology_version += 1`)
-- device realized → stream realized (`version += 1`, `topology_version += 1`)
-- stream realized → frameproducer realized (`version += 1`, `topology_version`
-  may remain unchanged if the observable topology signature does not change)
+- device realized → acquisition session realized (`version += 1`,
+  `topology_version += 1`) when provider truth first realizes an
+  `AcquisitionSession` seam for that device (for example through stream-backed
+  realization or a capture-only path)
+- acquisition session realized → stream realized (`version += 1`,
+  `topology_version += 1`)
+- started/producing activity → payload/native-support truth updates
+  (`version += 1`, `topology_version` may remain unchanged when structural
+  ancestry is unchanged)
 
 ### 1.3.y Snapshot access contract (`get_state_snapshot()`)
 
@@ -270,13 +276,55 @@ CamBANGStateSnapshot {
 
   rigs: Array<CamBANGRigState>
   devices: Array<CamBANGDeviceState>
+  acquisition_sessions: Array<AcquisitionSessionState>
   streams: Array<CamBANGStreamState>
 
   native_objects: Array<NativeObjectRecord>
 
+  scoped_resource_telemetry: ScopedResourceTelemetry
+
   detached_root_ids: Array<uint64> // computed by core (see §7)
 }
 ```
+
+`scoped_resource_telemetry` is aggregate counter telemetry for high-frequency resources.
+It does not imply per-frame `native_objects[]` churn.
+
+```text
+ScopedResourceTelemetry {
+  phase: phase                        // LIVE | DESTROYED
+  creation_gen: uint64
+  created_ns: uint64
+  destroyed_ns: uint64                // 0 unless phase=DESTROYED
+
+  framebuffer_lease_current: uint64
+  framebuffer_lease_total_created: uint64
+  framebuffer_lease_total_released: uint64
+  framebuffer_lease_peak_current: uint64
+
+  retained_gpu_backing_current: uint64
+  retained_gpu_backing_total_created: uint64
+  retained_gpu_backing_total_released: uint64
+  retained_gpu_backing_peak_current: uint64
+}
+```
+
+Scoped resource telemetry is lifecycle-bearing but intentionally only exposes
+`LIVE` and `DESTROYED` in v1.
+### 5.1 `acquisition_sessions` truth scope (v1)
+
+`acquisition_sessions` is a top-level snapshot category in schema version **1**.
+
+Current v1 meaning is intentionally narrow and implementation-synchronized:
+
+- `acquisition_sessions[]` reports **current/live retained AcquisitionSession truth** for the active generation.
+- It is **not** the destroyed-history archive for prior sessions.
+- Destroyed/retained lifecycle history remains diagnosable through `native_objects` retention.
+
+This distinction is important for diagnostics and panel projection: live session truth
+comes from top-level `acquisition_sessions`, while historical teardown ordering remains
+visible through retained `NativeObjectRecord` entries.
+
 ### 5.x Effective retained truth (normative)
 
 Certain snapshot fields represent **effective retained truth** within Core.
@@ -408,7 +456,57 @@ CamBANGDeviceState {
 }
 ```
 
-### 6.3 `CamBANGStreamState`
+### 6.3 `AcquisitionSessionState` (provisional tranche-1 shape)
+
+`AcquisitionSessionState` is introduced as a first-class snapshot category for
+acquisition-session truth. This tranche intentionally uses a provisional field
+shape borrowed from the existing still-capture summary vocabulary. Field
+residency is not final long-term approval in this tranche.
+
+Boundary direction remains:
+
+- Device remains the hardware/resource posture boundary.
+- Stream remains the repeating-flow boundary.
+- AcquisitionSession is the acquisition-session truth boundary.
+
+`AcquisitionSession` is runtime/provider-originated truth and is not a directly
+scenario-authored object.
+
+Implementation-status clarification (current repo truth):
+
+- `AcquisitionSession` is runtime/provider-originated truth and is not a directly
+  scenario-authored object.
+- `SyntheticProvider` now realizes truthful `AcquisitionSession` state for both
+  stream-backed and capture-only paths.
+- Capture activity/counters in `AcquisitionSessionState` reflect retained session
+  truth when a live session seam exists.
+- Still capture callbacks alone must not be treated as retained AcquisitionSession
+  realization in core state when no concrete session seam has been realized.
+
+``` text
+AcquisitionSessionState {
+  acquisition_session_id: uint64
+  device_instance_id: uint64
+
+  phase: phase
+
+  capture_profile_version: uint64
+  capture_width: uint32
+  capture_height: uint32
+  capture_format: uint32
+
+  captures_triggered: uint64
+  captures_completed: uint64
+  captures_failed: uint64
+
+  last_capture_id: uint64
+  last_capture_latency_ns: uint64
+
+  error_code: int32
+}
+```
+
+### 6.4 `CamBANGStreamState`
 
 A repeating stream. Each device supports at most **one active repeating
 stream** at a time (design choice).
@@ -470,19 +568,64 @@ CamBANGStreamState {
 **Invariant (v1):** - At most one stream per `device_instance_id` may be
 `phase=LIVE` and `mode != STOPPED`.
 
-### 6.4 `NativeObjectRecord`
+### Context placement for resource-bearing native truth
+
+CamBANG distinguishes structural context from additional provider-owned
+resource-bearing native truth.
+
+Boundary direction remains:
+
+- Device remains the hardware/resource posture boundary.
+- Stream remains the repeating-flow boundary.
+- AcquisitionSession remains the acquisition-session truth boundary.
+
+For additional provider-owned native resources whose lifetime matters beyond
+ordinary parent destruction:
+
+- **stream-originated** resource-bearing native truth is interpreted beneath
+  the owning `Stream` context
+- **capture-originated** resource-bearing native truth is interpreted beneath
+  the owning `AcquisitionSession` context
+
+This rule applies without requiring any `FrameProducer` row.
+
+The snapshot does not require a public-object analogue for such native truth.
+Native placement and interpretation are based on provider-owned runtime truth,
+not on 1:1 parity with public Godot-facing objects.
+
+### Native Payload Support projection grouping
+
+Native Payload Support is a projection grouping concept.
+
+It is not a required top-level snapshot category.
+It is not a required provider-reported native-object type.
+
+Grouping is derived from existing ownership/context truth:
+
+- within `Stream` for stream-originated support entities
+- within `AcquisitionSession` for capture-originated support entities
+
+This remains valid without any `FrameProducer` row.
+
+### 6.5 `NativeObjectRecord`
 
 Native/core objects created by the provider on behalf of CamBANG
 are tracked as registry records.
 
+FrameProducer is not part of the canonical structural snapshot model in this
+tranche. Production is interpreted through structural context, payload
+delivery, and provider-owned native support truth rather than a separate
+producer row.
+
 ``` text
 NativeObjectRecord {
   native_id: uint64
-  type: provider | device | stream | frameproducer
+  type: provider | device | acquisition_session | stream | support_resource
 
   phase: phase
 
   owner_device_instance_id: uint64       // 0 if none/unknown
+  owner_acquisition_session_id: uint64   // 0 if none/unknown
   owner_stream_id: uint64                // 0 if none/unknown
   owner_provider_native_id: uint64       // 0 if none/unknown
   owner_rig_id: uint64                   // 0 if none/unknown
@@ -498,6 +641,23 @@ NativeObjectRecord {
   buffers_in_use: uint32                 // 0 if not applicable
 }
 ```
+
+Ownership interpretation note:
+
+- Native `Stream` means a truthfully realized provider/native stream-like resource.
+- Production is interpreted through structural context, payload delivery,
+  and provider-owned native support truth rather than a separate producer row.
+- For resource-bearing native truth associated with repeating flow,
+  `owner_stream_id != 0` is the primary placement signal.
+- For capture-originated resource-bearing native truth with no repeating-stream
+  context, `owner_acquisition_session_id != 0` is the primary placement signal.
+- `FrameProducer` presence is not required for either placement rule.
+- Native-object truth is not constrained to 1:1 public-object parity.
+- Additional provider-owned native resources may also surface through
+  `native_objects` when their lifetimes matter for ownership diagnostics,
+  leak prevention, queue health, teardown correctness, or
+  retained-result/backing-resource truth.
+
 ## Lifecycle registry truth model
 
 The lifecycle registry records the **actual lifecycle of native
@@ -535,9 +695,13 @@ A `root_id` is included if: - its controlling owner has ended, **and** -
 at least one `NativeObjectRecord` with that `root_id` still exists in
 the registry (either not DESTROYED, or DESTROYED but still retained).
 
-“Controlling owner” refers to the device instance or stream
+“Controlling owner” refers to the AcquisitionSession, device instance, or stream
 that originally owned the native object branch associated with the
 root_id.
+
+If descendants survive past a dead controlling AcquisitionSession, this must be
+treated as an **Acquisition Session boundary breach** in diagnostics and not
+collapsed into generic orphan meaning.
 
 ------------------------------------------------------------------------
 

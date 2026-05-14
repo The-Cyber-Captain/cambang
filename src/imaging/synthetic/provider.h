@@ -20,6 +20,23 @@
 
 namespace cambang {
 
+
+struct SyntheticMetricsSnapshot {
+  uint64_t total_emitted_frames = 0;
+  uint64_t gpu_update_attempts = 0;
+  uint64_t gpu_update_demand_skipped = 0;
+  uint64_t gpu_texture_update_calls = 0;
+  uint64_t frame_copy_calls = 0;
+  double frame_render_total_ms = 0.0;
+  double pattern_overlay_total_ms = 0.0;
+  double pattern_base_copy_total_ms = 0.0;
+  double gpu_update_total_total_ms = 0.0;
+  double gpu_upload_copy_total_ms = 0.0;
+  double gpu_texture_update_total_ms = 0.0;
+  uint64_t catchup_ticks_capped = 0;
+  uint64_t catchup_frames_dropped = 0;
+};
+
 class SyntheticProvider final : public ICameraProvider {
 public:
   using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
@@ -99,6 +116,7 @@ public:
   ProviderResult advance_timeline_for_host(uint64_t dt_ns);
   ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
+  SyntheticMetricsSnapshot get_metrics_snapshot_for_host() const;
 
 private:
   CBProviderStrand strand_;
@@ -135,6 +153,9 @@ private:
     uint64_t root_id = 0;
     bool open = false;
     uint64_t native_id = 0;
+    uint64_t acquisition_session_native_id = 0;
+    uint32_t acquisition_session_stream_refs = 0;
+    uint32_t acquisition_session_capture_refs = 0;
     PictureConfig capture_picture{};
   };
 
@@ -143,15 +164,16 @@ private:
     bool created = false;
     bool started = false;
     bool producing = false;
-    uint64_t frame_producer_native_id = 0;
     uint64_t next_due_ns = 0;
     uint64_t native_id = 0;
+    uint64_t acquisition_session_native_id = 0;
 
     PictureConfig picture{};
     CpuPackedPatternRenderer renderer{};
     bool prefer_gpu_backing = false;
     std::vector<std::uint8_t> gpu_staging;
     std::shared_ptr<void> live_gpu_backing{};
+    uint64_t live_gpu_backing_native_id = 0;
     uint32_t live_gpu_width = 0;
     uint32_t live_gpu_height = 0;
     uint32_t live_gpu_stride_bytes = 0;
@@ -163,6 +185,7 @@ private:
     };
     std::vector<std::shared_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
+    uint32_t consecutive_behind_ticks = 0;
   };
 
   struct FrameReleaseLease {
@@ -176,11 +199,18 @@ private:
   uint64_t alloc_native_id_(NativeObjectType type);
   void emit_native_create_device_(const DeviceState& d);
   void emit_native_destroy_(uint64_t native_id);
+  uint64_t ensure_native_acquisition_session_(DeviceState& d);
+  void retain_native_acquisition_session_for_stream_(DeviceState& d);
+  void retain_native_acquisition_session_for_capture_(DeviceState& d);
+  void release_native_acquisition_session_for_stream_(uint64_t device_instance_id);
+  void release_native_acquisition_session_for_capture_(uint64_t device_instance_id);
+  void release_native_acquisition_session_if_unheld_(DeviceState& d);
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
   bool ensure_stream_live_gpu_backing_(StreamState& s, uint32_t width, uint32_t height, uint32_t stride);
   void release_stream_live_gpu_backing_(StreamState& s);
+  void emit_triage_trace_if_due_();
   static uint64_t generator_frame_ordinal_from_ns_(uint64_t timestamp_ns, const PictureConfig& picture) noexcept;
 
   void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
@@ -214,6 +244,63 @@ private:
       timeline_q_;
   std::vector<SyntheticScheduledEvent> timeline_pending_destructive_;
   TimelineRequestDispatchHook timeline_request_dispatch_hook_{};
+
+  // Triage-only stream scheduling/GPU-path instrumentation.
+  bool triage_trace_enabled_ = false;
+  bool display_demand_trace_enabled_ = false;
+  std::map<uint64_t, bool> display_demand_last_active_by_stream_;
+  std::map<uint64_t, bool> display_demand_last_skip_by_stream_;
+  uint32_t triage_catchup_cap_per_tick_ = 0;
+  uint64_t triage_next_log_ns_ = 0;
+  uint64_t triage_frames_emitted_total_ = 0;
+  uint64_t triage_catchup_bursts_total_ = 0;
+  uint64_t triage_catchup_ticks_capped_total_ = 0;
+  uint64_t triage_catchup_frames_dropped_total_ = 0;
+  uint32_t triage_catchup_max_frames_in_tick_ = 0;
+  uint64_t triage_falling_behind_repeat_total_ = 0;
+  uint64_t triage_gpu_update_attempts_total_ = 0;
+  uint64_t triage_gpu_update_demand_skipped_total_ = 0;
+  uint64_t triage_gpu_update_failures_total_ = 0;
+  uint64_t triage_gpu_update_retries_total_ = 0;
+  uint64_t triage_gpu_backing_recreate_total_ = 0;
+  uint64_t triage_gpu_backing_release_total_ = 0;
+  uint64_t triage_gpu_ensure_backing_calls_total_ = 0;
+  uint64_t triage_gpu_ensure_backing_total_ns_ = 0;
+  uint64_t triage_gpu_ensure_backing_max_ns_ = 0;
+  uint64_t triage_gpu_update_total_calls_ = 0;
+  uint64_t triage_gpu_update_total_ns_ = 0;
+  uint64_t triage_gpu_update_total_max_ns_ = 0;
+  uint64_t triage_timeline_pump_calls_ = 0;
+  uint64_t triage_timeline_pump_total_ns_ = 0;
+  uint64_t triage_timeline_pump_max_ns_ = 0;
+  uint64_t triage_timeline_event_exec_calls_ = 0;
+  uint64_t triage_timeline_event_exec_total_ns_ = 0;
+  uint64_t triage_timeline_event_exec_max_ns_ = 0;
+  uint64_t triage_timeline_emit_event_calls_ = 0;
+  uint64_t triage_timeline_emit_event_total_ns_ = 0;
+  uint64_t triage_timeline_emit_event_max_ns_ = 0;
+  uint64_t triage_emit_frame_calls_ = 0;
+  uint64_t triage_emit_frame_total_ns_ = 0;
+  uint64_t triage_emit_frame_max_ns_ = 0;
+  uint64_t triage_frame_render_calls_ = 0;
+  uint64_t triage_frame_render_total_ns_ = 0;
+  uint64_t triage_frame_render_max_ns_ = 0;
+  uint64_t triage_render_spec_build_total_ns_ = 0;
+  uint64_t triage_render_spec_build_max_ns_ = 0;
+  uint64_t triage_render_target_prepare_total_ns_ = 0;
+  uint64_t triage_render_target_prepare_max_ns_ = 0;
+  uint64_t triage_render_allocation_or_resize_count_ = 0;
+  uint64_t triage_frame_copy_calls_ = 0;
+  uint64_t triage_frame_copy_total_ns_ = 0;
+  uint64_t triage_frame_copy_max_ns_ = 0;
+  uint64_t triage_post_frame_calls_ = 0;
+  uint64_t triage_post_frame_total_ns_ = 0;
+  uint64_t triage_post_frame_max_ns_ = 0;
+  uint64_t triage_strand_flush_calls_ = 0;
+  uint64_t triage_strand_flush_total_ns_ = 0;
+  uint64_t triage_strand_flush_max_ns_ = 0;
+  bool triage_timeline_path_banner_emitted_ = false;
+  bool triage_nominal_path_banner_emitted_ = false;
 
   std::atomic<uint64_t> invalid_preset_requests_{0};
 };

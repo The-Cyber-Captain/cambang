@@ -102,6 +102,9 @@ func _initialize() -> void:
 	if row_ids.has("stream/1"):
 		_fail("authoritative stream row remained visible after NIL reconciliation")
 		return
+	if row_ids.has("acquisition_session/1"):
+		_fail("authoritative acquisition_session row remained visible after NIL reconciliation")
+		return
 
 	var retained_states: Array = panel.get("_retained_subtrees")
 	if retained_states.is_empty():
@@ -195,6 +198,7 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 		"topology_version": topology_version,
 		"timestamp_ns": 40096504700,
 		"imaging_spec_version": 1,
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [
 			{
@@ -203,6 +207,23 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"phase": "LIVE",
 				"mode": "STREAMING",
 				"errors_count": 0
+			}
+		],
+		"acquisition_sessions": [
+			{
+				"acquisition_session_id": 1,
+				"device_instance_id": 1,
+				"phase": "LIVE",
+				"capture_profile_version": 0,
+				"capture_width": 0,
+				"capture_height": 0,
+				"capture_format": 0,
+				"captures_triggered": 0,
+				"captures_completed": 0,
+				"captures_failed": 0,
+				"last_capture_id": 0,
+				"last_capture_latency_ns": 0,
+				"error_code": 0
 			}
 		],
 		"streams": [
@@ -222,12 +243,23 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"native_id": provider_native_id,
 				"type": "provider",
 				"phase": "LIVE",
-				"creation_gen": gen
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
 			},
 			{
 				"native_id": 101,
 				"type": "device",
 				"owner_device_instance_id": 1,
+				"phase": "LIVE",
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
+			},
+			{
+				"native_id": 104,
+				"type": "acquisition_session",
+				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
+				"owner_stream_id": 0,
 				"phase": "LIVE",
 				"creation_gen": gen
 			},
@@ -235,14 +267,16 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 				"native_id": 102,
 				"type": "stream",
 				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
 				"creation_gen": gen
 			},
 			{
 				"native_id": 103,
-				"type": "frameproducer",
+				"type": "stream",
 				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
 				"creation_gen": gen
@@ -250,61 +284,3 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 		],
 		"detached_root_ids": []
 	}
-
-
-func _collect_entry_ids(model: Variant) -> Array[String]:
-	var ids: Array[String] = []
-	if model == null:
-		return ids
-	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
-	for entry in entries:
-		if entry == null:
-			continue
-		ids.append(str(entry.get("id")))
-	return ids
-
-
-func _find_entry(model: Variant, wanted_id: String) -> Variant:
-	if model == null:
-		return null
-	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
-	for entry in entries:
-		if entry == null:
-			continue
-		if str(entry.get("id")) == wanted_id:
-			return entry
-	return null
-
-
-func _entry_has_badge(entry: Variant, badge_label: String) -> bool:
-	if entry == null:
-		return false
-	for badge in entry.get("badges"):
-		if badge != null and str(badge.get("label")) == badge_label:
-			return true
-	return false
-
-
-func _entry_info_contains(entry: Variant, needle: String) -> bool:
-	if entry == null:
-		return false
-	for line in entry.get("info_lines"):
-		if str(line).find(needle) != -1:
-			return true
-	return false
-
-
-func _fail(message: String) -> void:
-	push_error(message)
-	printerr(message)
-	_quit_with_cleanup(1)
-
-
-func _quit_with_cleanup(code: int) -> void:
-	if _panel != null and is_instance_valid(_panel):
-		_panel.queue_free()
-	if _server != null and is_instance_valid(_server):
-		_server.queue_free()
-	if _window != null and is_instance_valid(_window):
-		_window.queue_free()
-	quit(code)

@@ -367,6 +367,27 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set(uint64
   return out;
 }
 
+void CamBANGServer::mark_stream_display_demand(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  runtime_.mark_stream_display_demand(stream_id);
+}
+
+void CamBANGServer::retain_stream_display_demand(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  runtime_.retain_stream_display_demand(stream_id);
+}
+
+void CamBANGServer::release_stream_display_demand(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  runtime_.release_stream_display_demand(stream_id);
+}
+
 uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   if (device_instance_id == 0 || !is_running() || !provider_) {
     return 0;
@@ -389,12 +410,6 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   }
   return capture_id;
 }
-
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-ProviderBroker* CamBANGServer::provider_broker_for_dev() const noexcept {
-  return dynamic_cast<ProviderBroker*>(provider_.get());
-}
-#endif
 
 void CamBANGServer::_ensure_tick_connected() {
   if (tick_connected_) {
@@ -542,6 +557,36 @@ godot::Variant CamBANGServer::get_state_snapshot() const {
     return godot::Variant();
   }
   return latest_export_;
+}
+
+
+godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
+  if (!runtime_.is_running()) {
+    return godot::Variant();
+  }
+  const ProviderBroker* broker = dynamic_cast<const ProviderBroker*>(provider_.get());
+  if (!broker) {
+    return godot::Variant();
+  }
+  SyntheticMetricsSnapshot snap{};
+  if (!broker->get_synthetic_metrics_snapshot_for_host(snap)) {
+    return godot::Variant();
+  }
+  godot::Dictionary d;
+  d["total_emitted_frames"] = static_cast<uint64_t>(snap.total_emitted_frames);
+  d["gpu_update_attempts"] = static_cast<uint64_t>(snap.gpu_update_attempts);
+  d["gpu_update_demand_skipped"] = static_cast<uint64_t>(snap.gpu_update_demand_skipped);
+  d["gpu_texture_update_calls"] = static_cast<uint64_t>(snap.gpu_texture_update_calls);
+  d["frame_copy_calls"] = static_cast<uint64_t>(snap.frame_copy_calls);
+  d["frame_render_total_ms"] = snap.frame_render_total_ms;
+  d["pattern_overlay_total_ms"] = snap.pattern_overlay_total_ms;
+  d["pattern_base_copy_total_ms"] = snap.pattern_base_copy_total_ms;
+  d["gpu_update_total_total_ms"] = snap.gpu_update_total_total_ms;
+  d["gpu_upload_copy_total_ms"] = snap.gpu_upload_copy_total_ms;
+  d["gpu_texture_update_total_ms"] = snap.gpu_texture_update_total_ms;
+  d["catchup_ticks_capped"] = static_cast<uint64_t>(snap.catchup_ticks_capped);
+  d["catchup_frames_dropped"] = static_cast<uint64_t>(snap.catchup_frames_dropped);
+  return d;
 }
 
 godot::Variant CamBANGServer::get_active_provider_config() const {
@@ -758,6 +803,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result);

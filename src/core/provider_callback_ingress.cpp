@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "imaging/api/timeline_teardown_trace.h"
+#include "core/resource_aggregate_telemetry.h"
 
 namespace cambang {
 
@@ -39,10 +40,12 @@ void ProviderCallbackIngress::on_frame_ingress_dispatched_(uint64_t stream_id) {
 
 ProviderCallbackIngress::ProviderCallbackIngress(CoreThread* core_thread,
                                                  std::function<void(ProviderToCoreCommand&&)> sink,
-                                                 std::function<uint64_t()> core_monotonic_now_ns)
+                                                 std::function<uint64_t()> core_monotonic_now_ns,
+                                                 std::function<bool(uint64_t)> is_stream_display_demand_active)
     : core_thread_(core_thread),
       sink_(std::move(sink)),
-      core_monotonic_now_ns_(std::move(core_monotonic_now_ns)) {}
+      core_monotonic_now_ns_(std::move(core_monotonic_now_ns)),
+      is_stream_display_demand_active_(std::move(is_stream_display_demand_active)) {}
 
 uint64_t ProviderCallbackIngress::allocate_native_id(NativeObjectType /*type*/) {
   // Core-issued, globally unique for this process/session.
@@ -55,6 +58,13 @@ uint64_t ProviderCallbackIngress::core_monotonic_now_ns() {
     return core_monotonic_now_ns_();
   }
   return 0;
+}
+
+bool ProviderCallbackIngress::is_stream_display_demand_active(uint64_t stream_id) {
+  if (!is_stream_display_demand_active_) {
+    return false;
+  }
+  return is_stream_display_demand_active_(stream_id);
 }
 
 ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexcept {
@@ -102,6 +112,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     fail_frame = frame_payload.frame;
     frame_stream_id = frame_payload.frame.stream_id;
     has_fail_frame = true;
+    global_resource_aggregate_telemetry().lease_created(make_framebuffer_lease_scoped_resource_telemetry_key(
+        frame_payload.frame.stream_id,
+        frame_payload.frame.acquisition_session_id));
   }
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
@@ -150,6 +163,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::QueueFull:
         frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
+        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+            frame.stream_id,
+            frame.acquisition_session_id));
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
@@ -157,6 +173,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::Closed:
         frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
+        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+            frame.stream_id,
+            frame.acquisition_session_id));
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
@@ -164,6 +183,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       case CoreThread::PostResult::AllocFail:
         frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
         frame.release_now();
+        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+            frame.stream_id,
+            frame.acquisition_session_id));
         frame.release = nullptr;
         frame.release_user = nullptr;
         frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);
@@ -230,24 +252,26 @@ void ProviderCallbackIngress::on_stream_stopped(uint64_t stream_id, ProviderErro
   post_command(std::move(cmd));
 }
 
-void ProviderCallbackIngress::on_capture_started(uint64_t capture_id) {
+void ProviderCallbackIngress::on_capture_started(uint64_t capture_id, uint64_t device_instance_id) {
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
-  cmd.payload = CmdProviderCaptureStarted{capture_id};
+  cmd.payload = CmdProviderCaptureStarted{capture_id, device_instance_id};
   post_command(std::move(cmd));
 }
 
-void ProviderCallbackIngress::on_capture_completed(uint64_t capture_id) {
+void ProviderCallbackIngress::on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED;
-  cmd.payload = CmdProviderCaptureCompleted{capture_id};
+  cmd.payload = CmdProviderCaptureCompleted{capture_id, device_instance_id};
   post_command(std::move(cmd));
 }
 
-void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id, ProviderError error) {
+void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id,
+                                                uint64_t device_instance_id,
+                                                ProviderError error) {
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED;
-  cmd.payload = CmdProviderCaptureFailed{capture_id, static_cast<uint32_t>(error)};
+  cmd.payload = CmdProviderCaptureFailed{capture_id, device_instance_id, static_cast<uint32_t>(error)};
   post_command(std::move(cmd));
 }
 
@@ -281,6 +305,7 @@ void ProviderCallbackIngress::on_native_object_created(const NativeObjectCreateI
   p.type = info.type;
   p.root_id = info.root_id;
   p.owner_device_instance_id = info.owner_device_instance_id;
+  p.owner_acquisition_session_id = info.owner_acquisition_session_id;
   p.owner_stream_id = info.owner_stream_id;
   p.owner_provider_native_id = info.owner_provider_native_id;
   p.owner_rig_id = info.owner_rig_id;

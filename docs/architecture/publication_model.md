@@ -223,6 +223,7 @@ Examples of topology change:
 
 - rig created/destroyed
 - device added/removed
+- acquisition session created/destroyed
 - stream created/destroyed
 - membership changes
 - root-visibility changes that alter observable topology

@@ -22,8 +22,8 @@ Provider facts fall into four broad classes:
 
 | Event Class | Example | Delivery Policy |
 |---|---|---|
-| Lifecycle | device add/remove, stream start/stop | must never be dropped |
-| Native-object | provider/device/stream object create/destroy reports | must never be dropped |
+| Lifecycle | device add/remove, acquisition-session create/destroy, stream start/stop | must never be dropped |
+| Native-object | provider/device/acquisition-session/stream/support-resource object create/destroy reports | must never be dropped |
 | Error | provider, device, or stream error reports | must never be dropped |
 | Frame | video frame delivery | may be coalesced or dropped under backpressure |
 
@@ -31,6 +31,12 @@ Lifecycle, native-object, and error events must always preserve ordering.
 
 Topology change is not a separate event class. It is an effect reflected by
 lifecycle and native-object truth, and later by snapshot `topology_version`.
+
+Current concrete reminder for synthetic realization: `SyntheticProvider` now
+realizes truthful `AcquisitionSession` seams for both stream-backed and
+capture-only paths. The seam is created when provider truth first requires it
+for the device and is destroyed when both stream and capture references have
+been released.
 
 ## Backpressure
 

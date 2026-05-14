@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "devices": [
+    {
+      "key": "CameraA",
+      "endpoint_index": 0
+    },
+    {
+      "key": "CameraB",
+      "endpoint_index": 1
+    }
+  ],
+  "streams": [
+    {
+      "key": "PREVIEW_A",
+      "device_key": "CameraA",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    },
+    {
+      "key": "VIEWFINDER_A",
+      "device_key": "CameraA",
+      "intent": "VIEWFINDER",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    },
+    {
+      "key": "PREVIEW_B",
+      "device_key": "CameraB",
+      "intent": "PREVIEW",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    },
+    {
+      "key": "VIEWFINDER_B",
+      "device_key": "CameraB",
+      "intent": "VIEWFINDER",
+      "capture_profile": {
+        "width": 1280,
+        "height": 720,
+        "format_fourcc": 1094862674,
+        "target_fps_min": 30,
+        "target_fps_max": 30
+      }
+    }
+  ],
+  "timeline": [
+    {
+      "at_ns": 0,
+      "type": "OpenDevice",
+      "device_key": "CameraA"
+    },
+    {
+      "at_ns": 0,
+      "type": "UpdateCapturePicture",
+      "device_key": "CameraA",
+      "picture": {
+        "preset": "noise_animated",
+        "seed": 11,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": false,
+        "overlay_moving_bar": true,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 12
+      }
+    },
+
+    {
+      "at_ns": 2000000000,
+      "type": "CreateStream",
+      "stream_key": "PREVIEW_A"
+    },
+    {
+      "at_ns": 2000000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "PREVIEW_A",
+      "picture": {
+        "preset": "checker",
+        "seed": 21,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": true,
+        "solid_r": 255,
+        "solid_g": 64,
+        "solid_b": 64,
+        "solid_a": 255,
+        "checker_size_px": 24
+      }
+    },
+    {
+      "at_ns": 2000000000,
+      "type": "StartStream",
+      "stream_key": "PREVIEW_A"
+    },
+
+    {
+      "at_ns": 6000000000,
+      "type": "StopStream",
+      "stream_key": "PREVIEW_A"
+    },
+    {
+      "at_ns": 7000000000,
+      "type": "CreateStream",
+      "stream_key": "VIEWFINDER_A"
+    },
+    {
+      "at_ns": 7000000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "VIEWFINDER_A",
+      "picture": {
+        "preset": "solid",
+        "seed": 22,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": true,
+        "solid_r": 96,
+        "solid_g": 220,
+        "solid_b": 96,
+        "solid_a": 255,
+        "checker_size_px": 16
+      }
+    },
+    {
+      "at_ns": 7000000000,
+      "type": "StartStream",
+      "stream_key": "VIEWFINDER_A"
+    },
+
+    {
+      "at_ns": 11000000000,
+      "type": "OpenDevice",
+      "device_key": "CameraB"
+    },
+    {
+      "at_ns": 11000000000,
+      "type": "UpdateCapturePicture",
+      "device_key": "CameraB",
+      "picture": {
+        "preset": "xy_xor",
+        "seed": 31,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": false,
+        "solid_r": 0,
+        "solid_g": 0,
+        "solid_b": 0,
+        "solid_a": 255,
+        "checker_size_px": 12
+      }
+    },
+
+    {
+      "at_ns": 17000000000,
+      "type": "CreateStream",
+      "stream_key": "PREVIEW_B"
+    },
+    {
+      "at_ns": 17000000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "PREVIEW_B",
+      "picture": {
+        "preset": "checker",
+        "seed": 41,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": true,
+        "solid_r": 64,
+        "solid_g": 128,
+        "solid_b": 255,
+        "solid_a": 255,
+        "checker_size_px": 12
+      }
+    },
+    {
+      "at_ns": 17000000000,
+      "type": "StartStream",
+      "stream_key": "PREVIEW_B"
+    },
+
+    {
+      "at_ns": 21000000000,
+      "type": "StopStream",
+      "stream_key": "PREVIEW_B"
+    },
+    {
+      "at_ns": 22000000000,
+      "type": "CreateStream",
+      "stream_key": "VIEWFINDER_B"
+    },
+    {
+      "at_ns": 22000000000,
+      "type": "UpdateStreamPicture",
+      "stream_key": "VIEWFINDER_B",
+      "picture": {
+        "preset": "checker",
+        "seed": 42,
+        "generator_fps_num": 30,
+        "generator_fps_den": 1,
+        "overlay_frame_index_offsets": true,
+        "overlay_moving_bar": true,
+        "solid_r": 255,
+        "solid_g": 192,
+        "solid_b": 64,
+        "solid_a": 255,
+        "checker_size_px": 16
+      }
+    },
+    {
+      "at_ns": 22000000000,
+      "type": "StartStream",
+      "stream_key": "VIEWFINDER_B"
+    },
+
+    {
+      "at_ns": 33000000000,
+      "type": "StopStream",
+      "stream_key": "VIEWFINDER_A"
+    },
+    {
+      "at_ns": 34000000000,
+      "type": "DestroyStream",
+      "stream_key": "PREVIEW_A"
+    },
+    {
+      "at_ns": 35000000000,
+      "type": "DestroyStream",
+      "stream_key": "VIEWFINDER_A"
+    },
+    {
+      "at_ns": 36000000000,
+      "type": "CloseDevice",
+      "device_key": "CameraA"
+    },
+    {
+      "at_ns": 37000000000,
+      "type": "StopStream",
+      "stream_key": "VIEWFINDER_B"
+    },
+    {
+      "at_ns": 38000000000,
+      "type": "DestroyStream",
+      "stream_key": "PREVIEW_B"
+    },
+    {
+      "at_ns": 39000000000,
+      "type": "DestroyStream",
+      "stream_key": "VIEWFINDER_B"
+    },
+    {
+      "at_ns": 40000000000,
+      "type": "CloseDevice",
+      "device_key": "CameraB"
+    }
+  ]
+}

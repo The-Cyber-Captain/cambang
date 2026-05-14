@@ -114,10 +114,14 @@ static inline godot::String native_object_type_token(uint32_t raw_type) {
       return "provider";
     case NativeObjectType::Device:
       return "device";
+    case NativeObjectType::AcquisitionSession:
+      return "acquisition_session";
     case NativeObjectType::Stream:
       return "stream";
-    case NativeObjectType::FrameProducer:
-      return "frameproducer";
+    case NativeObjectType::FrameBufferLease:
+      return "frame_buffer_lease";
+    case NativeObjectType::GpuBacking:
+      return "gpu_backing";
     default:
       godot::UtilityFunctions::push_warning(
           "CamBANG export_snapshot_to_godot: unknown native object type; emitting unknown");
@@ -142,6 +146,38 @@ static inline godot::String visibility_last_path_token(CBVisibilityLastPath path
           "CamBANG export_snapshot_to_godot: unknown visibility path; emitting UNKNOWN");
       return "UNKNOWN";
   }
+}
+
+static inline godot::String telemetry_scope_token(uint32_t scope) {
+  switch (scope) {
+    case 0: return "STREAM";
+    case 1: return "ACQUISITION_SESSION";
+    case 2: return "DEVICE";
+    case 3: return "PROVIDER";
+    default: return "UNKNOWN";
+  }
+}
+
+static godot::Dictionary export_scoped_resource_telemetry(const ScopedResourceTelemetry& t) {
+  godot::Dictionary d;
+  d["phase"] = lifecycle_phase_token(t.phase);
+  d["creation_gen"] = static_cast<uint64_t>(t.creation_gen);
+  d["created_ns"] = static_cast<uint64_t>(t.created_ns);
+  d["destroyed_ns"] = static_cast<uint64_t>(t.destroyed_ns);
+  d["telemetry_scope"] = telemetry_scope_token(t.telemetry_scope);
+  d["provider_native_id"] = static_cast<uint64_t>(t.provider_native_id);
+  d["device_instance_id"] = static_cast<uint64_t>(t.device_instance_id);
+  d["acquisition_session_id"] = static_cast<uint64_t>(t.acquisition_session_id);
+  d["stream_id"] = static_cast<uint64_t>(t.stream_id);
+  d["framebuffer_lease_current"] = static_cast<uint64_t>(t.framebuffer_lease_current);
+  d["framebuffer_lease_total_created"] = static_cast<uint64_t>(t.framebuffer_lease_total_created);
+  d["framebuffer_lease_total_released"] = static_cast<uint64_t>(t.framebuffer_lease_total_released);
+  d["framebuffer_lease_peak_current"] = static_cast<uint64_t>(t.framebuffer_lease_peak_current);
+  d["retained_gpu_backing_current"] = static_cast<uint64_t>(t.retained_gpu_backing_current);
+  d["retained_gpu_backing_total_created"] = static_cast<uint64_t>(t.retained_gpu_backing_total_created);
+  d["retained_gpu_backing_total_released"] = static_cast<uint64_t>(t.retained_gpu_backing_total_released);
+  d["retained_gpu_backing_peak_current"] = static_cast<uint64_t>(t.retained_gpu_backing_peak_current);
+  return d;
 }
 
 static godot::Dictionary export_rig(const CamBANGRigState& r) {
@@ -225,12 +261,31 @@ static godot::Dictionary export_stream(const CamBANGStreamState& s) {
   return d;
 }
 
+static godot::Dictionary export_acquisition_session(const AcquisitionSessionState& s) {
+  godot::Dictionary d;
+  d["acquisition_session_id"] = static_cast<uint64_t>(s.acquisition_session_id);
+  d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);
+  d["phase"] = lifecycle_phase_token(s.phase);
+  d["capture_profile_version"] = static_cast<uint64_t>(s.capture_profile_version);
+  d["capture_width"] = static_cast<uint32_t>(s.capture_width);
+  d["capture_height"] = static_cast<uint32_t>(s.capture_height);
+  d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  d["captures_triggered"] = static_cast<uint64_t>(s.captures_triggered);
+  d["captures_completed"] = static_cast<uint64_t>(s.captures_completed);
+  d["captures_failed"] = static_cast<uint64_t>(s.captures_failed);
+  d["last_capture_id"] = static_cast<uint64_t>(s.last_capture_id);
+  d["last_capture_latency_ns"] = static_cast<uint64_t>(s.last_capture_latency_ns);
+  d["error_code"] = static_cast<int>(s.error_code);
+  return d;
+}
+
 static godot::Dictionary export_native_object(const NativeObjectRecord& r) {
   godot::Dictionary d;
   d["native_id"] = static_cast<uint64_t>(r.native_id);
   d["type"] = native_object_type_token(r.type);
   d["phase"] = lifecycle_phase_token(r.phase);
   d["owner_device_instance_id"] = static_cast<uint64_t>(r.owner_device_instance_id);
+  d["owner_acquisition_session_id"] = static_cast<uint64_t>(r.owner_acquisition_session_id);
   d["owner_stream_id"] = static_cast<uint64_t>(r.owner_stream_id);
   d["owner_provider_native_id"] = static_cast<uint64_t>(r.owner_provider_native_id);
   d["owner_rig_id"] = static_cast<uint64_t>(r.owner_rig_id);
@@ -275,6 +330,14 @@ godot::Dictionary export_snapshot_to_godot(const CamBANGStateSnapshot& snap,
     out["devices"] = devices;
   }
   {
+    godot::Array acquisition_sessions;
+    acquisition_sessions.resize(static_cast<int>(snap.acquisition_sessions.size()));
+    for (size_t i = 0; i < snap.acquisition_sessions.size(); ++i) {
+      acquisition_sessions[static_cast<int>(i)] = export_acquisition_session(snap.acquisition_sessions[i]);
+    }
+    out["acquisition_sessions"] = acquisition_sessions;
+  }
+  {
     godot::Array streams;
     streams.resize(static_cast<int>(snap.streams.size()));
     for (size_t i = 0; i < snap.streams.size(); ++i) {
@@ -298,6 +361,18 @@ godot::Dictionary export_snapshot_to_godot(const CamBANGStateSnapshot& snap,
     }
     out["detached_root_ids"] = detached;
   }
+
+
+    {
+    godot::Array scoped;
+    scoped.resize(static_cast<int>(snap.scoped_resource_telemetry.size()));
+    for (size_t i = 0; i < snap.scoped_resource_telemetry.size(); ++i) {
+      scoped[static_cast<int>(i)] = export_scoped_resource_telemetry(snap.scoped_resource_telemetry[i]);
+    }
+    out["scoped_resource_telemetry"] = scoped;
+  }
+
+
 
   return out;
 }

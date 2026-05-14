@@ -1,6 +1,7 @@
 ﻿// src/core/core_dispatcher.cpp
 
 #include "core/core_dispatcher.h"
+#include "core/resource_aggregate_telemetry.h"
 
 #include <cstdlib>
 #include <variant>
@@ -72,6 +73,9 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     if (streams_) {
       streams_->on_stream_destroyed(p.stream_id);
     }
+    if (result_store_) {
+      result_store_->remove_stream_result(p.stream_id);
+    }
     relevant_state_changed_ = true;
     break;
   }
@@ -120,7 +124,8 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
 case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
-  if (native_objects_) {
+  bool state_changed = false;
+    if (native_objects_) {
     const uint64_t fallback_created_ns = now_ns_ ? now_ns_() : 0;
     const uint64_t created_ns = p.has_created_ns ? p.created_ns : fallback_created_ns;
     const uint64_t creation_gen = current_gen_ ? *current_gen_ : 0;
@@ -129,6 +134,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
         p.type,
         p.root_id,
         p.owner_device_instance_id,
+        p.owner_acquisition_session_id,
         p.owner_stream_id,
         p.owner_provider_native_id,
         p.owner_rig_id,
@@ -136,22 +142,112 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
         p.buffers_in_use,
         creation_gen,
         created_ns);
+    state_changed = true;
+    if (acquisition_sessions_) {
+      uint32_t capture_width = 0;
+      uint32_t capture_height = 0;
+      uint32_t capture_format = 0;
+      uint64_t capture_profile_version = 0;
+      if (devices_ && p.owner_device_instance_id != 0) {
+        if (const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.owner_device_instance_id);
+            device != nullptr) {
+          capture_width = device->capture_width;
+          capture_height = device->capture_height;
+          capture_format = device->capture_format;
+          capture_profile_version = device->capture_profile_version;
+        }
+      }
+      state_changed =
+          acquisition_sessions_->on_native_object_created(
+              p.native_id,
+              p.type,
+              p.owner_device_instance_id,
+              created_ns,
+              capture_width,
+              capture_height,
+              capture_format,
+              capture_profile_version) ||
+          state_changed;
+    }
   }
-  relevant_state_changed_ = true;
+  relevant_state_changed_ = relevant_state_changed_ || state_changed;
   break;
 }
 
 case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
   stats_.commands_handled++;
   const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
+  bool state_changed = false;
   if (native_objects_) {
     const uint64_t integration_destroyed_ns = now_ns_ ? now_ns_() : 0;
     const uint64_t destroyed_ns = p.has_destroyed_ns ? p.destroyed_ns : integration_destroyed_ns;
     native_objects_->on_native_object_destroyed(p.native_id, destroyed_ns, integration_destroyed_ns);
+    state_changed = true;
+    if (acquisition_sessions_) {
+      state_changed =
+          acquisition_sessions_->on_native_object_destroyed(p.native_id, destroyed_ns) || state_changed;
+    }
   }
-  relevant_state_changed_ = true;
+  relevant_state_changed_ = relevant_state_changed_ || state_changed;
   break;
 }
+
+  case ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
+    bool state_changed = false;
+    if (acquisition_sessions_) {
+      uint32_t capture_width = 0;
+      uint32_t capture_height = 0;
+      uint32_t capture_format = 0;
+      uint64_t capture_profile_version = 0;
+      if (devices_ && p.device_instance_id != 0) {
+        if (const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
+            device != nullptr) {
+          capture_width = device->capture_width;
+          capture_height = device->capture_height;
+          capture_format = device->capture_format;
+          capture_profile_version = device->capture_profile_version;
+        }
+      }
+      const uint64_t started_ns = now_ns_ ? now_ns_() : 0;
+      state_changed = acquisition_sessions_->on_capture_started(p.device_instance_id,
+                                                                p.capture_id,
+                                                                started_ns,
+                                                                capture_width,
+                                                                capture_height,
+                                                                capture_format,
+                                                                capture_profile_version);
+    }
+    relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    break;
+  }
+
+  case ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
+    bool state_changed = false;
+    if (acquisition_sessions_) {
+      const uint64_t completed_ns = now_ns_ ? now_ns_() : 0;
+      state_changed = acquisition_sessions_->on_capture_completed(
+          p.device_instance_id, p.capture_id, completed_ns);
+    }
+    relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    break;
+  }
+
+  case ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
+    bool state_changed = false;
+    if (acquisition_sessions_) {
+      const uint64_t failed_ns = now_ns_ ? now_ns_() : 0;
+      state_changed = acquisition_sessions_->on_capture_failed(
+          p.device_instance_id, p.capture_id, p.error_code, failed_ns);
+    }
+    relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    break;
+  }
 
   case ProviderToCoreCommandType::PROVIDER_FRAME: {
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
@@ -160,6 +256,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     stats_.frames_received++;
 
     const uint64_t sid = p.frame.stream_id;
+    const uint64_t asid = p.frame.acquisition_session_id;
     std::optional<StreamIntent> stream_intent;
     bool retained_for_result = false;
     uint64_t integrated_ts_ns = 0;
@@ -191,6 +288,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       p.frame.release_user = nullptr;
       const CoreVisibilityPath visibility_path = frame_sink_->on_frame(std::move(frame));
       stats_.frames_released++;
+      global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+          sid,
+          asid));
       if (streams_) {
         streams_->on_frame_released(sid);
         if (streams_->on_visibility_path(sid, visibility_path)) {
@@ -202,6 +302,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       // If result retention already accepted this frame, it is not counted as dropped.
       p.frame.release_now();
       stats_.frames_released++;
+      global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+          sid,
+          asid));
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
       if (streams_) {

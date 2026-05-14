@@ -103,7 +103,7 @@ The canonical semantics come from:
 
 1. Core architecture documents
 2. the platform-agnostic reference providers
-3. the provider compliance verifier / harness
+3. the provider compliance verifier
 
 Platform-backed providers must conform to that model.
 
@@ -346,17 +346,111 @@ Shutdown teardown must still be truthful:
 Providers report creation and destruction of CamBANG-owned native
 objects to Core.
 
-At minimum, implemented providers normally report:
+The minimum commonly reported canonical structural nouns remain:
 
 - `Provider`
 - `Device`
+- `AcquisitionSession`
 - `Stream`
-- `FrameProducer`
+
+These canonical nouns define CamBANG's preferred cross-provider viewing
+structure. They do **not** limit native truth to only those categories,
+and they do not assert that a platform API uses the same hierarchy.
 
 Creation must be reported when the resource is actually acquired.
 
 Destruction must be reported only when the resource is actually
 released.
+
+CamBANG no longer treats `FrameProducer` as a first-class structural noun in
+the canonical model.
+
+Production is interpreted through structural context, payload-delivery truth,
+and provider-owned native support entities whose lifetime/release matters.
+Providers may still realize production seams internally in backend-specific
+ways, but those seams are not modeled as separate first-class structural rows.
+
+### Resource-bearing native truth beyond the structural spine
+
+Provider-owned resource-bearing native truth must not depend on a separate
+producer row for its right to surface.
+
+When provider-owned native resources or leases have lifetime/release
+significance not safely subsumed by parent destruction alone, providers
+may report that truth directly.
+
+Examples may include:
+
+- acquired images
+- retained samples
+- mapped buffers
+- attached GPU/native backings
+- shared-buffer references
+- similar provider-owned resource-bearing leases
+
+These rows remain separate from the canonical structural spine.
+
+### Context placement of resource-bearing native truth
+
+Provider-owned resource-bearing native truth is grouped by the context that
+called it into being.
+
+Placement rules:
+
+- **stream-originated** resource-bearing native truth belongs beneath the
+  owning `Stream` context
+- **capture-originated** resource-bearing native truth belongs beneath the
+  owning `AcquisitionSession` context
+
+This rule applies to provider-owned native resources or leases whose
+lifetime/release significance is not safely subsumed by parent destruction
+alone, including cases such as retained samples, acquired images, mapped
+buffers, attached GPU/native backings, shared-buffer references, and similar
+resource-bearing native truth.
+
+This placement rule does not require a public `CamBANGStream` to exist for
+capture-originated truth, and it does not depend on any `FrameProducer` row.
+
+Native Payload Support is interpreted through this placement rule and is not
+parented by a producer-row concept.
+
+### Native Payload Support as a projection grouping concept
+
+Native Payload Support is the canonical projection grouping concept for
+provider-owned native support entities whose lifetime/release matters
+independently and which support image-bearing payload/backing truth.
+
+It is not, in this tranche, a required provider-reported native-object type.
+Providers continue to report the actual support entities as native truth rows.
+Projection/UI may group them beneath a Native Payload Support row within the
+relevant `Stream` or `AcquisitionSession` context.
+
+Native `Stream` truth does not automatically imply a matching public
+Godot-facing object. Providers may truthfully use stream-like native
+resources to service device-level still capture without promoting those
+resources into public `CamBANGStream` semantics.
+
+Implementation-scope note (current verified state):
+
+- `SyntheticProvider` reports truthful `AcquisitionSession` realization for both
+  stream-backed and capture-only paths.
+- The concrete seam is retained while the device has active stream and/or
+  capture references, and is retired when those references are released.
+- Providers must not fabricate `AcquisitionSession` lifecycle events from
+  still-capture callbacks alone when no concrete acquisition-session seam has
+  actually been realized.
+- Capture-originated native support truth may therefore appear under an
+  `AcquisitionSession` without implying a public `CamBANGStream`.
+
+Providers must also report and retire provider-owned native resources
+truthfully whenever resource lifetime matters for runtime truth,
+ownership diagnostics, leak prevention, queue health, teardown
+correctness, or retained-result / backing-resource truth.
+
+This includes retained samples, acquired images, mapped or attached
+buffers, shared-buffer references, and similar resource-bearing native
+objects or leases whose release is not safely and wholly subsumed by
+parent destruction alone.
 
 Providers must not collapse ownership boundaries merely to make the
 registry look tidy.
@@ -394,7 +488,7 @@ When adding a new provider, including future platform-backed providers:
 2. define provider-type defaults in `StreamTemplate`
 3. route all provider → Core facts through the provider strand
 4. report native-object lifecycles truthfully
-5. pass the provider compliance verifier / harness
+5. pass the provider compliance verifier
 6. contain backend quirks inside the provider adapter layer
 
 Do **not**:

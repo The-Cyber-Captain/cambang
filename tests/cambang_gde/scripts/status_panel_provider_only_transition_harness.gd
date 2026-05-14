@@ -77,7 +77,7 @@ func _initialize() -> void:
 	_assert_rows(
 		panel.get("_last_panel_model"),
 		["server/main", "server/main/provider_pending"],
-		["provider/500", "device/1", "stream/1", "frameproducer/103"]
+		["provider/500", "device/1", "stream/1", "native_object/103"]
 	)
 
 	await _refresh_panel_with_snapshot(panel, server, _provider_only_snapshot(10, 500))
@@ -96,13 +96,13 @@ func _initialize() -> void:
 	_assert_rows(
 		panel.get("_last_panel_model"),
 		["server/main", "provider/500"],
-		["server/main/provider_pending", "device/1", "stream/1", "frameproducer/103"]
+		["server/main/provider_pending", "device/1", "stream/1", "native_object/103"]
 	)
 
 	await _refresh_panel_with_snapshot(panel, server, _realized_snapshot(10, 500))
 	_assert_rows(
 		panel.get("_last_panel_model"),
-		["server/main", "provider/500", "device/1", "stream/1", "frameproducer/103"],
+		["server/main", "provider/500", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
 		["server/main/provider_pending"]
 	)
 	if _retained_generation_list(panel) != []:
@@ -115,7 +115,7 @@ func _initialize() -> void:
 		return
 	_assert_rows(
 		panel.get("_last_panel_model"),
-		["server/main", "provider/600", "device/1", "stream/1", "frameproducer/103"],
+		["server/main", "provider/600", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
 		["server/main/provider_pending"]
 	)
 	if _retained_history_contains_provider_pending(panel):
@@ -185,8 +185,10 @@ func _provider_pending_snapshot() -> Dictionary:
 		"topology_version": 0,
 		"timestamp_ns": 100,
 		"imaging_spec_version": 1,
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [],
+		"acquisition_sessions": [],
 		"streams": [],
 		"native_objects": [],
 		"detached_root_ids": []
@@ -201,15 +203,18 @@ func _provider_only_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"topology_version": 0,
 		"timestamp_ns": 200,
 		"imaging_spec_version": 1,
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [],
+		"acquisition_sessions": [],
 		"streams": [],
 		"native_objects": [
 			{
 				"native_id": provider_native_id,
 				"type": "provider",
 				"phase": "LIVE",
-				"creation_gen": gen
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
 			}
 		],
 		"detached_root_ids": []
@@ -224,6 +229,7 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"topology_version": 2,
 		"timestamp_ns": 300,
 		"imaging_spec_version": 1,
+		"scoped_resource_telemetry": [],
 		"rigs": [],
 		"devices": [
 			{
@@ -232,6 +238,23 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 				"phase": "LIVE",
 				"mode": "STREAMING",
 				"errors_count": 0
+			}
+		],
+		"acquisition_sessions": [
+			{
+				"acquisition_session_id": 1,
+				"device_instance_id": 1,
+				"phase": "LIVE",
+				"capture_profile_version": 0,
+				"capture_width": 0,
+				"capture_height": 0,
+				"capture_format": 0,
+				"captures_triggered": 0,
+				"captures_completed": 0,
+				"captures_failed": 0,
+				"last_capture_id": 0,
+				"last_capture_latency_ns": 0,
+				"error_code": 0
 			}
 		],
 		"streams": [
@@ -251,12 +274,23 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 				"native_id": provider_native_id,
 				"type": "provider",
 				"phase": "LIVE",
-				"creation_gen": gen
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
 			},
 			{
 				"native_id": 101,
 				"type": "device",
 				"owner_device_instance_id": 1,
+				"phase": "LIVE",
+				"creation_gen": gen,
+				"owner_acquisition_session_id": 0
+			},
+			{
+				"native_id": 104,
+				"type": "acquisition_session",
+				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
+				"owner_stream_id": 0,
 				"phase": "LIVE",
 				"creation_gen": gen
 			},
@@ -264,14 +298,16 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 				"native_id": 102,
 				"type": "stream",
 				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
 				"creation_gen": gen
 			},
 			{
 				"native_id": 103,
-				"type": "frameproducer",
+				"type": "stream",
 				"owner_device_instance_id": 1,
+				"owner_acquisition_session_id": 1,
 				"owner_stream_id": 1,
 				"phase": "LIVE",
 				"creation_gen": gen
@@ -279,31 +315,3 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		],
 		"detached_root_ids": []
 	}
-
-
-func _collect_entry_ids(model: Variant) -> Array[String]:
-	var ids: Array[String] = []
-	if model == null:
-		return ids
-	var entries: Array = model.get("entries") if typeof(model) == TYPE_DICTIONARY else model.get("entries")
-	for entry in entries:
-		if entry == null:
-			continue
-		ids.append(str(entry.get("id")))
-	return ids
-
-
-func _fail(message: String) -> void:
-	push_error(message)
-	printerr(message)
-	_quit_with_cleanup(1)
-
-
-func _quit_with_cleanup(code: int) -> void:
-	if _panel != null and is_instance_valid(_panel):
-		_panel.queue_free()
-	if _server != null and is_instance_valid(_server):
-		_server.queue_free()
-	if _window != null and is_instance_valid(_window):
-		_window.queue_free()
-	quit(code)

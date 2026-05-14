@@ -539,6 +539,28 @@ The existence of a live GPU-backed display path for repeating streams does **not
 imply that still-capture results should retain or expose per-capture GPU artifacts
 at the public result seam.
 
+### 11.4.1 Stream display-demanded freshness policy (synthetic stream live GPU backing)
+
+This policy clarifies **stream display-view freshness** for synthetic stream live
+GPU backing. It does not redefine global GPU update behavior across all
+providers/paths.
+
+- Display-view freshness is tied to **display-oriented access**.
+- Polling latest `StreamResult` state alone does not imply display demand and
+  does not by itself require per-frame live GPU-backing refresh.
+- For synthetic stream live GPU backing, no-display operation may legitimately
+  avoid per-frame live GPU-backing updates. In current implementation this
+  publishes those no-demand frames as CPU-primary with current CPU bytes.
+- When display demand is active and GPU update succeeds, frames may publish as
+  GPU-primary (`GPU_SURFACE`).
+- Payload kind may therefore vary across successive stream frames under
+  display-demanded policy, while remaining truthful per retained frame.
+- `get_display_view()` is the demand-establishing access path for stream
+  display-view freshness.
+
+This is a stream result/display policy clarification only. It does not change
+AcquisitionSession architecture or lifecycle semantics.
+
 ## 11.5 Stream `to_image()` semantics
 
 `to_image()` remains the explicit path for **materialization onto CPU-backed
@@ -559,6 +581,15 @@ distinct paths:
 
 `get_display_view()` must not be reframed as implicit materialization onto
 CPU-backed storage.
+
+For synthetic stream GPU-primary/live-backing paths, `to_image()` must remain an
+explicit materialization outcome and must not silently return stale content:
+
+- use a current retained CPU/auxiliary payload when available (current
+  synthetic `to_image()` path preference), or
+- perform/require explicit supported materialization from a fresh source, or
+- report unsupported/expensive rather than presenting stale image content as
+  current materialization truth.
 
 ## 11.6 Capture-result guardrail
 

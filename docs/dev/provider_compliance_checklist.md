@@ -15,7 +15,7 @@ Before auditing a provider, confirm that review criteria come from:
 
 - canonical architecture docs
 - reference providers (`SyntheticProvider`, `StubProvider`)
-- compliance verifier / harness
+- compliance verifier
 
 Do not treat any single platform-backed provider as the definition of
 provider behaviour.
@@ -82,8 +82,10 @@ classes, typically including:
 
 - `Provider`
 - `Device`
+- `AcquisitionSession` (when concretely realized)
 - `Stream`
-- `FrameProducer`
+- stream/capture support resources whose lifetime/release matters (for example
+  frame buffer leases, GPU backings, retained samples, mapped buffers)
 
 Audit that:
 
@@ -92,6 +94,15 @@ Audit that:
 - no destruction is fabricated just to tidy state
 - ownership relationships remain visible rather than being hidden by
   provider-side auto-cascade logic
+
+Current implementation reminder:
+
+- `SyntheticProvider` now realizes concrete `AcquisitionSession` truth for both
+  stream-backed and capture-only paths.
+- Capture-only truth may realize acquisition-session-owned support resources
+  without fabricating a public stream.
+- Still capture callbacks alone do not satisfy retained AcquisitionSession truth
+  obligations when no concrete session seam has been realized.
 
 ---
 
@@ -127,8 +138,7 @@ For platform-backed providers:
 
 ## 9. Verification expectations
 
-Providers should be validated using the maintainer tools and verifier /
-harness.
+Providers should be validated using the maintainer tools and verifier.
 
 Validation should establish confidence in:
 

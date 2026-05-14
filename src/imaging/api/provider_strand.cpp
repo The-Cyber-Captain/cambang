@@ -150,11 +150,11 @@ void CBProviderStrand::deliver_(Event& ev) {
         } else if constexpr (std::is_same_v<T, EvStreamStopped>) {
           callbacks_->on_stream_stopped(e.id, e.err);
         } else if constexpr (std::is_same_v<T, EvCaptureStarted>) {
-          callbacks_->on_capture_started(e.id);
+          callbacks_->on_capture_started(e.id, e.device_instance_id);
         } else if constexpr (std::is_same_v<T, EvCaptureCompleted>) {
-          callbacks_->on_capture_completed(e.id);
+          callbacks_->on_capture_completed(e.id, e.device_instance_id);
         } else if constexpr (std::is_same_v<T, EvCaptureFailed>) {
-          callbacks_->on_capture_failed(e.id, e.err);
+          callbacks_->on_capture_failed(e.id, e.device_instance_id, e.err);
         } else if constexpr (std::is_same_v<T, EvFrame>) {
           callbacks_->on_frame(e.frame);
         } else if constexpr (std::is_same_v<T, EvDeviceError>) {
@@ -201,9 +201,17 @@ void CBProviderStrand::post_stream_stopped(uint64_t stream_id, ProviderError err
   post(EvStreamStopped{stream_id, error_or_ok});
 }
 
-void CBProviderStrand::post_capture_started(uint64_t capture_id) { post(EvCaptureStarted{capture_id}); }
-void CBProviderStrand::post_capture_completed(uint64_t capture_id) { post(EvCaptureCompleted{capture_id}); }
-void CBProviderStrand::post_capture_failed(uint64_t capture_id, ProviderError error) { post(EvCaptureFailed{capture_id, error}); }
+void CBProviderStrand::post_capture_started(uint64_t capture_id, uint64_t device_instance_id) {
+  post(EvCaptureStarted{capture_id, device_instance_id});
+}
+void CBProviderStrand::post_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {
+  post(EvCaptureCompleted{capture_id, device_instance_id});
+}
+void CBProviderStrand::post_capture_failed(uint64_t capture_id,
+                                           uint64_t device_instance_id,
+                                           ProviderError error) {
+  post(EvCaptureFailed{capture_id, device_instance_id, error});
+}
 
 void CBProviderStrand::post_frame(const FrameView& frame) { post(EvFrame{frame}); }
 

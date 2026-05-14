@@ -11,8 +11,10 @@
     "topology_version",
     "timestamp_ns",
     "imaging_spec_version",
+    "scoped_resource_telemetry",
     "rigs",
     "devices",
+    "acquisition_sessions",
     "streams",
     "native_objects",
     "detached_root_ids"
@@ -50,6 +52,12 @@
         "$ref": "#/$defs/CamBANGDeviceState"
       }
     },
+    "acquisition_sessions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AcquisitionSessionState"
+      }
+    },
     "streams": {
       "type": "array",
       "items": {
@@ -66,6 +74,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/uint64"
+      }
+    },
+    "scoped_resource_telemetry": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ScopedResourceTelemetry"
       }
     }
   },
@@ -295,6 +309,66 @@
         }
       }
     },
+    "AcquisitionSessionState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acquisition_session_id",
+        "device_instance_id",
+        "phase",
+        "capture_profile_version",
+        "capture_width",
+        "capture_height",
+        "capture_format",
+        "captures_triggered",
+        "captures_completed",
+        "captures_failed",
+        "last_capture_id",
+        "last_capture_latency_ns",
+        "error_code"
+      ],
+      "properties": {
+        "acquisition_session_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "capture_profile_version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "capture_width": {
+          "$ref": "#/$defs/uint32"
+        },
+        "capture_height": {
+          "$ref": "#/$defs/uint32"
+        },
+        "capture_format": {
+          "$ref": "#/$defs/uint32"
+        },
+        "captures_triggered": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_completed": {
+          "$ref": "#/$defs/uint64"
+        },
+        "captures_failed": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_capture_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "last_capture_latency_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "error_code": {
+          "$ref": "#/$defs/int32"
+        }
+      }
+    },
     "CamBANGStreamState": {
       "type": "object",
       "additionalProperties": false,
@@ -395,6 +469,7 @@
         "type",
         "phase",
         "owner_device_instance_id",
+        "owner_acquisition_session_id",
         "owner_stream_id",
         "owner_provider_native_id",
         "owner_rig_id",
@@ -416,6 +491,9 @@
           "$ref": "#/$defs/lifecycle_phase"
         },
         "owner_device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "owner_acquisition_session_id": {
           "$ref": "#/$defs/uint64"
         },
         "owner_stream_id": {
@@ -452,8 +530,10 @@
       "enum": [
         "provider",
         "device",
+        "acquisition_session",
         "stream",
-        "frameproducer"
+        "frame_buffer_lease",
+        "gpu_backing"
       ],
       "description": "Canonical native object type tokens."
     },
@@ -467,6 +547,92 @@
         "REJECTED_INVALID"
       ],
       "description": "Canonical retained visibility-path disposition tokens."
+    },
+    "telemetry_scope": {
+      "type": "string",
+      "enum": [
+        "STREAM",
+        "ACQUISITION_SESSION",
+        "DEVICE",
+        "PROVIDER",
+        "UNKNOWN"
+      ]
+    },
+    "ScopedResourceTelemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "telemetry_scope",
+        "destroyed_ns",
+        "created_ns",
+        "creation_gen",
+        "phase",
+        "provider_native_id",
+        "device_instance_id",
+        "acquisition_session_id",
+        "stream_id",
+        "framebuffer_lease_current",
+        "framebuffer_lease_total_created",
+        "framebuffer_lease_total_released",
+        "framebuffer_lease_peak_current",
+        "retained_gpu_backing_current",
+        "retained_gpu_backing_total_created",
+        "retained_gpu_backing_total_released",
+        "retained_gpu_backing_peak_current"
+      ],
+      "properties": {
+        "telemetry_scope": {
+          "$ref": "#/$defs/telemetry_scope"
+        },
+        "provider_native_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "device_instance_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "acquisition_session_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "stream_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_total_created": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_total_released": {
+          "$ref": "#/$defs/uint64"
+        },
+        "framebuffer_lease_peak_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_total_created": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_total_released": {
+          "$ref": "#/$defs/uint64"
+        },
+        "retained_gpu_backing_peak_current": {
+          "$ref": "#/$defs/uint64"
+        },
+        "phase": {
+          "$ref": "#/$defs/lifecycle_phase"
+        },
+        "creation_gen": {
+          "$ref": "#/$defs/uint64"
+        },
+        "created_ns": {
+          "$ref": "#/$defs/uint64"
+        },
+        "destroyed_ns": {
+          "$ref": "#/$defs/uint64"
+        }
+      }
     }
   }
 }

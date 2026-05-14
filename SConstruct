@@ -146,12 +146,6 @@ vars.Add(BoolVariable(
     True,
 ))
 
-vars.Add(BoolVariable(
-    "dev_nodes",
-    "Build dev-only Godot scaffolding nodes (CAMBANG_ENABLE_DEV_NODES).",
-    False,
-))
-
 tmp_env = Environment(variables=vars)
 Help(vars.GenerateHelpText(tmp_env))
 
@@ -215,7 +209,6 @@ if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'} platform_validate={'yes' if env['platform_validate'] else 'no'}")
 print(f"  synthetic={'yes' if env['synthetic'] else 'no'}")
-print(f"  dev_nodes={'yes' if env['dev_nodes'] else 'no'}")
 
 # Output dirs
 out_dir = "out"
@@ -509,19 +502,13 @@ if env["gde"]:
         os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_device.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_stream_result.cpp"),
+        os.path.join(gde_obj_dir, "godot", "cambang_stream_result_internal.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_capture_result_set.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_result_convert.cpp"),
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
         os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]
-
-    if env["dev_nodes"]:
-        gde_env.Append(CPPDEFINES=["CAMBANG_ENABLE_DEV_NODES=1"])
-        gde_sources += [
-            os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_node.cpp"),
-            os.path.join(gde_obj_dir, "godot", "dev", "cambang_dev_frameview_node.cpp"),
-        ]
 
     # Output base name (SCons appends .dll/.so/.dylib automatically).
     # These names are designed to match your cambang_dev.gdextension mapping.

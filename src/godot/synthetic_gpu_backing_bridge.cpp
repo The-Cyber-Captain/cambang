@@ -1,11 +1,16 @@
 #include "imaging/synthetic/gpu_backing_runtime.h"
+#include "godot/synthetic_gpu_backing_bridge_internal.h"
+#include "core/resource_aggregate_telemetry.h"
 
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
 #include <mutex>
+#include <chrono>
 #include <utility>
 #include <vector>
+
+#include <godot_cpp/core/class_db.hpp>
 
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
@@ -16,11 +21,18 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/string_name.hpp>
 
 namespace cambang {
-namespace {
 
-void enqueue_pending_release(const godot::RID& rid);
+void register_synthetic_gpu_backing_internal_classes();
+
+static void enqueue_pending_release(const godot::RID& rid);
+static void request_pending_release_drain();
+static bool gpu_trace_enabled() noexcept {
+  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
+  return value && value[0] != '\0' && value[0] != '0';
+}
 
 struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
@@ -31,6 +43,7 @@ struct RetainedSyntheticGpuBacking final {
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
   bool released = false;
+  ScopedResourceTelemetryKey telemetry_key{};
 
   void release_now() {
     godot::RID rid;
@@ -40,27 +53,21 @@ struct RetainedSyntheticGpuBacking final {
         return;
       }
       released = true;
+      global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
+
       if (rd_texture.is_valid()) {
         rid = rd_texture;
         rd_texture = godot::RID();
-      } else if (display_texture.is_valid()) {
-        rid = display_texture->get_texture_rd_rid();
       }
+
       display_texture.unref();
     }
 
     if (!rid.is_valid()) {
       return;
     }
-    godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-    godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
-    if (rd) {
-      // Deterministic immediate release is the primary lifetime model.
-      rd->free_rid(rid);
-      return;
-    }
-    // Fallback only: if RD access is unavailable at this instant, defer free.
     enqueue_pending_release(rid);
+    request_pending_release_drain();
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -68,61 +75,170 @@ struct RetainedSyntheticGpuBacking final {
   }
 };
 
-std::mutex g_pending_release_mutex;
-// Narrow fallback queue only. Normal lifetime is deterministic immediate
-// release in release_now() when a RenderingDevice is available.
-std::vector<godot::RID> g_pending_releases;
+class DisplayTextureRidOwner : public godot::RefCounted {
+  GDCLASS(DisplayTextureRidOwner, godot::RefCounted);
 
-void enqueue_pending_release(const godot::RID& rid) {
+public:
+  static void _bind_methods() {}
+
+  void init(const godot::RID& rid) {
+    rid_ = rid;
+  }
+
+  ~DisplayTextureRidOwner() override {
+    release_now();
+  }
+
+  void release_now() {
+    godot::RID rid;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (released_) {
+        return;
+      }
+      released_ = true;
+      rid = rid_;
+      rid_ = godot::RID();
+    }
+    if (!rid.is_valid()) {
+      return;
+    }
+    enqueue_pending_release(rid);
+    request_pending_release_drain();
+  }
+
+private:
+  std::mutex mutex_{};
+  godot::RID rid_{};
+  bool released_ = false;
+};
+
+void register_synthetic_gpu_backing_internal_classes() {
+  // Internal-only helpers: registered only so Ref<...>::instantiate() can
+  // resolve through ClassDB. These are not user-facing CamBANG API classes.
+  godot::ClassDB::register_class<RenderThreadDrainHelper>();
+  godot::ClassDB::register_class<DisplayTextureRidOwner>();
+}
+
+static std::mutex g_pending_release_mutex;
+// RIDs that must be released from the render thread.
+static std::vector<godot::RID> g_pending_releases;
+static bool g_pending_release_drain_scheduled = false;
+static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
+
+static RenderThreadDrainHelper* get_render_thread_drain_helper() {
+  if (g_render_thread_drain_helper.is_null()) {
+    g_render_thread_drain_helper.instantiate();
+  }
+  return g_render_thread_drain_helper.ptr();
+}
+
+static void enqueue_pending_release(const godot::RID& rid) {
+  if (!rid.is_valid()) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   g_pending_releases.push_back(rid);
 }
 
-void drain_pending_releases() {
+static void request_pending_release_drain() {
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return;
+  }
+
+  bool should_schedule = false;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+      g_pending_release_drain_scheduled = true;
+      should_schedule = true;
+    }
+  }
+  if (!should_schedule) {
+    return;
+  }
+
+  RenderThreadDrainHelper* helper = get_render_thread_drain_helper();
+  if (!helper) {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    g_pending_release_drain_scheduled = false;
+    return;
+  }
+
+  rs->call_on_render_thread(callable_mp(helper, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+}
+
+void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (g_pending_releases.empty()) {
-      return;
-    }
     pending.swap(g_pending_releases);
+    g_pending_release_drain_scheduled = false;
+  }
+  if (pending.empty()) {
+    return;
   }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (!rs) {
-    // Fallback remains pending until a later point with RD access.
-    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    for (godot::RID& rid : pending) {
-      g_pending_releases.push_back(std::move(rid));
-    }
-    return;
-  }
-  godot::RenderingDevice* rd = rs->get_rendering_device();
+  godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
   if (!rd) {
-    // Fallback remains pending until a later point with RD access.
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    for (godot::RID& rid : pending) {
+    for (godot::RID &rid : pending) {
       g_pending_releases.push_back(std::move(rid));
+    }
+    if (rs && !g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+      g_pending_release_drain_scheduled = true;
+      rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
     }
     return;
   }
-  for (const godot::RID& rid : pending) {
+
+  for (const godot::RID &rid : pending) {
     if (rid.is_valid()) {
+      if (gpu_trace_enabled()) {
+        godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_free rid=", rid.get_id());
+      }
       rd->free_rid(rid);
     }
   }
+
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+    g_pending_release_drain_scheduled = true;
+    rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+  }
 }
 
-bool gpu_trace_enabled() noexcept {
-  const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
-  return value && value[0] != '\0' && value[0] != '0';
+
+namespace {
+
+struct GpuUpdateTimingStats final {
+  uint64_t upload_copy_calls = 0;
+  uint64_t upload_copy_total_ns = 0;
+  uint64_t upload_copy_max_ns = 0;
+  uint64_t texture_update_calls = 0;
+  uint64_t texture_update_total_ns = 0;
+  uint64_t texture_update_max_ns = 0;
+  uint64_t texture_update_skipped = 0;
+};
+
+std::mutex g_gpu_update_timing_stats_mutex;
+GpuUpdateTimingStats g_gpu_update_timing_stats;
+
+void record_update_timing(uint64_t& max_ns, uint64_t& total_ns, uint64_t& calls, uint64_t sample_ns) {
+  total_ns += sample_ns;
+  ++calls;
+  if (sample_ns > max_ns) {
+    max_ns = sample_ns;
+  }
 }
 
 void trace_gpu(const char* message) {
   if (!gpu_trace_enabled()) {
     return;
   }
-  godot::UtilityFunctions::print("[CamBANG][SyntheticGPU] ", message);
+  godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] ", message);
 }
 
 void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
@@ -130,7 +246,7 @@ void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
     return;
   }
   godot::UtilityFunctions::print(
-      "[CamBANG][SyntheticGPU] runtime_query global_rd_ptr=",
+      "[CamBANG][SyntheticGpu] runtime_query global_rd_ptr=",
       global_rd_ptr,
       " runtime_truth_gpu_available=",
       runtime_truth_gpu_available);
@@ -252,7 +368,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
-  drain_pending_releases();
+  request_pending_release_drain();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return {};
@@ -285,8 +401,15 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   if (!texture.is_valid()) {
     return {};
   }
+  if (gpu_trace_enabled()) {
+    godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=retain_primary rid=", texture.get_id(),
+                                   " w=", (long long)width,
+                                   " h=", (long long)height);
+  }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
+  global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
   retained_backing->height = height;
@@ -294,13 +417,14 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
 }
 
 std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
+    uint64_t stream_id,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
   if (width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
-  drain_pending_releases();
+  request_pending_release_drain();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return {};
@@ -333,8 +457,15 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   if (!texture.is_valid()) {
     return {};
   }
+  if (gpu_trace_enabled()) {
+    godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=stream_live rid=", texture.get_id(),
+                                   " w=", (long long)width,
+                                   " h=", (long long)height);
+  }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
+  global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
   retained_backing->width = width;
   retained_backing->height = height;
@@ -351,7 +482,7 @@ bool update_stream_live_gpu_backing_rgba8(
   if (!backing || !src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return false;
   }
-  drain_pending_releases();
+  request_pending_release_drain();
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     return false;
@@ -388,13 +519,66 @@ bool update_stream_live_gpu_backing_rgba8(
     if (retained->upload_bytes.size() != frame_bytes) {
       retained->upload_bytes.resize(frame_bytes);
     }
+    const auto copy_t0 = std::chrono::steady_clock::now();
     std::memcpy(retained->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    const auto update_t0 = copy_t1;
     rd->texture_update(texture_rid, 0, retained->upload_bytes);
+    const auto update_t1 = std::chrono::steady_clock::now();
+    const uint64_t copy_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+    const uint64_t update_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(update_t1 - update_t0).count());
+    std::lock_guard<std::mutex> timing_lock(g_gpu_update_timing_stats_mutex);
+    record_update_timing(
+        g_gpu_update_timing_stats.upload_copy_max_ns,
+        g_gpu_update_timing_stats.upload_copy_total_ns,
+        g_gpu_update_timing_stats.upload_copy_calls,
+        copy_ns);
+    record_update_timing(
+        g_gpu_update_timing_stats.texture_update_max_ns,
+        g_gpu_update_timing_stats.texture_update_total_ns,
+        g_gpu_update_timing_stats.texture_update_calls,
+        update_ns);
   }
-  // Godot's RD texture_update path used here does not provide explicit success/failure.
-  // This helper can only report precondition/runtime-availability failures directly.
-  // Provider-side recreate+retry therefore triggers only when those observable checks fail.
   return true;
+}
+
+bool take_update_timing_stats(
+    uint64_t& upload_copy_calls,
+    uint64_t& upload_copy_total_ns,
+    uint64_t& upload_copy_max_ns,
+    uint64_t& texture_update_calls,
+    uint64_t& texture_update_total_ns,
+    uint64_t& texture_update_max_ns,
+    uint64_t& texture_update_skipped) noexcept {
+  std::lock_guard<std::mutex> lock(g_gpu_update_timing_stats_mutex);
+  upload_copy_calls = g_gpu_update_timing_stats.upload_copy_calls;
+  upload_copy_total_ns = g_gpu_update_timing_stats.upload_copy_total_ns;
+  upload_copy_max_ns = g_gpu_update_timing_stats.upload_copy_max_ns;
+  texture_update_calls = g_gpu_update_timing_stats.texture_update_calls;
+  texture_update_total_ns = g_gpu_update_timing_stats.texture_update_total_ns;
+  texture_update_max_ns = g_gpu_update_timing_stats.texture_update_max_ns;
+  texture_update_skipped = g_gpu_update_timing_stats.texture_update_skipped;
+  return true;
+}
+
+bool peek_update_timing_stats(
+    uint64_t& upload_copy_calls,
+    uint64_t& upload_copy_total_ns,
+    uint64_t& upload_copy_max_ns,
+    uint64_t& texture_update_calls,
+    uint64_t& texture_update_total_ns,
+    uint64_t& texture_update_max_ns,
+    uint64_t& texture_update_skipped) noexcept {
+  return take_update_timing_stats(
+      upload_copy_calls,
+      upload_copy_total_ns,
+      upload_copy_max_ns,
+      texture_update_calls,
+      texture_update_total_ns,
+      texture_update_max_ns,
+      texture_update_skipped);
 }
 
 void release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept {
@@ -416,24 +600,25 @@ const SyntheticGpuBackingRuntimeOps kOps{
     &create_stream_live_gpu_backing_rgba8,
     &update_stream_live_gpu_backing_rgba8,
     &release_stream_live_gpu_backing,
+    &take_update_timing_stats,
+    &peek_update_timing_stats,
 };
 
 } // namespace
 
 void install_synthetic_gpu_backing_godot_bridge() {
-  drain_pending_releases();
   set_synthetic_gpu_backing_runtime_ops(&kOps);
   trace_gpu("bridge_install runtime_ops_registered=true");
 }
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
-  drain_pending_releases();
   clear_synthetic_gpu_backing_runtime_ops();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
-  drain_pending_releases();
+  constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
+  request_pending_release_drain();
   if (!backing) {
     return {};
   }
@@ -462,8 +647,15 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
       return {};
     }
     // Display view is a live wrapper over stream-owned backing. Texture2DRD
-    // assumes ownership of this RID after binding.
+    // does not own/free this RID; lifetime is carried by attached metadata.
     texture->set_texture_rd_rid(retained->rd_texture);
+    const godot::RID display_rid = retained->rd_texture;
+    godot::Ref<DisplayTextureRidOwner> rid_owner;
+    rid_owner.instantiate();
+    if (rid_owner.is_valid()) {
+      rid_owner->init(display_rid);
+      texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
+    }
     retained->rd_texture = godot::RID();
     retained->display_texture = texture;
   }
@@ -471,7 +663,7 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
-  drain_pending_releases();
+  request_pending_release_drain();
   if (!backing) {
     return false;
   }
@@ -489,7 +681,7 @@ bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>&
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
-  drain_pending_releases();
+  request_pending_release_drain();
   if (!backing) {
     return {};
   }

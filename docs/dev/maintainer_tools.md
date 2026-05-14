@@ -205,6 +205,7 @@ This is the primary maintainer check for provider-contract rules such as:
 - serialized provider → core callback delivery
 - lifecycle ordering correctness
 - native-object create / destroy reporting
+- AcquisitionSession-aware native/snapshot expectations
 - non-lossy lifecycle/native-object/error delivery
 - deterministic shutdown sequencing
 - synthetic ordering and timeline invariants
@@ -458,4 +459,4 @@ startup is now authored through the verified effective timeline path:
 This removes ambiguity in the initial requested stream `to_image()` panel for
 scene 70.
 
-Capture-picture behavior was intentionally left untouched in this correction.
+Capture-picture behavior was intentionally left unchanged in this correction.

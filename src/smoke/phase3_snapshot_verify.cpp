@@ -30,10 +30,10 @@ is covered by dedicated Godot scene checks.
 
 #include "core/core_dispatcher.h"
 #include "core/core_device_registry.h"
-#include "core/latest_frame_mailbox.h"
 #include "core/provider_to_core_commands.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_runtime.h"
+#include "core/resource_aggregate_telemetry.h"
 #include "core/core_stream_registry.h"
 #include "core/snapshot/snapshot_builder.h"
 #include "core/snapshot/state_snapshot.h"
@@ -114,20 +114,47 @@ static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& s, uint
   return nullptr;
 }
 
-class MailboxSink final : public ICoreFrameSink {
-public:
-  explicit MailboxSink(LatestFrameMailbox* mailbox) : mailbox_(mailbox) {}
-
-  CoreVisibilityPath on_frame(FrameView frame) override {
-    if (!mailbox_) {
-      frame.release_now();
-      return CoreVisibilityPath::NONE;
+static bool has_acquisition_session_for_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
+  for (const auto& acq : s.acquisition_sessions) {
+    if (acq.device_instance_id == device_id) {
+      return true;
     }
-    return mailbox_->write_from_core(std::move(frame));
+  }
+  return false;
+}
+
+class VisibilitySink final : public ICoreFrameSink {
+public:
+  static bool valid_buffer_shape(const FrameView& frame) {
+    if (frame.width == 0 || frame.height == 0) return false;
+    if (frame.data == nullptr || frame.size_bytes == 0) return false;
+
+    const size_t row_bytes = static_cast<size_t>(frame.width) * 4u;
+    const size_t stride = (frame.stride_bytes == 0) ? row_bytes : static_cast<size_t>(frame.stride_bytes);
+    if (stride < row_bytes) return false;
+
+    const size_t rows_minus_one = static_cast<size_t>(frame.height - 1u);
+    if (rows_minus_one > (std::numeric_limits<size_t>::max() / stride)) return false;
+    const size_t offset = rows_minus_one * stride;
+    if (offset > (std::numeric_limits<size_t>::max() - row_bytes)) return false;
+    const size_t needed = offset + row_bytes;
+    return frame.size_bytes >= needed;
   }
 
-private:
-  LatestFrameMailbox* mailbox_ = nullptr;
+  CoreVisibilityPath on_frame(FrameView frame) override {
+    if (frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA) {
+      if (!valid_buffer_shape(frame)) {
+        frame.release_now();
+        return CoreVisibilityPath::REJECTED_INVALID;
+      }
+      frame.release_now();
+      return (frame.format_fourcc == FOURCC_RGBA)
+                 ? CoreVisibilityPath::RGBA_DIRECT
+                 : CoreVisibilityPath::BGRA_SWIZZLED;
+    }
+    frame.release_now();
+    return CoreVisibilityPath::REJECTED_UNSUPPORTED;
+  }
 };
 
 struct OwnedFrame {
@@ -166,13 +193,13 @@ struct OwnedFrame {
 
 static int test_visibility_diagnostics_snapshot_truth() {
   CoreDeviceRegistry devices;
+  CoreAcquisitionSessionRegistry acquisition_sessions;
   CoreStreamRegistry streams;
   CoreNativeObjectRegistry native_objects;
-  LatestFrameMailbox mailbox;
-  MailboxSink sink(&mailbox);
+  VisibilitySink sink;
   uint64_t gen = 0;
   uint64_t now_ns = 1000;
-  CoreDispatcher dispatcher(&streams, &devices, &native_objects, &gen, [&now_ns]() {
+  CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {
     return now_ns++;
   });
   dispatcher.set_frame_sink(&sink);
@@ -469,7 +496,7 @@ static int test_destroyed_retention_does_not_cross_generation_baseline() {
   }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && s->gen == 0 && s->version == 0;
+        return s && s->gen == 0 && s->version == 0 && s->acquisition_sessions.empty();
       })) {
     std::cerr << "FAIL: missing baseline snapshot for gen0\n";
     rt.stop();
@@ -512,7 +539,7 @@ static int test_destroyed_retention_does_not_cross_generation_baseline() {
   }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && s->gen == 1 && s->version == 0;
+        return s && s->gen == 1 && s->version == 0 && s->acquisition_sessions.empty();
       })) {
     std::cerr << "FAIL: missing baseline snapshot for gen1\n";
     rt.stop();
@@ -549,7 +576,7 @@ static int test_live_session_retirement_expiry_publication() {
 
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && s->version == 0;
+        return s && s->version == 0 && s->acquisition_sessions.empty();
       })) {
     std::cerr << "FAIL: missing baseline snapshot\n";
     rt.stop();
@@ -672,7 +699,7 @@ static int test_topology_detached_and_retirement() {
     return 1;
   }
 
-  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0; })) {
+  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0 && s->acquisition_sessions.empty(); })) {
     std::cerr << "FAIL: missing baseline snapshot\n";
     rt.stop();
     return 1;
@@ -735,9 +762,11 @@ static int test_topology_detached_and_retirement() {
   rt.request_publish();
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
-        return s && !has_stream(*s, kStreamId) && s->topology_version > topo2;
+        return s && !has_stream(*s, kStreamId) &&
+               !has_acquisition_session_for_device(*s, kDeviceId) &&
+               s->topology_version > topo2;
       })) {
-    std::cerr << "FAIL: stream disappearance topology transition missing\n";
+    std::cerr << "FAIL: stream/acquisition-session disappearance topology transition missing\n";
     rt.stop();
     return 1;
   }
@@ -796,7 +825,7 @@ static int test_timestamp_preservation_and_fallback() {
     std::cerr << "FAIL: runtime start\n";
     return 1;
   }
-  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0; })) {
+  if (!wait_until([&]() { auto s = snapshot_copy(buf); return s && s->version == 0 && s->acquisition_sessions.empty(); })) {
     std::cerr << "FAIL: missing baseline snapshot\n";
     rt.stop();
     return 1;
@@ -881,12 +910,13 @@ static int test_timestamp_preservation_and_fallback() {
 
 static int test_no_sink_delivered_vs_dropped_accounting() {
   CoreStreamRegistry streams;
+  CoreAcquisitionSessionRegistry acquisition_sessions;
   CoreDeviceRegistry devices;
   CoreNativeObjectRegistry native_objects;
   uint64_t gen = 0;
   uint64_t now_ns = 1000;
 
-  CoreDispatcher dispatcher(&streams, &devices, &native_objects, &gen, [&now_ns]() {
+  CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {
     return now_ns++;
   });
 
@@ -939,14 +969,274 @@ static int test_no_sink_delivered_vs_dropped_accounting() {
   return 0;
 }
 
+static int test_capture_lifecycle_updates_live_acquisition_session_only() {
+  CoreStreamRegistry streams;
+  CoreAcquisitionSessionRegistry acquisition_sessions;
+  CoreDeviceRegistry devices;
+  CoreNativeObjectRegistry native_objects;
+  uint64_t gen = 0;
+  uint64_t now_ns = 10'000;
+
+  CoreDispatcher dispatcher(&streams, &acquisition_sessions, &devices, &native_objects, &gen, [&now_ns]() {
+    return now_ns++;
+  });
+
+  (void)devices.retain_capture_profile(500, 640, 480, FOURCC_RGBA, 77);
+
+  ProviderToCoreCommand capture_without_session{};
+  capture_without_session.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
+  capture_without_session.payload = CmdProviderCaptureStarted{9001, 500};
+  dispatcher.dispatch(std::move(capture_without_session));
+  if (!acquisition_sessions.all().empty()) {
+    std::cerr << "FAIL: capture lifecycle fabricated acquisition session without native realization\n";
+    return 1;
+  }
+
+  ProviderToCoreCommand create_session{};
+  create_session.type = ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED;
+  create_session.payload = CmdProviderNativeObjectCreated{
+      7001,
+      static_cast<uint32_t>(NativeObjectType::AcquisitionSession),
+      0,
+      500,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      false,
+      0,
+  };
+  dispatcher.dispatch(std::move(create_session));
+
+  ProviderToCoreCommand capture_started{};
+  capture_started.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED;
+  capture_started.payload = CmdProviderCaptureStarted{9002, 500};
+  dispatcher.dispatch(std::move(capture_started));
+
+  ProviderToCoreCommand capture_completed{};
+  capture_completed.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED;
+  capture_completed.payload = CmdProviderCaptureCompleted{9002, 500};
+  dispatcher.dispatch(std::move(capture_completed));
+
+  const auto& all_sessions = acquisition_sessions.all();
+  auto it = all_sessions.find(7001);
+  if (it == all_sessions.end()) {
+    std::cerr << "FAIL: acquisition session missing after native realization\n";
+    return 1;
+  }
+  const auto& rec = it->second;
+  if (rec.captures_triggered != 1 || rec.captures_completed != 1 || rec.captures_failed != 0 ||
+      rec.last_capture_id != 9002 || rec.capture_profile_version != 77 ||
+      rec.capture_width != 640 || rec.capture_height != 480 || rec.capture_format != FOURCC_RGBA) {
+    std::cerr << "FAIL: capture lifecycle counters/profile did not integrate into acquisition session truth\n";
+    return 1;
+  }
+  if (rec.last_capture_latency_ns == 0) {
+    std::cerr << "FAIL: expected non-zero capture latency from integration-side timestamps\n";
+    return 1;
+  }
+  return 0;
+}
+
+static bool verify_scoped_resource_telemetry_invariants(const ScopedResourceTelemetry& a, const char* context) {
+  auto fail = [&](const char* msg) {
+    std::cerr << "FAIL: " << context << " " << msg
+              << " lease(current=" << a.framebuffer_lease_current
+              << " created=" << a.framebuffer_lease_total_created
+              << " released=" << a.framebuffer_lease_total_released
+              << " peak=" << a.framebuffer_lease_peak_current
+              << ") retained(current=" << a.retained_gpu_backing_current
+              << " created=" << a.retained_gpu_backing_total_created
+              << " released=" << a.retained_gpu_backing_total_released
+              << " peak=" << a.retained_gpu_backing_peak_current << ")\n";
+    return false;
+  };
+
+  if (a.framebuffer_lease_current > a.framebuffer_lease_total_created) {
+    return fail("invariant framebuffer_lease_current <= framebuffer_lease_total_created violated");
+  }
+  if (a.framebuffer_lease_total_released > a.framebuffer_lease_total_created) {
+    return fail("invariant framebuffer_lease_total_released <= framebuffer_lease_total_created violated");
+  }
+  if (a.framebuffer_lease_peak_current < a.framebuffer_lease_current) {
+    return fail("invariant framebuffer_lease_peak_current >= framebuffer_lease_current violated");
+  }
+  if (a.retained_gpu_backing_current > a.retained_gpu_backing_total_created) {
+    return fail("invariant retained_gpu_backing_current <= retained_gpu_backing_total_created violated");
+  }
+  if (a.retained_gpu_backing_total_released > a.retained_gpu_backing_total_created) {
+    return fail("invariant retained_gpu_backing_total_released <= retained_gpu_backing_total_created violated");
+  }
+  if (a.retained_gpu_backing_peak_current < a.retained_gpu_backing_current) {
+    return fail("invariant retained_gpu_backing_peak_current >= retained_gpu_backing_current violated");
+  }
+  return true;
+}
+
+
+static const ScopedResourceTelemetry* find_scoped_resource_telemetry_entry(
+    const std::vector<ScopedResourceTelemetry>& entries,
+    uint32_t telemetry_scope,
+    uint64_t stream_id) {
+  for (const auto& entry : entries) {
+    if (entry.telemetry_scope == telemetry_scope && entry.stream_id == stream_id) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+static int test_scoped_resource_telemetry_default_and_projection() {
+  SnapshotBuilder builder;
+  ResourceAggregateTelemetry telemetry;
+  SnapshotBuilder::Inputs in;
+  in.scoped_resource_telemetry = &telemetry;
+
+  const CamBANGStateSnapshot zero = builder.build(in, 0, 0, 0, 1);
+  if (!zero.scoped_resource_telemetry.empty()) {
+    std::cerr << "FAIL: scoped_resource_telemetry default snapshot must be empty\n";
+    return 1;
+  }
+
+  const auto key = cambang::make_stream_scoped_resource_telemetry(30001);
+  telemetry.lease_created(key);
+  telemetry.lease_created(key);
+  telemetry.lease_released(key);
+  telemetry.retained_gpu_backing_created(key);
+  telemetry.retained_gpu_backing_released(key);
+
+  const CamBANGStateSnapshot projected = builder.build(in, 0, 1, 0, 2);
+  const ScopedResourceTelemetry* a1 =
+      find_scoped_resource_telemetry_entry(projected.scoped_resource_telemetry, 0u, 30001);
+  if (a1 == nullptr) {
+    std::cerr << "FAIL: expected STREAM scoped_resource_telemetry entry for stream_id=30001\n";
+    return 1;
+  }
+  if (a1->framebuffer_lease_total_created != 2 ||
+      a1->framebuffer_lease_total_released != 1 ||
+      a1->framebuffer_lease_current != 1 ||
+      a1->framebuffer_lease_peak_current != 2 ||
+      a1->retained_gpu_backing_total_created != 1 ||
+      a1->retained_gpu_backing_total_released != 1 ||
+      a1->retained_gpu_backing_current != 0 ||
+      a1->retained_gpu_backing_peak_current != 1) {
+    std::cerr << "FAIL: scoped_resource_telemetry projected values mismatch\n";
+    (void)verify_scoped_resource_telemetry_invariants(*a1, "scoped_resource_telemetry projected snapshot");
+    return 1;
+  }
+  if (!verify_scoped_resource_telemetry_invariants(*a1, "scoped_resource_telemetry projected snapshot")) {
+    return 1;
+  }
+
+  return 0;
+}
+
+static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start (scoped_resource_telemetry integration)\n";
+    return 1;
+  }
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        return s && s->version == 0;
+      })) {
+    std::cerr << "FAIL: missing baseline snapshot (scoped_resource_telemetry integration)\n";
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<uint8_t> bytes{1, 2, 3, 4};
+  int releases = 0;
+  FrameView frame{};
+  frame.stream_id = 30001;
+  frame.device_instance_id = 0;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
+  frame.capture_timestamp.value = 777;
+  frame.capture_timestamp.tick_ns = 1;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    int* p = static_cast<int*>(user);
+    (*p)++;
+  };
+  frame.release_user = &releases;
+  rt.provider_callbacks()->on_frame(frame);
+  rt.request_publish();
+
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        if (!s) return false;
+        for (const auto& a : s->scoped_resource_telemetry) {
+          if (a.telemetry_scope == 0u &&
+              a.framebuffer_lease_total_created > 0 &&
+              a.framebuffer_lease_total_released > 0 &&
+              a.framebuffer_lease_peak_current > 0) {
+            return true;
+          }
+        }
+        return false;
+      })) {
+    std::cerr << "FAIL: scoped_resource_telemetry framebuffer lease totals/peak did not move in runtime path\n";
+    auto s = snapshot_copy(buf);
+    if (s) {
+      for (const auto& a : s->scoped_resource_telemetry) { (void)verify_scoped_resource_telemetry_invariants(a, "runtime framebuffer integration"); }
+    }
+    rt.stop();
+    return 1;
+  }
+
+  auto observed = snapshot_copy(buf);
+  if (!observed) {
+    std::cerr << "FAIL: missing observed snapshot for scoped_resource_telemetry integration\n";
+    rt.stop();
+    return 1;
+  }
+  const ScopedResourceTelemetry* observed_stream_entry =
+      find_scoped_resource_telemetry_entry(observed->scoped_resource_telemetry, 0u, 30001);
+  if (observed_stream_entry == nullptr) {
+    std::cerr << "FAIL: missing STREAM scoped_resource_telemetry entry for runtime framebuffer integration\n";
+    rt.stop();
+    return 1;
+  }
+  if (!verify_scoped_resource_telemetry_invariants(*observed_stream_entry, "runtime framebuffer integration")) {
+    rt.stop();
+    return 1;
+  }
+  if (observed_stream_entry->framebuffer_lease_current != 0) {
+    std::cerr << "FAIL: expected framebuffer_lease_current==0 after deterministic release path"
+              << " current=" << observed_stream_entry->framebuffer_lease_current << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (releases <= 0) {
+    std::cerr << "FAIL: runtime frame release callback did not run\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  return 0;
+}
+
 } // namespace
 
 int main() {
+  if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
+  if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;
   if (int r = test_destroyed_retention_does_not_cross_generation_baseline()) return r;
   if (int r = test_live_session_retirement_expiry_publication()) return r;
   if (int r = test_timestamp_preservation_and_fallback()) return r;
   if (int r = test_no_sink_delivered_vs_dropped_accounting()) return r;
+  if (int r = test_capture_lifecycle_updates_live_acquisition_session_only()) return r;
   if (int r = test_visibility_diagnostics_snapshot_truth()) return r;
   if (int r = test_still_capture_profile_visibility_audit_truth()) return r;
 

@@ -125,7 +125,6 @@ private:
     bool started = false;
     bool producing = false;
     uint64_t native_id = 0;
-    uint64_t frame_producer_native_id = 0;
 
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> flushed{false};

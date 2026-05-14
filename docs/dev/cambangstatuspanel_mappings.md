@@ -20,6 +20,44 @@ Health badge role mapping is:
 
 Health is applied ahead of all other badges.
 
+
+## Structural projection hierarchy (current implementation)
+
+Current projection order is:
+
+- `provider/<id>` (current single-provider row id is typically `provider/main`)
+- `device/<instance_id>`
+- `acquisition_session/<acquisition_session_id>`
+- `stream/<stream_id>`
+- optional `frameproducer/<id>` rows (native projection)
+- other `native/*` descendants
+
+For native ancestry reconstruction, `owner_acquisition_session_id` is used before
+stream-level fallback where session ownership is available.
+
+The projection logic preserves explicit **Acquisition Session boundary breach**
+classification when a descendant survives beyond its controlling AcquisitionSession seam.
+
+## Capture profile counter surfacing policy (current implementation)
+
+- Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
+  inspectable retained device-bound capture profile truth, but these counters are
+  detail-level in panel visibility.
+- AcquisitionSession rows surface `capture_prof`, `capture_w`, `capture_h`, and
+  `capture_fmt` at summary level as the preferred session-context capture profile
+  surface.
+- Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
+  are not coupled to Device-vs-AcquisitionSession demotion policy.
+
+## Hierarchy expansion vs detail visibility
+
+- Row disclosure expand/collapse controls hierarchy only: it determines whether
+  descendant rows are visible.
+- Row detail visibility is independently toggled and controls only detail
+  counters/info lines on the current row.
+- Detail hints/buttons must not use expansion wording; expansion is reserved for
+  hierarchy semantics.
+
 ---
 
 ## Lifecycle badge phase parsing
@@ -259,6 +297,43 @@ Priority order:
 
 ---
 
+
+## AcquisitionSession health rules
+
+AcquisitionSession health facts include:
+
+- contract/projection failure
+- lifecycle contradiction
+- preserved state
+- destroyed state
+
+An AcquisitionSession row is considered:
+
+- **preserved** if it is a retained projection entry or has badge `continuity-only`
+- **destroyed** if it has badge `destroyed` or parsed phase is `destroyed`
+
+### AcquisitionSession = `BAD` if any of:
+- contract/projection failure
+- lifecycle contradiction
+
+### AcquisitionSession = `UNKNOWN` if:
+- phase cannot be parsed from row badges
+
+### AcquisitionSession = `ATTN` if:
+- preserved and not destroyed
+
+### Otherwise:
+- AcquisitionSession = `OK`
+
+Priority order:
+
+- `BAD`
+- `UNKNOWN`
+- `ATTN`
+- `OK`
+
+---
+
 ## Stream health rules
 
 Stream health facts include:
@@ -385,7 +460,7 @@ Priority order:
 
 ## Contract / projection failure detection
 
-For server, provider, device, stream, and native rows, contract/projection failure is treated as a high-priority negative signal.
+For server, provider, device, AcquisitionSession, stream, and native rows, contract/projection failure is treated as a high-priority negative signal.
 
 Depending on row type, this is detected from some combination of:
 
@@ -403,6 +478,7 @@ Where present, these failures force `BAD` for:
 - device
 - stream
 - native rows
+- acquisition_session rows
 
 ---
 
@@ -481,3 +557,11 @@ Elapsed time prefers snapshot `timestamp_ns`; if unavailable, it falls back to o
 A threshold value of `0` disables that specific temporal growth rule.
 
 ---
+
+### Freshness additions
+- `server/main` now surfaces `imaging_spec_version` as a compact header counter.
+- top-level `scoped_resource_telemetry[]` projects onto scope-specific `.../native_payload_support` grouping rows (no dedicated resource_telemetry child row).
+- when present, scoped telemetry lifecycle phase (`LIVE`/`DESTROYED`) is surfaced as the NPS row `phase=...` badge using normal lifecycle badge grammar.
+- Stream rows surface `visibility_last_path` via `visibility:` info line alongside visibility counters.
+- Native support types (`gpu_backing`, `frame_buffer_lease`) are grouped under projection row `<stream|acquisition_session>/<id>/native_payload_support` when owners are present.
+- Native info lines now include non-zero `owner_provider_native_id` and `owner_rig_id` for ownership traceability.

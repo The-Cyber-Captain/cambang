@@ -70,6 +70,17 @@ using SharedCaptureResultData = std::shared_ptr<const CoreCaptureResultData>;
 
 class CoreResultStore final {
 public:
+  enum class DisplayDemandReason : uint8_t {
+    NONE = 0,
+    PERSISTENT_REFCOUNT = 1,
+    LEASE = 2,
+  };
+  struct DisplayDemandState {
+    bool active = false;
+    DisplayDemandReason reason = DisplayDemandReason::NONE;
+    uint32_t refcount = 0;
+  };
+
   CoreResultStore() = default;
   ~CoreResultStore() = default;
 
@@ -80,6 +91,12 @@ public:
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
+  void remove_stream_result(uint64_t stream_id);
+  void mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns);
+  void retain_stream_display_demand(uint64_t stream_id);
+  void release_stream_display_demand(uint64_t stream_id);
+  bool is_stream_display_demand_active(uint64_t stream_id, uint64_t now_ns) const;
+  DisplayDemandState get_stream_display_demand_state(uint64_t stream_id, uint64_t now_ns) const;
   void clear();
 
 private:
@@ -89,6 +106,8 @@ private:
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;
   std::map<uint64_t, std::map<uint64_t, SharedCaptureResultData>> capture_results_by_capture_id_;
+  std::map<uint64_t, uint64_t> stream_display_demand_last_seen_ns_;
+  std::map<uint64_t, uint32_t> stream_display_demand_refcounts_;
 };
 
 } // namespace cambang

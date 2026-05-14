@@ -7,11 +7,13 @@
 namespace cambang {
 
 class CoreDeviceRegistry;
+class CoreAcquisitionSessionRegistry;
 class CoreRigRegistry;
 class CoreStreamRegistry;
 class ProviderCallbackIngress;
 class CoreNativeObjectRegistry;
 class CoreSpecState;
+class ResourceAggregateTelemetry;
 
 // Minimal deterministic builder for schema v1 state snapshot.
 // Populates implemented fields from current registries; all others use
@@ -20,12 +22,14 @@ class SnapshotBuilder final {
 public:
     struct Inputs {
         const CoreDeviceRegistry* devices = nullptr;
+        const CoreAcquisitionSessionRegistry* acquisition_sessions = nullptr;
         const CoreRigRegistry* rigs = nullptr;
         const CoreStreamRegistry* streams = nullptr;
         // Provider ingress stats may be used for queue_depth in future.
         const ProviderCallbackIngress* ingress = nullptr;
         const CoreNativeObjectRegistry* native_objects = nullptr;
         const CoreSpecState* spec_state = nullptr;
+        const ResourceAggregateTelemetry* scoped_resource_telemetry = nullptr;
     };
 
     CamBANGStateSnapshot build(const Inputs& in,

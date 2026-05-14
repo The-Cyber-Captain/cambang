@@ -582,7 +582,6 @@ ProviderResult WindowsProvider::create_stream(const StreamRequest& req) {
   stream_.started = false;
   stream_.producing = false;
   stream_.native_id = alloc_native_id_(NativeObjectType::Stream);
-  stream_.frame_producer_native_id = 0;
   stream_.stop_requested.store(false);
   stream_.flushed.store(false);
 
@@ -597,9 +596,6 @@ ProviderResult WindowsProvider::destroy_stream(uint64_t stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   if (stream_.started) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-  }
-  if (stream_.frame_producer_native_id != 0) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   stream_.created = false;
@@ -645,15 +641,6 @@ ProviderResult WindowsProvider::start_stream(
 
   stream_.started = true;
   stream_.producing = true;
-  stream_.frame_producer_native_id = alloc_native_id_(NativeObjectType::FrameProducer);
-  emit_native_created_(
-      stream_.frame_producer_native_id,
-      NativeObjectType::FrameProducer,
-      device_.root_id,
-      device_.device_instance_id,
-      stream_id,
-      provider_native_id_,
-      0);
   strand_.post_stream_started(stream_id);
   return ProviderResult::success();
 }
@@ -706,8 +693,6 @@ ProviderResult WindowsProvider::stop_stream_with_timeout_(uint64_t stream_id, st
   }
 
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
-  emit_native_destroyed_(stream_.frame_producer_native_id);
-  stream_.frame_producer_native_id = 0;
   return ProviderResult::success();
 }
 
@@ -716,7 +701,7 @@ ProviderResult WindowsProvider::destroy_stream_forced_(uint64_t stream_id) {
   if (!stream_.created || stream_.req.stream_id != stream_id) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
-  if (stream_.started || stream_.frame_producer_native_id != 0) {
+  if (stream_.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   stream_.created = false;

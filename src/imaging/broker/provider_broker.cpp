@@ -576,4 +576,16 @@ ProviderResult ProviderBroker::set_timeline_reconciliation_for_host(TimelineReco
 }
 
 
+bool ProviderBroker::get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSnapshot& out) const {
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    out = syn->get_metrics_snapshot_for_host();
+    return true;
+  }
+#endif
+  (void)out;
+  return false;
+}
+
+
 } // namespace cambang

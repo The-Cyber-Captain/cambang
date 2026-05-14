@@ -23,6 +23,10 @@ public:
   static constexpr int CAPABILITY_EXPENSIVE = static_cast<int>(ResultCapability::EXPENSIVE);
   static constexpr int CAPABILITY_UNSUPPORTED = static_cast<int>(ResultCapability::UNSUPPORTED);
 
+  static constexpr int DISPLAY_PATH_NONE = 0;
+  static constexpr int DISPLAY_PATH_RETAINED_GPU_BACKING = 1;
+  static constexpr int DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW = 2;
+
   CamBANGStreamResult() = default;
 
   void set_data(SharedStreamResultData data) { data_ = std::move(data); }
@@ -54,6 +58,7 @@ public:
   int can_get_display_view() const;
   int can_to_image() const;
 
+  int get_display_view_path_kind() const;
   godot::Variant get_display_view() const;
   godot::Ref<godot::Image> to_image() const;
 

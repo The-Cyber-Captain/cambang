@@ -17,6 +17,7 @@ struct RuntimeCallbacks final : IProviderCallbacks {
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
+  bool is_stream_display_demand_active(uint64_t) override { return false; }
 
   void on_device_opened(uint64_t) override {}
   void on_device_closed(uint64_t) override {}
@@ -24,9 +25,9 @@ struct RuntimeCallbacks final : IProviderCallbacks {
   void on_stream_destroyed(uint64_t) override {}
   void on_stream_started(uint64_t) override {}
   void on_stream_stopped(uint64_t, ProviderError) override {}
-  void on_capture_started(uint64_t) override {}
-  void on_capture_completed(uint64_t) override {}
-  void on_capture_failed(uint64_t, ProviderError) override {}
+  void on_capture_started(uint64_t, uint64_t) override {}
+  void on_capture_completed(uint64_t, uint64_t) override {}
+  void on_capture_failed(uint64_t, uint64_t, ProviderError) override {}
   void on_frame(const FrameView&) override {}
   void on_device_error(uint64_t, ProviderError) override { ++device_errors; }
   void on_stream_error(uint64_t, ProviderError) override { ++stream_errors; }

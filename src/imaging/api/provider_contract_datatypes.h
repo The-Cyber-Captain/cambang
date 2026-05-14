@@ -78,7 +78,7 @@ struct ProviderResult {
 
 // Native object type vocabulary (core-owned).
 //
-// Canonical nouns: Provider, Device, Stream, FrameProducer.
+// Canonical nouns: Provider, Device, AcquisitionSession, Stream.
 // See docs/provider_architecture.md and docs/state_snapshot.md.
 //
 // NOTE: In the current scaffolding slice, providers fill `NativeObjectCreateInfo.type`
@@ -87,8 +87,10 @@ struct ProviderResult {
 enum class NativeObjectType : uint32_t {
   Provider = 1,
   Device = 2,
-  Stream = 3,
-  FrameProducer = 4,
+  AcquisitionSession = 3,
+  Stream = 4,
+  FrameBufferLease = 5,
+  GpuBacking = 6,
 };
 
 // -----------------------------------------------------------------------------
@@ -234,6 +236,7 @@ struct NativeObjectCreateInfo {
   uint64_t root_id = 0;                   // lineage root id (core-issued)
 
   uint64_t owner_device_instance_id = 0;
+  uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint64_t owner_provider_native_id = 0;  // 0 if unknown/none
   uint64_t owner_rig_id = 0;              // 0 if unknown/none
@@ -274,6 +277,7 @@ struct FrameView {
   // Correlation
   uint64_t device_instance_id = 0;
   uint64_t stream_id = 0;    // 0 if this frame belongs only to a still capture
+  uint64_t acquisition_session_id = 0; // 0 if unavailable/unknown
   uint64_t capture_id = 0;   // 0 if this is a repeating stream frame
 
   // Image metadata

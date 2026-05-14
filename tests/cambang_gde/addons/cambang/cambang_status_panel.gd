@@ -11,6 +11,13 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
+# TEMP DEBUG EXPANSION TRACE
+const DEBUG_EXPANSION_TRACE := false
+const DEBUG_EXPANSION_WATCH_ROW_IDS := [
+	"server/main",
+	"stream/30001",
+	"provider/synthetic/timeline/completion-gated",
+]
 
 
 class PanelModel extends RefCounted:
@@ -29,6 +36,7 @@ class StatusEntryModel extends RefCounted:
 	var is_in_orphan_native_branch: bool = false
 	var is_below_line: bool = false
 	var expanded: bool = false
+	var detail_visible: bool = false
 	var can_expand: bool = false
 	var badges: Array[BadgeModel] = []
 	var counters: Array[CounterModel] = []
@@ -127,6 +135,7 @@ var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _expanded_by_row_id: Dictionary = {}
+var _detail_visible_by_row_id: Dictionary = {}
 var _dev_parent_by_id: Dictionary = {}
 var _row_nodes_by_id: Dictionary = {}
 var _server: Object = null
@@ -283,8 +292,8 @@ func _resolve_style() -> StatusPanelStyle:
 	style.panel_bg = _resolve_panel_color("status_panel_bg", Color(0.07, 0.09, 0.12, 0.9))
 	style.identity_font = _resolve_shared_font("status_identity_font", fallback_font)
 	style.identity_font_size = _resolve_shared_int("status_identity_font_size", 13)
-	style.identity_font_color = _resolve_panel_color("status_identity_font_color", Color(0.88, 0.90, 0.93, 1.0))
-	style.identity_outline_color = _resolve_panel_color("status_identity_outline_color", Color(0.02, 0.03, 0.04, 0.55))
+	style.identity_font_color = _resolve_panel_color("status_identity_font_color", Color(0.0, 0.0, 0.0, 1.0))
+	style.identity_outline_color = _resolve_panel_color("status_identity_outline_color", Color(1.0, 1.0, 1.0, 0.92))
 	style.identity_outline_size = maxi(
 		1,
 		int(round(float(style.identity_font_size) * _resolve_shared_float("status_identity_outline_ratio", 0.08)))
@@ -581,13 +590,14 @@ func _build_debug_runtime_evidence_dump(snapshot: Variant, model: PanelModel) ->
 					continue
 				var rec := raw_rec as Dictionary
 				lines.append(
-					"  native_id=%d type=%s phase=%s creation_gen=%s owner_device_instance_id=%s owner_stream_id=%s owner_provider_native_id=%s root_id=%s"
+					"  native_id=%d type=%s phase=%s creation_gen=%s owner_device_instance_id=%s owner_acquisition_session_id=%s owner_stream_id=%s owner_provider_native_id=%s root_id=%s"
 					% [
 						int(rec.get("native_id", 0)),
 						str(rec.get("type", "")),
 						str(rec.get("phase", "")),
 						str(rec.get("creation_gen", "")),
 						str(rec.get("owner_device_instance_id", "")),
+						str(rec.get("owner_acquisition_session_id", "")),
 						str(rec.get("owner_stream_id", "")),
 						str(rec.get("owner_provider_native_id", "")),
 						str(rec.get("root_id", "")),
@@ -703,6 +713,8 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 			continue
 		if line.begins_with("Projection gap: native coverage"):
 			continue
+		if line.begins_with("Projection gap: missing native ids:"):
+			continue
 		next_info_lines.append(line)
 
 	var state := str(coverage.get("state", "UNKNOWN"))
@@ -721,7 +733,32 @@ func _info_lines_with_render_native_coverage(existing_info_lines: Array[String],
 				missing_native,
 			]
 		)
+		var missing_details := _coverage_missing_native_detail_line(coverage)
+		if not missing_details.is_empty():
+			next_info_lines.append(missing_details)
 	return next_info_lines
+
+
+func _coverage_missing_native_detail_line(coverage: Dictionary) -> String:
+	var missing_details: Array = coverage.get("missing_details", [])
+	if typeof(missing_details) != TYPE_ARRAY or missing_details.is_empty():
+		return ""
+	var detail_parts: Array[String] = []
+	var cap := min(missing_details.size(), 6)
+	for i in range(cap):
+		var detail: Variant = missing_details[i]
+		if typeof(detail) != TYPE_DICTIONARY:
+			continue
+		var native_id := int((detail as Dictionary).get("native_id", 0))
+		var native_type := str((detail as Dictionary).get("type", "unknown"))
+		var phase := str((detail as Dictionary).get("phase", "UNKNOWN")).to_upper()
+		detail_parts.append("%d:%s:%s" % [native_id, native_type, phase])
+	if detail_parts.is_empty():
+		return ""
+	var suffix := ""
+	if missing_details.size() > cap:
+		suffix = ", +%d more" % (missing_details.size() - cap)
+	return "Projection gap: missing native ids: %s%s" % [", ".join(detail_parts), suffix]
 
 
 func _badge_labels(badges: Array[BadgeModel]) -> Array[String]:
@@ -932,13 +969,78 @@ func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 		var next_health_label := _derive_stream_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		var next_info_lines := _stream_info_lines_with_bad_reason(entry.info_lines, health_facts, next_health_label)
 		_observe_stream_health_state(entry.id, health_facts)
-		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+		if _badge_labels(next_badges) == _badge_labels(entry.badges) and next_info_lines == entry.info_lines:
 			continue
 		entry.badges = next_badges
+		entry.info_lines = next_info_lines
 		_apply_detail_policy_to_entry(entry)
 		changed = true
 	return changed
+
+
+func _stream_info_lines_with_bad_reason(existing_info_lines: Array[String], health_facts: Dictionary, health_label: String) -> Array[String]:
+	var next_info_lines: Array[String] = []
+	for line in existing_info_lines:
+		if line.begins_with("Health reason:"):
+			continue
+		next_info_lines.append(line)
+	if health_label != "BAD":
+		return next_info_lines
+	for reason in _stream_bad_reason_lines(health_facts):
+		next_info_lines.append(reason)
+	return next_info_lines
+
+
+func _stream_bad_reason_lines(health_facts: Dictionary) -> Array[String]:
+	var reasons: Array[String] = []
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		var contract_reason := str(health_facts.get("contract_or_projection_failure_reason", "")).strip_edges()
+		if contract_reason.is_empty():
+			reasons.append("Health reason: contract/projection failure.")
+		else:
+			reasons.append("Health reason: contract/projection failure: %s" % contract_reason)
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		reasons.append("Health reason: lifecycle contradiction.")
+	if str(health_facts.get("mode", "")) == "ERROR":
+		reasons.append("Health reason: stream mode ERROR.")
+	_append_stream_growth_reason_if_exceeded(
+		reasons,
+		"drop",
+		float(health_facts.get("drop_growth_rate_per_sec", 0.0)),
+		stream_drop_growth_rate_bad_threshold_per_sec
+	)
+	_append_stream_growth_reason_if_exceeded(
+		reasons,
+		"rej_fmt",
+		float(health_facts.get("rej_fmt_growth_rate_per_sec", 0.0)),
+		stream_rej_fmt_growth_rate_bad_threshold_per_sec
+	)
+	_append_stream_growth_reason_if_exceeded(
+		reasons,
+		"rej_inv",
+		float(health_facts.get("rej_inv_growth_rate_per_sec", 0.0)),
+		stream_rej_inv_growth_rate_bad_threshold_per_sec
+	)
+	return reasons
+
+
+func _append_stream_growth_reason_if_exceeded(
+		reasons: Array[String],
+		counter_name: String,
+		growth_rate: float,
+		threshold_setting: float
+	) -> void:
+	var threshold := max(threshold_setting, 0.0)
+	if is_zero_approx(threshold):
+		return
+	if growth_rate <= threshold:
+		return
+	reasons.append(
+		"Health reason: %s growth %.3f/s exceeds threshold %.3f/s."
+		% [counter_name, growth_rate, threshold]
+	)
 
 
 func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
@@ -1015,6 +1117,7 @@ func _derive_stream_health_facts(
 	var stop_reason := _stream_stop_reason_label(stream_entry)
 	return {
 		"has_contract_or_projection_failure": _stream_has_contract_or_projection_failure(model, stream_entry),
+		"contract_or_projection_failure_reason": _stream_contract_or_projection_failure_reason(model, stream_entry),
 		"has_lifecycle_contradiction": _stream_has_lifecycle_contradiction(stream_entry),
 		"has_insufficient_local_truth": _stream_has_insufficient_local_truth(stream_entry, mode),
 		"is_preserved": _stream_is_preserved(stream_entry),
@@ -1742,6 +1845,21 @@ func _stream_has_contract_or_projection_failure(model: PanelModel, stream_entry:
 		if _is_anomaly_info_line(line):
 			return true
 	return false
+
+
+func _stream_contract_or_projection_failure_reason(model: PanelModel, stream_entry: StatusEntryModel) -> String:
+	if _stream_has_badge_label(stream_entry, "contract-gap"):
+		return "contract-gap badge."
+	if _stream_has_badge_label(stream_entry, "CONTRACT GAP"):
+		return "CONTRACT GAP badge."
+	if _stream_has_badge_label(stream_entry, "snapshot-incompatible"):
+		return "snapshot-incompatible badge."
+	if _entry_exists(model.entries, "%s/contract_gaps" % stream_entry.id):
+		return "contract_gaps child row."
+	for line in stream_entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return line
+	return ""
 
 
 func _device_has_counter_inconsistency(device_entry: StatusEntryModel, current_errors: int) -> bool:
@@ -3045,9 +3163,11 @@ func _check_snapshot_runtime_compat(snapshot: Dictionary) -> Dictionary:
 
 	_check_required_array_field(snapshot, "rigs", contract_gaps)
 	_check_required_array_field(snapshot, "devices", contract_gaps)
+	_check_required_array_field(snapshot, "acquisition_sessions", contract_gaps)
 	_check_required_array_field(snapshot, "streams", contract_gaps)
 	_check_required_array_field(snapshot, "native_objects", contract_gaps)
 	_check_required_array_field(snapshot, "detached_root_ids", contract_gaps)
+	_check_required_array_field(snapshot, "scoped_resource_telemetry", contract_gaps)
 
 	return {
 		"ok": contract_gaps.is_empty() and projection_gaps.is_empty(),
@@ -3074,6 +3194,14 @@ func _check_required_array_field(snapshot: Dictionary, key: String, gaps: Array[
 		return
 	if typeof(snapshot.get(key)) != TYPE_ARRAY:
 		gaps.append("Contract gap: snapshot.%s expected Array, got type=%d." % [key, typeof(snapshot.get(key))])
+
+
+func _check_required_dictionary_field(snapshot: Dictionary, key: String, gaps: Array[String]) -> void:
+	if not snapshot.has(key):
+		gaps.append("Contract gap: snapshot missing required top-level field '%s'." % key)
+		return
+	if typeof(snapshot.get(key)) != TYPE_DICTIONARY:
+		gaps.append("Contract gap: snapshot.%s must be an object/dictionary." % key)
 
 
 func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps: Array) -> PanelModel:
@@ -3329,6 +3457,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		_counter("gen", int(snapshot.get("gen", 0)), 3),
 		_counter("version", int(snapshot.get("version", 0)), 5),
 		_counter("topology", int(snapshot.get("topology_version", 0)), 3),
+		_counter("imaging_spec_version", int(snapshot.get("imaging_spec_version", 0)), 2),
 	]
 	var server_info_lines: Array[String] = []
 	var server_entry := _entry(
@@ -3346,6 +3475,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var devices := _safe_array(snapshot.get("devices", []), issues, "devices")
 	var rigs := _safe_array(snapshot.get("rigs", []), issues, "rigs")
+	var acquisition_sessions := _safe_array(snapshot.get("acquisition_sessions", []), issues, "acquisition_sessions")
 	var streams := _safe_array(snapshot.get("streams", []), issues, "streams")
 	var native_objects := _safe_array(snapshot.get("native_objects", []), issues, "native_objects")
 	var detached_root_ids := _safe_array(snapshot.get("detached_root_ids", []), issues, "detached_root_ids")
@@ -3421,6 +3551,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	var provider_counters: Array[CounterModel] = [
 		_counter("rigs", rigs.size(), 1),
 		_counter("devices", devices.size(), 1),
+		_counter("acquisition_sessions", acquisition_sessions.size(), 1),
 		_counter("streams", streams.size(), 1),
 		_counter("native_all", native_objects.size(), 1),
 		_counter("native_cur", current_native_objects.size(), 1),
@@ -3446,9 +3577,32 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	)
 	provider_entry.materialized_native_id = provider_native_id
 	panel.entries.append(provider_entry)
+	var scoped_resource_telemetry := _safe_array(snapshot.get("scoped_resource_telemetry", []), issues, "scoped_resource_telemetry")
+	var scoped_resource_telemetry_group_ids := {}
+	for i in range(scoped_resource_telemetry.size()):
+		var telemetry := _safe_dict(scoped_resource_telemetry[i], issues, "scoped_resource_telemetry[%d]" % i)
+		if telemetry.is_empty():
+			continue
+		var scope := str(telemetry.get("telemetry_scope", "UNKNOWN"))
+		var row_parent := "%s/native_payload_support" % provider_id
+		if scope == "STREAM":
+			row_parent = "stream/%d/native_payload_support" % int(telemetry.get("stream_id", 0))
+		elif scope == "ACQUISITION_SESSION":
+			row_parent = "acquisition_session/%d/native_payload_support" % int(telemetry.get("acquisition_session_id", 0))
+		elif scope == "DEVICE":
+			row_parent = "device/%d/native_payload_support" % int(telemetry.get("device_instance_id", 0))
+		elif scope == "PROVIDER":
+			row_parent = "provider/%d/native_payload_support" % int(telemetry.get("provider_native_id", 0))
+		_ensure_native_payload_support_group_row_id(panel, row_parent)
+		if scoped_resource_telemetry_group_ids.has(row_parent):
+			issues.append("Contract ambiguity: duplicate scoped_resource_telemetry group id %s (index=%d)." % [row_parent, i])
+			continue
+		scoped_resource_telemetry_group_ids[row_parent] = true
+		_apply_scoped_resource_telemetry_to_native_payload_support_group(panel, row_parent, telemetry)
 
 	var promoted_native_ids := {}
 	var current_device_native_matches_by_instance := {}
+	var current_acquisition_session_native_matches_by_session_id := {}
 	var current_stream_native_matches_by_stream_id := {}
 	var current_non_live_device_native_matches_by_instance := {}
 	var current_non_live_stream_native_matches_by_stream_id := {}
@@ -3467,6 +3621,24 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					if not current_non_live_device_native_matches_by_instance.has(owner_instance_id):
 						current_non_live_device_native_matches_by_instance[owner_instance_id] = []
 					current_non_live_device_native_matches_by_instance[owner_instance_id].append(native_rec)
+		elif native_type_key == "acquisition_session":
+			var acquisition_session_match_keys := {}
+			var native_id := int(native_rec.get("native_id", 0))
+			if native_id > 0:
+				acquisition_session_match_keys[native_id] = true
+			var owner_acquisition_session_id := int(native_rec.get("owner_acquisition_session_id", 0))
+			if owner_acquisition_session_id > 0:
+				acquisition_session_match_keys[owner_acquisition_session_id] = true
+			var acquisition_session_id := int(native_rec.get("acquisition_session_id", 0))
+			if acquisition_session_id > 0:
+				acquisition_session_match_keys[acquisition_session_id] = true
+			for session_key in acquisition_session_match_keys.keys():
+				var session_id := int(session_key)
+				if session_id <= 0:
+					continue
+				if not current_acquisition_session_native_matches_by_session_id.has(session_id):
+					current_acquisition_session_native_matches_by_session_id[session_id] = []
+				current_acquisition_session_native_matches_by_session_id[session_id].append(native_rec)
 		elif native_type_key == "stream":
 			var owner_stream_id := int(native_rec.get("owner_stream_id", 0))
 			if owner_stream_id > 0:
@@ -3480,6 +3652,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var devices_by_instance := {}
 	var provider_device_ids_by_instance := {}
+	var acquisition_session_entry_id_by_session_id := {}
 	for i in range(devices.size()):
 		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
 		if rec.is_empty():
@@ -3533,10 +3706,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["rebuild_count", "rebuild_count", 2],
 						["warm_hold_ms", "warm_hold_ms", 3],
 						["warm_remaining_ms", "warm_remaining_ms", 3],
-						["still_w", "capture_width", 4],
-						["still_h", "capture_height", 4],
-						["still_fmt", "capture_format", 4],
-						["still_prof", "capture_profile_version", 2],
+						["capture_w", "capture_width", 4],
+						["capture_h", "capture_height", 4],
+						["capture_fmt", "capture_format", 4],
+						["capture_prof", "capture_profile_version", 2],
 					],
 					[],
 					"device"
@@ -3547,6 +3720,82 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if device_matches.size() == 1:
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
 		panel.entries.append(device_entry)
+
+	for i in range(acquisition_sessions.size()):
+		var rec := _safe_dict(acquisition_sessions[i], issues, "acquisition_sessions[%d]" % i)
+		if rec.is_empty():
+			continue
+		var acquisition_session_id := int(rec.get("acquisition_session_id", 0))
+		if acquisition_session_id <= 0:
+			issues.append("Contract gap: acquisition_sessions[%d] missing valid acquisition_session_id." % i)
+			continue
+		if acquisition_session_entry_id_by_session_id.has(acquisition_session_id):
+			issues.append("Contract gap: duplicate acquisition_session_id=%d." % acquisition_session_id)
+			continue
+		var acquisition_session_owner_device_instance := int(rec.get("device_instance_id", 0))
+		if acquisition_session_owner_device_instance <= 0:
+			issues.append("Contract gap: acquisition_session/%d missing valid device_instance_id." % acquisition_session_id)
+			continue
+		var acquisition_session_parent_id := "device/%d" % acquisition_session_owner_device_instance
+		if not _entry_exists(panel.entries, acquisition_session_parent_id):
+			issues.append(
+				"Acquisition Session boundary breach: acquisition_session/%d owner device_instance_id=%d not present in snapshot devices."
+				% [acquisition_session_id, acquisition_session_owner_device_instance]
+			)
+			acquisition_session_parent_id = provider_id
+		var acquisition_session_phase: Variant = rec.get("phase", -1)
+		var acquisition_session_badges: Array[BadgeModel] = [
+			_badge("neutral", "phase=%s" % _phase_display_label(acquisition_session_phase)),
+		]
+		var acquisition_session_info: Array[String] = []
+		var acquisition_session_native_matches: Array = current_acquisition_session_native_matches_by_session_id.get(acquisition_session_id, [])
+		if acquisition_session_native_matches.size() == 1:
+			var acquisition_session_native_rec: Dictionary = acquisition_session_native_matches[0]
+			var acquisition_session_native_phase: Variant = acquisition_session_native_rec.get("phase", -1)
+			if _phase_display_label(acquisition_session_native_phase) != _phase_display_label(acquisition_session_phase):
+				acquisition_session_info.append(
+					"Native phase differs: %s (row phase=%s)."
+					% [_phase_display_label(acquisition_session_native_phase), _phase_display_label(acquisition_session_phase)]
+				)
+			promoted_native_ids[int(acquisition_session_native_rec.get("native_id", 0))] = true
+		elif acquisition_session_native_matches.size() > 1:
+			acquisition_session_info.append(
+				"Contract ambiguity: acquisition_session row has %d matching current-generation AcquisitionSession native objects."
+				% acquisition_session_native_matches.size()
+			)
+		var acquisition_session_entry_id := "acquisition_session/%d" % acquisition_session_id
+		var acquisition_session_entry := _entry(
+			acquisition_session_entry_id,
+			acquisition_session_parent_id,
+			3 if acquisition_session_parent_id != provider_id else 2,
+			"Acquisition Session",
+			true,
+			true,
+			acquisition_session_badges,
+			_counters_from_record(
+				rec,
+				[
+					["capture_prof", "capture_profile_version", 2],
+					["capture_w", "capture_width", 4],
+					["capture_h", "capture_height", 4],
+					["capture_fmt", "capture_format", 4],
+					["triggered", "captures_triggered", 3],
+					["completed", "captures_completed", 3],
+					["failed", "captures_failed", 3],
+					["last_capture_id", "last_capture_id", 3],
+					["last_capture_latency", "last_capture_latency_ns", 4],
+					["error_code", "error_code", 2],
+				],
+				[],
+				"acquisition_session"
+			),
+			acquisition_session_info,
+			"acquisition_session"
+		)
+		if acquisition_session_native_matches.size() == 1:
+			acquisition_session_entry.materialized_native_id = int(acquisition_session_native_matches[0].get("native_id", 0))
+		panel.entries.append(acquisition_session_entry)
+		acquisition_session_entry_id_by_session_id[acquisition_session_id] = acquisition_session_entry_id
 
 	var streams_by_device := {}
 	var seen_stream_ids := {}
@@ -3579,7 +3828,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 	
 
 	for instance_id in provider_device_ids_by_instance.keys():
-		var parent_entry_id := str(provider_device_ids_by_instance[instance_id])
 		var per_device_streams: Array = streams_by_device.get(instance_id, [])
 		for rec in per_device_streams:
 			var stream_id := int(rec.get("stream_id", 0))
@@ -3590,6 +3838,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_badge("neutral", "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE"))),
 			]
 			var stream_info: Array[String] = []
+			var visibility_info_line := _build_stream_visibility_info_line(rec)
+			if not visibility_info_line.is_empty():
+				stream_info.append(visibility_info_line)
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -3605,10 +3856,24 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					"Contract ambiguity: stream row has %d matching current-generation Stream native objects."
 					% stream_matches.size()
 				)
+			var stream_parent_resolution := _resolve_stream_parent_entry_id(
+				stream_id,
+				int(rec.get("device_instance_id", 0)),
+				stream_matches,
+				acquisition_session_entry_id_by_session_id,
+				panel.entries,
+				provider_id
+			)
+			var parent_entry_id := str(stream_parent_resolution.get("parent_id", ""))
+			if parent_entry_id.is_empty():
+				parent_entry_id = str(provider_device_ids_by_instance.get(instance_id, provider_id))
+			var stream_parent_notes: Array = stream_parent_resolution.get("notes", [])
+			for note in stream_parent_notes:
+				stream_info.append(str(note))
 			var stream_entry := _entry(
 				"stream/%d" % stream_id,
 				parent_entry_id,
-				3,
+				_depth_for_parent(parent_entry_id),
 				"stream/%d" % stream_id,
 				false,
 				true,
@@ -3641,6 +3906,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
 			panel.entries.append(stream_entry)
 
+	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var current_grounded_destroyed_device_row_id_by_instance := {}
 	for instance_key in current_non_live_device_native_matches_by_instance.keys():
 		var canonical_device_id := "device/%d" % int(instance_key)
@@ -3689,16 +3955,22 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			if destroyed_stream_native_id <= 0:
 				issues.append("Contract ambiguity: current-generation DESTROYED Stream native object missing valid native_id.")
 				continue
-			var destroyed_stream_parent_id := provider_id
-			var destroyed_stream_owner_instance := int(destroyed_stream_native.get("owner_device_instance_id", 0))
-			if _entry_exists(panel.entries, "device/%d" % destroyed_stream_owner_instance):
-				destroyed_stream_parent_id = "device/%d" % destroyed_stream_owner_instance
+			var destroyed_stream_parent_resolution := _resolve_native_parent_id_with_breach_context(
+				destroyed_stream_native,
+				provider_id,
+				orphan_row_id,
+				detached_root_ids,
+				acquisition_session_entry_id_by_session_id,
+				panel.entries
+			)
+			var destroyed_stream_parent_id := str(destroyed_stream_parent_resolution.get("parent_id", provider_id))
+			var destroyed_stream_info: Array[String] = destroyed_stream_parent_resolution.get("notes", [])
 			promoted_native_ids[destroyed_stream_native_id] = true
 			var destroyed_stream_counters := _last_known_same_row_type_counters(canonical_stream_id, "stream")
 			var destroyed_stream_entry := _entry(
 				canonical_stream_id,
 				destroyed_stream_parent_id,
-				3 if destroyed_stream_parent_id != provider_id else 2,
+				_depth_for_parent(destroyed_stream_parent_id),
 				"stream/%d [destroyed]" % int(stream_key),
 				true,
 				true,
@@ -3706,7 +3978,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					_badge("warning", "destroyed"),
 				],
 				destroyed_stream_counters,
-				[],
+				destroyed_stream_info,
 				"stream"
 			)
 			destroyed_stream_entry.materialized_native_id = destroyed_stream_native_id
@@ -3742,8 +4014,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_counters_from_record(
 					rec,
 					[
-						["still_w", "capture_width", 4],
-						["still_h", "capture_height", 4],
+						["capture_w", "capture_width", 4],
+						["capture_h", "capture_height", 4],
 					],
 					[
 						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
@@ -3773,7 +4045,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_append_lines(member_context_lines, member_info)
 			))
 
-	var orphan_row_id := "%s/orphaned_native_objects" % provider_id
 	var orphan_rows: Array[StatusEntryModel] = []
 	var orphan_rows_by_id := {}
 	for i in range(current_native_objects.size()):
@@ -3785,12 +4056,13 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			continue
 		if bool(promoted_native_ids.get(current_native_id, false)):
 			continue
+		_ensure_native_payload_support_group_row(panel, rec)
 		var native_entry := _build_native_object_entry(
 			rec,
 			provider_id,
 			orphan_row_id,
 			detached_root_ids,
-			devices_by_instance,
+			acquisition_session_entry_id_by_session_id,
 			panel.entries,
 			issues,
 			snapshot_gen,
@@ -3872,7 +4144,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				provider_id,
 				orphan_row_id,
 				detached_root_ids,
-				devices_by_instance,
+				acquisition_session_entry_id_by_session_id,
 				panel.entries,
 				issues,
 				snapshot_gen,
@@ -3952,7 +4224,8 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 	var missing_prior := 0
 	var missing_destroyed := 0
 	var missing_non_destroyed := 0
-	for native_id in snapshot_native_records.keys():
+	var missing_details: Array[Dictionary] = []
+	for native_id in _sorted_int_keys(snapshot_native_records.keys()):
 		if observed_native_id_set.has(native_id):
 			observed_snapshot_native_count += 1
 			continue
@@ -3969,6 +4242,11 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 			missing_destroyed += 1
 		else:
 			missing_non_destroyed += 1
+		missing_details.append({
+			"native_id": int(native_id),
+			"type": _native_object_type_key(rec),
+			"phase": _phase_display_label(rec.get("phase", -1)),
+		})
 
 	var missing_count := snapshot_native_records.size() - observed_snapshot_native_count
 	var coverage_state := "OK"
@@ -3987,6 +4265,7 @@ func _compute_native_coverage_from_ids(native_objects: Array, observed_native_id
 		"missing_prior": missing_prior,
 		"missing_destroyed": missing_destroyed,
 		"missing_non_destroyed": missing_non_destroyed,
+		"missing_details": missing_details,
 	}
 
 
@@ -4030,12 +4309,102 @@ func _append_native_generation_note(info_lines: Array[String], rec: Dictionary, 
 		info_lines.append("destroyed: authoritative prior-generation snapshot truth.")
 
 
+func _resolve_stream_parent_entry_id(
+		stream_id: int,
+		device_instance_id: int,
+		stream_native_matches: Array,
+		acquisition_session_entry_id_by_session_id: Dictionary,
+		existing_entries: Array[StatusEntryModel],
+		provider_id: String
+	) -> Dictionary:
+	var parent_id := "device/%d" % device_instance_id
+	var notes: Array[String] = []
+	var owner_acquisition_session_id := 0
+	if stream_native_matches.size() == 1:
+		owner_acquisition_session_id = int((stream_native_matches[0] as Dictionary).get("owner_acquisition_session_id", 0))
+	elif stream_native_matches.size() > 1:
+		notes.append(
+			"Contract ambiguity: stream/%d parent owner could not be resolved to one Acquisition Session." % stream_id
+		)
+
+	if owner_acquisition_session_id > 0:
+		var acquisition_session_parent_id := str(
+			acquisition_session_entry_id_by_session_id.get(owner_acquisition_session_id, "")
+		)
+		if acquisition_session_parent_id.is_empty():
+			notes.append(
+				"Acquisition Session boundary breach: stream/%d owner_acquisition_session_id=%d not present in snapshot acquisition_sessions."
+				% [stream_id, owner_acquisition_session_id]
+			)
+			if _entry_exists(existing_entries, parent_id):
+				return {"parent_id": parent_id, "notes": notes}
+			return {"parent_id": provider_id, "notes": notes}
+		return {"parent_id": acquisition_session_parent_id, "notes": notes}
+
+	if _entry_exists(existing_entries, parent_id):
+		return {"parent_id": parent_id, "notes": notes}
+	notes.append(
+		"Acquisition Session boundary breach: stream/%d owner device_instance_id=%d not present in snapshot devices."
+		% [stream_id, device_instance_id]
+	)
+	return {"parent_id": provider_id, "notes": notes}
+
+
+func _resolve_native_parent_id_with_breach_context(
+		rec: Dictionary,
+		provider_id: String,
+		orphan_row_id: String,
+		detached_root_ids: Array,
+		acquisition_session_entry_id_by_session_id: Dictionary,
+		existing_entries: Array[StatusEntryModel]
+	) -> Dictionary:
+	var owner_stream_id := int(rec.get("owner_stream_id", 0))
+	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
+	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
+	var root_id := int(rec.get("root_id", 0))
+	var native_type_key := _native_object_type_key(rec)
+	var notes: Array[String] = []
+
+	if owner_stream_id > 0 and native_type_key != "stream":
+		var stream_parent_id := "stream/%d" % owner_stream_id
+		if _entry_exists(existing_entries, stream_parent_id):
+			if _native_type_is_payload_support(native_type_key):
+				return {"parent_id": "%s/native_payload_support" % stream_parent_id, "notes": notes}
+			return {"parent_id": stream_parent_id, "notes": notes}
+		notes.append("Contract gap: owner stream not present in snapshot streams.")
+
+	if owner_acquisition_session_id > 0:
+		var acquisition_session_parent_id := str(
+			acquisition_session_entry_id_by_session_id.get(owner_acquisition_session_id, "")
+		)
+		if not acquisition_session_parent_id.is_empty():
+			if _native_type_is_payload_support(native_type_key):
+				return {"parent_id": "%s/native_payload_support" % acquisition_session_parent_id, "notes": notes}
+			return {"parent_id": acquisition_session_parent_id, "notes": notes}
+		notes.append(
+			"Acquisition Session boundary breach: owner_acquisition_session_id=%d not present in snapshot acquisition_sessions."
+			% owner_acquisition_session_id
+		)
+
+	if owner_device_instance_id > 0:
+		var device_parent_id := "device/%d" % owner_device_instance_id
+		if _entry_exists(existing_entries, device_parent_id):
+			return {"parent_id": device_parent_id, "notes": notes}
+		notes.append("Contract gap: owner device not present in snapshot devices.")
+
+	if _contains_int(detached_root_ids, root_id):
+		return {"parent_id": orphan_row_id, "notes": notes}
+
+	notes.append("Contract gap: native object has no stream/acquisition-session/device owner; placed under provider.")
+	return {"parent_id": provider_id, "notes": notes}
+
+
 func _build_native_object_entry(
 		rec: Dictionary,
 		provider_id: String,
 		orphan_row_id: String,
 		detached_root_ids: Array,
-		devices_by_instance: Dictionary,
+		acquisition_session_entry_id_by_session_id: Dictionary,
 		existing_entries: Array[StatusEntryModel],
 		issues: Array[String],
 		snapshot_gen: int,
@@ -4046,6 +4415,7 @@ func _build_native_object_entry(
 		issues.append("Contract gap: native object missing valid native_id.")
 		return null
 	var owner_stream_id := int(rec.get("owner_stream_id", 0))
+	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
 	var owner_device_instance_id := int(rec.get("owner_device_instance_id", 0))
 	var root_id := int(rec.get("root_id", 0))
 	var native_type_key := _native_object_type_key(rec)
@@ -4056,43 +4426,37 @@ func _build_native_object_entry(
 	var info_lines: Array[String] = []
 
 	if not is_provider_native:
-		var can_parent_to_stream := owner_stream_id > 0 and native_type_key != "stream"
-		if can_parent_to_stream:
-			parent_id = "stream/%d" % owner_stream_id
-			if not _entry_exists(existing_entries, parent_id):
-				info_lines.append("Contract gap: owner stream not present in snapshot streams.")
-				if not _contains_int(detached_root_ids, root_id):
-					parent_id = provider_id
-		elif owner_device_instance_id > 0:
-			parent_id = "device/%d" % owner_device_instance_id
-			if not _entry_exists(existing_entries, parent_id):
-				info_lines.append("Contract gap: owner device not present in snapshot devices.")
-				if not _contains_int(detached_root_ids, root_id):
-					parent_id = provider_id
-			else:
-				var owner_device: Dictionary = devices_by_instance.get(owner_device_instance_id, {})
-				if not owner_device.is_empty() and int(owner_device.get("rig_id", 0)) > 0:
-					info_lines.append("Contract gap: native object may be rig-triggered but schema does not publish origin context.")
-		elif _contains_int(detached_root_ids, root_id):
+		var parent_resolution := _resolve_native_parent_id_with_breach_context(
+			rec,
+			provider_id,
+			orphan_row_id,
+			detached_root_ids,
+			acquisition_session_entry_id_by_session_id,
+			existing_entries
+		)
+		parent_id = str(parent_resolution.get("parent_id", provider_id))
+		var parent_notes: Array = parent_resolution.get("notes", [])
+		for note in parent_notes:
+			info_lines.append(str(note))
+		if parent_id == orphan_row_id:
 			parent_id = orphan_row_id
-		else:
-			info_lines.append("Contract gap: native object has no stream/device owner; placed under provider.")
 
 	if is_prior_generation:
 		_append_native_generation_note(info_lines, rec, snapshot_gen)
+	_append_native_traceability_info_lines(info_lines, rec)
 
 	var row_id := "native_object/%d" % native_id
 	var row_label := "native_object/%d" % native_id
 	if is_provider_native:
 		row_id = "provider/%d" % native_id
 		row_label = "provider/%d" % native_id
-	elif native_type_key == "frameproducer":
-		row_id = "frameproducer/%d" % native_id
-		row_label = "frameproducer/%d" % native_id
-		if owner_stream_id > 0:
-			info_lines.append("owner_stream_id=%d" % owner_stream_id)
-		if rec.has("creation_gen"):
-			info_lines.append("creation_gen=%d" % int(rec.get("creation_gen", 0)))
+	elif native_type_key == "acquisition_session":
+		row_id = "acquisition_session/%d" % native_id
+		row_label = "acquisition_session/%d" % native_id
+	elif native_type_key == "frame_buffer_lease":
+		row_label = "frame_buffer_lease/%d" % native_id
+	elif native_type_key == "gpu_backing":
+		row_label = "gpu_backing/%d" % native_id
 
 	var target_depth := _depth_for_parent(parent_id)
 	var native_badges: Array[BadgeModel] = [_badge("neutral", "phase=%s" % _phase_display_label(rec.get("phase", -1)))]
@@ -4132,12 +4496,14 @@ func _visual_object_class_for_native_type(native_type_key: String) -> String:
 			return "provider"
 		"device":
 			return "device"
+		"acquisition_session":
+			return "acquisition_session"
 		"stream":
 			return "stream"
 		"rig":
 			return "rig"
-		"frameproducer":
-			return "native_object"
+		"gpu_backing", "frame_buffer_lease":
+			return "native_support_resource_detail"
 		_:
 			return "native_object"
 
@@ -4231,9 +4597,44 @@ func _ensure_expandability(panel: PanelModel) -> void:
 		child_counts[e.parent_id] = int(child_counts.get(e.parent_id, 0)) + 1
 	for e in panel.entries:
 		var child_count := int(child_counts.get(e.id, 0))
+		var can_expand_before := e.can_expand
+		var expanded_before := e.expanded
+		var has_override := _expanded_by_row_id.has(e.id)
+		var override_value := bool(_expanded_by_row_id.get(e.id, false))
+		var default_expand := _should_default_expand_entry(e)
 		e.can_expand = child_count > 0
-		if child_count > 0 and _should_default_expand_entry(e):
+		if has_override:
+			_debug_expansion_trace(
+				"_ensure_expandability",
+				{
+					"entry_id": e.id,
+					"child_count": child_count,
+					"can_expand_before": can_expand_before,
+					"can_expand_after": e.can_expand,
+					"has_override": has_override,
+					"override_value": override_value,
+					"default_expand": default_expand,
+					"expanded_before": expanded_before,
+					"expanded_after": e.expanded,
+				}
+			)
+			continue
+		if child_count > 0 and default_expand:
 			e.expanded = true
+		_debug_expansion_trace(
+			"_ensure_expandability",
+			{
+				"entry_id": e.id,
+				"child_count": child_count,
+				"can_expand_before": can_expand_before,
+				"can_expand_after": e.can_expand,
+				"has_override": has_override,
+				"override_value": override_value,
+				"default_expand": default_expand,
+				"expanded_before": expanded_before,
+				"expanded_after": e.expanded,
+			}
+		)
 
 
 func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
@@ -4300,6 +4701,8 @@ func _should_default_expand_entry(entry: StatusEntryModel) -> bool:
 
 func _depth_for_parent(parent_id: String) -> int:
 	if parent_id.begins_with("stream/"):
+		return 5
+	if parent_id.begins_with("acquisition_session/"):
 		return 4
 	if parent_id.begins_with("device/") or parent_id.begins_with("rig/"):
 		return 3
@@ -4422,7 +4825,11 @@ func _reconcile_row_nodes(
 		var entry_model: StatusEntryModel = model.entries[index]
 		if entry_model == null:
 			continue
+		var expanded_before_resolve := entry_model.expanded
+		var has_override := _expanded_by_row_id.has(entry_model.id)
+		var override_value := bool(_expanded_by_row_id.get(entry_model.id, false))
 		entry_model.expanded = _resolved_entry_expanded_state(entry_model)
+		entry_model.detail_visible = _resolved_entry_detail_visible_state(entry_model)
 		var row_visible := _is_entry_visible(entry_model)
 		_debug_log_disclosure_render_state(entry_model, row_visible, model)
 
@@ -4435,6 +4842,8 @@ func _reconcile_row_nodes(
 			created = true
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+			if entry.has_signal("detail_toggled") and not entry.detail_toggled.is_connected(_on_entry_detail_toggled):
+				entry.detail_toggled.connect(_on_entry_detail_toggled)
 
 		var bound_row_id: String = str(entry.get_entry_id())
 		if bound_row_id != "" and bound_row_id != row_id:
@@ -4456,6 +4865,8 @@ func _reconcile_row_nodes(
 			created = true
 			if entry.has_signal("disclosure_toggled") and not entry.disclosure_toggled.is_connected(_on_entry_disclosure_toggled):
 				entry.disclosure_toggled.connect(_on_entry_disclosure_toggled)
+			if entry.has_signal("detail_toggled") and not entry.detail_toggled.is_connected(_on_entry_detail_toggled):
+				entry.detail_toggled.connect(_on_entry_detail_toggled)
 
 		if entry.get_parent() != _status_rows:
 			_status_rows.add_child(entry)
@@ -4463,6 +4874,20 @@ func _reconcile_row_nodes(
 			_status_rows.move_child(entry, index)
 
 		entry.set_style(style)
+		_debug_expansion_trace(
+			"_reconcile_row_nodes.pre_set_model",
+			{
+				"entry_id": entry_model.id,
+				"parent_id": entry_model.parent_id,
+				"can_expand": entry_model.can_expand,
+				"expanded_before_resolve": expanded_before_resolve,
+				"resolved_expanded": entry_model.expanded,
+				"has_override": has_override,
+				"override_value": override_value,
+				"row_node_instance_id": entry.get_instance_id(),
+				"row_visible": row_visible,
+			}
+		)
 		entry.set_model(entry_model)
 		entry.visible = row_visible
 		_debug_log_row_lifecycle(entry_model, entry, created, update_category)
@@ -4507,10 +4932,33 @@ func _is_entry_visible(entry_model: StatusEntryModel) -> bool:
 		return true
 
 	var current_parent := entry_model.parent_id
+	var parent_chain: Array[String] = []
+	var hidden_by := ""
 	while current_parent != "":
-		if not bool(_expanded_by_row_id.get(current_parent, true)):
+		parent_chain.append(current_parent)
+		var parent_expanded := _resolved_expanded_state_for_row_id(current_parent)
+		if not parent_expanded:
+			hidden_by = current_parent
+			_debug_expansion_trace(
+				"_is_entry_visible.hidden",
+				{
+					"entry_id": entry_model.id,
+					"parent_chain": parent_chain,
+					"hidden_by": hidden_by,
+					"stream_30001_expanded": _resolved_expanded_state_for_row_id("stream/30001"),
+				}
+			)
 			return false
 		current_parent = _find_parent_id(current_parent)
+	_debug_expansion_trace(
+		"_is_entry_visible.visible",
+		{
+			"entry_id": entry_model.id,
+			"parent_chain": parent_chain,
+			"hidden_by": hidden_by,
+			"stream_30001_expanded": _resolved_expanded_state_for_row_id("stream/30001"),
+		}
+	)
 	return true
 
 
@@ -4518,10 +4966,59 @@ func _find_parent_id(entry_id: String) -> String:
 	return str(_dev_parent_by_id.get(entry_id, ""))
 
 
-func _on_entry_disclosure_toggled(entry_id: String, _expanded: bool) -> void:
-	var next_expanded := not _current_expanded_state_for_row(entry_id)
+func _on_entry_disclosure_toggled(entry_id: String, expanded: bool) -> void:
+	var next_expanded := bool(expanded)
+	var had_previous := _expanded_by_row_id.has(entry_id)
+	var previous_value := bool(_expanded_by_row_id.get(entry_id, false))
 	_debug_log_disclosure_click(entry_id, next_expanded)
 	_expanded_by_row_id[entry_id] = next_expanded
+	_debug_expansion_trace(
+		"_on_entry_disclosure_toggled",
+		{
+			"entry_id": entry_id,
+			"emitted_expanded": expanded,
+			"had_previous_override": had_previous,
+			"previous_override_value": previous_value,
+			"new_override_value": bool(_expanded_by_row_id.get(entry_id, false)),
+			"snapshot_gen": _last_snapshot_meta.get("gen", "?"),
+			"snapshot_version": _last_snapshot_meta.get("version", "?"),
+			"snapshot_topology": _last_snapshot_meta.get("topology_version", "?"),
+		}
+	)
+	if _last_panel_model != null:
+		_render_panel_model(_last_panel_model)
+	else:
+		_render_panel_model(_build_fake_panel_model())
+
+
+func _should_trace_expansion_for_row(entry_id: String) -> bool:
+	if not DEBUG_EXPANSION_TRACE:
+		return false
+	if entry_id == "":
+		return false
+	for watched in DEBUG_EXPANSION_WATCH_ROW_IDS:
+		var watched_id := str(watched)
+		if watched_id == "":
+			continue
+		if entry_id == watched_id:
+			return true
+		if watched_id == "stream/30001" and entry_id.begins_with("stream/30001/"):
+			return true
+	return false
+
+
+func _debug_expansion_trace(context: String, payload: Dictionary) -> void:
+	if not DEBUG_EXPANSION_TRACE:
+		return
+	var entry_id := str(payload.get("entry_id", ""))
+	if not _should_trace_expansion_for_row(entry_id):
+		return
+	print("[TEMP DEBUG EXPANSION TRACE] context=%s payload=%s" % [context, JSON.stringify(payload)])
+
+
+func _on_entry_detail_toggled(entry_id: String, _detail_visible: bool) -> void:
+	var next_detail_visible := not _current_detail_visible_state_for_row(entry_id)
+	_detail_visible_by_row_id[entry_id] = next_detail_visible
 	if _last_panel_model != null:
 		_render_panel_model(_last_panel_model)
 	else:
@@ -4538,7 +5035,25 @@ func _resolved_entry_expanded_state(entry_model: StatusEntryModel) -> bool:
 	return entry_model.expanded
 
 
+func _resolved_entry_detail_visible_state(entry_model: StatusEntryModel) -> bool:
+	if entry_model == null:
+		return false
+	if _detail_visible_by_row_id.has(entry_model.id):
+		return bool(_detail_visible_by_row_id[entry_model.id])
+	return false
+
+
 func _current_expanded_state_for_row(entry_id: String) -> bool:
+	return _resolved_expanded_state_for_row_id(entry_id)
+
+
+func _current_detail_visible_state_for_row(entry_id: String) -> bool:
+	if _detail_visible_by_row_id.has(entry_id):
+		return bool(_detail_visible_by_row_id[entry_id])
+	return false
+
+
+func _resolved_expanded_state_for_row_id(entry_id: String) -> bool:
 	if _expanded_by_row_id.has(entry_id):
 		return bool(_expanded_by_row_id[entry_id])
 	if _last_panel_model == null:
@@ -4753,6 +5268,7 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 			return {
 				"rigs": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"devices": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
+				"acquisition_sessions": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"streams": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"native_all": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
 				"native_cur": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
@@ -4770,10 +5286,10 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"rebuild_count": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"warm_hold_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
 				"warm_remaining_ms": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": true},
-				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"stream":
 			return {
@@ -4792,11 +5308,24 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"rej_fmt": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
 				"rej_inv": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
 			}
+		"acquisition_session":
+			return {
+				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"triggered": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"completed": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"failed": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"last_capture_id": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
+				"last_capture_latency": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+				"error_code": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
+			}
 		"rig":
 			return {
 				"members": {"semantic_group": "derived_aggregate", "truth_class": "derived", "required": true},
-				"still_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
-				"still_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"native_object":
 			return {
@@ -4971,9 +5500,11 @@ func _row_kind_for_counter_ordering(entry: StatusEntryModel) -> String:
 		return "device"
 	if visual == "stream":
 		return "stream"
+	if visual == "acquisition_session":
+		return "acquisition_session"
 	if visual == "rig":
 		return "rig"
-	if _is_native_object_entry(entry) or _is_frameproducer_entry(entry):
+	if _is_native_object_entry(entry):
 		return "native_object"
 	return "generic"
 
@@ -4998,18 +5529,23 @@ func _counter_preference_table() -> Dictionary:
 			"configuration": ["gen", "topology", "version"],
 		},
 		"provider": {
-			"derived_aggregate": ["rigs", "devices", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
+			"derived_aggregate": ["rigs", "devices", "acquisition_sessions", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
 		},
 		"device": {
-			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "still_w", "still_h", "still_fmt"],
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof"],
 		},
 		"stream": {
 			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
 			"activity": ["recv", "deliv", "queue"],
 			"pressure_failure": ["drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
 		},
+		"acquisition_session": {
+			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt"],
+			"activity": ["triggered", "completed", "last_capture_id"],
+			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
+		},
 		"rig": {
-			"configuration": ["still_w", "still_h"],
+			"configuration": ["capture_w", "capture_h"],
 			"derived_aggregate": ["members"],
 		},
 		"native_object": {
@@ -5131,10 +5667,10 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 	return "NONE"
 
 
-func _build_still_profile_info_line(rec: Dictionary) -> String:
+func _build_capture_profile_info_line(rec: Dictionary) -> String:
 	return _build_info_line_from_parts(
 		rec,
-		"still",
+		"capture",
 		[
 			["capture_width", "capture_width", "int"],
 			["capture_height", "capture_height", "int"],
@@ -5181,6 +5717,21 @@ func _format_info_value(raw_value: Variant, formatter: String) -> String:
 		"fourcc":
 			return _format_fourcc_with_raw(int(raw_value))
 		"visibility_path":
+			if typeof(raw_value) == TYPE_STRING or typeof(raw_value) == TYPE_STRING_NAME:
+				var token := str(raw_value).strip_edges().to_upper()
+				match token:
+					"NONE":
+						return _visibility_path_display(0)
+					"RGBA_DIRECT":
+						return _visibility_path_display(1)
+					"BGRA_SWIZZLED":
+						return _visibility_path_display(2)
+					"REJECTED_UNSUPPORTED":
+						return _visibility_path_display(3)
+					"REJECTED_INVALID":
+						return _visibility_path_display(4)
+					_:
+						return token
 			return _visibility_path_display(int(raw_value))
 		_:
 			return str(int(raw_value))
@@ -5221,9 +5772,10 @@ func _is_anomaly_info_line(line: String) -> bool:
 		or line.begins_with("Projection invariant:")
 		or line.begins_with("Projection gap:")
 		or line.begins_with("Runtime payload")
+		or line.begins_with("unsupported:")
+		or line.begins_with("malformed:")
+		or line.begins_with("error:")
 		or line.find("contradiction") >= 0
-		or line.find("unsupported") >= 0
-		or line.find("malformed") >= 0
 	)
 
 
@@ -5255,14 +5807,6 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 		return "core"
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
 		return "core"
-	if _is_frameproducer_entry(entry):
-		match counter.name:
-			"buffers":
-				return "summary"
-			"bytes":
-				return "detail"
-			_:
-				return "summary"
 	if _is_native_object_entry(entry):
 		match counter.name:
 			"buffers":
@@ -5274,18 +5818,21 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "still_w", "still_h", "native_all", "native_cur", "buffers", "source_version":
+		"capture_prof", "capture_w", "capture_h", "capture_fmt":
+			if entry.visual_object_class == "device":
+				return "detail"
 			return "summary"
-		"frames", "bytes", "native_prev", "native_dead", "source_topology":
+		"native_prev", "native_dead":
+			if entry.visual_object_class == "provider":
+				return "summary"
+			return "detail"
+		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "capture_w", "capture_h", "capture_fmt", "capture_prof", "native_all", "native_cur", "buffers", "source_version":
+			return "summary"
+		"frames", "bytes", "source_topology":
 			return "detail"
 		_:
 			return "summary"
 
-
-func _is_frameproducer_entry(entry: StatusEntryModel) -> bool:
-	if entry == null:
-		return false
-	return entry.id.begins_with("frameproducer/") or entry.id.contains("/frameproducer/")
 
 
 func _is_native_object_entry(entry: StatusEntryModel) -> bool:
@@ -5306,7 +5853,6 @@ func _entry_kind(entry: StatusEntryModel) -> String:
 			return "contract_gap"
 	if (
 		entry.id.begins_with("native_object/")
-		or entry.id.begins_with("frameproducer/")
 		or entry.id.contains("orphaned_native_objects")
 		or _has_badge_label(entry, "detached")
 		or _has_badge_label(entry, "orphaned")
@@ -5327,9 +5873,13 @@ func _native_object_type_key(rec: Dictionary) -> String:
 			2:
 				return "device"
 			3:
-				return "stream"
+				return "acquisition_session"
 			4:
-				return "frameproducer"
+				return "stream"
+			5:
+				return "frame_buffer_lease"
+			6:
+				return "gpu_backing"
 			_:
 				return ""
 	if typeof(type_value) == TYPE_STRING or typeof(type_value) == TYPE_STRING_NAME:
@@ -5339,13 +5889,212 @@ func _native_object_type_key(rec: Dictionary) -> String:
 				return "provider"
 			"device":
 				return "device"
+			"acquisition_session", "acquisitionsession", "acquisition session":
+				return "acquisition_session"
 			"stream":
 				return "stream"
-			"frameproducer", "frame_producer", "frame producer":
-				return "frameproducer"
+			"frame_buffer_lease", "framebufferlease", "frame buffer lease":
+				return "frame_buffer_lease"
+			"gpu_backing", "gpubacking", "gpu backing":
+				return "gpu_backing"
 			_:
 				return ""
 	return ""
+
+
+func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dictionary) -> void:
+	if rec.has("type"):
+		info_lines.append("concrete type=%s" % str(rec.get("type")))
+
+	var native_traceability_specs := [
+		["owner_stream_id", "owner_stream_id", "int"],
+		["owner_acquisition_session_id", "owner_acquisition_session_id", "int"],
+		["owner_device_instance_id", "owner_device_instance_id", "int"],
+		["root_id", "root_id", "int"],
+		["creation_gen", "creation_gen", "int"],
+		["created_ns", "created_ns", "int"],
+		["destroyed_ns", "destroyed_ns", "int"],
+		["bytes_allocated", "bytes_allocated", "int"],
+		["buffers_in_use", "buffers_in_use", "int"],
+	]
+	for spec in native_traceability_specs:
+		var source_field := str(spec[0])
+		if not rec.has(source_field):
+			continue
+		info_lines.append("%s=%s" % [str(spec[1]), str(rec.get(source_field))])
+	var owner_provider_native_id := int(rec.get("owner_provider_native_id", 0))
+	if owner_provider_native_id > 0:
+		info_lines.append("owner_provider_native_id=%d" % owner_provider_native_id)
+	var owner_rig_id := int(rec.get("owner_rig_id", 0))
+	if owner_rig_id > 0:
+		info_lines.append("owner_rig_id=%d" % owner_rig_id)
+
+
+func _native_type_is_payload_support(native_type_key: String) -> bool:
+	return native_type_key == "gpu_backing" or native_type_key == "frame_buffer_lease"
+
+
+func _apply_scoped_resource_telemetry_to_native_payload_support_group(panel: PanelModel, group_id: String, telemetry: Dictionary) -> void:
+	if panel == null or group_id == "":
+		return
+	var group_row := _find_panel_entry_by_id(panel, group_id)
+	if group_row == null:
+		return
+	_apply_native_payload_support_group_phase_badge(group_row, str(telemetry.get("phase", "LIVE")))
+	var telemetry_counters := _counters_from_record(telemetry, [["fbl_cur","framebuffer_lease_current",3],["fbl_total_new","framebuffer_lease_total_created",3],["fbl_total_rel","framebuffer_lease_total_released",3],["fbl_peak","framebuffer_lease_peak_current",3],["gpu_cur","retained_gpu_backing_current",3],["gpu_total_new","retained_gpu_backing_total_created",3],["gpu_total_rel","retained_gpu_backing_total_released",3],["gpu_peak","retained_gpu_backing_peak_current",3]], [], "resource_telemetry")
+	for counter in telemetry_counters:
+		var replaced := false
+		for idx in range(group_row.counters.size()):
+			if group_row.counters[idx].name == counter.name:
+				group_row.counters[idx] = counter
+				replaced = true
+				break
+		if not replaced:
+			group_row.counters.append(counter)
+	_apply_native_payload_support_group_telemetry_health(panel, group_row)
+
+
+func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, group_row: StatusEntryModel) -> void:
+	if group_row == null:
+		return
+	var fbl_cur := _counter_value_by_name(group_row, "fbl_cur", 0)
+	var fbl_peak := _counter_value_by_name(group_row, "fbl_peak", 0)
+	var fbl_total_new := _counter_value_by_name(group_row, "fbl_total_new", 0)
+	var fbl_total_rel := _counter_value_by_name(group_row, "fbl_total_rel", 0)
+	var gpu_cur := _counter_value_by_name(group_row, "gpu_cur", 0)
+	var gpu_peak := _counter_value_by_name(group_row, "gpu_peak", 0)
+	var gpu_total_new := _counter_value_by_name(group_row, "gpu_total_new", 0)
+	var gpu_total_rel := _counter_value_by_name(group_row, "gpu_total_rel", 0)
+	var health_reasons: Array[String] = []
+	if fbl_total_rel > fbl_total_new:
+		health_reasons.append("Health reason: framebuffer lease total_released exceeds total_created.")
+	if gpu_total_rel > gpu_total_new:
+		health_reasons.append("Health reason: gpu backing total_released exceeds total_created.")
+	if fbl_cur > fbl_peak:
+		health_reasons.append("Health reason: framebuffer lease current exceeds peak.")
+	if gpu_cur > gpu_peak:
+		health_reasons.append("Health reason: gpu backing current exceeds peak.")
+	if fbl_cur != (fbl_total_new - fbl_total_rel):
+		health_reasons.append("Health reason: framebuffer lease current does not match total_created-total_released.")
+	if gpu_cur != (gpu_total_new - gpu_total_rel):
+		health_reasons.append("Health reason: gpu backing current does not match total_created-total_released.")
+	var parent_row := _find_panel_entry_by_id(panel, str(group_row.parent_id))
+	if _entry_phase_is_non_live_or_destroyed(parent_row) and (fbl_cur > 0 or gpu_cur > 0):
+		health_reasons.append("Health reason: owner ended with current native payload support resources.")
+	var telemetry_phase := _phase_label_from_badge_label(_first_badge_label(group_row.badges, ["LIVE", "DESTROYED"]))
+	if telemetry_phase == "DESTROYED" and _native_payload_support_has_live_concrete_child(panel, str(group_row.id)):
+		health_reasons.append("Health reason: destroyed native payload support group has LIVE concrete child resource.")
+	if health_reasons.is_empty():
+		return
+	group_row.badges = _with_health_badge(group_row.badges, "warning", "BAD")
+	for reason in health_reasons:
+		if not group_row.anomaly_info_lines.has(reason):
+			group_row.anomaly_info_lines.append(reason)
+
+
+func _apply_native_payload_support_group_phase_badge(group_row: StatusEntryModel, telemetry_phase: String) -> void:
+	if group_row == null:
+		return
+	var normalized := telemetry_phase.strip_edges().to_upper()
+	if normalized != "LIVE" and normalized != "DESTROYED":
+		return
+	var phase_label := "phase=%s" % normalized
+	var next_badges: Array[BadgeModel] = []
+	var inserted := false
+	for badge in group_row.badges:
+		if badge == null:
+			continue
+		if badge.kind == "health":
+			next_badges.append(_badge(badge.role, badge.label, badge.kind))
+			if not inserted:
+				next_badges.append(_badge("neutral", phase_label))
+				inserted = true
+			continue
+		var parsed := _phase_label_from_badge_label(str(badge.label))
+		if parsed == "LIVE" or parsed == "DESTROYED":
+			if not inserted:
+				next_badges.append(_badge("neutral", phase_label))
+				inserted = true
+			continue
+		next_badges.append(_badge(badge.role, badge.label, badge.kind))
+	if not inserted:
+		next_badges.append(_badge("neutral", phase_label))
+	group_row.badges = _normalize_badges(next_badges)
+
+
+func _entry_phase_is_non_live_or_destroyed(entry: StatusEntryModel) -> bool:
+	if entry == null:
+		return false
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			var phase_label := _phase_label_from_badge_label(str(badge.label))
+			if phase_label == "DESTROYED" or phase_label == "TEARING_DOWN" or phase_label == "CREATED":
+				return true
+			if phase_label == "LIVE":
+				return false
+	return false
+
+
+func _native_payload_support_has_live_concrete_child(panel: PanelModel, group_id: String) -> bool:
+	if panel == null or group_id == "":
+		return false
+	for entry in panel.entries:
+		if entry == null:
+			continue
+		if str(entry.parent_id) != group_id:
+			continue
+		if str(entry.visual_object_class) != "native_support_resource_detail":
+			continue
+		for badge in entry.badges:
+			if badge == null:
+				continue
+			if _phase_label_from_badge_label(str(badge.label)) == "LIVE":
+				return true
+	return false
+
+
+func _first_badge_label(badges: Array[BadgeModel], phase_candidates: Array[String]) -> String:
+	for badge in badges:
+		if badge == null:
+			continue
+		var phase := _phase_label_from_badge_label(str(badge.label))
+		if phase_candidates.has(phase):
+			return str(badge.label)
+	return ""
+
+
+func _ensure_native_payload_support_group_row_id(panel: PanelModel, group_id: String) -> void:
+	if panel == null or group_id == "":
+		return
+	if _entry_exists(panel.entries, group_id):
+		return
+	var parent_id := ""
+	var suffix := "/native_payload_support"
+	if group_id.ends_with(suffix):
+		parent_id = group_id.substr(0, group_id.length() - suffix.length())
+	panel.entries.append(_entry(group_id, parent_id, _depth_for_parent(parent_id), "Native Payload Support", true, true, [], [], [], "native_payload_support_group"))
+
+
+func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary) -> void:
+	if panel == null:
+		return
+	var native_type_key := _native_object_type_key(rec)
+	if not _native_type_is_payload_support(native_type_key):
+		return
+	var owner_stream_id := int(rec.get("owner_stream_id", 0))
+	if owner_stream_id > 0:
+		var stream_parent_id := "stream/%d" % owner_stream_id
+		if _entry_exists(panel.entries, stream_parent_id):
+			var stream_group_id := "%s/native_payload_support" % stream_parent_id
+			_ensure_native_payload_support_group_row_id(panel, stream_group_id)
+			return
+	var owner_acquisition_session_id := int(rec.get("owner_acquisition_session_id", 0))
+	if owner_acquisition_session_id > 0:
+		var acquisition_session_parent_id := "acquisition_session/%d" % owner_acquisition_session_id
+		if _entry_exists(panel.entries, acquisition_session_parent_id):
+			var acquisition_group_id := "%s/native_payload_support" % acquisition_session_parent_id
+			_ensure_native_payload_support_group_row_id(panel, acquisition_group_id)
 
 
 func _format_fourcc_with_raw(value: int) -> String:

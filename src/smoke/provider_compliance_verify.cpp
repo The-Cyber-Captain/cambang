@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "imaging/broker/provider_broker.h"
@@ -65,6 +66,7 @@ struct EventRec {
   std::string tag;
   uint64_t id = 0;
   uint32_t type = 0;
+  uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint32_t pixel_sig = 0;
   CaptureTimestamp ts{};
@@ -73,9 +75,12 @@ struct EventRec {
 struct RecorderCallbacks final : IProviderCallbacks {
   uint64_t next_native_id = 1;
   std::vector<EventRec> events;
+  std::unordered_map<uint64_t, uint32_t> native_type_by_id;
+  std::unordered_map<uint64_t, uint64_t> native_owner_stream_by_id;
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
+  bool is_stream_display_demand_active(uint64_t) override { return false; }
 
   void on_device_opened(uint64_t id) override { events.push_back({"device_opened", id}); }
   void on_device_closed(uint64_t id) override { events.push_back({"device_closed", id}); }
@@ -83,9 +88,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_stream_destroyed(uint64_t id) override { events.push_back({"stream_destroyed", id}); }
   void on_stream_started(uint64_t id) override { events.push_back({"stream_started", id}); }
   void on_stream_stopped(uint64_t id, ProviderError) override { events.push_back({"stream_stopped", id}); }
-  void on_capture_started(uint64_t id) override { events.push_back({"capture_started", id}); }
-  void on_capture_completed(uint64_t id) override { events.push_back({"capture_completed", id}); }
-  void on_capture_failed(uint64_t id, ProviderError) override { events.push_back({"capture_failed", id}); }
+  void on_capture_started(uint64_t id, uint64_t) override { events.push_back({"capture_started", id}); }
+  void on_capture_completed(uint64_t id, uint64_t) override { events.push_back({"capture_completed", id}); }
+  void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { events.push_back({"capture_failed", id}); }
 
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
@@ -106,10 +111,25 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_device_error(uint64_t id, ProviderError) override { events.push_back({"device_error", id}); }
   void on_stream_error(uint64_t id, ProviderError) override { events.push_back({"stream_error", id}); }
   void on_native_object_created(const NativeObjectCreateInfo& info) override {
-    events.push_back({"native_created", info.native_id, info.type, info.owner_stream_id});
+    EventRec ev{"native_created", info.native_id};
+    ev.type = info.type;
+    ev.owner_acquisition_session_id = info.owner_acquisition_session_id;
+    ev.owner_stream_id = info.owner_stream_id;
+    native_type_by_id[info.native_id] = info.type;
+    native_owner_stream_by_id[info.native_id] = info.owner_stream_id;
+    events.push_back(ev);
   }
   void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override {
-    events.push_back({"native_destroyed", info.native_id});
+    EventRec ev{"native_destroyed", info.native_id};
+    auto type_it = native_type_by_id.find(info.native_id);
+    if (type_it != native_type_by_id.end()) {
+      ev.type = type_it->second;
+    }
+    auto owner_stream_it = native_owner_stream_by_id.find(info.native_id);
+    if (owner_stream_it != native_owner_stream_by_id.end()) {
+      ev.owner_stream_id = owner_stream_it->second;
+    }
+    events.push_back(ev);
   }
 };
 
@@ -129,6 +149,30 @@ int find_native_create_id(const std::vector<EventRec>& events, uint32_t type, ui
   return -1;
 }
 
+int find_native_create_id_with_owners(const std::vector<EventRec>& events,
+                                      uint32_t type,
+                                      uint64_t owner_acquisition_session_id,
+                                      uint64_t owner_stream_id) {
+  for (const auto& e : events) {
+    if (e.tag == "native_created" &&
+        e.type == type &&
+        e.owner_acquisition_session_id == owner_acquisition_session_id &&
+        e.owner_stream_id == owner_stream_id) {
+      return static_cast<int>(e.id);
+    }
+  }
+  return -1;
+}
+
+int find_native_create_id_by_type(const std::vector<EventRec>& events, uint32_t type) {
+  for (const auto& e : events) {
+    if (e.tag == "native_created" && e.type == type) {
+      return static_cast<int>(e.id);
+    }
+  }
+  return -1;
+}
+
 int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) {
   for (size_t i = 0; i < events.size(); ++i) {
     if (events[i].tag == "frame" && events[i].ts.value == ts_ns) {
@@ -136,6 +180,29 @@ int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) 
     }
   }
   return -1;
+}
+
+int count_events_by_tag_and_type(const std::vector<EventRec>& events, const char* tag, uint32_t type) {
+  int count = 0;
+  for (const auto& e : events) {
+    if (e.tag == tag && e.type == type) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+int count_events_by_tag_type_and_owner_stream(const std::vector<EventRec>& events,
+                                              const char* tag,
+                                              uint32_t type,
+                                              uint64_t owner_stream_id) {
+  int count = 0;
+  for (const auto& e : events) {
+    if (e.tag == tag && e.type == type && e.owner_stream_id == owner_stream_id) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 bool assert_native_balance(const std::vector<EventRec>& events, const char* name) {
@@ -1180,16 +1247,177 @@ bool run_synthetic_provider_direct_sanity_check() {
   const int stopped = find_event_index(cb.events, "stream_stopped", req.stream_id);
   const int destroyed = find_event_index(cb.events, "stream_destroyed", req.stream_id);
   const int closed = find_event_index(cb.events, "device_closed", req.device_instance_id);
-  const int fp_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::FrameProducer), req.stream_id);
   const int stream_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
+  const int acquisition_session_native_id =
+      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
   const int device_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Device), 0);
+  const int gpu_backing_created = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_created",
+      static_cast<uint32_t>(NativeObjectType::GpuBacking),
+      req.stream_id);
+  const int gpu_backing_destroyed = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_destroyed",
+      static_cast<uint32_t>(NativeObjectType::GpuBacking),
+      req.stream_id);
+  const int frame_buffer_lease_created = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_created",
+      static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
+      req.stream_id);
+  const int frame_buffer_lease_destroyed = count_events_by_tag_type_and_owner_stream(
+      cb.events,
+      "native_destroyed",
+      static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
+      req.stream_id);
 
-  if (stopped < 0 || destroyed < 0 || closed < 0 || fp_native_id < 0 || stream_native_id < 0 || device_native_id < 0) {
+  if (stopped < 0 || destroyed < 0 || closed < 0 ||
+      stream_native_id < 0 || acquisition_session_native_id < 0 || device_native_id < 0) {
     std::cerr << "FAIL synthetic direct sanity missing callback/native evidence\n";
     return false;
   }
+  const bool gpu_backing_realized_in_run = (gpu_backing_created > 0 || gpu_backing_destroyed > 0);
+  if (gpu_backing_realized_in_run) {
+    if (gpu_backing_created <= 0 || gpu_backing_destroyed <= 0) {
+      std::cerr << "FAIL synthetic direct sanity incomplete gpu backing native support lifecycle\n";
+      return false;
+    }
+  }
+  const bool frame_buffer_lease_realized_in_run =
+      (frame_buffer_lease_created > 0 || frame_buffer_lease_destroyed > 0);
+  if (frame_buffer_lease_realized_in_run) {
+    if (frame_buffer_lease_created <= 0 || frame_buffer_lease_destroyed <= 0) {
+      std::cerr
+          << "FAIL synthetic direct sanity incomplete frame buffer lease native support lifecycle\n";
+      return false;
+    }
+  }
 
   return assert_native_balance(cb.events, "synthetic_direct");
+}
+
+bool run_synthetic_still_only_acquisition_session_truth_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  if (!provider.initialize(&cb).ok() || !provider.open_device("synthetic:0", 41, 4101).ok()) {
+    std::cerr << "FAIL synthetic still-only setup failed\n";
+    return false;
+  }
+
+  CaptureRequest cap{};
+  cap.capture_id = 8001;
+  cap.device_instance_id = 41;
+  cap.width = 64;
+  cap.height = 64;
+  cap.format_fourcc = FOURCC_RGBA;
+  if (!provider.trigger_capture(cap).ok()) {
+    std::cerr << "FAIL synthetic still-only trigger_capture failed\n";
+    return false;
+  }
+
+  if (!provider.close_device(41).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic still-only teardown failed\n";
+    return false;
+  }
+
+  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
+  const int acq_native_id =
+      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+
+  if (capture_started_ix < 0 || capture_completed_ix < 0 || acq_native_id < 0 ||
+      acq_create_ix < 0 || acq_destroy_ix < 0) {
+    std::cerr << "FAIL synthetic still-only missing capture/session evidence\n";
+    return false;
+  }
+  if (!(acq_create_ix < capture_started_ix &&
+        capture_started_ix < capture_completed_ix &&
+        capture_completed_ix < acq_destroy_ix)) {
+    std::cerr << "FAIL synthetic still-only lifecycle ordering invalid\n";
+    return false;
+  }
+  if (count_events_by_tag_and_type(
+          cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
+    std::cerr << "FAIL synthetic still-only unexpectedly realized stream native object\n";
+    return false;
+  }
+  return assert_native_balance(cb.events, "synthetic_still_only");
+}
+
+bool run_synthetic_stream_plus_still_single_session_truth_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  StreamRequest req{};
+  req.stream_id = 72;
+  req.device_instance_id = 42;
+  req.intent = StreamIntent::PREVIEW;
+  req.profile.width = 64;
+  req.profile.height = 64;
+  req.profile.format_fourcc = FOURCC_RGBA;
+  req.profile.target_fps_min = 30;
+  req.profile.target_fps_max = 30;
+
+  CaptureRequest cap{};
+  cap.capture_id = 8002;
+  cap.device_instance_id = req.device_instance_id;
+  cap.width = 64;
+  cap.height = 64;
+  cap.format_fourcc = FOURCC_RGBA;
+
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", req.device_instance_id, 4201).ok() ||
+      !provider.create_stream(req).ok() ||
+      !provider.start_stream(req.stream_id, req.profile, req.picture).ok() ||
+      !provider.trigger_capture(cap).ok() ||
+      !provider.stop_stream(req.stream_id).ok() ||
+      !provider.destroy_stream(req.stream_id).ok() ||
+      !provider.close_device(req.device_instance_id).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic stream+still setup/teardown failed\n";
+    return false;
+  }
+
+  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
+  const int stream_destroy_ix = find_event_index(cb.events, "stream_destroyed", req.stream_id);
+  const int acq_native_id =
+      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+  const int acq_create_count = count_events_by_tag_and_type(
+      cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+
+  if (capture_started_ix < 0 || capture_completed_ix < 0 || stream_destroy_ix < 0 ||
+      acq_native_id < 0 || acq_create_ix < 0 || acq_destroy_ix < 0) {
+    std::cerr << "FAIL synthetic stream+still missing evidence\n";
+    return false;
+  }
+  if (acq_create_count != 1) {
+    std::cerr << "FAIL synthetic stream+still realized multiple acquisition sessions for one device\n";
+    return false;
+  }
+  if (!(acq_create_ix < capture_started_ix &&
+      capture_started_ix < capture_completed_ix &&
+      capture_completed_ix < acq_destroy_ix)) {
+    std::cerr << "FAIL synthetic stream+still ordering invalid\n";
+    return false;
+  }
+  return assert_native_balance(cb.events, "synthetic_stream_plus_still");
 }
 
 }  // namespace
@@ -1225,6 +1453,8 @@ int main(int argc, char** argv) {
   // Additional provider direct sanity coverage retained.
   if (!run_stub_provider_sanity_check()) return 1;
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
+  if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
+  if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
   // 7) External scenario file path (first-class, optional input).
   if (!opt.external_scenario_file.empty()) {

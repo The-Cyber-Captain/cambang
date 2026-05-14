@@ -8,6 +8,7 @@
 #include <string>
 
 #include "core/core_dispatcher.h"
+#include "core/core_acquisition_session_registry.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_result_store.h"
@@ -22,9 +23,6 @@
 
 #include "core/snapshot/snapshot_builder.h"
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-#include "core/latest_frame_mailbox.h"
-#endif
 
 #include "imaging/api/icamera_provider.h"
 #if !defined(CAMBANG_INTERNAL_SMOKE)
@@ -214,10 +212,19 @@ enum class TryCloseDeviceStatus : uint8_t {
   std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const {
     return result_store_.get_capture_result_set(capture_id);
   }
+  void mark_stream_display_demand(uint64_t stream_id) {
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+    result_store_.mark_stream_display_demand(stream_id, now_ns);
+  }
+  void retain_stream_display_demand(uint64_t stream_id) {
+    result_store_.retain_stream_display_demand(stream_id);
+  }
+  void release_stream_display_demand(uint64_t stream_id) {
+    result_store_.release_stream_display_demand(stream_id);
+  }
 
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  const LatestFrameMailbox& latest_frame_mailbox() const noexcept { return latest_frame_mailbox_; }
-#endif
 
   void attach_provider(ICameraProvider* provider) noexcept {
     provider_.store(provider, std::memory_order_release);
@@ -282,6 +289,7 @@ private:
   CoreThread core_thread_;
   CoreRigRegistry rigs_;
   CoreDeviceRegistry devices_;
+  CoreAcquisitionSessionRegistry acquisition_sessions_;
   CoreSpecState spec_state_;
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
@@ -305,25 +313,6 @@ private:
 
   // Core-defined epoch for snapshot timestamp_ns (session-relative monotonic).
   std::chrono::steady_clock::time_point epoch_;
-
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  LatestFrameMailbox latest_frame_mailbox_;
-  class LatestFrameMailboxSink final : public ICoreFrameSink {
-  public:
-    explicit LatestFrameMailboxSink(LatestFrameMailbox* mb) : mb_(mb) {}
-    CoreVisibilityPath on_frame(FrameView frame) override {
-      if (mb_) {
-        return mb_->write_from_core(std::move(frame));
-      } else {
-        frame.release_now();
-        return CoreVisibilityPath::NONE;
-      }
-    }
-  private:
-    LatestFrameMailbox* mb_ = nullptr;
-  };
-  LatestFrameMailboxSink latest_frame_sink_{&latest_frame_mailbox_};
-#endif
 
   CoreDispatcher dispatcher_;
   ProviderCallbackIngress ingress_;

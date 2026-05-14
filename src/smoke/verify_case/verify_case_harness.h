@@ -47,6 +47,7 @@ struct ObservedSnapshot {
   uint64_t version = 0;
   uint64_t topology_version = 0;
   size_t device_count = 0;
+  size_t acquisition_session_count = 0;
   size_t stream_count = 0;
   std::shared_ptr<const CamBANGStateSnapshot> raw;
 };
@@ -63,6 +64,7 @@ struct RealizationProfilerOptions {
   RealizationTraceFormat format = RealizationTraceFormat::Block;
   uint64_t target_device_id = 0;
   uint64_t target_stream_id = 0;
+  bool expect_acquisition_session = false;
 };
 
 class RealizationProfiler final {
@@ -93,8 +95,12 @@ public:
     maybe_record_(gen.provider_visible, view, milestone_matches_provider_(view), Stage::Provider, gen);
     maybe_record_(gen.device_identity, view, milestone_matches_device_identity_(view), Stage::DeviceIdentity, gen);
     maybe_record_(gen.device_native, view, milestone_matches_device_native_(view), Stage::DeviceNative, gen);
+    maybe_record_(gen.acquisition_session_visible,
+                  view,
+                  milestone_matches_acquisition_session_visible_(view),
+                  Stage::AcquisitionSession,
+                  gen);
     maybe_record_(gen.stream_visible, view, milestone_matches_stream_visible_(view), Stage::Stream, gen);
-    maybe_record_(gen.frameproducer_visible, view, milestone_matches_frameproducer_visible_(view), Stage::FrameProducer, gen);
 
     if (gen.provider_visible.seen && gen.provider_publish == kInvalidMarker) {
       gen.provider_publish = gen.provider_visible.observed_publish_ordinal;
@@ -104,7 +110,7 @@ public:
     gen.last_observed_publish = view.observed_publish_ordinal;
     gen.last_observed_timestamp_ns = view.timestamp_ns;
 
-    if (gen.frameproducer_visible.seen) {
+    if (is_completion_reached_(gen)) {
       gen.completed = true;
     }
 
@@ -137,8 +143,8 @@ public:
         emit_csv_line_(out, gen.gen, "provider_visible", gen.provider_visible, nullptr);
         emit_csv_line_(out, gen.gen, "device_identity", gen.device_identity, &gen.provider_visible);
         emit_csv_line_(out, gen.gen, "device_native", gen.device_native, &gen.device_identity);
-        emit_csv_line_(out, gen.gen, "stream_visible", gen.stream_visible, &gen.device_native);
-        emit_csv_line_(out, gen.gen, "frameproducer_visible", gen.frameproducer_visible, &gen.stream_visible);
+        emit_csv_line_(out, gen.gen, "acquisition_session_visible", gen.acquisition_session_visible, &gen.device_native);
+        emit_csv_line_(out, gen.gen, "stream_visible", gen.stream_visible, &gen.acquisition_session_visible);
       }
       std::fputs("gen,status,stalled_at,publish_delta,time_delta_ns\n", out);
       for (const auto& [gen_key, gen] : generations_) {
@@ -157,8 +163,8 @@ public:
         emit_block_line_(out, "provider_visible", gen.provider_visible, nullptr);
         emit_block_line_(out, "device_identity", gen.device_identity, &gen.provider_visible);
         emit_block_line_(out, "device_native", gen.device_native, &gen.device_identity);
-        emit_block_line_(out, "stream_visible", gen.stream_visible, &gen.device_native);
-        emit_block_line_(out, "frameproducer_visible", gen.frameproducer_visible, &gen.stream_visible);
+        emit_block_line_(out, "acquisition_session_visible", gen.acquisition_session_visible, &gen.device_native);
+        emit_block_line_(out, "stream_visible", gen.stream_visible, &gen.acquisition_session_visible);
         emit_block_status_(out, gen);
       }
     }
@@ -176,8 +182,8 @@ private:
     Provider = 1,
     DeviceIdentity = 2,
     DeviceNative = 3,
-    Stream = 4,
-    FrameProducer = 5,
+    AcquisitionSession = 4,
+    Stream = 5,
   };
   struct SnapshotView {
     const CamBANGStateSnapshot* raw = nullptr;
@@ -215,9 +221,24 @@ private:
     MilestoneRecord provider_visible;
     MilestoneRecord device_identity;
     MilestoneRecord device_native;
+    MilestoneRecord acquisition_session_visible;
     MilestoneRecord stream_visible;
-    MilestoneRecord frameproducer_visible;
   };
+
+  bool is_completion_reached_(const GenerationProfile& gen) const {
+    if (!gen.provider_visible.seen ||
+        !gen.device_identity.seen ||
+        !gen.device_native.seen) {
+      return false;
+    }
+    if (options_.target_stream_id != 0 && !gen.stream_visible.seen) {
+      return false;
+    }
+    if (options_.expect_acquisition_session && !gen.acquisition_session_visible.seen) {
+      return false;
+    }
+    return true;
+  }
 
   SnapshotView snapshot_view_(const ObservedSnapshot& observed, uint64_t published_seq_marker) const {
     SnapshotView view;
@@ -303,14 +324,16 @@ private:
            native_exists_for_generation_(*view.raw, view.gen, NativeObjectType::Device, options_.target_device_id, 0);
   }
 
-  bool milestone_matches_stream_visible_(const SnapshotView& view) const {
-    return options_.target_stream_id != 0 && has_stream_id_(*view.raw, options_.target_stream_id);
+  bool milestone_matches_acquisition_session_visible_(const SnapshotView& view) const {
+    if (options_.target_device_id == 0) {
+      return false;
+    }
+    return native_exists_for_generation_(
+        *view.raw, view.gen, NativeObjectType::AcquisitionSession, options_.target_device_id, 0);
   }
 
-  bool milestone_matches_frameproducer_visible_(const SnapshotView& view) const {
-    return options_.target_device_id != 0 && options_.target_stream_id != 0 &&
-           native_exists_for_generation_(
-               *view.raw, view.gen, NativeObjectType::FrameProducer, options_.target_device_id, options_.target_stream_id);
+  bool milestone_matches_stream_visible_(const SnapshotView& view) const {
+    return options_.target_stream_id != 0 && has_stream_id_(*view.raw, options_.target_stream_id);
   }
 
   static void emit_delta_(FILE* out, const MilestoneRecord& current, const MilestoneRecord* previous) {
@@ -385,8 +408,8 @@ private:
       case Stage::Provider: return "provider_visible";
       case Stage::DeviceIdentity: return "device_identity";
       case Stage::DeviceNative: return "device_native";
+      case Stage::AcquisitionSession: return "acquisition_session_visible";
       case Stage::Stream: return "stream_visible";
-      case Stage::FrameProducer: return "frameproducer_visible";
     }
     return "unknown";
   }
@@ -480,7 +503,14 @@ public:
     stream_count_ = value;
     return *this;
   }
-
+  SnapshotExpectation& acquisition_session_count(size_t value) {
+    acquisition_session_count_ = value;
+    return *this;
+  }
+  SnapshotExpectation& expect_acquisition_session(bool value) {
+    expect_acquisition_session_ = value;
+    return *this;
+  }
   bool matches(const ObservedSnapshot& observed, std::string& error) const {
     std::ostringstream oss;
     bool ok = true;
@@ -513,6 +543,16 @@ public:
     if (stream_count_.has_value()) {
       require(!observed.is_nil && observed.stream_count == *stream_count_, "stream_count mismatch");
     }
+    if (acquisition_session_count_.has_value()) {
+      require(!observed.is_nil && observed.acquisition_session_count == *acquisition_session_count_,
+              "acquisition_session_count mismatch");
+    }
+    if (expect_acquisition_session_.has_value()) {
+      const bool visible = !observed.is_nil && observed.acquisition_session_count > 0;
+      require(visible == *expect_acquisition_session_,
+              std::string("expect_acquisition_session mismatch expected=") +
+                  (*expect_acquisition_session_ ? "true" : "false"));
+    }
 
     error = oss.str();
     return ok;
@@ -525,6 +565,9 @@ private:
   std::optional<uint64_t> topology_version_;
   std::optional<size_t> device_count_;
   std::optional<size_t> stream_count_;
+  std::optional<size_t> acquisition_session_count_;
+  std::optional<bool> expect_acquisition_session_;
+
 };
 
 class ObservationBoundary final {
@@ -576,6 +619,7 @@ public:
     current_.version = godot_version_;
     current_.topology_version = godot_topology_version_;
     current_.device_count = snap->devices.size();
+    current_.acquisition_session_count = snap->acquisition_sessions.size();
     current_.stream_count = snap->streams.size();
     current_.raw = std::move(snap);
     return true;
@@ -965,6 +1009,20 @@ public:
     }, error, 500, 5, "timed out waiting for provider stream destroy publish");
   }
 
+  bool inject_provider_native_object_destroyed(uint64_t native_id, std::string& error) {
+    NativeObjectDestroyInfo info{};
+    info.native_id = native_id;
+    runtime_.provider_callbacks()->on_native_object_destroyed(info);
+    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+      for (const auto& rec : s.native_objects) {
+        if (rec.native_id == native_id && rec.phase != CBLifecyclePhase::DESTROYED) {
+          return false;
+        }
+      }
+      return true;
+    }, error, 500, 5, "timed out waiting for provider native destroy publish");
+  }
+
   bool inject_provider_device_closed(uint64_t device_id, std::string& error) {
     runtime_.provider_callbacks()->on_device_closed(device_id);
     return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
@@ -1127,6 +1185,9 @@ private:
     uint64_t core_monotonic_now_ns() override {
       return delegate_ ? delegate_->core_monotonic_now_ns() : 0;
     }
+    bool is_stream_display_demand_active(uint64_t stream_id) override {
+      return delegate_ ? delegate_->is_stream_display_demand_active(stream_id) : false;
+    }
 
     void on_device_opened(uint64_t id) override {
       record_("device_opened", id);
@@ -1152,14 +1213,14 @@ private:
       record_("stream_stopped", id);
       if (delegate_) delegate_->on_stream_stopped(id, error);
     }
-    void on_capture_started(uint64_t id) override {
-      if (delegate_) delegate_->on_capture_started(id);
+    void on_capture_started(uint64_t id, uint64_t device_instance_id) override {
+      if (delegate_) delegate_->on_capture_started(id, device_instance_id);
     }
-    void on_capture_completed(uint64_t id) override {
-      if (delegate_) delegate_->on_capture_completed(id);
+    void on_capture_completed(uint64_t id, uint64_t device_instance_id) override {
+      if (delegate_) delegate_->on_capture_completed(id, device_instance_id);
     }
-    void on_capture_failed(uint64_t id, ProviderError error) override {
-      if (delegate_) delegate_->on_capture_failed(id, error);
+    void on_capture_failed(uint64_t id, uint64_t device_instance_id, ProviderError error) override {
+      if (delegate_) delegate_->on_capture_failed(id, device_instance_id, error);
     }
     void on_frame(const FrameView& frame) override {
       if (delegate_) {

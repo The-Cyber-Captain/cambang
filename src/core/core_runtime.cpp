@@ -7,10 +7,12 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <map>
 
 #include <utility>
 
 #include "imaging/broker/banner_info.h"
+#include "core/resource_aggregate_telemetry.h"
 #include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
@@ -42,6 +44,11 @@ static bool disable_result_routing_requested() noexcept {
   return (v && v[0] == '1' && v[1] == '\0');
 }
 
+static bool display_demand_trace_enabled() noexcept {
+  const char* v = std::getenv("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
+  return v && v[0] != '\0' && v[0] != '0';
+}
+
 CoreRuntime::CoreRuntime()
     : core_thread_(),
       devices_(),
@@ -51,7 +58,7 @@ CoreRuntime::CoreRuntime()
       version_(0),
       topology_version_(0),
       last_topology_sig_(0),
-      dispatcher_(&streams_, &devices_, &native_objects_, &current_gen_, [this]() -> uint64_t {
+      dispatcher_(&streams_, &acquisition_sessions_, &devices_, &native_objects_, &current_gen_, [this]() -> uint64_t {
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
@@ -69,14 +76,33 @@ CoreRuntime::CoreRuntime()
         const auto now = std::chrono::steady_clock::now();
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+      }, [this, demand_last = std::map<uint64_t, bool>{}](uint64_t stream_id) mutable -> bool {
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+        const auto state = result_store_.get_stream_display_demand_state(stream_id, now_ns);
+        if (display_demand_trace_enabled()) {
+          const bool prev = demand_last[stream_id];
+          if (prev != state.active) {
+            const char* reason = "none";
+            if (state.reason == CoreResultStore::DisplayDemandReason::PERSISTENT_REFCOUNT) {
+              reason = "persistent_refcount";
+            } else if (state.reason == CoreResultStore::DisplayDemandReason::LEASE) {
+              reason = "lease";
+            }
+            std::printf("[CamBANG][DemandTrace] demand_transition stream_id=%llu active=%d reason=%s refcount=%u\n",
+                        static_cast<unsigned long long>(stream_id),
+                        state.active ? 1 : 0,
+                        reason,
+                        state.refcount);
+            demand_last[stream_id] = state.active;
+          }
+        }
+        return state.active;
       }) {
   dispatcher_.set_result_store(&result_store_);
   const bool result_routing_enabled = !disable_result_routing_requested();
   dispatcher_.set_result_routing_enabled(result_routing_enabled);
-#if defined(CAMBANG_ENABLE_DEV_NODES)
-  // Dev-only latest-frame sink (core thread dispatch path).
-  dispatcher_.set_frame_sink(&latest_frame_sink_);
-#endif
 }
 
 CoreRuntime::~CoreRuntime() {
@@ -183,6 +209,8 @@ void CoreRuntime::on_core_start() {
   epoch_ = std::chrono::steady_clock::now();
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
+  global_resource_aggregate_telemetry().clear();
+  acquisition_sessions_.clear();
   spec_state_.reset_for_generation(0);
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
@@ -321,7 +349,16 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
   const size_t retired_count =
       native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-  if (retired_count > 0) {
+  global_resource_aggregate_telemetry().reconcile_lifecycle(
+      now_ns,
+      current_gen_,
+      &streams_,
+      &acquisition_sessions_,
+      &devices_,
+      &native_objects_);
+  const size_t retired_telemetry_count =
+      global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+  if (retired_count > 0 || retired_telemetry_count > 0) {
     request_publish_from_core_unchecked();
   }
 
@@ -332,6 +369,14 @@ if (dispatcher_.consume_relevant_state_changed()) {
       next_retirement_delay_ns.has_value()) {
     has_next_deadline_delay = true;
     next_deadline_delay_ns = *next_retirement_delay_ns;
+  }
+  if (const auto next_telemetry_retirement_delay_ns =
+          global_resource_aggregate_telemetry().next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+      next_telemetry_retirement_delay_ns.has_value()) {
+    if (!has_next_deadline_delay || *next_telemetry_retirement_delay_ns < next_deadline_delay_ns) {
+      has_next_deadline_delay = true;
+      next_deadline_delay_ns = *next_telemetry_retirement_delay_ns;
+    }
   }
   if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
     has_next_deadline_delay = true;
@@ -352,10 +397,12 @@ if (dispatcher_.consume_relevant_state_changed()) {
     SnapshotBuilder::Inputs in;
     in.rigs = &rigs_;
     in.devices = &devices_;
+    in.acquisition_sessions = &acquisition_sessions_;
     in.streams = &streams_;
     in.ingress = &ingress_;
     in.native_objects = &native_objects_;
     in.spec_state = &spec_state_;
+    in.scoped_resource_telemetry = &global_resource_aggregate_telemetry();
 
     const uint64_t topo_sig = snapshot_builder_.compute_topology_signature(in);
 
@@ -526,6 +573,14 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
       case ShutdownPhase::FINAL_RETENTION_SWEEP: {
         (void)native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+        global_resource_aggregate_telemetry().reconcile_lifecycle(
+            now_ns,
+            current_gen_,
+            &streams_,
+            &acquisition_sessions_,
+            &devices_,
+            &native_objects_);
+        (void)global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
         set_phase(ShutdownPhase::FINAL_PUBLISH);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -550,6 +605,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
         // They remain truthfully retained while the generation is live and through
         // final prior-generation publication, then are quarantined before exit.
         (void)native_objects_.clear_destroyed();
+        global_resource_aggregate_telemetry().clear();
         set_phase(ShutdownPhase::EXIT);
         shutdown_wait_ticks_ = 0;
         // fallthrough
@@ -577,6 +633,7 @@ void CoreRuntime::on_core_stop() {
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
+  global_resource_aggregate_telemetry().clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }

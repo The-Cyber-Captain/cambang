@@ -2,6 +2,13 @@
 extends MarginContainer
 
 signal disclosure_toggled(entry_id: String, expanded: bool)
+signal detail_toggled(entry_id: String, detail_visible: bool)
+const DEBUG_EXPANSION_TRACE := false
+const DEBUG_EXPANSION_WATCH_ROW_IDS := [
+	"server/main",
+	"stream/30001",
+	"provider/synthetic/timeline/completion-gated",
+]
 
 const INDENT_WIDTH := 14.0
 const SERVER_BADGE_COVERAGE_SLOT_MIN_WIDTH := 192.0
@@ -27,6 +34,8 @@ var _row_content: HBoxContainer
 var _identity_segment: HBoxContainer
 var _state_segment: HBoxContainer
 var _counter_segment: HBoxContainer
+var _info_inner: HBoxContainer
+var _detail_utility_slot: HBoxContainer
 var _info_lines_container: VBoxContainer
 var _info_panel_inset: MarginContainer
 var _info_margin: MarginContainer
@@ -37,7 +46,7 @@ var _accent_bar: PanelContainer
 var _badge_pairs: Array[HBoxContainer] = []
 var _counter_widgets: Array[VBoxContainer] = []
 var _info_line_rows: Array[HBoxContainer] = []
-var _counter_detail_hint: Label
+var _counter_detail_hint: Button = null
 
 
 func _ready() -> void:
@@ -65,7 +74,8 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_is_below_line_for_render = bool(model.is_below_line)
 	_is_in_orphan_native_branch_for_render = bool(model.is_in_orphan_native_branch)
 	var is_expandable := model.can_expand
-	var effective_expanded := (model.expanded if is_expandable else true)
+	var effective_expanded := (model.expanded if is_expandable else false)
+	var detail_visible := bool(model.detail_visible)
 	_indent_region.custom_minimum_size = Vector2(max(model.depth, 0) * INDENT_WIDTH, 0)
 	_name_label.text = model.label
 
@@ -76,16 +86,17 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 	_disclosure_button.set_pressed_no_signal(model.expanded if is_expandable else false)
 	_disclosure_indicator.set_expanded(effective_expanded)
 	_disclosure_button.tooltip_text = _disclosure_tooltip_for_model(model)
+	_debug_expansion_trace_set_model(model, effective_expanded)
 
 	_apply_row_palette(model)
 	_render_badges(_badges_for_render(model))
-	_render_counters(model.counters, effective_expanded)
+	_render_counters(model.counters, detail_visible)
 	_render_info_lines(
 		model.depth,
 		model.summary_info_lines,
 		model.detail_info_lines,
 		model.anomaly_info_lines,
-		effective_expanded
+		detail_visible
 	)
 	_apply_horizontal_layout_policy()
 	_apply_stable_row_metrics()
@@ -106,6 +117,8 @@ func _apply_style() -> void:
 	_state_segment.add_theme_constant_override("separation", 8)
 	_counter_segment.add_theme_constant_override("separation", 8)
 	_info_lines_container.add_theme_constant_override("separation", 2)
+	if _counter_detail_hint != null:
+		_apply_detail_hint_style(_counter_detail_hint)
 
 	_info_panel_inset.add_theme_constant_override("margin_left", int(_style.info_panel_outer_inset.x))
 	_info_panel_inset.add_theme_constant_override("margin_top", int(_style.info_panel_outer_inset.y))
@@ -336,15 +349,18 @@ func _ensure_badge_pair(index: int) -> HBoxContainer:
 	return pair
 
 
-func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded: bool) -> void:
+func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_visible: bool) -> void:
 	var visible_counters: Array[CamBANGStatusPanel.CounterModel] = []
+	var has_detail_counters := false
 	var hidden_detail_count := 0
 	for counter in counters:
 		if counter == null:
 			continue
-		if counter.visibility == "detail" and not expanded:
-			hidden_detail_count += 1
-			continue
+		if counter.visibility == "detail":
+			has_detail_counters = true
+			if not detail_visible:
+				hidden_detail_count += 1
+				continue
 		visible_counters.append(counter)
 
 	for i in range(visible_counters.size()):
@@ -373,15 +389,23 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], expanded
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
 
-	var detail_hint := _ensure_counter_detail_hint()
-	if not expanded and hidden_detail_count > 0:
-		detail_hint.visible = true
-		detail_hint.text = "EXPAND +%d" % hidden_detail_count
-		detail_hint.label_settings = _state_label_settings()
-	else:
-		detail_hint.visible = false
+	var detail_hint: Button = _ensure_counter_detail_hint()
+	var detail_hint_visible := false
+	if detail_hint != null:
+		if has_detail_counters:
+			detail_hint.visible = true
+			detail_hint_visible = true
+			if detail_visible:
+				detail_hint.text = "HIDE DETAIL"
+				detail_hint.tooltip_text = "Hide row detail counters."
+			else:
+				detail_hint.text = "SHOW +%d" % hidden_detail_count
+				detail_hint.tooltip_text = "Show hidden row detail counters."
+		else:
+			detail_hint.visible = false
+			detail_hint.tooltip_text = ""
 
-	_counter_segment.visible = not visible_counters.is_empty() or detail_hint.visible
+	_counter_segment.visible = not visible_counters.is_empty() or detail_hint_visible
 
 
 func _format_counter_name(counter: CamBANGStatusPanel.CounterModel) -> String:
@@ -416,17 +440,44 @@ func _ensure_counter_widget(index: int) -> VBoxContainer:
 	return counter_widget
 
 
-func _ensure_counter_detail_hint() -> Label:
+func _ensure_counter_detail_hint() -> Button:
 	if _counter_detail_hint != null:
 		return _counter_detail_hint
+	if _info_inner == null:
+		return null
+	if _detail_utility_slot == null:
+		_detail_utility_slot = HBoxContainer.new()
+		_detail_utility_slot.size_flags_horizontal = Control.SIZE_SHRINK_END
+		_detail_utility_slot.size_flags_vertical = Control.SIZE_SHRINK_END
+		_detail_utility_slot.alignment = BoxContainer.ALIGNMENT_END
+		_info_inner.add_child(_detail_utility_slot)
 
-	var hint := Label.new()
+	var hint := Button.new()
 	hint.visible = false
-	hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	hint.label_settings = _state_label_settings()
-	_counter_segment.add_child(hint)
+	hint.flat = true
+	hint.focus_mode = Control.FOCUS_NONE
+	hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	hint.custom_minimum_size = Vector2(108.0, 0.0)
+	hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_detail_hint_style(hint)
+	if not hint.pressed.is_connected(_on_detail_hint_pressed):
+		hint.pressed.connect(_on_detail_hint_pressed)
+	_detail_utility_slot.add_child(hint)
 	_counter_detail_hint = hint
 	return hint
+
+
+func _apply_detail_hint_style(hint: Button) -> void:
+	if hint == null:
+		return
+	if _style == null:
+		return
+	if _style.counter_font != null:
+		hint.add_theme_font_override("font", _style.counter_font)
+	hint.add_theme_font_size_override("font_size", _style.counter_font_size)
+	hint.add_theme_color_override("font_color", _style.counter_font_color)
+	hint.add_theme_color_override("font_hover_color", _style.counter_font_color)
+	hint.add_theme_color_override("font_pressed_color", _style.counter_font_color)
 
 
 func _render_info_lines(
@@ -434,14 +485,14 @@ func _render_info_lines(
 		summary_info_lines: Array[String],
 		detail_info_lines: Array[String],
 		anomaly_info_lines: Array[String],
-		expanded: bool
+		detail_visible: bool
 	) -> void:
 	var visible_lines: Array[String] = []
 	for line in summary_info_lines:
 		visible_lines.append(line)
 	for line in anomaly_info_lines:
 		visible_lines.append(line)
-	if expanded:
+	if detail_visible:
 		for line in detail_info_lines:
 			visible_lines.append(line)
 
@@ -591,6 +642,8 @@ func _apply_stable_row_metrics() -> void:
 	_info_panel.custom_minimum_size = Vector2(_info_panel.custom_minimum_size.x, info_panel_height)
 	_state_segment.custom_minimum_size = Vector2(_state_segment.custom_minimum_size.x, info_content_height)
 	_counter_segment.custom_minimum_size = Vector2(_counter_segment.custom_minimum_size.x, info_content_height)
+	if _detail_utility_slot != null:
+		_detail_utility_slot.custom_minimum_size = Vector2(_detail_utility_slot.custom_minimum_size.x, info_content_height)
 
 
 func _apply_horizontal_layout_policy() -> void:
@@ -745,8 +798,12 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		"server",
 		"provider",
 		"device",
+		"acquisition_session",
 		"stream",
 		"rig",
+		"resource_telemetry",
+		"native_payload_support_group",
+		"native_support_resource_detail",
 		"native_object",
 		"contract_gap",
 		"orphan",
@@ -763,6 +820,8 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 		return "provider"
 	if model.id.begins_with("stream/") or model.id.contains("/stream/"):
 		return "stream"
+	if model.id.begins_with("acquisition_session/") or model.id.contains("/acquisition_session/"):
+		return "acquisition_session"
 	if model.id.begins_with("device/") or model.id.contains("/device/"):
 		return "device"
 	if model.id.begins_with("rig/") or model.id.contains("/rig/"):
@@ -770,8 +829,6 @@ func _object_class(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if (
 		model.id.begins_with("native_object/")
 		or model.id.contains("/native_object/")
-		or model.id.begins_with("frameproducer/")
-		or model.id.contains("/frameproducer/")
 	):
 		return "native_object"
 	return "generic"
@@ -785,10 +842,18 @@ func _class_color(object_class: String) -> Color:
 			return _resolve_class_theme_color("status_row_provider_accent", Color(0.47, 0.71, 0.96, 0.96))
 		"device":
 			return _resolve_class_theme_color("status_row_device_accent", Color(0.41, 0.82, 0.61, 0.96))
+		"acquisition_session":
+			return _resolve_class_theme_color("status_row_acquisition_session_accent", Color(0.96, 0.91, 0.60, 0.96))
 		"stream":
 			return _resolve_class_theme_color("status_row_stream_accent", Color(0.63, 0.70, 0.97, 0.96))
 		"rig":
 			return _resolve_class_theme_color("status_row_rig_accent", Color(0.83, 0.68, 0.96, 0.96))
+		"resource_telemetry":
+			return _resolve_class_theme_color("status_row_resource_telemetry_accent", Color(0.45, 0.88, 0.74, 0.96))
+		"native_payload_support_group":
+			return _resolve_class_theme_color("status_row_native_payload_support_group_accent", Color(0.96, 0.62, 0.84, 0.96))
+		"native_support_resource_detail":
+			return _resolve_class_theme_color("status_row_native_support_resource_detail_accent", Color(0.89, 0.80, 0.46, 0.96))
 		"native_object":
 			return _resolve_class_theme_color("status_row_native_accent", Color(0.44, 0.82, 0.85, 0.96))
 		"contract_gap":
@@ -1063,12 +1128,9 @@ func _is_detail_line(line: String, detail_info_lines: Array[String]) -> bool:
 func _disclosure_tooltip_for_model(model: CamBANGStatusPanel.StatusEntryModel) -> String:
 	if model == null or not model.can_expand:
 		return ""
-	var detail_counter_count := _count_detail_counters(model.counters)
-	if detail_counter_count <= 0:
-		return "Expand for more detail."
 	if model.expanded:
-		return "Collapse to summary counters."
-	return "Expand for %d more counter%s." % [detail_counter_count, ("" if detail_counter_count == 1 else "s")]
+		return "Collapse child rows."
+	return "Expand child rows."
 
 
 func _count_detail_counters(counters: Array[CamBANGStatusPanel.CounterModel]) -> int:
@@ -1086,6 +1148,43 @@ func _on_disclosure_pressed() -> void:
 	disclosure_toggled.emit(_entry_id, _disclosure_button.button_pressed)
 
 
+func _should_trace_expansion_for_row(entry_id: String) -> bool:
+	if not DEBUG_EXPANSION_TRACE:
+		return false
+	if entry_id == "":
+		return false
+	for watched in DEBUG_EXPANSION_WATCH_ROW_IDS:
+		var watched_id := str(watched)
+		if watched_id == "":
+			continue
+		if entry_id == watched_id:
+			return true
+		if watched_id == "stream/30001" and entry_id.begins_with("stream/30001/"):
+			return true
+	return false
+
+
+func _debug_expansion_trace_set_model(model: CamBANGStatusPanel.StatusEntryModel, effective_expanded: bool) -> void:
+	if model == null or not _should_trace_expansion_for_row(model.id):
+		return
+	print(
+		"[TEMP DEBUG EXPANSION TRACE] context=StatusEntry.set_model payload=%s"
+		% JSON.stringify(
+			{
+				"entry_id": model.id,
+				"can_expand": model.can_expand,
+				"model_expanded": model.expanded,
+				"button_pressed": _disclosure_button.button_pressed if _disclosure_button != null else null,
+				"indicator_expanded": effective_expanded,
+			}
+		)
+	)
+
+
+func _on_detail_hint_pressed() -> void:
+	detail_toggled.emit(_entry_id, true)
+
+
 func _bind_nodes() -> void:
 	if _indent_region != null:
 		return
@@ -1099,6 +1198,7 @@ func _bind_nodes() -> void:
 	_row_content = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent
 	_state_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/StateSegment
 	_counter_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/CounterSegment
+	_info_inner = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner
 	_info_lines_container = $StatusEntryRoot/InfoLines
 	_info_panel_inset = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset
 	_info_margin = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin
@@ -1107,7 +1207,9 @@ func _bind_nodes() -> void:
 	_accent_bar = $StatusEntryRoot/MainRow/EntryShell/AccentBar
 	_disclosure_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_disclosure_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_disclosure_button.focus_mode = Control.FOCUS_NONE
 	_name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_row_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ensure_counter_detail_hint()
 	if not _disclosure_button.pressed.is_connected(_on_disclosure_pressed):
 		_disclosure_button.pressed.connect(_on_disclosure_pressed)

@@ -52,9 +52,9 @@ public:
   void post_stream_started(uint64_t stream_id);
   void post_stream_stopped(uint64_t stream_id, ProviderError error_or_ok);
 
-  void post_capture_started(uint64_t capture_id);
-  void post_capture_completed(uint64_t capture_id);
-  void post_capture_failed(uint64_t capture_id, ProviderError error);
+  void post_capture_started(uint64_t capture_id, uint64_t device_instance_id);
+  void post_capture_completed(uint64_t capture_id, uint64_t device_instance_id);
+  void post_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error);
 
   void post_frame(const FrameView& frame);
 
@@ -73,9 +73,9 @@ private:
   struct EvStreamStarted { uint64_t id; };
   struct EvStreamStopped { uint64_t id; ProviderError err; };
 
-  struct EvCaptureStarted { uint64_t id; };
-  struct EvCaptureCompleted { uint64_t id; };
-  struct EvCaptureFailed { uint64_t id; ProviderError err; };
+  struct EvCaptureStarted { uint64_t id; uint64_t device_instance_id; };
+  struct EvCaptureCompleted { uint64_t id; uint64_t device_instance_id; };
+  struct EvCaptureFailed { uint64_t id; uint64_t device_instance_id; ProviderError err; };
 
   struct EvFrame { FrameView frame; };
 

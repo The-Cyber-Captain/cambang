@@ -8,7 +8,7 @@ Purpose
 Deterministically verifies SyntheticProvider Timeline behaviour and Core registry
 truth using scheduled verification-case events and virtual time.
 
-This utility validates lifecycle reporting, FrameProducer tracking, capture
+This utility validates lifecycle reporting, continuity tracking, capture
 timestamp semantics, and event ordering. It is intended for maintainer
 verification and CI regression checks.
 
@@ -113,8 +113,15 @@ static std::shared_ptr<const CamBANGStateSnapshot> snapshot_copy(StateSnapshotBu
 
 static void dump_snapshot(const CamBANGStateSnapshot& s) {
   std::cout << "[snap] gen=" << s.gen << " ver=" << s.version << " topo=" << s.topology_version << " ts=" << s.timestamp_ns
-            << " devices=" << s.devices.size() << " streams=" << s.streams.size()
+            << " devices=" << s.devices.size() << " acquisition_sessions=" << s.acquisition_sessions.size()
+            << " streams=" << s.streams.size()
             << " native_objects=" << s.native_objects.size() << "\n";
+  for (const auto& acq : s.acquisition_sessions) {
+    std::cout << "  acquisition_session id=" << acq.acquisition_session_id
+              << " device_instance_id=" << acq.device_instance_id
+              << " phase=" << static_cast<int>(acq.phase)
+              << "\n";
+  }
   for (const auto& st : s.streams) {
     std::cout << "  stream id=" << st.stream_id
               << " phase=" << static_cast<int>(st.phase)
@@ -128,6 +135,7 @@ static void dump_snapshot(const CamBANGStateSnapshot& s) {
     std::cout << "  native id=" << no.native_id
               << " type=" << no.type
               << " phase=" << static_cast<int>(no.phase)
+              << " owner_acquisition_session=" << no.owner_acquisition_session_id
               << " owner_stream=" << no.owner_stream_id
               << " created=" << no.created_ns
               << " destroyed=" << no.destroyed_ns
@@ -150,11 +158,11 @@ static bool assert_unique_native_ids(const CamBANGStateSnapshot& s) {
   return true;
 }
 
-static bool has_live_frame_producer_for_stream(const CamBANGStateSnapshot& s, uint64_t stream_id) {
-  for (const auto& no : s.native_objects) {
-    if (no.owner_stream_id != stream_id) continue;
-    if (no.type != static_cast<uint32_t>(NativeObjectType::FrameProducer)) continue;
-    if (no.destroyed_ns == 0) return true;
+static bool has_acquisition_session_for_device(const CamBANGStateSnapshot& s, uint64_t device_instance_id) {
+  for (const auto& acq : s.acquisition_sessions) {
+    if (acq.device_instance_id == device_instance_id) {
+      return true;
+    }
   }
   return false;
 }
@@ -233,11 +241,12 @@ static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const 
     }
   }
 
-  // Wait until a live FrameProducer exists.
+  // Wait until canonical stream/session seams are visible.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return has_live_frame_producer_for_stream(s, kStreamId);
+        return stream_exists(s, kStreamId) &&
+               has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: FrameProducer not observed after start\n";
+    std::cerr << "FAIL: stream/session seams not observed after start\n";
     return 1;
   }
 
@@ -267,11 +276,12 @@ static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const 
     }
   }
 
-  // Assert FrameProducer is no longer live.
+  // Assert stream/session seams are cleared after stop/destroy.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return !has_live_frame_producer_for_stream(s, kStreamId);
+        return !stream_exists(s, kStreamId) &&
+               !has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: FrameProducer still live after stop\n";
+    std::cerr << "FAIL: stream/session seams still visible after stop+destroy\n";
     return 1;
   }
 
@@ -305,17 +315,26 @@ static int run_invalid_sequence(CoreRuntime& rt, StateSnapshotBuffer& buf, const
 
   rt.request_publish();
 
-  // Assert no live FrameProducer exists.
+  // Assert canonical create-only seam: stream exists and AcquisitionSession exists
+  // for create_stream-only (stream exists but not started).
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return !has_live_frame_producer_for_stream(s, kStreamId);
+        return stream_exists(s, kStreamId) &&
+               has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: FrameProducer unexpectedly live\n";
+    std::cerr << "FAIL: invalid-sequence seam expectations failed (stream/session)\n";
     return 1;
   }
 
   // Cleanup.
   (void)rt.try_destroy_stream(kStreamId);
   rt.request_publish();
+  if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return !stream_exists(s, kStreamId) &&
+               !has_acquisition_session_for_device(s, kDeviceInstanceId);
+      }, opt.dump_snapshots)) {
+    std::cerr << "FAIL: AcquisitionSession seam not cleared after invalid-sequence destroy\n";
+    return 1;
+  }
   return 0;
 }
 
@@ -341,9 +360,10 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
         auto s = snapshot_copy(buf);
         if (!s) return false;
         if (opt.dump_snapshots) dump_snapshot(*s);
-        return stream_is_flowing(*s, kStreamId);
+        return stream_is_flowing(*s, kStreamId) &&
+               has_acquisition_session_for_device(*s, kDeviceInstanceId);
       })) {
-    std::cerr << "FAIL: stream did not reach FLOWING before catch-up tick\n";
+    std::cerr << "FAIL: stream did not reach FLOWING with expected session seam before catch-up tick\n";
     return 1;
   }
 

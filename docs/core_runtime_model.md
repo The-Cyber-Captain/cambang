@@ -136,6 +136,13 @@ Core maintains explicit state machines for:
     bool)
 -   **Stream core state** (STOPPED/FLOWING/STARVED/ERROR + intent)
 
+AcquisitionSession seam is provider/native-object truth and is retained in
+snapshot state via `acquisition_sessions`. Current implementation status in
+`SyntheticProvider` includes both stream-backed realization and capture-only
+realization. The provider retains a truthful `AcquisitionSession` seam while
+stream and/or capture references exist, and does not require a transient public
+`CamBANGStream` for capture-only truth.
+
 State transitions occur only on the core thread and must be
 deterministic.
 
@@ -376,8 +383,9 @@ Providers release owned resources in dependency order:
 
 1. FrameProducer
 2. Stream
-3. Device
-4. Provider
+3. AcquisitionSession (when realized)
+4. Device
+5. Provider
 
 At each boundary the provider emits the appropriate lifecycle and
 native-object events reflecting the actual state transition.
@@ -435,12 +443,12 @@ injects deterministic errors - supports test cases for: -
 arbitration/preemption - warm scheduling and expiry - retention sweep
 correctness - snapshot generation correctness
 
-Synthetic mode is a first-class test harness strategy for CI and
+Synthetic mode is a first-class verification strategy for CI and
 development confidence.
 
 Note:
 
-The current development smoke harness uses a minimal
+The current development smoke executable uses a minimal
 `StubProvider` for lifecycle and determinism validation.
 
 `SyntheticProvider` is intended as a richer deterministic
@@ -522,9 +530,9 @@ CamBANG distinguishes between **core invariant validation** and
 ### 13.1 Core invariant validation (portable)
 
 Core lifecycle and determinism invariants are validated in development
-builds via the `core_spine_smoke` harness (stub-provider-only).
+builds via the `core_spine_smoke` smoke executable (stub-provider-only).
 
-The smoke harness validates:
+The smoke executable validates:
 
 - Deterministic shutdown choreography
 - Release-on-drop semantics under overload
