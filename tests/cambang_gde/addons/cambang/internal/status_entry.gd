@@ -38,7 +38,7 @@ var _accent_bar: PanelContainer
 var _badge_pairs: Array[HBoxContainer] = []
 var _counter_widgets: Array[VBoxContainer] = []
 var _info_line_rows: Array[HBoxContainer] = []
-var _counter_detail_hint: Button
+var _counter_detail_hint: Button = null
 
 
 func _ready() -> void:
@@ -375,7 +375,7 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_v
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
 
-	var detail_hint := _ensure_counter_detail_hint()
+	var detail_hint: Button = _ensure_counter_detail_hint()
 	var detail_hint_visible := false
 	if detail_hint != null:
 		if hidden_detail_count > 0:
@@ -426,7 +426,7 @@ func _ensure_counter_widget(index: int) -> VBoxContainer:
 	return counter_widget
 
 
-func _ensure_counter_detail_hint():
+func _ensure_counter_detail_hint() -> Button:
 	if _counter_detail_hint != null:
 		return _counter_detail_hint
 	if _counter_segment == null:
