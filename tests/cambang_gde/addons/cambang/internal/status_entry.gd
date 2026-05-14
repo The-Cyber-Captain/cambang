@@ -463,12 +463,14 @@ func _ensure_counter_detail_hint() -> Button:
 func _apply_detail_hint_style(hint: Button) -> void:
 	if hint == null:
 		return
-	var font_size := (_style.counter_font_size if _style != null else 11)
-	hint.add_theme_font_size_override("font_size", max(font_size - 1, 10))
-	var base_color := (_style.counter_font_color if _style != null else Color(0.78, 0.82, 0.88, 0.92))
-	hint.add_theme_color_override("font_color", Color(base_color.r, base_color.g, base_color.b, 0.84))
-	hint.add_theme_color_override("font_hover_color", Color(base_color.r, base_color.g, base_color.b, 0.96))
-	hint.add_theme_color_override("font_pressed_color", Color(base_color.r, base_color.g, base_color.b, 1.0))
+	if _style == null:
+		return
+	if _style.counter_font != null:
+		hint.add_theme_font_override("font", _style.counter_font)
+	hint.add_theme_font_size_override("font_size", _style.counter_font_size)
+	hint.add_theme_color_override("font_color", _style.counter_font_color)
+	hint.add_theme_color_override("font_hover_color", _style.counter_font_color)
+	hint.add_theme_color_override("font_pressed_color", _style.counter_font_color)
 
 
 func _render_info_lines(
