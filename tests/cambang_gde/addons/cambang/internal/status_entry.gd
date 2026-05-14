@@ -110,6 +110,8 @@ func _apply_style() -> void:
 	_state_segment.add_theme_constant_override("separation", 8)
 	_counter_segment.add_theme_constant_override("separation", 8)
 	_info_lines_container.add_theme_constant_override("separation", 2)
+	if _counter_detail_hint != null:
+		_apply_detail_hint_style(_counter_detail_hint)
 
 	_info_panel_inset.add_theme_constant_override("margin_left", int(_style.info_panel_outer_inset.x))
 	_info_panel_inset.add_theme_constant_override("margin_top", int(_style.info_panel_outer_inset.y))
@@ -450,11 +452,23 @@ func _ensure_counter_detail_hint() -> Button:
 	hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	hint.custom_minimum_size = Vector2(108.0, 0.0)
 	hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_detail_hint_style(hint)
 	if not hint.pressed.is_connected(_on_detail_hint_pressed):
 		hint.pressed.connect(_on_detail_hint_pressed)
 	_detail_utility_slot.add_child(hint)
 	_counter_detail_hint = hint
 	return hint
+
+
+func _apply_detail_hint_style(hint: Button) -> void:
+	if hint == null:
+		return
+	var font_size := (_style.counter_font_size if _style != null else 11)
+	hint.add_theme_font_size_override("font_size", max(font_size - 1, 10))
+	var base_color := (_style.counter_font_color if _style != null else Color(0.78, 0.82, 0.88, 0.92))
+	hint.add_theme_color_override("font_color", Color(base_color.r, base_color.g, base_color.b, 0.84))
+	hint.add_theme_color_override("font_hover_color", Color(base_color.r, base_color.g, base_color.b, 0.96))
+	hint.add_theme_color_override("font_pressed_color", Color(base_color.r, base_color.g, base_color.b, 1.0))
 
 
 func _render_info_lines(
