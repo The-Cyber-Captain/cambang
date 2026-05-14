@@ -4591,10 +4591,8 @@ func _ensure_expandability(panel: PanelModel) -> void:
 	for e in panel.entries:
 		var child_count := int(child_counts.get(e.id, 0))
 		e.can_expand = child_count > 0
-		if child_count > 0:
-			e.expanded = _should_default_expand_entry(e)
-		else:
-			e.expanded = false
+		if child_count > 0 and _should_default_expand_entry(e):
+			e.expanded = true
 
 
 func _reorder_panel_entries_depth_first(panel: PanelModel) -> void:
