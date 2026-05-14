@@ -426,7 +426,7 @@ A Capture Result is **not** required to already be:
 - a display-ready RGB pixel buffer
 - an encoded artifact
 
-A Capture Result may retain one or more of:
+A retained image under a Capture Result may use one or more retained or materializable representations, such as:
 
 - encoded still artifact
 - raw still artifact
@@ -435,7 +435,7 @@ A Capture Result may retain one or more of:
 - CPU packed payload
 - derived forms requested or retained by policy
 
-Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, capture timestamp, exposure/capture attributes, retained backing resource instance, release state, and materialization state).
+A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, capture timestamp, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
 
 ## 10.4 Capture Result Set semantics
 
@@ -598,9 +598,7 @@ explicit materialization outcome and must not silently return stale content:
 Still-capture public result semantics remain distinct from repeating-stream
 display-view semantics.
 
-A Capture Result is the device-level still-capture result at the public result seam. Future capture support may internally use whatever retained/runtime state is appropriate,
-but this stream-side live GPU-backed display model must not be generalized into a
-public model of retained or exposed per-capture GPU artifacts.
+A Capture Result is the device-level still-capture result at the public result seam. Its still-capture backing and materialization behaviour must remain explicit and capture-result-specific; the stream-side live GPU-backed display model must not be generalized into a public model of retained or exposed per-capture GPU artifacts.
 
 ---
 
