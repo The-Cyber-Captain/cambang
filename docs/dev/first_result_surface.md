@@ -1,9 +1,9 @@
-# First Result Surface (Implementation Slice 1)
+# First Result Surface
 
 Status: Dev note (implementation-shaping)  
-Purpose: Freeze the first release-facing result-object surface for the initial implementation slice, while preserving the broader multi-representation release architecture.
+Purpose: Define the release-facing result-object surface while preserving the broader multi-representation release architecture.
 
-This note narrows the next implementation step. It does **not** redefine the broader payload/result architecture established in:
+This note records the result-object surface direction. It does **not** redefine the broader payload/result architecture established in:
 
 - `docs/dev/pixel_result_architecture_direction.md`
 - `docs/architecture/pixel_payload_and_result_contract.md`
@@ -21,9 +21,7 @@ CamBANG now has a documented release-facing image/result architecture that is:
 - capability/cost-aware
 - distinct from the hot runtime snapshot path
 
-However, implementation should begin with a deliberately small first slice.
-
-This note freezes that first slice so implementation can proceed without:
+This note keeps the result-object surface bounded to avoid:
 
 - drifting back toward mailbox-shaped public semantics
 - overcommitting to CPU-only architecture
@@ -32,17 +30,17 @@ This note freezes that first slice so implementation can proceed without:
 
 ---
 
-## 2. Scope of slice 1
+## 2. Scope
 
-### 2.1 First fully-supported payload representation
+### 2.1 Supported payload representation baseline
 
-The first fully-supported retained payload representation is:
+The currently supported retained payload representation is:
 
 - `CPU_PACKED`
 
-This is an implementation slice, **not** the canonical or ultimate release representation.
+This is a supported baseline, **not** the canonical or ultimate release representation.
 
-### 2.2 Architecturally in-scope payload kinds beyond the first fully-supported slice
+### 2.2 Architecturally in-scope payload kinds beyond the currently supported baseline
 
 The following remain first-class architectural targets:
 
@@ -51,18 +49,15 @@ The following remain first-class architectural targets:
 - `ENCODED_IMAGE`
 - `RAW_IMAGE`
 
-`CPU_PLANAR`, `ENCODED_IMAGE`, and `RAW_IMAGE` are still beyond the first
-fully-supported slice.
+`CPU_PLANAR`, `ENCODED_IMAGE`, and `RAW_IMAGE` remain first-class architectural targets beyond the currently supported baseline.
 
-`GPU_SURFACE` is now concretely exercised for synthetic stream results as a
-retained-primary path; this note still preserves the historical “slice 1 was
-`CPU_PACKED` first” implementation framing.
+`GPU_SURFACE` is now concretely exercised for synthetic stream results as a retained-primary path. This does not redefine the release architecture around any single payload representation.
 
 ---
 
-## 3. Public result-object goals for slice 1
+## 3. Public result-object goals
 
-Slice 1 should prove that CamBANG can expose release-facing result objects that are:
+CamBANG result objects should remain:
 
 - result-oriented rather than mailbox-oriented
 - capability/cost-aware
@@ -70,7 +65,7 @@ Slice 1 should prove that CamBANG can expose release-facing result objects that 
 - explicit about materialization
 - compatible with future non-CPU-only representations
 
-Slice 1 should **not** attempt to prove every future transport or rendering path.
+This surface does not require every transport or rendering path to be available at once.
 
 ---
 
@@ -82,7 +77,7 @@ The public/runtime-visible result nouns remain:
 - **Capture Result**
 - **Capture Result Set**
 
-Slice 1 must preserve these nouns and must not reintroduce mailbox terminology into the public API.
+These nouns must be preserved, and mailbox terminology must not be reintroduced into the public API.
 
 ---
 
@@ -137,7 +132,7 @@ In particular:
 
 ---
 
-## 6. `StreamResult` surface (slice 1)
+## 6. `StreamResult` surface
 
 `StreamResult` remains latest-result-oriented.
 
@@ -249,9 +244,9 @@ For synthetic `GPU_SURFACE`, `get_display_view()` has a direct GPU display path.
 That direct display path must not be reframed as materialization onto CPU-backed
 storage.
 
-### 6.7 Explicit non-goals for `StreamResult` in slice 1
+### 6.7 Explicit non-goals for `StreamResult`
 
-Not included in slice 1:
+Not included:
 
 - encoded-byte access
 - filesystem save operations
@@ -262,13 +257,13 @@ Not included in slice 1:
 
 ---
 
-## 7. `CaptureResult` surface (slice 1)
+## 7. `CaptureResult` surface
 
-`CaptureResult` is the discrete image-bearing result of a device still capture.
+`CaptureResult` is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same `CaptureResult`.
 
 ### 7.1 Core properties
 
-Initial direct properties:
+Initial direct properties describe the `CaptureResult` and its default image:
 
 - `width`
 - `height`
@@ -277,6 +272,8 @@ Initial direct properties:
 - `capture_timestamp`
 - `device_instance_id`
 - `capture_id`
+
+For bracketed captures, image-facing scalar values that can vary between bracket images, such as `capture_timestamp`, refer to the default image unless a bracket-aware access path explicitly selects another bracket image. Structural properties such as `width`, `height`, `format`, and `payload_kind` are result-level homogeneous truth.
 
 ### 7.2 Fact-group presence helpers
 
@@ -295,6 +292,8 @@ Initial grouped accessors:
 - `get_capture_attributes()`
 - `get_location_attributes()`
 - `get_optical_calibration()`
+
+`get_image_properties()`, `get_location_attributes()`, and `get_optical_calibration()` expose result-level shared truth. `get_capture_attributes()` describes the default image where capture attributes may vary between bracket images.
 
 ### 7.4 Capability inspection
 
@@ -318,7 +317,7 @@ Initial capture operations:
 
 CamBANG does **not** own filesystem persistence.
 
-Accordingly, slice 1 does **not** include:
+Accordingly, this surface does **not** include:
 
 - `save_to_file(...)`
 - path handling
@@ -339,16 +338,15 @@ Actual file saving belongs to Godot/app code.
 Still-capture public result semantics remain distinct from repeating-stream
 display-view semantics.
 
-A capture result is a **discrete artifact** at the public result seam and should
-not inherit the stream-side notion of a live GPU-backed display buffer.
+A `CaptureResult` is the device-level still-capture result at the public result seam and should not inherit the stream-side notion of a live GPU-backed display buffer.
 
 The existence of a live GPU-backed display path for repeating streams must not be
 used to justify retained or exposed per-capture GPU artifacts in the public
 capture-result model.
 
-### 7.8 Explicit non-goals for `CaptureResult` in slice 1
+### 7.8 Explicit non-goals for `CaptureResult`
 
-Not included in slice 1:
+Not included:
 
 - filesystem save APIs
 - RAW processing/export APIs
@@ -358,9 +356,9 @@ Not included in slice 1:
 
 ---
 
-## 8. `CaptureResultSet` surface (slice 1)
+## 8. `CaptureResultSet` surface
 
-`CaptureResultSet` is a grouped container for the subset of device-associated capture results realized by a rig-triggered capture.
+`CaptureResultSet` is the rig/Core-curated grouping of selected device `CaptureResult` objects for a rig-triggered synchronised capture. CaptureResultSet curation is distinct from the definition of `CaptureResult`.
 
 ### 8.1 Initial surface
 
@@ -378,11 +376,11 @@ It is not itself an image-bearing result object.
 
 ---
 
-## 9. Fact-group object shapes (slice 1)
+## 9. Fact-group object shapes
 
 These grouped objects should be read-only and typed.
 
-They should remain intentionally modest in slice 1.
+They should remain intentionally modest.
 
 ## 9.1 `ImageProperties`
 
@@ -425,7 +423,7 @@ Initial fields:
 
 ---
 
-## 10. Provenance surface (slice 1)
+## 10. Provenance surface
 
 Provenance remains per fact, not per result.
 
@@ -450,7 +448,7 @@ Initial provenance values:
 
 ### 10.3 Example shape intent
 
-Conceptually, slice 1 should support patterns like:
+Conceptually, the surface should support patterns like:
 
 - `result.get_capture_attributes().exposure_time_ns`
 - `result.get_capture_attributes().get_provenance().exposure_time_ns`
@@ -459,9 +457,9 @@ without forcing provenance verbosity into the primary value-access path.
 
 ---
 
-## 11. Explicit exclusions from slice 1
+## 11. Explicit exclusions
 
-Slice 1 does **not** imply or require:
+This surface does **not** imply or require:
 
 - full GPU-native presentation architecture
 - full multi-plane YUV result support
@@ -475,7 +473,7 @@ Slice 1 does **not** imply or require:
 
 ## 12. Guardrail against accidental narrowing
 
-The existence of a working `CPU_PACKED` slice must **not** be used to redefine the release architecture as CPU-only.
+The existence of a working `CPU_PACKED` path must **not** be used to redefine the release architecture as CPU-only.
 
 Implementation and follow-up design must preserve:
 
@@ -483,7 +481,7 @@ Implementation and follow-up design must preserve:
 - the distinction between display-view access and CPU image materialization
 - the ability to add `GPU_SURFACE`, `CPU_PLANAR`, `ENCODED_IMAGE`, and `RAW_IMAGE` without redefining public result nouns
 
-If future code or docs begin to treat `CPU_PACKED` as the canonical representation rather than the first fully-supported slice, that is architectural drift and should be corrected.
+If code or docs begin to treat `CPU_PACKED` as the canonical representation rather than one supported payload path, that is architectural drift and should be corrected.
 
 ## 12.x Non-CPU exemplar discipline (now exercised)
 
@@ -508,16 +506,3 @@ a non-CPU primary payload removes the need for an available CPU-facing fallback.
 
 ---
 
-## 13. Immediate implementation consequence
-
-Implementation should now focus on:
-
-1. defining the result-object scaffolding
-2. defining grouped fact objects and grouped provenance access
-3. adding internal retained-result ownership paths for stream and capture
-4. wiring the first fully-supported `CPU_PACKED` result path
-5. preserving deterministic ownership/release and Core accounting
-
-This is the intended bridge from architecture/design into implementation.
-
----
