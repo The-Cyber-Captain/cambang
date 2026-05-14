@@ -28,6 +28,8 @@ var _row_content: HBoxContainer
 var _identity_segment: HBoxContainer
 var _state_segment: HBoxContainer
 var _counter_segment: HBoxContainer
+var _info_inner: HBoxContainer
+var _detail_utility_slot: HBoxContainer
 var _info_lines_container: VBoxContainer
 var _info_panel_inset: MarginContainer
 var _info_margin: MarginContainer
@@ -432,18 +434,25 @@ func _ensure_counter_widget(index: int) -> VBoxContainer:
 func _ensure_counter_detail_hint() -> Button:
 	if _counter_detail_hint != null:
 		return _counter_detail_hint
-	if _counter_segment == null:
+	if _info_inner == null:
 		return null
+	if _detail_utility_slot == null:
+		_detail_utility_slot = HBoxContainer.new()
+		_detail_utility_slot.size_flags_horizontal = Control.SIZE_SHRINK_END
+		_detail_utility_slot.size_flags_vertical = Control.SIZE_SHRINK_END
+		_detail_utility_slot.alignment = BoxContainer.ALIGNMENT_END
+		_info_inner.add_child(_detail_utility_slot)
 
 	var hint := Button.new()
 	hint.visible = false
 	hint.flat = true
 	hint.focus_mode = Control.FOCUS_NONE
 	hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	hint.custom_minimum_size = Vector2(108.0, 0.0)
 	hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	if not hint.pressed.is_connected(_on_detail_hint_pressed):
 		hint.pressed.connect(_on_detail_hint_pressed)
-	_counter_segment.add_child(hint)
+	_detail_utility_slot.add_child(hint)
 	_counter_detail_hint = hint
 	return hint
 
@@ -610,6 +619,8 @@ func _apply_stable_row_metrics() -> void:
 	_info_panel.custom_minimum_size = Vector2(_info_panel.custom_minimum_size.x, info_panel_height)
 	_state_segment.custom_minimum_size = Vector2(_state_segment.custom_minimum_size.x, info_content_height)
 	_counter_segment.custom_minimum_size = Vector2(_counter_segment.custom_minimum_size.x, info_content_height)
+	if _detail_utility_slot != null:
+		_detail_utility_slot.custom_minimum_size = Vector2(_detail_utility_slot.custom_minimum_size.x, info_content_height)
 
 
 func _apply_horizontal_layout_policy() -> void:
@@ -1131,6 +1142,7 @@ func _bind_nodes() -> void:
 	_row_content = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent
 	_state_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/StateSegment
 	_counter_segment = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner/CounterSegment
+	_info_inner = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin/InfoInner
 	_info_lines_container = $StatusEntryRoot/InfoLines
 	_info_panel_inset = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset
 	_info_margin = $StatusEntryRoot/MainRow/EntryShell/ShellContent/RowContent/InfoPanelInset/InfoPanel/InfoMargin
