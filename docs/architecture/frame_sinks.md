@@ -203,13 +203,9 @@ third-party hand-off without redefining the public **Stream Result** noun.
 A **Capture Sink** is the internal/runtime path responsible for handling
 accepted still-capture payloads for downstream still-image access purposes.
 
-**Capture Sink** populates **Capture Result** objects, which represent
-discrete device-associated still-capture outputs rather than continuously
-replaced repeating-stream outputs.
+**Capture Sink** populates **Capture Result** objects as device-level still-capture results. Each Capture Result has a default image; when no bracketing is involved, that default image is the only image, and when bracketing is involved, additional bracket images may be represented within the same Capture Result.
 
-Rig-triggered grouped still capture is exposed publicly as a
-**Capture Result Set** containing the subset of realized device-associated
-**Capture Result** objects for that trigger.
+Rig-triggered grouped still capture is exposed publicly as a **Capture Result Set**, the rig/Core-curated grouping of selected device **Capture Result** objects for that trigger; this curation remains distinct from the definition of **Capture Result**.
 
 ### Initial non-goals
 

@@ -264,7 +264,7 @@ Not included in slice 1:
 
 ## 7. `CaptureResult` surface (slice 1)
 
-`CaptureResult` is the discrete image-bearing result of a device still capture.
+`CaptureResult` is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same `CaptureResult`.
 
 ### 7.1 Core properties
 
@@ -339,8 +339,7 @@ Actual file saving belongs to Godot/app code.
 Still-capture public result semantics remain distinct from repeating-stream
 display-view semantics.
 
-A capture result is a **discrete artifact** at the public result seam and should
-not inherit the stream-side notion of a live GPU-backed display buffer.
+A `CaptureResult` is the device-level still-capture result at the public result seam and should not inherit the stream-side notion of a live GPU-backed display buffer.
 
 The existence of a live GPU-backed display path for repeating streams must not be
 used to justify retained or exposed per-capture GPU artifacts in the public
@@ -360,7 +359,7 @@ Not included in slice 1:
 
 ## 8. `CaptureResultSet` surface (slice 1)
 
-`CaptureResultSet` is a grouped container for the subset of device-associated capture results realized by a rig-triggered capture.
+`CaptureResultSet` is the rig/Core-curated grouping of selected device `CaptureResult` objects for a rig-triggered synchronised capture. CaptureResultSet curation is distinct from the definition of `CaptureResult`.
 
 ### 8.1 Initial surface
 
