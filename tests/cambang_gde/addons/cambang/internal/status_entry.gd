@@ -1207,6 +1207,7 @@ func _bind_nodes() -> void:
 	_accent_bar = $StatusEntryRoot/MainRow/EntryShell/AccentBar
 	_disclosure_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_disclosure_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_disclosure_button.focus_mode = Control.FOCUS_NONE
 	_name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_row_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_ensure_counter_detail_hint()
