@@ -340,13 +340,16 @@ func _ensure_badge_pair(index: int) -> HBoxContainer:
 
 func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_visible: bool) -> void:
 	var visible_counters: Array[CamBANGStatusPanel.CounterModel] = []
+	var has_detail_counters := false
 	var hidden_detail_count := 0
 	for counter in counters:
 		if counter == null:
 			continue
-		if counter.visibility == "detail" and not detail_visible:
-			hidden_detail_count += 1
-			continue
+		if counter.visibility == "detail":
+			has_detail_counters = true
+			if not detail_visible:
+				hidden_detail_count += 1
+				continue
 		visible_counters.append(counter)
 
 	for i in range(visible_counters.size()):
@@ -378,15 +381,15 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_v
 	var detail_hint: Button = _ensure_counter_detail_hint()
 	var detail_hint_visible := false
 	if detail_hint != null:
-		if hidden_detail_count > 0:
+		if has_detail_counters:
 			detail_hint.visible = true
 			detail_hint_visible = true
 			if detail_visible:
 				detail_hint.text = "HIDE DETAIL"
-				detail_hint.tooltip_text = "Hide row detail counters/info."
+				detail_hint.tooltip_text = "Hide row detail counters."
 			else:
 				detail_hint.text = "SHOW +%d" % hidden_detail_count
-				detail_hint.tooltip_text = "Show hidden row detail counters/info."
+				detail_hint.tooltip_text = "Show hidden row detail counters."
 		else:
 			detail_hint.visible = false
 			detail_hint.tooltip_text = ""

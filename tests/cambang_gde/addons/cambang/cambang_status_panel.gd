@@ -5702,9 +5702,13 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 			if entry.visual_object_class == "device":
 				return "detail"
 			return "summary"
+		"native_prev", "native_dead":
+			if entry.visual_object_class == "provider":
+				return "summary"
+			return "detail"
 		"width", "height", "fps_min", "fps_max", "recv", "deliv", "drop", "queue", "shown", "rej_fmt", "rej_inv", "capture_w", "capture_h", "capture_fmt", "capture_prof", "native_all", "native_cur", "buffers", "source_version":
 			return "summary"
-		"frames", "bytes", "native_prev", "native_dead", "source_topology":
+		"frames", "bytes", "source_topology":
 			return "detail"
 		_:
 			return "summary"
