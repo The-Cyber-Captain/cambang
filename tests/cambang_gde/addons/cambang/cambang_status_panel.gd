@@ -4591,6 +4591,8 @@ func _ensure_expandability(panel: PanelModel) -> void:
 	for e in panel.entries:
 		var child_count := int(child_counts.get(e.id, 0))
 		e.can_expand = child_count > 0
+		if _expanded_by_row_id.has(e.id):
+			continue
 		if child_count > 0 and _should_default_expand_entry(e):
 			e.expanded = true
 
