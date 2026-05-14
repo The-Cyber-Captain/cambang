@@ -1,6 +1,6 @@
 extends Control
 
-# Tranche-1 result verification scope:
+# Result retrieval verification scope:
 # - proves CamBANGStreamResult from Godot boundary
 # - proves CamBANGCaptureResult from Godot boundary
 # - proves grouped facts/provenance accessor shape (Dictionary)
@@ -223,7 +223,7 @@ func _try_verify_capture_result() -> void:
 	_require(capture_result.get_width() > 0, "step %d FAIL: capture width invalid" % _step)
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
 	_require(capture_result.get_format() != 0, "step %d FAIL: capture format invalid" % _step)
-	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: tranche-1 capture payload_kind must be CPU_PACKED" % _step)
+	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: capture payload_kind must be CPU_PACKED" % _step)
 	_require(capture_result.get_capture_id() == _capture_id, "step %d FAIL: capture_id mismatch" % _step)
 	_require(capture_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: capture device_instance_id mismatch" % _step)
 	_step_ok("capture direct properties verified")
@@ -244,10 +244,10 @@ func _try_verify_capture_result() -> void:
 	_require(capture_can_to_image != int(capture_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: capture can_to_image() unexpectedly unsupported" % _step)
 	_step_ok("capture can_to_image capability verified")
 
-	# Tranche-1 honesty: encoded-byte access can remain unsupported.
+	# Honesty: encoded-byte access can remain unsupported.
 	var encoded_capability := int(capture_result.can_get_encoded_bytes())
 	if encoded_capability == int(capture_result.CAPABILITY_UNSUPPORTED):
-		_append_status("INFO: capture can_get_encoded_bytes() is UNSUPPORTED in tranche 1 (acceptable)")
+		_append_status("INFO: capture can_get_encoded_bytes() is UNSUPPORTED (acceptable)")
 	else:
 		_append_status("INFO: capture can_get_encoded_bytes() capability=%d" % encoded_capability)
 
