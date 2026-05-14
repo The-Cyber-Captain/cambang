@@ -623,6 +623,7 @@ func _log_summary_timing_once() -> void:
 	_clear_display_bindings_for_teardown()
 	_pending_captures.clear()
 	CamBANGServer.stop()
+	await get_tree().create_timer(10.0).timeout
 	get_tree().quit(0)
 
 
