@@ -1003,10 +1003,9 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   if (!prov) {
     return false;
   }
-  // Internal capability seam for future multi-image still sequencing.
-  // Default-only capture admission remains unchanged in this slice.
-  const bool supports_multi_image_still_sequence = prov->supports_multi_image_still_sequence();
-  (void)supports_multi_image_still_sequence;
+  // Internal seam placement for future multi-image still-sequence admission.
+  // Current default-only capture intentionally does not gate on this capability.
+  (void)prov->supports_multi_image_still_sequence();
 
   const CaptureTemplate tmpl = prov->capture_template();
   out.device_instance_id = device_instance_id;
