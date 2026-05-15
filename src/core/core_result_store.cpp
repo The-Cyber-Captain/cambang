@@ -111,23 +111,36 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!has_cpu_payload) {
       return false;
     }
-    auto capture_result = std::make_shared<CoreCaptureResultData>();
-    capture_result->capture_id = frame.capture_id;
-    capture_result->device_instance_id = frame.device_instance_id;
-    capture_result->image_width = payload.width;
-    capture_result->image_height = payload.height;
-    capture_result->image_format_fourcc = payload.format_fourcc;
-    capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
-    capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
-    capture_result->default_image.payload = payload;
-    facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
-    facts.has_capture_attributes = false;
-    facts.capture_attributes = ResultCaptureAttributesFacts{};
-    facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
-    capture_result->facts = facts;
+    SharedCaptureResultData capture_result =
+        build_default_image_capture_result(frame, payload, capture_timestamp_ns);
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
   return frame.stream_id != 0 || frame.capture_id != 0;
+}
+
+SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
+    const FrameView& frame,
+    const CoreResultPayloadCpuPacked& payload,
+    uint64_t capture_timestamp_ns) {
+  auto capture_result = std::make_shared<CoreCaptureResultData>();
+  capture_result->capture_id = frame.capture_id;
+  capture_result->device_instance_id = frame.device_instance_id;
+  capture_result->image_width = payload.width;
+  capture_result->image_height = payload.height;
+  capture_result->image_format_fourcc = payload.format_fourcc;
+  capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
+
+  // Current default-only still-capture behavior: retained still payload is
+  // accepted as the CaptureResult default image.
+  capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
+  capture_result->default_image.payload = payload;
+
+  CoreImageFactBundle facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
+  facts.has_capture_attributes = false;
+  facts.capture_attributes = ResultCaptureAttributesFacts{};
+  facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
+  capture_result->facts = facts;
+  return capture_result;
 }
 
 SharedStreamResultData CoreResultStore::get_latest_stream_result(uint64_t stream_id) const {
