@@ -57,7 +57,7 @@ struct CoreStreamResultData {
 };
 
 struct CoreCaptureResultData {
-  struct DefaultImageData {
+  struct ImageData {
     uint64_t capture_timestamp_ns = 0;
     CoreResultPayloadCpuPacked payload{};
 
@@ -74,7 +74,8 @@ struct CoreCaptureResultData {
   uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
 
-  DefaultImageData default_image{};
+  ImageData default_image{};
+  std::vector<ImageData> additional_images{};
 
   CoreImageFactBundle facts{};
 };
