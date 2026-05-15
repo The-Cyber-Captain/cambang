@@ -97,6 +97,11 @@ public:
   virtual bool supports_stream_picture_updates() const noexcept = 0;
   // Whether capture-scoped picture updates are supported.
   virtual bool supports_capture_picture_updates() const noexcept = 0;
+  // Whether provider can execute a still-capture sequence that includes
+  // non-default images beyond the required default image.
+  // This is an internal execution-capability seam for future multi-image still
+  // requests; default-only still capture continues through trigger_capture().
+  virtual bool supports_multi_image_still_sequence() const noexcept = 0;
 
   // Internal producer-backing capability advertisement for stream realization.
   // Backing capability is provider/runtime truth and is distinct from payload kind policy.

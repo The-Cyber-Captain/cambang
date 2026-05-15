@@ -81,6 +81,10 @@ bool ProviderBroker::supports_capture_picture_updates() const noexcept {
   return active_ ? active_->supports_capture_picture_updates() : false;
 }
 
+bool ProviderBroker::supports_multi_image_still_sequence() const noexcept {
+  return active_ ? active_->supports_multi_image_still_sequence() : false;
+}
+
 ProducerBackingCapabilities ProviderBroker::stream_backing_capabilities(
     const CaptureProfile& profile,
     const PictureConfig& picture) const noexcept {
