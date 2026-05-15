@@ -1,6 +1,6 @@
 extends Control
 
-const DEFAULT_SCENARIO_FILE := "stream_load_2x_720p30.json"
+const DEFAULT_SCENARIO_FILE := "stream_load_2x_1080p30_moving_bar.json"#"stream_load_2x_720p30.json"
 const DEFAULT_DURATION_SEC := 20.0
 const DEFAULT_POLL_RESULTS := true
 const DEFAULT_BIND_DISPLAY := true
