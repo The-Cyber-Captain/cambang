@@ -117,6 +117,9 @@ public:
 private:
   static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
+  static SharedCaptureResultData build_default_image_capture_result(const FrameView& frame,
+                                                                    const CoreResultPayloadCpuPacked& payload,
+                                                                    uint64_t capture_timestamp_ns);
 
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;
