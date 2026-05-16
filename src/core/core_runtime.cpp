@@ -1140,6 +1140,59 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
   return out;
 }
 
+CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflight_(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    const RigPreflightResult& preflight) const {
+  RigAdmittedRequestBundle out{};
+  out.capture_id = capture_id;
+  out.rig_id = rig_id;
+
+  if (capture_id == 0 || rig_id == 0) {
+    out.failure = RigCohortAdmissionFailure::InvalidCaptureId;
+    return out;
+  }
+  if (!preflight.ok || preflight.failure != RigPreflightFailure::None || preflight.rig_id != rig_id) {
+    out.failure = RigCohortAdmissionFailure::PreflightFailed;
+    return out;
+  }
+  if (preflight.participants.empty()) {
+    out.failure = RigCohortAdmissionFailure::EmptyParticipants;
+    return out;
+  }
+
+  CoreCaptureCohortRegistry::CohortRecord cohort{};
+  cohort.capture_id = capture_id;
+  cohort.rig_id = rig_id;
+  cohort.expected_participants.reserve(preflight.participants.size());
+  out.participants.reserve(preflight.participants.size());
+  for (const auto& p : preflight.participants) {
+    if (p.device_instance_id == 0) {
+      out.failure = RigCohortAdmissionFailure::PreflightFailed;
+      out.participants.clear();
+      return out;
+    }
+    cohort.expected_participants.push_back({p.device_instance_id, p.hardware_id});
+    RigAdmittedParticipantRequest ap{};
+    ap.hardware_id = p.hardware_id;
+    ap.request = p.request;
+    ap.request.capture_id = capture_id;
+    ap.request.rig_id = rig_id;
+    ap.request.device_instance_id = p.device_instance_id;
+    out.participants.push_back(std::move(ap));
+  }
+
+  if (!capture_cohort_registry_.insert(std::move(cohort))) {
+    out.failure = RigCohortAdmissionFailure::DuplicateCaptureId;
+    out.participants.clear();
+    return out;
+  }
+
+  out.ok = true;
+  out.failure = RigCohortAdmissionFailure::None;
+  return out;
+}
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize(uint64_t rig_id) const {
   return preflight_rig_participants_materialize_(rig_id);
@@ -1154,6 +1207,13 @@ bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector
     request_publish_from_core_unchecked();
   });
   return pr == CoreThread::PostResult::Enqueued;
+}
+
+CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_preflight(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    const RigPreflightResult& preflight) {
+  return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
 }
 #endif
 

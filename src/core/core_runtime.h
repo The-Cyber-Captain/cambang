@@ -192,9 +192,34 @@ enum class TryCloseDeviceStatus : uint8_t {
     std::vector<RigPreflightParticipant> participants;
   };
 
+  enum class RigCohortAdmissionFailure : uint8_t {
+    None = 0,
+    InvalidCaptureId = 1,
+    PreflightFailed = 2,
+    EmptyParticipants = 3,
+    DuplicateCaptureId = 4,
+  };
+
+  struct RigAdmittedParticipantRequest {
+    std::string hardware_id;
+    CaptureRequest request{};
+  };
+
+  struct RigAdmittedRequestBundle {
+    bool ok = false;
+    RigCohortAdmissionFailure failure = RigCohortAdmissionFailure::None;
+    uint64_t capture_id = 0;
+    uint64_t rig_id = 0;
+    std::vector<RigAdmittedParticipantRequest> participants;
+  };
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
   bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
+  RigAdmittedRequestBundle smoke_admit_rig_cohort_from_preflight(
+      uint64_t rig_id,
+      uint64_t capture_id,
+      const RigPreflightResult& preflight);
 #endif
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
@@ -314,6 +339,10 @@ private:
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
   RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
+  RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
+      uint64_t rig_id,
+      uint64_t capture_id,
+      const RigPreflightResult& preflight) const;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 
