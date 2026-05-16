@@ -101,6 +101,7 @@ CoreRuntime::CoreRuntime()
         return state.active;
       }) {
   dispatcher_.set_result_store(&result_store_);
+  dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
   const bool result_routing_enabled = !disable_result_routing_requested();
   dispatcher_.set_result_routing_enabled(result_routing_enabled);
 }
@@ -153,6 +154,7 @@ bool CoreRuntime::start() {
 
   // Reset core-thread-only pump state.
   rigs_.clear();
+  capture_assembly_registry_.clear();
   provider_facts_.clear();
   requests_.clear();
   shutdown_requested_ = false;
