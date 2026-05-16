@@ -24,9 +24,18 @@ for still-capture result assembly.
 - Current implementation status: `capture_completed` without retained default
   image and retained default image without terminal lifecycle do not produce
   successful retrievable `CaptureResult`.
-- Current implementation status: `CaptureResultSet` retrieval filters to
-  assembly-successful device candidates and then applies an explicit accept-all
-  placeholder curation policy.
+- Current implementation status: for `capture_id` values with no cohort,
+  `CaptureResultSet` retrieval keeps current non-rig behavior: assembly-success
+  filtering over result-store candidates, then explicit accept-all placeholder
+  curation.
+- Current implementation status: for cohort-backed `capture_id` values,
+  `CaptureResultSet` retrieval is cohort-aware:
+  - cohort `FAILED` => empty result set;
+  - cohort `OPEN` with any expected participant incomplete/missing => empty
+    result set;
+  - cohort `OPEN` with all expected participants assembly-successful and
+    retained => exactly expected participant results in cohort participant
+    order, then explicit accept-all placeholder curation.
 - Current implementation status: `capture_started` / `capture_completed` /
   `capture_failed` callbacks still update acquisition-session counters/latency
   in addition to device assembly tracking.
@@ -46,12 +55,11 @@ for still-capture result assembly.
   and one fixed expected set of participant `device_instance_id` values.
 - A future cohort should not own image payloads and should not duplicate
   per-device `DeviceCaptureAssembly` logic.
-- Current implementation status: there is no rig-triggered capture admission
-  path yet; rig admission/cohort handling remains future work.
-- True rig-triggered `CaptureResultSet` curation still requires future
-  admission-time cohort tracking of expected participants plus explicit
-  selection/terminal policy; current accept-all placeholder curation is not
-  rig-complete.
+- Current implementation status: internal rig preflight/admission/submission
+  helpers and cohort-aware `CaptureResultSet` curation support now exist, but
+  public rig-triggered capture API/surface remains future work.
+- Current accept-all placeholder curation is still not final rig
+  selection/terminal policy.
 - Release-direction admission model: resolve rig membership to participant
   `device_instance_id` values at admission time (with useful hardware-id
   traceability), then preflight/materialize all participant `CaptureRequest`
