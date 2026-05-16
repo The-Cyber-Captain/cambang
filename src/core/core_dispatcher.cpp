@@ -232,6 +232,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       state_changed = acquisition_sessions_->on_capture_completed(
           p.device_instance_id, p.capture_id, completed_ns);
     }
+    if (capture_assembly_registry_) {
+      capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
+    }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;
   }
@@ -244,6 +247,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       const uint64_t failed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_failed(
           p.device_instance_id, p.capture_id, p.error_code, failed_ns);
+    }
+    if (capture_assembly_registry_) {
+      capture_assembly_registry_->mark_capture_failed(p.capture_id, p.device_instance_id, p.error_code);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;
@@ -279,6 +285,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
         retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
       }
+    }
+    if (capture_assembly_registry_ && retained_for_result && p.frame.capture_id != 0) {
+      capture_assembly_registry_->mark_default_image_retained(p.frame.capture_id, p.frame.device_instance_id);
     }
 
     if (frame_sink_) {

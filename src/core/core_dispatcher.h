@@ -10,6 +10,7 @@
 #include "core/core_native_object_registry.h"
 #include "core/core_stream_registry.h"
 #include "core/core_frame_sink.h"
+#include "core/core_capture_assembly_registry.h"
 #include "core/core_result_store.h"
 
 namespace cambang {
@@ -77,6 +78,9 @@ public:
   // Must be called before the core thread starts, or from the core thread.
   void set_frame_sink(ICoreFrameSink* sink) noexcept { frame_sink_ = sink; }
   void set_result_store(CoreResultStore* result_store) noexcept { result_store_ = result_store; }
+  void set_capture_assembly_registry(CoreCaptureAssemblyRegistry* capture_assembly_registry) noexcept {
+    capture_assembly_registry_ = capture_assembly_registry;
+  }
   void set_result_routing_enabled(bool enabled) noexcept { result_routing_enabled_ = enabled; }
 
 private:
@@ -91,6 +95,7 @@ private:
   bool relevant_state_changed_ = false;
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
+  CoreCaptureAssemblyRegistry* capture_assembly_registry_ = nullptr; // non-owning; core-thread-only
   bool result_routing_enabled_ = true;
   CoreDispatchStats stats_{};
 };

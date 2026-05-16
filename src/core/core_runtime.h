@@ -9,6 +9,7 @@
 
 #include "core/core_dispatcher.h"
 #include "core/core_acquisition_session_registry.h"
+#include "core/core_capture_assembly_registry.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_result_store.h"
@@ -205,13 +206,8 @@ enum class TryCloseDeviceStatus : uint8_t {
     return result_store_.get_latest_stream_result(stream_id);
   }
 
-  SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
-    return result_store_.get_capture_result(capture_id, device_instance_id);
-  }
-
-  std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const {
-    return result_store_.get_capture_result_set(capture_id);
-  }
+  SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
+  std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id) {
     const auto now = std::chrono::steady_clock::now();
     const uint64_t now_ns = static_cast<uint64_t>(
@@ -284,6 +280,8 @@ private:
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
+      std::vector<SharedCaptureResultData> candidates) const;
 
 private:
   CoreThread core_thread_;
@@ -294,6 +292,7 @@ private:
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
   CoreResultStore result_store_;
+  CoreCaptureAssemblyRegistry capture_assembly_registry_;
 
   // Snapshot header counters (schema v1).
   // gen: core generation counter, monotonic across app/server lifetime.
