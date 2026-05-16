@@ -342,7 +342,7 @@ private:
   RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
       uint64_t rig_id,
       uint64_t capture_id,
-      const RigPreflightResult& preflight) const;
+      const RigPreflightResult& preflight);
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 

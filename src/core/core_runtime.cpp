@@ -1143,7 +1143,7 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflight_(
     uint64_t rig_id,
     uint64_t capture_id,
-    const RigPreflightResult& preflight) const {
+    const RigPreflightResult& preflight) {
   RigAdmittedRequestBundle out{};
   out.capture_id = capture_id;
   out.rig_id = rig_id;
