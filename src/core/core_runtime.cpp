@@ -110,6 +110,29 @@ CoreRuntime::~CoreRuntime() {
   stop();
 }
 
+SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+  if (!capture_assembly_registry_.is_assembly_successful(capture_id, device_instance_id)) {
+    return nullptr;
+  }
+  return result_store_.get_capture_result(capture_id, device_instance_id);
+}
+
+std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_t capture_id) const {
+  std::vector<SharedCaptureResultData> candidates = result_store_.get_capture_result_set(capture_id);
+  std::vector<SharedCaptureResultData> assembly_successful;
+  assembly_successful.reserve(candidates.size());
+  for (auto& candidate : candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (!capture_assembly_registry_.is_assembly_successful(capture_id, candidate->device_instance_id)) {
+      continue;
+    }
+    assembly_successful.push_back(std::move(candidate));
+  }
+  return curate_capture_result_set_accept_all_assembly_successful_(std::move(assembly_successful));
+}
+
 bool CoreRuntime::start() {
   // Idempotent start: already running is a success.
   const CoreRuntimeState st0 = state_.load(std::memory_order_acquire);
@@ -172,6 +195,13 @@ bool CoreRuntime::start() {
     state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
   }
   return ok;
+}
+
+std::vector<SharedCaptureResultData> CoreRuntime::curate_capture_result_set_accept_all_assembly_successful_(
+    std::vector<SharedCaptureResultData> candidates) const {
+  // Placeholder curation seam: current policy accepts all assembly-successful
+  // device captures. Future rig/cohort-aware policy can replace this step.
+  return candidates;
 }
 
 void CoreRuntime::stop() {

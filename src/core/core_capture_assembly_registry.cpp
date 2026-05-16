@@ -47,6 +47,21 @@ void CoreCaptureAssemblyRegistry::mark_capture_failed(uint64_t capture_id,
   assembly.failure_error_code = error_code;
 }
 
+bool CoreCaptureAssemblyRegistry::is_assembly_successful(uint64_t capture_id,
+                                                         uint64_t device_instance_id) const {
+  const auto cap_it = assemblies_by_capture_id_.find(capture_id);
+  if (cap_it == assemblies_by_capture_id_.end()) {
+    return false;
+  }
+  const auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end()) {
+    return false;
+  }
+  const DeviceCaptureAssembly& assembly = dev_it->second;
+  return assembly.has_default_image_retained &&
+         assembly.terminal_state == TerminalState::COMPLETED;
+}
+
 void CoreCaptureAssemblyRegistry::clear() {
   assemblies_by_capture_id_.clear();
 }
