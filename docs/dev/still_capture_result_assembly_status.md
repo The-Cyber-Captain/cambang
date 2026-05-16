@@ -41,10 +41,27 @@ for still-capture result assembly.
 - `CaptureResultSet` for rig-triggered capture should be curated only after
   participating device captures have assembled or failed according to explicit
   policy.
+- Future “cohort” terminology is internal maintainer/Core terminology only:
+  one admitted rig-triggered capture group = one `capture_id`, one `rig_id`,
+  and one fixed expected set of participant `device_instance_id` values.
+- A future cohort should not own image payloads and should not duplicate
+  per-device `DeviceCaptureAssembly` logic.
+- Current implementation status: there is no rig-triggered capture admission
+  path yet; rig admission/cohort handling remains future work.
 - True rig-triggered `CaptureResultSet` curation still requires future
   admission-time cohort tracking of expected participants plus explicit
   selection/terminal policy; current accept-all placeholder curation is not
   rig-complete.
+- Release-direction admission model: resolve rig membership to participant
+  `device_instance_id` values at admission time (with useful hardware-id
+  traceability), then preflight/materialize all participant `CaptureRequest`
+  values before provider submission.
+- Preferred initial admission policy is strict all-or-nothing: if any
+  participant cannot be admitted, deny the rig trigger before execution and do
+  not create an admitted cohort.
+- Once all participants pass admission, create the cohort before submitting
+  provider requests; later curation should observe/reference per-device
+  assembly terminal states and then apply explicit `CaptureResultSet` policy.
 - Future work requires an internal capture assembly/group tracker joining
   lifecycle facts with retained image payloads.
 - Do not implement a partial completion gate by simply checking
