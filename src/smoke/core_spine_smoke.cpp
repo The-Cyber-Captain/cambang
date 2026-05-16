@@ -572,6 +572,111 @@ static int test_shutdown_choreography(CoreRuntime& rt, StubProvider& prov) {
   return 0;
 }
 
+static int test_rig_preflight_materialization_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig preflight smoke)\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig preflight smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  // Missing rig.
+  {
+    const auto res = rt.preflight_rig_participants_materialize(9001);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::RigNotFound) {
+      std::cerr << "Expected RigNotFound for missing rig\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Empty membership.
+  if (!rt.smoke_set_rig_member_hardware_ids(7001, {})) {
+    std::cerr << "Failed to set rig members for empty-membership case\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7001);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::EmptyMembership) {
+      std::cerr << "Expected EmptyMembership for rig with no members\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig preflight smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const std::string live_hw = eps[0].hardware_id;
+
+  // Unresolved hardware id.
+  if (!rt.smoke_set_rig_member_hardware_ids(7002, {"missing:hw"})) {
+    std::cerr << "Failed to set unresolved hardware id case\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7002);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::HardwareIdUnresolved) {
+      std::cerr << "Expected HardwareIdUnresolved\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Success.
+  if (!rt.smoke_set_rig_member_hardware_ids(7003, {live_hw})) {
+    std::cerr << "Failed to set success case membership\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7003);
+    if (!res.ok || res.failure != CoreRuntime::RigPreflightFailure::None || res.participants.size() != 1) {
+      std::cerr << "Expected successful single participant preflight\n";
+      rt.stop();
+      return 1;
+    }
+    if (res.participants[0].hardware_id != live_hw ||
+        res.participants[0].device_instance_id != kDeviceInstanceId ||
+        res.participants[0].request.device_instance_id != kDeviceInstanceId ||
+        res.participants[0].request.rig_id != 0) {
+      std::cerr << "Unexpected participant resolution/materialization output\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Duplicate resolved participant (same hardware id listed twice).
+  if (!rt.smoke_set_rig_member_hardware_ids(7004, {live_hw, live_hw})) {
+    std::cerr << "Failed to set duplicate-resolution case\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7004);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::DuplicateResolvedDevice) {
+      std::cerr << "Expected DuplicateResolvedDevice\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  rt.stop();
+  return 0;
+}
+
 #endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -679,6 +784,7 @@ int main(int argc, char** argv) {
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
+    if (int r = test_rig_preflight_materialization_smoke()) return r;
 #endif
 
     std::cout << "OK: core spine smoke passed\n";

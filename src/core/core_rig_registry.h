@@ -38,6 +38,7 @@ public:
                               uint32_t height,
                               uint32_t format,
                               uint64_t capture_profile_version);
+  bool retain_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
 
   void clear() noexcept { rigs_.clear(); }
 

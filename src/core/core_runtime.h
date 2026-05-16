@@ -6,6 +6,7 @@
 #include <cstring>
 #include <deque>
 #include <string>
+#include <vector>
 
 #include "core/core_dispatcher.h"
 #include "core/core_acquisition_session_registry.h"
@@ -164,6 +165,37 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
 
+  enum class RigPreflightFailure : uint8_t {
+    None = 0,
+    RigNotFound = 1,
+    EmptyMembership = 2,
+    HardwareIdUnresolved = 3,
+    HardwareIdAmbiguous = 4,
+    DuplicateResolvedDevice = 5,
+    MaterializeFailed = 6,
+  };
+
+  struct RigPreflightParticipant {
+    std::string hardware_id;
+    uint64_t device_instance_id = 0;
+    CaptureRequest request{};
+  };
+
+  struct RigPreflightResult {
+    bool ok = false;
+    RigPreflightFailure failure = RigPreflightFailure::None;
+    uint64_t rig_id = 0;
+    size_t failure_member_index = 0;
+    std::string failure_hardware_id;
+    uint64_t failure_device_instance_id = 0;
+    std::vector<RigPreflightParticipant> participants;
+  };
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
+  bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
+#endif
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
     return core_thread_.try_post(std::move(task));
@@ -280,6 +312,7 @@ private:
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 

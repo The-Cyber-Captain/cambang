@@ -1065,6 +1065,97 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   return out.width > 0 && out.height > 0;
 }
 
+CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
+  RigPreflightResult out{};
+  out.rig_id = rig_id;
+  if (rig_id == 0) {
+    out.failure = RigPreflightFailure::RigNotFound;
+    return out;
+  }
+
+  const auto* rig = rigs_.find(rig_id);
+  if (!rig) {
+    out.failure = RigPreflightFailure::RigNotFound;
+    return out;
+  }
+  if (rig->member_hardware_ids.empty()) {
+    out.failure = RigPreflightFailure::EmptyMembership;
+    return out;
+  }
+
+  out.participants.reserve(rig->member_hardware_ids.size());
+  std::map<uint64_t, bool> seen_devices;
+
+  for (size_t i = 0; i < rig->member_hardware_ids.size(); ++i) {
+    const std::string& hardware_id = rig->member_hardware_ids[i];
+    uint64_t resolved_device_id = 0;
+    size_t matches = 0;
+    for (const auto& [device_instance_id, rec] : devices_.all()) {
+      if (rec.hardware_id == hardware_id && rec.open) {
+        ++matches;
+        resolved_device_id = device_instance_id;
+      }
+    }
+
+    if (matches == 0) {
+      out.failure = RigPreflightFailure::HardwareIdUnresolved;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      return out;
+    }
+    if (matches > 1) {
+      out.failure = RigPreflightFailure::HardwareIdAmbiguous;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      return out;
+    }
+    if (seen_devices.find(resolved_device_id) != seen_devices.end()) {
+      out.failure = RigPreflightFailure::DuplicateResolvedDevice;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      out.failure_device_instance_id = resolved_device_id;
+      return out;
+    }
+    seen_devices.emplace(resolved_device_id, true);
+
+    CaptureRequest req{};
+    if (!materialize_capture_request(resolved_device_id, req)) {
+      out.failure = RigPreflightFailure::MaterializeFailed;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      out.failure_device_instance_id = resolved_device_id;
+      return out;
+    }
+
+    RigPreflightParticipant participant{};
+    participant.hardware_id = hardware_id;
+    participant.device_instance_id = resolved_device_id;
+    participant.request = req;
+    out.participants.push_back(std::move(participant));
+  }
+
+  out.ok = true;
+  out.failure = RigPreflightFailure::None;
+  return out;
+}
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize(uint64_t rig_id) const {
+  return preflight_rig_participants_materialize_(rig_id);
+}
+
+bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
+  if (rig_id == 0) {
+    return false;
+  }
+  auto pr = try_post([this, rig_id, member_hardware_ids = std::move(member_hardware_ids)]() mutable {
+    (void)rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
+    request_publish_from_core_unchecked();
+  });
+  return pr == CoreThread::PostResult::Enqueued;
+}
+#endif
+
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {
   Stats s;
   s.publish_requests_coalesced = publish_requests_coalesced_.load(std::memory_order_relaxed);

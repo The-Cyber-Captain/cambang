@@ -23,6 +23,17 @@ bool CoreRigRegistry::retain_capture_profile(uint64_t rig_id,
   return true;
 }
 
+bool CoreRigRegistry::retain_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
+  if (rig_id == 0) {
+    return false;
+  }
+  auto& rec = rigs_[rig_id];
+  rec.rig_id = rig_id;
+  rec.member_hardware_ids = std::move(member_hardware_ids);
+  rec.live = true;
+  return true;
+}
+
 const CoreRigRegistry::RigRecord* CoreRigRegistry::find(uint64_t rig_id) const noexcept {
   const auto it = rigs_.find(rig_id);
   if (it == rigs_.end()) {
