@@ -281,6 +281,10 @@ if env["smoke"]:
         target=os.path.join(out_dir, "core_result_path_smoke"),
         source=smoke_core_runtime_sources + ["src/smoke/core_result_path_smoke.cpp"],
     )
+    core_capture_assembly_registry_smoke_prog = smoke_env.Program(
+        target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
+        source=smoke_core_runtime_sources + ["src/smoke/core_capture_assembly_registry_smoke.cpp"],
+    )
 
     # Pattern renderer microbenchmark (isolated smoke tool).
     pattern_bench_sources = []
@@ -361,6 +365,7 @@ if env["smoke"]:
         [
             core_smoke_prog,
             core_result_path_smoke_prog,
+            core_capture_assembly_registry_smoke_prog,
             pattern_bench_prog,
             synthetic_verify_prog,
             phase3_verify_prog,

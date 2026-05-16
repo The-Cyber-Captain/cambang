@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 
 namespace cambang {
 
@@ -27,6 +28,11 @@ public:
   void mark_capture_failed(uint64_t capture_id, uint64_t device_instance_id, uint32_t error_code);
 
   void clear();
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  std::optional<DeviceCaptureAssembly> find_for_smoke(uint64_t capture_id,
+                                                      uint64_t device_instance_id) const;
+#endif
 
 private:
   std::map<uint64_t, std::map<uint64_t, DeviceCaptureAssembly>> assemblies_by_capture_id_;

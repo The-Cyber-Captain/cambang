@@ -51,4 +51,19 @@ void CoreCaptureAssemblyRegistry::clear() {
   assemblies_by_capture_id_.clear();
 }
 
+#if defined(CAMBANG_INTERNAL_SMOKE)
+std::optional<CoreCaptureAssemblyRegistry::DeviceCaptureAssembly>
+CoreCaptureAssemblyRegistry::find_for_smoke(uint64_t capture_id, uint64_t device_instance_id) const {
+  const auto cap_it = assemblies_by_capture_id_.find(capture_id);
+  if (cap_it == assemblies_by_capture_id_.end()) {
+    return std::nullopt;
+  }
+  const auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end()) {
+    return std::nullopt;
+  }
+  return dev_it->second;
+}
+#endif
+
 } // namespace cambang
