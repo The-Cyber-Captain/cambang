@@ -23,6 +23,7 @@ Non-Goals
 */
 
 #include <chrono>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -572,6 +573,410 @@ static int test_shutdown_choreography(CoreRuntime& rt, StubProvider& prov) {
   return 0;
 }
 
+static int test_rig_preflight_materialization_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig preflight smoke)\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig preflight smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  // Missing rig.
+  {
+    const auto res = rt.preflight_rig_participants_materialize(9001);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::RigNotFound) {
+      std::cerr << "Expected RigNotFound for missing rig\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Empty membership.
+  if (!rt.smoke_set_rig_member_hardware_ids(7001, {})) {
+    std::cerr << "Failed to set rig members for empty-membership case\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7001);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::EmptyMembership) {
+      std::cerr << "Expected EmptyMembership for rig with no members\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig preflight smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const std::string live_hw = eps[0].hardware_id;
+
+  // Unresolved hardware id.
+  if (!rt.smoke_set_rig_member_hardware_ids(7002, {"missing:hw"})) {
+    std::cerr << "Failed to set unresolved hardware id case\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7002);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::HardwareIdUnresolved) {
+      std::cerr << "Expected HardwareIdUnresolved\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Success.
+  if (!rt.smoke_set_rig_member_hardware_ids(7003, {live_hw})) {
+    std::cerr << "Failed to set success case membership\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7003);
+    if (!res.ok || res.failure != CoreRuntime::RigPreflightFailure::None || res.participants.size() != 1) {
+      std::cerr << "Expected successful single participant preflight\n";
+      rt.stop();
+      return 1;
+    }
+    if (res.participants[0].hardware_id != live_hw ||
+        res.participants[0].device_instance_id != kDeviceInstanceId ||
+        res.participants[0].request.device_instance_id != kDeviceInstanceId ||
+        res.participants[0].request.rig_id != 0) {
+      std::cerr << "Unexpected participant resolution/materialization output\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  // Duplicate resolved participant (same hardware id listed twice).
+  if (!rt.smoke_set_rig_member_hardware_ids(7004, {live_hw, live_hw})) {
+    std::cerr << "Failed to set duplicate-resolution case\n";
+    rt.stop();
+    return 1;
+  }
+  {
+    const auto res = rt.preflight_rig_participants_materialize(7004);
+    if (res.ok || res.failure != CoreRuntime::RigPreflightFailure::DuplicateResolvedDevice) {
+      std::cerr << "Expected DuplicateResolvedDevice\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_rig_cohort_admission_from_preflight_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig cohort admit smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig cohort admit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig cohort admit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const std::string live_hw = eps[0].hardware_id;
+  if (!rt.smoke_set_rig_member_hardware_ids(8001, {live_hw})) {
+    std::cerr << "Failed to set rig members (rig cohort admit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const auto preflight_ok = rt.preflight_rig_participants_materialize(8001);
+  if (!preflight_ok.ok) {
+    std::cerr << "Preflight failed unexpectedly (rig cohort admit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8001, 9001, preflight_ok);
+  if (!admitted.ok || admitted.failure != CoreRuntime::RigCohortAdmissionFailure::None ||
+      admitted.capture_id != 9001 || admitted.rig_id != 8001 || admitted.participants.size() != 1) {
+    std::cerr << "Expected successful cohort admission from preflight\n";
+    rt.stop();
+    return 1;
+  }
+  const auto& p = admitted.participants[0];
+  if (p.hardware_id != live_hw ||
+      p.request.capture_id != 9001 ||
+      p.request.rig_id != 8001 ||
+      p.request.device_instance_id != kDeviceInstanceId) {
+    std::cerr << "Admitted request bundle stamping/traceability mismatch\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto zero_capture = rt.smoke_admit_rig_cohort_from_preflight(8001, 0, preflight_ok);
+  if (zero_capture.ok || zero_capture.failure != CoreRuntime::RigCohortAdmissionFailure::InvalidCaptureId) {
+    std::cerr << "Expected InvalidCaptureId for capture_id=0\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto dup_capture = rt.smoke_admit_rig_cohort_from_preflight(8001, 9001, preflight_ok);
+  if (dup_capture.ok || dup_capture.failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId) {
+    std::cerr << "Expected DuplicateCaptureId on second insert\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto bad_preflight = rt.preflight_rig_participants_materialize(9999);
+  if (bad_preflight.ok) {
+    std::cerr << "Expected missing-rig preflight failure\n";
+    rt.stop();
+    return 1;
+  }
+  const auto admit_bad_preflight = rt.smoke_admit_rig_cohort_from_preflight(9999, 9002, bad_preflight);
+  if (admit_bad_preflight.ok || admit_bad_preflight.failure != CoreRuntime::RigCohortAdmissionFailure::PreflightFailed) {
+    std::cerr << "Expected PreflightFailed when admitting failed preflight\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_rig_bundle_submission_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig submit smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig submit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig submit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const std::string live_hw = eps[0].hardware_id;
+  if (!rt.smoke_set_rig_member_hardware_ids(8101, {live_hw})) {
+    std::cerr << "Failed to set rig members (rig submit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto preflight_ok = rt.preflight_rig_participants_materialize(8101);
+  const auto admitted_ok = rt.smoke_admit_rig_cohort_from_preflight(8101, 9101, preflight_ok);
+  if (!admitted_ok.ok) {
+    std::cerr << "Failed to admit cohort for submit smoke success path\n";
+    rt.stop();
+    return 1;
+  }
+  const auto submit_ok = rt.smoke_submit_admitted_rig_bundle(admitted_ok);
+  if (!submit_ok.ok || submit_ok.submitted_count != admitted_ok.participants.size()) {
+    std::cerr << "Expected successful participant submissions\n";
+    rt.stop();
+    return 1;
+  }
+
+  // First participant synchronous failure: invalid device id in first entry.
+  auto bad_first = admitted_ok;
+  bad_first.capture_id = 9102;
+  bad_first.participants[0].request.capture_id = 9102;
+  bad_first.participants[0].request.device_instance_id = 999999;
+  if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9102, preflight_ok).ok) {
+    std::cerr << "Failed to admit cohort for first-fail case\n";
+    rt.stop();
+    return 1;
+  }
+  const auto first_fail = rt.smoke_submit_admitted_rig_bundle(bad_first);
+  if (first_fail.ok || first_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
+      first_fail.submitted_count != 0 || first_fail.failed_index != 0) {
+    std::cerr << "Expected first participant trigger failure\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Later participant failure after earlier success (duplicate first participant).
+  auto two_part = admitted_ok;
+  two_part.capture_id = 9103;
+  two_part.participants[0].request.capture_id = 9103;
+  CoreRuntime::RigAdmittedParticipantRequest second = two_part.participants[0];
+  second.request.capture_id = 9103;
+  second.request.device_instance_id = 888888;
+  two_part.participants.push_back(second);
+  if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9103, preflight_ok).ok) {
+    std::cerr << "Failed to admit cohort for later-fail case\n";
+    rt.stop();
+    return 1;
+  }
+  const auto later_fail = rt.smoke_submit_admitted_rig_bundle(two_part);
+  if (later_fail.ok || later_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
+      later_fail.submitted_count != 1 || later_fail.failed_index != 1) {
+    std::cerr << "Expected second participant trigger failure after first success\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_cohort_aware_capture_result_set_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  auto emit_capture = [&](uint64_t capture_id, uint64_t device_id, uint8_t fill) {
+    static std::vector<uint8_t> bytes(2 * 2 * 4, 0);
+    std::fill(bytes.begin(), bytes.end(), fill);
+    FrameView frame{};
+    frame.capture_id = capture_id;
+    frame.device_instance_id = device_id;
+    frame.stream_id = 0;
+    frame.width = 2;
+    frame.height = 2;
+    frame.format_fourcc = FOURCC_RGBA;
+    frame.data = bytes.data();
+    frame.size_bytes = bytes.size();
+    frame.stride_bytes = 0;
+    frame.release = [](void*, const FrameView*) {};
+    frame.release_user = nullptr;
+    rt.provider_callbacks()->on_capture_started(capture_id, device_id);
+    rt.provider_callbacks()->on_frame(frame);
+    rt.provider_callbacks()->on_capture_completed(capture_id, device_id);
+  };
+
+  // No cohort path: accept-all assembly-successful candidates.
+  emit_capture(9201, 100, 1);
+  emit_capture(9201, 101, 2);
+  if (!wait_until([&]() { return rt.get_capture_result_set(9201).size() == 2; }, 400, 5)) {
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8201, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = rt.preflight_rig_participants_materialize(8201);
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8201, 9202, preflight);
+  if (!admitted.ok) { rt.stop(); return 1; }
+
+  // Cohort OPEN but incomplete => empty.
+  if (!rt.get_capture_result_set(9202).empty()) { rt.stop(); return 1; }
+
+  // Emit expected participant + extra successful non-expected participant.
+  emit_capture(9202, admitted.participants[0].request.device_instance_id, 3);
+  emit_capture(9202, 4242, 4);
+  if (!wait_until([&]() { return rt.get_capture_result_set(9202).size() == 1; }, 400, 5)) {
+    rt.stop();
+    return 1;
+  }
+  auto cohort_set = rt.get_capture_result_set(9202);
+  if (cohort_set.size() != 1 ||
+      cohort_set[0]->device_instance_id != admitted.participants[0].request.device_instance_id) {
+    rt.stop();
+    return 1;
+  }
+
+  // FAILED cohort => empty.
+  rt.smoke_submit_admitted_rig_bundle(admitted); // may succeed; keep cohort OPEN
+  // Force a new failed cohort via bad submit
+  const auto admitted_fail = rt.smoke_admit_rig_cohort_from_preflight(8201, 9203, preflight);
+  auto bad = admitted_fail;
+  bad.participants[0].request.device_instance_id = 999999;
+  (void)rt.smoke_submit_admitted_rig_bundle(bad);
+  if (!rt.get_capture_result_set(9203).empty()) { rt.stop(); return 1; }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_rig_orchestration_helper_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  const std::string live_hw = eps[0].hardware_id;
+
+  // Preflight failure: missing rig, no cohort/provider submit.
+  const auto preflight_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(9901, 9301);
+  if (preflight_fail.ok || preflight_fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
+    rt.stop();
+    return 1;
+  }
+
+  if (!rt.smoke_set_rig_member_hardware_ids(8301, {live_hw})) { rt.stop(); return 1; }
+
+  // Invalid capture_id.
+  const auto bad_capture_id = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 0);
+  if (bad_capture_id.ok || bad_capture_id.failure != CoreRuntime::RigOrchestrationFailure::InvalidCaptureId) {
+    rt.stop();
+    return 1;
+  }
+
+  // Success.
+  const auto success = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
+  if (!success.ok || success.capture_id != 9302 || success.submitted_count != 1) {
+    rt.stop();
+    return 1;
+  }
+  const auto admission_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
+  if (admission_fail.ok || admission_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed) {
+    rt.stop();
+    return 1;
+  }
+
+  // Submission failure leaves cohort failed.
+  if (!rt.smoke_set_rig_member_hardware_ids(8302, {live_hw, live_hw})) { rt.stop(); return 1; }
+  // keep preflight/admission valid by using one member then mutate device in submit path via bad endpoint
+  if (!rt.smoke_set_rig_member_hardware_ids(8302, {live_hw})) { rt.stop(); return 1; }
+  auto preflight = rt.preflight_rig_participants_materialize(8302);
+  auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8302, 9303, preflight);
+  admitted.participants[0].request.device_instance_id = 777777;
+  const auto submit_fail = rt.smoke_submit_admitted_rig_bundle(admitted);
+  if (submit_fail.ok) { rt.stop(); return 1; }
+  if (!rt.get_capture_result_set(9303).empty()) { rt.stop(); return 1; }
+
+  // Orchestration-level submission failure case.
+  if (!rt.smoke_set_rig_member_hardware_ids(8303, {"missing:hw"})) { rt.stop(); return 1; }
+  const auto orchestration_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(8303, 9304);
+  if (orchestration_fail.ok || orchestration_fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 #endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -679,6 +1084,11 @@ int main(int argc, char** argv) {
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
+    if (int r = test_rig_preflight_materialization_smoke()) return r;
+    if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
+    if (int r = test_rig_bundle_submission_smoke()) return r;
+    if (int r = test_cohort_aware_capture_result_set_smoke()) return r;
+    if (int r = test_rig_orchestration_helper_smoke()) return r;
 #endif
 
     std::cout << "OK: core spine smoke passed\n";

@@ -29,6 +29,7 @@ is covered by dedicated Godot scene checks.
 #endif
 
 #include "core/core_dispatcher.h"
+#include "core/core_capture_cohort_registry.h"
 #include "core/core_device_registry.h"
 #include "core/provider_to_core_commands.h"
 #include "core/core_native_object_registry.h"
@@ -338,6 +339,68 @@ static int test_visibility_diagnostics_snapshot_truth() {
     return 1;
   }
 
+  return 0;
+}
+
+static int test_capture_cohort_registry_basics() {
+  CoreCaptureCohortRegistry cohorts;
+  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+    std::cerr << "FAIL: fresh cohort registry unexpectedly non-empty\n";
+    return 1;
+  }
+  CoreCaptureCohortRegistry::CohortRecord rec{};
+  rec.capture_id = 77;
+  rec.rig_id = 7;
+  rec.expected_participants.push_back({1001, "hw:a"});
+  rec.expected_participants.push_back({1002, "hw:b"});
+  if (!cohorts.insert(rec)) {
+    std::cerr << "FAIL: cohort insert rejected valid record\n";
+    return 1;
+  }
+  const auto* found = cohorts.find(77);
+  if (!found || found->state != CoreCaptureCohortRegistry::CohortState::OPEN ||
+      found->failure_phase != CoreCaptureCohortRegistry::CohortFailurePhase::NONE ||
+      found->failed_device_instance_id != 0 || found->has_failure_error_code) {
+    std::cerr << "FAIL: newly inserted cohort not in open/clean state\n";
+    return 1;
+  }
+  if (!cohorts.mark_failed(77, 1002, 17, CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION)) {
+    std::cerr << "FAIL: mark_failed rejected existing cohort\n";
+    return 1;
+  }
+  found = cohorts.find(77);
+  if (!found || found->state != CoreCaptureCohortRegistry::CohortState::FAILED ||
+      found->failure_phase != CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION ||
+      found->failed_device_instance_id != 1002 || !found->has_failure_error_code ||
+      found->failure_error_code != 17) {
+    std::cerr << "FAIL: mark_failed did not persist diagnostics\n";
+    return 1;
+  }
+  if (cohorts.mark_failed(9999, 1, 2, CoreCaptureCohortRegistry::CohortFailurePhase::EXECUTION)) {
+    std::cerr << "FAIL: mark_failed accepted missing capture_id\n";
+    return 1;
+  }
+
+  found = cohorts.find(77);
+  if (!found || found->expected_participants.size() != 2 ||
+      found->expected_participants[0].hardware_id != "hw:a" ||
+      found->expected_participants[1].hardware_id != "hw:b") {
+    std::cerr << "FAIL: participant ordering/traceability not preserved\n";
+    return 1;
+  }
+  CoreCaptureCohortRegistry::CohortRecord dup{};
+  dup.capture_id = 77;
+  dup.rig_id = 99;
+  dup.expected_participants.push_back({9, "dup"});
+  if (cohorts.insert(dup)) {
+    std::cerr << "FAIL: duplicate capture_id unexpectedly accepted\n";
+    return 1;
+  }
+  cohorts.clear();
+  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+    std::cerr << "FAIL: clear() did not remove cohort\n";
+    return 1;
+  }
   return 0;
 }
 
@@ -1229,6 +1292,7 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
 } // namespace
 
 int main() {
+  if (int r = test_capture_cohort_registry_basics()) return r;
   if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
   if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;
