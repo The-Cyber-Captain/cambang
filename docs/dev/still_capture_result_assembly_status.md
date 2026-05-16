@@ -58,6 +58,15 @@ for still-capture result assembly.
 - Current implementation status: internal rig preflight/admission/submission
   helpers and cohort-aware `CaptureResultSet` curation support now exist, but
   public rig-triggered capture API/surface remains future work.
+- Current implementation status: an internal end-to-end rig orchestration
+  helper now exists and composes:
+  preflight → caller-supplied `capture_id` validation → cohort admission →
+  participant submission.
+- Current implementation status: orchestration intentionally requires
+  caller-supplied `capture_id`; no second `capture_id` allocator was added in
+  this layer.
+- Capture-id allocator integration between server/runtime orchestration remains
+  future internal work.
 - Current accept-all placeholder curation is still not final rig
   selection/terminal policy.
 - Release-direction admission model: resolve rig membership to participant
