@@ -758,6 +758,90 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
   return 0;
 }
 
+static int test_rig_bundle_submission_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig submit smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig submit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig submit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const std::string live_hw = eps[0].hardware_id;
+  if (!rt.smoke_set_rig_member_hardware_ids(8101, {live_hw})) {
+    std::cerr << "Failed to set rig members (rig submit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto preflight_ok = rt.preflight_rig_participants_materialize(8101);
+  const auto admitted_ok = rt.smoke_admit_rig_cohort_from_preflight(8101, 9101, preflight_ok);
+  if (!admitted_ok.ok) {
+    std::cerr << "Failed to admit cohort for submit smoke success path\n";
+    rt.stop();
+    return 1;
+  }
+  const auto submit_ok = rt.smoke_submit_admitted_rig_bundle(admitted_ok);
+  if (!submit_ok.ok || submit_ok.submitted_count != admitted_ok.participants.size()) {
+    std::cerr << "Expected successful participant submissions\n";
+    rt.stop();
+    return 1;
+  }
+
+  // First participant synchronous failure: invalid device id in first entry.
+  auto bad_first = admitted_ok;
+  bad_first.capture_id = 9102;
+  bad_first.participants[0].request.capture_id = 9102;
+  bad_first.participants[0].request.device_instance_id = 999999;
+  if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9102, preflight_ok).ok) {
+    std::cerr << "Failed to admit cohort for first-fail case\n";
+    rt.stop();
+    return 1;
+  }
+  const auto first_fail = rt.smoke_submit_admitted_rig_bundle(bad_first);
+  if (first_fail.ok || first_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
+      first_fail.submitted_count != 0 || first_fail.failed_index != 0) {
+    std::cerr << "Expected first participant trigger failure\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Later participant failure after earlier success (duplicate first participant).
+  auto two_part = admitted_ok;
+  two_part.capture_id = 9103;
+  two_part.participants[0].request.capture_id = 9103;
+  CoreRuntime::RigAdmittedParticipantRequest second = two_part.participants[0];
+  second.request.capture_id = 9103;
+  second.request.device_instance_id = 888888;
+  two_part.participants.push_back(second);
+  if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9103, preflight_ok).ok) {
+    std::cerr << "Failed to admit cohort for later-fail case\n";
+    rt.stop();
+    return 1;
+  }
+  const auto later_fail = rt.smoke_submit_admitted_rig_bundle(two_part);
+  if (later_fail.ok || later_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
+      later_fail.submitted_count != 1 || later_fail.failed_index != 1) {
+    std::cerr << "Expected second participant trigger failure after first success\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 #endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -867,6 +951,7 @@ int main(int argc, char** argv) {
     if (int r = test_shutdown_choreography(rt, prov)) return r;
     if (int r = test_rig_preflight_materialization_smoke()) return r;
     if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
+    if (int r = test_rig_bundle_submission_smoke()) return r;
 #endif
 
     std::cout << "OK: core spine smoke passed\n";

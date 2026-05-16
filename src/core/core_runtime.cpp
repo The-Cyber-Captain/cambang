@@ -1193,6 +1193,58 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   return out;
 }
 
+CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
+    const RigAdmittedRequestBundle& bundle) {
+  RigSubmissionResult out{};
+  out.capture_id = bundle.capture_id;
+  out.rig_id = bundle.rig_id;
+
+  if (!bundle.ok || bundle.capture_id == 0 || bundle.rig_id == 0 || bundle.participants.empty()) {
+    out.failure = RigSubmissionFailure::InvalidBundle;
+    return out;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    out.failure = RigSubmissionFailure::ProviderUnavailable;
+    for (const auto& participant : bundle.participants) {
+      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                     participant.request.device_instance_id,
+                                                     static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
+    }
+    (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                               0,
+                                               static_cast<uint32_t>(ProviderError::ERR_BAD_STATE),
+                                               CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+    out.provider_error_code = static_cast<uint32_t>(ProviderError::ERR_BAD_STATE);
+    return out;
+  }
+
+  for (size_t i = 0; i < bundle.participants.size(); ++i) {
+    const auto& participant = bundle.participants[i];
+    const ProviderResult pr = prov->trigger_capture(participant.request);
+    if (!pr.ok()) {
+      out.failure = RigSubmissionFailure::TriggerFailed;
+      out.failed_index = i;
+      out.failed_device_instance_id = participant.request.device_instance_id;
+      out.provider_error_code = static_cast<uint32_t>(pr.code);
+      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                     participant.request.device_instance_id,
+                                                     static_cast<uint32_t>(pr.code));
+      (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                                 participant.request.device_instance_id,
+                                                 static_cast<uint32_t>(pr.code),
+                                                 CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+      return out;
+    }
+    out.submitted_count++;
+  }
+
+  out.ok = true;
+  out.failure = RigSubmissionFailure::None;
+  return out;
+}
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize(uint64_t rig_id) const {
   return preflight_rig_participants_materialize_(rig_id);
@@ -1214,6 +1266,11 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_p
     uint64_t capture_id,
     const RigPreflightResult& preflight) {
   return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+}
+
+CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
+    const RigAdmittedRequestBundle& bundle) {
+  return submit_admitted_rig_bundle_(bundle);
 }
 #endif
 

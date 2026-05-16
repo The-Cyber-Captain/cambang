@@ -213,6 +213,24 @@ enum class TryCloseDeviceStatus : uint8_t {
     std::vector<RigAdmittedParticipantRequest> participants;
   };
 
+  enum class RigSubmissionFailure : uint8_t {
+    None = 0,
+    InvalidBundle = 1,
+    ProviderUnavailable = 2,
+    TriggerFailed = 3,
+  };
+
+  struct RigSubmissionResult {
+    bool ok = false;
+    RigSubmissionFailure failure = RigSubmissionFailure::None;
+    uint64_t capture_id = 0;
+    uint64_t rig_id = 0;
+    size_t submitted_count = 0;
+    size_t failed_index = 0;
+    uint64_t failed_device_instance_id = 0;
+    uint32_t provider_error_code = 0;
+  };
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
   bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
@@ -220,6 +238,7 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t rig_id,
       uint64_t capture_id,
       const RigPreflightResult& preflight);
+  RigSubmissionResult smoke_submit_admitted_rig_bundle(const RigAdmittedRequestBundle& bundle);
 #endif
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
@@ -343,6 +362,7 @@ private:
       uint64_t rig_id,
       uint64_t capture_id,
       const RigPreflightResult& preflight);
+  RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 
