@@ -1265,6 +1265,49 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
   return out;
 }
 
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  RigTriggerOrchestrationResult out{};
+  out.rig_id = rig_id;
+  out.capture_id = capture_id;
+
+  const RigPreflightResult preflight = preflight_rig_participants_materialize_(rig_id);
+  if (!preflight.ok) {
+    out.failure = RigOrchestrationFailure::PreflightFailed;
+    out.preflight_failure = preflight.failure;
+    return out;
+  }
+
+  if (capture_id == 0) {
+    out.failure = RigOrchestrationFailure::InvalidCaptureId;
+    return out;
+  }
+
+  const RigAdmittedRequestBundle admitted = admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+  if (!admitted.ok) {
+    out.failure = RigOrchestrationFailure::AdmissionFailed;
+    out.admission_failure = admitted.failure;
+    return out;
+  }
+
+  const RigSubmissionResult submitted = submit_admitted_rig_bundle_(admitted);
+  if (!submitted.ok) {
+    out.failure = RigOrchestrationFailure::SubmissionFailed;
+    out.submission_failure = submitted.failure;
+    out.submitted_count = submitted.submitted_count;
+    out.failed_index = submitted.failed_index;
+    out.failed_device_instance_id = submitted.failed_device_instance_id;
+    out.provider_error_code = submitted.provider_error_code;
+    return out;
+  }
+
+  out.ok = true;
+  out.failure = RigOrchestrationFailure::None;
+  out.submitted_count = submitted.submitted_count;
+  return out;
+}
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize(uint64_t rig_id) const {
   return preflight_rig_participants_materialize_(rig_id);
@@ -1291,6 +1334,12 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_p
 CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
     const RigAdmittedRequestBundle& bundle) {
   return submit_admitted_rig_bundle_(bundle);
+}
+
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_with_capture_id(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
 }
 #endif
 

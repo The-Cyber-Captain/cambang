@@ -231,6 +231,28 @@ enum class TryCloseDeviceStatus : uint8_t {
     uint32_t provider_error_code = 0;
   };
 
+  enum class RigOrchestrationFailure : uint8_t {
+    None = 0,
+    InvalidCaptureId = 1,
+    PreflightFailed = 2,
+    AdmissionFailed = 3,
+    SubmissionFailed = 4,
+  };
+
+  struct RigTriggerOrchestrationResult {
+    bool ok = false;
+    RigOrchestrationFailure failure = RigOrchestrationFailure::None;
+    uint64_t rig_id = 0;
+    uint64_t capture_id = 0;
+    RigPreflightFailure preflight_failure = RigPreflightFailure::None;
+    RigCohortAdmissionFailure admission_failure = RigCohortAdmissionFailure::None;
+    RigSubmissionFailure submission_failure = RigSubmissionFailure::None;
+    size_t submitted_count = 0;
+    size_t failed_index = 0;
+    uint64_t failed_device_instance_id = 0;
+    uint32_t provider_error_code = 0;
+  };
+
 #if defined(CAMBANG_INTERNAL_SMOKE)
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
   bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
@@ -239,6 +261,9 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t capture_id,
       const RigPreflightResult& preflight);
   RigSubmissionResult smoke_submit_admitted_rig_bundle(const RigAdmittedRequestBundle& bundle);
+  RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_with_capture_id(
+      uint64_t rig_id,
+      uint64_t capture_id);
 #endif
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
@@ -363,6 +388,9 @@ private:
       uint64_t capture_id,
       const RigPreflightResult& preflight);
   RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
+  RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
+      uint64_t rig_id,
+      uint64_t capture_id);
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 
