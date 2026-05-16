@@ -358,6 +358,30 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   const auto* found = cohorts.find(77);
+  if (!found || found->state != CoreCaptureCohortRegistry::CohortState::OPEN ||
+      found->failure_phase != CoreCaptureCohortRegistry::CohortFailurePhase::NONE ||
+      found->failed_device_instance_id != 0 || found->has_failure_error_code) {
+    std::cerr << "FAIL: newly inserted cohort not in open/clean state\n";
+    return 1;
+  }
+  if (!cohorts.mark_failed(77, 1002, 17, CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION)) {
+    std::cerr << "FAIL: mark_failed rejected existing cohort\n";
+    return 1;
+  }
+  found = cohorts.find(77);
+  if (!found || found->state != CoreCaptureCohortRegistry::CohortState::FAILED ||
+      found->failure_phase != CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION ||
+      found->failed_device_instance_id != 1002 || !found->has_failure_error_code ||
+      found->failure_error_code != 17) {
+    std::cerr << "FAIL: mark_failed did not persist diagnostics\n";
+    return 1;
+  }
+  if (cohorts.mark_failed(9999, 1, 2, CoreCaptureCohortRegistry::CohortFailurePhase::EXECUTION)) {
+    std::cerr << "FAIL: mark_failed accepted missing capture_id\n";
+    return 1;
+  }
+
+  found = cohorts.find(77);
   if (!found || found->expected_participants.size() != 2 ||
       found->expected_participants[0].hardware_id != "hw:a" ||
       found->expected_participants[1].hardware_id != "hw:b") {
