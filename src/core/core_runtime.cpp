@@ -118,6 +118,26 @@ SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id, uin
 }
 
 std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_t capture_id) const {
+  if (const auto* cohort = capture_cohort_registry_.find(capture_id); cohort != nullptr) {
+    if (cohort->state == CoreCaptureCohortRegistry::CohortState::FAILED) {
+      return {};
+    }
+    std::vector<SharedCaptureResultData> cohort_results;
+    cohort_results.reserve(cohort->expected_participants.size());
+    for (const auto& participant : cohort->expected_participants) {
+      const uint64_t device_instance_id = participant.device_instance_id;
+      if (!capture_assembly_registry_.is_assembly_successful(capture_id, device_instance_id)) {
+        return {};
+      }
+      SharedCaptureResultData result = result_store_.get_capture_result(capture_id, device_instance_id);
+      if (!result) {
+        return {};
+      }
+      cohort_results.push_back(std::move(result));
+    }
+    return curate_capture_result_set_accept_all_assembly_successful_(std::move(cohort_results));
+  }
+
   std::vector<SharedCaptureResultData> candidates = result_store_.get_capture_result_set(capture_id);
   std::vector<SharedCaptureResultData> assembly_successful;
   assembly_successful.reserve(candidates.size());

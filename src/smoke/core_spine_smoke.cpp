@@ -23,6 +23,7 @@ Non-Goals
 */
 
 #include <chrono>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -842,6 +843,78 @@ static int test_rig_bundle_submission_smoke() {
   return 0;
 }
 
+static int test_cohort_aware_capture_result_set_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  auto emit_capture = [&](uint64_t capture_id, uint64_t device_id, uint8_t fill) {
+    static std::vector<uint8_t> bytes(2 * 2 * 4, 0);
+    std::fill(bytes.begin(), bytes.end(), fill);
+    FrameView frame{};
+    frame.capture_id = capture_id;
+    frame.device_instance_id = device_id;
+    frame.stream_id = 0;
+    frame.width = 2;
+    frame.height = 2;
+    frame.format_fourcc = FOURCC_RGBA;
+    frame.data = bytes.data();
+    frame.size_bytes = bytes.size();
+    frame.stride_bytes = 0;
+    frame.release = [](void*, const FrameView*) {};
+    frame.release_user = nullptr;
+    rt.provider_callbacks()->on_capture_started(capture_id, device_id);
+    rt.provider_callbacks()->on_frame(frame);
+    rt.provider_callbacks()->on_capture_completed(capture_id, device_id);
+  };
+
+  // No cohort path: accept-all assembly-successful candidates.
+  emit_capture(9201, 100, 1);
+  emit_capture(9201, 101, 2);
+  if (!wait_until([&]() { return rt.get_capture_result_set(9201).size() == 2; }, 400, 5)) {
+    rt.stop();
+    return 1;
+  }
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  if (!rt.smoke_set_rig_member_hardware_ids(8201, {eps[0].hardware_id})) { rt.stop(); return 1; }
+  const auto preflight = rt.preflight_rig_participants_materialize(8201);
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8201, 9202, preflight);
+  if (!admitted.ok) { rt.stop(); return 1; }
+
+  // Cohort OPEN but incomplete => empty.
+  if (!rt.get_capture_result_set(9202).empty()) { rt.stop(); return 1; }
+
+  // Emit expected participant + extra successful non-expected participant.
+  emit_capture(9202, admitted.participants[0].request.device_instance_id, 3);
+  emit_capture(9202, 4242, 4);
+  if (!wait_until([&]() { return rt.get_capture_result_set(9202).size() == 1; }, 400, 5)) {
+    rt.stop();
+    return 1;
+  }
+  auto cohort_set = rt.get_capture_result_set(9202);
+  if (cohort_set.size() != 1 ||
+      cohort_set[0]->device_instance_id != admitted.participants[0].request.device_instance_id) {
+    rt.stop();
+    return 1;
+  }
+
+  // FAILED cohort => empty.
+  rt.smoke_submit_admitted_rig_bundle(admitted); // may succeed; keep cohort OPEN
+  // Force a new failed cohort via bad submit
+  const auto admitted_fail = rt.smoke_admit_rig_cohort_from_preflight(8201, 9203, preflight);
+  auto bad = admitted_fail;
+  bad.participants[0].request.device_instance_id = 999999;
+  (void)rt.smoke_submit_admitted_rig_bundle(bad);
+  if (!rt.get_capture_result_set(9203).empty()) { rt.stop(); return 1; }
+
+  rt.stop();
+  return 0;
+}
+
 #endif // CAMBANG_SMOKE_WITH_STUB_PROVIDER
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -952,6 +1025,7 @@ int main(int argc, char** argv) {
     if (int r = test_rig_preflight_materialization_smoke()) return r;
     if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
     if (int r = test_rig_bundle_submission_smoke()) return r;
+    if (int r = test_cohort_aware_capture_result_set_smoke()) return r;
 #endif
 
     std::cout << "OK: core spine smoke passed\n";
