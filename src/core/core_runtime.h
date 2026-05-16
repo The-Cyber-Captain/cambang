@@ -11,6 +11,7 @@
 #include "core/core_dispatcher.h"
 #include "core/core_acquisition_session_registry.h"
 #include "core/core_capture_assembly_registry.h"
+#include "core/core_capture_cohort_registry.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_result_store.h"
@@ -326,6 +327,7 @@ private:
   CoreNativeObjectRegistry native_objects_;
   CoreResultStore result_store_;
   CoreCaptureAssemblyRegistry capture_assembly_registry_;
+  CoreCaptureCohortRegistry capture_cohort_registry_;
 
   // Snapshot header counters (schema v1).
   // gen: core generation counter, monotonic across app/server lifetime.

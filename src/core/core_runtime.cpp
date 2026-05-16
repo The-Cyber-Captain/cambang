@@ -178,6 +178,7 @@ bool CoreRuntime::start() {
   // Reset core-thread-only pump state.
   rigs_.clear();
   capture_assembly_registry_.clear();
+  capture_cohort_registry_.clear();
   provider_facts_.clear();
   requests_.clear();
   shutdown_requested_ = false;

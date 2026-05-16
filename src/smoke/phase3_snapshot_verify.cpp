@@ -29,6 +29,7 @@ is covered by dedicated Godot scene checks.
 #endif
 
 #include "core/core_dispatcher.h"
+#include "core/core_capture_cohort_registry.h"
 #include "core/core_device_registry.h"
 #include "core/provider_to_core_commands.h"
 #include "core/core_native_object_registry.h"
@@ -338,6 +339,44 @@ static int test_visibility_diagnostics_snapshot_truth() {
     return 1;
   }
 
+  return 0;
+}
+
+static int test_capture_cohort_registry_basics() {
+  CoreCaptureCohortRegistry cohorts;
+  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+    std::cerr << "FAIL: fresh cohort registry unexpectedly non-empty\n";
+    return 1;
+  }
+  CoreCaptureCohortRegistry::CohortRecord rec{};
+  rec.capture_id = 77;
+  rec.rig_id = 7;
+  rec.expected_participants.push_back({1001, "hw:a"});
+  rec.expected_participants.push_back({1002, "hw:b"});
+  if (!cohorts.insert(rec)) {
+    std::cerr << "FAIL: cohort insert rejected valid record\n";
+    return 1;
+  }
+  const auto* found = cohorts.find(77);
+  if (!found || found->expected_participants.size() != 2 ||
+      found->expected_participants[0].hardware_id != "hw:a" ||
+      found->expected_participants[1].hardware_id != "hw:b") {
+    std::cerr << "FAIL: participant ordering/traceability not preserved\n";
+    return 1;
+  }
+  CoreCaptureCohortRegistry::CohortRecord dup{};
+  dup.capture_id = 77;
+  dup.rig_id = 99;
+  dup.expected_participants.push_back({9, "dup"});
+  if (cohorts.insert(dup)) {
+    std::cerr << "FAIL: duplicate capture_id unexpectedly accepted\n";
+    return 1;
+  }
+  cohorts.clear();
+  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+    std::cerr << "FAIL: clear() did not remove cohort\n";
+    return 1;
+  }
   return 0;
 }
 
@@ -1229,6 +1268,7 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
 } // namespace
 
 int main() {
+  if (int r = test_capture_cohort_registry_basics()) return r;
   if (int r = test_scoped_resource_telemetry_default_and_projection()) return r;
   if (int r = test_scoped_resource_telemetry_runtime_framebuffer_lease_integration()) return r;
   if (int r = test_topology_detached_and_retirement()) return r;
