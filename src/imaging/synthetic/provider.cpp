@@ -2054,4 +2054,4 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
 
 } // namespace cambang
 
-std::vector<SyntheticStagedRigTopology> SyntheticProvider::get_staged_rig_topology_for_host() const { return staged_rig_topology_; }
+std::vector<cambang::SyntheticStagedRigTopology> cambang::SyntheticProvider::get_staged_rig_topology_for_host() const { return staged_rig_topology_; }
