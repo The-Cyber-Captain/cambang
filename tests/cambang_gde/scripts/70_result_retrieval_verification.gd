@@ -6,7 +6,7 @@ extends Control
 # - proves grouped facts/provenance accessor shape (Dictionary)
 # - proves to_image() for both
 # Non-goals intentionally preserved:
-# - no CamBANGRig.trigger_sync_capture()
+# - no CamBANGRig.trigger_capture()
 # - no CamBANGCaptureResultSet realization proof
 # - no grouped-capture curation policy proof
 # - no mailbox coupling

@@ -264,7 +264,13 @@ enum class TryCloseDeviceStatus : uint8_t {
   RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_with_capture_id(
       uint64_t rig_id,
       uint64_t capture_id);
+
 #endif
+
+  // Server-internal adapter: caller supplies capture_id (no allocation here).
+  RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
+      uint64_t rig_id,
+      uint64_t capture_id);
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {

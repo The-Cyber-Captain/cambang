@@ -92,7 +92,7 @@ capture across multiple devices.
 Primary lifecycle controls:
 
 - `arm()` / `disarm()`
-- `trigger_sync_capture()`
+- `trigger_capture()`
 
 Rig-triggered sync capture has priority over standalone activity on
 member devices when conflicts arise.

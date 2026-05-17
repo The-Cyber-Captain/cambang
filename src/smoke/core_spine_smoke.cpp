@@ -915,6 +915,64 @@ static int test_cohort_aware_capture_result_set_smoke() {
   return 0;
 }
 
+
+static int test_server_facing_rig_orchestration_adapter_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) return 1;
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) { rt.stop(); return 1; }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  const std::string live_hw = eps[0].hardware_id;
+
+  // Simulate CamBANGServer allocator shape: monotonic counter, skip 0.
+  uint64_t next_capture_id = 1;
+  auto allocate_capture_id = [&]() {
+    uint64_t capture_id = next_capture_id++;
+    if (capture_id == 0) {
+      capture_id = next_capture_id++;
+    }
+    return capture_id;
+  };
+
+  if (!rt.smoke_set_rig_member_hardware_ids(8401, {live_hw})) { rt.stop(); return 1; }
+
+  const uint64_t ok_capture_id = allocate_capture_id();
+  const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id);
+  if (!success.ok || success.capture_id != ok_capture_id || success.submitted_count != 1) {
+    rt.stop();
+    return 1;
+  }
+
+  if (!wait_until([&]() { return rt.get_capture_result_set(ok_capture_id).size() == 1; }, 400, 5)) {
+    rt.stop();
+    return 1;
+  }
+
+  const auto set = rt.get_capture_result_set(ok_capture_id);
+  if (set.size() != 1 || !set[0] || set[0]->capture_id != ok_capture_id) {
+    rt.stop();
+    return 1;
+  }
+
+  // Failure path: missing rig should fail and should not expose cohort result set.
+  const uint64_t bad_capture_id = allocate_capture_id();
+  const auto fail = rt.orchestrate_rig_capture_with_capture_id_for_server(999991, bad_capture_id);
+  if (fail.ok || fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
+    rt.stop();
+    return 1;
+  }
+  if (!rt.get_capture_result_set(bad_capture_id).empty()) {
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_rig_orchestration_helper_smoke() {
   CoreRuntime rt;
   if (!rt.start()) return 1;
@@ -1089,6 +1147,7 @@ int main(int argc, char** argv) {
     if (int r = test_rig_bundle_submission_smoke()) return r;
     if (int r = test_cohort_aware_capture_result_set_smoke()) return r;
     if (int r = test_rig_orchestration_helper_smoke()) return r;
+    if (int r = test_server_facing_rig_orchestration_adapter_smoke()) return r;
 #endif
 
     std::cout << "OK: core spine smoke passed\n";

@@ -109,7 +109,7 @@ should be documented as a constant.
 Commands represent requests from Godot-facing objects, e.g.: -
 engage/disengage device - set warm policy - create/destroy stream -
 start/stop stream - set capture profile(s) - trigger device capture -
-arm/disarm rig - trigger rig sync capture - apply spec patches
+arm/disarm rig - trigger rig capture - apply spec patches
 (`ApplyMode` handled by core)
 
 Commands are immutable message objects; core owns command execution.
