@@ -107,6 +107,7 @@ public:
   ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_synthetic_timeline_request_dispatch_hook(std::function<void(const SyntheticScheduledEvent&)> hook);
   bool get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSnapshot& out) const;
+  bool get_synthetic_staged_rig_topology_for_host(std::vector<SyntheticStagedRigTopology>& out) const;
 
   RuntimeMode runtime_mode_latched() const noexcept { return mode_latched_; }
   SyntheticRole synthetic_role_latched() const noexcept { return synthetic_role_latched_; }

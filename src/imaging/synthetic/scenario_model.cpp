@@ -82,6 +82,37 @@ bool materialize_synthetic_canonical_scenario(
     stream_by_key.emplace(bound.key, bound);
   }
 
+
+  std::unordered_map<std::string, std::string> hardware_id_by_device_key;
+  hardware_id_by_device_key.reserve(canonical.devices.size());
+  for (const auto& d : out.devices) {
+    hardware_id_by_device_key.emplace(d.key, std::string("synthetic:") + std::to_string(d.endpoint_index));
+  }
+
+  std::unordered_map<std::string, bool> rig_key_seen;
+  std::unordered_map<uint64_t, bool> rig_id_seen;
+  out.rigs.reserve(canonical.rigs.size());
+  for (const auto& r : canonical.rigs) {
+    if (r.key.empty() || r.rig_id == 0 || r.member_device_keys.empty() || rig_key_seen[r.key] || rig_id_seen[r.rig_id]) {
+      set_error(error, "invalid canonical scenario rig declarations");
+      return false;
+    }
+    rig_key_seen[r.key] = true;
+    rig_id_seen[r.rig_id] = true;
+    SyntheticMaterializedRigBinding bound{};
+    bound.key = r.key;
+    bound.rig_id = r.rig_id;
+    std::unordered_map<std::string, bool> local;
+    for (const auto& device_key : r.member_device_keys) {
+      if (local[device_key]) { set_error(error, "duplicate rig member device key: " + device_key); return false; }
+      local[device_key] = true;
+      const auto it = hardware_id_by_device_key.find(device_key);
+      if (it == hardware_id_by_device_key.end()) { set_error(error, "rig member references unknown device key: " + device_key); return false; }
+      bound.member_hardware_ids.push_back(it->second);
+    }
+    out.rigs.push_back(std::move(bound));
+  }
+
   std::vector<SyntheticScheduledEvent> indexed;
   indexed.reserve(canonical.timeline.size());
 

@@ -1314,14 +1314,7 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
 }
 
 bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
-  if (rig_id == 0) {
-    return false;
-  }
-  auto pr = try_post([this, rig_id, member_hardware_ids = std::move(member_hardware_ids)]() mutable {
-    (void)rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
-    request_publish_from_core_unchecked();
-  });
-  return pr == CoreThread::PostResult::Enqueued;
+  return retain_rig_member_hardware_ids(rig_id, member_hardware_ids);
 }
 
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_preflight(
@@ -1348,6 +1341,19 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     uint64_t rig_id,
     uint64_t capture_id) {
   return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+}
+
+bool CoreRuntime::retain_rig_member_hardware_ids(
+    uint64_t rig_id,
+    const std::vector<std::string>& member_hardware_ids) {
+  if (rig_id == 0) {
+    return false;
+  }
+  auto pr = try_post([this, rig_id, member_hardware_ids]() {
+    (void)rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids);
+    request_publish_from_core_unchecked();
+  });
+  return pr == CoreThread::PostResult::Enqueued;
 }
 
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {

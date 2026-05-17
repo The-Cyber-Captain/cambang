@@ -267,6 +267,8 @@ enum class TryCloseDeviceStatus : uint8_t {
 
 #endif
 
+  bool retain_rig_member_hardware_ids(uint64_t rig_id, const std::vector<std::string>& member_hardware_ids);
+
   // Server-internal adapter: caller supplies capture_id (no allocation here).
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
       uint64_t rig_id,

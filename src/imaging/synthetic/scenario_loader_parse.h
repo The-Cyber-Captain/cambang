@@ -40,6 +40,12 @@ struct SyntheticScenarioLoaderParsedStream {
   SyntheticScenarioLoaderParsedCaptureProfile capture_profile{};
 };
 
+struct SyntheticScenarioLoaderParsedRig {
+  std::string key;
+  std::uint64_t rig_id = 0;
+  std::vector<std::string> members;
+};
+
 struct SyntheticScenarioLoaderParsedAction {
   std::uint64_t at_ns = 0;
   std::string type;
@@ -55,6 +61,7 @@ struct SyntheticScenarioLoaderParsedDocument {
   std::uint32_t schema_version = 0;
   std::vector<SyntheticScenarioLoaderParsedDevice> devices;
   std::vector<SyntheticScenarioLoaderParsedStream> streams;
+  std::vector<SyntheticScenarioLoaderParsedRig> rigs;
   std::vector<SyntheticScenarioLoaderParsedAction> timeline;
 };
 

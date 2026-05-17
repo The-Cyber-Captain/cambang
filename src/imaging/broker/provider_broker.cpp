@@ -593,3 +593,10 @@ bool ProviderBroker::get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSna
 
 
 } // namespace cambang
+
+bool cambang::ProviderBroker::get_synthetic_staged_rig_topology_for_host(std::vector<cambang::SyntheticStagedRigTopology>& out) const {
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) { out = syn->get_staged_rig_topology_for_host(); return true; }
+#endif
+  (void)out; return false;
+}

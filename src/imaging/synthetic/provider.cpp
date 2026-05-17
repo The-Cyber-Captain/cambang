@@ -390,8 +390,10 @@ void SyntheticProvider::timeline_activate_or_dispatch_(const SyntheticScheduledE
 
 bool SyntheticProvider::materialize_staged_canonical_scenario_(
     SyntheticTimelineScenario& out,
+    std::vector<SyntheticStagedRigTopology>& rigs_out,
     std::string& error) const {
   out = {};
+  rigs_out.clear();
   SyntheticScenarioMaterializationOptions opts{};
   SyntheticScenarioMaterializationResult materialized{};
   if (!materialize_synthetic_canonical_scenario(
@@ -406,6 +408,14 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
   // canonical schedule is lowered to executable request-like timeline events.
   // Lifecycle actions must be explicit in the canonical timed actions.
   // EmitFrame remains provider-internal and is not emitted here.
+  rigs_out.reserve(materialized.rigs.size());
+  for (const auto& r : materialized.rigs) { SyntheticStagedRigTopology t{}; t.rig_id = r.rig_id; t.member_hardware_ids = r.member_hardware_ids; rigs_out.push_back(std::move(t)); }
+  uint32_t required_endpoint_count = 0;
+  for (const auto& d : materialized.devices) {
+    required_endpoint_count = std::max(required_endpoint_count, d.endpoint_index + 1u);
+  }
+  const_cast<SyntheticProvider*>(this)->staged_required_endpoint_count_ = required_endpoint_count;
+
   std::vector<SyntheticScheduledEvent> events;
   events.reserve(materialized.executable_schedule.events.size());
 
@@ -608,7 +618,11 @@ bool SyntheticProvider::is_known_hardware_id_(const std::string& hardware_id) co
   if (!end || *end != '\0' || idx < 0) {
     return false;
   }
-  return static_cast<uint32_t>(idx) < cfg_.endpoint_count;
+  return static_cast<uint32_t>(idx) < effective_endpoint_count_();
+}
+
+uint32_t SyntheticProvider::effective_endpoint_count_() const noexcept {
+  return std::max(cfg_.endpoint_count, staged_required_endpoint_count_);
 }
 
 uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
@@ -1300,6 +1314,8 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_scenario_ = scenario;
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
+  staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1321,6 +1337,8 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = scenario;
   timeline_canonical_staged_ = true;
+  staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1338,12 +1356,14 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
   timeline_pending_destructive_.clear();
   if (timeline_canonical_staged_) {
     std::string error;
-    if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
+    std::vector<SyntheticStagedRigTopology> staged_rigs;
+    if (!materialize_staged_canonical_scenario_(timeline_scenario_, staged_rigs, error)) {
       if (!error.empty()) {
         std::fprintf(stderr, "[Synthetic] canonical scenario materialization failed: %s\n", error.c_str());
       }
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
+    staged_rig_topology_ = std::move(staged_rigs);
   }
   for (const auto& ev : timeline_scenario_.events) {
     timeline_schedule_(ev);
@@ -1442,6 +1462,8 @@ ProviderResult SyntheticProvider::shutdown() {
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
+  staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
 
@@ -2047,3 +2069,5 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
 }
 
 } // namespace cambang
+
+std::vector<cambang::SyntheticStagedRigTopology> cambang::SyntheticProvider::get_staged_rig_topology_for_host() const { return staged_rig_topology_; }
