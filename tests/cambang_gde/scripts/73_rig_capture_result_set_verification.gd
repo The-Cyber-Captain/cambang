@@ -11,7 +11,7 @@ const DEVICE_D := "DeviceD"
 const DEVICE_E := "DeviceE"
 const DEVICE_F := "DeviceF"
 
-@onready var _status_label: RichTextLabel = $RootMargin/MainColumn/StatusLabel
+@onready var _status_label: RichTextLabel = $RootMargin/VBoxContainer/MainColumn/StatusLabel
 
 var _step := 0
 var _done := false

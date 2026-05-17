@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
   "devices": [
-    { "key": "DeviceA", "endpoint_index": 0 },
-    { "key": "DeviceB", "endpoint_index": 1 },
-    { "key": "DeviceC", "endpoint_index": 2 },
-    { "key": "DeviceD", "endpoint_index": 3 },
-    { "key": "DeviceE", "endpoint_index": 4 },
-    { "key": "DeviceF", "endpoint_index": 5 }
+	{ "key": "DeviceA", "endpoint_index": 0 },
+	{ "key": "DeviceB", "endpoint_index": 1 },
+	{ "key": "DeviceC", "endpoint_index": 2 },
+	{ "key": "DeviceD", "endpoint_index": 3 },
+	{ "key": "DeviceE", "endpoint_index": 4 },
+	{ "key": "DeviceF", "endpoint_index": 5 }
   ],
   "streams": [],
   "timeline": [
-    { "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceA" },
-    { "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceB" },
-    { "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceC" },
-    { "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceD" },
-    { "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceE" },
-    { "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceF" },
+	{ "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceA" },
+	{ "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceB" },
+	{ "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceC" },
+	{ "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceD" },
+	{ "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceE" },
+	{ "at_ns": 0, "type": "OpenDevice", "device_key": "DeviceF" },
 
-    { "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceA", "picture": { "preset": "checker", "seed": 101, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": true, "solid_r": 255, "solid_g": 48, "solid_b": 48, "solid_a": 255, "checker_size_px": 16 } },
-    { "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceB", "picture": { "preset": "solid", "seed": 102, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": false, "solid_r": 64, "solid_g": 160, "solid_b": 255, "solid_a": 255, "checker_size_px": 16 } },
-    { "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceC", "picture": { "preset": "xy_xor", "seed": 103, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": true, "solid_r": 0, "solid_g": 0, "solid_b": 0, "solid_a": 255, "checker_size_px": 16 } },
-    { "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceD", "picture": { "preset": "noise_animated", "seed": 104, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": false, "overlay_moving_bar": true, "solid_r": 0, "solid_g": 0, "solid_b": 0, "solid_a": 255, "checker_size_px": 12 } },
-    { "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceE", "picture": { "preset": "checker", "seed": 105, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": false, "overlay_moving_bar": false, "solid_r": 255, "solid_g": 224, "solid_b": 64, "solid_a": 255, "checker_size_px": 24 } },
-    { "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceF", "picture": { "preset": "solid", "seed": 106, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": true, "solid_r": 96, "solid_g": 220, "solid_b": 120, "solid_a": 255, "checker_size_px": 16 } }
+	{ "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceA", "picture": { "preset": "checker", "seed": 101, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": true, "solid_r": 255, "solid_g": 48, "solid_b": 48, "solid_a": 255, "checker_size_px": 16 } },
+	{ "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceB", "picture": { "preset": "solid", "seed": 102, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": false, "solid_r": 64, "solid_g": 160, "solid_b": 255, "solid_a": 255, "checker_size_px": 16 } },
+	{ "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceC", "picture": { "preset": "xy_xor", "seed": 103, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": true, "solid_r": 0, "solid_g": 0, "solid_b": 0, "solid_a": 255, "checker_size_px": 16 } },
+	{ "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceD", "picture": { "preset": "noise_animated", "seed": 104, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": false, "overlay_moving_bar": true, "solid_r": 0, "solid_g": 0, "solid_b": 0, "solid_a": 255, "checker_size_px": 12 } },
+	{ "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceE", "picture": { "preset": "checker", "seed": 105, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": false, "overlay_moving_bar": false, "solid_r": 255, "solid_g": 224, "solid_b": 64, "solid_a": 255, "checker_size_px": 24 } },
+	{ "at_ns": 0, "type": "UpdateCapturePicture", "device_key": "DeviceF", "picture": { "preset": "solid", "seed": 106, "generator_fps_num": 30, "generator_fps_den": 1, "overlay_frame_index_offsets": true, "overlay_moving_bar": true, "solid_r": 96, "solid_g": 220, "solid_b": 120, "solid_a": 255, "checker_size_px": 16 } }
   ]
 }

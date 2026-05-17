@@ -1,6 +1,14 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=4 format=3 uid="uid://b27lk1yvaseq0"]
 
-[ext_resource type="Script" path="res://scripts/73_rig_capture_result_set_verification.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://djnqbbk5o8f4t" path="res://scripts/73_rig_capture_result_set_verification.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="2_vb4lx"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_vb4lx"]
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
 
 [node name="73_RigCaptureResultSetVerification" type="Control"]
 layout_mode = 3
@@ -23,15 +31,28 @@ theme_override_constants/margin_top = 10
 theme_override_constants/margin_right = 10
 theme_override_constants/margin_bottom = 10
 
-[node name="MainColumn" type="VBoxContainer" parent="RootMargin"]
+[node name="VBoxContainer" type="VBoxContainer" parent="RootMargin"]
+layout_mode = 2
+
+[node name="CamBANGStatusPanel" type="PanelContainer" parent="RootMargin/VBoxContainer"]
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 2.32
+theme_override_styles/panel = SubResource("StyleBoxFlat_vb4lx")
+script = ExtResource("2_vb4lx")
+metadata/_custom_type_script = "uid://djv2vyhmruoh2"
+
+[node name="MainColumn" type="VBoxContainer" parent="RootMargin/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 4
+size_flags_vertical = 2
 theme_override_constants/separation = 8
 
-[node name="Title" type="Label" parent="RootMargin/MainColumn"]
+[node name="Title" type="Label" parent="RootMargin/VBoxContainer/MainColumn"]
 layout_mode = 2
 text = "Rig Capture Result Set Verification"
 
-[node name="StatusLabel" type="RichTextLabel" parent="RootMargin/MainColumn"]
+[node name="StatusLabel" type="RichTextLabel" parent="RootMargin/VBoxContainer/MainColumn"]
 layout_mode = 2
 size_flags_vertical = 3
