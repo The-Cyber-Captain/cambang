@@ -21,7 +21,6 @@ public:
   }
 
   uint64_t get_instance_id() const { return device_instance_id_; }
-  uint64_t get_device_instance_id() const { return get_instance_id(); }
 
   uint64_t trigger_capture();
 

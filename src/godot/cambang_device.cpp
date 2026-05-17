@@ -13,7 +13,6 @@ uint64_t CamBANGDevice::trigger_capture() {
 
 void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_instance_id"), &CamBANGDevice::get_instance_id);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGDevice::get_device_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGDevice::trigger_capture);
 }
 
