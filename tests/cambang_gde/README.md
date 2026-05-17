@@ -64,6 +64,9 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - `no_display_eager` is self-contained via `CAMBANG_EXERCISE`: it implies effective GPU update policy `always` when no explicit low-level policy is set.
   - Precedence: explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` > exercise-derived (`no_display_eager` => `always`) > default (`display_demanded`).
   - Conflict: `CAMBANG_EXERCISE=no_display_eager` with explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` not equal to `always` fails clearly.
+- `scenes/73_rig_capture_result_set_verification.tscn`
+  - Focused Godot proof for `CamBANGRig` object API: `CamBANGServer.get_rig(rig_id)`, `CamBANGRig.get_id()`, `CamBANGRig.trigger_capture()`, and `CamBANGServer.get_capture_result_set(capture_id)` consistency.
+  - Uses dedicated external scenario fixture `scenarios/rig_capture_result_basic.json` and verifies deterministic multi-rig topology plus result-set membership/device-id coherence for Rig A capture.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -83,7 +86,7 @@ Migration guidance:
 - `40_frameview_mf_stress_test` → use `72_stream_load_isolation` for load/perf isolation and `60_restart_boundary_abuse` for restart semantics.
 - `50_frameview_cycling_patterns_chose_provider` → use `66_status_panel_scenario_runtime` for server-driven scenario/runtime observation.
 - `51_heavy_probe_registry` → use `63_snapshot_observer_minimal` for lightweight snapshot diagnostics plus `65_public_boundary_verify` for boundary contract checks.
-- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60-66` for boundary/status/snapshot confidence, `70` for result retrieval, `71` for capture/session matrix, and `72` for stream-load isolation.
+- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60-66` for boundary/status/snapshot confidence, `70` for result retrieval, `71` for capture/session matrix, `72` for stream-load isolation, and `73` for rig-capture result-set proof.
 
 
 ## Running
@@ -98,6 +101,7 @@ godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tsc
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/66_status_panel_scenario_runtime.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
+godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verification.tscn --quit-after 20
 ```
 
 Notes:
