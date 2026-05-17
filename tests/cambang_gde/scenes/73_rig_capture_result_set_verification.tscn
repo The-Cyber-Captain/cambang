@@ -37,8 +37,9 @@ layout_mode = 2
 [node name="CamBANGStatusPanel" type="PanelContainer" parent="RootMargin/VBoxContainer"]
 custom_minimum_size = Vector2(320, 0)
 layout_mode = 2
+size_flags_horizontal = 3
 size_flags_vertical = 3
-size_flags_stretch_ratio = 2.32
+size_flags_stretch_ratio = 5.54
 theme_override_styles/panel = SubResource("StyleBoxFlat_vb4lx")
 script = ExtResource("2_vb4lx")
 metadata/_custom_type_script = "uid://djv2vyhmruoh2"
