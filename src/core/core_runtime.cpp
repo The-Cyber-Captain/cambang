@@ -1342,12 +1342,13 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_ca
   return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
 }
 
+#endif
+
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_for_server(
     uint64_t rig_id,
     uint64_t capture_id) {
   return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
 }
-#endif
 
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {
   Stats s;
