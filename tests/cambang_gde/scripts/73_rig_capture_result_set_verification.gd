@@ -119,8 +119,17 @@ func _try_latch_and_validate_rig_topology() -> void:
 		var r: Dictionary = rv
 		var rig_id := int(r.get("rig_id", 0))
 		_require(rig_id > 0, "step %d FAIL: snapshot rig has invalid rig_id" % _step)
-		var members_variant: Variant = r.get("member_device_instance_ids", [])
-		_require(typeof(members_variant) == TYPE_ARRAY, "step %d FAIL: rig member_device_instance_ids must be Array" % _step)
+		var members_variant: Variant = r.get("member_device_instance_ids", null)
+		if members_variant == null:
+			var hw_members: Variant = r.get("member_hardware_ids", [])
+			_require(typeof(hw_members) == TYPE_ARRAY, "step %d FAIL: rig member_hardware_ids must be Array" % _step)
+			var derived: Array = []
+			for hwv in hw_members:
+				var hw := str(hwv)
+				_require(device_id_by_hw.has(hw), "step %d FAIL: rig member hardware_id not found in devices: %s" % [_step, hw])
+				derived.append(int(device_id_by_hw[hw]))
+			members_variant = derived
+		_require(typeof(members_variant) == TYPE_ARRAY, "step %d FAIL: rig members must be Array" % _step)
 		var members: Array = _sorted_ids(members_variant)
 		for m in members:
 			if not all_rig_members.has(m):

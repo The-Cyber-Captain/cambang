@@ -685,6 +685,12 @@ godot::Error CamBANGServer::start_scenario() {
   const ProviderResult pr = broker->start_timeline_scenario_for_host();
   if (pr.ok()) {
     strict_scenario_unmet_logged_ = false;
+    std::vector<SyntheticStagedRigTopology> staged_rigs;
+    if (broker->get_synthetic_staged_rig_topology_for_host(staged_rigs)) {
+      for (const auto& r : staged_rigs) {
+        (void)runtime_.smoke_set_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids);
+      }
+    }
   }
   return map_provider_result_to_godot_error(pr);
 }

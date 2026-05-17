@@ -25,6 +25,12 @@ struct SyntheticScenarioStreamDeclaration {
   CaptureProfile baseline_capture_profile{};
 };
 
+struct SyntheticScenarioRigDeclaration {
+  std::string key;
+  std::uint64_t rig_id = 0;
+  std::vector<std::string> member_device_keys;
+};
+
 struct SyntheticScenarioTimelineAction {
   std::uint64_t at_ns = 0;
   SyntheticEventType type = SyntheticEventType::EmitFrame;
@@ -40,6 +46,7 @@ struct SyntheticScenarioTimelineAction {
 struct SyntheticCanonicalScenario {
   std::vector<SyntheticScenarioDeviceDeclaration> devices;
   std::vector<SyntheticScenarioStreamDeclaration> streams;
+  std::vector<SyntheticScenarioRigDeclaration> rigs;
   std::vector<SyntheticScenarioTimelineAction> timeline;
 };
 
@@ -65,9 +72,16 @@ struct SyntheticMaterializedStreamBinding {
   std::uint64_t stream_id = 0;
 };
 
+struct SyntheticMaterializedRigBinding {
+  std::string key;
+  std::uint64_t rig_id = 0;
+  std::vector<std::string> member_hardware_ids;
+};
+
 struct SyntheticScenarioMaterializationResult {
   std::vector<SyntheticMaterializedDeviceBinding> devices;
   std::vector<SyntheticMaterializedStreamBinding> streams;
+  std::vector<SyntheticMaterializedRigBinding> rigs;
   SyntheticTimelineScenario executable_schedule{};
 };
 

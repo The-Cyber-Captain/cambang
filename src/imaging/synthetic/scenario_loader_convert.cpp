@@ -100,6 +100,15 @@ bool convert_parsed_synthetic_scenario_loader_document_to_canonical(
     out.streams.push_back(mapped);
   }
 
+  out.rigs.reserve(parsed.rigs.size());
+  for (const auto& r : parsed.rigs) {
+    SyntheticScenarioRigDeclaration mapped{};
+    mapped.key = r.key;
+    mapped.rig_id = r.rig_id;
+    mapped.member_device_keys = r.members;
+    out.rigs.push_back(std::move(mapped));
+  }
+
   out.timeline.reserve(parsed.timeline.size());
   for (const auto& a : parsed.timeline) {
     SyntheticScenarioTimelineAction mapped{};

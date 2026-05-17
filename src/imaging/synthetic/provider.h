@@ -37,6 +37,11 @@ struct SyntheticMetricsSnapshot {
   uint64_t catchup_frames_dropped = 0;
 };
 
+struct SyntheticStagedRigTopology {
+  std::uint64_t rig_id = 0;
+  std::vector<std::string> member_hardware_ids;
+};
+
 class SyntheticProvider final : public ICameraProvider {
 public:
   using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
@@ -118,6 +123,7 @@ public:
   ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
   SyntheticMetricsSnapshot get_metrics_snapshot_for_host() const;
+  std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
 
 private:
   CBProviderStrand strand_;
@@ -137,7 +143,7 @@ private:
   bool timeline_destructive_prereq_ready_(const SyntheticScheduledEvent& ev, const char*& reason) const;
   bool timeline_is_destructive_primitive_(SyntheticEventType type) const;
   void timeline_pump_();
-  bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
+  bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::vector<SyntheticStagedRigTopology>& rigs_out, std::string& error) const;
   static bool has_runtime_gpu_backing_path_() noexcept;
   ProducerBackingCapabilities query_stream_producer_capabilities_(
       const CaptureProfile& profile,
@@ -235,6 +241,7 @@ private:
   uint64_t timeline_seq_ = 0;
   SyntheticTimelineScenario timeline_scenario_{};
   SyntheticCanonicalScenario timeline_canonical_scenario_{};
+  std::vector<SyntheticStagedRigTopology> staged_rig_topology_{};
   bool timeline_canonical_staged_ = false;
   bool timeline_running_ = false;
   bool timeline_paused_ = false;

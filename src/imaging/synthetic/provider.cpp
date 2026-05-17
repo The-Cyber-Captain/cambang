@@ -390,8 +390,10 @@ void SyntheticProvider::timeline_activate_or_dispatch_(const SyntheticScheduledE
 
 bool SyntheticProvider::materialize_staged_canonical_scenario_(
     SyntheticTimelineScenario& out,
+    std::vector<SyntheticStagedRigTopology>& rigs_out,
     std::string& error) const {
   out = {};
+  rigs_out.clear();
   SyntheticScenarioMaterializationOptions opts{};
   SyntheticScenarioMaterializationResult materialized{};
   if (!materialize_synthetic_canonical_scenario(
@@ -406,6 +408,9 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
   // canonical schedule is lowered to executable request-like timeline events.
   // Lifecycle actions must be explicit in the canonical timed actions.
   // EmitFrame remains provider-internal and is not emitted here.
+  rigs_out.reserve(materialized.rigs.size());
+  for (const auto& r : materialized.rigs) { SyntheticStagedRigTopology t{}; t.rig_id = r.rig_id; t.member_hardware_ids = r.member_hardware_ids; rigs_out.push_back(std::move(t)); }
+
   std::vector<SyntheticScheduledEvent> events;
   events.reserve(materialized.executable_schedule.events.size());
 
@@ -1338,7 +1343,8 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
   timeline_pending_destructive_.clear();
   if (timeline_canonical_staged_) {
     std::string error;
-    if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
+    std::vector<SyntheticStagedRigTopology> staged_rigs;
+    if (!materialize_staged_canonical_scenario_(timeline_scenario_, staged_rigs, error)) {
       if (!error.empty()) {
         std::fprintf(stderr, "[Synthetic] canonical scenario materialization failed: %s\n", error.c_str());
       }
@@ -2047,3 +2053,5 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
 }
 
 } // namespace cambang
+
+std::vector<SyntheticStagedRigTopology> SyntheticProvider::get_staged_rig_topology_for_host() const { return staged_rig_topology_; }
