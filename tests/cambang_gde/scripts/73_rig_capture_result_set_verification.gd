@@ -80,7 +80,7 @@ func _try_latch_and_validate_rig_topology() -> void:
 
 	var devices: Array = snapshot.get("devices", [])
 	var rigs: Array = snapshot.get("rigs", [])
-	if devices.is_empty() or rigs.is_empty():
+	if devices.size() != 6 or rigs.size() != 3:
 		return
 
 	var device_id_by_hw: Dictionary = {}

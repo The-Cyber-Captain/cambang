@@ -1305,6 +1305,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_scenario_ = scenario;
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
+  staged_rig_topology_.clear();
   return ProviderResult::success();
 }
 
@@ -1326,6 +1327,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = scenario;
   timeline_canonical_staged_ = true;
+  staged_rig_topology_.clear();
   return ProviderResult::success();
 }
 
@@ -1350,6 +1352,7 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
       }
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
+    staged_rig_topology_ = std::move(staged_rigs);
   }
   for (const auto& ev : timeline_scenario_.events) {
     timeline_schedule_(ev);
@@ -1448,6 +1451,7 @@ ProviderResult SyntheticProvider::shutdown() {
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
+  staged_rig_topology_.clear();
   timeline_running_ = false;
   timeline_paused_ = false;
 
