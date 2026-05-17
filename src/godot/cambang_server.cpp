@@ -688,7 +688,7 @@ godot::Error CamBANGServer::start_scenario() {
     std::vector<SyntheticStagedRigTopology> staged_rigs;
     if (broker->get_synthetic_staged_rig_topology_for_host(staged_rigs)) {
       for (const auto& r : staged_rigs) {
-        (void)runtime_.smoke_set_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids);
+        (void)runtime_.retain_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids);
       }
     }
   }
