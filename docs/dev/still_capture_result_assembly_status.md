@@ -65,8 +65,11 @@ for still-capture result assembly.
 - Current implementation status: orchestration intentionally requires
   caller-supplied `capture_id`; no second `capture_id` allocator was added in
   this layer.
-- Capture-id allocator integration between server/runtime orchestration remains
-  future internal work.
+- Current implementation status: CamBANGServer now has a private server-internal
+  rig-trigger helper that allocates `capture_id` from its existing
+  `next_capture_id_` monotonic allocator and invokes runtime orchestration with
+  caller-supplied `rig_id` + allocated `capture_id` (no second allocator in
+  runtime).
 - Current accept-all placeholder curation is still not final rig
   selection/terminal policy.
 - Release-direction admission model: resolve rig membership to participant
