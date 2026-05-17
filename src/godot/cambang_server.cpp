@@ -3,6 +3,7 @@
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream_result.h"
+#include "godot/cambang_rig.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
@@ -333,6 +334,16 @@ godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id)
   godot::Ref<CamBANGDevice> out;
   out.instantiate();
   out->set_server_and_instance(const_cast<CamBANGServer*>(this), device_instance_id);
+  return out;
+}
+
+godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
+  if (rig_id == 0 || !is_running()) {
+    return godot::Ref<CamBANGRig>();
+  }
+  godot::Ref<CamBANGRig> out;
+  out.instantiate();
+  out->set_server_and_id(const_cast<CamBANGServer*>(this), rig_id);
   return out;
 }
 
@@ -822,6 +833,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set", "capture_id"), &CamBANGServer::get_capture_result_set);

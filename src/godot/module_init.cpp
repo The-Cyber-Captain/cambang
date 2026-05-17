@@ -13,6 +13,7 @@
 
 #include "godot/cambang_server.h"
 #include "godot/cambang_device.h"
+#include "godot/cambang_rig.h"
 #include "godot/cambang_capture_result.h"
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_stream_result.h"
@@ -29,6 +30,7 @@ static void cambang_gde_initialize(godot::ModuleInitializationLevel p_level) {
 
     godot::ClassDB::register_class<cambang::CamBANGServer>();
     godot::ClassDB::register_class<cambang::CamBANGDevice>();
+    godot::ClassDB::register_class<cambang::CamBANGRig>();
     godot::ClassDB::register_class<cambang::CamBANGStreamResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResult>();
     godot::ClassDB::register_class<cambang::CamBANGCaptureResultSet>();

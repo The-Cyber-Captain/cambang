@@ -22,7 +22,7 @@ reporting
 -   **Triggered device capture**: a single still capture requested on a
     device (`CamBANGDevice.trigger_capture()`).
 -   **Triggered rig capture**: a synchronised capture requested on a rig
-    (`CamBANGRig.trigger_sync_capture()`).
+    (`CamBANGRig.trigger_capture()`).
 
 ### 1.2 Ownership and membership
 
