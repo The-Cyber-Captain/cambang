@@ -1387,6 +1387,7 @@ ProviderResult SyntheticProvider::stop_timeline_scenario_for_host() {
   timeline_running_ = false;
   timeline_paused_ = false;
   timeline_pending_destructive_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 

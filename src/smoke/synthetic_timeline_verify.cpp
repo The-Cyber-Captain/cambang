@@ -216,6 +216,21 @@ static uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   return (kOneSecNs * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
 }
 
+static const char* provider_error_label(ProviderError e) {
+  switch (e) {
+    case ProviderError::OK: return "OK";
+    case ProviderError::ERR_NOT_SUPPORTED: return "ERR_NOT_SUPPORTED";
+    case ProviderError::ERR_INVALID_ARGUMENT: return "ERR_INVALID_ARGUMENT";
+    case ProviderError::ERR_BUSY: return "ERR_BUSY";
+    case ProviderError::ERR_BAD_STATE: return "ERR_BAD_STATE";
+    case ProviderError::ERR_PLATFORM_CONSTRAINT: return "ERR_PLATFORM_CONSTRAINT";
+    case ProviderError::ERR_TRANSIENT_FAILURE: return "ERR_TRANSIENT_FAILURE";
+    case ProviderError::ERR_PROVIDER_FAILED: return "ERR_PROVIDER_FAILED";
+    case ProviderError::ERR_SHUTTING_DOWN: return "ERR_SHUTTING_DOWN";
+    default: return "ERR_UNKNOWN";
+  }
+}
+
 // Drive the synthetic virtual clock deterministically.
 static void tick_synthetic(CoreRuntime& rt, uint64_t dt_ns) {
   auto* p = rt.attached_provider();
@@ -420,9 +435,22 @@ static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov
   constexpr uint64_t kDid5After = 9205;
   constexpr uint64_t kDid5AfterStop = 9305;
 
-  if (!prov.open_device("synthetic:0", kDid0, kBaseRoot + 0).ok()) return 1;
-  if (!prov.open_device("synthetic:1", kDid1, kBaseRoot + 1).ok()) return 1;
-  if (prov.open_device("synthetic:5", kDid5Before, kBaseRoot + 5).ok()) return 1;
+  auto step_fail = [](const std::string& step, ProviderError err) -> int {
+    std::cerr << "staged_endpoint_span_inference FAIL: " << step
+              << ", got " << provider_error_label(err) << "\n";
+    return 1;
+  };
+  auto step_fail_plain = [](const std::string& step) -> int {
+    std::cerr << "staged_endpoint_span_inference FAIL: " << step << "\n";
+    return 1;
+  };
+
+  auto r = prov.open_device("synthetic:0", kDid0, kBaseRoot + 0);
+  if (!r.ok()) return step_fail("expected synthetic:0 open to succeed before staging", r.code);
+  r = prov.open_device("synthetic:1", kDid1, kBaseRoot + 1);
+  if (!r.ok()) return step_fail("expected synthetic:1 open to succeed before staging", r.code);
+  r = prov.open_device("synthetic:5", kDid5Before, kBaseRoot + 5);
+  if (r.ok()) return step_fail_plain("expected synthetic:5 open to be rejected before staging");
   (void)prov.close_device(kDid0);
   (void)prov.close_device(kDid1);
 
@@ -433,14 +461,19 @@ static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov
     d.endpoint_index = i;
     canonical.devices.push_back(std::move(d));
   }
-  if (!prov.set_timeline_scenario_for_host(canonical).ok()) return 1;
-  if (!prov.start_timeline_scenario_for_host().ok()) return 1;
+  r = prov.set_timeline_scenario_for_host(canonical);
+  if (!r.ok()) return step_fail("expected canonical scenario staging to succeed", r.code);
+  r = prov.start_timeline_scenario_for_host();
+  if (!r.ok()) return step_fail("expected staged canonical scenario start to succeed", r.code);
 
-  if (!prov.open_device("synthetic:5", kDid5After, kBaseRoot + 15).ok()) return 1;
+  r = prov.open_device("synthetic:5", kDid5After, kBaseRoot + 15);
+  if (!r.ok()) return step_fail("expected synthetic:5 open to succeed after staged endpoint widening", r.code);
   (void)prov.close_device(kDid5After);
 
-  if (!prov.stop_timeline_scenario_for_host().ok()) return 1;
-  if (prov.open_device("synthetic:5", kDid5AfterStop, kBaseRoot + 25).ok()) return 1;
+  r = prov.stop_timeline_scenario_for_host();
+  if (!r.ok()) return step_fail("expected staged scenario stop to succeed", r.code);
+  r = prov.open_device("synthetic:5", kDid5AfterStop, kBaseRoot + 25);
+  if (r.ok()) return step_fail_plain("expected synthetic:5 open to be rejected after staged scenario stop");
   return 0;
 }
 
