@@ -73,6 +73,7 @@ Observable boundary contract:
 
 - `CamBANGServer.start()`
 - `CamBANGServer.stop()`
+- `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
 - `signal state_published(gen, version, topology_version)`
 
@@ -84,14 +85,17 @@ The full behavioural contract for the Godot-facing runtime boundary
 tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
+Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
+entry point; rig capture is triggered via `CamBANGRig.trigger_capture()`.
+
 ### `CamBANGRig`
 
-User-created multi-camera coordinator used to perform synchronised
+Godot-facing multi-camera coordinator used to perform synchronised
 capture across multiple devices.
 
 Primary lifecycle controls:
 
-- `arm()` / `disarm()`
+- `get_id()`
 - `trigger_capture()`
 
 Rig-triggered sync capture has priority over standalone activity on
@@ -107,11 +111,16 @@ Primary lifecycle controls:
 - `engage()` / `disengage()`
 - `set_warm_policy(...)`
 - `set_still_capture_profile(profile)`
+- `get_instance_id()`
 - `trigger_capture()`
 
 `CamBANGDevice` is the public Godot-facing control point for device-level
 still capture. That public surface does not imply any required 1:1 parity
 with provider-internal or native-object execution details.
+
+Compatibility note:
+
+- `CamBANGDevice.get_device_instance_id()` has been removed.
 
 ### `CamBANGStream`
 
