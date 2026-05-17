@@ -66,6 +66,7 @@ static void usage(const char* argv0) {
       << "  basic_lifecycle\n"
       << "  invalid_sequence\n"
       << "  catchup_stress\n"
+      << "  staged_endpoint_span_inference\n"
       << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n";
 }
 
@@ -411,6 +412,38 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
   return 0;
 }
 
+static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov) {
+  constexpr uint64_t kBaseRoot = 9000;
+  constexpr uint64_t kDid0 = 9100;
+  constexpr uint64_t kDid1 = 9101;
+  constexpr uint64_t kDid5Before = 9105;
+  constexpr uint64_t kDid5After = 9205;
+  constexpr uint64_t kDid5AfterStop = 9305;
+
+  if (!prov.open_device("synthetic:0", kDid0, kBaseRoot + 0).ok()) return 1;
+  if (!prov.open_device("synthetic:1", kDid1, kBaseRoot + 1).ok()) return 1;
+  if (prov.open_device("synthetic:5", kDid5Before, kBaseRoot + 5).ok()) return 1;
+  (void)prov.close_device(kDid0);
+  (void)prov.close_device(kDid1);
+
+  SyntheticCanonicalScenario canonical{};
+  for (uint32_t i = 0; i <= 5; ++i) {
+    SyntheticScenarioDeviceDeclaration d{};
+    d.key = std::string("Device") + static_cast<char>('A' + static_cast<int>(i));
+    d.endpoint_index = i;
+    canonical.devices.push_back(std::move(d));
+  }
+  if (!prov.set_timeline_scenario_for_host(canonical).ok()) return 1;
+  if (!prov.start_timeline_scenario_for_host().ok()) return 1;
+
+  if (!prov.open_device("synthetic:5", kDid5After, kBaseRoot + 15).ok()) return 1;
+  (void)prov.close_device(kDid5After);
+
+  if (!prov.stop_timeline_scenario_for_host().ok()) return 1;
+  if (prov.open_device("synthetic:5", kDid5AfterStop, kBaseRoot + 25).ok()) return 1;
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -482,6 +515,8 @@ int main(int argc, char** argv) {
     r = run_invalid_sequence(rt, buf, opt);
   } else if (opt.verify_case == "catchup_stress") {
     r = run_catchup_stress(rt, buf, opt, period);
+  } else if (opt.verify_case == "staged_endpoint_span_inference") {
+    r = run_staged_endpoint_span_inference_regression(prov);
   } else {
     std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
     usage(argv[0]);
