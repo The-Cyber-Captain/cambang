@@ -61,6 +61,10 @@ int main() {
   assert(capture_result);
   assert(capture_result->capture_id == 77);
   assert(capture_result->device_instance_id == 100);
+  assert(capture_result->default_image.image_member_index == 0);
+  assert(capture_result->default_image.role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED);
+  assert(capture_result->default_image.payload.width == 2);
+  assert(capture_result->additional_images.empty());
 
   auto capture_set = store.get_capture_result_set(77);
   assert(capture_set.size() == 2);

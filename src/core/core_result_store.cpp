@@ -132,6 +132,8 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
 
   // Current default-only still-capture behavior: retained still payload is
   // accepted as the CaptureResult default image.
+  capture_result->default_image.image_member_index = 0;
+  capture_result->default_image.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
   capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
   capture_result->default_image.payload = payload;
 

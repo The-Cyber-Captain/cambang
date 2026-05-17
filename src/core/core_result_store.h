@@ -57,7 +57,17 @@ struct CoreStreamResultData {
 };
 
 struct CoreCaptureResultData {
-  struct ImageData {
+  enum class ImageMemberRole : uint8_t {
+    DEFAULT_METERED = 0,
+    ADDITIONAL_BRACKET = 1,
+  };
+
+  // Image member of a single CaptureResult.
+  // Result-level shared facts stay on CoreCaptureResultData; only genuinely
+  // per-image fields live here.
+  struct ImageMemberData {
+    uint32_t image_member_index = 0;
+    ImageMemberRole role = ImageMemberRole::DEFAULT_METERED;
     uint64_t capture_timestamp_ns = 0;
     CoreResultPayloadCpuPacked payload{};
 
@@ -74,8 +84,8 @@ struct CoreCaptureResultData {
   uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
 
-  ImageData default_image{};
-  std::vector<ImageData> additional_images{};
+  ImageMemberData default_image{};
+  std::vector<ImageMemberData> additional_images{};
 
   CoreImageFactBundle facts{};
 };
