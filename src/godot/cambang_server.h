@@ -158,6 +158,9 @@ private:
       SyntheticRole synthetic_role,
       TimingDriver timing_driver);
 
+  // Server-internal helper for rig-trigger orchestration (not Godot-bound).
+  uint64_t trigger_rig_capture_internal_(uint64_t rig_id);
+
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;

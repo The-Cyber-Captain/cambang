@@ -411,6 +411,23 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   return capture_id;
 }
 
+uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
+  if (rig_id == 0 || !is_running() || !provider_) {
+    return 0;
+  }
+
+  uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  if (capture_id == 0) {
+    capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  const auto orchestration = runtime_.orchestrate_rig_capture_with_capture_id_for_server(rig_id, capture_id);
+  if (!orchestration.ok) {
+    return 0;
+  }
+  return capture_id;
+}
+
 void CamBANGServer::_ensure_tick_connected() {
   if (tick_connected_) {
     return;
