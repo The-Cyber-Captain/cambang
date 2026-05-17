@@ -202,6 +202,7 @@ private:
 
   static void release_frame_(void* user, const FrameView* frame);
   bool is_known_hardware_id_(const std::string& hardware_id) const;
+  uint32_t effective_endpoint_count_() const noexcept;
 
   uint64_t alloc_native_id_(NativeObjectType type);
   void emit_native_create_device_(const DeviceState& d);
@@ -242,6 +243,7 @@ private:
   SyntheticTimelineScenario timeline_scenario_{};
   SyntheticCanonicalScenario timeline_canonical_scenario_{};
   std::vector<SyntheticStagedRigTopology> staged_rig_topology_{};
+  uint32_t staged_required_endpoint_count_ = 0;
   bool timeline_canonical_staged_ = false;
   bool timeline_running_ = false;
   bool timeline_paused_ = false;
