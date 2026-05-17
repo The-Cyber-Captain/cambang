@@ -509,6 +509,7 @@ int main(int argc, char** argv) {
   }
 
   int r = 0;
+  std::string failure_reason;
   if (opt.verify_case == "basic_lifecycle") {
     r = run_basic_lifecycle(rt, buf, opt, period);
   } else if (opt.verify_case == "invalid_sequence") {
@@ -521,6 +522,10 @@ int main(int argc, char** argv) {
     std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
     usage(argv[0]);
     r = 2;
+    failure_reason = "unknown_verify_case";
+  }
+  if (r != 0 && failure_reason.empty()) {
+    failure_reason = "case_returned_nonzero";
   }
 
   // Provider shutdown choreography.
@@ -532,6 +537,9 @@ int main(int argc, char** argv) {
 
   if (r == 0) {
     std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";
+  } else {
+    std::cout << "FAIL: synthetic_timeline_verify failed (verify_case="
+              << opt.verify_case << ", reason=" << failure_reason << ")\n";
   }
   return r;
 }
