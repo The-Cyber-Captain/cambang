@@ -129,8 +129,8 @@ func _try_latch_and_validate_rig_topology() -> void:
 	var id_e := int(device_id_by_hw["synthetic:4"])
 	var id_f := int(device_id_by_hw["synthetic:5"])
 
-	var expected_a := _sorted_ids([id_a, id_b])
-	var expected_b := _sorted_ids([id_e])
+	var expected_a := _sorted_ids([id_a, id_e])
+	var expected_b := _sorted_ids([id_b])
 	var expected_c := _sorted_ids([id_c, id_f])
 
 	var found_rig_a := false
@@ -170,12 +170,12 @@ func _try_latch_and_validate_rig_topology() -> void:
 	_require(found_rig_a, "step %d FAIL: Rig A signature [A,E] not found" % _step)
 	_require(found_rig_b, "step %d FAIL: Rig B signature [B] not found" % _step)
 	_require(found_rig_c, "step %d FAIL: Rig C signature [C,F] not found" % _step)
-	_step_ok("expected rigs present (A=[A,B], B=[E], C=[C,F])")
+	_step_ok("expected rigs present (A=[A,E], B=[B], C=[C,F])")
 
 	_require(not all_rig_members.has(id_d), "step %d FAIL: standalone DeviceD unexpectedly appears in rig membership" % _step)
 	_step_ok("standalone DeviceD verified as non-member")
 
-	_excluded_device_ids = [id_c, id_d, id_e, id_f]
+	_excluded_device_ids = [id_b, id_c, id_d, id_f]
 
 
 func _try_latch_rig_a_capture_readiness() -> void:

@@ -410,6 +410,11 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
   // EmitFrame remains provider-internal and is not emitted here.
   rigs_out.reserve(materialized.rigs.size());
   for (const auto& r : materialized.rigs) { SyntheticStagedRigTopology t{}; t.rig_id = r.rig_id; t.member_hardware_ids = r.member_hardware_ids; rigs_out.push_back(std::move(t)); }
+  uint32_t required_endpoint_count = 0;
+  for (const auto& d : materialized.devices) {
+    required_endpoint_count = std::max(required_endpoint_count, d.endpoint_index + 1u);
+  }
+  const_cast<SyntheticProvider*>(this)->staged_required_endpoint_count_ = required_endpoint_count;
 
   std::vector<SyntheticScheduledEvent> events;
   events.reserve(materialized.executable_schedule.events.size());
@@ -613,7 +618,11 @@ bool SyntheticProvider::is_known_hardware_id_(const std::string& hardware_id) co
   if (!end || *end != '\0' || idx < 0) {
     return false;
   }
-  return static_cast<uint32_t>(idx) < cfg_.endpoint_count;
+  return static_cast<uint32_t>(idx) < effective_endpoint_count_();
+}
+
+uint32_t SyntheticProvider::effective_endpoint_count_() const noexcept {
+  return std::max(cfg_.endpoint_count, staged_required_endpoint_count_);
 }
 
 uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
@@ -1306,6 +1315,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
   staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1328,6 +1338,7 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_canonical_scenario_ = scenario;
   timeline_canonical_staged_ = true;
   staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1452,6 +1463,7 @@ ProviderResult SyntheticProvider::shutdown() {
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
   staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
 

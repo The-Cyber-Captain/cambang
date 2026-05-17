@@ -10,8 +10,8 @@
   ],
   "streams": [],
   "rigs": [
-    {"key":"RigA","rig_id":1001,"members":["DeviceA","DeviceB"]},
-    {"key":"RigB","rig_id":1002,"members":["DeviceE"]},
+    {"key":"RigA","rig_id":1001,"members":["DeviceA","DeviceE"]},
+    {"key":"RigB","rig_id":1002,"members":["DeviceB"]},
     {"key":"RigC","rig_id":1003,"members":["DeviceC","DeviceF"]}
   ],
   "timeline": [
