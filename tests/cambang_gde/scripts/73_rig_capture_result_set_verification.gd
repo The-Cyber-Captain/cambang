@@ -22,6 +22,7 @@ var _capture_id := 0
 var _rig_a_id := 0
 var _rig_a_members: Array[int] = []
 var _excluded_device_ids: Array[int] = []
+var _rig_a_capture_ready := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -56,11 +57,33 @@ func _process(_delta: float) -> void:
 		return
 
 	if Time.get_ticks_msec() - _start_ms > TOTAL_TIMEOUT_MS:
+		if _rig_a_id != 0 and not _rig_a_capture_ready:
+			var snapshot = CamBANGServer.get_state_snapshot()
+			var diag_lines: Array[String] = []
+			if snapshot != null:
+				var by_id: Dictionary = {}
+				for dv in snapshot.get("devices", []):
+					var d: Dictionary = dv
+					by_id[int(d.get("instance_id", 0))] = d
+				for member_id in _rig_a_members:
+					if by_id.has(member_id):
+						var d: Dictionary = by_id[member_id]
+						diag_lines.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [
+							int(member_id), str(d.get("hardware_id", "")),
+							int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
+							int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+						])
+			_fail("step %d FAIL: capture readiness timeout for Rig A members: %s" % [_step, "; ".join(diag_lines)])
+			return
 		_fail("step %d FAIL: total verification timeout" % _step)
 		return
 
 	if _rig_a_id == 0:
 		_try_latch_and_validate_rig_topology()
+		return
+
+	if not _rig_a_capture_ready:
+		_try_latch_rig_a_capture_readiness()
 		return
 
 	if _capture_id == 0:
@@ -155,15 +178,69 @@ func _try_latch_and_validate_rig_topology() -> void:
 	_excluded_device_ids = [id_b, id_c, id_d, id_f]
 
 
+func _try_latch_rig_a_capture_readiness() -> void:
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return
+	var devices: Array = snapshot.get("devices", [])
+	if devices.is_empty():
+		return
+
+	var by_id: Dictionary = {}
+	for dv in devices:
+		var d: Dictionary = dv
+		by_id[int(d.get("instance_id", 0))] = d
+
+	var pending: Array[String] = []
+	for member_id in _rig_a_members:
+		if not by_id.has(member_id):
+			pending.append("id=%d missing-device-row" % int(member_id))
+			continue
+		var d: Dictionary = by_id[member_id]
+		var w := int(d.get("capture_width", 0))
+		var h := int(d.get("capture_height", 0))
+		var fmt := int(d.get("capture_format", 0))
+		var cpv := int(d.get("capture_profile_version", 0))
+		if w <= 0 or h <= 0 or fmt == 0 or cpv <= 0:
+			pending.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [int(member_id), str(d.get("hardware_id", "")), w, h, fmt, cpv])
+
+	if not pending.is_empty():
+		return
+
+	_rig_a_capture_ready = true
+	_step_ok("Rig A member capture profiles ready (capture_width/height/format/profile_version)")
+
+
 func _trigger_rig_a_capture() -> void:
 	var rig = CamBANGServer.get_rig(_rig_a_id)
 	_require(rig != null, "step %d FAIL: CamBANGServer.get_rig() returned null" % _step)
 	_require(rig.get_class() == "CamBANGRig", "step %d FAIL: get_rig() must return CamBANGRig" % _step)
 	_require(int(rig.get_id()) == _rig_a_id, "step %d FAIL: rig.get_id() mismatch" % _step)
+	if _done:
+		return
 	_step_ok("selected Rig A object verified")
 
 	_capture_id = int(rig.trigger_capture())
-	_require(_capture_id != 0, "step %d FAIL: rig.trigger_capture() returned zero capture id" % _step)
+	if _capture_id == 0:
+		var snapshot = CamBANGServer.get_state_snapshot()
+		var diag_lines: Array[String] = []
+		if snapshot != null:
+			var by_id: Dictionary = {}
+			for dv in snapshot.get("devices", []):
+				var d: Dictionary = dv
+				by_id[int(d.get("instance_id", 0))] = d
+			for member_id in _rig_a_members:
+				if by_id.has(member_id):
+					var d: Dictionary = by_id[member_id]
+					diag_lines.append("id=%d hw=%s w=%d h=%d fmt=%d cpv=%d" % [
+						int(member_id), str(d.get("hardware_id", "")),
+						int(d.get("capture_width", 0)), int(d.get("capture_height", 0)),
+						int(d.get("capture_format", 0)), int(d.get("capture_profile_version", 0))
+					])
+				else:
+					diag_lines.append("id=%d missing-device-row" % int(member_id))
+		_fail("step %d FAIL: rig.trigger_capture() returned zero capture id; RigA member diagnostics: %s" % [_step, "; ".join(diag_lines)])
+		return
 	_step_ok("rig capture trigger accepted (capture_id=%d)" % _capture_id)
 	_result_set_poll_start_ms = Time.get_ticks_msec()
 
