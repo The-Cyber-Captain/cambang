@@ -112,6 +112,9 @@ public:
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
                     uint64_t capture_timestamp_ns);
+  bool append_additional_capture_image(uint64_t capture_id,
+                                       uint64_t device_instance_id,
+                                       CoreCaptureResultData::ImageMemberData image_member);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
@@ -127,6 +130,7 @@ public:
 private:
   static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
+  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
   static SharedCaptureResultData build_default_image_capture_result(const FrameView& frame,
                                                                     const CoreResultPayloadCpuPacked& payload,
                                                                     uint64_t capture_timestamp_ns);

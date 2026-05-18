@@ -118,6 +118,34 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   return frame.stream_id != 0 || frame.capture_id != 0;
 }
 
+bool CoreResultStore::append_additional_capture_image(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    CoreCaptureResultData::ImageMemberData image_member) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto cap_it = capture_results_by_capture_id_.find(capture_id);
+  if (cap_it == capture_results_by_capture_id_.end()) {
+    return false;
+  }
+  auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end() || !dev_it->second) {
+    return false;
+  }
+  if (!has_valid_capture_image_member_payload(image_member.payload)) {
+    return false;
+  }
+  if (image_member.role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET) {
+    return false;
+  }
+
+  auto updated = std::make_shared<CoreCaptureResultData>(*dev_it->second);
+  const uint32_t next_index = 1u + static_cast<uint32_t>(updated->additional_images.size());
+  image_member.image_member_index = next_index;
+  updated->additional_images.push_back(std::move(image_member));
+  dev_it->second = std::move(updated);
+  return true;
+}
+
 SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
     const CoreResultPayloadCpuPacked& payload,
@@ -143,6 +171,19 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
   facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
   capture_result->facts = facts;
   return capture_result;
+}
+
+bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload) {
+  if (payload.width == 0 || payload.height == 0) {
+    return false;
+  }
+  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+    return false;
+  }
+  if (payload.bytes.empty()) {
+    return false;
+  }
+  return true;
 }
 
 SharedStreamResultData CoreResultStore::get_latest_stream_result(uint64_t stream_id) const {
