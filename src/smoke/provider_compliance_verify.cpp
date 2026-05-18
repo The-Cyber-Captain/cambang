@@ -69,6 +69,7 @@ struct EventRec {
   uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint32_t pixel_sig = 0;
+  CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
   CaptureTimestamp ts{};
 };
 
@@ -102,6 +103,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
                      (static_cast<uint32_t>(p[2]) << 16) |
                      (static_cast<uint32_t>(p[3]) << 24);
     }
+    ev.capture_image_routing = frame.capture_image_routing;
     events.push_back(ev);
     if (frame.release) {
       frame.release(frame.release_user, &frame);
@@ -1345,12 +1347,86 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     std::cerr << "FAIL synthetic still-only lifecycle ordering invalid\n";
     return false;
   }
+  int frame_count = 0;
+  for (const auto& ev : cb.events) {
+    if (ev.tag == "frame") {
+      ++frame_count;
+      if (ev.capture_image_routing != CaptureImageRouting::DEFAULT_METERED) {
+        std::cerr << "FAIL synthetic still-only frame routing expected DEFAULT_METERED\n";
+        return false;
+      }
+    }
+  }
+  if (frame_count != 1) {
+    std::cerr << "FAIL synthetic still-only expected exactly one frame\n";
+    return false;
+  }
   if (count_events_by_tag_and_type(
           cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
     std::cerr << "FAIL synthetic still-only unexpectedly realized stream native object\n";
     return false;
   }
   return assert_native_balance(cb.events, "synthetic_still_only");
+}
+
+bool run_synthetic_multi_member_still_sequence_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+
+  if (!provider.initialize(&cb).ok() || !provider.open_device("synthetic:0", 43, 4301).ok()) {
+    std::cerr << "FAIL synthetic multi-member setup failed\n";
+    return false;
+  }
+
+  CaptureRequest cap{};
+  cap.capture_id = 8003;
+  cap.device_instance_id = 43;
+  cap.width = 64;
+  cap.height = 64;
+  cap.format_fourcc = FOURCC_RGBA;
+  cap.image_sequence = make_default_metered_capture_image_sequence();
+  cap.image_sequence.members.push_back(
+      CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, 1000});
+  if (!is_valid_capture_image_sequence_request(cap.image_sequence, provider.supports_multi_image_still_sequence())) {
+    std::cerr << "FAIL synthetic multi-member request validation rejected expected valid sequence\n";
+    return false;
+  }
+  if (!provider.trigger_capture(cap).ok()) {
+    std::cerr << "FAIL synthetic multi-member trigger_capture failed\n";
+    return false;
+  }
+  if (!provider.close_device(43).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic multi-member teardown failed\n";
+    return false;
+  }
+
+  int started_count = 0;
+  int completed_count = 0;
+  std::vector<EventRec> frame_events;
+  for (const auto& ev : cb.events) {
+    if (ev.tag == "capture_started" && ev.id == cap.capture_id) ++started_count;
+    if (ev.tag == "capture_completed" && ev.id == cap.capture_id) ++completed_count;
+    if (ev.tag == "frame") frame_events.push_back(ev);
+  }
+  if (started_count != 1 || completed_count != 1 || frame_events.size() != 2) {
+    std::cerr << "FAIL synthetic multi-member lifecycle/frame count mismatch\n";
+    return false;
+  }
+  if (frame_events[0].capture_image_routing != CaptureImageRouting::DEFAULT_METERED ||
+      frame_events[1].capture_image_routing != CaptureImageRouting::ADDITIONAL_BRACKET) {
+    std::cerr << "FAIL synthetic multi-member routing mismatch\n";
+    return false;
+  }
+  if (frame_events[0].pixel_sig == frame_events[1].pixel_sig) {
+    std::cerr << "FAIL synthetic multi-member expected deterministic pixel difference\n";
+    return false;
+  }
+  return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
 }
 
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
@@ -1454,6 +1530,7 @@ int main(int argc, char** argv) {
   if (!run_stub_provider_sanity_check()) return 1;
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
   if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
+  if (!run_synthetic_multi_member_still_sequence_check()) return 1;
   if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
   // 7) External scenario file path (first-class, optional input).

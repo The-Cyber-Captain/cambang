@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <chrono>
 #include <cstring>
@@ -69,6 +70,23 @@ uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
     return std::numeric_limits<uint32_t>::max();
   }
   return static_cast<uint32_t>(parsed);
+}
+
+void apply_capture_exposure_compensation_rgba8_(
+    std::vector<std::uint8_t>& pixels,
+    int32_t exposure_compensation_milli_ev) {
+  if (exposure_compensation_milli_ev == 0) {
+    return;
+  }
+  const double gain = std::pow(2.0, static_cast<double>(exposure_compensation_milli_ev) / 1000.0);
+  for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
+    const double r = static_cast<double>(pixels[i]) * gain;
+    const double g = static_cast<double>(pixels[i + 1]) * gain;
+    const double b = static_cast<double>(pixels[i + 2]) * gain;
+    pixels[i] = static_cast<std::uint8_t>(std::clamp(r, 0.0, 255.0));
+    pixels[i + 1] = static_cast<std::uint8_t>(std::clamp(g, 0.0, 255.0));
+    pixels[i + 2] = static_cast<std::uint8_t>(std::clamp(b, 0.0, 255.0));
+  }
 }
 
 uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
@@ -1024,10 +1042,7 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   const uint32_t stride = req.width * 4u;
   const size_t frame_size = static_cast<size_t>(stride) * static_cast<size_t>(req.height);
-  auto bytes = std::make_shared<std::vector<std::uint8_t>>();
-  bytes->resize(frame_size);
-  std::vector<std::uint8_t> gpu_staging;
-  gpu_staging.resize(frame_size);
+  std::vector<std::uint8_t> gpu_staging(frame_size);
 
   bool preset_valid = true;
   PatternSpec spec = to_pattern_spec(req.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
@@ -1051,22 +1066,6 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   CpuPackedPatternRenderer renderer{};
   renderer.render_into(spec, dst, ov);
-  const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
-      gpu_staging.data(),
-      req.width,
-      req.height,
-      stride,
-      *bytes);
-  if (!gpu_ok) {
-    std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
-  }
-
-  if (fmt == FOURCC_BGRA) {
-    for (size_t i = 0; i + 3 < bytes->size(); i += 4) {
-      std::swap((*bytes)[i], (*bytes)[i + 2]);
-    }
-  }
-
   retain_native_acquisition_session_for_capture_(dev_it->second);
   if (dev_it->second.acquisition_session_capture_refs == 0) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -1077,28 +1076,56 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  FrameView fv{};
-  fv.device_instance_id = req.device_instance_id;
-  fv.stream_id = 0;
-  fv.acquisition_session_id = capture_acquisition_session_id;
-  fv.capture_id = req.capture_id;
-  fv.width = req.width;
-  fv.height = req.height;
-  fv.format_fourcc = fmt;
-  fv.capture_timestamp.value = capture_ts_ns;
-  fv.capture_timestamp.tick_ns = 1;
-  fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = bytes->data();
-  fv.size_bytes = bytes->size();
-  fv.stride_bytes = stride;
-
-  auto* lease = new FrameReleaseLease();
-  lease->bytes = bytes;
-  fv.release = &SyntheticProvider::release_frame_;
-  fv.release_user = lease;
-
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
-  strand_.post_frame(fv);
+  CaptureImageSequenceRequest fallback_default_sequence;
+  const auto* members = &req.image_sequence.members;
+  if (members->empty()) {
+    fallback_default_sequence = make_default_metered_capture_image_sequence();
+    members = &fallback_default_sequence.members;
+  }
+  for (size_t i = 0; i < members->size(); ++i) {
+    const auto& member = (*members)[i];
+    auto bytes = std::make_shared<std::vector<std::uint8_t>>();
+    bytes->resize(frame_size);
+    const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
+        gpu_staging.data(),
+        req.width,
+        req.height,
+        stride,
+        *bytes);
+    if (!gpu_ok) {
+      std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
+    }
+    apply_capture_exposure_compensation_rgba8_(*bytes, member.exposure_compensation_milli_ev);
+    if (fmt == FOURCC_BGRA) {
+      for (size_t bi = 0; bi + 3 < bytes->size(); bi += 4) {
+        std::swap((*bytes)[bi], (*bytes)[bi + 2]);
+      }
+    }
+
+    FrameView fv{};
+    fv.device_instance_id = req.device_instance_id;
+    fv.stream_id = 0;
+    fv.acquisition_session_id = capture_acquisition_session_id;
+    fv.capture_id = req.capture_id;
+    fv.width = req.width;
+    fv.height = req.height;
+    fv.format_fourcc = fmt;
+    fv.capture_timestamp.value = capture_ts_ns;
+    fv.capture_timestamp.tick_ns = 1;
+    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    fv.capture_image_routing = (i == 0)
+        ? CaptureImageRouting::DEFAULT_METERED
+        : CaptureImageRouting::ADDITIONAL_BRACKET;
+    fv.data = bytes->data();
+    fv.size_bytes = bytes->size();
+    fv.stride_bytes = stride;
+    auto* lease = new FrameReleaseLease();
+    lease->bytes = bytes;
+    fv.release = &SyntheticProvider::release_frame_;
+    fv.release_user = lease;
+    strand_.post_frame(fv);
+  }
   strand_.post_capture_completed(req.capture_id, req.device_instance_id);
   release_native_acquisition_session_for_capture_(req.device_instance_id);
   return ProviderResult::success();

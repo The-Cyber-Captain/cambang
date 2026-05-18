@@ -155,6 +155,7 @@ enum class CaptureImageRequestMemberRole : uint8_t {
 struct CaptureImageRequestMember {
   uint32_t image_member_index = 0;
   CaptureImageRequestMemberRole role = CaptureImageRequestMemberRole::DEFAULT_METERED;
+  int32_t exposure_compensation_milli_ev = 0;
 };
 
 struct CaptureImageSequenceRequest {
@@ -174,7 +175,8 @@ inline bool is_valid_capture_image_sequence_request(
     return false;
   }
   if (seq.members[0].image_member_index != 0u ||
-      seq.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+      seq.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED ||
+      seq.members[0].exposure_compensation_milli_ev != 0) {
     return false;
   }
   for (size_t i = 0; i < seq.members.size(); ++i) {
