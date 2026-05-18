@@ -657,6 +657,14 @@ static int test_rig_preflight_materialization_smoke() {
       rt.stop();
       return 1;
     }
+    const auto& members = res.participants[0].request.image_sequence.members;
+    if (members.size() != 1 ||
+        members[0].image_member_index != 0 ||
+        members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+      std::cerr << "Expected rig preflight materialized request with one default-metered image member\n";
+      rt.stop();
+      return 1;
+    }
   }
 
   // Duplicate resolved participant (same hardware id listed twice).
@@ -672,6 +680,38 @@ static int test_rig_preflight_materialization_smoke() {
       rt.stop();
       return 1;
     }
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_device_capture_request_materialization_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (device materialization smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (device materialization smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  CaptureRequest req{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req)) {
+    std::cerr << "Expected materialized capture request for live device\n";
+    rt.stop();
+    return 1;
+  }
+  if (req.image_sequence.members.size() != 1 ||
+      req.image_sequence.members[0].image_member_index != 0 ||
+      req.image_sequence.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+    std::cerr << "Expected device materialized request with one default-metered image member\n";
+    rt.stop();
+    return 1;
   }
 
   rt.stop();
@@ -796,6 +836,33 @@ static int test_rig_bundle_submission_smoke() {
   const auto submit_ok = rt.smoke_submit_admitted_rig_bundle(admitted_ok);
   if (!submit_ok.ok || submit_ok.submitted_count != admitted_ok.participants.size()) {
     std::cerr << "Expected successful participant submissions\n";
+    rt.stop();
+    return 1;
+  }
+  if (admitted_ok.participants[0].request.image_sequence.members.size() != 1 ||
+      admitted_ok.participants[0].request.image_sequence.members[0].image_member_index != 0 ||
+      admitted_ok.participants[0].request.image_sequence.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+    std::cerr << "Expected one-member default-metered sequence in admitted request\n";
+    rt.stop();
+    return 1;
+  }
+
+  // Multi-image request rejected when provider lacks multi-image capability.
+  auto multi_member_invalid = admitted_ok;
+  multi_member_invalid.capture_id = 9104;
+  multi_member_invalid.participants[0].request.capture_id = 9104;
+  multi_member_invalid.participants[0].request.image_sequence.members.push_back(
+      CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET});
+  if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9104, preflight_ok).ok) {
+    std::cerr << "Failed to admit cohort for multi-image rejection case\n";
+    rt.stop();
+    return 1;
+  }
+  const auto multi_member_fail = rt.smoke_submit_admitted_rig_bundle(multi_member_invalid);
+  if (multi_member_fail.ok ||
+      multi_member_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
+      multi_member_fail.provider_error_code != static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT)) {
+    std::cerr << "Expected deterministic rejection for two-member sequence without provider support\n";
     rt.stop();
     return 1;
   }
@@ -953,6 +1020,10 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
 
   const auto set = rt.get_capture_result_set(ok_capture_id);
   if (set.size() != 1 || !set[0] || set[0]->capture_id != ok_capture_id) {
+    rt.stop();
+    return 1;
+  }
+  if (!set[0]->additional_images.empty()) {
     rt.stop();
     return 1;
   }
@@ -1142,6 +1213,7 @@ int main(int argc, char** argv) {
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
+    if (int r = test_device_capture_request_materialization_smoke()) return r;
     if (int r = test_rig_preflight_materialization_smoke()) return r;
     if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
     if (int r = test_rig_bundle_submission_smoke()) return r;

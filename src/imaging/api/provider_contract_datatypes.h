@@ -147,6 +147,56 @@ struct CaptureTemplate {
   PictureConfig picture{};
 };
 
+enum class CaptureImageRequestMemberRole : uint8_t {
+  DEFAULT_METERED = 0,
+  ADDITIONAL_BRACKET = 1,
+};
+
+struct CaptureImageRequestMember {
+  uint32_t image_member_index = 0;
+  CaptureImageRequestMemberRole role = CaptureImageRequestMemberRole::DEFAULT_METERED;
+};
+
+struct CaptureImageSequenceRequest {
+  std::vector<CaptureImageRequestMember> members{};
+};
+
+inline CaptureImageSequenceRequest make_default_metered_capture_image_sequence() {
+  CaptureImageSequenceRequest seq{};
+  seq.members.push_back(CaptureImageRequestMember{0u, CaptureImageRequestMemberRole::DEFAULT_METERED});
+  return seq;
+}
+
+inline bool is_valid_capture_image_sequence_request(
+    const CaptureImageSequenceRequest& seq,
+    bool supports_multi_image_still_sequence) noexcept {
+  if (seq.members.empty()) {
+    return false;
+  }
+  if (seq.members[0].image_member_index != 0u ||
+      seq.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+    return false;
+  }
+  for (size_t i = 0; i < seq.members.size(); ++i) {
+    const auto& m = seq.members[i];
+    if (m.image_member_index != static_cast<uint32_t>(i)) {
+      return false;
+    }
+    if (i > 0) {
+      if (m.role == CaptureImageRequestMemberRole::DEFAULT_METERED) {
+        return false;
+      }
+      if (m.role != CaptureImageRequestMemberRole::ADDITIONAL_BRACKET) {
+        return false;
+      }
+    }
+  }
+  if (seq.members.size() > 1 && !supports_multi_image_still_sequence) {
+    return false;
+  }
+  return true;
+}
+
 // Convert PictureConfig + geometry to a renderer PatternSpec.
 // If out_preset_valid is provided, it is set to whether cfg.preset existed in registry.
 // Invalid presets deterministically fall back to XyXor.
@@ -218,6 +268,7 @@ struct CaptureRequest {
   uint32_t height = 0;
   uint32_t format_fourcc = 0;        // e.g., 'JPEG', 'RAW '
   PictureConfig picture{};
+  CaptureImageSequenceRequest image_sequence{};
 
   uint64_t profile_version = 0;      // core bookkeeping
 };

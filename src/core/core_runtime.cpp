@@ -1056,9 +1056,7 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   if (!prov) {
     return false;
   }
-  // Internal seam placement for future multi-image still-sequence admission.
-  // Current default-only capture intentionally does not gate on this capability.
-  (void)prov->supports_multi_image_still_sequence();
+  const bool supports_multi_image = prov->supports_multi_image_still_sequence();
 
   const CaptureTemplate tmpl = prov->capture_template();
   out.device_instance_id = device_instance_id;
@@ -1068,6 +1066,7 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   out.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
   out.profile_version = 0;
   out.picture = tmpl.picture;
+  out.image_sequence = make_default_metered_capture_image_sequence();
 
   if (const auto* rec = devices_.find(device_instance_id)) {
     if (rec->capture_width > 0) {
@@ -1083,7 +1082,10 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
     out.picture = rec->capture_picture;
   }
 
-  return out.width > 0 && out.height > 0;
+  if (!(out.width > 0 && out.height > 0)) {
+    return false;
+  }
+  return is_valid_capture_image_sequence_request(out.image_sequence, supports_multi_image);
 }
 
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
@@ -1242,6 +1244,22 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
 
   for (size_t i = 0; i < bundle.participants.size(); ++i) {
     const auto& participant = bundle.participants[i];
+    if (!is_valid_capture_image_sequence_request(
+            participant.request.image_sequence,
+            prov->supports_multi_image_still_sequence())) {
+      out.failure = RigSubmissionFailure::TriggerFailed;
+      out.failed_index = i;
+      out.failed_device_instance_id = participant.request.device_instance_id;
+      out.provider_error_code = static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT);
+      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                     participant.request.device_instance_id,
+                                                     static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
+      (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                                 participant.request.device_instance_id,
+                                                 static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT),
+                                                 CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+      return out;
+    }
     const ProviderResult pr = prov->trigger_capture(participant.request);
     if (!pr.ok()) {
       out.failure = RigSubmissionFailure::TriggerFailed;
