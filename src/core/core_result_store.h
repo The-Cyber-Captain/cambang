@@ -115,6 +115,8 @@ public:
   bool append_additional_capture_image(uint64_t capture_id,
                                        uint64_t device_instance_id,
                                        CoreCaptureResultData::ImageMemberData image_member);
+  static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
+                                                              CoreResultPayloadCpuPacked& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;

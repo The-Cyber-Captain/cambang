@@ -279,14 +279,26 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     } else {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
     }
+    const bool is_additional_bracket =
+        p.frame.capture_image_routing == CaptureImageRouting::ADDITIONAL_BRACKET;
     if (result_store_) {
       const bool lifecycle_allows_retention =
           result_retention_allowed_ ? result_retention_allowed_() : true;
       if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
-        retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+        if (is_additional_bracket) {
+          CoreCaptureResultData::ImageMemberData image_member{};
+          image_member.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+          image_member.capture_timestamp_ns = integrated_ts_ns;
+          if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
+            retained_for_result = result_store_->append_additional_capture_image(
+                p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
+          }
+        } else {
+          retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+        }
       }
     }
-    if (capture_assembly_registry_ && retained_for_result && p.frame.capture_id != 0) {
+    if (capture_assembly_registry_ && retained_for_result && p.frame.capture_id != 0 && !is_additional_bracket) {
       capture_assembly_registry_->mark_default_image_retained(p.frame.capture_id, p.frame.device_instance_id);
     }
 

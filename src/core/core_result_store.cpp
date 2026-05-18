@@ -146,6 +146,17 @@ bool CoreResultStore::append_additional_capture_image(
   return true;
 }
 
+bool CoreResultStore::try_build_capture_image_member_data_from_frame(const FrameView& frame,
+                                                                     CoreResultPayloadCpuPacked& out_payload) {
+  if (!has_cpu_packed_payload(frame)) {
+    return false;
+  }
+  if (!try_copy_cpu_packed_payload(frame, out_payload)) {
+    return false;
+  }
+  return has_valid_capture_image_member_payload(out_payload);
+}
+
 SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
     const CoreResultPayloadCpuPacked& payload,
