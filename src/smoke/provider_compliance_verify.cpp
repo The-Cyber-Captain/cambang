@@ -69,9 +69,22 @@ struct EventRec {
   uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint32_t pixel_sig = 0;
+  uint64_t payload_hash = 0;
+  size_t payload_size_bytes = 0;
   CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
   CaptureTimestamp ts{};
 };
+
+uint64_t fnv1a64_hash_bytes(const uint8_t* data, size_t size_bytes) {
+  constexpr uint64_t kOffset = 1469598103934665603ull;
+  constexpr uint64_t kPrime = 1099511628211ull;
+  uint64_t h = kOffset;
+  for (size_t i = 0; i < size_bytes; ++i) {
+    h ^= static_cast<uint64_t>(data[i]);
+    h *= kPrime;
+  }
+  return h;
+}
 
 struct RecorderCallbacks final : IProviderCallbacks {
   uint64_t next_native_id = 1;
@@ -102,6 +115,11 @@ struct RecorderCallbacks final : IProviderCallbacks {
                      (static_cast<uint32_t>(p[1]) << 8) |
                      (static_cast<uint32_t>(p[2]) << 16) |
                      (static_cast<uint32_t>(p[3]) << 24);
+    }
+    if (frame.data && frame.size_bytes > 0) {
+      const uint8_t* p = static_cast<const uint8_t*>(frame.data);
+      ev.payload_size_bytes = frame.size_bytes;
+      ev.payload_hash = fnv1a64_hash_bytes(p, frame.size_bytes);
     }
     ev.capture_image_routing = frame.capture_image_routing;
     events.push_back(ev);
@@ -1422,8 +1440,16 @@ bool run_synthetic_multi_member_still_sequence_check() {
     std::cerr << "FAIL synthetic multi-member routing mismatch\n";
     return false;
   }
-  if (frame_events[0].pixel_sig == frame_events[1].pixel_sig) {
-    std::cerr << "FAIL synthetic multi-member expected deterministic pixel difference\n";
+  if (frame_events[0].payload_size_bytes == 0 || frame_events[1].payload_size_bytes == 0) {
+    std::cerr << "FAIL synthetic multi-member expected non-empty payloads\n";
+    return false;
+  }
+  if (frame_events[0].payload_size_bytes != frame_events[1].payload_size_bytes) {
+    std::cerr << "FAIL synthetic multi-member expected equal-sized payloads\n";
+    return false;
+  }
+  if (frame_events[0].payload_hash == frame_events[1].payload_hash) {
+    std::cerr << "FAIL synthetic multi-member expected deterministic payload hash difference\n";
     return false;
   }
   return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
