@@ -414,6 +414,11 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
     capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
   req.capture_id = capture_id;
+  if (!is_valid_capture_image_sequence_request(
+          req.image_sequence,
+          provider_->supports_multi_image_still_sequence())) {
+    return 0;
+  }
 
   const ProviderResult pr = provider_->trigger_capture(req);
   if (!pr.ok()) {
