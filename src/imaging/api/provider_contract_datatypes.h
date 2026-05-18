@@ -270,6 +270,16 @@ struct CaptureTimestamp {
   CaptureTimestampDomain domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
 };
 
+// Internal still-capture image routing marker (provider -> core).
+//
+// Default-initialized and legacy-populated frames remain DEFAULT_METERED.
+// Providers that begin emitting bracket stills can set ADDITIONAL_BRACKET
+// to route those frames into capture additional_images.
+enum class CaptureImageRouting : uint8_t {
+  DEFAULT_METERED = 0,
+  ADDITIONAL_BRACKET = 1,
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -279,6 +289,7 @@ struct FrameView {
   uint64_t stream_id = 0;    // 0 if this frame belongs only to a still capture
   uint64_t acquisition_session_id = 0; // 0 if unavailable/unknown
   uint64_t capture_id = 0;   // 0 if this is a repeating stream frame
+  CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
 
   // Image metadata
   uint32_t width = 0;
