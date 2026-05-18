@@ -114,6 +114,12 @@ arm/disarm rig - trigger rig capture - apply spec patches
 
 Commands are immutable message objects; core owns command execution.
 
+Current public Godot-facing trigger surface is object-oriented:
+- device capture via `CamBANGDevice.trigger_capture()`
+- rig capture via `CamBANGRig.trigger_capture()` (rig object obtained with
+  `CamBANGServer.get_rig(rig_id)`)
+- no public singleton `CamBANGServer.trigger_rig_capture(...)` entry.
+
 ### 4.2 Provider event queue (Provider → Core)
 
 Provider events represent facts observed by the provider, e.g.: - device
@@ -124,6 +130,10 @@ notifications
 
 Provider events must be enqueued from the provider's serialized callback
 context.
+
+Scenario execution note (current): scenarios stage provider/world/topology/config
+state. Triggered capture remains API/GDScript-driven and is not modeled as a
+scenario timeline capture action.
 
 ------------------------------------------------------------------------
 

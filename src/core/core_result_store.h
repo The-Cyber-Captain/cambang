@@ -57,7 +57,17 @@ struct CoreStreamResultData {
 };
 
 struct CoreCaptureResultData {
-  struct ImageData {
+  enum class ImageMemberRole : uint8_t {
+    DEFAULT_METERED = 0,
+    ADDITIONAL_BRACKET = 1,
+  };
+
+  // Image member of a single CaptureResult.
+  // Result-level shared facts stay on CoreCaptureResultData; only genuinely
+  // per-image fields live here.
+  struct ImageMemberData {
+    uint32_t image_member_index = 0;
+    ImageMemberRole role = ImageMemberRole::DEFAULT_METERED;
     uint64_t capture_timestamp_ns = 0;
     CoreResultPayloadCpuPacked payload{};
 
@@ -74,8 +84,8 @@ struct CoreCaptureResultData {
   uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
 
-  ImageData default_image{};
-  std::vector<ImageData> additional_images{};
+  ImageMemberData default_image{};
+  std::vector<ImageMemberData> additional_images{};
 
   CoreImageFactBundle facts{};
 };
@@ -102,6 +112,9 @@ public:
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
                     uint64_t capture_timestamp_ns);
+  bool append_additional_capture_image(uint64_t capture_id,
+                                       uint64_t device_instance_id,
+                                       CoreCaptureResultData::ImageMemberData image_member);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
@@ -117,6 +130,7 @@ public:
 private:
   static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
+  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
   static SharedCaptureResultData build_default_image_capture_result(const FrameView& frame,
                                                                     const CoreResultPayloadCpuPacked& payload,
                                                                     uint64_t capture_timestamp_ns);

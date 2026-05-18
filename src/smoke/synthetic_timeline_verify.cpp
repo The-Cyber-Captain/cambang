@@ -66,6 +66,7 @@ static void usage(const char* argv0) {
       << "  basic_lifecycle\n"
       << "  invalid_sequence\n"
       << "  catchup_stress\n"
+      << "  staged_endpoint_span_inference\n"
       << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n";
 }
 
@@ -213,6 +214,21 @@ static bool wait_for_pred(StateSnapshotBuffer& buf, const std::function<bool(con
 static uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
   if (fps_num == 0 || fps_den == 0) return 0;
   return (kOneSecNs * static_cast<uint64_t>(fps_den)) / static_cast<uint64_t>(fps_num);
+}
+
+static const char* provider_error_label(ProviderError e) {
+  switch (e) {
+    case ProviderError::OK: return "OK";
+    case ProviderError::ERR_NOT_SUPPORTED: return "ERR_NOT_SUPPORTED";
+    case ProviderError::ERR_INVALID_ARGUMENT: return "ERR_INVALID_ARGUMENT";
+    case ProviderError::ERR_BUSY: return "ERR_BUSY";
+    case ProviderError::ERR_BAD_STATE: return "ERR_BAD_STATE";
+    case ProviderError::ERR_PLATFORM_CONSTRAINT: return "ERR_PLATFORM_CONSTRAINT";
+    case ProviderError::ERR_TRANSIENT_FAILURE: return "ERR_TRANSIENT_FAILURE";
+    case ProviderError::ERR_PROVIDER_FAILED: return "ERR_PROVIDER_FAILED";
+    case ProviderError::ERR_SHUTTING_DOWN: return "ERR_SHUTTING_DOWN";
+    default: return "ERR_UNKNOWN";
+  }
 }
 
 // Drive the synthetic virtual clock deterministically.
@@ -411,6 +427,56 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
   return 0;
 }
 
+static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov) {
+  constexpr uint64_t kBaseRoot = 9000;
+  constexpr uint64_t kDid0 = 9100;
+  constexpr uint64_t kDid1 = 9101;
+  constexpr uint64_t kDid5Before = 9105;
+  constexpr uint64_t kDid5After = 9205;
+  constexpr uint64_t kDid5AfterStop = 9305;
+
+  auto step_fail = [](const std::string& step, ProviderError err) -> int {
+    std::cerr << "staged_endpoint_span_inference FAIL: " << step
+              << ", got " << provider_error_label(err) << "\n";
+    return 1;
+  };
+  auto step_fail_plain = [](const std::string& step) -> int {
+    std::cerr << "staged_endpoint_span_inference FAIL: " << step << "\n";
+    return 1;
+  };
+
+  auto r = prov.open_device("synthetic:0", kDid0, kBaseRoot + 0);
+  if (!r.ok()) return step_fail("expected synthetic:0 open to succeed before staging", r.code);
+  r = prov.open_device("synthetic:1", kDid1, kBaseRoot + 1);
+  if (!r.ok()) return step_fail("expected synthetic:1 open to succeed before staging", r.code);
+  r = prov.open_device("synthetic:5", kDid5Before, kBaseRoot + 5);
+  if (r.ok()) return step_fail_plain("expected synthetic:5 open to be rejected before staging");
+  (void)prov.close_device(kDid0);
+  (void)prov.close_device(kDid1);
+
+  SyntheticCanonicalScenario canonical{};
+  for (uint32_t i = 0; i <= 5; ++i) {
+    SyntheticScenarioDeviceDeclaration d{};
+    d.key = std::string("Device") + static_cast<char>('A' + static_cast<int>(i));
+    d.endpoint_index = i;
+    canonical.devices.push_back(std::move(d));
+  }
+  r = prov.set_timeline_scenario_for_host(canonical);
+  if (!r.ok()) return step_fail("expected canonical scenario staging to succeed", r.code);
+  r = prov.start_timeline_scenario_for_host();
+  if (!r.ok()) return step_fail("expected staged canonical scenario start to succeed", r.code);
+
+  r = prov.open_device("synthetic:5", kDid5After, kBaseRoot + 15);
+  if (!r.ok()) return step_fail("expected synthetic:5 open to succeed after staged endpoint widening", r.code);
+  (void)prov.close_device(kDid5After);
+
+  r = prov.stop_timeline_scenario_for_host();
+  if (!r.ok()) return step_fail("expected staged scenario stop to succeed", r.code);
+  r = prov.open_device("synthetic:5", kDid5AfterStop, kBaseRoot + 25);
+  if (r.ok()) return step_fail_plain("expected synthetic:5 open to be rejected after staged scenario stop");
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -476,16 +542,23 @@ int main(int argc, char** argv) {
   }
 
   int r = 0;
+  std::string failure_reason;
   if (opt.verify_case == "basic_lifecycle") {
     r = run_basic_lifecycle(rt, buf, opt, period);
   } else if (opt.verify_case == "invalid_sequence") {
     r = run_invalid_sequence(rt, buf, opt);
   } else if (opt.verify_case == "catchup_stress") {
     r = run_catchup_stress(rt, buf, opt, period);
+  } else if (opt.verify_case == "staged_endpoint_span_inference") {
+    r = run_staged_endpoint_span_inference_regression(prov);
   } else {
     std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
     usage(argv[0]);
     r = 2;
+    failure_reason = "unknown_verify_case";
+  }
+  if (r != 0 && failure_reason.empty()) {
+    failure_reason = "case_returned_nonzero";
   }
 
   // Provider shutdown choreography.
@@ -497,6 +570,9 @@ int main(int argc, char** argv) {
 
   if (r == 0) {
     std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";
+  } else {
+    std::cout << "FAIL: synthetic_timeline_verify failed (verify_case="
+              << opt.verify_case << ", reason=" << failure_reason << ")\n";
   }
   return r;
 }

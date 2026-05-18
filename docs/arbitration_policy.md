@@ -258,3 +258,11 @@ Numeric mapping is defined in code and documented separately.
 -   v1 VIEWFINDER is strict: deny/preempt during capture; no adaptive
     fallback.
 -   Deny/preempt/fail semantics are explicit and deterministic.
+
+Implementation-status guardrails (current):
+- Rig capture is publicly triggered via `CamBANGRig.trigger_capture()`;
+  no public `CamBANGServer.trigger_rig_capture(...)` API.
+- Scenario timelines stage state/topology but do not define capture trigger actions.
+- Overlapping multi-rig membership is not supported (single membership per device).
+- `CaptureResult.additional_images` remains unpopulated.
+- Multi-image/bracket production is not implemented yet.

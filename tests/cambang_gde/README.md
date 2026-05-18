@@ -66,7 +66,9 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Conflict: `CAMBANG_EXERCISE=no_display_eager` with explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` not equal to `always` fails clearly.
 - `scenes/73_rig_capture_result_set_verification.tscn`
   - Focused Godot proof for `CamBANGRig` object API: `CamBANGServer.get_rig(rig_id)`, `CamBANGRig.get_id()`, `CamBANGRig.trigger_capture()`, and `CamBANGServer.get_capture_result_set(capture_id)` consistency.
-  - Uses dedicated external scenario fixture `scenarios/rig_capture_result_basic.json` and verifies deterministic multi-rig topology plus result-set membership/device-id coherence for Rig A capture.
+  - Uses dedicated external scenario fixture `scenarios/rig_capture_result_basic.json`.
+  - Fixture topology: six devices A-F; Rig A = A+E; Rig B = B; Rig C = C+F; Device D standalone.
+  - Capture remains API-driven via `CamBANGRig.trigger_capture()` (not scenario timeline-triggered), and verification asserts `CaptureResultSet` contains exactly Rig A members.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 

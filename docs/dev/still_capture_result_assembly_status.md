@@ -5,6 +5,12 @@ for still-capture result assembly.
 
 ## Current accepted state
 
+- Godot-facing rig capture API is active:
+  - `CamBANGServer.get_rig(rig_id)` returns `CamBANGRig`.
+  - `CamBANGRig` exposes `get_id()` and `trigger_capture()`.
+  - `CamBANGDevice` exposes `get_instance_id()` and `trigger_capture()`.
+  - `CamBANGDevice.get_device_instance_id()` compatibility alias is removed.
+  - No public `CamBANGServer.trigger_rig_capture(...)` API is exposed.
 - `CaptureResult` is device-level and has an explicit required default image.
 - Default-only still capture is the currently supported one-image case.
 - `additional_images` exists only as internal storage preparation and remains
@@ -39,6 +45,20 @@ for still-capture result assembly.
 - Current implementation status: `capture_started` / `capture_completed` /
   `capture_failed` callbacks still update acquisition-session counters/latency
   in addition to device assembly tracking.
+- Scenario semantics remain staging-only for provider/world/topology/config.
+  Capture triggering remains API/GDScript-driven (not a scenario timeline action).
+- Synthetic scenario rig topology support is active in schema v1:
+  - optional top-level `rigs` declarations;
+  - membership authored by scenario device keys;
+  - single-membership-per-device (overlap rejected).
+- SyntheticProvider endpoint span remains default-2 unless staging declares
+  wider device endpoint indices; staged canonical/external scenarios infer the
+  effective endpoint span from declared device endpoint indices.
+- Scene 73 (`tests/cambang_gde/scenes/73_rig_capture_result_set_verification.tscn`)
+  is the canonical Godot-visible rig capture result-set proof using
+  `scenarios/rig_capture_result_basic.json` with six devices (A-F),
+  Rig A = A+E, Rig B = B, Rig C = C+F, Device D standalone; capture is triggered
+  via `CamBANGRig.trigger_capture()` and verification is via `CaptureResultSet`.
 
 ## Release-direction targets (not implemented in this slice)
 
