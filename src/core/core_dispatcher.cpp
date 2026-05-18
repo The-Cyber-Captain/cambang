@@ -286,12 +286,18 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           result_retention_allowed_ ? result_retention_allowed_() : true;
       if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
         if (is_additional_bracket) {
+          // This tranche only accepts still-capture-only bracket frames.
+          // Reject malformed/unsupported bracket routes deterministically.
+          if (p.frame.capture_id == 0 || p.frame.stream_id != 0) {
+            retained_for_result = false;
+          } else {
           CoreCaptureResultData::ImageMemberData image_member{};
           image_member.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
           image_member.capture_timestamp_ns = integrated_ts_ns;
           if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
             retained_for_result = result_store_->append_additional_capture_image(
                 p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
+          }
           }
         } else {
           retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
