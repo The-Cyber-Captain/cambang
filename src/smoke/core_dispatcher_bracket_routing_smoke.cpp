@@ -31,6 +31,7 @@ int main() {
     frame.size_bytes = px.size();
     frame.capture_timestamp.value = ts;
     frame.capture_timestamp.tick_ns = 1;
+    frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
     return frame;
   };
 
@@ -48,7 +49,7 @@ int main() {
 
   ProviderToCoreCommand bracket_cmd{};
   bracket_cmd.type = ProviderToCoreCommandType::PROVIDER_FRAME;
-  bracket_cmd.payload = CmdProviderFrame{make_capture_frame(CaptureImageRouting::ADDITIONAL_BRACKET, 1001)};
+  bracket_cmd.payload = CmdProviderFrame{make_capture_frame(CaptureImageRouting::ADDITIONAL_BRACKET, 2000)};
   dispatcher.dispatch(std::move(bracket_cmd));
 
   auto with_bracket = result_store.get_capture_result(900, 901);
@@ -57,7 +58,7 @@ int main() {
   assert(with_bracket->default_image.image_member_index == 0);
   assert(with_bracket->additional_images.size() == 1);
   assert(with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
-  assert(with_bracket->additional_images[0].capture_timestamp_ns == 1001);
+  assert(with_bracket->additional_images[0].capture_timestamp_ns == 2000);
   assert(with_bracket->additional_images[0].image_member_index == 1);
   auto assembly_after_bracket = assembly_registry.find_for_smoke(900, 901);
   assert(assembly_after_bracket && assembly_after_bracket->has_default_image_retained);
