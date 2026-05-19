@@ -47,6 +47,7 @@ var _inspection_capture_id := 0
 var _capture_profile_version_after_set := -1
 var _still_profile_set_applied := false
 var _still_bundle_snapshot_verified := false
+var _capture_triggered := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -239,13 +240,19 @@ func _try_verify_stream_result() -> void:
 		_step_ok("device still capture profile set (three-member bracket)")
 		_still_profile_set_applied = true
 
-	if _capture_profile_version_after_set < 0:
-		_capture_profile_version_after_set = _get_device_capture_profile_version(_device_instance_id)
-		if _capture_profile_version_after_set < 0:
-			return
+	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
+	if device_snapshot.is_empty():
+		return
 
 	if not _still_bundle_snapshot_verified:
-		var bundle_members_after_set := _get_device_still_image_bundle_members(_device_instance_id)
+		var bundle_variant: Variant = device_snapshot.get("still_image_bundle", {})
+		if typeof(bundle_variant) != TYPE_DICTIONARY:
+			return
+		var bundle_dict: Dictionary = bundle_variant
+		var members_variant: Variant = bundle_dict.get("members", [])
+		if typeof(members_variant) != TYPE_ARRAY:
+			return
+		var bundle_members_after_set: Array = members_variant
 		if bundle_members_after_set.size() < 3:
 			return
 		_require(int((bundle_members_after_set[0] as Dictionary).get("image_member_index", -1)) == 0, "step %d FAIL: snapshot bundle member 0 index mismatch" % _step)
@@ -254,13 +261,23 @@ func _try_verify_stream_result() -> void:
 		_require(int((bundle_members_after_set[0] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == 0, "step %d FAIL: snapshot bundle member 0 EV mismatch" % _step)
 		_require(int((bundle_members_after_set[1] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == -1000, "step %d FAIL: snapshot bundle member 1 EV mismatch" % _step)
 		_require(int((bundle_members_after_set[2] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == 1000, "step %d FAIL: snapshot bundle member 2 EV mismatch" % _step)
+		_capture_profile_version_after_set = int(device_snapshot.get("capture_profile_version", -1))
+		_require(_capture_profile_version_after_set >= 0, "step %d FAIL: capture_profile_version missing in caught-up snapshot" % _step)
 		_still_bundle_snapshot_verified = true
 		_step_ok("snapshot device still_image_bundle verified (three members)")
+		return
 
-	_capture_id = int(device.trigger_capture())
-	_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
-	_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
-	var capture_profile_version_after_trigger := _get_device_capture_profile_version(_device_instance_id)
+	if not _capture_triggered:
+		_capture_id = int(device.trigger_capture())
+		_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
+		_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
+		_capture_triggered = true
+		_capture_poll_start_ms = Time.get_ticks_msec()
+		return
+
+	var capture_profile_version_after_trigger := int(device_snapshot.get("capture_profile_version", -1))
+	if capture_profile_version_after_trigger < 0:
+		return
 	_require(
 		capture_profile_version_after_trigger == _capture_profile_version_after_set,
 		"step %d FAIL: trigger_capture() must not change capture_profile_version (%d -> %d)" % [
@@ -270,7 +287,6 @@ func _try_verify_stream_result() -> void:
 		]
 	)
 	_step_ok("capture_profile_version unchanged by trigger_capture")
-	_capture_poll_start_ms = Time.get_ticks_msec()
 
 
 func _try_verify_capture_result() -> void:
@@ -454,38 +470,18 @@ func _request_manual_capture() -> void:
 	_append_status("INFO: manual capture requested (capture_id=%d)" % _inspection_capture_id)
 
 
-func _get_device_capture_profile_version(device_instance_id: int) -> int:
+func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
-		return -1
+		return {}
 	var devices: Array = snapshot.get("devices", [])
 	for d in devices:
 		if typeof(d) != TYPE_DICTIONARY:
 			continue
 		var rec: Dictionary = d
 		if int(rec.get("instance_id", 0)) == device_instance_id:
-			return int(rec.get("capture_profile_version", -1))
-	return -1
-
-
-func _get_device_still_image_bundle_members(device_instance_id: int) -> Array:
-	var snapshot = CamBANGServer.get_state_snapshot()
-	if snapshot == null:
-		return []
-	var devices: Array = snapshot.get("devices", [])
-	for d in devices:
-		if typeof(d) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = d
-		if int(rec.get("instance_id", 0)) != device_instance_id:
-			continue
-		var bundle_variant: Variant = rec.get("still_image_bundle", {})
-		if typeof(bundle_variant) != TYPE_DICTIONARY:
-			return []
-		var bundle: Dictionary = bundle_variant
-		var members_variant: Variant = bundle.get("members", [])
-		return members_variant if typeof(members_variant) == TYPE_ARRAY else []
-	return []
+			return rec
+	return {}
 
 
 func _poll_inspection_capture_result() -> void:
