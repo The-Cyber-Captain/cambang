@@ -206,16 +206,32 @@ func _try_verify_stream_result() -> void:
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
 	_step_ok("device seam verified")
 
-	var set_profile_err := int(device.set_still_capture_profile({
+	var bracket_profile := {
 		"image_sequence": {
 			"members": [
-				{"image_member_index": 0, "role": "DEFAULT_METERED", "exposure_compensation_milli_ev": 0},
-				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -1000},
-				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 1000}
-			]
-		}
-	}))
-	_require(set_profile_err == OK, "step %d FAIL: set_still_capture_profile() rejected three-member bracket profile (%d)" % [_step, set_profile_err])
+				{
+					"image_member_index": 0,
+					"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+					"exposure_compensation_milli_ev": 0,
+				},
+				{
+					"image_member_index": 1,
+					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+					"exposure_compensation_milli_ev": -1000,
+				},
+				{
+					"image_member_index": 2,
+					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+					"exposure_compensation_milli_ev": 1000,
+				},
+			],
+		},
+	}
+	var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
+	_require(
+		set_profile_err == OK,
+		"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
+	)
 	_step_ok("device still capture profile set (three-member bracket)")
 
 	_capture_id = int(device.trigger_capture())
@@ -396,19 +412,33 @@ func _request_manual_capture() -> void:
 	if device == null:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
-	_inspection	var set_profile_err := int(device.set_still_capture_profile({
+	var bracket_profile := {
 		"image_sequence": {
 			"members": [
-				{"image_member_index": 0, "role": "DEFAULT_METERED", "exposure_compensation_milli_ev": 0},
-				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -1000},
-				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 1000}
-			]
-		}
-	}))
-	_require(set_profile_err == OK, "step %d FAIL: set_still_capture_profile() rejected three-member bracket profile (%d)" % [_step, set_profile_err])
-	_step_ok("device still capture profile set (three-member bracket)")
+				{
+					"image_member_index": 0,
+					"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+					"exposure_compensation_milli_ev": 0,
+				},
+				{
+					"image_member_index": 1,
+					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+					"exposure_compensation_milli_ev": -1000,
+				},
+				{
+					"image_member_index": 2,
+					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+					"exposure_compensation_milli_ev": 1000,
+				},
+			],
+		},
+	}
+	var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
+	if set_profile_err != OK:
+		_append_status("WARN: set_still_capture_profile failed err=%d" % set_profile_err)
+		return
 
-	_capture_id = int(device.trigger_capture())
+	_inspection_capture_id = int(device.trigger_capture())
 	if _inspection_capture_id == 0:
 		_append_status("WARN: manual capture request rejected (capture_id=0)")
 		return
