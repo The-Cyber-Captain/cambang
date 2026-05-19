@@ -53,6 +53,16 @@ enum class CBVisibilityLastPath : uint8_t {
     REJECTED_INVALID = 4,
 };
 
+struct CaptureStillImageMemberState {
+    uint32_t image_member_index = 0;
+    cambang::CaptureStillImageMemberRole role = cambang::CaptureStillImageMemberRole::DEFAULT_METERED;
+    int32_t exposure_compensation_milli_ev = 0;
+};
+
+struct CaptureStillImageBundleState {
+    std::vector<CaptureStillImageMemberState> members;
+};
+
 struct CamBANGRigState {
     uint64_t rig_id = 0;
     std::string name;
@@ -81,16 +91,6 @@ struct CamBANGRigState {
 };
 
 struct CamBANGDeviceState {
-    struct CaptureStillImageBundleStateMember {
-        uint32_t image_member_index = 0;
-        cambang::CaptureStillImageMemberRole role = cambang::CaptureStillImageMemberRole::DEFAULT_METERED;
-        int32_t exposure_compensation_milli_ev = 0;
-    };
-
-    struct CaptureStillImageBundleState {
-        std::vector<CaptureStillImageBundleStateMember> members;
-    };
-
     std::string hardware_id;
     uint64_t instance_id = 0;
 

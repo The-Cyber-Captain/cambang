@@ -163,7 +163,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             d.capture_format = rec.capture_format;
             d.still_image_bundle.members.reserve(rec.capture_still_image_bundle.members.size());
             for (const auto& m : rec.capture_still_image_bundle.members) {
-                CamBANGDeviceState::CaptureStillImageBundleStateMember sm{};
+                CaptureStillImageMemberState sm{};
                 sm.image_member_index = m.image_member_index;
                 sm.role = m.role;
                 sm.exposure_compensation_milli_ev = m.exposure_compensation_milli_ev;
@@ -212,7 +212,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.capture_format = rec.capture_format;
             s.still_image_bundle.members.reserve(rec.capture_still_image_bundle.members.size());
             for (const auto& m : rec.capture_still_image_bundle.members) {
-                AcquisitionSessionState::CaptureStillImageBundleStateMember sm;
+                CaptureStillImageMemberState sm{};
                 sm.image_member_index = m.image_member_index;
                 sm.role = static_cast<uint32_t>(m.role);
                 sm.role_name = capture_still_image_member_role_name(m.role);
