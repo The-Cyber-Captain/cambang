@@ -49,6 +49,8 @@ var _still_profile_set_applied := false
 var _still_bundle_snapshot_verified := false
 var _session_bundle_snapshot_verified := false
 var _capture_triggered := false
+var _stream_baseline_verified := false
+var _device_seam_verified := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -155,61 +157,65 @@ func _try_verify_stream_result() -> void:
 	if stream_result == null:
 		return
 
-	_require(stream_result.get_class() == "CamBANGStreamResult", "step %d FAIL: stream result must be CamBANGStreamResult" % _step)
-	_step_ok("stream result object branding verified")
+	if not _stream_baseline_verified:
+		_require(stream_result.get_class() == "CamBANGStreamResult", "step %d FAIL: stream result must be CamBANGStreamResult" % _step)
+		_step_ok("stream result object branding verified")
 
-	_require(stream_result.get_width() > 0, "step %d FAIL: stream width invalid" % _step)
-	_require(stream_result.get_height() > 0, "step %d FAIL: stream height invalid" % _step)
-	_require(stream_result.get_format() != 0, "step %d FAIL: stream format invalid" % _step)
-	var stream_payload_kind := int(stream_result.get_payload_kind())
-	_require(
-		stream_payload_kind == PAYLOAD_KIND_CPU_PACKED or stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
-		"step %d FAIL: stream payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
-	)
-	_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
-	_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
-	_step_ok("stream direct properties verified")
+		_require(stream_result.get_width() > 0, "step %d FAIL: stream width invalid" % _step)
+		_require(stream_result.get_height() > 0, "step %d FAIL: stream height invalid" % _step)
+		_require(stream_result.get_format() != 0, "step %d FAIL: stream format invalid" % _step)
+		var stream_payload_kind := int(stream_result.get_payload_kind())
+		_require(
+			stream_payload_kind == PAYLOAD_KIND_CPU_PACKED or stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
+			"step %d FAIL: stream payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
+		)
+		_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
+		_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
+		_step_ok("stream direct properties verified")
 
-	_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
-	_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
-	_require(typeof(stream_result.get_location_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes accessor must return Dictionary" % _step)
-	_require(typeof(stream_result.get_optical_calibration()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration accessor must return Dictionary" % _step)
-	_step_ok("stream grouped fact accessors verified (Dictionary)")
+		_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
+		_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
+		_require(typeof(stream_result.get_location_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes accessor must return Dictionary" % _step)
+		_require(typeof(stream_result.get_optical_calibration()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration accessor must return Dictionary" % _step)
+		_step_ok("stream grouped fact accessors verified (Dictionary)")
 
-	_require(typeof(stream_result.get_image_properties_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties_provenance must return Dictionary" % _step)
-	_require(typeof(stream_result.get_capture_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes_provenance must return Dictionary" % _step)
-	_require(typeof(stream_result.get_location_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes_provenance must return Dictionary" % _step)
-	_require(typeof(stream_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration_provenance must return Dictionary" % _step)
-	_step_ok("stream provenance grouped accessors verified (Dictionary)")
+		_require(typeof(stream_result.get_image_properties_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties_provenance must return Dictionary" % _step)
+		_require(typeof(stream_result.get_capture_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes_provenance must return Dictionary" % _step)
+		_require(typeof(stream_result.get_location_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes_provenance must return Dictionary" % _step)
+		_require(typeof(stream_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration_provenance must return Dictionary" % _step)
+		_step_ok("stream provenance grouped accessors verified (Dictionary)")
 
-	var stream_can_to_image := int(stream_result.can_to_image())
-	_require(stream_can_to_image != int(stream_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: stream can_to_image() unexpectedly unsupported" % _step)
-	_step_ok("stream can_to_image capability verified")
+		var stream_can_to_image := int(stream_result.can_to_image())
+		_require(stream_can_to_image != int(stream_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: stream can_to_image() unexpectedly unsupported" % _step)
+		_step_ok("stream can_to_image capability verified")
 
-	# to_image() is explicit materialization onto CPU-backed storage; it is not
-	# the normal live display path.
-	var stream_image: Image = stream_result.to_image()
-	_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
-	_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
-	_step_ok("stream to_image materialization verified")
-	_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request")
-	_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
-	_step_ok("requested stream image panel populated from explicit request")
+		# to_image() is explicit materialization onto CPU-backed storage; it is not
+		# the normal live display path.
+		var stream_image: Image = stream_result.to_image()
+		_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
+		_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
+		_step_ok("stream to_image materialization verified")
+		_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request")
+		_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
+		_step_ok("requested stream image panel populated from explicit request")
 
-	var stream_display_view = stream_result.get_display_view()
-	if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
-		_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
-	else:
-		_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
-	_step_ok("stream display_view path verified")
+		var stream_display_view = stream_result.get_display_view()
+		if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
+			_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
+		else:
+			_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
+		_step_ok("stream display_view path verified")
 
-	_ensure_stream_panel_display_view_bound(stream_result, true)
-	_step_ok("stream image displayed")
+		_ensure_stream_panel_display_view_bound(stream_result, true)
+		_step_ok("stream image displayed")
+		_stream_baseline_verified = true
 
 	var device = CamBANGServer.get_device(_device_instance_id)
 	_require(device != null, "step %d FAIL: CamBANGServer.get_device() returned null" % _step)
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
-	_step_ok("device seam verified")
+	if not _device_seam_verified:
+		_step_ok("device seam verified")
+		_device_seam_verified = true
 
 	if not _still_profile_set_applied:
 		var bracket_profile := {
