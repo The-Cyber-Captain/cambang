@@ -44,6 +44,7 @@ var _device_instance_id := 0
 var _stream_id := 0
 var _capture_id := 0
 var _inspection_capture_id := 0
+var _capture_profile_version_after_set := -1
 
 func _ready() -> void:
 	_status_label.clear()
@@ -233,10 +234,25 @@ func _try_verify_stream_result() -> void:
 		"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
 	)
 	_step_ok("device still capture profile set (three-member bracket)")
+	_capture_profile_version_after_set = _get_device_capture_profile_version(_device_instance_id)
+	_require(
+		_capture_profile_version_after_set >= 0,
+		"step %d FAIL: unable to read capture_profile_version after profile set" % _step
+	)
 
 	_capture_id = int(device.trigger_capture())
 	_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
 	_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
+	var capture_profile_version_after_trigger := _get_device_capture_profile_version(_device_instance_id)
+	_require(
+		capture_profile_version_after_trigger == _capture_profile_version_after_set,
+		"step %d FAIL: trigger_capture() must not change capture_profile_version (%d -> %d)" % [
+			_step,
+			_capture_profile_version_after_set,
+			capture_profile_version_after_trigger
+		]
+	)
+	_step_ok("capture_profile_version unchanged by trigger_capture")
 	_capture_poll_start_ms = Time.get_ticks_msec()
 
 
@@ -412,31 +428,6 @@ func _request_manual_capture() -> void:
 	if device == null:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
-	var bracket_profile := {
-		"image_sequence": {
-			"members": [
-				{
-					"image_member_index": 0,
-					"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
-					"exposure_compensation_milli_ev": 0,
-				},
-				{
-					"image_member_index": 1,
-					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-					"exposure_compensation_milli_ev": -1000,
-				},
-				{
-					"image_member_index": 2,
-					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-					"exposure_compensation_milli_ev": 1000,
-				},
-			],
-		},
-	}
-	var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
-	if set_profile_err != OK:
-		_append_status("WARN: set_still_capture_profile failed err=%d" % set_profile_err)
-		return
 
 	_inspection_capture_id = int(device.trigger_capture())
 	if _inspection_capture_id == 0:
@@ -444,6 +435,20 @@ func _request_manual_capture() -> void:
 		return
 	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
 	_append_status("INFO: manual capture requested (capture_id=%d)" % _inspection_capture_id)
+
+
+func _get_device_capture_profile_version(device_instance_id: int) -> int:
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return -1
+	var devices: Array = snapshot.get("devices", [])
+	for d in devices:
+		if typeof(d) != TYPE_DICTIONARY:
+			continue
+		var rec: Dictionary = d
+		if int(rec.get("instance_id", 0)) == device_instance_id:
+			return int(rec.get("capture_profile_version", -1))
+	return -1
 
 
 func _poll_inspection_capture_result() -> void:

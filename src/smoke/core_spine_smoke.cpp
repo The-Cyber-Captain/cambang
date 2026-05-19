@@ -718,6 +718,115 @@ static int test_device_capture_request_materialization_smoke() {
   return 0;
 }
 
+static int test_still_capture_profile_version_idempotency_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (still profile idempotency smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (still profile idempotency smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  CaptureRequest req{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req)) {
+    std::cerr << "Expected materialized request for baseline version check\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t v0 = req.profile_version;
+
+  req.capture_id = 9901;
+  if (!prov.trigger_capture(req).ok()) {
+    std::cerr << "Expected trigger_capture success for baseline version check\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_trigger{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_trigger) ||
+      req_after_trigger.profile_version != v0) {
+    std::cerr << "trigger_capture must not change capture_profile_version\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureProfile p{};
+  p.width = req.width;
+  p.height = req.height;
+  p.format_fourcc = req.format_fourcc;
+  CaptureImageSequenceRequest s = make_default_metered_capture_image_sequence();
+  s.members.push_back(CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, -1000});
+  s.members.push_back(CaptureImageRequestMember{2u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, 1000});
+
+  if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
+    std::cerr << "Expected first still profile set success\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_until([&]() {
+        CaptureRequest r{};
+        return rt.materialize_capture_request(kDeviceInstanceId, r) && r.profile_version > v0;
+      }, 400, 5)) {
+    std::cerr << "Expected profile_version increment after first still profile set\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_set{};
+  rt.materialize_capture_request(kDeviceInstanceId, req_after_set);
+  const uint64_t v1 = req_after_set.profile_version;
+
+  if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
+    std::cerr << "Expected second identical still profile set success\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_same{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_same) ||
+      req_after_same.profile_version != v1) {
+    std::cerr << "Identical still profile set must be idempotent for profile_version\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureProfile p2 = p;
+  p2.width = p.width + 16;
+  if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p2, s) != TrySetStillCaptureProfileStatus::OK) {
+    std::cerr << "Expected changed still profile set success\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_changed{};
+  if (!wait_until([&]() {
+        CaptureRequest r{};
+        return rt.materialize_capture_request(kDeviceInstanceId, r) && r.profile_version == v1 + 1;
+      }, 400, 5)) {
+    std::cerr << "Changed still profile set must increment profile_version once\n";
+    rt.stop();
+    return 1;
+  }
+  rt.materialize_capture_request(kDeviceInstanceId, req_after_changed);
+  req_after_changed.capture_id = 9902;
+  if (!prov.trigger_capture(req_after_changed).ok()) {
+    std::cerr << "Expected trigger_capture success after profile change\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_trigger2{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_trigger2) ||
+      req_after_trigger2.profile_version != v1 + 1) {
+    std::cerr << "trigger_capture after profile set must not increment profile_version\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_rig_cohort_admission_from_preflight_smoke() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -1214,6 +1323,7 @@ int main(int argc, char** argv) {
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
     if (int r = test_device_capture_request_materialization_smoke()) return r;
+    if (int r = test_still_capture_profile_version_idempotency_smoke()) return r;
     if (int r = test_rig_preflight_materialization_smoke()) return r;
     if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
     if (int r = test_rig_bundle_submission_smoke()) return r;

@@ -1070,6 +1070,27 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
   const CoreThread::PostResult pr = try_post([this, device_instance_id, profile, image_sequence]() {
     uint64_t next_version = 1;
     if (const auto* rec = devices_.find(device_instance_id)) {
+      bool same_sequence = (rec->capture_image_sequence.members.size() == image_sequence.members.size());
+      if (same_sequence) {
+        for (size_t i = 0; i < rec->capture_image_sequence.members.size(); ++i) {
+          const auto& a = rec->capture_image_sequence.members[i];
+          const auto& b = image_sequence.members[i];
+          if (a.image_member_index != b.image_member_index ||
+              a.role != b.role ||
+              a.exposure_compensation_milli_ev != b.exposure_compensation_milli_ev) {
+            same_sequence = false;
+            break;
+          }
+        }
+      }
+      const bool unchanged =
+          rec->capture_width == profile.width &&
+          rec->capture_height == profile.height &&
+          rec->capture_format == profile.format_fourcc &&
+          same_sequence;
+      if (unchanged) {
+        return;
+      }
       next_version = rec->capture_profile_version + 1;
       if (next_version == 0) next_version = 1;
     }
