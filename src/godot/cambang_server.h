@@ -102,7 +102,7 @@ public:
   uint64_t trigger_device_capture(uint64_t device_instance_id);
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
-                                                const CaptureImageSequenceRequest& image_sequence);
+                                                const CaptureStillImageBundle& still_image_bundle);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
 
 protected:

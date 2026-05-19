@@ -173,7 +173,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   TrySetStillCaptureProfileStatus try_set_device_still_capture_profile(
       uint64_t device_instance_id,
       const CaptureProfile& profile,
-      const CaptureImageSequenceRequest& image_sequence) noexcept;
+      const CaptureStillImageBundle& still_image_bundle) noexcept;
 
   bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
 

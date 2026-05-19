@@ -208,7 +208,7 @@ func _try_verify_stream_result() -> void:
 	_step_ok("device seam verified")
 
 	var bracket_profile := {
-		"image_sequence": {
+		"still_image_bundle": {
 			"members": [
 				{
 					"image_member_index": 0,

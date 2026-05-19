@@ -54,15 +54,15 @@ bool CoreDeviceRegistry::set_capture_picture(uint64_t device_instance_id, const 
   return true;
 }
 
-bool CoreDeviceRegistry::set_capture_image_sequence(uint64_t device_instance_id,
-                                                    const CaptureImageSequenceRequest& sequence,
+bool CoreDeviceRegistry::set_capture_still_image_bundle(uint64_t device_instance_id,
+                                                    const CaptureStillImageBundle& sequence,
                                                     uint64_t capture_profile_version) {
   if (device_instance_id == 0) {
     return false;
   }
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
-  rec.capture_image_sequence = sequence;
+  rec.capture_still_image_bundle = sequence;
   rec.capture_profile_version = capture_profile_version;
   return true;
 }

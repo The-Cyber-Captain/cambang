@@ -8,15 +8,15 @@ namespace {
 
 using namespace cambang;
 
-bool parse_role(const godot::Variant& role_variant, CaptureImageRequestMemberRole& out_role) {
+bool parse_role(const godot::Variant& role_variant, CaptureStillImageMemberRole& out_role) {
   if (role_variant.get_type() == godot::Variant::INT) {
     const int role_i = static_cast<int>(int64_t(role_variant));
-    if (role_i == static_cast<int>(CaptureImageRequestMemberRole::DEFAULT_METERED)) {
-      out_role = CaptureImageRequestMemberRole::DEFAULT_METERED;
+    if (role_i == static_cast<int>(CaptureStillImageMemberRole::DEFAULT_METERED)) {
+      out_role = CaptureStillImageMemberRole::DEFAULT_METERED;
       return true;
     }
-    if (role_i == static_cast<int>(CaptureImageRequestMemberRole::ADDITIONAL_BRACKET)) {
-      out_role = CaptureImageRequestMemberRole::ADDITIONAL_BRACKET;
+    if (role_i == static_cast<int>(CaptureStillImageMemberRole::ADDITIONAL_BRACKET)) {
+      out_role = CaptureStillImageMemberRole::ADDITIONAL_BRACKET;
       return true;
     }
     return false;
@@ -24,26 +24,26 @@ bool parse_role(const godot::Variant& role_variant, CaptureImageRequestMemberRol
   if (role_variant.get_type() == godot::Variant::STRING) {
     const godot::String role_s = role_variant;
     if (role_s == "DEFAULT_METERED") {
-      out_role = CaptureImageRequestMemberRole::DEFAULT_METERED;
+      out_role = CaptureStillImageMemberRole::DEFAULT_METERED;
       return true;
     }
     if (role_s == "ADDITIONAL_BRACKET") {
-      out_role = CaptureImageRequestMemberRole::ADDITIONAL_BRACKET;
+      out_role = CaptureStillImageMemberRole::ADDITIONAL_BRACKET;
       return true;
     }
   }
   return false;
 }
 
-bool parse_image_sequence_dict(const godot::Dictionary& profile,
-                               CaptureImageSequenceRequest& out_sequence,
+bool parse_still_image_bundle_dict(const godot::Dictionary& profile,
+                               CaptureStillImageBundle& out_sequence,
                                godot::Error& out_error) {
-  out_sequence = make_default_metered_capture_image_sequence();
-  if (!profile.has("image_sequence")) {
+  out_sequence = make_default_metered_still_image_bundle();
+  if (!profile.has("still_image_bundle")) {
     out_error = godot::OK;
     return true;
   }
-  const godot::Variant seq_v = profile.get("image_sequence", godot::Variant());
+  const godot::Variant seq_v = profile.get("still_image_bundle", godot::Variant());
   if (seq_v.get_type() != godot::Variant::DICTIONARY) {
     out_error = godot::ERR_INVALID_PARAMETER;
     return false;
@@ -78,12 +78,12 @@ bool parse_image_sequence_dict(const godot::Dictionary& profile,
       out_error = godot::ERR_INVALID_PARAMETER;
       return false;
     }
-    CaptureImageRequestMemberRole role{};
+    CaptureStillImageMemberRole role{};
     if (!parse_role(md.get("role", godot::Variant()), role)) {
       out_error = godot::ERR_INVALID_PARAMETER;
       return false;
     }
-    CaptureImageRequestMember member{};
+    CaptureStillImageMember member{};
     member.image_member_index = static_cast<uint32_t>(int64_t(idx_v));
     member.role = role;
     member.exposure_compensation_milli_ev = static_cast<int32_t>(int64_t(ev_v));
@@ -134,9 +134,9 @@ godot::Error CamBANGDevice::set_still_capture_profile(const godot::Dictionary& p
     next_profile.format_fourcc = static_cast<uint32_t>(int64_t(v));
   }
 
-  CaptureImageSequenceRequest sequence{};
+  CaptureStillImageBundle sequence{};
   godot::Error parse_err = godot::OK;
-  if (!parse_image_sequence_dict(profile, sequence, parse_err)) {
+  if (!parse_still_image_bundle_dict(profile, sequence, parse_err)) {
     return parse_err;
   }
   return server_->set_device_still_capture_profile(device_instance_id_, next_profile, sequence);

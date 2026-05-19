@@ -1414,10 +1414,10 @@ bool run_synthetic_multi_member_still_sequence_check() {
   cap.width = 64;
   cap.height = 64;
   cap.format_fourcc = FOURCC_RGBA;
-  cap.image_sequence = make_default_metered_capture_image_sequence();
-  cap.image_sequence.members.push_back(
-      CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, 1000});
-  if (!is_valid_capture_image_sequence_request(cap.image_sequence, provider.supports_multi_image_still_sequence())) {
+  cap.still_image_bundle = make_default_metered_still_image_bundle();
+  cap.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
+  if (!is_valid_capture_still_image_bundle(cap.still_image_bundle, provider.supports_multi_image_still_sequence())) {
     std::cerr << "FAIL synthetic multi-member request validation rejected expected valid sequence\n";
     return false;
   }
@@ -1537,11 +1537,11 @@ bool run_core_synthetic_three_member_capture_result_check() {
   }
 
   req.capture_id = 9601;
-  req.image_sequence = make_default_metered_capture_image_sequence();
-  req.image_sequence.members.push_back(
-      CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, -1000});
-  req.image_sequence.members.push_back(
-      CaptureImageRequestMember{2u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, +1000});
+  req.still_image_bundle = make_default_metered_still_image_bundle();
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
   if (!provider.trigger_capture(req).ok()) {
     return fail_with_cleanup("FAIL core synthetic three-member trigger_capture failed");
   }

@@ -823,8 +823,12 @@ For still capture, `CaptureResult` is image-member based.
 - Bracketed still capture uses the same sequence model with additional members at
   indices `1..N`, role `ADDITIONAL_BRACKET`.
 
-This means a one-image capture is the minimum valid image-member sequence, not a
-separate legacy path.
+This means a one-image capture is the minimum valid still image bundle (ordered
+image-member bundle for one still event), not a separate legacy path.
+
+For public still-profile authoring at the Godot boundary, the profile Dictionary
+key is `still_image_bundle` (not `image_sequence`) to avoid implying a
+video/time sequence.
 
 `CaptureResultSet` remains a rig/Core curation container for grouping device
 `CaptureResult` objects and must not be treated as the container for bracket

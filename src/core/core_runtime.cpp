@@ -1051,7 +1051,7 @@ TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
 TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profile(
     uint64_t device_instance_id,
     const CaptureProfile& profile,
-    const CaptureImageSequenceRequest& image_sequence) noexcept {
+    const CaptureStillImageBundle& still_image_bundle) noexcept {
   if (device_instance_id == 0 || profile.width == 0 || profile.height == 0 || profile.format_fourcc == 0) {
     return TrySetStillCaptureProfileStatus::InvalidArgument;
   }
@@ -1061,20 +1061,20 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
     return TrySetStillCaptureProfileStatus::Busy;
   }
   const bool supports_multi_image = prov->supports_multi_image_still_sequence();
-  if (!is_valid_capture_image_sequence_request(image_sequence, supports_multi_image)) {
+  if (!is_valid_capture_still_image_bundle(still_image_bundle, supports_multi_image)) {
     return supports_multi_image
         ? TrySetStillCaptureProfileStatus::InvalidArgument
         : TrySetStillCaptureProfileStatus::NotSupported;
   }
 
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, profile, image_sequence]() {
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, profile, still_image_bundle]() {
     uint64_t next_version = 1;
     if (const auto* rec = devices_.find(device_instance_id)) {
-      bool same_sequence = (rec->capture_image_sequence.members.size() == image_sequence.members.size());
+      bool same_sequence = (rec->capture_still_image_bundle.members.size() == still_image_bundle.members.size());
       if (same_sequence) {
-        for (size_t i = 0; i < rec->capture_image_sequence.members.size(); ++i) {
-          const auto& a = rec->capture_image_sequence.members[i];
-          const auto& b = image_sequence.members[i];
+        for (size_t i = 0; i < rec->capture_still_image_bundle.members.size(); ++i) {
+          const auto& a = rec->capture_still_image_bundle.members[i];
+          const auto& b = still_image_bundle.members[i];
           if (a.image_member_index != b.image_member_index ||
               a.role != b.role ||
               a.exposure_compensation_milli_ev != b.exposure_compensation_milli_ev) {
@@ -1100,7 +1100,7 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
         profile.height,
         profile.format_fourcc,
         next_version);
-    (void)devices_.set_capture_image_sequence(device_instance_id, image_sequence, next_version);
+    (void)devices_.set_capture_still_image_bundle(device_instance_id, still_image_bundle, next_version);
     request_publish_from_core_unchecked();
   });
 
@@ -1127,7 +1127,7 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   out.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
   out.profile_version = 0;
   out.picture = tmpl.picture;
-  out.image_sequence = make_default_metered_capture_image_sequence();
+  out.still_image_bundle = make_default_metered_still_image_bundle();
 
   if (const auto* rec = devices_.find(device_instance_id)) {
     if (rec->capture_width > 0) {
@@ -1141,13 +1141,13 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
     }
     out.profile_version = rec->capture_profile_version;
     out.picture = rec->capture_picture;
-    out.image_sequence = rec->capture_image_sequence;
+    out.still_image_bundle = rec->capture_still_image_bundle;
   }
 
   if (!(out.width > 0 && out.height > 0)) {
     return false;
   }
-  return is_valid_capture_image_sequence_request(out.image_sequence, supports_multi_image);
+  return is_valid_capture_still_image_bundle(out.still_image_bundle, supports_multi_image);
 }
 
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
@@ -1306,8 +1306,8 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
 
   for (size_t i = 0; i < bundle.participants.size(); ++i) {
     const auto& participant = bundle.participants[i];
-    if (!is_valid_capture_image_sequence_request(
-            participant.request.image_sequence,
+    if (!is_valid_capture_still_image_bundle(
+            participant.request.still_image_bundle,
             prov->supports_multi_image_still_sequence())) {
       out.failure = RigSubmissionFailure::TriggerFailed;
       out.failed_index = i;

@@ -657,10 +657,10 @@ static int test_rig_preflight_materialization_smoke() {
       rt.stop();
       return 1;
     }
-    const auto& members = res.participants[0].request.image_sequence.members;
+    const auto& members = res.participants[0].request.still_image_bundle.members;
     if (members.size() != 1 ||
         members[0].image_member_index != 0 ||
-        members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+        members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
       std::cerr << "Expected rig preflight materialized request with one default-metered image member\n";
       rt.stop();
       return 1;
@@ -706,9 +706,9 @@ static int test_device_capture_request_materialization_smoke() {
     rt.stop();
     return 1;
   }
-  if (req.image_sequence.members.size() != 1 ||
-      req.image_sequence.members[0].image_member_index != 0 ||
-      req.image_sequence.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+  if (req.still_image_bundle.members.size() != 1 ||
+      req.still_image_bundle.members[0].image_member_index != 0 ||
+      req.still_image_bundle.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
     std::cerr << "Expected device materialized request with one default-metered image member\n";
     rt.stop();
     return 1;
@@ -758,9 +758,9 @@ static int test_still_capture_profile_version_idempotency_smoke() {
   p.width = req.width;
   p.height = req.height;
   p.format_fourcc = req.format_fourcc;
-  CaptureImageSequenceRequest s = make_default_metered_capture_image_sequence();
-  s.members.push_back(CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, -1000});
-  s.members.push_back(CaptureImageRequestMember{2u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, 1000});
+  CaptureStillImageBundle s = make_default_metered_still_image_bundle();
+  s.members.push_back(CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  s.members.push_back(CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
 
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
     std::cerr << "Expected first still profile set success\n";
@@ -948,9 +948,9 @@ static int test_rig_bundle_submission_smoke() {
     rt.stop();
     return 1;
   }
-  if (admitted_ok.participants[0].request.image_sequence.members.size() != 1 ||
-      admitted_ok.participants[0].request.image_sequence.members[0].image_member_index != 0 ||
-      admitted_ok.participants[0].request.image_sequence.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+  if (admitted_ok.participants[0].request.still_image_bundle.members.size() != 1 ||
+      admitted_ok.participants[0].request.still_image_bundle.members[0].image_member_index != 0 ||
+      admitted_ok.participants[0].request.still_image_bundle.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
     std::cerr << "Expected one-member default-metered sequence in admitted request\n";
     rt.stop();
     return 1;
@@ -960,8 +960,8 @@ static int test_rig_bundle_submission_smoke() {
   auto multi_member_invalid = admitted_ok;
   multi_member_invalid.capture_id = 9104;
   multi_member_invalid.participants[0].request.capture_id = 9104;
-  multi_member_invalid.participants[0].request.image_sequence.members.push_back(
-      CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET});
+  multi_member_invalid.participants[0].request.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET});
   if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9104, preflight_ok).ok) {
     std::cerr << "Failed to admit cohort for multi-image rejection case\n";
     rt.stop();

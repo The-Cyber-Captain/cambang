@@ -424,8 +424,8 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
     capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
   req.capture_id = capture_id;
-  if (!is_valid_capture_image_sequence_request(
-          req.image_sequence,
+  if (!is_valid_capture_still_image_bundle(
+          req.still_image_bundle,
           provider_->supports_multi_image_still_sequence())) {
     return 0;
   }
@@ -440,12 +440,12 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
 godot::Error CamBANGServer::set_device_still_capture_profile(
     uint64_t device_instance_id,
     const CaptureProfile& profile,
-    const CaptureImageSequenceRequest& image_sequence) {
+    const CaptureStillImageBundle& still_image_bundle) {
   if (device_instance_id == 0 || !is_running() || !provider_) {
     return godot::ERR_BUSY;
   }
   return map_try_set_still_capture_profile_status(
-      runtime_.try_set_device_still_capture_profile(device_instance_id, profile, image_sequence));
+      runtime_.try_set_device_still_capture_profile(device_instance_id, profile, still_image_bundle));
 }
 
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
@@ -462,18 +462,18 @@ godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t devic
   out["format_fourcc"] = static_cast<int64_t>(req.format_fourcc);
   godot::Dictionary seq;
   godot::Array members;
-  for (const auto& m : req.image_sequence.members) {
+  for (const auto& m : req.still_image_bundle.members) {
     godot::Dictionary md;
     md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
     md["role"] = static_cast<int64_t>(m.role);
-    md["role_name"] = (m.role == CaptureImageRequestMemberRole::DEFAULT_METERED)
+    md["role_name"] = (m.role == CaptureStillImageMemberRole::DEFAULT_METERED)
         ? godot::String("DEFAULT_METERED")
         : godot::String("ADDITIONAL_BRACKET");
     md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
     members.push_back(md);
   }
   seq["members"] = members;
-  out["image_sequence"] = seq;
+  out["still_image_bundle"] = seq;
   return out;
 }
 

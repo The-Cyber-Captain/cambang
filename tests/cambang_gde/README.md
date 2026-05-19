@@ -45,6 +45,7 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
 - `scenes/70_result_retrieval_verification.tscn`
   - Verifies Godot-facing result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Scene profile authoring for multi-member still capture uses `still_image_bundle` (ordered still-event image members), not `image_sequence`.
   - CaptureResult coverage in Scene 70 currently proves the public one-member indexed API shape (`get_image_count()==1`, member-0 metadata/materialization access) under today's public triggers.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
   - Expected pass string: `OK: result_retrieval_verification passed`

@@ -269,7 +269,9 @@ Bracketed captures use the same model, adding members:
 
 - member `1..N` with role `ADDITIONAL_BRACKET`
 
-A one-image capture is therefore the minimum valid image-member sequence, not a separate legacy/default-only path.
+A one-image capture is therefore the minimum valid still image bundle (ordered
+image-member bundle for one still event), not a separate legacy/default-only
+path.
 
 ### 7.1 Core properties
 
@@ -332,6 +334,10 @@ supported.
 Existing scalar/default `CaptureResult` methods (`to_image()`,
 `can_to_image()`, and related default-image descriptive accessors) remain member-0
 conveniences.
+
+Still-capture profile authoring at the Godot boundary uses the Dictionary key
+`still_image_bundle` to describe this ordered member bundle and intentionally
+avoids `image_sequence` wording to prevent time-sequence ambiguity.
 
 ### 7.4 Capability inspection
 
@@ -545,4 +551,3 @@ It exists to prevent future implementation from teaching the wrong lesson that
 a non-CPU primary payload removes the need for an available CPU-facing fallback.
 
 ---
-
