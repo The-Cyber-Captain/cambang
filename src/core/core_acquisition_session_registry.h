@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "core/snapshot/state_snapshot.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
 
@@ -20,6 +21,7 @@ public:
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
+    CaptureStillImageBundle capture_still_image_bundle{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
@@ -40,7 +42,8 @@ public:
                                 uint32_t capture_width,
                                 uint32_t capture_height,
                                 uint32_t capture_format,
-                                uint64_t capture_profile_version);
+                                uint64_t capture_profile_version,
+                                const CaptureStillImageBundle& capture_still_image_bundle);
   bool on_native_object_destroyed(uint64_t native_id, uint64_t destroyed_ns);
   bool on_capture_started(uint64_t device_instance_id,
                           uint64_t capture_id,
@@ -48,7 +51,8 @@ public:
                           uint32_t capture_width,
                           uint32_t capture_height,
                           uint32_t capture_format,
-                          uint64_t capture_profile_version);
+                          uint64_t capture_profile_version,
+                          const CaptureStillImageBundle& capture_still_image_bundle);
   bool on_capture_completed(uint64_t device_instance_id, uint64_t capture_id, uint64_t completed_ns);
   bool on_capture_failed(uint64_t device_instance_id,
                          uint64_t capture_id,

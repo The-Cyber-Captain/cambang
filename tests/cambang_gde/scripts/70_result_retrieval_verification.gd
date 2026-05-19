@@ -47,6 +47,7 @@ var _inspection_capture_id := 0
 var _capture_profile_version_after_set := -1
 var _still_profile_set_applied := false
 var _still_bundle_snapshot_verified := false
+var _session_bundle_snapshot_verified := false
 var _capture_triggered := false
 
 func _ready() -> void:
@@ -266,6 +267,29 @@ func _try_verify_stream_result() -> void:
 		_still_bundle_snapshot_verified = true
 		_step_ok("snapshot device still_image_bundle verified (three members)")
 		return
+	if not _session_bundle_snapshot_verified:
+		var acquisition_session_snapshot := _get_acquisition_session_snapshot_record(_device_instance_id)
+		if acquisition_session_snapshot.is_empty():
+			return
+		var session_bundle_variant: Variant = acquisition_session_snapshot.get("still_image_bundle", {})
+		if typeof(session_bundle_variant) != TYPE_DICTIONARY:
+			return
+		var session_bundle_dict: Dictionary = session_bundle_variant
+		var session_members_variant: Variant = session_bundle_dict.get("members", [])
+		if typeof(session_members_variant) != TYPE_ARRAY:
+			return
+		var session_bundle_members: Array = session_members_variant
+		if session_bundle_members.size() < 3:
+			return
+		_require(int((session_bundle_members[0] as Dictionary).get("image_member_index", -1)) == 0, "step %d FAIL: acquisition_session bundle member 0 index mismatch" % _step)
+		_require(int((session_bundle_members[1] as Dictionary).get("image_member_index", -1)) == 1, "step %d FAIL: acquisition_session bundle member 1 index mismatch" % _step)
+		_require(int((session_bundle_members[2] as Dictionary).get("image_member_index", -1)) == 2, "step %d FAIL: acquisition_session bundle member 2 index mismatch" % _step)
+		_require(int((session_bundle_members[0] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == 0, "step %d FAIL: acquisition_session bundle member 0 EV mismatch" % _step)
+		_require(int((session_bundle_members[1] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == -1000, "step %d FAIL: acquisition_session bundle member 1 EV mismatch" % _step)
+		_require(int((session_bundle_members[2] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == 1000, "step %d FAIL: acquisition_session bundle member 2 EV mismatch" % _step)
+		_session_bundle_snapshot_verified = true
+		_step_ok("snapshot acquisition_session still_image_bundle verified (three members)")
+		return
 
 	if not _capture_triggered:
 		_capture_id = int(device.trigger_capture())
@@ -480,6 +504,20 @@ func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
 			continue
 		var rec: Dictionary = d
 		if int(rec.get("instance_id", 0)) == device_instance_id:
+			return rec
+	return {}
+
+
+func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictionary:
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return {}
+	var acquisition_sessions: Array = snapshot.get("acquisition_sessions", [])
+	for s in acquisition_sessions:
+		if typeof(s) != TYPE_DICTIONARY:
+			continue
+		var rec: Dictionary = s
+		if int(rec.get("device_instance_id", 0)) == device_instance_id:
 			return rec
 	return {}
 

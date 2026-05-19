@@ -284,6 +284,18 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
   d["capture_width"] = static_cast<uint32_t>(s.capture_width);
   d["capture_height"] = static_cast<uint32_t>(s.capture_height);
   d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  godot::Dictionary bundle;
+  godot::Array members;
+  for (const auto& m : s.still_image_bundle.members) {
+    godot::Dictionary item;
+    item["image_member_index"] = static_cast<int>(m.image_member_index);
+    item["role"] = static_cast<int>(m.role);
+    item["role_name"] = godot::String(m.role_name.c_str());
+    item["exposure_compensation_milli_ev"] = static_cast<int>(m.exposure_compensation_milli_ev);
+    members.append(item);
+  }
+  bundle["members"] = members;
+  d["still_image_bundle"] = bundle;
   d["captures_triggered"] = static_cast<uint64_t>(s.captures_triggered);
   d["captures_completed"] = static_cast<uint64_t>(s.captures_completed);
   d["captures_failed"] = static_cast<uint64_t>(s.captures_failed);

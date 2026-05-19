@@ -3,6 +3,23 @@
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
+namespace {
+bool same_bundle_members(const CaptureStillImageBundle& a, const CaptureStillImageBundle& b) {
+  if (a.members.size() != b.members.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.members.size(); ++i) {
+    const auto& am = a.members[i];
+    const auto& bm = b.members[i];
+    if (am.image_member_index != bm.image_member_index ||
+        am.role != bm.role ||
+        am.exposure_compensation_milli_ev != bm.exposure_compensation_milli_ev) {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
 
 bool CoreAcquisitionSessionRegistry::on_native_object_created(uint64_t native_id,
                                                               uint32_t type,
@@ -11,7 +28,8 @@ bool CoreAcquisitionSessionRegistry::on_native_object_created(uint64_t native_id
                                                               uint32_t capture_width,
                                                               uint32_t capture_height,
                                                               uint32_t capture_format,
-                                                              uint64_t capture_profile_version) {
+                                                              uint64_t capture_profile_version,
+                                                              const CaptureStillImageBundle& capture_still_image_bundle) {
   if (native_id == 0 || type != static_cast<uint32_t>(NativeObjectType::AcquisitionSession)) {
     return false;
   }
@@ -58,6 +76,10 @@ bool CoreAcquisitionSessionRegistry::on_native_object_created(uint64_t native_id
     entry.capture_profile_version = capture_profile_version;
     changed = true;
   }
+  if (!same_bundle_members(entry.capture_still_image_bundle, capture_still_image_bundle)) {
+    entry.capture_still_image_bundle = capture_still_image_bundle;
+    changed = true;
+  }
 
   if (was_live && prev_device_instance_id != 0 && prev_device_instance_id != owner_device_instance_id) {
     rebuild_device_live_index_(prev_device_instance_id);
@@ -95,7 +117,8 @@ bool CoreAcquisitionSessionRegistry::on_capture_started(uint64_t device_instance
                                                         uint32_t capture_width,
                                                         uint32_t capture_height,
                                                         uint32_t capture_format,
-                                                        uint64_t capture_profile_version) {
+                                                        uint64_t capture_profile_version,
+                                                        const CaptureStillImageBundle& capture_still_image_bundle) {
   if (device_instance_id == 0 || capture_id == 0) {
     return false;
   }
@@ -134,6 +157,10 @@ bool CoreAcquisitionSessionRegistry::on_capture_started(uint64_t device_instance
   }
   if (entry.capture_profile_version != capture_profile_version) {
     entry.capture_profile_version = capture_profile_version;
+    changed = true;
+  }
+  if (!same_bundle_members(entry.capture_still_image_bundle, capture_still_image_bundle)) {
+    entry.capture_still_image_bundle = capture_still_image_bundle;
     changed = true;
   }
   captures_in_flight_[capture_id] = CaptureInFlight{session_id, started_ns};

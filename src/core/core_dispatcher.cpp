@@ -148,6 +148,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
       uint32_t capture_height = 0;
       uint32_t capture_format = 0;
       uint64_t capture_profile_version = 0;
+      CaptureStillImageBundle capture_still_image_bundle = make_default_metered_still_image_bundle();
       if (devices_ && p.owner_device_instance_id != 0) {
         if (const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.owner_device_instance_id);
             device != nullptr) {
@@ -155,6 +156,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
           capture_height = device->capture_height;
           capture_format = device->capture_format;
           capture_profile_version = device->capture_profile_version;
+          capture_still_image_bundle = device->capture_still_image_bundle;
         }
       }
       state_changed =
@@ -166,7 +168,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
               capture_width,
               capture_height,
               capture_format,
-              capture_profile_version) ||
+              capture_profile_version,
+              capture_still_image_bundle) ||
           state_changed;
     }
   }
@@ -201,6 +204,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       uint32_t capture_height = 0;
       uint32_t capture_format = 0;
       uint64_t capture_profile_version = 0;
+      CaptureStillImageBundle capture_still_image_bundle = make_default_metered_still_image_bundle();
       if (devices_ && p.device_instance_id != 0) {
         if (const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
             device != nullptr) {
@@ -208,6 +212,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           capture_height = device->capture_height;
           capture_format = device->capture_format;
           capture_profile_version = device->capture_profile_version;
+          capture_still_image_bundle = device->capture_still_image_bundle;
         }
       }
       const uint64_t started_ns = now_ns_ ? now_ns_() : 0;
@@ -217,7 +222,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
                                                                 capture_width,
                                                                 capture_height,
                                                                 capture_format,
-                                                                capture_profile_version);
+                                                                capture_profile_version,
+                                                                capture_still_image_bundle);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;

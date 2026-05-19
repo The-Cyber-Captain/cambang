@@ -3689,10 +3689,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
 				% device_matches.size()
 			)
-		var device_bundle_summary := _build_still_image_bundle_member_count_line(rec)
-		if not device_bundle_summary.is_empty():
-			device_info.append(device_bundle_summary)
-		var device_bundle_detail := _build_still_image_bundle_detail_line(rec)
+		var device_bundle_detail := _build_still_image_bundle_summary(rec)
 		if not device_bundle_detail.is_empty():
 			device_info.append(device_bundle_detail)
 		var device_entry := _entry(
