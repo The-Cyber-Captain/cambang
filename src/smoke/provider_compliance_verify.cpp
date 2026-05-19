@@ -125,7 +125,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
       ev.payload_size_bytes = frame.size_bytes;
       ev.payload_hash = fnv1a64_hash_bytes(p, frame.size_bytes);
     }
-    ev.capture_image_routing = frame.capture_image_routing;
+    ev.capture_image_routing = frame.capture_image.routing;
     ev.capture_image_member_index = frame.capture_image.image_member_index;
     ev.capture_image_exposure_compensation_milli_ev =
         frame.capture_image.exposure_compensation_milli_ev;

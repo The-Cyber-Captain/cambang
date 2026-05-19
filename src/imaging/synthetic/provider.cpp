@@ -1114,10 +1114,9 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     fv.capture_timestamp.value = capture_ts_ns;
     fv.capture_timestamp.tick_ns = 1;
     fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-    fv.capture_image_routing = (i == 0)
+    fv.capture_image.routing = (i == 0)
         ? CaptureImageRouting::DEFAULT_METERED
         : CaptureImageRouting::ADDITIONAL_BRACKET;
-    fv.capture_image.routing = fv.capture_image_routing;
     fv.capture_image.image_member_index = member.image_member_index;
     fv.capture_image.exposure_compensation_milli_ev = member.exposure_compensation_milli_ev;
     fv.data = bytes->data();

@@ -142,6 +142,11 @@ bool CoreResultStore::append_additional_capture_image(
   }
 
   auto updated = std::make_shared<CoreCaptureResultData>(*dev_it->second);
+  const uint32_t expected_member_index =
+      1u + static_cast<uint32_t>(updated->additional_images.size());
+  if (image_member.image_member_index != expected_member_index) {
+    return false;
+  }
   updated->additional_images.push_back(std::move(image_member));
   dev_it->second = std::move(updated);
   return true;
@@ -162,8 +167,7 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
     const CoreResultPayloadCpuPacked& payload,
     uint64_t capture_timestamp_ns) {
-  if (frame.capture_image_routing != CaptureImageRouting::DEFAULT_METERED ||
-      frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
+  if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
       frame.capture_image.image_member_index != 0u) {
     return nullptr;
   }

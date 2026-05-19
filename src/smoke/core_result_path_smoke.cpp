@@ -75,6 +75,7 @@ int main() {
   const size_t default_bytes_before = capture_result->default_image.payload.bytes.size();
 
   CoreCaptureResultData::ImageMemberData bracket{};
+  bracket.image_member_index = 1;
   bracket.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
   bracket.capture_timestamp_ns = 2002;
   bracket.payload = capture_result->default_image.payload;
@@ -101,10 +102,17 @@ int main() {
   assert(!store.append_additional_capture_image(77, 100, bad_role));
 
   CoreCaptureResultData::ImageMemberData bad_payload{};
+  bad_payload.image_member_index = 2;
   bad_payload.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
   bad_payload.capture_timestamp_ns = 2004;
   bad_payload.payload = CoreResultPayloadCpuPacked{};
   assert(!store.append_additional_capture_image(77, 100, bad_payload));
+  CoreCaptureResultData::ImageMemberData out_of_order{};
+  out_of_order.image_member_index = 3;
+  out_of_order.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+  out_of_order.capture_timestamp_ns = 2005;
+  out_of_order.payload = capture_result_with_bracket->default_image.payload;
+  assert(!store.append_additional_capture_image(77, 100, out_of_order));
   assert(!store.append_additional_capture_image(999, 100, bracket));
 
   auto capture_set = store.get_capture_result_set(77);

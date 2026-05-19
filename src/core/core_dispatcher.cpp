@@ -280,7 +280,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
     }
     const bool is_additional_bracket =
-        p.frame.capture_image_routing == CaptureImageRouting::ADDITIONAL_BRACKET;
+        p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
     const uint32_t frame_member_index = p.frame.capture_image.image_member_index;
     const int32_t frame_member_ev = p.frame.capture_image.exposure_compensation_milli_ev;
     if (result_store_) {
