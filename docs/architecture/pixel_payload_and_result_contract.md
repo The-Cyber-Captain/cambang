@@ -810,3 +810,22 @@ CamBANG’s release-facing image path is a **multi-representation, provider-adap
 - Original image truth is preserved, while derived materializations remain explicit.
 
 ---
+
+
+---
+
+## 7.x Still-capture image-member contract clarification
+
+For still capture, `CaptureResult` is image-member based.
+
+- The canonical minimum valid sequence is one member: index `0`, role
+  `DEFAULT_METERED`, with exposure-compensation baseline `0` milli-eV.
+- Bracketed still capture uses the same sequence model with additional members at
+  indices `1..N`, role `ADDITIONAL_BRACKET`.
+
+This means a one-image capture is the minimum valid image-member sequence, not a
+separate legacy path.
+
+`CaptureResultSet` remains a rig/Core curation container for grouping device
+`CaptureResult` objects and must not be treated as the container for bracket
+members of a single device capture result.
