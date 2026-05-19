@@ -45,6 +45,8 @@ var _stream_id := 0
 var _capture_id := 0
 var _inspection_capture_id := 0
 var _capture_profile_version_after_set := -1
+var _still_profile_set_applied := false
+var _still_bundle_snapshot_verified := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -207,44 +209,53 @@ func _try_verify_stream_result() -> void:
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
 	_step_ok("device seam verified")
 
-	var bracket_profile := {
-		"still_image_bundle": {
-			"members": [
-				{
-					"image_member_index": 0,
-					"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
-					"exposure_compensation_milli_ev": 0,
-				},
-				{
-					"image_member_index": 1,
-					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-					"exposure_compensation_milli_ev": -1000,
-				},
-				{
-					"image_member_index": 2,
-					"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-					"exposure_compensation_milli_ev": 1000,
-				},
-			],
-		},
-	}
-	var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
-	_require(
-		set_profile_err == OK,
-		"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
-	)
-	_step_ok("device still capture profile set (three-member bracket)")
-	_capture_profile_version_after_set = _get_device_capture_profile_version(_device_instance_id)
-	_require(
-		_capture_profile_version_after_set >= 0,
-		"step %d FAIL: unable to read capture_profile_version after profile set" % _step
-	)
-	var bundle_members_after_set := _get_device_still_image_bundle_members(_device_instance_id)
-	_require(bundle_members_after_set.size() == 3, "step %d FAIL: snapshot still_image_bundle must contain 3 members after profile set" % _step)
-	_require(int((bundle_members_after_set[0] as Dictionary).get("image_member_index", -1)) == 0, "step %d FAIL: snapshot bundle member 0 index mismatch" % _step)
-	_require(int((bundle_members_after_set[1] as Dictionary).get("image_member_index", -1)) == 1, "step %d FAIL: snapshot bundle member 1 index mismatch" % _step)
-	_require(int((bundle_members_after_set[2] as Dictionary).get("image_member_index", -1)) == 2, "step %d FAIL: snapshot bundle member 2 index mismatch" % _step)
-	_step_ok("snapshot device still_image_bundle verified (three members)")
+	if not _still_profile_set_applied:
+		var bracket_profile := {
+			"still_image_bundle": {
+				"members": [
+					{
+						"image_member_index": 0,
+						"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+						"exposure_compensation_milli_ev": 0,
+					},
+					{
+						"image_member_index": 1,
+						"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+						"exposure_compensation_milli_ev": -1000,
+					},
+					{
+						"image_member_index": 2,
+						"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+						"exposure_compensation_milli_ev": 1000,
+					},
+				],
+			},
+		}
+		var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
+		_require(
+			set_profile_err == OK,
+			"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
+		)
+		_step_ok("device still capture profile set (three-member bracket)")
+		_still_profile_set_applied = true
+
+	if _capture_profile_version_after_set < 0:
+		_capture_profile_version_after_set = _get_device_capture_profile_version(_device_instance_id)
+		if _capture_profile_version_after_set < 0:
+			return
+
+	if not _still_bundle_snapshot_verified:
+		var bundle_members_after_set := _get_device_still_image_bundle_members(_device_instance_id)
+		if bundle_members_after_set.size() < 3:
+			return
+		_require(int((bundle_members_after_set[0] as Dictionary).get("image_member_index", -1)) == 0, "step %d FAIL: snapshot bundle member 0 index mismatch" % _step)
+		_require(int((bundle_members_after_set[1] as Dictionary).get("image_member_index", -1)) == 1, "step %d FAIL: snapshot bundle member 1 index mismatch" % _step)
+		_require(int((bundle_members_after_set[2] as Dictionary).get("image_member_index", -1)) == 2, "step %d FAIL: snapshot bundle member 2 index mismatch" % _step)
+		_require(int((bundle_members_after_set[0] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == 0, "step %d FAIL: snapshot bundle member 0 EV mismatch" % _step)
+		_require(int((bundle_members_after_set[1] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == -1000, "step %d FAIL: snapshot bundle member 1 EV mismatch" % _step)
+		_require(int((bundle_members_after_set[2] as Dictionary).get("exposure_compensation_milli_ev", 9999)) == 1000, "step %d FAIL: snapshot bundle member 2 EV mismatch" % _step)
+		_still_bundle_snapshot_verified = true
+		_step_ok("snapshot device still_image_bundle verified (three members)")
 
 	_capture_id = int(device.trigger_capture())
 	_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
