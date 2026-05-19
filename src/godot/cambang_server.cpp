@@ -89,6 +89,16 @@ static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexce
   }
 }
 
+static godot::Error map_try_set_still_capture_profile_status(TrySetStillCaptureProfileStatus s) noexcept {
+  switch (s) {
+    case TrySetStillCaptureProfileStatus::OK: return godot::OK;
+    case TrySetStillCaptureProfileStatus::NotSupported: return godot::ERR_UNAVAILABLE;
+    case TrySetStillCaptureProfileStatus::Busy: return godot::ERR_BUSY;
+    case TrySetStillCaptureProfileStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
 static bool line_contains_token(const std::string& line, const char* token) {
   return token && line.find(token) != std::string::npos;
 }
@@ -425,6 +435,46 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
     return 0;
   }
   return capture_id;
+}
+
+godot::Error CamBANGServer::set_device_still_capture_profile(
+    uint64_t device_instance_id,
+    const CaptureProfile& profile,
+    const CaptureImageSequenceRequest& image_sequence) {
+  if (device_instance_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_BUSY;
+  }
+  return map_try_set_still_capture_profile_status(
+      runtime_.try_set_device_still_capture_profile(device_instance_id, profile, image_sequence));
+}
+
+godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
+  godot::Dictionary out;
+  if (device_instance_id == 0) {
+    return out;
+  }
+  CaptureRequest req{};
+  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
+    return out;
+  }
+  out["width"] = static_cast<int64_t>(req.width);
+  out["height"] = static_cast<int64_t>(req.height);
+  out["format_fourcc"] = static_cast<int64_t>(req.format_fourcc);
+  godot::Dictionary seq;
+  godot::Array members;
+  for (const auto& m : req.image_sequence.members) {
+    godot::Dictionary md;
+    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
+    md["role"] = static_cast<int64_t>(m.role);
+    md["role_name"] = (m.role == CaptureImageRequestMemberRole::DEFAULT_METERED)
+        ? godot::String("DEFAULT_METERED")
+        : godot::String("ADDITIONAL_BRACKET");
+    md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
+    members.push_back(md);
+  }
+  seq["members"] = members;
+  out["image_sequence"] = seq;
+  return out;
 }
 
 uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {

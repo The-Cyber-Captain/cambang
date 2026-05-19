@@ -1048,6 +1048,46 @@ TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
                                                   : TrySetCapturePictureStatus::Busy;
 }
 
+TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profile(
+    uint64_t device_instance_id,
+    const CaptureProfile& profile,
+    const CaptureImageSequenceRequest& image_sequence) noexcept {
+  if (device_instance_id == 0 || profile.width == 0 || profile.height == 0 || profile.format_fourcc == 0) {
+    return TrySetStillCaptureProfileStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TrySetStillCaptureProfileStatus::Busy;
+  }
+  const bool supports_multi_image = prov->supports_multi_image_still_sequence();
+  if (!is_valid_capture_image_sequence_request(image_sequence, supports_multi_image)) {
+    return supports_multi_image
+        ? TrySetStillCaptureProfileStatus::InvalidArgument
+        : TrySetStillCaptureProfileStatus::NotSupported;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, profile, image_sequence]() {
+    uint64_t next_version = 1;
+    if (const auto* rec = devices_.find(device_instance_id)) {
+      next_version = rec->capture_profile_version + 1;
+      if (next_version == 0) next_version = 1;
+    }
+    (void)devices_.retain_capture_profile(
+        device_instance_id,
+        profile.width,
+        profile.height,
+        profile.format_fourcc,
+        next_version);
+    (void)devices_.set_capture_image_sequence(device_instance_id, image_sequence, next_version);
+    request_publish_from_core_unchecked();
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued)
+      ? TrySetStillCaptureProfileStatus::OK
+      : TrySetStillCaptureProfileStatus::Busy;
+}
+
 bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
   if (device_instance_id == 0) {
     return false;
@@ -1080,6 +1120,7 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
     }
     out.profile_version = rec->capture_profile_version;
     out.picture = rec->capture_picture;
+    out.image_sequence = rec->capture_image_sequence;
   }
 
   if (!(out.width > 0 && out.height > 0)) {

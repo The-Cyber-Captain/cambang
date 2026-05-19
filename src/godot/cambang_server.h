@@ -100,6 +100,10 @@ public:
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
   uint64_t trigger_device_capture(uint64_t device_instance_id);
+  godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
+                                                const CaptureProfile& profile,
+                                                const CaptureImageSequenceRequest& image_sequence);
+  godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
 
 protected:
   static void _bind_methods();

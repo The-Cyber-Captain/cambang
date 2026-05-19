@@ -206,6 +206,18 @@ func _try_verify_stream_result() -> void:
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
 	_step_ok("device seam verified")
 
+		var set_profile_err := int(device.set_still_capture_profile({
+		"image_sequence": {
+			"members": [
+				{"image_member_index": 0, "role": "DEFAULT_METERED", "exposure_compensation_milli_ev": 0},
+				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -333},
+				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 333}
+			]
+		}
+	}))
+	_require(set_profile_err == OK, "step %d FAIL: set_still_capture_profile() rejected three-member bracket profile (%d)" % [_step, set_profile_err])
+	_step_ok("device still capture profile set (three-member bracket)")
+
 	_capture_id = int(device.trigger_capture())
 	_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
 	_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
@@ -240,18 +252,28 @@ func _try_verify_capture_result() -> void:
 	_require(typeof(capture_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture optical_calibration_provenance must return Dictionary" % _step)
 	_step_ok("capture provenance grouped accessors verified (Dictionary)")
 
-	_require(int(capture_result.get_image_count()) == 1, "step %d FAIL: capture get_image_count() must be 1 for default path" % _step)
-	_require(not bool(capture_result.has_additional_images()), "step %d FAIL: capture has_additional_images() must be false for default path" % _step)
+	_require(int(capture_result.get_image_count()) == 3, "step %d FAIL: capture get_image_count() must be 3 for bracket profile" % _step)
+	_require(bool(capture_result.has_additional_images()), "step %d FAIL: capture has_additional_images() must be true for bracket profile" % _step)
 	var image_member_0: Dictionary = capture_result.get_image_member(0)
 	var image_member_1: Dictionary = capture_result.get_image_member(1)
+	var image_member_2: Dictionary = capture_result.get_image_member(2)
+	var image_member_3: Dictionary = capture_result.get_image_member(3)
 	_require(not image_member_0.is_empty(), "step %d FAIL: capture get_image_member(0) must return non-empty Dictionary" % _step)
-	_require(image_member_1.is_empty(), "step %d FAIL: capture get_image_member(1) must return empty Dictionary for out-of-range" % _step)
+	_require(not image_member_1.is_empty(), "step %d FAIL: capture get_image_member(1) must return non-empty Dictionary" % _step)
+	_require(not image_member_2.is_empty(), "step %d FAIL: capture get_image_member(2) must return non-empty Dictionary" % _step)
+	_require(image_member_3.is_empty(), "step %d FAIL: capture get_image_member(3) must return empty Dictionary for out-of-range" % _step)
 	_require(int(image_member_0.get("image_member_index", -1)) == 0, "step %d FAIL: capture image_member(0).image_member_index must be 0" % _step)
 	_require(bool(image_member_0.get("is_default", false)), "step %d FAIL: capture image_member(0).is_default must be true" % _step)
 	_require(not bool(image_member_0.get("is_additional_bracket", true)), "step %d FAIL: capture image_member(0).is_additional_bracket must be false" % _step)
 	_require(int(image_member_0.get("role", -1)) == int(capture_result.IMAGE_ROLE_DEFAULT_METERED), "step %d FAIL: capture image_member(0).role must be IMAGE_ROLE_DEFAULT_METERED" % _step)
 	_require(str(image_member_0.get("role_name", "")) == "DEFAULT_METERED", "step %d FAIL: capture image_member(0).role_name must be DEFAULT_METERED" % _step)
-	_step_ok("capture indexed image-member metadata verified (default-only path)")
+		_require(int(image_member_1.get("image_member_index", -1)) == 1, "step %d FAIL: capture image_member(1).image_member_index must be 1" % _step)
+	_require(int(image_member_2.get("image_member_index", -1)) == 2, "step %d FAIL: capture image_member(2).image_member_index must be 2" % _step)
+	_require(int(image_member_1.get("role", -1)) == int(capture_result.IMAGE_ROLE_ADDITIONAL_BRACKET), "step %d FAIL: capture image_member(1).role must be IMAGE_ROLE_ADDITIONAL_BRACKET" % _step)
+	_require(int(image_member_2.get("role", -1)) == int(capture_result.IMAGE_ROLE_ADDITIONAL_BRACKET), "step %d FAIL: capture image_member(2).role must be IMAGE_ROLE_ADDITIONAL_BRACKET" % _step)
+	_require(int(image_member_1.get("exposure_compensation_milli_ev", 0)) == -333, "step %d FAIL: capture image_member(1) EV must be -333" % _step)
+	_require(int(image_member_2.get("exposure_compensation_milli_ev", 0)) == 333, "step %d FAIL: capture image_member(2) EV must be 333" % _step)
+	_step_ok("capture indexed image-member metadata verified (three-member profile)")
 
 	var capture_can_to_image := int(capture_result.can_to_image())
 	_require(capture_can_to_image != int(capture_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: capture can_to_image() unexpectedly unsupported" % _step)
@@ -273,7 +295,11 @@ func _try_verify_capture_result() -> void:
 	var capture_image_member_0: Image = capture_result.to_image_member(0)
 	_require(capture_image_member_0 != null, "step %d FAIL: capture to_image_member(0) returned null" % _step)
 	var capture_image_member_1: Image = capture_result.to_image_member(1)
-	_require(capture_image_member_1 == null, "step %d FAIL: capture to_image_member(1) must be null for out-of-range member" % _step)
+	var capture_image_member_2: Image = capture_result.to_image_member(2)
+	var capture_image_member_3: Image = capture_result.to_image_member(3)
+	_require(capture_image_member_1 != null, "step %d FAIL: capture to_image_member(1) returned null" % _step)
+	_require(capture_image_member_2 != null, "step %d FAIL: capture to_image_member(2) returned null" % _step)
+	_require(capture_image_member_3 == null, "step %d FAIL: capture to_image_member(3) must be null for out-of-range member" % _step)
 	_require(capture_image_member_0.get_width() == capture_image.get_width(), "step %d FAIL: capture to_image_member(0) width must match to_image()" % _step)
 	_require(capture_image_member_0.get_height() == capture_image.get_height(), "step %d FAIL: capture to_image_member(0) height must match to_image()" % _step)
 	_require(capture_image_member_0.get_format() == capture_image.get_format(), "step %d FAIL: capture to_image_member(0) format must match to_image()" % _step)
@@ -370,7 +396,19 @@ func _request_manual_capture() -> void:
 	if device == null:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
-	_inspection_capture_id = int(device.trigger_capture())
+	_inspection	var set_profile_err := int(device.set_still_capture_profile({
+		"image_sequence": {
+			"members": [
+				{"image_member_index": 0, "role": "DEFAULT_METERED", "exposure_compensation_milli_ev": 0},
+				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -333},
+				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 333}
+			]
+		}
+	}))
+	_require(set_profile_err == OK, "step %d FAIL: set_still_capture_profile() rejected three-member bracket profile (%d)" % [_step, set_profile_err])
+	_step_ok("device still capture profile set (three-member bracket)")
+
+	_capture_id = int(device.trigger_capture())
 	if _inspection_capture_id == 0:
 		_append_status("WARN: manual capture request rejected (capture_id=0)")
 		return

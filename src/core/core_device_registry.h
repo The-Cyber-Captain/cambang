@@ -26,6 +26,7 @@ public:
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
+    CaptureImageSequenceRequest capture_image_sequence = make_default_metered_capture_image_sequence();
     PictureConfig capture_picture{};
     uint32_t warm_hold_ms = 0;
     bool warm_deadline_active = false;
@@ -44,6 +45,9 @@ public:
                               uint32_t height,
                               uint32_t format,
                               uint64_t capture_profile_version);
+  bool set_capture_image_sequence(uint64_t device_instance_id,
+                                  const CaptureImageSequenceRequest& sequence,
+                                  uint64_t capture_profile_version);
   bool set_capture_picture(uint64_t device_instance_id, const PictureConfig& picture);
   bool set_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
   bool arm_warm_deadline(uint64_t device_instance_id, uint64_t deadline_ns);
