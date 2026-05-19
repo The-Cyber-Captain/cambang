@@ -155,6 +155,7 @@ enum class CaptureImageRequestMemberRole : uint8_t {
 struct CaptureImageRequestMember {
   uint32_t image_member_index = 0;
   CaptureImageRequestMemberRole role = CaptureImageRequestMemberRole::DEFAULT_METERED;
+  int32_t exposure_compensation_milli_ev = 0;
 };
 
 struct CaptureImageSequenceRequest {
@@ -174,7 +175,8 @@ inline bool is_valid_capture_image_sequence_request(
     return false;
   }
   if (seq.members[0].image_member_index != 0u ||
-      seq.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED) {
+      seq.members[0].role != CaptureImageRequestMemberRole::DEFAULT_METERED ||
+      seq.members[0].exposure_compensation_milli_ev != 0) {
     return false;
   }
   for (size_t i = 0; i < seq.members.size(); ++i) {
@@ -331,6 +333,12 @@ enum class CaptureImageRouting : uint8_t {
   ADDITIONAL_BRACKET = 1,
 };
 
+struct CaptureImageFrameMetadata {
+  CaptureImageRouting routing = CaptureImageRouting::DEFAULT_METERED;
+  uint32_t image_member_index = 0;
+  int32_t exposure_compensation_milli_ev = 0;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -340,7 +348,7 @@ struct FrameView {
   uint64_t stream_id = 0;    // 0 if this frame belongs only to a still capture
   uint64_t acquisition_session_id = 0; // 0 if unavailable/unknown
   uint64_t capture_id = 0;   // 0 if this is a repeating stream frame
-  CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
+  CaptureImageFrameMetadata capture_image{};
 
   // Image metadata
   uint32_t width = 0;

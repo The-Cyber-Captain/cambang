@@ -280,7 +280,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
     }
     const bool is_additional_bracket =
-        p.frame.capture_image_routing == CaptureImageRouting::ADDITIONAL_BRACKET;
+        p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
+    const uint32_t frame_member_index = p.frame.capture_image.image_member_index;
+    const int32_t frame_member_ev = p.frame.capture_image.exposure_compensation_milli_ev;
     if (result_store_) {
       const bool lifecycle_allows_retention =
           result_retention_allowed_ ? result_retention_allowed_() : true;
@@ -293,6 +295,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           } else {
           CoreCaptureResultData::ImageMemberData image_member{};
           image_member.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+          image_member.image_member_index = frame_member_index;
+          image_member.exposure_compensation_milli_ev = frame_member_ev;
           image_member.capture_timestamp_ns = integrated_ts_ns;
           if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
             retained_for_result = result_store_->append_additional_capture_image(

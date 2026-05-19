@@ -23,7 +23,9 @@ int main() {
     FrameView frame{};
     frame.capture_id = 900;
     frame.device_instance_id = 901;
-    frame.capture_image_routing = routing;
+    frame.capture_image.routing = routing;
+    frame.capture_image.image_member_index =
+        (routing == CaptureImageRouting::DEFAULT_METERED) ? 0u : 1u;
     frame.width = 2;
     frame.height = 2;
     frame.format_fourcc = FOURCC_RGBA;
@@ -62,6 +64,17 @@ int main() {
   assert(with_bracket->additional_images[0].image_member_index == 1);
   auto assembly_after_bracket = assembly_registry.find_for_smoke(900, 901);
   assert(assembly_after_bracket && assembly_after_bracket->has_default_image_retained);
+
+  // Out-of-order bracket append index is rejected (expected next index is 2).
+  ProviderToCoreCommand out_of_order_bracket{};
+  out_of_order_bracket.type = ProviderToCoreCommandType::PROVIDER_FRAME;
+  auto out_of_order = make_capture_frame(CaptureImageRouting::ADDITIONAL_BRACKET, 2050);
+  out_of_order.capture_image.image_member_index = 3;
+  out_of_order_bracket.payload = CmdProviderFrame{out_of_order};
+  dispatcher.dispatch(std::move(out_of_order_bracket));
+  auto still_one_bracket = result_store.get_capture_result(900, 901);
+  assert(still_one_bracket);
+  assert(still_one_bracket->additional_images.size() == 1);
 
   // Bracket-before-base-result must fail deterministically (no default result yet).
   ProviderToCoreCommand bracket_before_base{};

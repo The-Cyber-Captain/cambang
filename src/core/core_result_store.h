@@ -68,6 +68,7 @@ struct CoreCaptureResultData {
   struct ImageMemberData {
     uint32_t image_member_index = 0;
     ImageMemberRole role = ImageMemberRole::DEFAULT_METERED;
+    int32_t exposure_compensation_milli_ev = 0;
     uint64_t capture_timestamp_ns = 0;
     CoreResultPayloadCpuPacked payload{};
 
@@ -86,6 +87,20 @@ struct CoreCaptureResultData {
 
   ImageMemberData default_image{};
   std::vector<ImageMemberData> additional_images{};
+  bool has_additional_images() const noexcept { return !additional_images.empty(); }
+  uint32_t image_member_count() const noexcept { return 1u + static_cast<uint32_t>(additional_images.size()); }
+  const ImageMemberData* image_member_at(uint32_t image_member_index) const noexcept {
+    if (image_member_index == 0) return &default_image;
+    const uint32_t additional_index = image_member_index - 1u;
+    if (additional_index >= static_cast<uint32_t>(additional_images.size())) return nullptr;
+    return &additional_images[additional_index];
+  }
+  ImageMemberData* image_member_at(uint32_t image_member_index) noexcept {
+    if (image_member_index == 0) return &default_image;
+    const uint32_t additional_index = image_member_index - 1u;
+    if (additional_index >= static_cast<uint32_t>(additional_images.size())) return nullptr;
+    return &additional_images[additional_index];
+  }
 
   CoreImageFactBundle facts{};
 };

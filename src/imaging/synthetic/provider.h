@@ -57,7 +57,7 @@ public:
   CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
-  bool supports_multi_image_still_sequence() const noexcept override { return false; }
+  bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,

@@ -19,6 +19,8 @@ public:
   static constexpr int CAPABILITY_CHEAP = static_cast<int>(ResultCapability::CHEAP);
   static constexpr int CAPABILITY_EXPENSIVE = static_cast<int>(ResultCapability::EXPENSIVE);
   static constexpr int CAPABILITY_UNSUPPORTED = static_cast<int>(ResultCapability::UNSUPPORTED);
+  static constexpr int IMAGE_ROLE_DEFAULT_METERED = 0;
+  static constexpr int IMAGE_ROLE_ADDITIONAL_BRACKET = 1;
 
   CamBANGCaptureResult() = default;
 
@@ -49,6 +51,11 @@ public:
 
   int can_get_display_view() const;
   int can_to_image() const;
+  int get_image_count() const;
+  bool has_additional_images() const;
+  godot::Dictionary get_image_member(int image_member_index) const;
+  int can_to_image_member(int image_member_index) const;
+  godot::Ref<godot::Image> to_image_member(int image_member_index) const;
   int can_get_encoded_bytes() const;
 
   godot::Variant get_display_view() const;
