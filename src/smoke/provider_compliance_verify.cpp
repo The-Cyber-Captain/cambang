@@ -5,9 +5,11 @@
 #include <functional>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "core/core_runtime.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/stub/provider.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
@@ -1455,6 +1457,122 @@ bool run_synthetic_multi_member_still_sequence_check() {
   return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
 }
 
+bool run_core_synthetic_three_member_capture_result_check() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL core synthetic three-member runtime start failed\n";
+    return false;
+  }
+
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+  rt.attach_provider(&provider);
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "FAIL core synthetic three-member provider init failed\n";
+    rt.stop();
+    return false;
+  }
+  std::vector<CameraEndpoint> eps;
+  if (!provider.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "FAIL core synthetic three-member enumerate failed\n";
+    (void)provider.shutdown();
+    rt.stop();
+    return false;
+  }
+
+  const uint64_t device_id = 64;
+  if (!provider.open_device(eps[0].hardware_id, device_id, 6401).ok()) {
+    std::cerr << "FAIL core synthetic three-member open_device failed\n";
+    (void)provider.shutdown();
+    rt.stop();
+    return false;
+  }
+
+  CaptureRequest req{};
+  for (int i = 0; i < 50; ++i) {
+    if (rt.materialize_capture_request(device_id, req)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (req.device_instance_id != device_id) {
+    std::cerr << "FAIL core synthetic three-member materialize request failed\n";
+    (void)provider.close_device(device_id);
+    (void)provider.shutdown();
+    rt.stop();
+    return false;
+  }
+
+  req.capture_id = 9601;
+  req.image_sequence = make_default_metered_capture_image_sequence();
+  req.image_sequence.members.push_back(
+      CaptureImageRequestMember{1u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, -1000});
+  req.image_sequence.members.push_back(
+      CaptureImageRequestMember{2u, CaptureImageRequestMemberRole::ADDITIONAL_BRACKET, +1000});
+  if (!provider.trigger_capture(req).ok()) {
+    std::cerr << "FAIL core synthetic three-member trigger_capture failed\n";
+    (void)provider.close_device(device_id);
+    (void)provider.shutdown();
+    rt.stop();
+    return false;
+  }
+
+  SharedCaptureResultData result;
+  for (int i = 0; i < 50; ++i) {
+    result = rt.get_capture_result(req.capture_id, device_id);
+    if (result) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!result) {
+    std::cerr << "FAIL core synthetic three-member result missing\n";
+    (void)provider.close_device(device_id);
+    (void)provider.shutdown();
+    rt.stop();
+    return false;
+  }
+  if (result->default_image.image_member_index != 0 ||
+      result->default_image.role != CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED) {
+    std::cerr << "FAIL core synthetic three-member default member metadata mismatch\n";
+    return false;
+  }
+  if (result->additional_images.size() != 2 ||
+      result->additional_images[0].image_member_index != 1 ||
+      result->additional_images[0].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET ||
+      result->additional_images[1].image_member_index != 2 ||
+      result->additional_images[1].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET) {
+    std::cerr << "FAIL core synthetic three-member additional member metadata mismatch\n";
+    return false;
+  }
+
+  const auto& d = result->default_image.payload.bytes;
+  const auto& b1 = result->additional_images[0].payload.bytes;
+  const auto& b2 = result->additional_images[1].payload.bytes;
+  if (d.empty() || b1.empty() || b2.empty()) {
+    std::cerr << "FAIL core synthetic three-member expected non-empty payloads\n";
+    return false;
+  }
+  if (!(d.size() == b1.size() && b1.size() == b2.size())) {
+    std::cerr << "FAIL core synthetic three-member expected equal-sized payloads\n";
+    return false;
+  }
+  const uint64_t h0 = fnv1a64_hash_bytes(d.data(), d.size());
+  const uint64_t h1 = fnv1a64_hash_bytes(b1.data(), b1.size());
+  const uint64_t h2 = fnv1a64_hash_bytes(b2.data(), b2.size());
+  if (h0 == h1 || h0 == h2 || h1 == h2) {
+    std::cerr << "FAIL core synthetic three-member expected all payload hashes to differ\n";
+    return false;
+  }
+
+  if (!provider.close_device(device_id).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL core synthetic three-member teardown failed\n";
+    return false;
+  }
+  rt.stop();
+  return true;
+}
+
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -1557,6 +1675,7 @@ int main(int argc, char** argv) {
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
   if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
   if (!run_synthetic_multi_member_still_sequence_check()) return 1;
+  if (!run_core_synthetic_three_member_capture_result_check()) return 1;
   if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
   // 7) External scenario file path (first-class, optional input).
