@@ -50,7 +50,65 @@ int CamBANGCaptureResult::can_get_display_view() const {
 }
 
 int CamBANGCaptureResult::can_to_image() const {
-  return data_ ? CAPABILITY_CHEAP : CAPABILITY_UNSUPPORTED;
+  return can_to_image_member(0);
+}
+
+int CamBANGCaptureResult::get_image_count() const {
+  return data_ ? static_cast<int>(data_->image_member_count()) : 0;
+}
+
+bool CamBANGCaptureResult::has_additional_images() const {
+  return data_ && data_->has_additional_images();
+}
+
+godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index) const {
+  if (!data_ || image_member_index < 0) {
+    return godot::Dictionary();
+  }
+  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member) {
+    return godot::Dictionary();
+  }
+  godot::Dictionary out;
+  const int role = static_cast<int>(member->role);
+  out["image_member_index"] = static_cast<int64_t>(member->image_member_index);
+  out["role"] = role;
+  out["role_name"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED)
+      ? godot::String("DEFAULT_METERED")
+      : godot::String("ADDITIONAL_BRACKET");
+  out["capture_timestamp"] = static_cast<int64_t>(member->capture_timestamp_ns);
+  out["exposure_compensation_milli_ev"] = static_cast<int64_t>(member->exposure_compensation_milli_ev);
+  out["is_default"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED);
+  out["is_additional_bracket"] = (member->role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
+  return out;
+}
+
+int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
+  if (!data_ || image_member_index < 0) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  if (member->payload.width == 0 || member->payload.height == 0 || member->payload.bytes.empty()) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  if (member->payload.format_fourcc != FOURCC_RGBA && member->payload.format_fourcc != FOURCC_BGRA) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  return CAPABILITY_CHEAP;
+}
+
+godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
+  if (!data_ || image_member_index < 0) {
+    return godot::Ref<godot::Image>();
+  }
+  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member) {
+    return godot::Ref<godot::Image>();
+  }
+  return payload_to_image(member->payload);
 }
 
 int CamBANGCaptureResult::can_get_encoded_bytes() const {
@@ -62,10 +120,7 @@ godot::Variant CamBANGCaptureResult::get_display_view() const {
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image() const {
-  if (!data_) {
-    return godot::Ref<godot::Image>();
-  }
-  return payload_to_image(data_->default_image.payload);
+  return to_image_member(0);
 }
 
 godot::PackedByteArray CamBANGCaptureResult::get_encoded_bytes() const {
@@ -98,6 +153,11 @@ void CamBANGCaptureResult::_bind_methods() {
 
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGCaptureResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGCaptureResult::can_to_image);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_image_count"), &CamBANGCaptureResult::get_image_count);
+  godot::ClassDB::bind_method(godot::D_METHOD("has_additional_images"), &CamBANGCaptureResult::has_additional_images);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_image_member", "image_member_index"), &CamBANGCaptureResult::get_image_member);
+  godot::ClassDB::bind_method(godot::D_METHOD("can_to_image_member", "image_member_index"), &CamBANGCaptureResult::can_to_image_member);
+  godot::ClassDB::bind_method(godot::D_METHOD("to_image_member", "image_member_index"), &CamBANGCaptureResult::to_image_member);
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_encoded_bytes"), &CamBANGCaptureResult::can_get_encoded_bytes);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_view"), &CamBANGCaptureResult::get_display_view);
@@ -108,6 +168,8 @@ void CamBANGCaptureResult::_bind_methods() {
   BIND_CONSTANT(CAPABILITY_CHEAP);
   BIND_CONSTANT(CAPABILITY_EXPENSIVE);
   BIND_CONSTANT(CAPABILITY_UNSUPPORTED);
+  BIND_CONSTANT(IMAGE_ROLE_DEFAULT_METERED);
+  BIND_CONSTANT(IMAGE_ROLE_ADDITIONAL_BRACKET);
 }
 
 } // namespace cambang

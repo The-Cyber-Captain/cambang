@@ -17,6 +17,7 @@
 #include "imaging/synthetic/provider.h"
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/scenario_model.h"
+#include "godot/cambang_capture_result.h"
 #include "smoke/verify_case/verify_case_harness.h"
 
 using namespace cambang;
@@ -1535,6 +1536,21 @@ bool run_core_synthetic_three_member_capture_result_check() {
   if (!default_result || default_result->image_member_count() != 1 || default_result->has_additional_images()) {
     return fail_with_cleanup("FAIL core synthetic default retained result member-count/additional mismatch");
   }
+  {
+    CamBANGCaptureResult wrapped_default;
+    wrapped_default.set_data(default_result);
+    if (wrapped_default.get_image_count() != 1 ||
+        wrapped_default.has_additional_images() ||
+        wrapped_default.get_image_member(0).is_empty() ||
+        !wrapped_default.get_image_member(1).is_empty() ||
+        wrapped_default.can_to_image_member(0) != CamBANGCaptureResult::CAPABILITY_CHEAP ||
+        wrapped_default.can_to_image_member(1) != CamBANGCaptureResult::CAPABILITY_UNSUPPORTED ||
+        wrapped_default.to_image_member(0).is_null() ||
+        !wrapped_default.to_image_member(1).is_null() ||
+        wrapped_default.to_image().is_null()) {
+      return fail_with_cleanup("FAIL core synthetic default wrapped result member access mismatch");
+    }
+  }
 
   req.capture_id = 9601;
   req.image_sequence = make_default_metered_capture_image_sequence();
@@ -1600,6 +1616,42 @@ bool run_core_synthetic_three_member_capture_result_check() {
   const uint64_t h2 = fnv1a64_hash_bytes(b2.data(), b2.size());
   if (h0 == h1 || h0 == h2 || h1 == h2) {
     return fail_with_cleanup("FAIL core synthetic three-member expected all payload hashes to differ");
+  }
+  {
+    CamBANGCaptureResult wrapped;
+    wrapped.set_data(result);
+    if (wrapped.get_image_count() != 3 || !wrapped.has_additional_images()) {
+      return fail_with_cleanup("FAIL core synthetic three-member wrapped result member count mismatch");
+    }
+    const godot::Dictionary m0d = wrapped.get_image_member(0);
+    const godot::Dictionary m1d = wrapped.get_image_member(1);
+    const godot::Dictionary m2d = wrapped.get_image_member(2);
+    const godot::Dictionary m3d = wrapped.get_image_member(3);
+    if (m0d.is_empty() || m1d.is_empty() || m2d.is_empty() || !m3d.is_empty()) {
+      return fail_with_cleanup("FAIL core synthetic three-member wrapped result member dictionary mismatch");
+    }
+    if (static_cast<int64_t>(m0d["image_member_index"]) != 0 ||
+        static_cast<int64_t>(m1d["image_member_index"]) != 1 ||
+        static_cast<int64_t>(m2d["image_member_index"]) != 2 ||
+        static_cast<int64_t>(m0d["exposure_compensation_milli_ev"]) != 0 ||
+        static_cast<int64_t>(m1d["exposure_compensation_milli_ev"]) != -1000 ||
+        static_cast<int64_t>(m2d["exposure_compensation_milli_ev"]) != 1000 ||
+        static_cast<int64_t>(m0d["role"]) != CamBANGCaptureResult::IMAGE_ROLE_DEFAULT_METERED ||
+        static_cast<int64_t>(m1d["role"]) != CamBANGCaptureResult::IMAGE_ROLE_ADDITIONAL_BRACKET ||
+        static_cast<int64_t>(m2d["role"]) != CamBANGCaptureResult::IMAGE_ROLE_ADDITIONAL_BRACKET) {
+      return fail_with_cleanup("FAIL core synthetic three-member wrapped result member metadata mismatch");
+    }
+    if (wrapped.can_to_image_member(0) != CamBANGCaptureResult::CAPABILITY_CHEAP ||
+        wrapped.can_to_image_member(1) != CamBANGCaptureResult::CAPABILITY_CHEAP ||
+        wrapped.can_to_image_member(2) != CamBANGCaptureResult::CAPABILITY_CHEAP ||
+        wrapped.can_to_image_member(3) != CamBANGCaptureResult::CAPABILITY_UNSUPPORTED ||
+        wrapped.to_image_member(0).is_null() ||
+        wrapped.to_image_member(1).is_null() ||
+        wrapped.to_image_member(2).is_null() ||
+        !wrapped.to_image_member(3).is_null() ||
+        wrapped.to_image().is_null()) {
+      return fail_with_cleanup("FAIL core synthetic three-member wrapped result image materialization mismatch");
+    }
   }
 
   if (!provider.close_device(device_id).ok()) {
