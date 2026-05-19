@@ -5668,7 +5668,7 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 
 
 func _build_capture_profile_info_line(rec: Dictionary) -> String:
-	return _build_info_line_from_parts(
+	var base_line := _build_info_line_from_parts(
 		rec,
 		"capture",
 		[
@@ -5678,6 +5678,39 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 			["capture_profile_version", "capture_profile_version", "int"],
 		]
 	)
+	var bundle_summary := _build_still_image_bundle_summary(rec)
+	if bundle_summary.is_empty():
+		return base_line
+	if base_line.is_empty():
+		return "capture: %s" % bundle_summary
+	return "%s %s" % [base_line, bundle_summary]
+
+
+func _build_still_image_bundle_summary(rec: Dictionary) -> String:
+	if not rec.has("still_image_bundle"):
+		return ""
+	var bundle_variant: Variant = rec.get("still_image_bundle")
+	if typeof(bundle_variant) != TYPE_DICTIONARY:
+		return ""
+	var bundle: Dictionary = bundle_variant
+	var members_variant: Variant = bundle.get("members", [])
+	if typeof(members_variant) != TYPE_ARRAY:
+		return ""
+	var members: Array = members_variant
+	if members.is_empty():
+		return "bundle_members=0"
+	var toks: Array[String] = []
+	for mv in members:
+		if typeof(mv) != TYPE_DICTIONARY:
+			continue
+		var m: Dictionary = mv
+		var idx := int(m.get("image_member_index", -1))
+		var role_name := str(m.get("role_name", ""))
+		if role_name.is_empty():
+			role_name = str(m.get("role", -1))
+		var ev := int(m.get("exposure_compensation_milli_ev", 0))
+		toks.append("%d:%s:%d" % [idx, role_name, ev])
+	return "bundle_members=%d bundle=[%s]" % [members.size(), ",".join(toks)]
 
 
 func _build_stream_visibility_info_line(rec: Dictionary) -> String:

@@ -239,6 +239,12 @@ func _try_verify_stream_result() -> void:
 		_capture_profile_version_after_set >= 0,
 		"step %d FAIL: unable to read capture_profile_version after profile set" % _step
 	)
+	var bundle_members_after_set := _get_device_still_image_bundle_members(_device_instance_id)
+	_require(bundle_members_after_set.size() == 3, "step %d FAIL: snapshot still_image_bundle must contain 3 members after profile set" % _step)
+	_require(int((bundle_members_after_set[0] as Dictionary).get("image_member_index", -1)) == 0, "step %d FAIL: snapshot bundle member 0 index mismatch" % _step)
+	_require(int((bundle_members_after_set[1] as Dictionary).get("image_member_index", -1)) == 1, "step %d FAIL: snapshot bundle member 1 index mismatch" % _step)
+	_require(int((bundle_members_after_set[2] as Dictionary).get("image_member_index", -1)) == 2, "step %d FAIL: snapshot bundle member 2 index mismatch" % _step)
+	_step_ok("snapshot device still_image_bundle verified (three members)")
 
 	_capture_id = int(device.trigger_capture())
 	_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
@@ -449,6 +455,26 @@ func _get_device_capture_profile_version(device_instance_id: int) -> int:
 		if int(rec.get("instance_id", 0)) == device_instance_id:
 			return int(rec.get("capture_profile_version", -1))
 	return -1
+
+
+func _get_device_still_image_bundle_members(device_instance_id: int) -> Array:
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return []
+	var devices: Array = snapshot.get("devices", [])
+	for d in devices:
+		if typeof(d) != TYPE_DICTIONARY:
+			continue
+		var rec: Dictionary = d
+		if int(rec.get("instance_id", 0)) != device_instance_id:
+			continue
+		var bundle_variant: Variant = rec.get("still_image_bundle", {})
+		if typeof(bundle_variant) != TYPE_DICTIONARY:
+			return []
+		var bundle: Dictionary = bundle_variant
+		var members_variant: Variant = bundle.get("members", [])
+		return members_variant if typeof(members_variant) == TYPE_ARRAY else []
+	return []
 
 
 func _poll_inspection_capture_result() -> void:

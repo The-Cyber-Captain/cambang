@@ -43,6 +43,8 @@ classification when a descendant survives beyond its controlling AcquisitionSess
 - Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
   inspectable retained device-bound capture profile truth, but these counters are
   detail-level in panel visibility.
+- Device detail info-line also projects compact `still_image_bundle` profile truth
+  (`bundle_members` count plus per-member `image_member_index:role_name:ev` tokens).
 - AcquisitionSession rows surface `capture_prof`, `capture_w`, `capture_h`, and
   `capture_fmt` at summary level as the preferred session-context capture profile
   surface.

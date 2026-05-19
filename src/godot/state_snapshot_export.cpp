@@ -225,6 +225,20 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   d["capture_width"] = static_cast<uint32_t>(s.capture_width);
   d["capture_height"] = static_cast<uint32_t>(s.capture_height);
   d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  godot::Dictionary bundle;
+  godot::Array members;
+  for (const auto& m : s.still_image_bundle.members) {
+    godot::Dictionary md;
+    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
+    md["role"] = static_cast<int64_t>(m.role);
+    md["role_name"] = (m.role == cambang::CaptureStillImageMemberRole::DEFAULT_METERED)
+        ? godot::String("DEFAULT_METERED")
+        : godot::String("ADDITIONAL_BRACKET");
+    md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
+    members.push_back(md);
+  }
+  bundle["members"] = members;
+  d["still_image_bundle"] = bundle;
   d["warm_hold_ms"] = static_cast<uint32_t>(s.warm_hold_ms);
   d["warm_remaining_ms"] = static_cast<uint32_t>(s.warm_remaining_ms);
   d["rebuild_count"] = static_cast<uint64_t>(s.rebuild_count);

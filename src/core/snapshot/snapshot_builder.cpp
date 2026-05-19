@@ -161,6 +161,14 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             d.capture_width = rec.capture_width;
             d.capture_height = rec.capture_height;
             d.capture_format = rec.capture_format;
+            d.still_image_bundle.members.reserve(rec.capture_still_image_bundle.members.size());
+            for (const auto& m : rec.capture_still_image_bundle.members) {
+                CamBANGDeviceState::CaptureStillImageBundleStateMember sm{};
+                sm.image_member_index = m.image_member_index;
+                sm.role = m.role;
+                sm.exposure_compensation_milli_ev = m.exposure_compensation_milli_ev;
+                d.still_image_bundle.members.push_back(sm);
+            }
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
