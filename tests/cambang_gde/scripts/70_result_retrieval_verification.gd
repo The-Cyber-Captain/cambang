@@ -206,12 +206,12 @@ func _try_verify_stream_result() -> void:
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
 	_step_ok("device seam verified")
 
-		var set_profile_err := int(device.set_still_capture_profile({
+	var set_profile_err := int(device.set_still_capture_profile({
 		"image_sequence": {
 			"members": [
 				{"image_member_index": 0, "role": "DEFAULT_METERED", "exposure_compensation_milli_ev": 0},
-				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -333},
-				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 333}
+				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -1000},
+				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 1000}
 			]
 		}
 	}))
@@ -267,12 +267,12 @@ func _try_verify_capture_result() -> void:
 	_require(not bool(image_member_0.get("is_additional_bracket", true)), "step %d FAIL: capture image_member(0).is_additional_bracket must be false" % _step)
 	_require(int(image_member_0.get("role", -1)) == int(capture_result.IMAGE_ROLE_DEFAULT_METERED), "step %d FAIL: capture image_member(0).role must be IMAGE_ROLE_DEFAULT_METERED" % _step)
 	_require(str(image_member_0.get("role_name", "")) == "DEFAULT_METERED", "step %d FAIL: capture image_member(0).role_name must be DEFAULT_METERED" % _step)
-		_require(int(image_member_1.get("image_member_index", -1)) == 1, "step %d FAIL: capture image_member(1).image_member_index must be 1" % _step)
+	_require(int(image_member_1.get("image_member_index", -1)) == 1, "step %d FAIL: capture image_member(1).image_member_index must be 1" % _step)
 	_require(int(image_member_2.get("image_member_index", -1)) == 2, "step %d FAIL: capture image_member(2).image_member_index must be 2" % _step)
 	_require(int(image_member_1.get("role", -1)) == int(capture_result.IMAGE_ROLE_ADDITIONAL_BRACKET), "step %d FAIL: capture image_member(1).role must be IMAGE_ROLE_ADDITIONAL_BRACKET" % _step)
 	_require(int(image_member_2.get("role", -1)) == int(capture_result.IMAGE_ROLE_ADDITIONAL_BRACKET), "step %d FAIL: capture image_member(2).role must be IMAGE_ROLE_ADDITIONAL_BRACKET" % _step)
-	_require(int(image_member_1.get("exposure_compensation_milli_ev", 0)) == -333, "step %d FAIL: capture image_member(1) EV must be -333" % _step)
-	_require(int(image_member_2.get("exposure_compensation_milli_ev", 0)) == 333, "step %d FAIL: capture image_member(2) EV must be 333" % _step)
+	_require(int(image_member_1.get("exposure_compensation_milli_ev", 0)) == -1000, "step %d FAIL: capture image_member(1) EV must be -1000" % _step)
+	_require(int(image_member_2.get("exposure_compensation_milli_ev", 0)) == 1000, "step %d FAIL: capture image_member(2) EV must be 1000" % _step)
 	_step_ok("capture indexed image-member metadata verified (three-member profile)")
 
 	var capture_can_to_image := int(capture_result.can_to_image())
@@ -400,8 +400,8 @@ func _request_manual_capture() -> void:
 		"image_sequence": {
 			"members": [
 				{"image_member_index": 0, "role": "DEFAULT_METERED", "exposure_compensation_milli_ev": 0},
-				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -333},
-				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 333}
+				{"image_member_index": 1, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": -1000},
+				{"image_member_index": 2, "role": "ADDITIONAL_BRACKET", "exposure_compensation_milli_ev": 1000}
 			]
 		}
 	}))
