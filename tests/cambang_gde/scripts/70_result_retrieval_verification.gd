@@ -107,7 +107,10 @@ func _process(_delta: float) -> void:
 		return
 
 	if _capture_id == 0:
-		if Time.get_ticks_msec() - _stream_poll_start_ms > STREAM_TIMEOUT_MS:
+		# Stream timeout only applies to initial stream-baseline acquisition.
+		# After stream baseline passes, we may still be waiting for snapshot bundle
+		# catch-up gates before triggering capture; that must not reuse stream timeout.
+		if not _stream_baseline_verified and Time.get_ticks_msec() - _stream_poll_start_ms > STREAM_TIMEOUT_MS:
 			_fail("step %d FAIL: latest stream result did not appear within timeout" % _step)
 			return
 		_try_verify_stream_result()
