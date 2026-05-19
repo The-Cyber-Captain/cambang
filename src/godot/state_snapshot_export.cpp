@@ -108,6 +108,18 @@ static inline godot::String stream_stop_reason_token(CBStreamStopReason reason) 
   }
 }
 
+static inline godot::String capture_still_image_member_role_name(
+    cambang::CaptureStillImageMemberRole role) {
+  switch (role) {
+    case cambang::CaptureStillImageMemberRole::DEFAULT_METERED:
+      return "DEFAULT_METERED";
+    case cambang::CaptureStillImageMemberRole::ADDITIONAL_BRACKET:
+      return "ADDITIONAL_BRACKET";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 static inline godot::String native_object_type_token(uint32_t raw_type) {
   switch (static_cast<NativeObjectType>(raw_type)) {
     case NativeObjectType::Provider:
@@ -231,9 +243,7 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
     godot::Dictionary md;
     md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
     md["role"] = static_cast<int64_t>(m.role);
-    md["role_name"] = (m.role == cambang::CaptureStillImageMemberRole::DEFAULT_METERED)
-        ? godot::String("DEFAULT_METERED")
-        : godot::String("ADDITIONAL_BRACKET");
+    md["role_name"] = capture_still_image_member_role_name(m.role);
     md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
     members.push_back(md);
   }
@@ -290,7 +300,7 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
     godot::Dictionary item;
     item["image_member_index"] = static_cast<int>(m.image_member_index);
     item["role"] = static_cast<int>(m.role);
-    item["role_name"] = godot::String(m.role_name.c_str());
+    item["role_name"] = capture_still_image_member_role_name(m.role);
     item["exposure_compensation_milli_ev"] = static_cast<int>(m.exposure_compensation_milli_ev);
     members.append(item);
   }

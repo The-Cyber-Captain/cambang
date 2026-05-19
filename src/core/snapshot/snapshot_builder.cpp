@@ -44,6 +44,19 @@ inline void fnv1a_u64(uint64_t& h, uint64_t v) {
     }
 }
 
+CaptureStillImageBundleState make_still_image_bundle_state(const CaptureStillImageBundle& bundle) {
+    CaptureStillImageBundleState out{};
+    out.members.reserve(bundle.members.size());
+    for (const auto& m : bundle.members) {
+        CaptureStillImageMemberState sm{};
+        sm.image_member_index = m.image_member_index;
+        sm.role = m.role;
+        sm.exposure_compensation_milli_ev = m.exposure_compensation_milli_ev;
+        out.members.push_back(sm);
+    }
+    return out;
+}
+
 std::set<uint64_t> compute_detached_roots(const SnapshotBuilder::Inputs& in) {
     std::set<uint64_t> detached_roots;
     if (!in.native_objects) {
@@ -161,14 +174,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             d.capture_width = rec.capture_width;
             d.capture_height = rec.capture_height;
             d.capture_format = rec.capture_format;
-            d.still_image_bundle.members.reserve(rec.capture_still_image_bundle.members.size());
-            for (const auto& m : rec.capture_still_image_bundle.members) {
-                CaptureStillImageMemberState sm{};
-                sm.image_member_index = m.image_member_index;
-                sm.role = m.role;
-                sm.exposure_compensation_milli_ev = m.exposure_compensation_milli_ev;
-                d.still_image_bundle.members.push_back(sm);
-            }
+            d.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
@@ -210,15 +216,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.capture_width = rec.capture_width;
             s.capture_height = rec.capture_height;
             s.capture_format = rec.capture_format;
-            s.still_image_bundle.members.reserve(rec.capture_still_image_bundle.members.size());
-            for (const auto& m : rec.capture_still_image_bundle.members) {
-                CaptureStillImageMemberState sm{};
-                sm.image_member_index = m.image_member_index;
-                sm.role = static_cast<uint32_t>(m.role);
-                sm.role_name = capture_still_image_member_role_name(m.role);
-                sm.exposure_compensation_milli_ev = m.exposure_compensation_milli_ev;
-                s.still_image_bundle.members.push_back(sm);
-            }
+            s.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
             s.captures_triggered = rec.captures_triggered;
             s.captures_completed = rec.captures_completed;
             s.captures_failed = rec.captures_failed;
