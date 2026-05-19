@@ -333,6 +333,12 @@ enum class CaptureImageRouting : uint8_t {
   ADDITIONAL_BRACKET = 1,
 };
 
+struct CaptureImageFrameMetadata {
+  CaptureImageRouting routing = CaptureImageRouting::DEFAULT_METERED;
+  uint32_t image_member_index = 0;
+  int32_t exposure_compensation_milli_ev = 0;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -343,6 +349,7 @@ struct FrameView {
   uint64_t acquisition_session_id = 0; // 0 if unavailable/unknown
   uint64_t capture_id = 0;   // 0 if this is a repeating stream frame
   CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
+  CaptureImageFrameMetadata capture_image{};
 
   // Image metadata
   uint32_t width = 0;

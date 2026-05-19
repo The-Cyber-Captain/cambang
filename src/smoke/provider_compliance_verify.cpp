@@ -74,6 +74,8 @@ struct EventRec {
   uint64_t payload_hash = 0;
   size_t payload_size_bytes = 0;
   CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
+  uint32_t capture_image_member_index = 0;
+  int32_t capture_image_exposure_compensation_milli_ev = 0;
   CaptureTimestamp ts{};
 };
 
@@ -124,6 +126,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
       ev.payload_hash = fnv1a64_hash_bytes(p, frame.size_bytes);
     }
     ev.capture_image_routing = frame.capture_image_routing;
+    ev.capture_image_member_index = frame.capture_image.image_member_index;
+    ev.capture_image_exposure_compensation_milli_ev =
+        frame.capture_image.exposure_compensation_milli_ev;
     events.push_back(ev);
     if (frame.release) {
       frame.release(frame.release_user, &frame);
@@ -1442,6 +1447,13 @@ bool run_synthetic_multi_member_still_sequence_check() {
     std::cerr << "FAIL synthetic multi-member routing mismatch\n";
     return false;
   }
+  if (frame_events[0].capture_image_member_index != 0 ||
+      frame_events[0].capture_image_exposure_compensation_milli_ev != 0 ||
+      frame_events[1].capture_image_member_index != 1 ||
+      frame_events[1].capture_image_exposure_compensation_milli_ev != 1000) {
+    std::cerr << "FAIL synthetic multi-member emitted metadata mismatch\n";
+    return false;
+  }
   if (frame_events[0].payload_size_bytes == 0 || frame_events[1].payload_size_bytes == 0) {
     std::cerr << "FAIL synthetic multi-member expected non-empty payloads\n";
     return false;
@@ -1509,6 +1521,20 @@ bool run_core_synthetic_three_member_capture_result_check() {
   if (req.device_instance_id != device_id) {
     return fail_with_cleanup("FAIL core synthetic three-member materialize request failed");
   }
+  CaptureRequest default_req = req;
+  default_req.capture_id = 9600;
+  if (!provider.trigger_capture(default_req).ok()) {
+    return fail_with_cleanup("FAIL core synthetic default trigger_capture failed");
+  }
+  SharedCaptureResultData default_result;
+  for (int i = 0; i < 50; ++i) {
+    default_result = rt.get_capture_result(default_req.capture_id, device_id);
+    if (default_result) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!default_result || default_result->image_member_count() != 1 || default_result->has_additional_images()) {
+    return fail_with_cleanup("FAIL core synthetic default retained result member-count/additional mismatch");
+  }
 
   req.capture_id = 9601;
   req.image_sequence = make_default_metered_capture_image_sequence();
@@ -1530,15 +1556,34 @@ bool run_core_synthetic_three_member_capture_result_check() {
     return fail_with_cleanup("FAIL core synthetic three-member result missing");
   }
   if (result->default_image.image_member_index != 0 ||
-      result->default_image.role != CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED) {
+      result->default_image.role != CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED ||
+      result->default_image.exposure_compensation_milli_ev != 0) {
     return fail_with_cleanup("FAIL core synthetic three-member default member metadata mismatch");
   }
   if (result->additional_images.size() != 2 ||
       result->additional_images[0].image_member_index != 1 ||
       result->additional_images[0].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET ||
+      result->additional_images[0].exposure_compensation_milli_ev != -1000 ||
       result->additional_images[1].image_member_index != 2 ||
-      result->additional_images[1].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET) {
+      result->additional_images[1].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET ||
+      result->additional_images[1].exposure_compensation_milli_ev != 1000) {
     return fail_with_cleanup("FAIL core synthetic three-member additional member metadata mismatch");
+  }
+  if (result->image_member_count() != 3 || !result->has_additional_images()) {
+    return fail_with_cleanup("FAIL core synthetic three-member member-count/additional-image contract mismatch");
+  }
+  const auto* m0 = result->image_member_at(0);
+  const auto* m1 = result->image_member_at(1);
+  const auto* m2 = result->image_member_at(2);
+  const auto* m3 = result->image_member_at(3);
+  if (!m0 || !m1 || !m2 || m3 != nullptr) {
+    return fail_with_cleanup("FAIL core synthetic three-member image_member_at access contract mismatch");
+  }
+  if (m0->image_member_index != 0 || m1->image_member_index != 1 || m2->image_member_index != 2 ||
+      m0->exposure_compensation_milli_ev != 0 ||
+      m1->exposure_compensation_milli_ev != -1000 ||
+      m2->exposure_compensation_milli_ev != 1000) {
+    return fail_with_cleanup("FAIL core synthetic three-member retained member index/ev mismatch");
   }
 
   const auto& d = result->default_image.payload.bytes;

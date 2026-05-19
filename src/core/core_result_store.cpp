@@ -137,10 +137,11 @@ bool CoreResultStore::append_additional_capture_image(
   if (image_member.role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET) {
     return false;
   }
+  if (image_member.image_member_index == 0u) {
+    return false;
+  }
 
   auto updated = std::make_shared<CoreCaptureResultData>(*dev_it->second);
-  const uint32_t next_index = 1u + static_cast<uint32_t>(updated->additional_images.size());
-  image_member.image_member_index = next_index;
   updated->additional_images.push_back(std::move(image_member));
   dev_it->second = std::move(updated);
   return true;
@@ -161,6 +162,11 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
     const CoreResultPayloadCpuPacked& payload,
     uint64_t capture_timestamp_ns) {
+  if (frame.capture_image_routing != CaptureImageRouting::DEFAULT_METERED ||
+      frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
+      frame.capture_image.image_member_index != 0u) {
+    return nullptr;
+  }
   auto capture_result = std::make_shared<CoreCaptureResultData>();
   capture_result->capture_id = frame.capture_id;
   capture_result->device_instance_id = frame.device_instance_id;
@@ -173,6 +179,11 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
   // accepted as the CaptureResult default image.
   capture_result->default_image.image_member_index = 0;
   capture_result->default_image.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
+  capture_result->default_image.exposure_compensation_milli_ev =
+      frame.capture_image.exposure_compensation_milli_ev;
+  if (capture_result->default_image.exposure_compensation_milli_ev != 0) {
+    return nullptr;
+  }
   capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
   capture_result->default_image.payload = payload;
 
