@@ -256,12 +256,12 @@ func _try_verify_stream_result() -> void:
 		_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
-		var device_snapshot := _get_device_snapshot_record(_device_instance_id)
-		_capture_profile_version_after_set = int(device_snapshot.get("capture_profile_version", -1))
+		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
+		_capture_profile_version_after_set = int(device_snapshot_after_set.get("capture_profile_version", -1))
 		return
 
-	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
-	var capture_profile_version_after_trigger := int(device_snapshot.get("capture_profile_version", -1))
+	var device_snapshot_after_trigger := _get_device_snapshot_record(_device_instance_id)
+	var capture_profile_version_after_trigger := int(device_snapshot_after_trigger.get("capture_profile_version", -1))
 	if capture_profile_version_after_trigger < 0:
 		return
 	_require(
@@ -363,7 +363,6 @@ func _try_verify_capture_result() -> void:
 		capture_result.get_height(),
 		capture_result.get_capture_id()
 	]
-	_request_status_panel_acquisition_session_bundle_detail_visibility()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
 
