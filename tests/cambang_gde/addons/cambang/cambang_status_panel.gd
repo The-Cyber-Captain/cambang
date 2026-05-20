@@ -228,6 +228,7 @@ func apply_fixture_expanded_rows(row_ids: Array) -> void:
 
 
 func apply_fixture_detail_visible_rows(row_ids: Array) -> void:
+	_detail_visible_by_row_id.clear()
 	for raw_row_id in row_ids:
 		var row_id := str(raw_row_id)
 		if row_id.is_empty():
