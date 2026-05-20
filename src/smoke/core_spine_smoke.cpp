@@ -718,7 +718,7 @@ static int test_device_capture_request_materialization_smoke() {
   return 0;
 }
 
-static int test_still_capture_profile_version_idempotency_smoke() {
+static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuffer& buf) {
   CoreRuntime rt;
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start (still profile idempotency smoke)\n";
@@ -731,6 +731,12 @@ static int test_still_capture_profile_version_idempotency_smoke() {
     return 1;
   }
   rt.attach_provider(&prov);
+  rt.set_snapshot_publisher(&buf);
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "Timeout waiting for initial snapshot publication (still profile idempotency smoke)\n";
+    rt.stop();
+    return 1;
+  }
 
   CaptureRequest req{};
   if (!rt.materialize_capture_request(kDeviceInstanceId, req)) {
@@ -739,6 +745,22 @@ static int test_still_capture_profile_version_idempotency_smoke() {
     return 1;
   }
   const uint64_t v0 = req.profile_version;
+  const auto default_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+    if (s.devices.empty()) return false;
+    const auto& d = s.devices[0];
+    return d.instance_id == kDeviceInstanceId &&
+           d.still_image_bundle.members.size() == 1 &&
+           d.still_image_bundle.members[0].image_member_index == 0 &&
+           d.still_image_bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
+           d.still_image_bundle.members[0].exposure_compensation_milli_ev == 0;
+  });
+  if (!default_bundle_ready) {
+    std::cerr << "Expected default snapshot still_image_bundle with one DEFAULT_METERED member\n";
+    rt.stop();
+    return 1;
+  }
+  auto snap_before_profile = get_last_snapshot(buf);
+  const uint64_t topo_before_profile = snap_before_profile ? snap_before_profile->topology_version : 0;
 
   req.capture_id = 9901;
   if (!prov.trigger_capture(req).ok()) {
@@ -778,6 +800,30 @@ static int test_still_capture_profile_version_idempotency_smoke() {
   CaptureRequest req_after_set{};
   rt.materialize_capture_request(kDeviceInstanceId, req_after_set);
   const uint64_t v1 = req_after_set.profile_version;
+  const auto device_three_member_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+    for (const auto& d : s.devices) {
+      if (d.instance_id != kDeviceInstanceId) continue;
+      if (d.still_image_bundle.members.size() != 3) return false;
+      const auto& m0 = d.still_image_bundle.members[0];
+      const auto& m1 = d.still_image_bundle.members[1];
+      const auto& m2 = d.still_image_bundle.members[2];
+      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.exposure_compensation_milli_ev == 0 &&
+             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.exposure_compensation_milli_ev == -1000 &&
+             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.exposure_compensation_milli_ev == 1000;
+    }
+    return false;
+  });
+  if (!device_three_member_ready) {
+    std::cerr << "Expected three-member still_image_bundle snapshot on device after profile set\n";
+    rt.stop();
+    return 1;
+  }
+  auto snap_after_profile = get_last_snapshot(buf);
+  if (snap_after_profile && snap_after_profile->topology_version != topo_before_profile) {
+    std::cerr << "topology_version must not change solely on still profile/bundle configuration\n";
+    rt.stop();
+    return 1;
+  }
 
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
     std::cerr << "Expected second identical still profile set success\n";
@@ -819,6 +865,24 @@ static int test_still_capture_profile_version_idempotency_smoke() {
   if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_trigger2) ||
       req_after_trigger2.profile_version != v1 + 1) {
     std::cerr << "trigger_capture after profile set must not increment profile_version\n";
+    rt.stop();
+    return 1;
+  }
+  const auto acquisition_session_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+    for (const auto& a : s.acquisition_sessions) {
+      if (a.device_instance_id != kDeviceInstanceId) continue;
+      if (a.still_image_bundle.members.size() != 3) return false;
+      const auto& m0 = a.still_image_bundle.members[0];
+      const auto& m1 = a.still_image_bundle.members[1];
+      const auto& m2 = a.still_image_bundle.members[2];
+      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.exposure_compensation_milli_ev == 0 &&
+             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.exposure_compensation_milli_ev == -1000 &&
+             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.exposure_compensation_milli_ev == 1000;
+    }
+    return false;
+  });
+  if (!acquisition_session_bundle_ready) {
+    std::cerr << "Expected three-member still_image_bundle snapshot on acquisition session after capture-context realization\n";
     rt.stop();
     return 1;
   }
@@ -1323,7 +1387,7 @@ int main(int argc, char** argv) {
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
     if (int r = test_device_capture_request_materialization_smoke()) return r;
-    if (int r = test_still_capture_profile_version_idempotency_smoke()) return r;
+    if (int r = test_still_capture_profile_version_idempotency_smoke(buf)) return r;
     if (int r = test_rig_preflight_materialization_smoke()) return r;
     if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
     if (int r = test_rig_bundle_submission_smoke()) return r;
