@@ -4622,8 +4622,7 @@ func _ensure_expandability(panel: PanelModel) -> void:
 		var has_override := _expanded_by_row_id.has(e.id)
 		var override_value := bool(_expanded_by_row_id.get(e.id, false))
 		var default_expand := _should_default_expand_entry(e)
-		var has_detail_lines := not e.detail_info_lines.is_empty()
-		e.can_expand = child_count > 0 or has_detail_lines
+		e.can_expand = child_count > 0
 		if has_override:
 			_debug_expansion_trace(
 				"_ensure_expandability",
