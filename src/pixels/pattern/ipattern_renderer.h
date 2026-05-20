@@ -19,6 +19,12 @@ public:
       const PatternSpec& spec,
       const PatternRenderTarget& dst,
       const PatternOverlayData& overlay) = 0;
+
+  virtual void render_into(
+      const PatternSpec& spec,
+      const PatternRenderTarget& dst,
+      const PatternOverlayData& overlay,
+      const PatternRenderOptions& options) = 0;
 };
 
 } // namespace cambang
