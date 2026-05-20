@@ -81,7 +81,9 @@ struct EventRec {
   uint8_t sample_b = 0;
   CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
   uint32_t capture_image_member_index = 0;
-  int32_t capture_image_exposure_compensation_milli_ev = 0;
+  int32_t capture_image_applied_exposure_compensation_milli_ev = 0;
+  bool capture_image_has_realized_exposure_compensation_milli_ev = false;
+  int32_t capture_image_realized_exposure_compensation_milli_ev = 0;
   CaptureTimestamp ts{};
 };
 
@@ -165,8 +167,12 @@ struct RecorderCallbacks final : IProviderCallbacks {
     }
     ev.capture_image_routing = frame.capture_image.routing;
     ev.capture_image_member_index = frame.capture_image.image_member_index;
-    ev.capture_image_exposure_compensation_milli_ev =
-        frame.capture_image.exposure_compensation_milli_ev;
+    ev.capture_image_applied_exposure_compensation_milli_ev =
+        frame.capture_image.applied_exposure_compensation_milli_ev;
+    ev.capture_image_has_realized_exposure_compensation_milli_ev =
+        frame.capture_image.has_realized_exposure_compensation_milli_ev;
+    ev.capture_image_realized_exposure_compensation_milli_ev =
+        frame.capture_image.realized_exposure_compensation_milli_ev;
     events.push_back(ev);
     if (frame.release) {
       frame.release(frame.release_user, &frame);
@@ -1486,9 +1492,15 @@ bool run_synthetic_multi_member_still_sequence_check() {
     return false;
   }
   if (frame_events[0].capture_image_member_index != 0 ||
-      frame_events[0].capture_image_exposure_compensation_milli_ev != 0 ||
+      frame_events[0].capture_image_applied_exposure_compensation_milli_ev != 0 ||
+      !frame_events[0].capture_image_has_realized_exposure_compensation_milli_ev ||
+      frame_events[0].capture_image_realized_exposure_compensation_milli_ev !=
+          frame_events[0].capture_image_applied_exposure_compensation_milli_ev ||
       frame_events[1].capture_image_member_index != 1 ||
-      frame_events[1].capture_image_exposure_compensation_milli_ev != 1000) {
+      frame_events[1].capture_image_applied_exposure_compensation_milli_ev != 1000 ||
+      !frame_events[1].capture_image_has_realized_exposure_compensation_milli_ev ||
+      frame_events[1].capture_image_realized_exposure_compensation_milli_ev !=
+          frame_events[1].capture_image_applied_exposure_compensation_milli_ev) {
     std::cerr << "FAIL synthetic multi-member emitted metadata mismatch\n";
     return false;
   }
@@ -1558,7 +1570,9 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
         if (ev.tag == "frame" &&
             ev.capture_id == capture_id &&
             ev.capture_image_member_index < member_evs.size() &&
-            ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
+            ev.capture_image_has_realized_exposure_compensation_milli_ev &&
+            ev.capture_image_realized_exposure_compensation_milli_ev == ev.capture_image_applied_exposure_compensation_milli_ev &&
+            ev.capture_image_applied_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
           matched_frames++;
         }
       }
@@ -1575,7 +1589,9 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
       if (ev.tag == "frame" &&
           ev.capture_id == capture_id &&
           ev.capture_image_member_index < member_evs.size() &&
-          ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
+          ev.capture_image_has_realized_exposure_compensation_milli_ev &&
+          ev.capture_image_realized_exposure_compensation_milli_ev == ev.capture_image_applied_exposure_compensation_milli_ev &&
+          ev.capture_image_applied_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
         out_frames.push_back(ev);
       }
     }
@@ -1605,7 +1621,9 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
           : CaptureImageRouting::ADDITIONAL_BRACKET;
       if (frame.capture_image_routing != expected_routing ||
           frame.capture_image_member_index != i ||
-          frame.capture_image_exposure_compensation_milli_ev != evs[i]) {
+          !frame.capture_image_has_realized_exposure_compensation_milli_ev ||
+          frame.capture_image_realized_exposure_compensation_milli_ev != frame.capture_image_applied_exposure_compensation_milli_ev ||
+          frame.capture_image_applied_exposure_compensation_milli_ev != evs[i]) {
         return fail_with_cleanup("FAIL synthetic dynamic asymmetric member metadata mismatch");
       }
     }
@@ -1617,13 +1635,13 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
     const double y2 = f2.sampled_luma;
     if (!(y1 < y0 && y2 > y0)) {
       std::cerr << "FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering"
-                << " [m0 idx=" << f0.capture_image_member_index << " ev=" << f0.capture_image_exposure_compensation_milli_ev
+                << " [m0 idx=" << f0.capture_image_member_index << " ev=" << f0.capture_image_applied_exposure_compensation_milli_ev
                 << " fmt=" << f0.format_fourcc << " luma=" << y0
                 << " rgb=(" << static_cast<int>(f0.sample_r) << "," << static_cast<int>(f0.sample_g) << "," << static_cast<int>(f0.sample_b) << ")]"
-                << " [m1 idx=" << f1.capture_image_member_index << " ev=" << f1.capture_image_exposure_compensation_milli_ev
+                << " [m1 idx=" << f1.capture_image_member_index << " ev=" << f1.capture_image_applied_exposure_compensation_milli_ev
                 << " fmt=" << f1.format_fourcc << " luma=" << y1
                 << " rgb=(" << static_cast<int>(f1.sample_r) << "," << static_cast<int>(f1.sample_g) << "," << static_cast<int>(f1.sample_b) << ")]"
-                << " [m2 idx=" << f2.capture_image_member_index << " ev=" << f2.capture_image_exposure_compensation_milli_ev
+                << " [m2 idx=" << f2.capture_image_member_index << " ev=" << f2.capture_image_applied_exposure_compensation_milli_ev
                 << " fmt=" << f2.format_fourcc << " luma=" << y2
                 << " rgb=(" << static_cast<int>(f2.sample_r) << "," << static_cast<int>(f2.sample_g) << "," << static_cast<int>(f2.sample_b) << ")]\n";
       return fail_with_cleanup("FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering");
@@ -1641,7 +1659,9 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
     for (size_t i = 0; i < evs.size(); ++i) {
       const auto& frame = frames[frames.size() - evs.size() + i];
       if (frame.capture_image_member_index != i ||
-          frame.capture_image_exposure_compensation_milli_ev != evs[i]) {
+          !frame.capture_image_has_realized_exposure_compensation_milli_ev ||
+          frame.capture_image_realized_exposure_compensation_milli_ev != frame.capture_image_applied_exposure_compensation_milli_ev ||
+          frame.capture_image_applied_exposure_compensation_milli_ev != evs[i]) {
         return fail_with_cleanup("FAIL synthetic dynamic large bundle member order/metadata mismatch");
       }
     }
@@ -1740,16 +1760,25 @@ bool run_core_synthetic_three_member_capture_result_check() {
   }
   if (result->default_image.image_member_index != 0 ||
       result->default_image.role != CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED ||
-      result->default_image.exposure_compensation_milli_ev != 0) {
+      result->default_image.applied_exposure_compensation_milli_ev != 0 ||
+      !result->default_image.has_realized_exposure_compensation_milli_ev ||
+      result->default_image.realized_exposure_compensation_milli_ev !=
+          result->default_image.applied_exposure_compensation_milli_ev) {
     return fail_with_cleanup("FAIL core synthetic three-member default member metadata mismatch");
   }
   if (result->additional_images.size() != 2 ||
       result->additional_images[0].image_member_index != 1 ||
       result->additional_images[0].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET ||
-      result->additional_images[0].exposure_compensation_milli_ev != -1000 ||
+      result->additional_images[0].applied_exposure_compensation_milli_ev != -1000 ||
+      !result->additional_images[0].has_realized_exposure_compensation_milli_ev ||
+      result->additional_images[0].realized_exposure_compensation_milli_ev !=
+          result->additional_images[0].applied_exposure_compensation_milli_ev ||
       result->additional_images[1].image_member_index != 2 ||
       result->additional_images[1].role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET ||
-      result->additional_images[1].exposure_compensation_milli_ev != 1000) {
+      result->additional_images[1].applied_exposure_compensation_milli_ev != 1000 ||
+      !result->additional_images[1].has_realized_exposure_compensation_milli_ev ||
+      result->additional_images[1].realized_exposure_compensation_milli_ev !=
+          result->additional_images[1].applied_exposure_compensation_milli_ev) {
     return fail_with_cleanup("FAIL core synthetic three-member additional member metadata mismatch");
   }
   if (result->image_member_count() != 3 || !result->has_additional_images()) {
@@ -1763,9 +1792,15 @@ bool run_core_synthetic_three_member_capture_result_check() {
     return fail_with_cleanup("FAIL core synthetic three-member image_member_at access contract mismatch");
   }
   if (m0->image_member_index != 0 || m1->image_member_index != 1 || m2->image_member_index != 2 ||
-      m0->exposure_compensation_milli_ev != 0 ||
-      m1->exposure_compensation_milli_ev != -1000 ||
-      m2->exposure_compensation_milli_ev != 1000) {
+      m0->applied_exposure_compensation_milli_ev != 0 ||
+      m1->applied_exposure_compensation_milli_ev != -1000 ||
+      m2->applied_exposure_compensation_milli_ev != 1000 ||
+      !m0->has_realized_exposure_compensation_milli_ev ||
+      !m1->has_realized_exposure_compensation_milli_ev ||
+      !m2->has_realized_exposure_compensation_milli_ev ||
+      m0->realized_exposure_compensation_milli_ev != m0->applied_exposure_compensation_milli_ev ||
+      m1->realized_exposure_compensation_milli_ev != m1->applied_exposure_compensation_milli_ev ||
+      m2->realized_exposure_compensation_milli_ev != m2->applied_exposure_compensation_milli_ev) {
     return fail_with_cleanup("FAIL core synthetic three-member retained member index/ev mismatch");
   }
 

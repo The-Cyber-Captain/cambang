@@ -51,7 +51,7 @@ CaptureStillImageBundleState make_still_image_bundle_state(const CaptureStillIma
         CaptureStillImageMemberState sm{};
         sm.image_member_index = m.image_member_index;
         sm.role = m.role;
-        sm.exposure_compensation_milli_ev = m.exposure_compensation_milli_ev;
+        sm.intended_exposure_compensation_milli_ev = m.intended_exposure_compensation_milli_ev;
         out.members.push_back(sm);
     }
     return out;

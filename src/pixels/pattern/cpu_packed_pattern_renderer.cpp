@@ -149,8 +149,8 @@ void CpuPackedPatternRenderer::render_into(
   if (spec.overlay_moving_bar) {
     apply_moving_bar(spec, dst, overlay.frame_index);
   }
-  if (options.exposure_compensation_milli_ev != 0) {
-    apply_exposure_compensation(dst, options.exposure_compensation_milli_ev);
+  if (options.applied_exposure_compensation_milli_ev != 0) {
+    apply_exposure_compensation(dst, options.applied_exposure_compensation_milli_ev);
   }
   const auto overlay_t1 = std::chrono::steady_clock::now();
   const uint64_t overlay_ns = static_cast<uint64_t>(
@@ -163,18 +163,18 @@ void CpuPackedPatternRenderer::render_into(
 void CpuPackedPatternRenderer::apply_render_options_in_place(
     const PatternRenderTarget& dst,
     const PatternRenderOptions& options) const {
-  if (options.exposure_compensation_milli_ev != 0) {
-    apply_exposure_compensation(dst, options.exposure_compensation_milli_ev);
+  if (options.applied_exposure_compensation_milli_ev != 0) {
+    apply_exposure_compensation(dst, options.applied_exposure_compensation_milli_ev);
   }
 }
 
 void CpuPackedPatternRenderer::apply_exposure_compensation(
     const PatternRenderTarget& dst,
-    int32_t exposure_compensation_milli_ev) const {
-  if (exposure_compensation_milli_ev == 0) {
+    int32_t applied_exposure_compensation_milli_ev) const {
+  if (applied_exposure_compensation_milli_ev == 0) {
     return;
   }
-  const double gain = std::pow(2.0, static_cast<double>(exposure_compensation_milli_ev) / 1000.0);
+  const double gain = std::pow(2.0, static_cast<double>(applied_exposure_compensation_milli_ev) / 1000.0);
   auto* base = static_cast<uint8_t*>(dst.data);
   for (uint32_t y = 0; y < dst.height; ++y) {
     uint8_t* row = base + static_cast<size_t>(y) * static_cast<size_t>(dst.stride_bytes);

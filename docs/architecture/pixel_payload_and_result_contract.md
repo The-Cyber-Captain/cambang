@@ -830,6 +830,15 @@ For public still-profile authoring at the Godot boundary, the profile Dictionary
 key is `still_image_bundle` (not `image_sequence`) to avoid implying a
 video/time sequence.
 
+
+Exposure-compensation semantics for still image members are intentionally split:
+
+- `intended_exposure_compensation_milli_ev`: authored profile/bundle member intent.
+- `applied_exposure_compensation_milli_ev`: execution/result member identity instruction.
+- `has_realized_exposure_compensation_milli_ev` + `realized_exposure_compensation_milli_ev`: provider-observed effective truth when known (presence-flag based; no sentinel).
+
+Case A (unsupported bundle shape/member count) remains admission/validation failure; Case B (executed member with differing effective exposure) is represented by applied vs realized divergence when realized is present.
+
 `CaptureResultSet` remains a rig/Core curation container for grouping device
 `CaptureResult` objects and must not be treated as the container for bracket
 members of a single device capture result.

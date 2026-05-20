@@ -56,7 +56,7 @@ enum class CBVisibilityLastPath : uint8_t {
 struct CaptureStillImageMemberState {
     uint32_t image_member_index = 0;
     cambang::CaptureStillImageMemberRole role = cambang::CaptureStillImageMemberRole::DEFAULT_METERED;
-    int32_t exposure_compensation_milli_ev = 0;
+    int32_t intended_exposure_compensation_milli_ev = 0;
 };
 
 struct CaptureStillImageBundleState {

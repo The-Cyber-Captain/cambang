@@ -155,7 +155,7 @@ enum class CaptureStillImageMemberRole : uint8_t {
 struct CaptureStillImageMember {
   uint32_t image_member_index = 0;
   CaptureStillImageMemberRole role = CaptureStillImageMemberRole::DEFAULT_METERED;
-  int32_t exposure_compensation_milli_ev = 0;
+  int32_t intended_exposure_compensation_milli_ev = 0;
 };
 
 struct CaptureStillImageBundle {
@@ -176,7 +176,7 @@ inline bool is_valid_capture_still_image_bundle(
   }
   if (seq.members[0].image_member_index != 0u ||
       seq.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED ||
-      seq.members[0].exposure_compensation_milli_ev != 0) {
+      seq.members[0].intended_exposure_compensation_milli_ev != 0) {
     return false;
   }
   for (size_t i = 0; i < seq.members.size(); ++i) {
@@ -336,7 +336,9 @@ enum class CaptureImageRouting : uint8_t {
 struct CaptureImageFrameMetadata {
   CaptureImageRouting routing = CaptureImageRouting::DEFAULT_METERED;
   uint32_t image_member_index = 0;
-  int32_t exposure_compensation_milli_ev = 0;
+  int32_t applied_exposure_compensation_milli_ev = 0;
+  bool has_realized_exposure_compensation_milli_ev = false;
+  int32_t realized_exposure_compensation_milli_ev = 0;
 };
 
 // Frame view delivered from provider.

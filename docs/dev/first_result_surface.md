@@ -311,7 +311,9 @@ Initial grouped accessors:
 ### 7.3.x Image-member model and Godot wrapper access
 
 `FrameView` capture metadata now carries image-member routing facts (`routing`,
-`image_member_index`, `exposure_compensation_milli_ev`) and retained still data is
+`image_member_index`, `applied_exposure_compensation_milli_ev`,
+`has_realized_exposure_compensation_milli_ev`,
+`realized_exposure_compensation_milli_ev`) and retained still data is
 modeled as a default member plus optional additional members in
 `CoreCaptureResultData` (`default_image`, `additional_images`).
 
@@ -325,7 +327,7 @@ Godot-facing `CamBANGCaptureResult` now exposes indexed image-member access:
 - `can_to_image_member(index)`
 - `to_image_member(index)`
 
-`get_image_member(index)` returns Dictionary metadata for the selected member.
+`get_image_member(index)` returns Dictionary metadata for the selected member, including `applied_exposure_compensation_milli_ev` and provider-realized exposure truth (`has_realized_exposure_compensation_milli_ev`, `realized_exposure_compensation_milli_ev`).
 Invalid/out-of-range access returns an empty Dictionary.
 
 `to_image_member(index)` explicitly materializes the selected member where

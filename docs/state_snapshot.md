@@ -451,7 +451,7 @@ CamBANGDeviceState {
       image_member_index: uint32
       role: uint32
       role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
-      exposure_compensation_milli_ev: int32
+      intended_exposure_compensation_milli_ev: int32
     }>
   }                                      // applied still-image bundle profile truth
 
@@ -507,7 +507,7 @@ AcquisitionSessionState {
       image_member_index: uint32
       role: uint32
       role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
-      exposure_compensation_milli_ev: int32
+      intended_exposure_compensation_milli_ev: int32
     }>
   }                                      // applied still-image bundle profile truth for this acquisition-session context
 

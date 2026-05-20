@@ -77,7 +77,9 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
       ? godot::String("DEFAULT_METERED")
       : godot::String("ADDITIONAL_BRACKET");
   out["capture_timestamp"] = static_cast<int64_t>(member->capture_timestamp_ns);
-  out["exposure_compensation_milli_ev"] = static_cast<int64_t>(member->exposure_compensation_milli_ev);
+  out["applied_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->applied_exposure_compensation_milli_ev);
+  out["has_realized_exposure_compensation_milli_ev"] = member->has_realized_exposure_compensation_milli_ev;
+  out["realized_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->realized_exposure_compensation_milli_ev);
   out["is_default"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED);
   out["is_additional_bracket"] = (member->role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
   return out;

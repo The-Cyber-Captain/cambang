@@ -56,7 +56,7 @@ struct PatternOverlayData final {
 //
 // Intended for capture-member realization-time adjustments.
 struct PatternRenderOptions final {
-  int32_t exposure_compensation_milli_ev = 0;
+  int32_t applied_exposure_compensation_milli_ev = 0;
 };
 
 // Cache key for base-frame generation.
