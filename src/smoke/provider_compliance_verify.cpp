@@ -67,6 +67,7 @@ bool parse_opts(int argc, char** argv, Options& opt) {
 struct EventRec {
   std::string tag;
   uint64_t id = 0;
+  uint64_t capture_id = 0;
   uint32_t type = 0;
   uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
@@ -125,6 +126,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
 
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
+    ev.capture_id = frame.capture_id;
     ev.ts = frame.capture_timestamp;
     if (frame.data && frame.size_bytes >= 4) {
       const uint8_t* p = static_cast<const uint8_t*>(frame.data);
@@ -1522,9 +1524,34 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
     if (!provider.trigger_capture(req).ok()) {
       return false;
     }
+    bool completed = false;
+    for (int iter = 0; iter < kMaxIters; ++iter) {
+      size_t matched_frames = 0;
+      completed = false;
+      for (const auto& ev : cb.events) {
+        if (ev.tag == "capture_completed" && ev.id == capture_id) {
+          completed = true;
+        }
+        if (ev.tag == "frame" &&
+            ev.capture_id == capture_id &&
+            ev.capture_image_member_index < member_evs.size() &&
+            ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
+          matched_frames++;
+        }
+      }
+      if (completed && matched_frames >= member_evs.size()) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    if (!completed) {
+      return false;
+    }
     out_frames.clear();
     for (const auto& ev : cb.events) {
-      if (ev.tag == "frame" && ev.capture_image_member_index < member_evs.size() &&
+      if (ev.tag == "frame" &&
+          ev.capture_id == capture_id &&
+          ev.capture_image_member_index < member_evs.size() &&
           ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
         out_frames.push_back(ev);
       }
