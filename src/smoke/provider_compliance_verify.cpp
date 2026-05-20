@@ -74,6 +74,11 @@ struct EventRec {
   uint32_t pixel_sig = 0;
   uint64_t payload_hash = 0;
   size_t payload_size_bytes = 0;
+  uint32_t format_fourcc = 0;
+  double sampled_luma = 0.0;
+  uint8_t sample_r = 0;
+  uint8_t sample_g = 0;
+  uint8_t sample_b = 0;
   CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
   uint32_t capture_image_member_index = 0;
   int32_t capture_image_exposure_compensation_milli_ev = 0;
@@ -91,14 +96,7 @@ uint64_t fnv1a64_hash_bytes(const uint8_t* data, size_t size_bytes) {
   return h;
 }
 
-double average_rgb_luma(const EventRec& ev) {
-  if (ev.payload_size_bytes < 4 || ev.payload_hash == 0) {
-    return 0.0;
-  }
-  const uint32_t packed = ev.pixel_sig;
-  const uint8_t r = static_cast<uint8_t>(packed & 0xFFu);
-  const uint8_t g = static_cast<uint8_t>((packed >> 8u) & 0xFFu);
-  const uint8_t b = static_cast<uint8_t>((packed >> 16u) & 0xFFu);
+double luma_from_rgb(uint8_t r, uint8_t g, uint8_t b) {
   return (0.2126 * static_cast<double>(r)) +
          (0.7152 * static_cast<double>(g)) +
          (0.0722 * static_cast<double>(b));
@@ -139,6 +137,30 @@ struct RecorderCallbacks final : IProviderCallbacks {
       const uint8_t* p = static_cast<const uint8_t*>(frame.data);
       ev.payload_size_bytes = frame.size_bytes;
       ev.payload_hash = fnv1a64_hash_bytes(p, frame.size_bytes);
+      const bool valid_shape = (frame.width > 0 && frame.height > 0 && frame.stride_bytes >= frame.width * 4u);
+      const bool rgba_like = (frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA);
+      if (valid_shape && rgba_like) {
+        const uint32_t sx = frame.width / 2u;
+        const uint32_t sy = frame.height / 2u;
+        const size_t off = static_cast<size_t>(sy) * static_cast<size_t>(frame.stride_bytes) + static_cast<size_t>(sx) * 4u;
+        if (off + 3 < frame.size_bytes) {
+          const uint8_t c0 = p[off + 0];
+          const uint8_t c1 = p[off + 1];
+          const uint8_t c2 = p[off + 2];
+          uint8_t r = c0;
+          uint8_t g = c1;
+          uint8_t b = c2;
+          if (frame.format_fourcc == FOURCC_BGRA) {
+            b = c0;
+            g = c1;
+            r = c2;
+          }
+          ev.sample_r = r;
+          ev.sample_g = g;
+          ev.sample_b = b;
+          ev.sampled_luma = luma_from_rgb(r, g, b);
+        }
+      }
     }
     ev.capture_image_routing = frame.capture_image.routing;
     ev.capture_image_member_index = frame.capture_image.image_member_index;
@@ -1586,10 +1608,23 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
         return fail_with_cleanup("FAIL synthetic dynamic asymmetric member metadata mismatch");
       }
     }
-    const double y0 = average_rgb_luma(frames[frames.size() - 3]);
-    const double y1 = average_rgb_luma(frames[frames.size() - 2]);
-    const double y2 = average_rgb_luma(frames[frames.size() - 1]);
+    const auto& f0 = frames[frames.size() - 3];
+    const auto& f1 = frames[frames.size() - 2];
+    const auto& f2 = frames[frames.size() - 1];
+    const double y0 = f0.sampled_luma;
+    const double y1 = f1.sampled_luma;
+    const double y2 = f2.sampled_luma;
     if (!(y1 < y0 && y2 > y0)) {
+      std::cerr << "FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering"
+                << " [m0 idx=" << f0.capture_image_member_index << " ev=" << f0.capture_image_exposure_compensation_milli_ev
+                << " fmt=" << f0.format_fourcc << " luma=" << y0
+                << " rgb=(" << static_cast<int>(f0.sample_r) << "," << static_cast<int>(f0.sample_g) << "," << static_cast<int>(f0.sample_b) << ")]"
+                << " [m1 idx=" << f1.capture_image_member_index << " ev=" << f1.capture_image_exposure_compensation_milli_ev
+                << " fmt=" << f1.format_fourcc << " luma=" << y1
+                << " rgb=(" << static_cast<int>(f1.sample_r) << "," << static_cast<int>(f1.sample_g) << "," << static_cast<int>(f1.sample_b) << ")]"
+                << " [m2 idx=" << f2.capture_image_member_index << " ev=" << f2.capture_image_exposure_compensation_milli_ev
+                << " fmt=" << f2.format_fourcc << " luma=" << y2
+                << " rgb=(" << static_cast<int>(f2.sample_r) << "," << static_cast<int>(f2.sample_g) << "," << static_cast<int>(f2.sample_b) << ")]\n";
       return fail_with_cleanup("FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering");
     }
   }
@@ -1878,3 +1913,4 @@ int main(int argc, char** argv) {
   std::cout << "PASS provider_compliance_verify\n";
   return 0;
 }
+    ev.format_fourcc = frame.format_fourcc;
