@@ -75,6 +75,11 @@ uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
 void apply_capture_exposure_compensation_rgba8_(
     std::vector<std::uint8_t>& pixels,
     int32_t exposure_compensation_milli_ev) {
+  // Synthetic still-capture tranche note:
+  // - This transform uses request/applied EV intent from CaptureRequest
+  //   still_image_bundle to produce deterministic per-member visual distinction.
+  // - It intentionally does NOT model requested-vs-actual hardware EV truth.
+  //   That requires a separate metadata-modeling tranche.
   if (exposure_compensation_milli_ev == 0) {
     return;
   }

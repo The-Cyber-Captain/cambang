@@ -90,6 +90,19 @@ uint64_t fnv1a64_hash_bytes(const uint8_t* data, size_t size_bytes) {
   return h;
 }
 
+double average_rgb_luma(const EventRec& ev) {
+  if (ev.payload_size_bytes < 4 || ev.payload_hash == 0) {
+    return 0.0;
+  }
+  const uint32_t packed = ev.pixel_sig;
+  const uint8_t r = static_cast<uint8_t>(packed & 0xFFu);
+  const uint8_t g = static_cast<uint8_t>((packed >> 8u) & 0xFFu);
+  const uint8_t b = static_cast<uint8_t>((packed >> 16u) & 0xFFu);
+  return (0.2126 * static_cast<double>(r)) +
+         (0.7152 * static_cast<double>(g)) +
+         (0.0722 * static_cast<double>(b));
+}
+
 struct RecorderCallbacks final : IProviderCallbacks {
   uint64_t next_native_id = 1;
   std::vector<EventRec> events;
@@ -1469,6 +1482,113 @@ bool run_synthetic_multi_member_still_sequence_check() {
   return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
 }
 
+bool run_synthetic_dynamic_still_bundle_shape_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() || !provider.open_device("synthetic:0", 144, 14401).ok()) {
+    std::cerr << "FAIL synthetic dynamic bundle setup failed\n";
+    return false;
+  }
+  auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.close_device(144);
+    (void)provider.shutdown();
+    return false;
+  };
+  auto run_capture_and_collect = [&](uint64_t capture_id,
+                                     const std::vector<int32_t>& member_evs,
+                                     std::vector<EventRec>& out_frames) -> bool {
+    CaptureRequest req{};
+    req.capture_id = capture_id;
+    req.device_instance_id = 144;
+    req.width = 64;
+    req.height = 64;
+    req.format_fourcc = FOURCC_RGBA;
+    req.still_image_bundle = make_default_metered_still_image_bundle();
+    for (size_t i = 1; i < member_evs.size(); ++i) {
+      req.still_image_bundle.members.push_back(CaptureStillImageMember{
+          static_cast<uint32_t>(i),
+          CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
+          member_evs[i]});
+    }
+    if (!is_valid_capture_still_image_bundle(req.still_image_bundle, provider.supports_multi_image_still_sequence())) {
+      return false;
+    }
+    if (!provider.trigger_capture(req).ok()) {
+      return false;
+    }
+    out_frames.clear();
+    for (const auto& ev : cb.events) {
+      if (ev.tag == "frame" && ev.capture_image_member_index < member_evs.size() &&
+          ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
+        out_frames.push_back(ev);
+      }
+    }
+    return out_frames.size() >= member_evs.size();
+  };
+
+  {
+    const std::vector<int32_t> evs{0};
+    std::vector<EventRec> frames;
+    if (!run_capture_and_collect(8101, evs, frames)) {
+      return fail_with_cleanup("FAIL synthetic dynamic one-member capture failed");
+    }
+  }
+  {
+    const std::vector<int32_t> evs{0, -1000, 2000};
+    std::vector<EventRec> frames;
+    if (!run_capture_and_collect(8102, evs, frames)) {
+      return fail_with_cleanup("FAIL synthetic dynamic asymmetric capture failed");
+    }
+    if (frames.size() < evs.size()) {
+      return fail_with_cleanup("FAIL synthetic dynamic asymmetric expected member count");
+    }
+    for (size_t i = 0; i < evs.size(); ++i) {
+      const auto& frame = frames[frames.size() - evs.size() + i];
+      const CaptureImageRouting expected_routing = (i == 0)
+          ? CaptureImageRouting::DEFAULT_METERED
+          : CaptureImageRouting::ADDITIONAL_BRACKET;
+      if (frame.capture_image_routing != expected_routing ||
+          frame.capture_image_member_index != i ||
+          frame.capture_image_exposure_compensation_milli_ev != evs[i]) {
+        return fail_with_cleanup("FAIL synthetic dynamic asymmetric member metadata mismatch");
+      }
+    }
+    const double y0 = average_rgb_luma(frames[frames.size() - 3]);
+    const double y1 = average_rgb_luma(frames[frames.size() - 2]);
+    const double y2 = average_rgb_luma(frames[frames.size() - 1]);
+    if (!(y1 < y0 && y2 > y0)) {
+      return fail_with_cleanup("FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering");
+    }
+  }
+  {
+    const std::vector<int32_t> evs{0, -2000, -1000, 1000, 2000};
+    std::vector<EventRec> frames;
+    if (!run_capture_and_collect(8103, evs, frames)) {
+      return fail_with_cleanup("FAIL synthetic dynamic large bundle capture failed");
+    }
+    if (frames.size() < evs.size()) {
+      return fail_with_cleanup("FAIL synthetic dynamic large bundle expected member count");
+    }
+    for (size_t i = 0; i < evs.size(); ++i) {
+      const auto& frame = frames[frames.size() - evs.size() + i];
+      if (frame.capture_image_member_index != i ||
+          frame.capture_image_exposure_compensation_milli_ev != evs[i]) {
+        return fail_with_cleanup("FAIL synthetic dynamic large bundle member order/metadata mismatch");
+      }
+    }
+  }
+  if (!provider.close_device(144).ok() || !provider.shutdown().ok()) {
+    return fail_with_cleanup("FAIL synthetic dynamic bundle teardown failed");
+  }
+  return assert_native_balance(cb.events, "synthetic_dynamic_still_bundle_shape");
+}
+
 bool run_core_synthetic_three_member_capture_result_check() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -1719,6 +1839,7 @@ int main(int argc, char** argv) {
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
   if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
   if (!run_synthetic_multi_member_still_sequence_check()) return 1;
+  if (!run_synthetic_dynamic_still_bundle_shape_check()) return 1;
   if (!run_core_synthetic_three_member_capture_result_check()) return 1;
   if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
