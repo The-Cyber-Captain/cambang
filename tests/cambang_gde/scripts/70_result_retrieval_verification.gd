@@ -256,12 +256,12 @@ func _try_verify_stream_result() -> void:
 		_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
-		var device_snapshot := _get_device_snapshot_record(_device_instance_id)
-		_capture_profile_version_after_set = int(device_snapshot.get("capture_profile_version", -1))
+		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
+		_capture_profile_version_after_set = int(device_snapshot_after_set.get("capture_profile_version", -1))
 		return
 
-	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
-	var capture_profile_version_after_trigger := int(device_snapshot.get("capture_profile_version", -1))
+	var device_snapshot_after_trigger := _get_device_snapshot_record(_device_instance_id)
+	var capture_profile_version_after_trigger := int(device_snapshot_after_trigger.get("capture_profile_version", -1))
 	if capture_profile_version_after_trigger < 0:
 		return
 	_require(
@@ -363,7 +363,10 @@ func _try_verify_capture_result() -> void:
 		capture_result.get_height(),
 		capture_result.get_capture_id()
 	]
-	_request_status_panel_acquisition_session_bundle_detail_visibility()
+	_exercise_status_panel_acquisition_session_fixture_detail_visibility()
+	if _status_panel != null:
+		_status_panel.apply_fixture_detail_visible_rows([])
+		_status_panel.force_refresh()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
 
@@ -485,7 +488,7 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 	return {}
 
 
-func _request_status_panel_acquisition_session_bundle_detail_visibility() -> void:
+func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> void:
 	if _status_panel_acquisition_session_detail_requested:
 		return
 	if _status_panel == null:
@@ -501,7 +504,7 @@ func _request_status_panel_acquisition_session_bundle_detail_visibility() -> voi
 	_status_panel.apply_fixture_detail_visible_rows([row_id])
 	_status_panel.force_refresh()
 	_status_panel_acquisition_session_detail_requested = true
-	_append_status("INFO: status panel expanded acquisition session detail (%s)" % row_id)
+	_append_status("INFO: status panel fixture detail visibility exercised (%s)" % row_id)
 
 
 func _poll_inspection_capture_result() -> void:

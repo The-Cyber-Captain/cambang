@@ -228,6 +228,7 @@ func apply_fixture_expanded_rows(row_ids: Array) -> void:
 
 
 func apply_fixture_detail_visible_rows(row_ids: Array) -> void:
+	_detail_visible_by_row_id.clear()
 	for raw_row_id in row_ids:
 		var row_id := str(raw_row_id)
 		if row_id.is_empty():
@@ -3697,7 +3698,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
 				% device_matches.size()
 			)
-		var device_bundle_detail := _build_still_image_bundle_summary(rec)
+		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
+		if not device_bundle_count.is_empty():
+			device_info.append(device_bundle_count)
+		var device_bundle_detail := _build_still_image_bundle_detail_line(rec)
 		if not device_bundle_detail.is_empty():
 			device_info.append(device_bundle_detail)
 		var device_entry := _entry(
@@ -5695,22 +5699,19 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 			["capture_profile_version", "capture_profile_version", "int"],
 		]
 	)
-	var bundle_summary := _build_still_image_bundle_summary(rec)
-	if bundle_summary.is_empty():
+	var bundle_count_line := _build_still_image_bundle_member_count_line(rec)
+	var bundle_detail_line := _build_still_image_bundle_detail_line(rec)
+	var bundle_segments: Array[String] = []
+	if not bundle_count_line.is_empty():
+		bundle_segments.append(bundle_count_line.trim_prefix("still: "))
+	if not bundle_detail_line.is_empty():
+		bundle_segments.append(bundle_detail_line)
+	if bundle_segments.is_empty():
 		return base_line
+	var bundle_fragment := " ".join(bundle_segments)
 	if base_line.is_empty():
-		return "capture: %s" % bundle_summary
-	return "%s %s" % [base_line, bundle_summary]
-
-
-func _build_still_image_bundle_summary(rec: Dictionary) -> String:
-	var bundle_members := _extract_still_image_bundle_members(rec)
-	if bundle_members == null:
-		return ""
-	var members: Array = bundle_members
-	if members.is_empty():
-		return "bundle_members=0 bundle=[]"
-	return "bundle_members=%d bundle=[%s]" % [members.size(), _build_still_image_bundle_member_tokens(members)]
+		return "capture: %s" % bundle_fragment
+	return "%s %s" % [base_line, bundle_fragment]
 
 
 func _build_still_image_bundle_member_count_line(rec: Dictionary) -> String:
