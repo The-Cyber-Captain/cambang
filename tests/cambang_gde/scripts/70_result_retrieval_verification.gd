@@ -29,6 +29,7 @@ const PAYLOAD_KIND_GPU_SURFACE := 2
 @onready var _gui_controls: HBoxContainer = $RootMargin/MainColumn/GuiControls
 @onready var _request_stream_image_button: Button = $RootMargin/MainColumn/GuiControls/RequestStreamImageButton
 @onready var _capture_again_button: Button = $RootMargin/MainColumn/GuiControls/CaptureAgainButton
+@onready var _status_panel: CamBANGStatusPanel = $RootMargin/MainColumn/CamBANGStatusPanel
 
 var _step := 0
 var _done := false
@@ -49,6 +50,7 @@ var _still_profile_set_applied := false
 var _capture_triggered := false
 var _stream_baseline_verified := false
 var _device_seam_verified := false
+var _status_panel_acquisition_session_detail_requested := false
 
 func _ready() -> void:
 	_status_label.clear()
@@ -361,6 +363,7 @@ func _try_verify_capture_result() -> void:
 		capture_result.get_height(),
 		capture_result.get_capture_id()
 	]
+	_request_status_panel_acquisition_session_bundle_detail_visibility()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
 
@@ -480,6 +483,25 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 		if int(rec.get("device_instance_id", 0)) == device_instance_id:
 			return rec
 	return {}
+
+
+func _request_status_panel_acquisition_session_bundle_detail_visibility() -> void:
+	if _status_panel_acquisition_session_detail_requested:
+		return
+	if _status_panel == null:
+		return
+	var acquisition_session_snapshot := _get_acquisition_session_snapshot_record(_device_instance_id)
+	if acquisition_session_snapshot.is_empty():
+		return
+	var acquisition_session_id := int(acquisition_session_snapshot.get("acquisition_session_id", 0))
+	if acquisition_session_id <= 0:
+		return
+	var row_id := "acquisition_session/%d" % acquisition_session_id
+	_status_panel.apply_fixture_expanded_rows([row_id])
+	_status_panel.apply_fixture_detail_visible_rows([row_id])
+	_status_panel.force_refresh()
+	_status_panel_acquisition_session_detail_requested = true
+	_append_status("INFO: status panel expanded acquisition session detail (%s)" % row_id)
 
 
 func _poll_inspection_capture_result() -> void:
