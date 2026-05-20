@@ -125,6 +125,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
     ev.capture_id = frame.capture_id;
+    ev.format_fourcc = frame.format_fourcc;
     ev.ts = frame.capture_timestamp;
     if (frame.data && frame.size_bytes >= 4) {
       const uint8_t* p = static_cast<const uint8_t*>(frame.data);
@@ -1913,4 +1914,3 @@ int main(int argc, char** argv) {
   std::cout << "PASS provider_compliance_verify\n";
   return 0;
 }
-    ev.format_fourcc = frame.format_fourcc;
