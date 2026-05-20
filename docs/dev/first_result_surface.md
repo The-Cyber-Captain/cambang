@@ -259,11 +259,23 @@ Not included:
 
 ## 7. `CaptureResult` surface
 
-`CaptureResult` is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same `CaptureResult`.
+`CaptureResult` is the device-level still-capture result and is image-member based.
+
+The canonical minimum valid capture sequence is one image member:
+
+- member `0` with role `DEFAULT_METERED`
+
+Bracketed captures use the same model, adding members:
+
+- member `1..N` with role `ADDITIONAL_BRACKET`
+
+A one-image capture is therefore the minimum valid still image bundle (ordered
+image-member bundle for one still event), not a separate legacy/default-only
+path.
 
 ### 7.1 Core properties
 
-Initial direct properties describe the `CaptureResult` and its default image:
+Initial direct scalar properties describe the `CaptureResult` using member-0 convenience semantics:
 
 - `width`
 - `height`
@@ -273,7 +285,7 @@ Initial direct properties describe the `CaptureResult` and its default image:
 - `device_instance_id`
 - `capture_id`
 
-For bracketed captures, image-facing scalar values that can vary between bracket images, such as `capture_timestamp`, refer to the default image unless a bracket-aware access path explicitly selects another bracket image. Structural properties such as `width`, `height`, `format`, and `payload_kind` are result-level homogeneous truth.
+For multi-member captures, image-facing scalar values that can vary between members (for example `capture_timestamp`) refer to member `0` unless an image-member access path explicitly selects another member. Structural properties such as `width`, `height`, `format`, and `payload_kind` are result-level homogeneous truth.
 
 ### 7.2 Fact-group presence helpers
 
@@ -293,7 +305,39 @@ Initial grouped accessors:
 - `get_location_attributes()`
 - `get_optical_calibration()`
 
-`get_image_properties()`, `get_location_attributes()`, and `get_optical_calibration()` expose result-level shared truth. `get_capture_attributes()` describes the default image where capture attributes may vary between bracket images.
+`get_image_properties()`, `get_location_attributes()`, and `get_optical_calibration()` expose result-level shared truth. `get_capture_attributes()` describes member `0` where capture attributes may vary between image members.
+
+
+### 7.3.x Image-member model and Godot wrapper access
+
+`FrameView` capture metadata now carries image-member routing facts (`routing`,
+`image_member_index`, `exposure_compensation_milli_ev`) and retained still data is
+modeled as a default member plus optional additional members in
+`CoreCaptureResultData` (`default_image`, `additional_images`).
+
+Godot-facing `CamBANGCaptureResult` now exposes indexed image-member access:
+
+- `IMAGE_ROLE_DEFAULT_METERED`
+- `IMAGE_ROLE_ADDITIONAL_BRACKET`
+- `get_image_count()`
+- `has_additional_images()`
+- `get_image_member(index)`
+- `can_to_image_member(index)`
+- `to_image_member(index)`
+
+`get_image_member(index)` returns Dictionary metadata for the selected member.
+Invalid/out-of-range access returns an empty Dictionary.
+
+`to_image_member(index)` explicitly materializes the selected member where
+supported.
+
+Existing scalar/default `CaptureResult` methods (`to_image()`,
+`can_to_image()`, and related default-image descriptive accessors) remain member-0
+conveniences.
+
+Still-capture profile authoring at the Godot boundary uses the Dictionary key
+`still_image_bundle` to describe this ordered member bundle and intentionally
+avoids `image_sequence` wording to prevent time-sequence ambiguity.
 
 ### 7.4 Capability inspection
 
@@ -358,7 +402,9 @@ Not included:
 
 ## 8. `CaptureResultSet` surface
 
-`CaptureResultSet` is the rig/Core-curated grouping of selected device `CaptureResult` objects for a rig-triggered synchronised capture. CaptureResultSet curation is distinct from the definition of `CaptureResult`.
+`CaptureResultSet` is the rig/Core-curated grouping of selected device `CaptureResult` objects for a rig-triggered synchronised capture.
+
+CaptureResultSet curation remains distinct from the definition of `CaptureResult` and is not the container for bracket image members inside a single device capture result.
 
 ### 8.1 Initial surface
 
@@ -505,4 +551,3 @@ It exists to prevent future implementation from teaching the wrong lesson that
 a non-CPU primary payload removes the need for an available CPU-facing fallback.
 
 ---
-

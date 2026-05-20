@@ -53,6 +53,16 @@ enum class CBVisibilityLastPath : uint8_t {
     REJECTED_INVALID = 4,
 };
 
+struct CaptureStillImageMemberState {
+    uint32_t image_member_index = 0;
+    cambang::CaptureStillImageMemberRole role = cambang::CaptureStillImageMemberRole::DEFAULT_METERED;
+    int32_t exposure_compensation_milli_ev = 0;
+};
+
+struct CaptureStillImageBundleState {
+    std::vector<CaptureStillImageMemberState> members;
+};
+
 struct CamBANGRigState {
     uint64_t rig_id = 0;
     std::string name;
@@ -67,6 +77,7 @@ struct CamBANGRigState {
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
+    CaptureStillImageBundleState still_image_bundle{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
@@ -94,6 +105,7 @@ struct CamBANGDeviceState {
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
+    CaptureStillImageBundleState still_image_bundle{};
 
     uint32_t warm_hold_ms = 0;
     uint32_t warm_remaining_ms = 0;
@@ -115,6 +127,7 @@ struct AcquisitionSessionState {
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
+    CaptureStillImageBundleState still_image_bundle{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;

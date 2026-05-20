@@ -227,6 +227,14 @@ func apply_fixture_expanded_rows(row_ids: Array) -> void:
 		_expanded_by_row_id[row_id] = true
 
 
+func apply_fixture_detail_visible_rows(row_ids: Array) -> void:
+	for raw_row_id in row_ids:
+		var row_id := str(raw_row_id)
+		if row_id.is_empty():
+			continue
+		_detail_visible_by_row_id[row_id] = true
+
+
 func _build_ui_if_needed() -> void:
 	if _title_label != null:
 		return
@@ -3689,6 +3697,9 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
 				% device_matches.size()
 			)
+		var device_bundle_detail := _build_still_image_bundle_summary(rec)
+		if not device_bundle_detail.is_empty():
+			device_info.append(device_bundle_detail)
 		var device_entry := _entry(
 			device_entry_id,
 			provider_id,
@@ -3763,6 +3774,12 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: acquisition_session row has %d matching current-generation AcquisitionSession native objects."
 				% acquisition_session_native_matches.size()
 			)
+		var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
+		if not acquisition_bundle_summary.is_empty():
+			acquisition_session_info.append(acquisition_bundle_summary)
+		var acquisition_bundle_detail := _build_still_image_bundle_detail_line(rec)
+		if not acquisition_bundle_detail.is_empty():
+			acquisition_session_info.append(acquisition_bundle_detail)
 		var acquisition_session_entry_id := "acquisition_session/%d" % acquisition_session_id
 		var acquisition_session_entry := _entry(
 			acquisition_session_entry_id,
@@ -5668,7 +5685,7 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 
 
 func _build_capture_profile_info_line(rec: Dictionary) -> String:
-	return _build_info_line_from_parts(
+	var base_line := _build_info_line_from_parts(
 		rec,
 		"capture",
 		[
@@ -5678,6 +5695,66 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 			["capture_profile_version", "capture_profile_version", "int"],
 		]
 	)
+	var bundle_summary := _build_still_image_bundle_summary(rec)
+	if bundle_summary.is_empty():
+		return base_line
+	if base_line.is_empty():
+		return "capture: %s" % bundle_summary
+	return "%s %s" % [base_line, bundle_summary]
+
+
+func _build_still_image_bundle_summary(rec: Dictionary) -> String:
+	var bundle_members := _extract_still_image_bundle_members(rec)
+	if bundle_members == null:
+		return ""
+	var members: Array = bundle_members
+	if members.is_empty():
+		return "bundle_members=0 bundle=[]"
+	return "bundle_members=%d bundle=[%s]" % [members.size(), _build_still_image_bundle_member_tokens(members)]
+
+
+func _build_still_image_bundle_member_count_line(rec: Dictionary) -> String:
+	var bundle_members := _extract_still_image_bundle_members(rec)
+	if bundle_members == null:
+		return ""
+	var members: Array = bundle_members
+	return "still: bundle_members=%d" % members.size()
+
+
+func _build_still_image_bundle_detail_line(rec: Dictionary) -> String:
+	var bundle_members := _extract_still_image_bundle_members(rec)
+	if bundle_members == null:
+		return ""
+	var members: Array = bundle_members
+	return "bundle=[%s]" % _build_still_image_bundle_member_tokens(members)
+
+
+func _extract_still_image_bundle_members(rec: Dictionary) -> Variant:
+	if not rec.has("still_image_bundle"):
+		return null
+	var bundle_variant: Variant = rec.get("still_image_bundle")
+	if typeof(bundle_variant) != TYPE_DICTIONARY:
+		return null
+	var bundle: Dictionary = bundle_variant
+	var members_variant: Variant = bundle.get("members", [])
+	if typeof(members_variant) != TYPE_ARRAY:
+		return null
+	return members_variant
+
+
+func _build_still_image_bundle_member_tokens(members: Array) -> String:
+	var toks: Array[String] = []
+	for mv in members:
+		if typeof(mv) != TYPE_DICTIONARY:
+			continue
+		var m: Dictionary = mv
+		var idx := int(m.get("image_member_index", -1))
+		var role_name := str(m.get("role_name", ""))
+		if role_name.is_empty():
+			role_name = str(m.get("role", -1))
+		var ev := int(m.get("exposure_compensation_milli_ev", 0))
+		toks.append("%d:%s:%d" % [idx, role_name, ev])
+	return ",".join(toks)
 
 
 func _build_stream_visibility_info_line(rec: Dictionary) -> String:

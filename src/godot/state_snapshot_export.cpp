@@ -108,6 +108,18 @@ static inline godot::String stream_stop_reason_token(CBStreamStopReason reason) 
   }
 }
 
+static inline godot::String capture_still_image_member_role_name(
+    cambang::CaptureStillImageMemberRole role) {
+  switch (role) {
+    case cambang::CaptureStillImageMemberRole::DEFAULT_METERED:
+      return "DEFAULT_METERED";
+    case cambang::CaptureStillImageMemberRole::ADDITIONAL_BRACKET:
+      return "ADDITIONAL_BRACKET";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 static inline godot::String native_object_type_token(uint32_t raw_type) {
   switch (static_cast<NativeObjectType>(raw_type)) {
     case NativeObjectType::Provider:
@@ -225,6 +237,18 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   d["capture_width"] = static_cast<uint32_t>(s.capture_width);
   d["capture_height"] = static_cast<uint32_t>(s.capture_height);
   d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  godot::Dictionary bundle;
+  godot::Array members;
+  for (const auto& m : s.still_image_bundle.members) {
+    godot::Dictionary md;
+    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
+    md["role"] = static_cast<int64_t>(m.role);
+    md["role_name"] = capture_still_image_member_role_name(m.role);
+    md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
+    members.push_back(md);
+  }
+  bundle["members"] = members;
+  d["still_image_bundle"] = bundle;
   d["warm_hold_ms"] = static_cast<uint32_t>(s.warm_hold_ms);
   d["warm_remaining_ms"] = static_cast<uint32_t>(s.warm_remaining_ms);
   d["rebuild_count"] = static_cast<uint64_t>(s.rebuild_count);
@@ -270,6 +294,18 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
   d["capture_width"] = static_cast<uint32_t>(s.capture_width);
   d["capture_height"] = static_cast<uint32_t>(s.capture_height);
   d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  godot::Dictionary bundle;
+  godot::Array members;
+  for (const auto& m : s.still_image_bundle.members) {
+    godot::Dictionary item;
+    item["image_member_index"] = static_cast<int>(m.image_member_index);
+    item["role"] = static_cast<int>(m.role);
+    item["role_name"] = capture_still_image_member_role_name(m.role);
+    item["exposure_compensation_milli_ev"] = static_cast<int>(m.exposure_compensation_milli_ev);
+    members.append(item);
+  }
+  bundle["members"] = members;
+  d["still_image_bundle"] = bundle;
   d["captures_triggered"] = static_cast<uint64_t>(s.captures_triggered);
   d["captures_completed"] = static_cast<uint64_t>(s.captures_completed);
   d["captures_failed"] = static_cast<uint64_t>(s.captures_failed);

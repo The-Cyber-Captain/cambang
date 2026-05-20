@@ -1077,10 +1077,10 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   }
 
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
-  CaptureImageSequenceRequest fallback_default_sequence;
-  const auto* members = &req.image_sequence.members;
+  CaptureStillImageBundle fallback_default_sequence;
+  const auto* members = &req.still_image_bundle.members;
   if (members->empty()) {
-    fallback_default_sequence = make_default_metered_capture_image_sequence();
+    fallback_default_sequence = make_default_metered_still_image_bundle();
     members = &fallback_default_sequence.members;
   }
   for (size_t i = 0; i < members->size(); ++i) {

@@ -48,6 +48,13 @@ enum class TrySetCapturePictureStatus : uint8_t {
   InvalidArgument = 3,
 };
 
+enum class TrySetStillCaptureProfileStatus : uint8_t {
+  OK = 0,
+  NotSupported = 1,
+  Busy = 2,
+  InvalidArgument = 3,
+};
+
 enum class TryCreateStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
@@ -163,6 +170,10 @@ enum class TryCloseDeviceStatus : uint8_t {
   TrySetStreamPictureStatus try_set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) noexcept;
   // Device-scoped capture-picture update path.
   TrySetCapturePictureStatus try_set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) noexcept;
+  TrySetStillCaptureProfileStatus try_set_device_still_capture_profile(
+      uint64_t device_instance_id,
+      const CaptureProfile& profile,
+      const CaptureStillImageBundle& still_image_bundle) noexcept;
 
   bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
 

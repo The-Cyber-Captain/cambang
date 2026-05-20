@@ -43,9 +43,14 @@ classification when a descendant survives beyond its controlling AcquisitionSess
 - Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
   inspectable retained device-bound capture profile truth, but these counters are
   detail-level in panel visibility.
+- Device rows may include detail-level `still_image_bundle` traceability as current
+  intended/applied device profile truth.
 - AcquisitionSession rows surface `capture_prof`, `capture_w`, `capture_h`, and
   `capture_fmt` at summary level as the preferred session-context capture profile
   surface.
+- AcquisitionSession rows are the preferred summary surface for applied acquisition/
+  capture-context `still_image_bundle` truth (compact `bundle_members` count in
+  summary, full member tokens in detail).
 - Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
   are not coupled to Device-vs-AcquisitionSession demotion policy.
 

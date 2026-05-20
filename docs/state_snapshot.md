@@ -446,6 +446,14 @@ CamBANGDeviceState {
   capture_width: uint32
   capture_height: uint32
   capture_format: uint32                 // FourCC-style CamBANG pixel format
+  still_image_bundle: {
+    members: Array<{
+      image_member_index: uint32
+      role: uint32
+      role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
+      exposure_compensation_milli_ev: int32
+    }>
+  }                                      // applied still-image bundle profile truth
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming
@@ -494,6 +502,14 @@ AcquisitionSessionState {
   capture_width: uint32
   capture_height: uint32
   capture_format: uint32
+  still_image_bundle: {
+    members: Array<{
+      image_member_index: uint32
+      role: uint32
+      role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
+      exposure_compensation_milli_ev: int32
+    }>
+  }                                      // applied still-image bundle profile truth for this acquisition-session context
 
   captures_triggered: uint64
   captures_completed: uint64
