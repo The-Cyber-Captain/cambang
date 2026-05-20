@@ -264,5 +264,11 @@ Implementation-status guardrails (current):
   no public `CamBANGServer.trigger_rig_capture(...)` API.
 - Scenario timelines stage state/topology but do not define capture trigger actions.
 - Overlapping multi-rig membership is not supported (single membership per device).
-- `CaptureResult.additional_images` remains unpopulated.
-- Multi-image/bracket production is not implemented yet.
+- `CaptureResult` is a device-level still-capture result with member `0`
+  `DEFAULT_METERED` and optional additional `ADDITIONAL_BRACKET` members.
+- `SyntheticProvider` currently proves multi-member still-image-bundle
+  emission/routing for result/member seams.
+- `CaptureResultSet` curation semantics remain unchanged and are not the
+  bracket-member container for a single device `CaptureResult`.
+- Platform-backed providers should not be assumed to emit bracket members
+  until capability/native mapping is deliberately implemented.

@@ -45,8 +45,9 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
 - `scenes/70_result_retrieval_verification.tscn`
   - Verifies Godot-facing result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
-  - Scene profile authoring for multi-member still capture uses `still_image_bundle` (ordered still-event image members), not `image_sequence`.
-  - CaptureResult coverage in Scene 70 currently proves the public one-member indexed API shape (`get_image_count()==1`, member-0 metadata/materialization access) under today's public triggers.
+  - Authors a three-member still capture profile via `still_image_bundle` (ordered still-event image members), not `image_sequence`.
+  - Triggers capture through the public device trigger flow and verifies `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+  - Scene 70 is a user-flow/result-wrapper verifier; exact Device/AcquisitionSession snapshot-shape proof belongs to native/snapshot verification harnesses.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
   - Expected pass string: `OK: result_retrieval_verification passed`
 - `scenes/71_capture_session_matrix_v3.tscn`
@@ -119,8 +120,9 @@ Notes:
   large value such as `--quit-after 1000`.
 - `60`, `61`, `62`, `63`, `65`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
-- Public Godot trigger paths currently produce the minimum one-member capture sequence; public bracket request authoring is not yet exposed.
-- Native verifier coverage (`provider_compliance_verify`) proves internal multi-member synthetic still capture emission/routing/payload divergence and retained three-member metadata shape; Scene 70 remains the public one-member wrapper proof.
+- Scene 70 exercises public device still-profile authoring using a three-member `still_image_bundle`.
+- Scene 70 verifies the resulting `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+- Exact Device/AcquisitionSession snapshot-shape proof remains in native/snapshot verification harnesses, not Scene 70 pre-trigger gating.
 - `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
   builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
   for bounded CLI execution.
