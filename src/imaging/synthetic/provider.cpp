@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstdarg>
 #include <chrono>
 #include <cstring>
@@ -70,28 +69,6 @@ uint32_t env_u32_or_default(const char* name, uint32_t fallback) {
     return std::numeric_limits<uint32_t>::max();
   }
   return static_cast<uint32_t>(parsed);
-}
-
-void apply_capture_exposure_compensation_rgba8_(
-    std::vector<std::uint8_t>& pixels,
-    int32_t exposure_compensation_milli_ev) {
-  // Synthetic still-capture tranche note:
-  // - This transform uses request/applied EV intent from CaptureRequest
-  //   still_image_bundle to produce deterministic per-member visual distinction.
-  // - It intentionally does NOT model requested-vs-actual hardware EV truth.
-  //   That requires a separate metadata-modeling tranche.
-  if (exposure_compensation_milli_ev == 0) {
-    return;
-  }
-  const double gain = std::pow(2.0, static_cast<double>(exposure_compensation_milli_ev) / 1000.0);
-  for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
-    const double r = static_cast<double>(pixels[i]) * gain;
-    const double g = static_cast<double>(pixels[i + 1]) * gain;
-    const double b = static_cast<double>(pixels[i + 2]) * gain;
-    pixels[i] = static_cast<std::uint8_t>(std::clamp(r, 0.0, 255.0));
-    pixels[i + 1] = static_cast<std::uint8_t>(std::clamp(g, 0.0, 255.0));
-    pixels[i + 2] = static_cast<std::uint8_t>(std::clamp(b, 0.0, 255.0));
-  }
 }
 
 uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
@@ -1101,7 +1078,18 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     if (!gpu_ok) {
       std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
     }
-    apply_capture_exposure_compensation_rgba8_(*bytes, member.exposure_compensation_milli_ev);
+    if (member.exposure_compensation_milli_ev != 0) {
+      PatternRenderOptions render_options{};
+      render_options.exposure_compensation_milli_ev = member.exposure_compensation_milli_ev;
+      PatternRenderTarget member_dst{};
+      member_dst.data = bytes->data();
+      member_dst.size_bytes = bytes->size();
+      member_dst.width = req.width;
+      member_dst.height = req.height;
+      member_dst.stride_bytes = stride;
+      member_dst.format = PatternSpec::PackedFormat::RGBA8;
+      renderer.apply_render_options_in_place(member_dst, render_options);
+    }
     if (fmt == FOURCC_BGRA) {
       for (size_t bi = 0; bi + 3 < bytes->size(); bi += 4) {
         std::swap((*bytes)[bi], (*bytes)[bi + 2]);

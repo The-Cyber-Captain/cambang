@@ -52,6 +52,13 @@ struct PatternOverlayData final {
   uint64_t stream_id = 0;
 };
 
+// Optional per-render options that are not part of PatternSpec/base identity.
+//
+// Intended for capture-member realization-time adjustments.
+struct PatternRenderOptions final {
+  int32_t exposure_compensation_milli_ev = 0;
+};
+
 // Cache key for base-frame generation.
 struct PatternBaseKey final {
   uint32_t width = 0;
