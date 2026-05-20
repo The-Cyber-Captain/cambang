@@ -120,8 +120,9 @@ Notes:
   large value such as `--quit-after 1000`.
 - `60`, `61`, `62`, `63`, `65`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
-- Public Godot trigger paths currently produce the minimum one-member capture sequence; public bracket request authoring is not yet exposed.
-- Native verifier coverage (`provider_compliance_verify`) proves internal multi-member synthetic still capture emission/routing/payload divergence and retained three-member metadata shape; Scene 70 remains the public one-member wrapper proof.
+- Scene 70 exercises public device still-profile authoring using a three-member `still_image_bundle`.
+- Scene 70 verifies the resulting `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+- Exact Device/AcquisitionSession snapshot-shape proof remains in native/snapshot verification harnesses, not Scene 70 pre-trigger gating.
 - `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
   builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
   for bounded CLI execution.
