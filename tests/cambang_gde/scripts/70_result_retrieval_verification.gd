@@ -26,6 +26,7 @@ const PAYLOAD_KIND_GPU_SURFACE := 2
 @onready var _stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamTexture
 @onready var _requested_stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/RequestedStreamPanel/RequestedStreamTexture
 @onready var _capture_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/CapturePanel/CaptureTexture
+@onready var _member_strip_row: HBoxContainer = $RootMargin/MainColumn/MemberInspectionStrip/StripScroll/MembersRow
 @onready var _gui_controls: HBoxContainer = $RootMargin/MainColumn/GuiControls
 @onready var _request_stream_image_button: Button = $RootMargin/MainColumn/GuiControls/RequestStreamImageButton
 @onready var _capture_again_button: Button = $RootMargin/MainColumn/GuiControls/CaptureAgainButton
@@ -353,6 +354,7 @@ func _try_verify_capture_result() -> void:
 	_step_ok("capture to_image materialization verified")
 
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
+	_refresh_member_inspection_strip(capture_result, expected_members)
 	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=initial verification" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
@@ -365,6 +367,56 @@ func _try_verify_capture_result() -> void:
 		_status_panel.force_refresh()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
+
+
+
+func _role_name(role: int) -> String:
+	if role == CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED:
+		return "default"
+	if role == CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET:
+		return "bracket"
+	return str(role)
+
+
+func _clear_member_inspection_strip() -> void:
+	if _member_strip_row == null:
+		return
+	for child in _member_strip_row.get_children():
+		child.queue_free()
+
+
+func _refresh_member_inspection_strip(capture_result, expected_members: Array) -> void:
+	_clear_member_inspection_strip()
+	if _member_strip_row == null or capture_result == null:
+		return
+	for i in range(expected_members.size()):
+		var expected_member: Dictionary = expected_members[i]
+		var image_member_materialized: Image = capture_result.to_image_member(i)
+		if image_member_materialized == null:
+			continue
+
+		var item_col := VBoxContainer.new()
+		item_col.custom_minimum_size = Vector2(150, 0)
+		item_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var preview := TextureRect.new()
+		preview.custom_minimum_size = Vector2(140, 78)
+		preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		preview.texture = ImageTexture.create_from_image(image_member_materialized)
+		item_col.add_child(preview)
+
+		var meta := Label.new()
+		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		meta.text = "idx=%d role=%s ev=%d" % [
+			int(expected_member.get("image_member_index", -1)),
+			_role_name(int(expected_member.get("role", -1))),
+			int(expected_member.get("exposure_compensation_milli_ev", 0)),
+		]
+		item_col.add_child(meta)
+
+		_member_strip_row.add_child(item_col)
 
 
 func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind: bool = false) -> void:
@@ -448,6 +500,7 @@ func _request_manual_capture() -> void:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
 
+	_clear_member_inspection_strip()
 	_inspection_capture_id = int(device.trigger_capture())
 	if _inspection_capture_id == 0:
 		_append_status("WARN: manual capture request rejected (capture_id=0)")
@@ -519,6 +572,7 @@ func _poll_inspection_capture_result() -> void:
 		_inspection_capture_id = 0
 		return
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
+	_refresh_member_inspection_strip(capture_result, _make_scene70_still_image_bundle_members())
 	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=manual capture" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
@@ -578,6 +632,7 @@ func _cleanup_and_quit(code: int) -> void:
 	_stream_texture_rect.texture = null
 	_requested_stream_texture_rect.texture = null
 	_capture_texture_rect.texture = null
+	_clear_member_inspection_strip()
 	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
