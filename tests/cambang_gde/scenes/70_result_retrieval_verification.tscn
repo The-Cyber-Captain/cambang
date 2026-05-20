@@ -113,6 +113,22 @@ stretch_mode = 5
 layout_mode = 2
 text = "waiting for capture result..."
 
+
+[node name="MemberInspectionStrip" type="PanelContainer" parent="RootMargin/MainColumn"]
+custom_minimum_size = Vector2(0, 120)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="StripScroll" type="ScrollContainer" parent="RootMargin/MainColumn/MemberInspectionStrip"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+horizontal_scroll_mode = 1
+vertical_scroll_mode = 0
+
+[node name="MembersRow" type="HBoxContainer" parent="RootMargin/MainColumn/MemberInspectionStrip/StripScroll"]
+layout_mode = 2
+theme_override_constants/separation = 8
 [node name="GuiControls" type="HBoxContainer" parent="RootMargin/MainColumn"]
 layout_mode = 2
 theme_override_constants/separation = 10
