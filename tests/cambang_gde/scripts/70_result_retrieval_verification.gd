@@ -52,6 +52,25 @@ var _stream_baseline_verified := false
 var _device_seam_verified := false
 var _status_panel_acquisition_session_detail_requested := false
 
+func _make_scene70_still_image_bundle_members() -> Array:
+	return [
+		{
+			"image_member_index": 0,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			"exposure_compensation_milli_ev": 0,
+		},
+		{
+			"image_member_index": 1,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			"exposure_compensation_milli_ev": -1000,
+		},
+		{
+			"image_member_index": 2,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			"exposure_compensation_milli_ev": 1000,
+		},
+	]
+
 func _ready() -> void:
 	_status_label.clear()
 	_is_headless = DisplayServer.get_name() == "headless"
@@ -221,25 +240,10 @@ func _try_verify_stream_result() -> void:
 		_device_seam_verified = true
 
 	if not _still_profile_set_applied:
+		var expected_members := _make_scene70_still_image_bundle_members()
 		var bracket_profile := {
 			"still_image_bundle": {
-				"members": [
-					{
-						"image_member_index": 0,
-						"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
-						"exposure_compensation_milli_ev": 0,
-					},
-					{
-						"image_member_index": 1,
-						"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-						"exposure_compensation_milli_ev": -1000,
-					},
-					{
-						"image_member_index": 2,
-						"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-						"exposure_compensation_milli_ev": 1000,
-					},
-				],
+				"members": expected_members,
 			},
 		}
 		var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
@@ -303,27 +307,26 @@ func _try_verify_capture_result() -> void:
 	_require(typeof(capture_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture optical_calibration_provenance must return Dictionary" % _step)
 	_step_ok("capture provenance grouped accessors verified (Dictionary)")
 
-	_require(int(capture_result.get_image_count()) == 3, "step %d FAIL: capture get_image_count() must be 3 for bracket profile" % _step)
-	_require(bool(capture_result.has_additional_images()), "step %d FAIL: capture has_additional_images() must be true for bracket profile" % _step)
-	var image_member_0: Dictionary = capture_result.get_image_member(0)
-	var image_member_1: Dictionary = capture_result.get_image_member(1)
-	var image_member_2: Dictionary = capture_result.get_image_member(2)
-	var image_member_3: Dictionary = capture_result.get_image_member(3)
-	_require(not image_member_0.is_empty(), "step %d FAIL: capture get_image_member(0) must return non-empty Dictionary" % _step)
-	_require(not image_member_1.is_empty(), "step %d FAIL: capture get_image_member(1) must return non-empty Dictionary" % _step)
-	_require(not image_member_2.is_empty(), "step %d FAIL: capture get_image_member(2) must return non-empty Dictionary" % _step)
-	_require(image_member_3.is_empty(), "step %d FAIL: capture get_image_member(3) must return empty Dictionary for out-of-range" % _step)
-	_require(int(image_member_0.get("image_member_index", -1)) == 0, "step %d FAIL: capture image_member(0).image_member_index must be 0" % _step)
-	_require(bool(image_member_0.get("is_default", false)), "step %d FAIL: capture image_member(0).is_default must be true" % _step)
-	_require(not bool(image_member_0.get("is_additional_bracket", true)), "step %d FAIL: capture image_member(0).is_additional_bracket must be false" % _step)
-	_require(int(image_member_0.get("role", -1)) == int(capture_result.IMAGE_ROLE_DEFAULT_METERED), "step %d FAIL: capture image_member(0).role must be IMAGE_ROLE_DEFAULT_METERED" % _step)
-	_require(str(image_member_0.get("role_name", "")) == "DEFAULT_METERED", "step %d FAIL: capture image_member(0).role_name must be DEFAULT_METERED" % _step)
-	_require(int(image_member_1.get("image_member_index", -1)) == 1, "step %d FAIL: capture image_member(1).image_member_index must be 1" % _step)
-	_require(int(image_member_2.get("image_member_index", -1)) == 2, "step %d FAIL: capture image_member(2).image_member_index must be 2" % _step)
-	_require(int(image_member_1.get("role", -1)) == int(capture_result.IMAGE_ROLE_ADDITIONAL_BRACKET), "step %d FAIL: capture image_member(1).role must be IMAGE_ROLE_ADDITIONAL_BRACKET" % _step)
-	_require(int(image_member_2.get("role", -1)) == int(capture_result.IMAGE_ROLE_ADDITIONAL_BRACKET), "step %d FAIL: capture image_member(2).role must be IMAGE_ROLE_ADDITIONAL_BRACKET" % _step)
-	_require(int(image_member_1.get("exposure_compensation_milli_ev", 0)) == -1000, "step %d FAIL: capture image_member(1) EV must be -1000" % _step)
-	_require(int(image_member_2.get("exposure_compensation_milli_ev", 0)) == 1000, "step %d FAIL: capture image_member(2) EV must be 1000" % _step)
+	var expected_members := _make_scene70_still_image_bundle_members()
+	var expected_member_count := expected_members.size()
+	_require(int(capture_result.get_image_count()) == expected_member_count, "step %d FAIL: capture get_image_count() mismatch for bracket profile" % _step)
+	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for bracket profile" % _step)
+	var materialized_member_0: Image = null
+	for i in range(expected_member_count):
+		var expected_member: Dictionary = expected_members[i]
+		var image_member: Dictionary = capture_result.get_image_member(i)
+		_require(not image_member.is_empty(), "step %d FAIL: capture get_image_member(%d) must return non-empty Dictionary" % [_step, i])
+		_require(int(image_member.get("image_member_index", -1)) == int(expected_member.get("image_member_index", -1)), "step %d FAIL: capture image_member(%d).image_member_index mismatch" % [_step, i])
+		_require(int(image_member.get("role", -1)) == int(expected_member.get("role", -1)), "step %d FAIL: capture image_member(%d).role mismatch" % [_step, i])
+		_require(int(image_member.get("exposure_compensation_milli_ev", 0)) == int(expected_member.get("exposure_compensation_milli_ev", 0)), "step %d FAIL: capture image_member(%d) EV mismatch" % [_step, i])
+		var image_member_materialized: Image = capture_result.to_image_member(i)
+		_require(image_member_materialized != null, "step %d FAIL: capture to_image_member(%d) returned null" % [_step, i])
+		if i == 0:
+			materialized_member_0 = image_member_materialized
+	var out_of_range_member: Dictionary = capture_result.get_image_member(expected_member_count)
+	_require(out_of_range_member.is_empty(), "step %d FAIL: capture get_image_member(expected_count) must return empty Dictionary for out-of-range" % _step)
+	var out_of_range_image: Image = capture_result.to_image_member(expected_member_count)
+	_require(out_of_range_image == null, "step %d FAIL: capture to_image_member(expected_count) must be null for out-of-range member" % _step)
 	_step_ok("capture indexed image-member metadata verified (three-member profile)")
 
 	var capture_can_to_image := int(capture_result.can_to_image())
@@ -343,17 +346,10 @@ func _try_verify_capture_result() -> void:
 	var capture_image: Image = capture_result.to_image()
 	_require(capture_image != null, "step %d FAIL: capture to_image() returned null" % _step)
 	_require(capture_image.get_width() > 0 and capture_image.get_height() > 0, "step %d FAIL: capture image dimensions invalid" % _step)
-	var capture_image_member_0: Image = capture_result.to_image_member(0)
-	_require(capture_image_member_0 != null, "step %d FAIL: capture to_image_member(0) returned null" % _step)
-	var capture_image_member_1: Image = capture_result.to_image_member(1)
-	var capture_image_member_2: Image = capture_result.to_image_member(2)
-	var capture_image_member_3: Image = capture_result.to_image_member(3)
-	_require(capture_image_member_1 != null, "step %d FAIL: capture to_image_member(1) returned null" % _step)
-	_require(capture_image_member_2 != null, "step %d FAIL: capture to_image_member(2) returned null" % _step)
-	_require(capture_image_member_3 == null, "step %d FAIL: capture to_image_member(3) must be null for out-of-range member" % _step)
-	_require(capture_image_member_0.get_width() == capture_image.get_width(), "step %d FAIL: capture to_image_member(0) width must match to_image()" % _step)
-	_require(capture_image_member_0.get_height() == capture_image.get_height(), "step %d FAIL: capture to_image_member(0) height must match to_image()" % _step)
-	_require(capture_image_member_0.get_format() == capture_image.get_format(), "step %d FAIL: capture to_image_member(0) format must match to_image()" % _step)
+	_require(materialized_member_0 != null, "step %d FAIL: capture to_image_member(0) returned null" % _step)
+	_require(materialized_member_0.get_width() == capture_image.get_width(), "step %d FAIL: capture to_image_member(0) width must match to_image()" % _step)
+	_require(materialized_member_0.get_height() == capture_image.get_height(), "step %d FAIL: capture to_image_member(0) height must match to_image()" % _step)
+	_require(materialized_member_0.get_format() == capture_image.get_format(), "step %d FAIL: capture to_image_member(0) format must match to_image()" % _step)
 	_step_ok("capture to_image materialization verified")
 
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)

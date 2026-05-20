@@ -309,6 +309,8 @@ func _cleanup_and_quit(code: int) -> void:
 	if _done:
 		return
 	_done = true
-	CamBANGServer.stop()
 	await get_tree().create_timer(10.0).timeout
+
+	CamBANGServer.stop()
+	await get_tree().create_timer(5.0).timeout
 	get_tree().quit(code)

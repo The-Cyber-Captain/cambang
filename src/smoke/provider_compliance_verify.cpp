@@ -67,12 +67,18 @@ bool parse_opts(int argc, char** argv, Options& opt) {
 struct EventRec {
   std::string tag;
   uint64_t id = 0;
+  uint64_t capture_id = 0;
   uint32_t type = 0;
   uint64_t owner_acquisition_session_id = 0;
   uint64_t owner_stream_id = 0;
   uint32_t pixel_sig = 0;
   uint64_t payload_hash = 0;
   size_t payload_size_bytes = 0;
+  uint32_t format_fourcc = 0;
+  double sampled_luma = 0.0;
+  uint8_t sample_r = 0;
+  uint8_t sample_g = 0;
+  uint8_t sample_b = 0;
   CaptureImageRouting capture_image_routing = CaptureImageRouting::DEFAULT_METERED;
   uint32_t capture_image_member_index = 0;
   int32_t capture_image_exposure_compensation_milli_ev = 0;
@@ -88,6 +94,12 @@ uint64_t fnv1a64_hash_bytes(const uint8_t* data, size_t size_bytes) {
     h *= kPrime;
   }
   return h;
+}
+
+double luma_from_rgb(uint8_t r, uint8_t g, uint8_t b) {
+  return (0.2126 * static_cast<double>(r)) +
+         (0.7152 * static_cast<double>(g)) +
+         (0.0722 * static_cast<double>(b));
 }
 
 struct RecorderCallbacks final : IProviderCallbacks {
@@ -112,6 +124,8 @@ struct RecorderCallbacks final : IProviderCallbacks {
 
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
+    ev.capture_id = frame.capture_id;
+    ev.format_fourcc = frame.format_fourcc;
     ev.ts = frame.capture_timestamp;
     if (frame.data && frame.size_bytes >= 4) {
       const uint8_t* p = static_cast<const uint8_t*>(frame.data);
@@ -124,6 +138,30 @@ struct RecorderCallbacks final : IProviderCallbacks {
       const uint8_t* p = static_cast<const uint8_t*>(frame.data);
       ev.payload_size_bytes = frame.size_bytes;
       ev.payload_hash = fnv1a64_hash_bytes(p, frame.size_bytes);
+      const bool valid_shape = (frame.width > 0 && frame.height > 0 && frame.stride_bytes >= frame.width * 4u);
+      const bool rgba_like = (frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA);
+      if (valid_shape && rgba_like) {
+        const uint32_t sx = frame.width / 2u;
+        const uint32_t sy = frame.height / 2u;
+        const size_t off = static_cast<size_t>(sy) * static_cast<size_t>(frame.stride_bytes) + static_cast<size_t>(sx) * 4u;
+        if (off + 3 < frame.size_bytes) {
+          const uint8_t c0 = p[off + 0];
+          const uint8_t c1 = p[off + 1];
+          const uint8_t c2 = p[off + 2];
+          uint8_t r = c0;
+          uint8_t g = c1;
+          uint8_t b = c2;
+          if (frame.format_fourcc == FOURCC_BGRA) {
+            b = c0;
+            g = c1;
+            r = c2;
+          }
+          ev.sample_r = r;
+          ev.sample_g = g;
+          ev.sample_b = b;
+          ev.sampled_luma = luma_from_rgb(r, g, b);
+        }
+      }
     }
     ev.capture_image_routing = frame.capture_image.routing;
     ev.capture_image_member_index = frame.capture_image.image_member_index;
@@ -1469,6 +1507,151 @@ bool run_synthetic_multi_member_still_sequence_check() {
   return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
 }
 
+bool run_synthetic_dynamic_still_bundle_shape_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() || !provider.open_device("synthetic:0", 144, 14401).ok()) {
+    std::cerr << "FAIL synthetic dynamic bundle setup failed\n";
+    return false;
+  }
+  auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.close_device(144);
+    (void)provider.shutdown();
+    return false;
+  };
+  auto run_capture_and_collect = [&](uint64_t capture_id,
+                                     const std::vector<int32_t>& member_evs,
+                                     std::vector<EventRec>& out_frames) -> bool {
+    CaptureRequest req{};
+    req.capture_id = capture_id;
+    req.device_instance_id = 144;
+    req.width = 64;
+    req.height = 64;
+    req.format_fourcc = FOURCC_RGBA;
+    req.still_image_bundle = make_default_metered_still_image_bundle();
+    for (size_t i = 1; i < member_evs.size(); ++i) {
+      req.still_image_bundle.members.push_back(CaptureStillImageMember{
+          static_cast<uint32_t>(i),
+          CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
+          member_evs[i]});
+    }
+    if (!is_valid_capture_still_image_bundle(req.still_image_bundle, provider.supports_multi_image_still_sequence())) {
+      return false;
+    }
+    if (!provider.trigger_capture(req).ok()) {
+      return false;
+    }
+    bool completed = false;
+    for (int iter = 0; iter < kMaxIters; ++iter) {
+      size_t matched_frames = 0;
+      completed = false;
+      for (const auto& ev : cb.events) {
+        if (ev.tag == "capture_completed" && ev.id == capture_id) {
+          completed = true;
+        }
+        if (ev.tag == "frame" &&
+            ev.capture_id == capture_id &&
+            ev.capture_image_member_index < member_evs.size() &&
+            ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
+          matched_frames++;
+        }
+      }
+      if (completed && matched_frames >= member_evs.size()) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    if (!completed) {
+      return false;
+    }
+    out_frames.clear();
+    for (const auto& ev : cb.events) {
+      if (ev.tag == "frame" &&
+          ev.capture_id == capture_id &&
+          ev.capture_image_member_index < member_evs.size() &&
+          ev.capture_image_exposure_compensation_milli_ev == member_evs[ev.capture_image_member_index]) {
+        out_frames.push_back(ev);
+      }
+    }
+    return out_frames.size() >= member_evs.size();
+  };
+
+  {
+    const std::vector<int32_t> evs{0};
+    std::vector<EventRec> frames;
+    if (!run_capture_and_collect(8101, evs, frames)) {
+      return fail_with_cleanup("FAIL synthetic dynamic one-member capture failed");
+    }
+  }
+  {
+    const std::vector<int32_t> evs{0, -1000, 2000};
+    std::vector<EventRec> frames;
+    if (!run_capture_and_collect(8102, evs, frames)) {
+      return fail_with_cleanup("FAIL synthetic dynamic asymmetric capture failed");
+    }
+    if (frames.size() < evs.size()) {
+      return fail_with_cleanup("FAIL synthetic dynamic asymmetric expected member count");
+    }
+    for (size_t i = 0; i < evs.size(); ++i) {
+      const auto& frame = frames[frames.size() - evs.size() + i];
+      const CaptureImageRouting expected_routing = (i == 0)
+          ? CaptureImageRouting::DEFAULT_METERED
+          : CaptureImageRouting::ADDITIONAL_BRACKET;
+      if (frame.capture_image_routing != expected_routing ||
+          frame.capture_image_member_index != i ||
+          frame.capture_image_exposure_compensation_milli_ev != evs[i]) {
+        return fail_with_cleanup("FAIL synthetic dynamic asymmetric member metadata mismatch");
+      }
+    }
+    const auto& f0 = frames[frames.size() - 3];
+    const auto& f1 = frames[frames.size() - 2];
+    const auto& f2 = frames[frames.size() - 1];
+    const double y0 = f0.sampled_luma;
+    const double y1 = f1.sampled_luma;
+    const double y2 = f2.sampled_luma;
+    if (!(y1 < y0 && y2 > y0)) {
+      std::cerr << "FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering"
+                << " [m0 idx=" << f0.capture_image_member_index << " ev=" << f0.capture_image_exposure_compensation_milli_ev
+                << " fmt=" << f0.format_fourcc << " luma=" << y0
+                << " rgb=(" << static_cast<int>(f0.sample_r) << "," << static_cast<int>(f0.sample_g) << "," << static_cast<int>(f0.sample_b) << ")]"
+                << " [m1 idx=" << f1.capture_image_member_index << " ev=" << f1.capture_image_exposure_compensation_milli_ev
+                << " fmt=" << f1.format_fourcc << " luma=" << y1
+                << " rgb=(" << static_cast<int>(f1.sample_r) << "," << static_cast<int>(f1.sample_g) << "," << static_cast<int>(f1.sample_b) << ")]"
+                << " [m2 idx=" << f2.capture_image_member_index << " ev=" << f2.capture_image_exposure_compensation_milli_ev
+                << " fmt=" << f2.format_fourcc << " luma=" << y2
+                << " rgb=(" << static_cast<int>(f2.sample_r) << "," << static_cast<int>(f2.sample_g) << "," << static_cast<int>(f2.sample_b) << ")]\n";
+      return fail_with_cleanup("FAIL synthetic dynamic asymmetric expected deterministic EV brightness ordering");
+    }
+  }
+  {
+    const std::vector<int32_t> evs{0, -2000, -1000, 1000, 2000};
+    std::vector<EventRec> frames;
+    if (!run_capture_and_collect(8103, evs, frames)) {
+      return fail_with_cleanup("FAIL synthetic dynamic large bundle capture failed");
+    }
+    if (frames.size() < evs.size()) {
+      return fail_with_cleanup("FAIL synthetic dynamic large bundle expected member count");
+    }
+    for (size_t i = 0; i < evs.size(); ++i) {
+      const auto& frame = frames[frames.size() - evs.size() + i];
+      if (frame.capture_image_member_index != i ||
+          frame.capture_image_exposure_compensation_milli_ev != evs[i]) {
+        return fail_with_cleanup("FAIL synthetic dynamic large bundle member order/metadata mismatch");
+      }
+    }
+  }
+  if (!provider.close_device(144).ok() || !provider.shutdown().ok()) {
+    return fail_with_cleanup("FAIL synthetic dynamic bundle teardown failed");
+  }
+  return assert_native_balance(cb.events, "synthetic_dynamic_still_bundle_shape");
+}
+
 bool run_core_synthetic_three_member_capture_result_check() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -1719,6 +1902,7 @@ int main(int argc, char** argv) {
   if (!run_synthetic_provider_direct_sanity_check()) return 1;
   if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
   if (!run_synthetic_multi_member_still_sequence_check()) return 1;
+  if (!run_synthetic_dynamic_still_bundle_shape_check()) return 1;
   if (!run_core_synthetic_three_member_capture_result_check()) return 1;
   if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
