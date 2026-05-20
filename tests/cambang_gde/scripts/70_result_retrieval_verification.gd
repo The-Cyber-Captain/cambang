@@ -363,6 +363,9 @@ func _try_verify_capture_result() -> void:
 		capture_result.get_height(),
 		capture_result.get_capture_id()
 	]
+	if _should_exercise_fixture_detail_visibility():
+		_append_status("INFO: fixture detail visibility exercise enabled (CAMBANG_SCENE70_EXERCISE_FIXTURE_DETAIL_VISIBILITY=1)")
+		_request_status_panel_acquisition_session_bundle_detail_visibility()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
 
@@ -482,6 +485,11 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 		if int(rec.get("device_instance_id", 0)) == device_instance_id:
 			return rec
 	return {}
+
+
+func _should_exercise_fixture_detail_visibility() -> bool:
+	var raw := OS.get_environment("CAMBANG_SCENE70_EXERCISE_FIXTURE_DETAIL_VISIBILITY")
+	return raw == "1"
 
 
 func _request_status_panel_acquisition_session_bundle_detail_visibility() -> void:
