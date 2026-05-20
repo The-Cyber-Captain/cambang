@@ -158,6 +158,45 @@
       ],
       "description": "Canonical stream stop reason tokens."
     },
+    "still_image_bundle_member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_member_index",
+        "role",
+        "role_name",
+        "exposure_compensation_milli_ev"
+      ],
+      "properties": {
+        "image_member_index": {
+          "type": "integer"
+        },
+        "role": {
+          "type": "integer"
+        },
+        "role_name": {
+          "type": "string"
+        },
+        "exposure_compensation_milli_ev": {
+          "type": "integer"
+        }
+      }
+    },
+    "still_image_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "members"
+      ],
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/still_image_bundle_member"
+          }
+        }
+      }
+    },
     "CamBANGRigState": {
       "type": "object",
       "additionalProperties": false,
@@ -256,7 +295,8 @@
         "warm_remaining_ms",
         "rebuild_count",
         "errors_count",
-        "last_error_code"
+        "last_error_code",
+        "still_image_bundle"
       ],
       "properties": {
         "hardware_id": {
@@ -306,6 +346,9 @@
         },
         "capture_format": {
           "$ref": "#/$defs/uint32"
+        },
+        "still_image_bundle": {
+          "$ref": "#/$defs/still_image_bundle"
         }
       }
     },
@@ -325,7 +368,8 @@
         "captures_failed",
         "last_capture_id",
         "last_capture_latency_ns",
-        "error_code"
+        "error_code",
+        "still_image_bundle"
       ],
       "properties": {
         "acquisition_session_id": {
@@ -366,6 +410,9 @@
         },
         "error_code": {
           "$ref": "#/$defs/int32"
+        },
+        "still_image_bundle": {
+          "$ref": "#/$defs/still_image_bundle"
         }
       }
     },
