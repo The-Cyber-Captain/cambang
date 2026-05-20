@@ -818,9 +818,9 @@ CamBANG’s release-facing image path is a **multi-representation, provider-adap
 
 For still capture, `CaptureResult` is image-member based.
 
-- The canonical minimum valid sequence is one member: index `0`, role
+- The canonical minimum valid image-member bundle is one member: index `0`, role
   `DEFAULT_METERED`, with exposure-compensation baseline `0` milli-eV.
-- Bracketed still capture uses the same sequence model with additional members at
+- Bracketed still capture uses the same image-member model with additional members at
   indices `1..N`, role `ADDITIONAL_BRACKET`.
 
 This means a one-image capture is the minimum valid still image bundle (ordered

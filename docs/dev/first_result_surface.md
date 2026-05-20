@@ -261,7 +261,7 @@ Not included:
 
 `CaptureResult` is the device-level still-capture result and is image-member based.
 
-The canonical minimum valid capture sequence is one image member:
+The canonical minimum valid image-member bundle is one image member:
 
 - member `0` with role `DEFAULT_METERED`
 

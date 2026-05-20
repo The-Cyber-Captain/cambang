@@ -12,16 +12,20 @@ for still-capture result assembly.
   - `CamBANGDevice.get_device_instance_id()` compatibility alias is removed.
   - No public `CamBANGServer.trigger_rig_capture(...)` API is exposed.
 - `CaptureResult` is device-level and has an explicit required default image.
-- Default-only still capture is the currently supported one-image case.
-- `additional_images` exists only as internal storage preparation and remains
-  unpopulated.
-- `build_default_image_capture_result(...)` is the current default-only
-  assembly seam.
+- `CaptureResult` uses the image-member model: required default member
+  (`DEFAULT_METERED`, index `0`) plus optional additional bracket members
+  (`ADDITIONAL_BRACKET`, indices `1..N`).
+- `additional_images` is used to retain additional image members where produced.
+- `build_default_image_capture_result(...)` remains the minimum one-member
+  assembly seam within the same image-member model.
 - `supports_multi_image_still_sequence()` is an internal provider capability
   seam for future non-default images beyond the default image.
 - Default-only capture remains on the existing materialization +
   `trigger_capture(...)` path and is intentionally not gated by
   `supports_multi_image_still_sequence()`.
+- Current implementation status: public/result-facing member behavior is covered
+  by Scene 70 (`tests/cambang_gde/scenes/70_result_retrieval_verification.tscn`)
+  and dispatcher/result-path smoke coverage.
 - Current implementation status: device-level `CaptureResult` availability is
   assembly-success gated: retained default image + `capture_completed` are both
   required for successful retrieval.
@@ -65,8 +69,6 @@ for still-capture result assembly.
 - `CaptureResult` should represent a completed image-bearing device-level
   still-capture result, not merely a retained payload observed before capture
   completion.
-- Default-only capture is the one-image case of the same assembly model
-  intended for future multi-image still capture.
 - `CaptureResultSet` for rig-triggered capture should be curated only after
   participating device captures have assembled or failed according to explicit
   policy.
