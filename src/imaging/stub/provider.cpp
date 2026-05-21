@@ -120,7 +120,7 @@ void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
   if (slot->owner) {
     slot->owner->frames_released_.fetch_add(1, std::memory_order_relaxed);
   }
-  slot->in_use = false;
+  slot->in_use.store(false, std::memory_order_release);
 }
 
 ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
@@ -325,7 +325,7 @@ ProviderResult StubProvider::start_stream(
       slot.owner = this;
       slot.stream_id = stream_id;
       slot.bytes.resize(total);
-      slot.in_use = false;
+      slot.in_use.store(false, std::memory_order_release);
     }
     st.pool_cursor = 0;
   }
@@ -426,8 +426,8 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     for (size_t probe = 0; probe < n; ++probe) {
       const size_t idx = (st.pool_cursor + probe) % n;
       auto& cand = st.pool[idx];
-      if (!cand.in_use) {
-        cand.in_use = true;
+      if (!cand.in_use.load(std::memory_order_acquire)) {
+        cand.in_use.store(true, std::memory_order_release);
         slot = &cand;
         st.pool_cursor = (idx + 1) % n;
         break;

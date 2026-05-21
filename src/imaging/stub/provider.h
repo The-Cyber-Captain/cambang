@@ -115,7 +115,7 @@ private:
       StubProvider* owner = nullptr;
       uint64_t stream_id = 0;
       std::vector<std::uint8_t> bytes;
-      bool in_use = false;
+      std::atomic<bool> in_use{false};
     };
     std::vector<BufferSlot> pool;
     size_t pool_cursor = 0;
