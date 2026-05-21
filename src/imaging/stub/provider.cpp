@@ -264,6 +264,10 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   if (st_it->second.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  // Quiescence barrier: ensure any previously posted frame callbacks/release hooks
+  // that may reference this stream's buffer-slot storage have completed before
+  // stream storage is erased.
+  strand_.flush();
   // Clear device link.
   const uint64_t dev_id = st_it->second.req.device_instance_id;
   auto dev_it = devices_.find(dev_id);
@@ -616,6 +620,10 @@ ProviderResult StubProvider::shutdown() {
       strand_.post_stream_stopped(stream_id, ProviderError::OK);
     }
   }
+
+  // Quiescence barrier: drain any in-flight frame callbacks/release hooks while
+  // stream slot storage is still alive.
+  strand_.flush();
 
   // Destroy all streams.
   for (auto it = streams_.begin(); it != streams_.end(); ) {
