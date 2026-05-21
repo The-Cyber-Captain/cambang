@@ -659,7 +659,9 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
   if (!synthetic.initialize(&cb).ok()) return false;
 
   std::vector<SyntheticEventType> dispatched;
-  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched](const SyntheticScheduledEvent& ev) {
+  std::mutex dispatched_mu;
+  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched, &dispatched_mu](const SyntheticScheduledEvent& ev) {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
     dispatched.push_back(ev.type);
   });
 
