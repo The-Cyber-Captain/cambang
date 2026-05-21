@@ -140,7 +140,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
         snap.rigs.reserve(in.rigs->all().size());
         for (const auto& [rig_id, rec] : in.rigs->all()) {
             (void)rig_id;
-            CamBANGRigState r;
+            RigState r;
             r.rig_id = rec.rig_id;
             r.name = rec.name;
             r.phase = rec.live ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
@@ -166,7 +166,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
     if (in.devices) {
         snap.devices.reserve(in.devices->all().size());
         for (const auto& [id, rec] : in.devices->all()) {
-            CamBANGDeviceState d;
+            DeviceState d;
             d.instance_id = id;
             d.hardware_id = rec.hardware_id;
             d.camera_spec_version = rec.camera_spec_version;
@@ -231,7 +231,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
     if (in.streams) {
         snap.streams.reserve(in.streams->all().size());
         for (const auto& [sid, rec] : in.streams->all()) {
-            CamBANGStreamState s;
+            StreamState s;
             s.stream_id = sid;
             s.device_instance_id = rec.device_instance_id;
             s.phase = rec.created ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;

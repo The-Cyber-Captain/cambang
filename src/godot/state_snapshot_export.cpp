@@ -192,7 +192,7 @@ static godot::Dictionary export_scoped_resource_telemetry(const ScopedResourceTe
   return d;
 }
 
-static godot::Dictionary export_rig(const CamBANGRigState& r) {
+static godot::Dictionary export_rig(const RigState& r) {
   godot::Dictionary d;
   d["rig_id"] = static_cast<uint64_t>(r.rig_id);
   d["name"] = gs(r.name);
@@ -224,7 +224,7 @@ static godot::Dictionary export_rig(const CamBANGRigState& r) {
   return d;
 }
 
-static godot::Dictionary export_device(const CamBANGDeviceState& s) {
+static godot::Dictionary export_device(const DeviceState& s) {
   godot::Dictionary d;
   d["hardware_id"] = gs(s.hardware_id);
   d["instance_id"] = static_cast<uint64_t>(s.instance_id);
@@ -257,7 +257,7 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   return d;
 }
 
-static godot::Dictionary export_stream(const CamBANGStreamState& s) {
+static godot::Dictionary export_stream(const StreamState& s) {
   godot::Dictionary d;
   d["stream_id"] = static_cast<uint64_t>(s.stream_id);
   d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);

@@ -63,7 +63,7 @@ struct CaptureStillImageBundleState {
     std::vector<CaptureStillImageMemberState> members;
 };
 
-struct CamBANGRigState {
+struct RigState {
     uint64_t rig_id = 0;
     std::string name;
 
@@ -90,7 +90,7 @@ struct CamBANGRigState {
     int32_t error_code = 0;
 };
 
-struct CamBANGDeviceState {
+struct DeviceState {
     std::string hardware_id;
     uint64_t instance_id = 0;
 
@@ -139,7 +139,7 @@ struct AcquisitionSessionState {
     int32_t error_code = 0;
 };
 
-struct CamBANGStreamState {
+struct StreamState {
     uint64_t stream_id = 0;
     uint64_t device_instance_id = 0;
 
@@ -227,10 +227,10 @@ struct CamBANGStateSnapshot {
 
     uint64_t imaging_spec_version = 0;
 
-    std::vector<CamBANGRigState> rigs;
-    std::vector<CamBANGDeviceState> devices;
+    std::vector<RigState> rigs;
+    std::vector<DeviceState> devices;
     std::vector<AcquisitionSessionState> acquisition_sessions;
-    std::vector<CamBANGStreamState> streams;
+    std::vector<StreamState> streams;
 
     std::vector<NativeObjectRecord> native_objects;
     std::vector<uint64_t> detached_root_ids;

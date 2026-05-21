@@ -274,10 +274,10 @@ CamBANGStateSnapshot {
 
   imaging_spec_version: uint64     // effective ImagingSpec version
 
-  rigs: Array<CamBANGRigState>
-  devices: Array<CamBANGDeviceState>
+  rigs: Array<RigState>
+  devices: Array<DeviceState>
   acquisition_sessions: Array<AcquisitionSessionState>
-  streams: Array<CamBANGStreamState>
+  streams: Array<StreamState>
 
   native_objects: Array<NativeObjectRecord>
 
@@ -390,13 +390,13 @@ deterministic baseline snapshot after `CamBANGServer.start()` completes.
 - Represents change lineage only.
 - Must not be used to infer configuration contents.
 
-### 6.1 `CamBANGRigState`
+### 6.1 `RigState`
 
 `capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
 profile for this rig.
 
 ``` text
-CamBANGRigState {
+RigState {
   rig_id: uint64
   name: String
 
@@ -424,13 +424,13 @@ CamBANGRigState {
 }
 ```
 
-### 6.2 `CamBANGDeviceState`
+### 6.2 `DeviceState`
 
 `capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
 profile for this device.
 
 ``` text
-CamBANGDeviceState {
+DeviceState {
   hardware_id: String
   instance_id: uint64
 
@@ -522,13 +522,13 @@ AcquisitionSessionState {
 }
 ```
 
-### 6.4 `CamBANGStreamState`
+### 6.4 `StreamState`
 
 A repeating stream. Each device supports at most **one active repeating
 stream** at a time (design choice).
 
 ``` text
-CamBANGStreamState {
+StreamState {
   stream_id: uint64
   device_instance_id: uint64
 

@@ -88,7 +88,7 @@ static bool has_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
   return false;
 }
 
-static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
+static const DeviceState* find_device(const CamBANGStateSnapshot& s, uint64_t device_id) {
   for (const auto& d : s.devices) {
     if (d.instance_id == device_id) {
       return &d;
@@ -97,7 +97,7 @@ static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& s, uint
   return nullptr;
 }
 
-static const CamBANGRigState* find_rig(const CamBANGStateSnapshot& s, uint64_t rig_id) {
+static const RigState* find_rig(const CamBANGStateSnapshot& s, uint64_t rig_id) {
   for (const auto& r : s.rigs) {
     if (r.rig_id == rig_id) {
       return &r;
@@ -106,7 +106,7 @@ static const CamBANGRigState* find_rig(const CamBANGStateSnapshot& s, uint64_t r
   return nullptr;
 }
 
-static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+static const StreamState* find_stream(const CamBANGStateSnapshot& s, uint64_t stream_id) {
   for (const auto& st : s.streams) {
     if (st.stream_id == stream_id) {
       return &st;

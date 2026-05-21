@@ -43,13 +43,13 @@
     "rigs": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/CamBANGRigState"
+        "$ref": "#/$defs/RigState"
       }
     },
     "devices": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/CamBANGDeviceState"
+        "$ref": "#/$defs/DeviceState"
       }
     },
     "acquisition_sessions": {
@@ -61,7 +61,7 @@
     "streams": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/CamBANGStreamState"
+        "$ref": "#/$defs/StreamState"
       }
     },
     "native_objects": {
@@ -197,7 +197,7 @@
         }
       }
     },
-    "CamBANGRigState": {
+    "RigState": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -276,7 +276,7 @@
         }
       }
     },
-    "CamBANGDeviceState": {
+    "DeviceState": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -416,7 +416,7 @@
         }
       }
     },
-    "CamBANGStreamState": {
+    "StreamState": {
       "type": "object",
       "additionalProperties": false,
       "required": [
