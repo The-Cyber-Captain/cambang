@@ -6,6 +6,7 @@
 #include <functional>
 #include <iostream>
 #include <mutex>
+#include <utility>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -27,6 +28,7 @@ namespace {
 
 struct Options {
   std::string external_scenario_file;
+  std::string only_check;
 };
 
 constexpr int kMaxIters = 500;
@@ -59,7 +61,8 @@ bool starts_with(const std::string& s, const std::string& prefix) {
 }
 
 void usage(const char* argv0) {
-  std::cerr << "Usage: " << argv0 << " [--external_scenario_file=<path>]\n";
+  std::cerr << "Usage: " << argv0
+            << " [--external_scenario_file=<path>] [--only_check=<name>]\n";
 }
 
 bool parse_opts(int argc, char** argv, Options& opt) {
@@ -71,6 +74,10 @@ bool parse_opts(int argc, char** argv, Options& opt) {
     }
     if (starts_with(a, "--external_scenario_file=")) {
       opt.external_scenario_file = a.substr(std::string("--external_scenario_file=").size());
+      continue;
+    }
+    if (starts_with(a, "--only_check=")) {
+      opt.only_check = a.substr(std::string("--only_check=").size());
       continue;
     }
     std::cerr << "Unknown arg: " << a << "\n";
@@ -2128,39 +2135,56 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // 1) Materialization / loader compliance.
-  if (!run_named_check("run_synthetic_scenario_materialization_check", [] { return run_synthetic_scenario_materialization_check(); })) return 1;
-  if (!run_named_check("run_synthetic_builtin_scenario_library_build_check", [] { return run_synthetic_builtin_scenario_library_build_check(); })) return 1;
-  if (!run_named_check("run_synthetic_external_scenario_loader_check", [] { return run_synthetic_external_scenario_loader_check(); })) return 1;
-  if (!run_named_check("run_synthetic_external_scenario_loader_negative_check", [] { return run_synthetic_external_scenario_loader_negative_check(); })) return 1;
+  using CheckFn = std::function<bool()>;
+  const std::vector<std::pair<const char*, CheckFn>> checks = {
+      {"run_synthetic_scenario_materialization_check", [] { return run_synthetic_scenario_materialization_check(); }},
+      {"run_synthetic_builtin_scenario_library_build_check", [] { return run_synthetic_builtin_scenario_library_build_check(); }},
+      {"run_synthetic_external_scenario_loader_check", [] { return run_synthetic_external_scenario_loader_check(); }},
+      {"run_synthetic_external_scenario_loader_negative_check", [] { return run_synthetic_external_scenario_loader_negative_check(); }},
+      {"run_synthetic_primitive_lifecycle_foundation_check", [] { return run_synthetic_primitive_lifecycle_foundation_check(); }},
+      {"run_clustered_strict_branch_check", [] { return run_clustered_strict_branch_check(); }},
+      {"run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); }},
+      {"run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); }},
+      {"run_synthetic_backing_capability_advertisement_check", [] { return run_synthetic_backing_capability_advertisement_check(); }},
+      {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
+      {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
+      {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
+      {"run_synthetic_still_only_acquisition_session_truth_check", [] { return run_synthetic_still_only_acquisition_session_truth_check(); }},
+      {"run_synthetic_multi_member_still_sequence_check", [] { return run_synthetic_multi_member_still_sequence_check(); }},
+      {"run_synthetic_dynamic_still_bundle_shape_check", [] { return run_synthetic_dynamic_still_bundle_shape_check(); }},
+      {"run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); }},
+      {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
+      {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
+  };
 
-  // 2) Primitive lifecycle foundation.
-  if (!run_named_check("run_synthetic_primitive_lifecycle_foundation_check", [] { return run_synthetic_primitive_lifecycle_foundation_check(); })) return 1;
+  if (!opt.only_check.empty()) {
+    if (opt.only_check == "run_external_scenario_file_execution_check") {
+      if (opt.external_scenario_file.empty()) {
+        std::cerr << "FAIL run_external_scenario_file_execution_check requires --external_scenario_file=<path>\n";
+        return 1;
+      }
+      if (!run_named_check("run_external_scenario_file_execution_check", [&] { return run_external_scenario_file_execution_check(opt.external_scenario_file); })) return 1;
+      std::cout << "PASS provider_compliance_verify\n";
+      return 0;
+    }
+    for (const auto& check : checks) {
+      if (opt.only_check == check.first) {
+        if (!run_named_check(check.first, check.second)) return 1;
+        std::cout << "PASS provider_compliance_verify\n";
+        return 0;
+      }
+    }
+    std::cerr << "Unknown --only_check value: " << opt.only_check << "\nAvailable check names:\n";
+    for (const auto& check : checks) {
+      std::cerr << "  " << check.first << "\n";
+    }
+    std::cerr << "  run_external_scenario_file_execution_check\n";
+    return 1;
+  }
 
-  // 3) Clustered strict/gated destructive sequencing interpretation.
-  if (!run_named_check("run_clustered_strict_branch_check", [] { return run_clustered_strict_branch_check(); })) return 1;
-  if (!run_named_check("run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); })) return 1;
-
-  // 4) Broker / host surface compliance.
-  if (!run_named_check("run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); })) return 1;
-
-  // 5) Synthetic backing capability advertisement seam checks.
-  if (!run_named_check("run_synthetic_backing_capability_advertisement_check", [] { return run_synthetic_backing_capability_advertisement_check(); })) return 1;
-
-  // 6) Synthetic frame/picture integration checks.
-  if (!run_named_check("run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); })) return 1;
-
-  // Additional provider direct sanity coverage retained.
-  if (!run_named_check("run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); })) return 1;
-  if (!run_named_check("run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); })) return 1;
-  if (!run_named_check("run_synthetic_still_only_acquisition_session_truth_check", [] { return run_synthetic_still_only_acquisition_session_truth_check(); })) return 1;
-  if (!run_named_check("run_synthetic_multi_member_still_sequence_check", [] { return run_synthetic_multi_member_still_sequence_check(); })) return 1;
-  if (!run_named_check("run_synthetic_dynamic_still_bundle_shape_check", [] { return run_synthetic_dynamic_still_bundle_shape_check(); })) return 1;
-  if (!run_named_check("run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); })) return 1;
-  if (!run_named_check("run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); })) return 1;
-  if (!run_named_check("run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); })) return 1;
-
-  // 7) External scenario file path (first-class, optional input).
+  for (const auto& check : checks) {
+    if (!run_named_check(check.first, check.second)) return 1;
+  }
   if (!opt.external_scenario_file.empty()) {
     if (!run_named_check("run_external_scenario_file_execution_check", [&] { return run_external_scenario_file_execution_check(opt.external_scenario_file); })) return 1;
   }
