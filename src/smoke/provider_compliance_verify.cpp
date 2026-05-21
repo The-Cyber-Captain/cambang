@@ -2127,6 +2127,9 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // Diagnostic order-isolation check: run stub sanity before synthetic-heavy checks.
+  if (!run_named_check("diagnostic_early_run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); })) return 1;
+
   // 1) Materialization / loader compliance.
   if (!run_named_check("run_synthetic_scenario_materialization_check", [] { return run_synthetic_scenario_materialization_check(); })) return 1;
   if (!run_named_check("run_synthetic_builtin_scenario_library_build_check", [] { return run_synthetic_builtin_scenario_library_build_check(); })) return 1;
