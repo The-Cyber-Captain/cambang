@@ -111,20 +111,26 @@ struct RecorderCallbacks final : IProviderCallbacks {
   std::vector<EventRec> events;
   std::unordered_map<uint64_t, uint32_t> native_type_by_id;
   std::unordered_map<uint64_t, uint64_t> native_owner_stream_by_id;
+  mutable std::mutex mu;
+
+  std::vector<EventRec> snapshot_events() const {
+    std::lock_guard<std::mutex> lk(mu);
+    return events;
+  }
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
   bool is_stream_display_demand_active(uint64_t) override { return false; }
 
-  void on_device_opened(uint64_t id) override { events.push_back({"device_opened", id}); }
-  void on_device_closed(uint64_t id) override { events.push_back({"device_closed", id}); }
-  void on_stream_created(uint64_t id) override { events.push_back({"stream_created", id}); }
-  void on_stream_destroyed(uint64_t id) override { events.push_back({"stream_destroyed", id}); }
-  void on_stream_started(uint64_t id) override { events.push_back({"stream_started", id}); }
-  void on_stream_stopped(uint64_t id, ProviderError) override { events.push_back({"stream_stopped", id}); }
-  void on_capture_started(uint64_t id, uint64_t) override { events.push_back({"capture_started", id}); }
-  void on_capture_completed(uint64_t id, uint64_t) override { events.push_back({"capture_completed", id}); }
-  void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { events.push_back({"capture_failed", id}); }
+  void on_device_opened(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_opened", id}); }
+  void on_device_closed(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_closed", id}); }
+  void on_stream_created(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_created", id}); }
+  void on_stream_destroyed(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_destroyed", id}); }
+  void on_stream_started(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_started", id}); }
+  void on_stream_stopped(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_stopped", id}); }
+  void on_capture_started(uint64_t id, uint64_t) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_started", id}); }
+  void on_capture_completed(uint64_t id, uint64_t) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_completed", id}); }
+  void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_failed", id}); }
 
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
@@ -175,19 +181,21 @@ struct RecorderCallbacks final : IProviderCallbacks {
         frame.capture_image.has_realized_exposure_compensation_milli_ev;
     ev.capture_image_realized_exposure_compensation_milli_ev =
         frame.capture_image.realized_exposure_compensation_milli_ev;
+    std::lock_guard<std::mutex> lk(mu);
     events.push_back(ev);
     if (frame.release) {
       frame.release(frame.release_user, &frame);
     }
   }
 
-  void on_device_error(uint64_t id, ProviderError) override { events.push_back({"device_error", id}); }
-  void on_stream_error(uint64_t id, ProviderError) override { events.push_back({"stream_error", id}); }
+  void on_device_error(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_error", id}); }
+  void on_stream_error(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_error", id}); }
   void on_native_object_created(const NativeObjectCreateInfo& info) override {
     EventRec ev{"native_created", info.native_id};
     ev.type = info.type;
     ev.owner_acquisition_session_id = info.owner_acquisition_session_id;
     ev.owner_stream_id = info.owner_stream_id;
+    std::lock_guard<std::mutex> lk(mu);
     native_type_by_id[info.native_id] = info.type;
     native_owner_stream_by_id[info.native_id] = info.owner_stream_id;
     events.push_back(ev);
@@ -202,6 +210,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
     if (owner_stream_it != native_owner_stream_by_id.end()) {
       ev.owner_stream_id = owner_stream_it->second;
     }
+    std::lock_guard<std::mutex> lk(mu);
     events.push_back(ev);
   }
 };
@@ -1577,7 +1586,8 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
     for (int iter = 0; iter < kMaxIters; ++iter) {
       size_t matched_frames = 0;
       completed = false;
-      for (const auto& ev : cb.events) {
+      const auto events_snapshot = cb.snapshot_events();
+      for (const auto& ev : events_snapshot) {
         if (ev.tag == "capture_completed" && ev.id == capture_id) {
           completed = true;
         }
@@ -1599,7 +1609,8 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
       return false;
     }
     out_frames.clear();
-    for (const auto& ev : cb.events) {
+    const auto events_snapshot = cb.snapshot_events();
+    for (const auto& ev : events_snapshot) {
       if (ev.tag == "frame" &&
           ev.capture_id == capture_id &&
           ev.capture_image_member_index < member_evs.size() &&
