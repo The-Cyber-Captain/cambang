@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -552,7 +553,9 @@ bool run_synthetic_external_scenario_loader_check() {
   if (!synthetic.initialize(&cb).ok()) return false;
 
   std::vector<SyntheticEventType> dispatched;
-  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched](const SyntheticScheduledEvent& ev) {
+  std::mutex dispatched_mu;
+  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched, &dispatched_mu](const SyntheticScheduledEvent& ev) {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
     dispatched.push_back(ev.type);
   });
 
@@ -665,10 +668,13 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
     (void)synthetic.shutdown();
     return false;
   }
-  if (!dispatched.empty()) {
-    std::cerr << "FAIL external scenario file dispatched before explicit start\n";
-    (void)synthetic.shutdown();
-    return false;
+  {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
+    if (!dispatched.empty()) {
+      std::cerr << "FAIL external scenario file dispatched before explicit start\n";
+      (void)synthetic.shutdown();
+      return false;
+    }
   }
 
   if (!synthetic.start_timeline_scenario_for_host().ok()) {
@@ -677,7 +683,12 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
   }
   synthetic.advance(max_at_ns + 1);
 
-  if (dispatched != expected_dispatch) {
+  std::vector<SyntheticEventType> dispatched_snapshot;
+  {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
+    dispatched_snapshot = dispatched;
+  }
+  if (dispatched_snapshot != expected_dispatch) {
     std::cerr << "FAIL external scenario file dispatch/order mismatch\n";
     (void)synthetic.shutdown();
     return false;
