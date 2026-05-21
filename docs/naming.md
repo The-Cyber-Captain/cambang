@@ -275,9 +275,9 @@ and exposed for polling/inspection.
 
 Records inside the snapshot that correspond to user-facing/runtime-facing state:
 
-- `CamBANGRigState`
-- `CamBANGDeviceState`
-- `CamBANGStreamState`
+- `RigState`
+- `DeviceState`
+- `StreamState`
 - `AcquisitionSessionState`
 
 Native/core objects created by the provider on behalf of CamBANG are tracked as registry records:

@@ -1118,7 +1118,7 @@ public:
                                     timeout_msg);
   }
 
-  static const CamBANGDeviceState* find_device(const CamBANGStateSnapshot& snap, uint64_t device_id) {
+  static const DeviceState* find_device(const CamBANGStateSnapshot& snap, uint64_t device_id) {
     for (const auto& device : snap.devices) {
       if (device.instance_id == device_id) {
         return &device;
@@ -1127,7 +1127,7 @@ public:
     return nullptr;
   }
 
-  static const CamBANGStreamState* find_stream(const CamBANGStateSnapshot& snap, uint64_t stream_id) {
+  static const StreamState* find_stream(const CamBANGStateSnapshot& snap, uint64_t stream_id) {
     for (const auto& stream : snap.streams) {
       if (stream.stream_id == stream_id) {
         return &stream;
