@@ -42,20 +42,6 @@ constexpr uint64_t kClusteredDeviceId = 121;
 constexpr uint64_t kClusteredRootId = 12201;
 constexpr uint64_t kClusteredStreamId = 122;
 
-template <typename Fn>
-bool run_named_check(const char* name, Fn&& fn) {
-  std::cout << "BEGIN " << name << "\n";
-  std::cout.flush();
-  const bool ok = fn();
-  if (ok) {
-    std::cout << "PASS " << name << "\n";
-  } else {
-    std::cout << "FAIL " << name << "\n";
-  }
-  std::cout.flush();
-  return ok;
-}
-
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
 }
@@ -2163,13 +2149,13 @@ int main(int argc, char** argv) {
         std::cerr << "FAIL run_external_scenario_file_execution_check requires --external_scenario_file=<path>\n";
         return 1;
       }
-      if (!run_named_check("run_external_scenario_file_execution_check", [&] { return run_external_scenario_file_execution_check(opt.external_scenario_file); })) return 1;
+      if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
       std::cout << "PASS provider_compliance_verify\n";
       return 0;
     }
     for (const auto& check : checks) {
       if (opt.only_check == check.first) {
-        if (!run_named_check(check.first, check.second)) return 1;
+        if (!check.second()) return 1;
         std::cout << "PASS provider_compliance_verify\n";
         return 0;
       }
@@ -2183,10 +2169,10 @@ int main(int argc, char** argv) {
   }
 
   for (const auto& check : checks) {
-    if (!run_named_check(check.first, check.second)) return 1;
+    if (!check.second()) return 1;
   }
   if (!opt.external_scenario_file.empty()) {
-    if (!run_named_check("run_external_scenario_file_execution_check", [&] { return run_external_scenario_file_execution_check(opt.external_scenario_file); })) return 1;
+    if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
   }
 
   std::cout << "PASS provider_compliance_verify\n";
