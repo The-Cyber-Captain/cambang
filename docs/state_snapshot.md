@@ -442,18 +442,22 @@ DeviceState {
   rig_id: uint64                         // 0 if not a rig member
 
   camera_spec_version: uint64            // effective CameraSpec version
-  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
-  capture_width: uint32
-  capture_height: uint32
-  capture_format: uint32                 // FourCC-style CamBANG pixel format
-  still_image_bundle: {
+  capture_profile: {
+    still: {
+      version: uint64                    // monotonic change lineage for the applied still capture profile
+      width: uint32
+      height: uint32
+      format: uint32                     // FourCC-style CamBANG pixel format
+      still_image_bundle: {
     members: Array<{
       image_member_index: uint32
       role: uint32
       role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
       intended_exposure_compensation_milli_ev: int32
     }>
-  }                                      // applied still-image bundle profile truth
+      }                                  // applied still-image bundle profile truth
+    }
+  }
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming
@@ -498,18 +502,22 @@ AcquisitionSessionState {
 
   phase: phase
 
-  capture_profile_version: uint64
-  capture_width: uint32
-  capture_height: uint32
-  capture_format: uint32
-  still_image_bundle: {
+  capture_profile: {
+    still: {
+      version: uint64
+      width: uint32
+      height: uint32
+      format: uint32
+      still_image_bundle: {
     members: Array<{
       image_member_index: uint32
       role: uint32
       role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
       intended_exposure_compensation_milli_ev: int32
     }>
-  }                                      // applied still-image bundle profile truth for this acquisition-session context
+      }                                  // still-image bundle profile truth latched for this acquisition-session context
+    }
+  }
 
   captures_triggered: uint64
   captures_completed: uint64

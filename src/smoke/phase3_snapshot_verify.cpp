@@ -1091,8 +1091,8 @@ static int test_capture_lifecycle_updates_live_acquisition_session_only() {
   }
   const auto& rec = it->second;
   if (rec.captures_triggered != 1 || rec.captures_completed != 1 || rec.captures_failed != 0 ||
-      rec.last_capture_id != 9002 || rec.capture_profile_version != 77 ||
-      rec.capture_width != 640 || rec.capture_height != 480 || rec.capture_format != FOURCC_RGBA) {
+      rec.last_capture_id != 9002 || rec.capture_profile.still.version != 77 ||
+      rec.capture_profile.still.width != 640 || rec.capture_profile.still.height != 480 || rec.capture_profile.still.format != FOURCC_RGBA) {
     std::cerr << "FAIL: capture lifecycle counters/profile did not integrate into acquisition session truth\n";
     return 1;
   }

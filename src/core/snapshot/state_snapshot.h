@@ -90,6 +90,18 @@ struct RigState {
     int32_t error_code = 0;
 };
 
+struct StillCaptureProfileState {
+    uint64_t version = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format = 0;
+    CaptureStillImageBundleState still_image_bundle{};
+};
+
+struct CaptureProfileState {
+    StillCaptureProfileState still{};
+};
+
 struct DeviceState {
     std::string hardware_id;
     uint64_t instance_id = 0;
@@ -101,11 +113,7 @@ struct DeviceState {
     uint64_t rig_id = 0;
 
     uint64_t camera_spec_version = 0;
-    uint64_t capture_profile_version = 0;
-    uint32_t capture_width = 0;
-    uint32_t capture_height = 0;
-    uint32_t capture_format = 0;
-    CaptureStillImageBundleState still_image_bundle{};
+    CaptureProfileState capture_profile{};
 
     uint32_t warm_hold_ms = 0;
     uint32_t warm_remaining_ms = 0;
@@ -123,11 +131,7 @@ struct AcquisitionSessionState {
 
     CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
 
-    uint64_t capture_profile_version = 0;
-    uint32_t capture_width = 0;
-    uint32_t capture_height = 0;
-    uint32_t capture_format = 0;
-    CaptureStillImageBundleState still_image_bundle{};
+    CaptureProfileState capture_profile{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;

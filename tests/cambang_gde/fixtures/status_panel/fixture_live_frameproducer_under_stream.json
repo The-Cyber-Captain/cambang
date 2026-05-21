@@ -59,14 +59,28 @@
         "engaged": false,
         "rig_id": 0,
         "camera_spec_version": 0,
-        "capture_profile_version": 0,
-        "capture_width": 0,
-        "capture_height": 0,
-        "capture_format": 0,
         "warm_hold_ms": 0,
         "warm_remaining_ms": 0,
         "rebuild_count": 0,
-        "last_error_code": 0
+        "last_error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 0,
+            "width": 0,
+            "height": 0,
+            "format": 0,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "streams": [
@@ -182,16 +196,30 @@
         "acquisition_session_id": 1,
         "device_instance_id": 1,
         "phase": "LIVE",
-        "capture_profile_version": 0,
-        "capture_width": 0,
-        "capture_height": 0,
-        "capture_format": 0,
         "captures_triggered": 0,
         "captures_completed": 0,
         "captures_failed": 0,
         "last_capture_id": 0,
         "last_capture_latency_ns": 0,
-        "error_code": 0
+        "error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 0,
+            "width": 0,
+            "height": 0,
+            "format": 0,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "scoped_resource_telemetry": []

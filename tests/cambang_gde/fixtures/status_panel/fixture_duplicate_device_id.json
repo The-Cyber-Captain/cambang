@@ -32,14 +32,28 @@
         "engaged": false,
         "rig_id": 0,
         "camera_spec_version": 0,
-        "capture_profile_version": 0,
-        "capture_width": 0,
-        "capture_height": 0,
-        "capture_format": 0,
         "warm_hold_ms": 0,
         "warm_remaining_ms": 0,
         "rebuild_count": 0,
-        "last_error_code": 0
+        "last_error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 0,
+            "width": 0,
+            "height": 0,
+            "format": 0,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        }
       },
       {
         "instance_id": 1,
@@ -50,14 +64,28 @@
         "engaged": false,
         "rig_id": 0,
         "camera_spec_version": 0,
-        "capture_profile_version": 0,
-        "capture_width": 0,
-        "capture_height": 0,
-        "capture_format": 0,
         "warm_hold_ms": 0,
         "warm_remaining_ms": 0,
         "rebuild_count": 0,
-        "last_error_code": 0
+        "last_error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 0,
+            "width": 0,
+            "height": 0,
+            "format": 0,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "streams": [],

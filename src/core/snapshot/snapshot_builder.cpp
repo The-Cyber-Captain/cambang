@@ -151,6 +151,7 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             r.capture_width = rec.capture_width;
             r.capture_height = rec.capture_height;
             r.capture_format = rec.capture_format;
+            r.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
             r.captures_triggered = rec.captures_triggered;
             r.captures_completed = rec.captures_completed;
             r.captures_failed = rec.captures_failed;
@@ -170,11 +171,11 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             d.instance_id = id;
             d.hardware_id = rec.hardware_id;
             d.camera_spec_version = rec.camera_spec_version;
-            d.capture_profile_version = rec.capture_profile_version;
-            d.capture_width = rec.capture_width;
-            d.capture_height = rec.capture_height;
-            d.capture_format = rec.capture_format;
-            d.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
+            d.capture_profile.still.version = rec.capture_profile_version;
+            d.capture_profile.still.width = rec.capture_width;
+            d.capture_profile.still.height = rec.capture_height;
+            d.capture_profile.still.format = rec.capture_format;
+            d.capture_profile.still.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
@@ -212,11 +213,11 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             s.acquisition_session_id = rec.acquisition_session_id;
             s.device_instance_id = rec.device_instance_id;
             s.phase = rec.phase;
-            s.capture_profile_version = rec.capture_profile_version;
-            s.capture_width = rec.capture_width;
-            s.capture_height = rec.capture_height;
-            s.capture_format = rec.capture_format;
-            s.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
+            s.capture_profile.still.version = rec.capture_profile_version;
+            s.capture_profile.still.width = rec.capture_width;
+            s.capture_profile.still.height = rec.capture_height;
+            s.capture_profile.still.format = rec.capture_format;
+            s.capture_profile.still.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
             s.captures_triggered = rec.captures_triggered;
             s.captures_completed = rec.captures_completed;
             s.captures_failed = rec.captures_failed;
