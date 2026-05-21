@@ -967,6 +967,9 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
     s.producing = false;
   }
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
+  // Drain queued frame callbacks before destructive runtime release of the
+  // stream-live GPU backing object they may still reference.
+  quiesce_provider_strand_before_stream_gpu_backing_release_();
   release_stream_live_gpu_backing_(s);
   return ProviderResult::success();
 }
@@ -1179,6 +1182,9 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   if (emit_stop_event && had_started) {
     strand_.post_stream_stopped(stream_id, stop_error);
   }
+  // Drain queued frame callbacks before destructive runtime release of the
+  // stream-live GPU backing object they may still reference.
+  quiesce_provider_strand_before_stream_gpu_backing_release_();
   release_stream_live_gpu_backing_(s);
   s.started = false;
   emit_native_destroy_(s.native_id);
@@ -1525,6 +1531,13 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
     lease->slot->in_use.store(false, std::memory_order_release);
   }
   delete lease;
+}
+
+void SyntheticProvider::quiesce_provider_strand_before_stream_gpu_backing_release_() {
+  if (!strand_.running()) {
+    return;
+  }
+  strand_.flush();
 }
 
 bool SyntheticProvider::ensure_stream_live_gpu_backing_(

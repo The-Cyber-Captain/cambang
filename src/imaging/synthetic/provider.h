@@ -216,6 +216,7 @@ private:
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
+  void quiesce_provider_strand_before_stream_gpu_backing_release_();
   bool ensure_stream_live_gpu_backing_(StreamState& s, uint32_t width, uint32_t height, uint32_t stride);
   void release_stream_live_gpu_backing_(StreamState& s);
   void emit_triage_trace_if_due_();
