@@ -1892,8 +1892,9 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
     std::cerr << "FAIL core synthetic mismatch callback trigger/teardown failed\n";
     return false;
   }
+  const auto callback_events = cb.snapshot_events();
   std::vector<EventRec> cap_frames;
-  for (const auto& e : cb.events) {
+  for (const auto& e : callback_events) {
     if (e.tag == "frame" && e.capture_id == cb_req.capture_id) {
       cap_frames.push_back(e);
     }
