@@ -1117,9 +1117,19 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     fv.capture_image.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
     fv.capture_image.has_realized_exposure_compensation_milli_ev = true;
     {
+      const auto realized_known_override_it =
+          cfg_.verification_has_realized_exposure_compensation_override_by_member_index.find(member.image_member_index);
+      if (realized_known_override_it !=
+              cfg_.verification_has_realized_exposure_compensation_override_by_member_index.end() &&
+          !realized_known_override_it->second) {
+        fv.capture_image.has_realized_exposure_compensation_milli_ev = false;
+      }
+    }
+    {
       const auto realized_override_it =
           cfg_.verification_realized_exposure_compensation_override_by_member_index.find(member.image_member_index);
-      if (realized_override_it != cfg_.verification_realized_exposure_compensation_override_by_member_index.end()) {
+      if (fv.capture_image.has_realized_exposure_compensation_milli_ev &&
+          realized_override_it != cfg_.verification_realized_exposure_compensation_override_by_member_index.end()) {
         fv.capture_image.realized_exposure_compensation_milli_ev = realized_override_it->second;
       } else {
         fv.capture_image.realized_exposure_compensation_milli_ev = fv.capture_image.applied_exposure_compensation_milli_ev;

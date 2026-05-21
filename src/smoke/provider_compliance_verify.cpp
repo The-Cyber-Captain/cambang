@@ -2045,6 +2045,128 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
   return true;
 }
 
+bool run_synthetic_still_bundle_capability_gate_contract_check() {
+  const CaptureStillImageBundle default_only = make_default_metered_still_image_bundle();
+  if (!is_valid_capture_still_image_bundle(default_only, false)) {
+    std::cerr << "FAIL still bundle capability gate: default-only bundle must remain valid when multi-image unsupported\n";
+    return false;
+  }
+
+  CaptureStillImageBundle multi = make_default_metered_still_image_bundle();
+  multi.members.push_back(CaptureStillImageMember{
+      1u,
+      CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
+      -1000});
+  if (is_valid_capture_still_image_bundle(multi, false)) {
+    std::cerr << "FAIL still bundle capability gate: multi-member bundle must be rejected when multi-image unsupported\n";
+    return false;
+  }
+  if (!is_valid_capture_still_image_bundle(multi, true)) {
+    std::cerr << "FAIL still bundle capability gate: multi-member bundle should be valid when multi-image supported\n";
+    return false;
+  }
+  return true;
+}
+
+bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL core synthetic realized-unknown runtime start failed\n";
+    return false;
+  }
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.verification_has_realized_exposure_compensation_override_by_member_index[2u] = false;
+  SyntheticProvider provider(cfg);
+  bool provider_initialized = false;
+  bool device_opened = false;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    if (device_opened) {
+      (void)provider.close_device(66);
+      device_opened = false;
+    }
+    if (provider_initialized) {
+      (void)provider.shutdown();
+      provider_initialized = false;
+    }
+    rt.stop();
+    return false;
+  };
+  rt.attach_provider(&provider);
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown provider init failed");
+  }
+  provider_initialized = true;
+  std::vector<CameraEndpoint> eps;
+  if (!provider.enumerate_endpoints(eps).ok() || eps.empty()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown enumerate failed");
+  }
+  const uint64_t device_id = 66;
+  if (!provider.open_device(eps[0].hardware_id, device_id, 6601).ok()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown open_device failed");
+  }
+  device_opened = true;
+
+  CaptureRequest req{};
+  for (int i = 0; i < 50; ++i) {
+    if (rt.materialize_capture_request(device_id, req)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (req.device_instance_id != device_id) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown materialize request failed");
+  }
+
+  req.capture_id = 9702;
+  req.still_image_bundle = make_default_metered_still_image_bundle();
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
+  if (!provider.trigger_capture(req).ok()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown trigger_capture failed");
+  }
+
+  SharedCaptureResultData result;
+  for (int i = 0; i < 50; ++i) {
+    result = rt.get_capture_result(req.capture_id, device_id);
+    if (result) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!result || result->image_member_count() != 3 || !result->has_additional_images()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown retained result missing/shape mismatch");
+  }
+  const auto* m0 = result->image_member_at(0);
+  const auto* m1 = result->image_member_at(1);
+  const auto* m2 = result->image_member_at(2);
+  if (!m0 || !m1 || !m2) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown retained members missing");
+  }
+  if (!m0->has_realized_exposure_compensation_milli_ev ||
+      !m1->has_realized_exposure_compensation_milli_ev ||
+      m0->realized_exposure_compensation_milli_ev != m0->applied_exposure_compensation_milli_ev ||
+      m1->realized_exposure_compensation_milli_ev != m1->applied_exposure_compensation_milli_ev) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown expected realized-known for members 0/1");
+  }
+  if (m2->has_realized_exposure_compensation_milli_ev) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown expected has_realized=false for member 2");
+  }
+
+  if (!provider.close_device(device_id).ok()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown close_device failed");
+  }
+  device_opened = false;
+  if (!provider.shutdown().ok()) {
+    return fail_with_cleanup("FAIL core synthetic realized-unknown provider shutdown failed");
+  }
+  provider_initialized = false;
+  rt.stop();
+  return true;
+}
+
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -2140,6 +2262,8 @@ int main(int argc, char** argv) {
       {"run_synthetic_dynamic_still_bundle_shape_check", [] { return run_synthetic_dynamic_still_bundle_shape_check(); }},
       {"run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); }},
       {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
+      {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
+      {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
   };
 

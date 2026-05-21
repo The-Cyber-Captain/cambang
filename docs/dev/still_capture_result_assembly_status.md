@@ -21,7 +21,16 @@ for still-capture result assembly.
 - `CaptureResult` uses the image-member model: required default member
   (`DEFAULT_METERED`, index `0`) plus optional additional bracket members
   (`ADDITIONAL_BRACKET`, indices `1..N`).
+- Member `0` validity constraints remain strict: role `DEFAULT_METERED`,
+  `image_member_index==0`, and
+  `applied_exposure_compensation_milli_ev==0`.
 - `additional_images` is used to retain additional image members where produced.
+- Retained additional members are a contiguous ordered prefix only; sparse,
+  gapped, duplicated, or out-of-order additional members are malformed and are
+  not retained.
+- Missing intended additional members are represented by absence; this tranche
+  does not fabricate replacement members and does not introduce public
+  per-member failure objects.
 - `build_default_image_capture_result(...)` remains the minimum one-member
   assembly seam within the same image-member model.
 - `supports_multi_image_still_sequence()` is an internal provider capability
@@ -40,6 +49,10 @@ for still-capture result assembly.
 - Current implementation status: `capture_completed` without retained default
   image and retained default image without terminal lifecycle do not produce
   successful retrievable `CaptureResult`.
+- Current implementation status: partial additional-member success is allowed;
+  when default member `0` is retained and capture terminal is `COMPLETED`, the
+  `CaptureResult` is retrievable and reflects only the actually retained
+  contiguous member prefix.
 - Current implementation status: for `capture_id` values with no cohort,
   `CaptureResultSet` retrieval keeps current non-rig behavior: assembly-success
   filtering over result-store candidates, then explicit accept-all placeholder
@@ -55,6 +68,8 @@ for still-capture result assembly.
 - Current implementation status: `capture_started` / `capture_completed` /
   `capture_failed` callbacks still update acquisition-session counters/latency
   in addition to device assembly tracking.
+- `get_image_count()` reports retained member count, not requested/intended
+  bundle count.
 - Scenario semantics remain staging-only for provider/world/topology/config.
   Capture triggering remains API/GDScript-driven (not a scenario timeline action).
 - Synthetic scenario rig topology support is active in schema v1:
@@ -132,3 +147,7 @@ for still-capture result assembly.
   (with `has_realized_exposure_compensation_milli_ev=true`) while normal
   `SyntheticProvider` behavior remains realized==applied when the verifier
   override seam is unset.
+- `supports_multi_image_still_sequence()` remains an internal capability gate
+  for multi-member still bundles only: default-only capture remains valid even
+  when capability is false, and multi-member authored bundles must be
+  rejected/admission-failed when capability is false.

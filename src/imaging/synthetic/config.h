@@ -75,6 +75,12 @@ struct SyntheticProviderConfig {
   // by deterministic verifier fixtures to prove applied-vs-realized divergence
   // representation without changing normal synthetic realization semantics.
   std::map<std::uint32_t, std::int32_t> verification_realized_exposure_compensation_override_by_member_index{};
+
+  // Verification-only realized-known presence override by image_member_index.
+  // When present and false, emitted still-member metadata reports realized EV
+  // unknown (`has_realized_exposure_compensation_milli_ev=false`) and does not
+  // rely on sentinel numeric values. Non-release verifier seam only.
+  std::map<std::uint32_t, bool> verification_has_realized_exposure_compensation_override_by_member_index{};
 };
 
 } // namespace cambang
