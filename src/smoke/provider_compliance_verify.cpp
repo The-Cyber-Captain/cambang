@@ -701,10 +701,11 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
   }
   if (dispatched_snapshot != expected_dispatch) {
     std::cerr << "FAIL external scenario file dispatch/order mismatch\n";
+    synthetic.set_timeline_request_dispatch_hook_for_host({});
     (void)synthetic.shutdown();
     return false;
   }
-
+  synthetic.set_timeline_request_dispatch_hook_for_host({});
   return synthetic.shutdown().ok();
 }
 
@@ -1253,18 +1254,19 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
   synthetic.advance(period_ns * 2);
 
-  const int f0 = find_frame_index_by_ts(cb.events, 0);
-  const int f1 = find_frame_index_by_ts(cb.events, period_ns);
-  const int f2 = find_frame_index_by_ts(cb.events, period_ns * 2);
+  const auto cb_events = cb.snapshot_events();
+  const int f0 = find_frame_index_by_ts(cb_events, 0);
+  const int f1 = find_frame_index_by_ts(cb_events, period_ns);
+  const int f2 = find_frame_index_by_ts(cb_events, period_ns * 2);
   if (f0 < 0 || f1 < 0 || f2 < 0) {
     std::cerr << "FAIL synthetic picture check frame evidence missing\n";
     (void)synthetic.shutdown();
     return false;
   }
 
-  const uint32_t sig0 = cb.events[static_cast<size_t>(f0)].pixel_sig;
-  const uint32_t sig1 = cb.events[static_cast<size_t>(f1)].pixel_sig;
-  const uint32_t sig2 = cb.events[static_cast<size_t>(f2)].pixel_sig;
+  const uint32_t sig0 = cb_events[static_cast<size_t>(f0)].pixel_sig;
+  const uint32_t sig1 = cb_events[static_cast<size_t>(f1)].pixel_sig;
+  const uint32_t sig2 = cb_events[static_cast<size_t>(f2)].pixel_sig;
   if (sig0 == sig1 || sig1 != sig2) {
     std::cerr << "FAIL synthetic picture check rendered appearance contract mismatch\n";
     (void)synthetic.shutdown();
@@ -1277,7 +1279,7 @@ bool run_synthetic_timeline_picture_appearance_check() {
       !synthetic.shutdown().ok()) {
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_picture_appearance");
+  return assert_native_balance(cb_events, "synthetic_picture_appearance");
 }
 
 bool run_stub_provider_sanity_check() {
@@ -1305,7 +1307,8 @@ bool run_stub_provider_sanity_check() {
     return false;
   }
 
-  return assert_native_balance(cb.events, "stub");
+  const auto cb_events = cb.snapshot_events();
+  return assert_native_balance(cb_events, "stub");
 }
 
 bool run_synthetic_provider_direct_sanity_check() {
@@ -1338,30 +1341,31 @@ bool run_synthetic_provider_direct_sanity_check() {
     return false;
   }
 
-  const int stopped = find_event_index(cb.events, "stream_stopped", req.stream_id);
-  const int destroyed = find_event_index(cb.events, "stream_destroyed", req.stream_id);
-  const int closed = find_event_index(cb.events, "device_closed", req.device_instance_id);
-  const int stream_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
+  const auto cb_events = cb.snapshot_events();
+  const int stopped = find_event_index(cb_events, "stream_stopped", req.stream_id);
+  const int destroyed = find_event_index(cb_events, "stream_destroyed", req.stream_id);
+  const int closed = find_event_index(cb_events, "device_closed", req.device_instance_id);
+  const int stream_native_id = find_native_create_id(cb_events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
   const int acquisition_session_native_id =
-      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int device_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Device), 0);
+      find_native_create_id_by_type(cb_events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int device_native_id = find_native_create_id(cb_events, static_cast<uint32_t>(NativeObjectType::Device), 0);
   const int gpu_backing_created = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_created",
       static_cast<uint32_t>(NativeObjectType::GpuBacking),
       req.stream_id);
   const int gpu_backing_destroyed = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_destroyed",
       static_cast<uint32_t>(NativeObjectType::GpuBacking),
       req.stream_id);
   const int frame_buffer_lease_created = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_created",
       static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
       req.stream_id);
   const int frame_buffer_lease_destroyed = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_destroyed",
       static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
       req.stream_id);
@@ -1388,7 +1392,7 @@ bool run_synthetic_provider_direct_sanity_check() {
     }
   }
 
-  return assert_native_balance(cb.events, "synthetic_direct");
+  return assert_native_balance(cb_events, "synthetic_direct");
 }
 
 bool run_synthetic_still_only_acquisition_session_truth_check() {
@@ -1421,12 +1425,13 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
 
-  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
-  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
+  const auto cb_events = cb.snapshot_events();
+  const int capture_started_ix = find_event_index(cb_events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb_events, "capture_completed", cap.capture_id);
   const int acq_native_id =
-      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
-  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+      find_native_create_id_by_type(cb_events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb_events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb_events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
 
   if (capture_started_ix < 0 || capture_completed_ix < 0 || acq_native_id < 0 ||
       acq_create_ix < 0 || acq_destroy_ix < 0) {
@@ -1440,7 +1445,7 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
   int frame_count = 0;
-  for (const auto& ev : cb.events) {
+  for (const auto& ev : cb_events) {
     if (ev.tag == "frame") {
       ++frame_count;
       if (ev.capture_image_routing != CaptureImageRouting::DEFAULT_METERED) {
@@ -1454,11 +1459,11 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
   if (count_events_by_tag_and_type(
-          cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
+          cb_events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
     std::cerr << "FAIL synthetic still-only unexpectedly realized stream native object\n";
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_still_only");
+  return assert_native_balance(cb_events, "synthetic_still_only");
 }
 
 bool run_synthetic_multi_member_still_sequence_check() {
@@ -1500,7 +1505,8 @@ bool run_synthetic_multi_member_still_sequence_check() {
   int started_count = 0;
   int completed_count = 0;
   std::vector<EventRec> frame_events;
-  for (const auto& ev : cb.events) {
+  const auto cb_events = cb.snapshot_events();
+  for (const auto& ev : cb_events) {
     if (ev.tag == "capture_started" && ev.id == cap.capture_id) ++started_count;
     if (ev.tag == "capture_completed" && ev.id == cap.capture_id) ++completed_count;
     if (ev.tag == "frame") frame_events.push_back(ev);
@@ -1539,7 +1545,7 @@ bool run_synthetic_multi_member_still_sequence_check() {
     std::cerr << "FAIL synthetic multi-member expected deterministic payload hash difference\n";
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
+  return assert_native_balance(cb_events, "synthetic_multi_member_still_sequence");
 }
 
 bool run_synthetic_dynamic_still_bundle_shape_check() {
@@ -1694,7 +1700,8 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
   if (!provider.close_device(144).ok() || !provider.shutdown().ok()) {
     return fail_with_cleanup("FAIL synthetic dynamic bundle teardown failed");
   }
-  return assert_native_balance(cb.events, "synthetic_dynamic_still_bundle_shape");
+  const auto cb_events = cb.snapshot_events();
+  return assert_native_balance(cb_events, "synthetic_dynamic_still_bundle_shape");
 }
 
 bool run_core_synthetic_three_member_capture_result_check() {
@@ -2070,15 +2077,16 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     return false;
   }
 
-  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
-  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
-  const int stream_destroy_ix = find_event_index(cb.events, "stream_destroyed", req.stream_id);
+  const auto cb_events = cb.snapshot_events();
+  const int capture_started_ix = find_event_index(cb_events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb_events, "capture_completed", cap.capture_id);
+  const int stream_destroy_ix = find_event_index(cb_events, "stream_destroyed", req.stream_id);
   const int acq_native_id =
-      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
-  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+      find_native_create_id_by_type(cb_events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb_events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb_events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
   const int acq_create_count = count_events_by_tag_and_type(
-      cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+      cb_events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
 
   if (capture_started_ix < 0 || capture_completed_ix < 0 || stream_destroy_ix < 0 ||
       acq_native_id < 0 || acq_create_ix < 0 || acq_destroy_ix < 0) {
@@ -2095,7 +2103,7 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     std::cerr << "FAIL synthetic stream+still ordering invalid\n";
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_stream_plus_still");
+  return assert_native_balance(cb_events, "synthetic_stream_plus_still");
 }
 
 }  // namespace
@@ -2135,9 +2143,7 @@ int main(int argc, char** argv) {
   if (!run_synthetic_multi_member_still_sequence_check()) return 1;
   if (!run_synthetic_dynamic_still_bundle_shape_check()) return 1;
   if (!run_core_synthetic_three_member_capture_result_check()) return 1;
-  // Diagnostic isolation: temporarily skip mismatch proof execution from main flow
-  // to determine whether running this case destabilizes subsequent external-scenario runs.
-  // Function remains compiled/available; only execution order is gated here.
+  if (!run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()) return 1;
   if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
   // 7) External scenario file path (first-class, optional input).
