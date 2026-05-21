@@ -1298,8 +1298,18 @@ bool run_synthetic_timeline_picture_appearance_check() {
 }
 
 bool run_stub_provider_sanity_check() {
+  std::cout << "TRACE stub: begin\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before RecorderCallbacks construction\n";
+  std::cout.flush();
   RecorderCallbacks cb;
+  std::cout << "TRACE stub: after RecorderCallbacks construction\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before StubProvider construction\n";
+  std::cout.flush();
   StubProvider provider;
+  std::cout << "TRACE stub: after StubProvider construction\n";
+  std::cout.flush();
 
   StreamRequest req{};
   req.stream_id = 11;
@@ -1311,17 +1321,58 @@ bool run_stub_provider_sanity_check() {
   req.profile.target_fps_min = 30;
   req.profile.target_fps_max = 30;
 
+  std::cout << "TRACE stub: before initialize\n";
+  std::cout.flush();
   if (!provider.initialize(&cb).ok()) return false;
+  std::cout << "TRACE stub: after initialize\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before open_device\n";
+  std::cout.flush();
   if (!provider.open_device("stub0", 1, 1001).ok()) return false;
+  std::cout << "TRACE stub: after open_device\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before create_stream\n";
+  std::cout.flush();
   if (!provider.create_stream(req).ok()) return false;
+  std::cout << "TRACE stub: after create_stream\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before start_stream\n";
+  std::cout.flush();
   if (!provider.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
+  std::cout << "TRACE stub: after start_stream\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before stop_stream\n";
+  std::cout.flush();
   if (!provider.stop_stream(req.stream_id).ok()) return false;
+  std::cout << "TRACE stub: after stop_stream\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before destroy_stream\n";
+  std::cout.flush();
   if (!provider.destroy_stream(req.stream_id).ok()) return false;
+  std::cout << "TRACE stub: after destroy_stream\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before close_device\n";
+  std::cout.flush();
   if (!provider.close_device(req.device_instance_id).ok()) return false;
+  std::cout << "TRACE stub: after close_device\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before shutdown\n";
+  std::cout.flush();
   if (!provider.shutdown().ok()) return false;
+  std::cout << "TRACE stub: after shutdown\n";
+  std::cout.flush();
 
+  std::cout << "TRACE stub: before snapshot_events\n";
+  std::cout.flush();
   const auto cb_events = cb.snapshot_events();
-  return assert_native_balance(cb_events, "stub");
+  std::cout << "TRACE stub: after snapshot_events\n";
+  std::cout.flush();
+  std::cout << "TRACE stub: before assert_native_balance\n";
+  std::cout.flush();
+  const bool ok = assert_native_balance(cb_events, "stub");
+  std::cout << "TRACE stub: after assert_native_balance\n";
+  std::cout.flush();
+  return ok;
 }
 
 bool run_synthetic_provider_direct_sanity_check() {
