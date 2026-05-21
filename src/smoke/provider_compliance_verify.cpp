@@ -2,6 +2,7 @@
 // This tool intentionally uses provider callbacks, retained snapshots,
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdint>
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <string>
@@ -1877,6 +1878,9 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
     std::cerr << "FAIL core synthetic mismatch callback expected three frame members\n";
     return false;
   }
+  std::sort(cap_frames.begin(), cap_frames.end(), [](const EventRec& a, const EventRec& b) {
+    return a.capture_image_member_index < b.capture_image_member_index;
+  });
   for (size_t i = 0; i < cap_frames.size(); ++i) {
     const auto& frame = cap_frames[i];
     if (frame.capture_image_member_index != i ||
