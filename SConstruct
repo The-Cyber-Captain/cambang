@@ -145,6 +145,12 @@ vars.Add(BoolVariable(
     "Build the GDExtension artifact (godot glue + selected provider).",
     True,
 ))
+vars.Add(EnumVariable(
+    "sanitize",
+    "Optional sanitizer instrumentation mode.",
+    "none",
+    allowed_values=["none", "asan", "asan_ubsan"],
+))
 
 tmp_env = Environment(variables=vars)
 Help(vars.GenerateHelpText(tmp_env))
@@ -209,6 +215,7 @@ if env["platform"] == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  provider={env['provider']} smoke={'yes' if env['smoke'] else 'no'} platform_validate={'yes' if env['platform_validate'] else 'no'}")
 print(f"  synthetic={'yes' if env['synthetic'] else 'no'}")
+print(f"  sanitize={env['sanitize']}")
 
 # Output dirs
 out_dir = "out"
@@ -243,6 +250,12 @@ def _unique_sources(seq):
 if env["smoke"]:
     smoke_env = env.Clone()
     smoke_env.Append(CPPDEFINES=["CAMBANG_INTERNAL_SMOKE=1"])
+    if env["sanitize"] == "asan":
+        smoke_env.Append(CXXFLAGS=["-g", "-O1", "-fno-omit-frame-pointer", "-fsanitize=address"])
+        smoke_env.Append(LINKFLAGS=["-fsanitize=address"])
+    elif env["sanitize"] == "asan_ubsan":
+        smoke_env.Append(CXXFLAGS=["-g", "-O1", "-fno-omit-frame-pointer", "-fsanitize=address,undefined"])
+        smoke_env.Append(LINKFLAGS=["-fsanitize=address,undefined"])
     if env["synthetic"]:
         smoke_env.Append(CPPDEFINES=["CAMBANG_ENABLE_SYNTHETIC=1"])
 
