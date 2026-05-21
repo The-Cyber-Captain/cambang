@@ -318,14 +318,16 @@ ProviderResult StubProvider::start_stream(
   constexpr size_t kPoolSize = 1200;
   const size_t row_bytes = static_cast<size_t>(w) * 4u;
   const size_t total = row_bytes * static_cast<size_t>(h);
-  if (st.pool.size() != kPoolSize || (st.pool.empty() ? 0 : st.pool[0].bytes.size()) != total) {
+  if (st.pool.size() != kPoolSize || (st.pool.empty() || !st.pool[0] ? 0 : st.pool[0]->bytes.size()) != total) {
     st.pool.clear();
-    st.pool.resize(kPoolSize);
-    for (auto& slot : st.pool) {
-      slot.owner = this;
-      slot.stream_id = stream_id;
-      slot.bytes.resize(total);
-      slot.in_use.store(false, std::memory_order_release);
+    st.pool.reserve(kPoolSize);
+    for (size_t i = 0; i < kPoolSize; ++i) {
+      auto slot = std::make_unique<StreamState::BufferSlot>();
+      slot->owner = this;
+      slot->stream_id = stream_id;
+      slot->bytes.resize(total);
+      slot->in_use.store(false, std::memory_order_release);
+      st.pool.push_back(std::move(slot));
     }
     st.pool_cursor = 0;
   }
@@ -425,10 +427,13 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     }
     for (size_t probe = 0; probe < n; ++probe) {
       const size_t idx = (st.pool_cursor + probe) % n;
-      auto& cand = st.pool[idx];
-      if (!cand.in_use.load(std::memory_order_acquire)) {
-        cand.in_use.store(true, std::memory_order_release);
-        slot = &cand;
+      auto* cand = st.pool[idx].get();
+      if (!cand) {
+        continue;
+      }
+      if (!cand->in_use.load(std::memory_order_acquire)) {
+        cand->in_use.store(true, std::memory_order_release);
+        slot = cand;
         st.pool_cursor = (idx + 1) % n;
         break;
       }

@@ -117,7 +117,7 @@ private:
       std::vector<std::uint8_t> bytes;
       std::atomic<bool> in_use{false};
     };
-    std::vector<BufferSlot> pool;
+    std::vector<std::unique_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
   };
 
