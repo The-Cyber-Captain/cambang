@@ -3,7 +3,6 @@
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdint>
 #include <algorithm>
-#include <fstream>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -40,17 +39,6 @@ constexpr uint64_t kLifecycleStreamId = 9103;
 constexpr uint64_t kClusteredDeviceId = 121;
 constexpr uint64_t kClusteredRootId = 12201;
 constexpr uint64_t kClusteredStreamId = 122;
-
-constexpr const char* kVerifierStepMarkerPath = "out/provider_compliance_verify.step";
-
-void write_stub_step_marker(const char* step) {
-  std::ofstream os(kVerifierStepMarkerPath, std::ios::out | std::ios::trunc);
-  if (!os.is_open()) {
-    return;
-  }
-  os << (step ? step : "(null)") << "\n";
-  os.flush();
-}
 
 template <typename Fn>
 bool run_named_check(const char* name, Fn&& fn) {
@@ -1310,13 +1298,8 @@ bool run_synthetic_timeline_picture_appearance_check() {
 }
 
 bool run_stub_provider_sanity_check() {
-  write_stub_step_marker("run_stub_provider_sanity_check: begin");
-  write_stub_step_marker("run_stub_provider_sanity_check: before RecorderCallbacks construction");
   RecorderCallbacks cb;
-  write_stub_step_marker("run_stub_provider_sanity_check: after RecorderCallbacks construction");
-  write_stub_step_marker("run_stub_provider_sanity_check: before StubProvider construction");
   StubProvider provider;
-  write_stub_step_marker("run_stub_provider_sanity_check: after StubProvider construction");
 
   StreamRequest req{};
   req.stream_id = 11;
@@ -1328,37 +1311,17 @@ bool run_stub_provider_sanity_check() {
   req.profile.target_fps_min = 30;
   req.profile.target_fps_max = 30;
 
-  write_stub_step_marker("run_stub_provider_sanity_check: before initialize");
   if (!provider.initialize(&cb).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after initialize");
-  write_stub_step_marker("run_stub_provider_sanity_check: before open_device");
   if (!provider.open_device("stub0", 1, 1001).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after open_device");
-  write_stub_step_marker("run_stub_provider_sanity_check: before create_stream");
   if (!provider.create_stream(req).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after create_stream");
-  write_stub_step_marker("run_stub_provider_sanity_check: before start_stream");
   if (!provider.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after start_stream");
-  write_stub_step_marker("run_stub_provider_sanity_check: before stop_stream");
   if (!provider.stop_stream(req.stream_id).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after stop_stream");
-  write_stub_step_marker("run_stub_provider_sanity_check: before destroy_stream");
   if (!provider.destroy_stream(req.stream_id).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after destroy_stream");
-  write_stub_step_marker("run_stub_provider_sanity_check: before close_device");
   if (!provider.close_device(req.device_instance_id).ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after close_device");
-  write_stub_step_marker("run_stub_provider_sanity_check: before shutdown");
   if (!provider.shutdown().ok()) return false;
-  write_stub_step_marker("run_stub_provider_sanity_check: after shutdown");
 
-  write_stub_step_marker("run_stub_provider_sanity_check: before snapshot_events");
   const auto cb_events = cb.snapshot_events();
-  write_stub_step_marker("run_stub_provider_sanity_check: after snapshot_events");
-  write_stub_step_marker("run_stub_provider_sanity_check: before assert_native_balance");
   const bool ok = assert_native_balance(cb_events, "stub");
-  write_stub_step_marker("run_stub_provider_sanity_check: after assert_native_balance");
   return ok;
 }
 
@@ -2164,9 +2127,6 @@ int main(int argc, char** argv) {
   if (!parse_opts(argc, argv, opt)) {
     return 2;
   }
-
-  // Diagnostic order-isolation check: run stub sanity before synthetic-heavy checks.
-  if (!run_named_check("diagnostic_early_run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); })) return 1;
 
   // 1) Materialization / loader compliance.
   if (!run_named_check("run_synthetic_scenario_materialization_check", [] { return run_synthetic_scenario_materialization_check(); })) return 1;

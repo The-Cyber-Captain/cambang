@@ -431,8 +431,12 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
       if (!cand) {
         continue;
       }
-      if (!cand->in_use.load(std::memory_order_acquire)) {
-        cand->in_use.store(true, std::memory_order_release);
+      bool expected = false;
+      if (cand->in_use.compare_exchange_strong(
+              expected,
+              true,
+              std::memory_order_acq_rel,
+              std::memory_order_acquire)) {
         slot = cand;
         st.pool_cursor = (idx + 1) % n;
         break;
