@@ -210,6 +210,9 @@ This is the primary maintainer check for provider-contract rules such as:
 - deterministic shutdown sequencing
 - synthetic ordering and timeline invariants
 - clustered destructive sequencing behavior under strict vs completion-gated modes
+- verifier-only still-capture metadata divergence proof for Case B
+  (`applied_exposure_compensation_milli_ev` differs from
+  `realized_exposure_compensation_milli_ev` on a successfully emitted member)
 
 ### What it proves for synthetic timeline destructive sequencing
 

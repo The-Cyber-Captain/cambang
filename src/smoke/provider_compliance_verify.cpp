@@ -1835,6 +1835,173 @@ bool run_core_synthetic_three_member_capture_result_check() {
   return true;
 }
 
+bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check() {
+  // First, verify callback metadata divergence on direct provider callbacks.
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.verification_realized_exposure_compensation_override_by_member_index[2u] = 750;
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", 6500, 65001).ok()) {
+    std::cerr << "FAIL core synthetic mismatch callback provider init/open failed\n";
+    return false;
+  }
+  CaptureRequest cb_req{};
+  cb_req.capture_id = 9700;
+  cb_req.device_instance_id = 6500;
+  cb_req.width = 64;
+  cb_req.height = 64;
+  cb_req.format_fourcc = FOURCC_RGBA;
+  cb_req.still_image_bundle = make_default_metered_still_image_bundle();
+  cb_req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  cb_req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
+  if (!provider.trigger_capture(cb_req).ok() ||
+      !provider.close_device(6500).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL core synthetic mismatch callback trigger/teardown failed\n";
+    return false;
+  }
+  std::vector<EventRec> cap_frames;
+  for (const auto& e : cb.events) {
+    if (e.tag == "frame" && e.capture_id == cb_req.capture_id) {
+      cap_frames.push_back(e);
+    }
+  }
+  if (cap_frames.size() != 3) {
+    std::cerr << "FAIL core synthetic mismatch callback expected three frame members\n";
+    return false;
+  }
+  for (size_t i = 0; i < cap_frames.size(); ++i) {
+    const auto& frame = cap_frames[i];
+    if (frame.capture_image_member_index != i ||
+        !frame.capture_image_has_realized_exposure_compensation_milli_ev) {
+      std::cerr << "FAIL core synthetic mismatch callback member index/realized-presence mismatch\n";
+      return false;
+    }
+  }
+  if (cap_frames[0].capture_image_applied_exposure_compensation_milli_ev != 0 ||
+      cap_frames[0].capture_image_realized_exposure_compensation_milli_ev != 0 ||
+      cap_frames[1].capture_image_applied_exposure_compensation_milli_ev != -1000 ||
+      cap_frames[1].capture_image_realized_exposure_compensation_milli_ev != -1000 ||
+      cap_frames[2].capture_image_applied_exposure_compensation_milli_ev != 1000 ||
+      cap_frames[2].capture_image_realized_exposure_compensation_milli_ev != 750 ||
+      cap_frames[2].capture_image_realized_exposure_compensation_milli_ev ==
+          cap_frames[2].capture_image_applied_exposure_compensation_milli_ev) {
+    std::cerr << "FAIL core synthetic mismatch callback member EV truth mismatch\n";
+    return false;
+  }
+
+  // Then verify retained/Core result metadata divergence with normal shape/order.
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL core synthetic mismatch runtime start failed\n";
+    return false;
+  }
+  SyntheticProvider core_provider(cfg);
+  bool provider_initialized = false;
+  bool device_opened = false;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    if (device_opened) {
+      (void)core_provider.close_device(65);
+      device_opened = false;
+    }
+    if (provider_initialized) {
+      (void)core_provider.shutdown();
+      provider_initialized = false;
+    }
+    rt.stop();
+    return false;
+  };
+  rt.attach_provider(&core_provider);
+  if (!core_provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch provider init failed");
+  }
+  provider_initialized = true;
+  std::vector<CameraEndpoint> eps;
+  if (!core_provider.enumerate_endpoints(eps).ok() || eps.empty()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch enumerate failed");
+  }
+
+  const uint64_t device_id = 65;
+  if (!core_provider.open_device(eps[0].hardware_id, device_id, 6501).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch open_device failed");
+  }
+  device_opened = true;
+
+  CaptureRequest req{};
+  for (int i = 0; i < 50; ++i) {
+    if (rt.materialize_capture_request(device_id, req)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (req.device_instance_id != device_id) {
+    return fail_with_cleanup("FAIL core synthetic mismatch materialize request failed");
+  }
+
+  req.capture_id = 9701;
+  req.still_image_bundle = make_default_metered_still_image_bundle();
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
+  if (!core_provider.trigger_capture(req).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch trigger_capture failed");
+  }
+
+  SharedCaptureResultData result;
+  for (int i = 0; i < 50; ++i) {
+    result = rt.get_capture_result(req.capture_id, device_id);
+    if (result) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!result) {
+    return fail_with_cleanup("FAIL core synthetic mismatch result missing");
+  }
+  if (result->image_member_count() != 3 || !result->has_additional_images()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch member-count/additional-image contract mismatch");
+  }
+  const auto* m0 = result->image_member_at(0);
+  const auto* m1 = result->image_member_at(1);
+  const auto* m2 = result->image_member_at(2);
+  if (!m0 || !m1 || !m2) {
+    return fail_with_cleanup("FAIL core synthetic mismatch retained members missing");
+  }
+  if (m0->applied_exposure_compensation_milli_ev != 0 ||
+      !m0->has_realized_exposure_compensation_milli_ev ||
+      m0->realized_exposure_compensation_milli_ev != m0->applied_exposure_compensation_milli_ev ||
+      m1->applied_exposure_compensation_milli_ev != -1000 ||
+      !m1->has_realized_exposure_compensation_milli_ev ||
+      m1->realized_exposure_compensation_milli_ev != m1->applied_exposure_compensation_milli_ev ||
+      m2->applied_exposure_compensation_milli_ev != 1000 ||
+      !m2->has_realized_exposure_compensation_milli_ev ||
+      m2->realized_exposure_compensation_milli_ev != 750 ||
+      m2->realized_exposure_compensation_milli_ev == m2->applied_exposure_compensation_milli_ev) {
+    return fail_with_cleanup("FAIL core synthetic mismatch retained member EV truth mismatch");
+  }
+  if (result->default_image.payload.bytes.empty() ||
+      result->additional_images[0].payload.bytes.empty() ||
+      result->additional_images[1].payload.bytes.empty()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch expected non-empty payloads");
+  }
+
+  if (!core_provider.close_device(device_id).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch close_device failed");
+  }
+  device_opened = false;
+  if (!core_provider.shutdown().ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch provider shutdown failed");
+  }
+  provider_initialized = false;
+  rt.stop();
+  return true;
+}
+
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -1939,6 +2106,7 @@ int main(int argc, char** argv) {
   if (!run_synthetic_multi_member_still_sequence_check()) return 1;
   if (!run_synthetic_dynamic_still_bundle_shape_check()) return 1;
   if (!run_core_synthetic_three_member_capture_result_check()) return 1;
+  if (!run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()) return 1;
   if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
 
   // 7) External scenario file path (first-class, optional input).

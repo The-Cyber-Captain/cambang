@@ -126,3 +126,9 @@ for still-capture result assembly.
 - Unsupported/restricted/negative capability cases should be tested via spec
   fixtures, `StubProvider`, or verifier-only fixtures, not normal
   `SyntheticProvider` personality modes.
+- `provider_compliance_verify` now includes a verifier-only Case B proof where
+  one successfully emitted still-image member reports
+  `applied_exposure_compensation_milli_ev != realized_exposure_compensation_milli_ev`
+  (with `has_realized_exposure_compensation_milli_ev=true`) while normal
+  `SyntheticProvider` behavior remains realized==applied when the verifier
+  override seam is unset.

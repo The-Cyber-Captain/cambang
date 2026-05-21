@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 
 #include "imaging/synthetic/scenario.h"
 #include "pixels/pattern/pattern_registry.h"
@@ -68,6 +69,12 @@ struct SyntheticProviderConfig {
   // Verification-only advertisement override. Non-release behavior.
   SyntheticVerificationBackingAdvertisementOverride verification_backing_advertisement_override =
       SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth;
+
+  // Verification-only realized EV override by image_member_index for still
+  // capture metadata emission. This is intentionally non-release behavior used
+  // by deterministic verifier fixtures to prove applied-vs-realized divergence
+  // representation without changing normal synthetic realization semantics.
+  std::map<std::uint32_t, std::int32_t> verification_realized_exposure_compensation_override_by_member_index{};
 };
 
 } // namespace cambang
