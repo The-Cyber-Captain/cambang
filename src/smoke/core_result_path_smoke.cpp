@@ -113,6 +113,12 @@ int main() {
   out_of_order.capture_timestamp_ns = 2005;
   out_of_order.payload = capture_result_with_bracket->default_image.payload;
   assert(!store.append_additional_capture_image(77, 100, out_of_order));
+  CoreCaptureResultData::ImageMemberData duplicate_index{};
+  duplicate_index.image_member_index = 1;
+  duplicate_index.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+  duplicate_index.capture_timestamp_ns = 2006;
+  duplicate_index.payload = capture_result_with_bracket->default_image.payload;
+  assert(!store.append_additional_capture_image(77, 100, duplicate_index));
   assert(!store.append_additional_capture_image(999, 100, bracket));
 
   auto capture_set = store.get_capture_result_set(77);

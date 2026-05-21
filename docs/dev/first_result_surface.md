@@ -330,6 +330,14 @@ Godot-facing `CamBANGCaptureResult` now exposes indexed image-member access:
 `get_image_member(index)` returns Dictionary metadata for the selected member, including `applied_exposure_compensation_milli_ev` and provider-realized exposure truth (`has_realized_exposure_compensation_milli_ev`, `realized_exposure_compensation_milli_ev`).
 Invalid/out-of-range access returns an empty Dictionary.
 
+`get_image_count()` reports retained member count only. It does not imply that
+all authored/intended members from an upstream still-image bundle were
+successfully retained.
+
+In this tranche, missing additional intended members are represented by
+absence from retained image members. No sparse `additional_images` model and no
+public per-member failure object are introduced.
+
 `to_image_member(index)` explicitly materializes the selected member where
 supported.
 

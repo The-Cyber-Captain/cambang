@@ -437,6 +437,27 @@ A retained image under a Capture Result may use one or more retained or material
 
 A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, capture timestamp, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
 
+For the current still-capture bracket tranche:
+
+- member `0` is required and is the default metered member identity;
+- additional bracket members are optional members under the same Capture Result;
+- retained additional members must remain a contiguous ordered prefix (`1..K`);
+- malformed sparse/gapped/duplicate/non-sequential additional output is rejected
+  rather than normalized into sparse member retention;
+- missing intended additional members are represented by absence, not fabricated
+  members and not public per-member failure objects.
+
+Provider-reported exposure truth is preserved at the per-member boundary:
+
+- `applied_exposure_compensation_milli_ev` is provider execution truth;
+- realized exposure truth is represented by
+  `has_realized_exposure_compensation_milli_ev` +
+  `realized_exposure_compensation_milli_ev`;
+- unknown realized exposure uses `has_realized_exposure_compensation_milli_ev=false`
+  (no sentinel numeric value);
+- `realized_exposure_compensation_milli_ev != applied_exposure_compensation_milli_ev`
+  remains representable when `has_realized_exposure_compensation_milli_ev=true`.
+
 ## 10.4 Capture Result Set semantics
 
 A **Capture Result Set** is the rig/Core-curated grouping of selected device Capture Results for a rig-triggered synchronised capture. Capture Result Set curation is distinct from the definition of Capture Result.

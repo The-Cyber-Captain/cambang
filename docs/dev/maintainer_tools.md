@@ -213,6 +213,12 @@ This is the primary maintainer check for provider-contract rules such as:
 - verifier-only still-capture metadata divergence proof for Case B
   (`applied_exposure_compensation_milli_ev` differs from
   `realized_exposure_compensation_milli_ev` on a successfully emitted member)
+- verifier-only still-capture realized-unknown propagation proof for Case C
+  (`has_realized_exposure_compensation_milli_ev=false` survives provider →
+  Core retained result truth)
+- still-image-bundle capability-gate checks proving:
+  - default-only bundle validity is not gated by multi-member capability
+  - multi-member authored bundle rejection when multi-member capability is false
 
 ### What it proves for synthetic timeline destructive sequencing
 
