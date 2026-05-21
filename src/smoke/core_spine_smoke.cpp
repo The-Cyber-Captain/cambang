@@ -752,7 +752,7 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
            d.still_image_bundle.members.size() == 1 &&
            d.still_image_bundle.members[0].image_member_index == 0 &&
            d.still_image_bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
-           d.still_image_bundle.members[0].exposure_compensation_milli_ev == 0;
+           d.still_image_bundle.members[0].intended_exposure_compensation_milli_ev == 0;
   });
   if (!default_bundle_ready) {
     std::cerr << "Expected default snapshot still_image_bundle with one DEFAULT_METERED member\n";
@@ -807,9 +807,9 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
       const auto& m0 = d.still_image_bundle.members[0];
       const auto& m1 = d.still_image_bundle.members[1];
       const auto& m2 = d.still_image_bundle.members[2];
-      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.exposure_compensation_milli_ev == 0 &&
-             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.exposure_compensation_milli_ev == -1000 &&
-             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.exposure_compensation_milli_ev == 1000;
+      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.intended_exposure_compensation_milli_ev == 0 &&
+             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.intended_exposure_compensation_milli_ev == -1000 &&
+             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.intended_exposure_compensation_milli_ev == 1000;
     }
     return false;
   });
@@ -875,9 +875,9 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
       const auto& m0 = a.still_image_bundle.members[0];
       const auto& m1 = a.still_image_bundle.members[1];
       const auto& m2 = a.still_image_bundle.members[2];
-      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.exposure_compensation_milli_ev == 0 &&
-             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.exposure_compensation_milli_ev == -1000 &&
-             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.exposure_compensation_milli_ev == 1000;
+      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.intended_exposure_compensation_milli_ev == 0 &&
+             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.intended_exposure_compensation_milli_ev == -1000 &&
+             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.intended_exposure_compensation_milli_ev == 1000;
     }
     return false;
   });

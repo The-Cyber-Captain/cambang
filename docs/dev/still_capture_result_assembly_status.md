@@ -5,6 +5,12 @@ for still-capture result assembly.
 
 ## Current accepted state
 
+
+- Exposure-compensation terminology is split for clarity:
+  - `intended_exposure_compensation_milli_ev` = authored still-image-bundle intent.
+  - `applied_exposure_compensation_milli_ev` = provider execution/result-member identity.
+  - `has_realized_exposure_compensation_milli_ev` + `realized_exposure_compensation_milli_ev` = provider-observed effective truth when known.
+  - Unknown realized truth uses the presence flag (`has_realized_* = false`), never a sentinel value.
 - Godot-facing rig capture API is active:
   - `CamBANGServer.get_rig(rig_id)` returns `CamBANGRig`.
   - `CamBANGRig` exposes `get_id()` and `trigger_capture()`.

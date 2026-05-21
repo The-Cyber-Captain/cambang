@@ -68,7 +68,9 @@ struct CoreCaptureResultData {
   struct ImageMemberData {
     uint32_t image_member_index = 0;
     ImageMemberRole role = ImageMemberRole::DEFAULT_METERED;
-    int32_t exposure_compensation_milli_ev = 0;
+    int32_t applied_exposure_compensation_milli_ev = 0;
+    bool has_realized_exposure_compensation_milli_ev = false;
+    int32_t realized_exposure_compensation_milli_ev = 0;
     uint64_t capture_timestamp_ns = 0;
     CoreResultPayloadCpuPacked payload{};
 

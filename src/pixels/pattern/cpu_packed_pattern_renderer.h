@@ -76,7 +76,7 @@ private:
 
   void apply_frame_index_offsets(const PatternSpec& spec, const PatternRenderTarget& dst, uint64_t frame_index) const;
   void apply_moving_bar(const PatternSpec& spec, const PatternRenderTarget& dst, uint64_t frame_index) const;
-  void apply_exposure_compensation(const PatternRenderTarget& dst, int32_t exposure_compensation_milli_ev) const;
+  void apply_exposure_compensation(const PatternRenderTarget& dst, int32_t applied_exposure_compensation_milli_ev) const;
 
   static inline void write_px(uint8_t* p, PatternSpec::PackedFormat fmt, uint8_t r, uint8_t g, uint8_t b, uint8_t a) noexcept {
     if (fmt == PatternSpec::PackedFormat::RGBA8) {

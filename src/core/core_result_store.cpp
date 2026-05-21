@@ -183,9 +183,13 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
   // accepted as the CaptureResult default image.
   capture_result->default_image.image_member_index = 0;
   capture_result->default_image.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
-  capture_result->default_image.exposure_compensation_milli_ev =
-      frame.capture_image.exposure_compensation_milli_ev;
-  if (capture_result->default_image.exposure_compensation_milli_ev != 0) {
+  capture_result->default_image.applied_exposure_compensation_milli_ev =
+      frame.capture_image.applied_exposure_compensation_milli_ev;
+  capture_result->default_image.has_realized_exposure_compensation_milli_ev =
+      frame.capture_image.has_realized_exposure_compensation_milli_ev;
+  capture_result->default_image.realized_exposure_compensation_milli_ev =
+      frame.capture_image.realized_exposure_compensation_milli_ev;
+  if (capture_result->default_image.applied_exposure_compensation_milli_ev != 0) {
     return nullptr;
   }
   capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;

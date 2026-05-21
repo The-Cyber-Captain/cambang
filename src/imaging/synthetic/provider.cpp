@@ -1078,9 +1078,9 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     if (!gpu_ok) {
       std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
     }
-    if (member.exposure_compensation_milli_ev != 0) {
+    if (member.intended_exposure_compensation_milli_ev != 0) {
       PatternRenderOptions render_options{};
-      render_options.exposure_compensation_milli_ev = member.exposure_compensation_milli_ev;
+      render_options.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
       PatternRenderTarget member_dst{};
       member_dst.data = bytes->data();
       member_dst.size_bytes = bytes->size();
@@ -1111,7 +1111,9 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
         ? CaptureImageRouting::DEFAULT_METERED
         : CaptureImageRouting::ADDITIONAL_BRACKET;
     fv.capture_image.image_member_index = member.image_member_index;
-    fv.capture_image.exposure_compensation_milli_ev = member.exposure_compensation_milli_ev;
+    fv.capture_image.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
+    fv.capture_image.has_realized_exposure_compensation_milli_ev = true;
+    fv.capture_image.realized_exposure_compensation_milli_ev = fv.capture_image.applied_exposure_compensation_milli_ev;
     fv.data = bytes->data();
     fv.size_bytes = bytes->size();
     fv.stride_bytes = stride;

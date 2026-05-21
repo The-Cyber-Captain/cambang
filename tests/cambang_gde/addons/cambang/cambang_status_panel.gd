@@ -5753,7 +5753,7 @@ func _build_still_image_bundle_member_tokens(members: Array) -> String:
 		var role_name := str(m.get("role_name", ""))
 		if role_name.is_empty():
 			role_name = str(m.get("role", -1))
-		var ev := int(m.get("exposure_compensation_milli_ev", 0))
+		var ev := int(m.get("intended_exposure_compensation_milli_ev", 0))
 		toks.append("%d:%s:%d" % [idx, role_name, ev])
 	return ",".join(toks)
 

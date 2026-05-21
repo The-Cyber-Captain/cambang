@@ -68,12 +68,12 @@ bool parse_still_image_bundle_dict(const godot::Dictionary& profile,
       return false;
     }
     const godot::Dictionary md = mv;
-    if (!md.has("image_member_index") || !md.has("role") || !md.has("exposure_compensation_milli_ev")) {
+    if (!md.has("image_member_index") || !md.has("role") || !md.has("intended_exposure_compensation_milli_ev")) {
       out_error = godot::ERR_INVALID_PARAMETER;
       return false;
     }
     const godot::Variant idx_v = md.get("image_member_index", godot::Variant());
-    const godot::Variant ev_v = md.get("exposure_compensation_milli_ev", godot::Variant());
+    const godot::Variant ev_v = md.get("intended_exposure_compensation_milli_ev", godot::Variant());
     if (idx_v.get_type() != godot::Variant::INT || ev_v.get_type() != godot::Variant::INT) {
       out_error = godot::ERR_INVALID_PARAMETER;
       return false;
@@ -86,7 +86,7 @@ bool parse_still_image_bundle_dict(const godot::Dictionary& profile,
     CaptureStillImageMember member{};
     member.image_member_index = static_cast<uint32_t>(int64_t(idx_v));
     member.role = role;
-    member.exposure_compensation_milli_ev = static_cast<int32_t>(int64_t(ev_v));
+    member.intended_exposure_compensation_milli_ev = static_cast<int32_t>(int64_t(ev_v));
     out_sequence.members.push_back(member);
   }
   out_error = godot::OK;

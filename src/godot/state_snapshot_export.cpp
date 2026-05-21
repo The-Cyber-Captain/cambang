@@ -244,7 +244,7 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
     md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
     md["role"] = static_cast<int64_t>(m.role);
     md["role_name"] = capture_still_image_member_role_name(m.role);
-    md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
+    md["intended_exposure_compensation_milli_ev"] = static_cast<int64_t>(m.intended_exposure_compensation_milli_ev);
     members.push_back(md);
   }
   bundle["members"] = members;
@@ -301,7 +301,7 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
     item["image_member_index"] = static_cast<int>(m.image_member_index);
     item["role"] = static_cast<int>(m.role);
     item["role_name"] = capture_still_image_member_role_name(m.role);
-    item["exposure_compensation_milli_ev"] = static_cast<int>(m.exposure_compensation_milli_ev);
+    item["intended_exposure_compensation_milli_ev"] = static_cast<int>(m.intended_exposure_compensation_milli_ev);
     members.append(item);
   }
   bundle["members"] = members;

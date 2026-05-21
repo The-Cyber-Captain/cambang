@@ -58,17 +58,17 @@ func _make_scene70_still_image_bundle_members() -> Array:
 		{
 			"image_member_index": 0,
 			"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
-			"exposure_compensation_milli_ev": 0,
+			"intended_exposure_compensation_milli_ev": 0,
 		},
 		{
 			"image_member_index": 1,
 			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			"exposure_compensation_milli_ev": -1000,
+			"intended_exposure_compensation_milli_ev": -1000,
 		},
 		{
 			"image_member_index": 2,
 			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			"exposure_compensation_milli_ev": 1000,
+			"intended_exposure_compensation_milli_ev": 1000,
 		},
 	]
 
@@ -319,7 +319,10 @@ func _try_verify_capture_result() -> void:
 		_require(not image_member.is_empty(), "step %d FAIL: capture get_image_member(%d) must return non-empty Dictionary" % [_step, i])
 		_require(int(image_member.get("image_member_index", -1)) == int(expected_member.get("image_member_index", -1)), "step %d FAIL: capture image_member(%d).image_member_index mismatch" % [_step, i])
 		_require(int(image_member.get("role", -1)) == int(expected_member.get("role", -1)), "step %d FAIL: capture image_member(%d).role mismatch" % [_step, i])
-		_require(int(image_member.get("exposure_compensation_milli_ev", 0)) == int(expected_member.get("exposure_compensation_milli_ev", 0)), "step %d FAIL: capture image_member(%d) EV mismatch" % [_step, i])
+		var expected_intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
+		_require(int(image_member.get("applied_exposure_compensation_milli_ev", 0)) == expected_intended_ev, "step %d FAIL: capture image_member(%d) applied EV mismatch" % [_step, i])
+		_require(bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)), "step %d FAIL: capture image_member(%d) realized EV must be present in synthetic normal mode" % [_step, i])
+		_require(int(image_member.get("realized_exposure_compensation_milli_ev", 0)) == int(image_member.get("applied_exposure_compensation_milli_ev", 0)), "step %d FAIL: capture image_member(%d) realized EV must equal applied EV in synthetic normal mode" % [_step, i])
 		var image_member_materialized: Image = capture_result.to_image_member(i)
 		_require(image_member_materialized != null, "step %d FAIL: capture to_image_member(%d) returned null" % [_step, i])
 		if i == 0:
@@ -407,12 +410,20 @@ func _refresh_member_inspection_strip(capture_result, expected_members: Array) -
 		preview.texture = ImageTexture.create_from_image(image_member_materialized)
 		item_col.add_child(preview)
 
+		var image_member: Dictionary = capture_result.get_image_member(i)
+		var intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
+		var applied_ev := int(image_member.get("applied_exposure_compensation_milli_ev", 0))
+		var realized_tag := "unknown"
+		if bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)):
+			realized_tag = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
 		var meta := Label.new()
 		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		meta.text = "idx=%d role=%s ev=%d" % [
+		meta.text = "idx=%d role=%s i=%d a=%d r=%s" % [
 			int(expected_member.get("image_member_index", -1)),
 			_role_name(int(expected_member.get("role", -1))),
-			int(expected_member.get("exposure_compensation_milli_ev", 0)),
+			intended_ev,
+			applied_ev,
+			realized_tag,
 		]
 		item_col.add_child(meta)
 

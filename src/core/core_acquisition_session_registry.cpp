@@ -13,7 +13,7 @@ bool same_bundle_members(const CaptureStillImageBundle& a, const CaptureStillIma
     const auto& bm = b.members[i];
     if (am.image_member_index != bm.image_member_index ||
         am.role != bm.role ||
-        am.exposure_compensation_milli_ev != bm.exposure_compensation_milli_ev) {
+        am.intended_exposure_compensation_milli_ev != bm.intended_exposure_compensation_milli_ev) {
       return false;
     }
   }

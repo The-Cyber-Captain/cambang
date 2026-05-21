@@ -469,7 +469,7 @@ godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t devic
     md["role_name"] = (m.role == CaptureStillImageMemberRole::DEFAULT_METERED)
         ? godot::String("DEFAULT_METERED")
         : godot::String("ADDITIONAL_BRACKET");
-    md["exposure_compensation_milli_ev"] = static_cast<int64_t>(m.exposure_compensation_milli_ev);
+    md["intended_exposure_compensation_milli_ev"] = static_cast<int64_t>(m.intended_exposure_compensation_milli_ev);
     members.push_back(md);
   }
   seq["members"] = members;

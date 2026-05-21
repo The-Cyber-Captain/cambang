@@ -1077,7 +1077,7 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
           const auto& b = still_image_bundle.members[i];
           if (a.image_member_index != b.image_member_index ||
               a.role != b.role ||
-              a.exposure_compensation_milli_ev != b.exposure_compensation_milli_ev) {
+              a.intended_exposure_compensation_milli_ev != b.intended_exposure_compensation_milli_ev) {
             same_sequence = false;
             break;
           }

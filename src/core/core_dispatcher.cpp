@@ -288,7 +288,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     const bool is_additional_bracket =
         p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
     const uint32_t frame_member_index = p.frame.capture_image.image_member_index;
-    const int32_t frame_member_ev = p.frame.capture_image.exposure_compensation_milli_ev;
+    const int32_t frame_member_applied_ev = p.frame.capture_image.applied_exposure_compensation_milli_ev;
+    const bool frame_member_has_realized_ev = p.frame.capture_image.has_realized_exposure_compensation_milli_ev;
+    const int32_t frame_member_realized_ev = p.frame.capture_image.realized_exposure_compensation_milli_ev;
     if (result_store_) {
       const bool lifecycle_allows_retention =
           result_retention_allowed_ ? result_retention_allowed_() : true;
@@ -302,7 +304,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           CoreCaptureResultData::ImageMemberData image_member{};
           image_member.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
           image_member.image_member_index = frame_member_index;
-          image_member.exposure_compensation_milli_ev = frame_member_ev;
+          image_member.applied_exposure_compensation_milli_ev = frame_member_applied_ev;
+          image_member.has_realized_exposure_compensation_milli_ev = frame_member_has_realized_ev;
+          image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
           image_member.capture_timestamp_ns = integrated_ts_ns;
           if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
             retained_for_result = result_store_->append_additional_capture_image(
