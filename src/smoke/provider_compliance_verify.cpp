@@ -2,8 +2,11 @@
 // This tool intentionally uses provider callbacks, retained snapshots,
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdint>
+#include <algorithm>
 #include <functional>
 #include <iostream>
+#include <mutex>
+#include <utility>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -25,6 +28,7 @@ namespace {
 
 struct Options {
   std::string external_scenario_file;
+  std::string only_check;
 };
 
 constexpr int kMaxIters = 500;
@@ -43,7 +47,8 @@ bool starts_with(const std::string& s, const std::string& prefix) {
 }
 
 void usage(const char* argv0) {
-  std::cerr << "Usage: " << argv0 << " [--external_scenario_file=<path>]\n";
+  std::cerr << "Usage: " << argv0
+            << " [--external_scenario_file=<path>] [--only_check=<name>]\n";
 }
 
 bool parse_opts(int argc, char** argv, Options& opt) {
@@ -55,6 +60,10 @@ bool parse_opts(int argc, char** argv, Options& opt) {
     }
     if (starts_with(a, "--external_scenario_file=")) {
       opt.external_scenario_file = a.substr(std::string("--external_scenario_file=").size());
+      continue;
+    }
+    if (starts_with(a, "--only_check=")) {
+      opt.only_check = a.substr(std::string("--only_check=").size());
       continue;
     }
     std::cerr << "Unknown arg: " << a << "\n";
@@ -109,20 +118,26 @@ struct RecorderCallbacks final : IProviderCallbacks {
   std::vector<EventRec> events;
   std::unordered_map<uint64_t, uint32_t> native_type_by_id;
   std::unordered_map<uint64_t, uint64_t> native_owner_stream_by_id;
+  mutable std::mutex mu;
+
+  std::vector<EventRec> snapshot_events() const {
+    std::lock_guard<std::mutex> lk(mu);
+    return events;
+  }
 
   uint64_t allocate_native_id(NativeObjectType) override { return next_native_id++; }
   uint64_t core_monotonic_now_ns() override { return 0; }
   bool is_stream_display_demand_active(uint64_t) override { return false; }
 
-  void on_device_opened(uint64_t id) override { events.push_back({"device_opened", id}); }
-  void on_device_closed(uint64_t id) override { events.push_back({"device_closed", id}); }
-  void on_stream_created(uint64_t id) override { events.push_back({"stream_created", id}); }
-  void on_stream_destroyed(uint64_t id) override { events.push_back({"stream_destroyed", id}); }
-  void on_stream_started(uint64_t id) override { events.push_back({"stream_started", id}); }
-  void on_stream_stopped(uint64_t id, ProviderError) override { events.push_back({"stream_stopped", id}); }
-  void on_capture_started(uint64_t id, uint64_t) override { events.push_back({"capture_started", id}); }
-  void on_capture_completed(uint64_t id, uint64_t) override { events.push_back({"capture_completed", id}); }
-  void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { events.push_back({"capture_failed", id}); }
+  void on_device_opened(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_opened", id}); }
+  void on_device_closed(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_closed", id}); }
+  void on_stream_created(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_created", id}); }
+  void on_stream_destroyed(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_destroyed", id}); }
+  void on_stream_started(uint64_t id) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_started", id}); }
+  void on_stream_stopped(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_stopped", id}); }
+  void on_capture_started(uint64_t id, uint64_t) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_started", id}); }
+  void on_capture_completed(uint64_t id, uint64_t) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_completed", id}); }
+  void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_failed", id}); }
 
   void on_frame(const FrameView& frame) override {
     EventRec ev{"frame", 0};
@@ -173,24 +188,27 @@ struct RecorderCallbacks final : IProviderCallbacks {
         frame.capture_image.has_realized_exposure_compensation_milli_ev;
     ev.capture_image_realized_exposure_compensation_milli_ev =
         frame.capture_image.realized_exposure_compensation_milli_ev;
+    std::lock_guard<std::mutex> lk(mu);
     events.push_back(ev);
     if (frame.release) {
       frame.release(frame.release_user, &frame);
     }
   }
 
-  void on_device_error(uint64_t id, ProviderError) override { events.push_back({"device_error", id}); }
-  void on_stream_error(uint64_t id, ProviderError) override { events.push_back({"stream_error", id}); }
+  void on_device_error(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"device_error", id}); }
+  void on_stream_error(uint64_t id, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"stream_error", id}); }
   void on_native_object_created(const NativeObjectCreateInfo& info) override {
     EventRec ev{"native_created", info.native_id};
     ev.type = info.type;
     ev.owner_acquisition_session_id = info.owner_acquisition_session_id;
     ev.owner_stream_id = info.owner_stream_id;
+    std::lock_guard<std::mutex> lk(mu);
     native_type_by_id[info.native_id] = info.type;
     native_owner_stream_by_id[info.native_id] = info.owner_stream_id;
     events.push_back(ev);
   }
   void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override {
+    std::lock_guard<std::mutex> lk(mu);
     EventRec ev{"native_destroyed", info.native_id};
     auto type_it = native_type_by_id.find(info.native_id);
     if (type_it != native_type_by_id.end()) {
@@ -551,7 +569,9 @@ bool run_synthetic_external_scenario_loader_check() {
   if (!synthetic.initialize(&cb).ok()) return false;
 
   std::vector<SyntheticEventType> dispatched;
-  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched](const SyntheticScheduledEvent& ev) {
+  std::mutex dispatched_mu;
+  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched, &dispatched_mu](const SyntheticScheduledEvent& ev) {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
     dispatched.push_back(ev.type);
   });
 
@@ -655,7 +675,9 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
   if (!synthetic.initialize(&cb).ok()) return false;
 
   std::vector<SyntheticEventType> dispatched;
-  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched](const SyntheticScheduledEvent& ev) {
+  std::mutex dispatched_mu;
+  synthetic.set_timeline_request_dispatch_hook_for_host([&dispatched, &dispatched_mu](const SyntheticScheduledEvent& ev) {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
     dispatched.push_back(ev.type);
   });
 
@@ -664,10 +686,13 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
     (void)synthetic.shutdown();
     return false;
   }
-  if (!dispatched.empty()) {
-    std::cerr << "FAIL external scenario file dispatched before explicit start\n";
-    (void)synthetic.shutdown();
-    return false;
+  {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
+    if (!dispatched.empty()) {
+      std::cerr << "FAIL external scenario file dispatched before explicit start\n";
+      (void)synthetic.shutdown();
+      return false;
+    }
   }
 
   if (!synthetic.start_timeline_scenario_for_host().ok()) {
@@ -676,12 +701,18 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
   }
   synthetic.advance(max_at_ns + 1);
 
-  if (dispatched != expected_dispatch) {
+  std::vector<SyntheticEventType> dispatched_snapshot;
+  {
+    std::lock_guard<std::mutex> lk(dispatched_mu);
+    dispatched_snapshot = dispatched;
+  }
+  if (dispatched_snapshot != expected_dispatch) {
     std::cerr << "FAIL external scenario file dispatch/order mismatch\n";
+    synthetic.set_timeline_request_dispatch_hook_for_host({});
     (void)synthetic.shutdown();
     return false;
   }
-
+  synthetic.set_timeline_request_dispatch_hook_for_host({});
   return synthetic.shutdown().ok();
 }
 
@@ -1230,18 +1261,19 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
   synthetic.advance(period_ns * 2);
 
-  const int f0 = find_frame_index_by_ts(cb.events, 0);
-  const int f1 = find_frame_index_by_ts(cb.events, period_ns);
-  const int f2 = find_frame_index_by_ts(cb.events, period_ns * 2);
+  const auto cb_events_for_frames = cb.snapshot_events();
+  const int f0 = find_frame_index_by_ts(cb_events_for_frames, 0);
+  const int f1 = find_frame_index_by_ts(cb_events_for_frames, period_ns);
+  const int f2 = find_frame_index_by_ts(cb_events_for_frames, period_ns * 2);
   if (f0 < 0 || f1 < 0 || f2 < 0) {
     std::cerr << "FAIL synthetic picture check frame evidence missing\n";
     (void)synthetic.shutdown();
     return false;
   }
 
-  const uint32_t sig0 = cb.events[static_cast<size_t>(f0)].pixel_sig;
-  const uint32_t sig1 = cb.events[static_cast<size_t>(f1)].pixel_sig;
-  const uint32_t sig2 = cb.events[static_cast<size_t>(f2)].pixel_sig;
+  const uint32_t sig0 = cb_events_for_frames[static_cast<size_t>(f0)].pixel_sig;
+  const uint32_t sig1 = cb_events_for_frames[static_cast<size_t>(f1)].pixel_sig;
+  const uint32_t sig2 = cb_events_for_frames[static_cast<size_t>(f2)].pixel_sig;
   if (sig0 == sig1 || sig1 != sig2) {
     std::cerr << "FAIL synthetic picture check rendered appearance contract mismatch\n";
     (void)synthetic.shutdown();
@@ -1254,7 +1286,8 @@ bool run_synthetic_timeline_picture_appearance_check() {
       !synthetic.shutdown().ok()) {
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_picture_appearance");
+  const auto cb_events_after_teardown = cb.snapshot_events();
+  return assert_native_balance(cb_events_after_teardown, "synthetic_picture_appearance");
 }
 
 bool run_stub_provider_sanity_check() {
@@ -1271,18 +1304,18 @@ bool run_stub_provider_sanity_check() {
   req.profile.target_fps_min = 30;
   req.profile.target_fps_max = 30;
 
-  if (!provider.initialize(&cb).ok() ||
-      !provider.open_device("stub0", 1, 1001).ok() ||
-      !provider.create_stream(req).ok() ||
-      !provider.start_stream(req.stream_id, req.profile, req.picture).ok() ||
-      !provider.stop_stream(req.stream_id).ok() ||
-      !provider.destroy_stream(req.stream_id).ok() ||
-      !provider.close_device(req.device_instance_id).ok() ||
-      !provider.shutdown().ok()) {
-    return false;
-  }
+  if (!provider.initialize(&cb).ok()) return false;
+  if (!provider.open_device("stub0", 1, 1001).ok()) return false;
+  if (!provider.create_stream(req).ok()) return false;
+  if (!provider.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
+  if (!provider.stop_stream(req.stream_id).ok()) return false;
+  if (!provider.destroy_stream(req.stream_id).ok()) return false;
+  if (!provider.close_device(req.device_instance_id).ok()) return false;
+  if (!provider.shutdown().ok()) return false;
 
-  return assert_native_balance(cb.events, "stub");
+  const auto cb_events = cb.snapshot_events();
+  const bool ok = assert_native_balance(cb_events, "stub");
+  return ok;
 }
 
 bool run_synthetic_provider_direct_sanity_check() {
@@ -1315,30 +1348,31 @@ bool run_synthetic_provider_direct_sanity_check() {
     return false;
   }
 
-  const int stopped = find_event_index(cb.events, "stream_stopped", req.stream_id);
-  const int destroyed = find_event_index(cb.events, "stream_destroyed", req.stream_id);
-  const int closed = find_event_index(cb.events, "device_closed", req.device_instance_id);
-  const int stream_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
+  const auto cb_events = cb.snapshot_events();
+  const int stopped = find_event_index(cb_events, "stream_stopped", req.stream_id);
+  const int destroyed = find_event_index(cb_events, "stream_destroyed", req.stream_id);
+  const int closed = find_event_index(cb_events, "device_closed", req.device_instance_id);
+  const int stream_native_id = find_native_create_id(cb_events, static_cast<uint32_t>(NativeObjectType::Stream), req.stream_id);
   const int acquisition_session_native_id =
-      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int device_native_id = find_native_create_id(cb.events, static_cast<uint32_t>(NativeObjectType::Device), 0);
+      find_native_create_id_by_type(cb_events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int device_native_id = find_native_create_id(cb_events, static_cast<uint32_t>(NativeObjectType::Device), 0);
   const int gpu_backing_created = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_created",
       static_cast<uint32_t>(NativeObjectType::GpuBacking),
       req.stream_id);
   const int gpu_backing_destroyed = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_destroyed",
       static_cast<uint32_t>(NativeObjectType::GpuBacking),
       req.stream_id);
   const int frame_buffer_lease_created = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_created",
       static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
       req.stream_id);
   const int frame_buffer_lease_destroyed = count_events_by_tag_type_and_owner_stream(
-      cb.events,
+      cb_events,
       "native_destroyed",
       static_cast<uint32_t>(NativeObjectType::FrameBufferLease),
       req.stream_id);
@@ -1365,7 +1399,7 @@ bool run_synthetic_provider_direct_sanity_check() {
     }
   }
 
-  return assert_native_balance(cb.events, "synthetic_direct");
+  return assert_native_balance(cb_events, "synthetic_direct");
 }
 
 bool run_synthetic_still_only_acquisition_session_truth_check() {
@@ -1398,12 +1432,13 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
 
-  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
-  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
+  const auto cb_events = cb.snapshot_events();
+  const int capture_started_ix = find_event_index(cb_events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb_events, "capture_completed", cap.capture_id);
   const int acq_native_id =
-      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
-  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+      find_native_create_id_by_type(cb_events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb_events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb_events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
 
   if (capture_started_ix < 0 || capture_completed_ix < 0 || acq_native_id < 0 ||
       acq_create_ix < 0 || acq_destroy_ix < 0) {
@@ -1417,7 +1452,7 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
   int frame_count = 0;
-  for (const auto& ev : cb.events) {
+  for (const auto& ev : cb_events) {
     if (ev.tag == "frame") {
       ++frame_count;
       if (ev.capture_image_routing != CaptureImageRouting::DEFAULT_METERED) {
@@ -1431,11 +1466,11 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
   if (count_events_by_tag_and_type(
-          cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
+          cb_events, "native_created", static_cast<uint32_t>(NativeObjectType::Stream)) != 0) {
     std::cerr << "FAIL synthetic still-only unexpectedly realized stream native object\n";
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_still_only");
+  return assert_native_balance(cb_events, "synthetic_still_only");
 }
 
 bool run_synthetic_multi_member_still_sequence_check() {
@@ -1477,7 +1512,8 @@ bool run_synthetic_multi_member_still_sequence_check() {
   int started_count = 0;
   int completed_count = 0;
   std::vector<EventRec> frame_events;
-  for (const auto& ev : cb.events) {
+  const auto cb_events = cb.snapshot_events();
+  for (const auto& ev : cb_events) {
     if (ev.tag == "capture_started" && ev.id == cap.capture_id) ++started_count;
     if (ev.tag == "capture_completed" && ev.id == cap.capture_id) ++completed_count;
     if (ev.tag == "frame") frame_events.push_back(ev);
@@ -1516,7 +1552,7 @@ bool run_synthetic_multi_member_still_sequence_check() {
     std::cerr << "FAIL synthetic multi-member expected deterministic payload hash difference\n";
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_multi_member_still_sequence");
+  return assert_native_balance(cb_events, "synthetic_multi_member_still_sequence");
 }
 
 bool run_synthetic_dynamic_still_bundle_shape_check() {
@@ -1563,7 +1599,8 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
     for (int iter = 0; iter < kMaxIters; ++iter) {
       size_t matched_frames = 0;
       completed = false;
-      for (const auto& ev : cb.events) {
+      const auto events_snapshot = cb.snapshot_events();
+      for (const auto& ev : events_snapshot) {
         if (ev.tag == "capture_completed" && ev.id == capture_id) {
           completed = true;
         }
@@ -1585,7 +1622,8 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
       return false;
     }
     out_frames.clear();
-    for (const auto& ev : cb.events) {
+    const auto events_snapshot = cb.snapshot_events();
+    for (const auto& ev : events_snapshot) {
       if (ev.tag == "frame" &&
           ev.capture_id == capture_id &&
           ev.capture_image_member_index < member_evs.size() &&
@@ -1669,7 +1707,8 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
   if (!provider.close_device(144).ok() || !provider.shutdown().ok()) {
     return fail_with_cleanup("FAIL synthetic dynamic bundle teardown failed");
   }
-  return assert_native_balance(cb.events, "synthetic_dynamic_still_bundle_shape");
+  const auto cb_events = cb.snapshot_events();
+  return assert_native_balance(cb_events, "synthetic_dynamic_still_bundle_shape");
 }
 
 bool run_core_synthetic_three_member_capture_result_check() {
@@ -1835,6 +1874,177 @@ bool run_core_synthetic_three_member_capture_result_check() {
   return true;
 }
 
+bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check() {
+  // First, verify callback metadata divergence on direct provider callbacks.
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  cfg.verification_realized_exposure_compensation_override_by_member_index[2u] = 750;
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok() ||
+      !provider.open_device("synthetic:0", 6500, 65001).ok()) {
+    std::cerr << "FAIL core synthetic mismatch callback provider init/open failed\n";
+    return false;
+  }
+  CaptureRequest cb_req{};
+  cb_req.capture_id = 9700;
+  cb_req.device_instance_id = 6500;
+  cb_req.width = 64;
+  cb_req.height = 64;
+  cb_req.format_fourcc = FOURCC_RGBA;
+  cb_req.still_image_bundle = make_default_metered_still_image_bundle();
+  cb_req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  cb_req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
+  if (!provider.trigger_capture(cb_req).ok() ||
+      !provider.close_device(6500).ok() ||
+      !provider.shutdown().ok()) {
+    std::cerr << "FAIL core synthetic mismatch callback trigger/teardown failed\n";
+    return false;
+  }
+  const auto callback_events = cb.snapshot_events();
+  std::vector<EventRec> cap_frames;
+  for (const auto& e : callback_events) {
+    if (e.tag == "frame" && e.capture_id == cb_req.capture_id) {
+      cap_frames.push_back(e);
+    }
+  }
+  if (cap_frames.size() != 3) {
+    std::cerr << "FAIL core synthetic mismatch callback expected three frame members\n";
+    return false;
+  }
+  std::sort(cap_frames.begin(), cap_frames.end(), [](const EventRec& a, const EventRec& b) {
+    return a.capture_image_member_index < b.capture_image_member_index;
+  });
+  for (size_t i = 0; i < cap_frames.size(); ++i) {
+    const auto& frame = cap_frames[i];
+    if (frame.capture_image_member_index != i ||
+        !frame.capture_image_has_realized_exposure_compensation_milli_ev) {
+      std::cerr << "FAIL core synthetic mismatch callback member index/realized-presence mismatch\n";
+      return false;
+    }
+  }
+  if (cap_frames[0].capture_image_applied_exposure_compensation_milli_ev != 0 ||
+      cap_frames[0].capture_image_realized_exposure_compensation_milli_ev != 0 ||
+      cap_frames[1].capture_image_applied_exposure_compensation_milli_ev != -1000 ||
+      cap_frames[1].capture_image_realized_exposure_compensation_milli_ev != -1000 ||
+      cap_frames[2].capture_image_applied_exposure_compensation_milli_ev != 1000 ||
+      cap_frames[2].capture_image_realized_exposure_compensation_milli_ev != 750 ||
+      cap_frames[2].capture_image_realized_exposure_compensation_milli_ev ==
+          cap_frames[2].capture_image_applied_exposure_compensation_milli_ev) {
+    std::cerr << "FAIL core synthetic mismatch callback member EV truth mismatch\n";
+    return false;
+  }
+
+  // Then verify retained/Core result metadata divergence with normal shape/order.
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL core synthetic mismatch runtime start failed\n";
+    return false;
+  }
+  SyntheticProvider core_provider(cfg);
+  bool provider_initialized = false;
+  bool device_opened = false;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    if (device_opened) {
+      (void)core_provider.close_device(65);
+      device_opened = false;
+    }
+    if (provider_initialized) {
+      (void)core_provider.shutdown();
+      provider_initialized = false;
+    }
+    rt.stop();
+    return false;
+  };
+  rt.attach_provider(&core_provider);
+  if (!core_provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch provider init failed");
+  }
+  provider_initialized = true;
+  std::vector<CameraEndpoint> eps;
+  if (!core_provider.enumerate_endpoints(eps).ok() || eps.empty()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch enumerate failed");
+  }
+
+  const uint64_t device_id = 65;
+  if (!core_provider.open_device(eps[0].hardware_id, device_id, 6501).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch open_device failed");
+  }
+  device_opened = true;
+
+  CaptureRequest req{};
+  for (int i = 0; i < 50; ++i) {
+    if (rt.materialize_capture_request(device_id, req)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (req.device_instance_id != device_id) {
+    return fail_with_cleanup("FAIL core synthetic mismatch materialize request failed");
+  }
+
+  req.capture_id = 9701;
+  req.still_image_bundle = make_default_metered_still_image_bundle();
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  req.still_image_bundle.members.push_back(
+      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
+  if (!core_provider.trigger_capture(req).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch trigger_capture failed");
+  }
+
+  SharedCaptureResultData result;
+  for (int i = 0; i < 50; ++i) {
+    result = rt.get_capture_result(req.capture_id, device_id);
+    if (result) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (!result) {
+    return fail_with_cleanup("FAIL core synthetic mismatch result missing");
+  }
+  if (result->image_member_count() != 3 || !result->has_additional_images()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch member-count/additional-image contract mismatch");
+  }
+  const auto* m0 = result->image_member_at(0);
+  const auto* m1 = result->image_member_at(1);
+  const auto* m2 = result->image_member_at(2);
+  if (!m0 || !m1 || !m2) {
+    return fail_with_cleanup("FAIL core synthetic mismatch retained members missing");
+  }
+  if (m0->applied_exposure_compensation_milli_ev != 0 ||
+      !m0->has_realized_exposure_compensation_milli_ev ||
+      m0->realized_exposure_compensation_milli_ev != m0->applied_exposure_compensation_milli_ev ||
+      m1->applied_exposure_compensation_milli_ev != -1000 ||
+      !m1->has_realized_exposure_compensation_milli_ev ||
+      m1->realized_exposure_compensation_milli_ev != m1->applied_exposure_compensation_milli_ev ||
+      m2->applied_exposure_compensation_milli_ev != 1000 ||
+      !m2->has_realized_exposure_compensation_milli_ev ||
+      m2->realized_exposure_compensation_milli_ev != 750 ||
+      m2->realized_exposure_compensation_milli_ev == m2->applied_exposure_compensation_milli_ev) {
+    return fail_with_cleanup("FAIL core synthetic mismatch retained member EV truth mismatch");
+  }
+  if (result->default_image.payload.bytes.empty() ||
+      result->additional_images[0].payload.bytes.empty() ||
+      result->additional_images[1].payload.bytes.empty()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch expected non-empty payloads");
+  }
+
+  if (!core_provider.close_device(device_id).ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch close_device failed");
+  }
+  device_opened = false;
+  if (!core_provider.shutdown().ok()) {
+    return fail_with_cleanup("FAIL core synthetic mismatch provider shutdown failed");
+  }
+  provider_initialized = false;
+  rt.stop();
+  return true;
+}
+
 bool run_synthetic_stream_plus_still_single_session_truth_check() {
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
@@ -1874,15 +2084,16 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     return false;
   }
 
-  const int capture_started_ix = find_event_index(cb.events, "capture_started", cap.capture_id);
-  const int capture_completed_ix = find_event_index(cb.events, "capture_completed", cap.capture_id);
-  const int stream_destroy_ix = find_event_index(cb.events, "stream_destroyed", req.stream_id);
+  const auto cb_events = cb.snapshot_events();
+  const int capture_started_ix = find_event_index(cb_events, "capture_started", cap.capture_id);
+  const int capture_completed_ix = find_event_index(cb_events, "capture_completed", cap.capture_id);
+  const int stream_destroy_ix = find_event_index(cb_events, "stream_destroyed", req.stream_id);
   const int acq_native_id =
-      find_native_create_id_by_type(cb.events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
-  const int acq_create_ix = find_event_index(cb.events, "native_created", static_cast<uint64_t>(acq_native_id));
-  const int acq_destroy_ix = find_event_index(cb.events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
+      find_native_create_id_by_type(cb_events, static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+  const int acq_create_ix = find_event_index(cb_events, "native_created", static_cast<uint64_t>(acq_native_id));
+  const int acq_destroy_ix = find_event_index(cb_events, "native_destroyed", static_cast<uint64_t>(acq_native_id));
   const int acq_create_count = count_events_by_tag_and_type(
-      cb.events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
+      cb_events, "native_created", static_cast<uint32_t>(NativeObjectType::AcquisitionSession));
 
   if (capture_started_ix < 0 || capture_completed_ix < 0 || stream_destroy_ix < 0 ||
       acq_native_id < 0 || acq_create_ix < 0 || acq_destroy_ix < 0) {
@@ -1899,7 +2110,7 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     std::cerr << "FAIL synthetic stream+still ordering invalid\n";
     return false;
   }
-  return assert_native_balance(cb.events, "synthetic_stream_plus_still");
+  return assert_native_balance(cb_events, "synthetic_stream_plus_still");
 }
 
 }  // namespace
@@ -1910,38 +2121,56 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // 1) Materialization / loader compliance.
-  if (!run_synthetic_scenario_materialization_check()) return 1;
-  if (!run_synthetic_builtin_scenario_library_build_check()) return 1;
-  if (!run_synthetic_external_scenario_loader_check()) return 1;
-  if (!run_synthetic_external_scenario_loader_negative_check()) return 1;
+  using CheckFn = std::function<bool()>;
+  const std::vector<std::pair<const char*, CheckFn>> checks = {
+      {"run_synthetic_scenario_materialization_check", [] { return run_synthetic_scenario_materialization_check(); }},
+      {"run_synthetic_builtin_scenario_library_build_check", [] { return run_synthetic_builtin_scenario_library_build_check(); }},
+      {"run_synthetic_external_scenario_loader_check", [] { return run_synthetic_external_scenario_loader_check(); }},
+      {"run_synthetic_external_scenario_loader_negative_check", [] { return run_synthetic_external_scenario_loader_negative_check(); }},
+      {"run_synthetic_primitive_lifecycle_foundation_check", [] { return run_synthetic_primitive_lifecycle_foundation_check(); }},
+      {"run_clustered_strict_branch_check", [] { return run_clustered_strict_branch_check(); }},
+      {"run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); }},
+      {"run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); }},
+      {"run_synthetic_backing_capability_advertisement_check", [] { return run_synthetic_backing_capability_advertisement_check(); }},
+      {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
+      {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
+      {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},
+      {"run_synthetic_still_only_acquisition_session_truth_check", [] { return run_synthetic_still_only_acquisition_session_truth_check(); }},
+      {"run_synthetic_multi_member_still_sequence_check", [] { return run_synthetic_multi_member_still_sequence_check(); }},
+      {"run_synthetic_dynamic_still_bundle_shape_check", [] { return run_synthetic_dynamic_still_bundle_shape_check(); }},
+      {"run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); }},
+      {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
+      {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
+  };
 
-  // 2) Primitive lifecycle foundation.
-  if (!run_synthetic_primitive_lifecycle_foundation_check()) return 1;
+  if (!opt.only_check.empty()) {
+    if (opt.only_check == "run_external_scenario_file_execution_check") {
+      if (opt.external_scenario_file.empty()) {
+        std::cerr << "FAIL run_external_scenario_file_execution_check requires --external_scenario_file=<path>\n";
+        return 1;
+      }
+      if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
+      std::cout << "PASS provider_compliance_verify\n";
+      return 0;
+    }
+    for (const auto& check : checks) {
+      if (opt.only_check == check.first) {
+        if (!check.second()) return 1;
+        std::cout << "PASS provider_compliance_verify\n";
+        return 0;
+      }
+    }
+    std::cerr << "Unknown --only_check value: " << opt.only_check << "\nAvailable check names:\n";
+    for (const auto& check : checks) {
+      std::cerr << "  " << check.first << "\n";
+    }
+    std::cerr << "  run_external_scenario_file_execution_check\n";
+    return 1;
+  }
 
-  // 3) Clustered strict/gated destructive sequencing interpretation.
-  if (!run_clustered_strict_branch_check()) return 1;
-  if (!run_clustered_completion_gated_branch_check()) return 1;
-
-  // 4) Broker / host surface compliance.
-  if (!run_broker_timeline_host_surface_check()) return 1;
-
-  // 5) Synthetic backing capability advertisement seam checks.
-  if (!run_synthetic_backing_capability_advertisement_check()) return 1;
-
-  // 6) Synthetic frame/picture integration checks.
-  if (!run_synthetic_timeline_picture_appearance_check()) return 1;
-
-  // Additional provider direct sanity coverage retained.
-  if (!run_stub_provider_sanity_check()) return 1;
-  if (!run_synthetic_provider_direct_sanity_check()) return 1;
-  if (!run_synthetic_still_only_acquisition_session_truth_check()) return 1;
-  if (!run_synthetic_multi_member_still_sequence_check()) return 1;
-  if (!run_synthetic_dynamic_still_bundle_shape_check()) return 1;
-  if (!run_core_synthetic_three_member_capture_result_check()) return 1;
-  if (!run_synthetic_stream_plus_still_single_session_truth_check()) return 1;
-
-  // 7) External scenario file path (first-class, optional input).
+  for (const auto& check : checks) {
+    if (!check.second()) return 1;
+  }
   if (!opt.external_scenario_file.empty()) {
     if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
   }
