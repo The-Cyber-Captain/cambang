@@ -6,6 +6,7 @@
 #include <functional>
 #include <iostream>
 #include <mutex>
+#include <csignal>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -39,6 +40,28 @@ constexpr uint64_t kLifecycleStreamId = 9103;
 constexpr uint64_t kClusteredDeviceId = 121;
 constexpr uint64_t kClusteredRootId = 12201;
 constexpr uint64_t kClusteredStreamId = 122;
+
+std::atomic<const char*> g_current_check_step{"(unset)"};
+
+void mark_step(const char* step) noexcept {
+  g_current_check_step.store(step, std::memory_order_relaxed);
+}
+
+#define MARK_STEP(s) ::mark_step((s))
+
+void crash_signal_handler(int sig) {
+  const char* step = g_current_check_step.load(std::memory_order_relaxed);
+  std::cerr << "CRASH signal=" << sig << " step="
+            << (step ? step : "(null)") << "\n";
+  std::cerr.flush();
+  std::signal(sig, SIG_DFL);
+  std::raise(sig);
+}
+
+void install_crash_progress_handlers() {
+  std::signal(SIGSEGV, crash_signal_handler);
+  std::signal(SIGABRT, crash_signal_handler);
+}
 
 template <typename Fn>
 bool run_named_check(const char* name, Fn&& fn) {
@@ -1298,8 +1321,13 @@ bool run_synthetic_timeline_picture_appearance_check() {
 }
 
 bool run_stub_provider_sanity_check() {
+  MARK_STEP("run_stub_provider_sanity_check: begin");
+  MARK_STEP("run_stub_provider_sanity_check: before RecorderCallbacks construction");
   RecorderCallbacks cb;
+  MARK_STEP("run_stub_provider_sanity_check: after RecorderCallbacks construction");
+  MARK_STEP("run_stub_provider_sanity_check: before StubProvider construction");
   StubProvider provider;
+  MARK_STEP("run_stub_provider_sanity_check: after StubProvider construction");
 
   StreamRequest req{};
   req.stream_id = 11;
@@ -1311,17 +1339,37 @@ bool run_stub_provider_sanity_check() {
   req.profile.target_fps_min = 30;
   req.profile.target_fps_max = 30;
 
+  MARK_STEP("run_stub_provider_sanity_check: before initialize");
   if (!provider.initialize(&cb).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after initialize");
+  MARK_STEP("run_stub_provider_sanity_check: before open_device");
   if (!provider.open_device("stub0", 1, 1001).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after open_device");
+  MARK_STEP("run_stub_provider_sanity_check: before create_stream");
   if (!provider.create_stream(req).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after create_stream");
+  MARK_STEP("run_stub_provider_sanity_check: before start_stream");
   if (!provider.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after start_stream");
+  MARK_STEP("run_stub_provider_sanity_check: before stop_stream");
   if (!provider.stop_stream(req.stream_id).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after stop_stream");
+  MARK_STEP("run_stub_provider_sanity_check: before destroy_stream");
   if (!provider.destroy_stream(req.stream_id).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after destroy_stream");
+  MARK_STEP("run_stub_provider_sanity_check: before close_device");
   if (!provider.close_device(req.device_instance_id).ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after close_device");
+  MARK_STEP("run_stub_provider_sanity_check: before shutdown");
   if (!provider.shutdown().ok()) return false;
+  MARK_STEP("run_stub_provider_sanity_check: after shutdown");
 
+  MARK_STEP("run_stub_provider_sanity_check: before snapshot_events");
   const auto cb_events = cb.snapshot_events();
+  MARK_STEP("run_stub_provider_sanity_check: after snapshot_events");
+  MARK_STEP("run_stub_provider_sanity_check: before assert_native_balance");
   const bool ok = assert_native_balance(cb_events, "stub");
+  MARK_STEP("run_stub_provider_sanity_check: after assert_native_balance");
   return ok;
 }
 
@@ -2123,6 +2171,7 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  install_crash_progress_handlers();
   Options opt;
   if (!parse_opts(argc, argv, opt)) {
     return 2;
