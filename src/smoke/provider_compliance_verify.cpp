@@ -1197,6 +1197,8 @@ bool run_synthetic_backing_capability_advertisement_check() {
 // ===== Family E: Synthetic frame/picture integration compliance =====
 
 bool run_synthetic_timeline_picture_appearance_check() {
+  std::cout << "TRACE run_synthetic_timeline_picture_appearance_check: begin\n";
+  std::cout.flush();
   RecorderCallbacks cb;
   SyntheticProviderConfig cfg{};
   cfg.synthetic_role = SyntheticRole::Timeline;
@@ -1208,7 +1210,11 @@ bool run_synthetic_timeline_picture_appearance_check() {
   cfg.nominal.start_stream_warmup_ns = 0;
 
   SyntheticProvider synthetic(cfg);
+  std::cout << "TRACE run_synthetic_timeline_picture_appearance_check: provider constructed\n";
+  std::cout.flush();
   if (!synthetic.initialize(&cb).ok()) return false;
+  std::cout << "TRACE run_synthetic_timeline_picture_appearance_check: initialized\n";
+  std::cout.flush();
 
   const uint64_t device_id = 51;
   const uint64_t root_id = 5201;
@@ -1235,6 +1241,8 @@ bool run_synthetic_timeline_picture_appearance_check() {
     (void)synthetic.shutdown();
     return false;
   }
+  std::cout << "TRACE run_synthetic_timeline_picture_appearance_check: open/create/start done\n";
+  std::cout.flush();
 
   SyntheticTimelineScenario scenario{};
   for (uint64_t i = 0; i < 3; ++i) {
@@ -1250,6 +1258,8 @@ bool run_synthetic_timeline_picture_appearance_check() {
     (void)synthetic.shutdown();
     return false;
   }
+  std::cout << "TRACE run_synthetic_timeline_picture_appearance_check: scenario loaded+started\n";
+  std::cout.flush();
 
   synthetic.advance(0);
 
@@ -1293,13 +1303,21 @@ bool run_synthetic_timeline_picture_appearance_check() {
       !synthetic.shutdown().ok()) {
     return false;
   }
+  std::cout << "TRACE run_synthetic_timeline_picture_appearance_check: END cleanup complete\n";
+  std::cout.flush();
   const auto cb_events_after_teardown = cb.snapshot_events();
   return assert_native_balance(cb_events_after_teardown, "synthetic_picture_appearance");
 }
 
 bool run_stub_provider_sanity_check() {
+  std::cout << "TRACE run_stub_provider_sanity_check: begin\n";
+  std::cout.flush();
   RecorderCallbacks cb;
+  std::cout << "TRACE run_stub_provider_sanity_check: RecorderCallbacks constructed\n";
+  std::cout.flush();
   StubProvider provider;
+  std::cout << "TRACE run_stub_provider_sanity_check: StubProvider constructed\n";
+  std::cout.flush();
 
   StreamRequest req{};
   req.stream_id = 11;
@@ -1311,18 +1329,34 @@ bool run_stub_provider_sanity_check() {
   req.profile.target_fps_min = 30;
   req.profile.target_fps_max = 30;
 
-  if (!provider.initialize(&cb).ok() ||
-      !provider.open_device("stub0", 1, 1001).ok() ||
-      !provider.create_stream(req).ok() ||
-      !provider.start_stream(req.stream_id, req.profile, req.picture).ok() ||
-      !provider.stop_stream(req.stream_id).ok() ||
-      !provider.destroy_stream(req.stream_id).ok() ||
-      !provider.close_device(req.device_instance_id).ok() ||
-      !provider.shutdown().ok()) {
-    return false;
-  }
+  if (!provider.initialize(&cb).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: initialize ok\n";
+  std::cout.flush();
+  if (!provider.open_device("stub0", 1, 1001).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: open_device ok\n";
+  std::cout.flush();
+  if (!provider.create_stream(req).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: create_stream ok\n";
+  std::cout.flush();
+  if (!provider.start_stream(req.stream_id, req.profile, req.picture).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: start_stream ok\n";
+  std::cout.flush();
+  if (!provider.stop_stream(req.stream_id).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: stop_stream ok\n";
+  std::cout.flush();
+  if (!provider.destroy_stream(req.stream_id).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: destroy_stream ok\n";
+  std::cout.flush();
+  if (!provider.close_device(req.device_instance_id).ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: close_device ok\n";
+  std::cout.flush();
+  if (!provider.shutdown().ok()) return false;
+  std::cout << "TRACE run_stub_provider_sanity_check: shutdown ok\n";
+  std::cout.flush();
 
   const auto cb_events = cb.snapshot_events();
+  std::cout << "TRACE run_stub_provider_sanity_check: snapshot_events captured\n";
+  std::cout.flush();
   return assert_native_balance(cb_events, "stub");
 }
 
