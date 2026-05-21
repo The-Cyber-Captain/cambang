@@ -151,7 +151,6 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
             r.capture_width = rec.capture_width;
             r.capture_height = rec.capture_height;
             r.capture_format = rec.capture_format;
-            r.still_image_bundle = make_still_image_bundle_state(rec.capture_still_image_bundle);
             r.captures_triggered = rec.captures_triggered;
             r.captures_completed = rec.captures_completed;
             r.captures_failed = rec.captures_failed;

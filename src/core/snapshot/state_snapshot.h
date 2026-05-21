@@ -77,7 +77,6 @@ struct RigState {
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
-    CaptureStillImageBundleState still_image_bundle{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
