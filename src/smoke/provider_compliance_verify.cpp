@@ -1254,19 +1254,19 @@ bool run_synthetic_timeline_picture_appearance_check() {
 
   synthetic.advance(period_ns * 2);
 
-  const auto cb_events = cb.snapshot_events();
-  const int f0 = find_frame_index_by_ts(cb_events, 0);
-  const int f1 = find_frame_index_by_ts(cb_events, period_ns);
-  const int f2 = find_frame_index_by_ts(cb_events, period_ns * 2);
+  const auto cb_events_for_frames = cb.snapshot_events();
+  const int f0 = find_frame_index_by_ts(cb_events_for_frames, 0);
+  const int f1 = find_frame_index_by_ts(cb_events_for_frames, period_ns);
+  const int f2 = find_frame_index_by_ts(cb_events_for_frames, period_ns * 2);
   if (f0 < 0 || f1 < 0 || f2 < 0) {
     std::cerr << "FAIL synthetic picture check frame evidence missing\n";
     (void)synthetic.shutdown();
     return false;
   }
 
-  const uint32_t sig0 = cb_events[static_cast<size_t>(f0)].pixel_sig;
-  const uint32_t sig1 = cb_events[static_cast<size_t>(f1)].pixel_sig;
-  const uint32_t sig2 = cb_events[static_cast<size_t>(f2)].pixel_sig;
+  const uint32_t sig0 = cb_events_for_frames[static_cast<size_t>(f0)].pixel_sig;
+  const uint32_t sig1 = cb_events_for_frames[static_cast<size_t>(f1)].pixel_sig;
+  const uint32_t sig2 = cb_events_for_frames[static_cast<size_t>(f2)].pixel_sig;
   if (sig0 == sig1 || sig1 != sig2) {
     std::cerr << "FAIL synthetic picture check rendered appearance contract mismatch\n";
     (void)synthetic.shutdown();
@@ -1279,7 +1279,8 @@ bool run_synthetic_timeline_picture_appearance_check() {
       !synthetic.shutdown().ok()) {
     return false;
   }
-  return assert_native_balance(cb_events, "synthetic_picture_appearance");
+  const auto cb_events_after_teardown = cb.snapshot_events();
+  return assert_native_balance(cb_events_after_teardown, "synthetic_picture_appearance");
 }
 
 bool run_stub_provider_sanity_check() {
