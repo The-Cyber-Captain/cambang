@@ -3725,10 +3725,10 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						
 					],
 					[
-						["capture_w", still_profile.get("width", 0), 4],
-						["capture_h", still_profile.get("height", 0), 4],
-						["capture_fmt", still_profile.get("format", 0), 4],
-						["capture_prof", still_profile.get("version", 0), 2],
+						_counter("capture_w", int(still_profile.get("width", 0)), 4),
+						_counter("capture_h", int(still_profile.get("height", 0)), 4),
+						_counter("capture_fmt", int(still_profile.get("format", 0)), 4),
+						_counter("capture_prof", int(still_profile.get("version", 0)), 2),
 					],
 					"device"
 				),
