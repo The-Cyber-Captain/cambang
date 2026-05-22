@@ -3699,7 +3699,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% device_matches.size()
 			)
 		var still_profile := _capture_profile_still_dict(rec)
-			var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
+		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
 		if not device_bundle_count.is_empty():
 			device_info.append(device_bundle_count)
 		var device_bundle_detail := _build_still_image_bundle_detail_line(rec)
