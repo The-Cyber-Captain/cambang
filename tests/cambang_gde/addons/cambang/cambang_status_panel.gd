@@ -3782,7 +3782,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% acquisition_session_native_matches.size()
 			)
 		var acquisition_still_profile := _capture_profile_still_dict(rec)
-			var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
+		var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
 		if not acquisition_bundle_summary.is_empty():
 			acquisition_session_info.append(acquisition_bundle_summary)
 		var acquisition_bundle_detail := _build_still_image_bundle_detail_line(rec)
