@@ -262,11 +262,13 @@ func _try_verify_stream_result() -> void:
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
 		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
-		_capture_profile_version_after_set = int(device_snapshot_after_set.get("capture_profile_version", -1))
+		var profile_after_set: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_set)
+		_capture_profile_version_after_set = int(profile_after_set.get("version", -1))
 		return
 
 	var device_snapshot_after_trigger := _get_device_snapshot_record(_device_instance_id)
-	var capture_profile_version_after_trigger := int(device_snapshot_after_trigger.get("capture_profile_version", -1))
+	var profile_after_trigger: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_trigger)
+	var capture_profile_version_after_trigger := int(profile_after_trigger.get("version", -1))
 	if capture_profile_version_after_trigger < 0:
 		return
 	_require(

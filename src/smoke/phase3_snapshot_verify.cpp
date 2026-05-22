@@ -453,10 +453,10 @@ static int test_still_capture_profile_visibility_audit_truth() {
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
-        return device && device->capture_profile_version == 7 &&
-               device->capture_width == 4032 &&
-               device->capture_height == 3024 &&
-               device->capture_format == kJpeg;
+        return device && device->capture_profile.still.version == 7 &&
+               device->capture_profile.still.width == 4032 &&
+               device->capture_profile.still.height == 3024 &&
+               device->capture_profile.still.format == kJpeg;
       })) {
     std::cerr << "FAIL: device still capture profile not snapshot-visible\n";
     rt.stop();
@@ -480,10 +480,10 @@ static int test_still_capture_profile_visibility_audit_truth() {
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
-        return device && device->capture_profile_version == 8 &&
-               device->capture_width == 1920 &&
-               device->capture_height == 1080 &&
-               device->capture_format == kRaw;
+        return device && device->capture_profile.still.version == 8 &&
+               device->capture_profile.still.width == 1920 &&
+               device->capture_profile.still.height == 1080 &&
+               device->capture_profile.still.format == kRaw;
       })) {
     std::cerr << "FAIL: device still capture profile did not update\n";
     rt.stop();
@@ -1091,8 +1091,8 @@ static int test_capture_lifecycle_updates_live_acquisition_session_only() {
   }
   const auto& rec = it->second;
   if (rec.captures_triggered != 1 || rec.captures_completed != 1 || rec.captures_failed != 0 ||
-      rec.last_capture_id != 9002 || rec.capture_profile.still.version != 77 ||
-      rec.capture_profile.still.width != 640 || rec.capture_profile.still.height != 480 || rec.capture_profile.still.format != FOURCC_RGBA) {
+      rec.last_capture_id != 9002 || rec.capture_profile_version != 77 ||
+      rec.capture_width != 640 || rec.capture_height != 480 || rec.capture_format != FOURCC_RGBA) {
     std::cerr << "FAIL: capture lifecycle counters/profile did not integrate into acquisition session truth\n";
     return 1;
   }

@@ -426,7 +426,7 @@ RigState {
 
 ### 6.2 `DeviceState`
 
-`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+`capture_profile.still.width`, `capture_profile.still.height`, and `capture_profile.still.format` form part of the applied still capture
 profile for this device.
 
 ``` text
