@@ -536,6 +536,17 @@ func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
 	return {}
 
 
+func _extract_snapshot_still_profile(device_snapshot: Dictionary) -> Dictionary:
+	var capture_profile_v: Variant = device_snapshot.get("capture_profile", null)
+	if typeof(capture_profile_v) != TYPE_DICTIONARY:
+		return {}
+	var capture_profile: Dictionary = capture_profile_v
+	var still_v: Variant = capture_profile.get("still", null)
+	if typeof(still_v) != TYPE_DICTIONARY:
+		return {}
+	return still_v
+
+
 func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictionary:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
