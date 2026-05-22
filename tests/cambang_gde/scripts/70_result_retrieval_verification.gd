@@ -412,20 +412,13 @@ func _refresh_member_inspection_strip(capture_result, expected_members: Array) -
 		preview.texture = ImageTexture.create_from_image(image_member_materialized)
 		item_col.add_child(preview)
 
-		var image_member: Dictionary = capture_result.get_image_member(i)
 		var intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
-		var applied_ev := int(image_member.get("applied_exposure_compensation_milli_ev", 0))
-		var realized_tag := "unknown"
-		if bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)):
-			realized_tag = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
 		var meta := Label.new()
 		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		meta.text = "idx=%d role=%s i=%d a=%d r=%s" % [
+		meta.text = "idx=%d role=%s ev=%d" % [
 			int(expected_member.get("image_member_index", -1)),
 			_role_name(int(expected_member.get("role", -1))),
 			intended_ev,
-			applied_ev,
-			realized_tag,
 		]
 		item_col.add_child(meta)
 
