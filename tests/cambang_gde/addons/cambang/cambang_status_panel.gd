@@ -3699,16 +3699,16 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% device_matches.size()
 			)
 		var still_profile := _capture_profile_still_dict(rec)
-			var camera_state_v: Variant = rec.get("camera_state", {})
-			if typeof(camera_state_v) == TYPE_DICTIONARY:
-				var camera_state: Dictionary = camera_state_v
-				var exposure_v: Variant = camera_state.get("exposure", {})
-				if typeof(exposure_v) == TYPE_DICTIONARY:
-					var exposure: Dictionary = exposure_v
-					var ae_mode: Dictionary = exposure.get("ae_mode", {})
-					var baseline_ev: Dictionary = exposure.get("baseline_exposure_compensation_milli_ev", {})
-					device_info.append("camera_state.ae_mode support=%s apply_status=%s" % [str(ae_mode.get("support", "UNKNOWN")), str(ae_mode.get("apply_status", "UNKNOWN"))])
-					device_info.append("camera_state.baseline_ev support=%s apply_status=%s" % [str(baseline_ev.get("support", "UNKNOWN")), str(baseline_ev.get("apply_status", "UNKNOWN"))])
+		var camera_state_v: Variant = rec.get("camera_state", {})
+		if typeof(camera_state_v) == TYPE_DICTIONARY:
+			var camera_state: Dictionary = camera_state_v
+			var exposure_v: Variant = camera_state.get("exposure", {})
+			if typeof(exposure_v) == TYPE_DICTIONARY:
+				var exposure: Dictionary = exposure_v
+				var ae_mode: Dictionary = exposure.get("ae_mode", {})
+				var baseline_ev: Dictionary = exposure.get("baseline_exposure_compensation_milli_ev", {})
+				device_info.append("camera_state.ae_mode support=%s apply_status=%s" % [str(ae_mode.get("support", "UNKNOWN")), str(ae_mode.get("apply_status", "UNKNOWN"))])
+				device_info.append("camera_state.baseline_ev support=%s apply_status=%s" % [str(baseline_ev.get("support", "UNKNOWN")), str(baseline_ev.get("apply_status", "UNKNOWN"))])
 		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
 		if not device_bundle_count.is_empty():
 			device_info.append(device_bundle_count)
