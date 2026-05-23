@@ -101,6 +101,39 @@ struct CaptureProfileState {
     StillCaptureProfileState still{};
 };
 
+enum class CBCameraValueSupport : uint8_t { SUPPORTED=0, UNSUPPORTED=1, UNIMPLEMENTED=2, UNKNOWN=3 };
+enum class CBCameraApplyStatus : uint8_t { APPLIED=0, PENDING=1, REJECTED=2, CONSTRAINED=3, UNKNOWN=4 };
+
+struct CameraValueStateString {
+    CBCameraValueSupport support = CBCameraValueSupport::UNIMPLEMENTED;
+    bool has_target = false;
+    std::string target;
+    bool has_applied = false;
+    std::string applied;
+    CBCameraApplyStatus apply_status = CBCameraApplyStatus::UNKNOWN;
+    int32_t apply_error_code = 0;
+};
+
+struct CameraValueStateInt32 {
+    CBCameraValueSupport support = CBCameraValueSupport::UNIMPLEMENTED;
+    bool has_target = false;
+    int32_t target = 0;
+    bool has_applied = false;
+    int32_t applied = 0;
+    CBCameraApplyStatus apply_status = CBCameraApplyStatus::UNKNOWN;
+    int32_t apply_error_code = 0;
+};
+
+struct DeviceCameraExposureState {
+    CameraValueStateString ae_mode{};
+    CameraValueStateInt32 baseline_exposure_compensation_milli_ev{};
+};
+
+struct DeviceCameraState {
+    uint64_t version = 0;
+    DeviceCameraExposureState exposure{};
+};
+
 struct DeviceState {
     std::string hardware_id;
     uint64_t instance_id = 0;
@@ -113,6 +146,7 @@ struct DeviceState {
 
     uint64_t camera_spec_version = 0;
     CaptureProfileState capture_profile{};
+    DeviceCameraState camera_state{};
 
     uint32_t warm_hold_ms = 0;
     uint32_t warm_remaining_ms = 0;
@@ -131,6 +165,7 @@ struct AcquisitionSessionState {
     CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
 
     CaptureProfileState capture_profile{};
+    DeviceCameraState camera_state{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;

@@ -73,6 +73,29 @@
               ]
             }
           }
+        },
+        "camera_state": {
+          "version": 0,
+          "exposure": {
+            "ae_mode": {
+              "support": "UNIMPLEMENTED",
+              "has_target": false,
+              "target": "",
+              "has_applied": false,
+              "applied": "",
+              "apply_status": "UNKNOWN",
+              "apply_error_code": 0
+            },
+            "baseline_exposure_compensation_milli_ev": {
+              "support": "UNIMPLEMENTED",
+              "has_target": false,
+              "target": 0,
+              "has_applied": false,
+              "applied": 0,
+              "apply_status": "UNKNOWN",
+              "apply_error_code": 0
+            }
+          }
         }
       }
     ],

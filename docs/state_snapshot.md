@@ -442,6 +442,29 @@ DeviceState {
   rig_id: uint64                         // 0 if not a rig member
 
   camera_spec_version: uint64            // effective CameraSpec version
+  camera_state: {
+    version: uint64
+    exposure: {
+      ae_mode: {
+        support: SUPPORTED | UNSUPPORTED | UNIMPLEMENTED | UNKNOWN
+        has_target: bool
+        target: String
+        has_applied: bool
+        applied: String
+        apply_status: APPLIED | PENDING | REJECTED | CONSTRAINED | UNKNOWN
+        apply_error_code: int32
+      }
+      baseline_exposure_compensation_milli_ev: {
+        support: SUPPORTED | UNSUPPORTED | UNIMPLEMENTED | UNKNOWN
+        has_target: bool
+        target: int32
+        has_applied: bool
+        applied: int32
+        apply_status: APPLIED | PENDING | REJECTED | CONSTRAINED | UNKNOWN
+        apply_error_code: int32
+      }
+    }
+  }                                   // target/applied device camera posture; no realized per-image truth
   capture_profile: {
     still: {
       version: uint64                    // monotonic change lineage for the applied still capture profile
