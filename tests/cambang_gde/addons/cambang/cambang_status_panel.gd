@@ -128,10 +128,6 @@ const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
 const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
 
 var _title_label: Label
-var _provider_mode_value: Label
-var _schema_version_value: Label
-var _counts_value: Label
-var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _expanded_by_row_id: Dictionary = {}
@@ -257,16 +253,6 @@ func _build_ui_if_needed() -> void:
 	_title_label = Label.new()
 	_title_label.text = "CamBANG Status"
 	root.add_child(_title_label)
-
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_child(grid)
-
-	_provider_mode_value = _add_row(grid, "Provider Mode")
-	_schema_version_value = _add_row(grid, "Schema Version")
-	_counts_value = _add_row(grid, "Entity Counts")
-	_timestamp_value = _add_row(grid, "timestamp_ns")
 
 	_status_rows_scroll = ScrollContainer.new()
 	_status_rows_scroll.set_script(TOUCH_SCROLL_SCRIPT)
@@ -455,7 +441,6 @@ func _refresh_from_server() -> void:
 	if _server == null:
 		_server = _get_server()
 	if _server == null:
-		_provider_mode_value.text = "unavailable"
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
 		_clear_observed_device_health_history()
@@ -466,25 +451,6 @@ func _refresh_from_server() -> void:
 		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
-	var provider_mode := "unknown"
-	if _server.has_method("get_active_provider_config"):
-		var cfg: Variant = _server.get_active_provider_config()
-		if typeof(cfg) == TYPE_DICTIONARY:
-			var d: Dictionary = cfg
-			var provider_kind := int(d.get("provider_kind", -1))
-			if provider_kind == _server.PROVIDER_KIND_PLATFORM_BACKED:
-				provider_mode = "platform_backed"
-			elif provider_kind == _server.PROVIDER_KIND_SYNTHETIC:
-				provider_mode = "synthetic"
-				var synthetic_role := d.get("synthetic_role", null)
-				if synthetic_role != null and int(synthetic_role) == _server.SYNTHETIC_ROLE_TIMELINE:
-					provider_mode = "synthetic/timeline"
-					var timeline_reconciliation := str(d.get("timeline_reconciliation", ""))
-					if timeline_reconciliation == "completion_gated":
-						provider_mode += "/completion-gated"
-					elif timeline_reconciliation == "strict":
-						provider_mode += "/strict"
-	_provider_mode_value.text = provider_mode
 	var snapshot := _fetch_snapshot()
 	var reading := _read_snapshot(snapshot)
 	_apply_snapshot_read(reading)
@@ -3259,9 +3225,16 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 
 
 func _apply_snapshot_read(reading: Dictionary) -> void:
-	_schema_version_value.text = str(reading.get("schema_version", "-"))
-	_counts_value.text = str(reading.get("counts", "-"))
-	_timestamp_value.text = "%s (monotonic publish timestamp)" % str(reading.get("timestamp", "-"))
+	var segments: Array[String] = ["CamBANG Status"]
+	if reading.has("schema_version"):
+		var schema_value := str(reading.get("schema_version", "")).strip_edges()
+		if not schema_value.is_empty() and schema_value != "-":
+			segments.append("schema=%s" % schema_value)
+	if reading.has("timestamp"):
+		var timestamp_value := str(reading.get("timestamp", "")).strip_edges()
+		if not timestamp_value.is_empty() and timestamp_value != "-":
+			segments.append("t=%sns" % timestamp_value)
+	_title_label.text = " · ".join(segments)
 
 
 func _build_fake_panel_model() -> PanelModel:
