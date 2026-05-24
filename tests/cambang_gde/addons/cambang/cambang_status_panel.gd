@@ -5774,6 +5774,8 @@ func _build_camera_state_info_lines(rec: Dictionary) -> Array[String]:
 	if typeof(camera_state_v) != TYPE_DICTIONARY:
 		return lines
 	var camera_state: Dictionary = camera_state_v
+	if camera_state.has("version"):
+		lines.append("camera_state.version=%s" % str(camera_state.get("version")))
 	var families := [
 		["exposure", "ae_mode"],
 		["exposure", "baseline_exposure_compensation_milli_ev"],
@@ -5809,10 +5811,20 @@ func _build_camera_state_info_lines(rec: Dictionary) -> Array[String]:
 		if typeof(value_v) != TYPE_DICTIONARY:
 			continue
 		var value: Dictionary = value_v
-		lines.append(
-			"camera_state.%s.%s support=%s apply_status=%s"
-			% [family_name, field_name, str(value.get("support", "UNKNOWN")), str(value.get("apply_status", "UNKNOWN"))]
-		)
+		var parts: Array[String] = []
+		parts.append("support=%s" % str(value.get("support", "UNKNOWN")))
+		var has_target := bool(value.get("has_target", false))
+		parts.append("has_target=%s" % ("true" if has_target else "false"))
+		if has_target and value.has("target"):
+			parts.append("target=%s" % str(value.get("target")))
+		var has_applied := bool(value.get("has_applied", false))
+		parts.append("has_applied=%s" % ("true" if has_applied else "false"))
+		if has_applied and value.has("applied"):
+			parts.append("applied=%s" % str(value.get("applied")))
+		parts.append("apply_status=%s" % str(value.get("apply_status", "UNKNOWN")))
+		if value.has("apply_error_code"):
+			parts.append("apply_error_code=%s" % str(value.get("apply_error_code")))
+		lines.append("camera_state.%s.%s %s" % [family_name, field_name, " ".join(parts)])
 	return lines
 
 
