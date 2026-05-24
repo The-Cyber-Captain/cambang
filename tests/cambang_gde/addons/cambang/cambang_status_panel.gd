@@ -456,6 +456,7 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 
 func _refresh_from_server() -> void:
 	_build_ui_if_needed()
+	var provider_mode := ""
 	if _server == null:
 		_server = _get_server()
 	if _server == null:
@@ -468,6 +469,24 @@ func _refresh_from_server() -> void:
 		_last_panel_model = _compose_presented_panel_model(no_server_panel, false, {})
 		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
+
+	if _server.has_method("get_active_provider_config"):
+		var cfg: Variant = _server.get_active_provider_config()
+		if typeof(cfg) == TYPE_DICTIONARY:
+			var d: Dictionary = cfg
+			var provider_kind := int(d.get("provider_kind", -1))
+			if provider_kind == _server.PROVIDER_KIND_PLATFORM_BACKED:
+				provider_mode = "platform_backed"
+			elif provider_kind == _server.PROVIDER_KIND_SYNTHETIC:
+				provider_mode = "synthetic"
+				var synthetic_role := d.get("synthetic_role", null)
+				if synthetic_role != null and int(synthetic_role) == _server.SYNTHETIC_ROLE_TIMELINE:
+					provider_mode = "synthetic/timeline"
+					var timeline_reconciliation := str(d.get("timeline_reconciliation", ""))
+					if timeline_reconciliation == "completion_gated":
+						provider_mode += "/completion-gated"
+					elif timeline_reconciliation == "strict":
+						provider_mode += "/strict"
 
 	var snapshot := _fetch_snapshot()
 	var reading := _read_snapshot(snapshot)
