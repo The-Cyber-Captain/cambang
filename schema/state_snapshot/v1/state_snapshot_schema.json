@@ -165,7 +165,7 @@
         "image_member_index",
         "role",
         "role_name",
-        "exposure_compensation_milli_ev"
+        "intended_exposure_compensation_milli_ev"
       ],
       "properties": {
         "image_member_index": {
@@ -177,7 +177,7 @@
         "role_name": {
           "type": "string"
         },
-        "exposure_compensation_milli_ev": {
+        "intended_exposure_compensation_milli_ev": {
           "type": "integer"
         }
       }
