@@ -741,8 +741,10 @@ func _extract_rendered_counter_labels_by_row(panel: Variant) -> Dictionary:
 					continue
 				if widget.get_child_count() < 2:
 					continue
-				var name_label := widget.get_child(0)
-				if name_label != null and name_label is Label and bool(name_label.visible):
+				var name_label: Label = widget.get_child(0) as Label
+				if name_label == null:
+					continue
+				if bool(name_label.visible):
 					labels.append(str(name_label.text))
 		labels_by_row[row_id] = labels
 
