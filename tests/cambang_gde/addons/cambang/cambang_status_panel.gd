@@ -198,6 +198,24 @@ func _reconcile_post_stop_nil_boundary() -> bool:
 	if _server == null:
 		return false
 
+	var provider_mode := "unknown"
+	if _server.has_method("get_active_provider_config"):
+		var cfg: Variant = _server.get_active_provider_config()
+		if typeof(cfg) == TYPE_DICTIONARY:
+			var d: Dictionary = cfg
+			var provider_kind := int(d.get("provider_kind", -1))
+			if provider_kind == _server.PROVIDER_KIND_PLATFORM_BACKED:
+				provider_mode = "platform_backed"
+			elif provider_kind == _server.PROVIDER_KIND_SYNTHETIC:
+				provider_mode = "synthetic"
+				var synthetic_role := d.get("synthetic_role", null)
+				if synthetic_role != null and int(synthetic_role) == _server.SYNTHETIC_ROLE_TIMELINE:
+					provider_mode = "synthetic/timeline"
+					var timeline_reconciliation := str(d.get("timeline_reconciliation", ""))
+					if timeline_reconciliation == "completion_gated":
+						provider_mode += "/completion-gated"
+					elif timeline_reconciliation == "strict":
+						provider_mode += "/strict"
 	var snapshot := _fetch_snapshot()
 	if snapshot != null:
 		return false
