@@ -3710,9 +3710,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			)
 		var still_profile := _capture_profile_still_dict(rec)
 		device_info.append_array(_build_camera_state_info_lines(rec))
-		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
-		if not device_bundle_count.is_empty():
-			device_info.append(device_bundle_count)
+		var device_bundle_count := _still_image_bundle_member_count(rec)
 		var device_bundle_detail := _build_still_image_bundle_detail_line(rec)
 		if not device_bundle_detail.is_empty():
 			device_info.append(device_bundle_detail)
@@ -3740,6 +3738,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						_counter("capture_h", int(still_profile.get("height", 0)), 4),
 						_counter("capture_fmt", int(still_profile.get("format", 0)), 4),
 						_counter("capture_prof", int(still_profile.get("version", 0)), 2),
+						_counter("bundle", device_bundle_count, 2),
 					],
 					"device"
 				),
@@ -3794,9 +3793,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			)
 		var acquisition_still_profile := _capture_profile_still_dict(rec)
 		acquisition_session_info.append_array(_build_camera_state_info_lines(rec))
-		var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
-		if not acquisition_bundle_summary.is_empty():
-			acquisition_session_info.append(acquisition_bundle_summary)
+		var acquisition_bundle_count := _still_image_bundle_member_count(rec)
 		var acquisition_bundle_detail := _build_still_image_bundle_detail_line(rec)
 		if not acquisition_bundle_detail.is_empty():
 			acquisition_session_info.append(acquisition_bundle_detail)
@@ -3825,6 +3822,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						_counter("capture_h", int(acquisition_still_profile.get("height", 0)), 4),
 						_counter("capture_fmt", int(acquisition_still_profile.get("format", 0)), 4),
 						_counter("capture_prof", int(acquisition_still_profile.get("version", 0)), 2),
+						_counter("bundle", acquisition_bundle_count, 2),
 					],
 					"acquisition_session"
 				),
@@ -3877,9 +3875,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_badge("neutral", "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE"))),
 			]
 			var stream_info: Array[String] = []
-			var visibility_info_line := _build_stream_visibility_info_line(rec)
-			if not visibility_info_line.is_empty():
-				stream_info.append(visibility_info_line)
+			if rec.has("visibility_last_path"):
+				stream_info.append(
+					"visibility_path=%s"
+					% _format_info_value(rec.get("visibility_last_path"), "visibility_path")
+				)
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -4068,7 +4068,6 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		for j in range(members.size()):
 			var hardware_id := str(members[j])
 			var member_device := _find_device_by_hardware(devices, hardware_id, issues)
-			var member_context_lines: Array[String] = ["context: rig member."]
 			var member_info: Array[String] = []
 			if member_device.is_empty():
 				member_info.append("Contract gap: rig member hardware_id not present in devices list.")
@@ -4081,7 +4080,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				false,
 				[],
 				[],
-				_append_lines(member_context_lines, member_info)
+				member_info
 			))
 
 	var orphan_rows: Array[StatusEntryModel] = []
@@ -5329,6 +5328,7 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"bundle": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"stream":
 			return {
@@ -5353,6 +5353,7 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"bundle": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"triggered": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"completed": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"failed": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
@@ -5571,7 +5572,7 @@ func _counter_preference_table() -> Dictionary:
 			"derived_aggregate": ["rigs", "devices", "acquisition_sessions", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
 		},
 		"device": {
-			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof"],
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof", "bundle"],
 		},
 		"stream": {
 			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
@@ -5579,7 +5580,7 @@ func _counter_preference_table() -> Dictionary:
 			"pressure_failure": ["drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
 		},
 		"acquisition_session": {
-			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt"],
+			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt", "bundle"],
 			"activity": ["triggered", "completed", "last_capture_id"],
 			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
 		},
@@ -5737,7 +5738,7 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 			["capture_profile_version", "capture_profile_version", "int"],
 		]
 	)
-	var bundle_count_line := _build_still_image_bundle_member_count_line(rec)
+	var bundle_count_line := "still: bundle_members=%d" % _still_image_bundle_member_count(rec)
 	var bundle_detail_line := _build_still_image_bundle_detail_line(rec)
 	var bundle_segments: Array[String] = []
 	if not bundle_count_line.is_empty():
@@ -5752,12 +5753,12 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 	return "%s %s" % [base_line, bundle_fragment]
 
 
-func _build_still_image_bundle_member_count_line(rec: Dictionary) -> String:
+func _still_image_bundle_member_count(rec: Dictionary) -> int:
 	var bundle_members := _extract_still_image_bundle_members(rec)
 	if bundle_members == null:
-		return ""
+		return 0
 	var members: Array = bundle_members
-	return "still: bundle_members=%d" % members.size()
+	return members.size()
 
 
 func _build_still_image_bundle_detail_line(rec: Dictionary) -> String:
@@ -6004,7 +6005,7 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"capture_prof", "capture_w", "capture_h", "capture_fmt":
+		"capture_prof", "capture_w", "capture_h", "capture_fmt", "bundle":
 			if entry.visual_object_class == "device":
 				return "detail"
 			return "summary"
