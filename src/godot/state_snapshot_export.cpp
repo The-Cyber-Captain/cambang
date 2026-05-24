@@ -192,6 +192,83 @@ static godot::Dictionary export_scoped_resource_telemetry(const ScopedResourceTe
   return d;
 }
 
+
+static godot::String camera_value_support_token(CBCameraValueSupport s) {
+  switch (s) {
+    case CBCameraValueSupport::SUPPORTED: return gs("SUPPORTED");
+    case CBCameraValueSupport::UNSUPPORTED: return gs("UNSUPPORTED");
+    case CBCameraValueSupport::UNIMPLEMENTED: return gs("UNIMPLEMENTED");
+    default: return gs("UNKNOWN");
+  }
+}
+
+static godot::String camera_apply_status_token(CBCameraApplyStatus s) {
+  switch (s) {
+    case CBCameraApplyStatus::APPLIED: return gs("APPLIED");
+    case CBCameraApplyStatus::PENDING: return gs("PENDING");
+    case CBCameraApplyStatus::REJECTED: return gs("REJECTED");
+    case CBCameraApplyStatus::CONSTRAINED: return gs("CONSTRAINED");
+    default: return gs("UNKNOWN");
+  }
+}
+
+static godot::Dictionary export_camera_value_state_string(const CameraValueStateString& v) {
+  godot::Dictionary d;
+  d["support"] = camera_value_support_token(v.support);
+  d["has_target"] = v.has_target;
+  d["target"] = gs(v.target);
+  d["has_applied"] = v.has_applied;
+  d["applied"] = gs(v.applied);
+  d["apply_status"] = camera_apply_status_token(v.apply_status);
+  d["apply_error_code"] = static_cast<int>(v.apply_error_code);
+  return d;
+}
+
+static godot::Dictionary export_camera_value_state_int32(const CameraValueStateInt32& v) {
+  godot::Dictionary d;
+  d["support"] = camera_value_support_token(v.support);
+  d["has_target"] = v.has_target;
+  d["target"] = static_cast<int>(v.target);
+  d["has_applied"] = v.has_applied;
+  d["applied"] = static_cast<int>(v.applied);
+  d["apply_status"] = camera_apply_status_token(v.apply_status);
+  d["apply_error_code"] = static_cast<int>(v.apply_error_code);
+  return d;
+}
+
+static godot::Dictionary export_device_camera_state(const DeviceCameraState& c) {
+  godot::Dictionary d;
+  d["version"] = static_cast<uint64_t>(c.version);
+  godot::Dictionary exposure;
+  exposure["ae_mode"] = export_camera_value_state_string(c.exposure.ae_mode);
+  exposure["baseline_exposure_compensation_milli_ev"] = export_camera_value_state_int32(c.exposure.baseline_exposure_compensation_milli_ev);
+  d["exposure"] = exposure;
+  return d;
+}
+
+static godot::Dictionary export_capture_profile(const CaptureProfileState& c) {
+  godot::Dictionary profile;
+  godot::Dictionary still;
+  still["version"] = static_cast<uint64_t>(c.still.version);
+  still["width"] = static_cast<uint32_t>(c.still.width);
+  still["height"] = static_cast<uint32_t>(c.still.height);
+  still["format"] = static_cast<uint32_t>(c.still.format);
+  godot::Dictionary bundle;
+  godot::Array members;
+  for (const auto& m : c.still.still_image_bundle.members) {
+    godot::Dictionary md;
+    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
+    md["role"] = static_cast<int64_t>(m.role);
+    md["role_name"] = capture_still_image_member_role_name(m.role);
+    md["intended_exposure_compensation_milli_ev"] = static_cast<int64_t>(m.intended_exposure_compensation_milli_ev);
+    members.push_back(md);
+  }
+  bundle["members"] = members;
+  still["still_image_bundle"] = bundle;
+  profile["still"] = still;
+  return profile;
+}
+
 static godot::Dictionary export_rig(const RigState& r) {
   godot::Dictionary d;
   d["rig_id"] = static_cast<uint64_t>(r.rig_id);
@@ -233,22 +310,8 @@ static godot::Dictionary export_device(const DeviceState& s) {
   d["engaged"] = static_cast<bool>(s.engaged);
   d["rig_id"] = static_cast<uint64_t>(s.rig_id);
   d["camera_spec_version"] = static_cast<uint64_t>(s.camera_spec_version);
-  d["capture_profile_version"] = static_cast<uint64_t>(s.capture_profile_version);
-  d["capture_width"] = static_cast<uint32_t>(s.capture_width);
-  d["capture_height"] = static_cast<uint32_t>(s.capture_height);
-  d["capture_format"] = static_cast<uint32_t>(s.capture_format);
-  godot::Dictionary bundle;
-  godot::Array members;
-  for (const auto& m : s.still_image_bundle.members) {
-    godot::Dictionary md;
-    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
-    md["role"] = static_cast<int64_t>(m.role);
-    md["role_name"] = capture_still_image_member_role_name(m.role);
-    md["intended_exposure_compensation_milli_ev"] = static_cast<int64_t>(m.intended_exposure_compensation_milli_ev);
-    members.push_back(md);
-  }
-  bundle["members"] = members;
-  d["still_image_bundle"] = bundle;
+  d["capture_profile"] = export_capture_profile(s.capture_profile);
+  d["camera_state"] = export_device_camera_state(s.camera_state);
   d["warm_hold_ms"] = static_cast<uint32_t>(s.warm_hold_ms);
   d["warm_remaining_ms"] = static_cast<uint32_t>(s.warm_remaining_ms);
   d["rebuild_count"] = static_cast<uint64_t>(s.rebuild_count);
@@ -290,22 +353,8 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
   d["acquisition_session_id"] = static_cast<uint64_t>(s.acquisition_session_id);
   d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);
   d["phase"] = lifecycle_phase_token(s.phase);
-  d["capture_profile_version"] = static_cast<uint64_t>(s.capture_profile_version);
-  d["capture_width"] = static_cast<uint32_t>(s.capture_width);
-  d["capture_height"] = static_cast<uint32_t>(s.capture_height);
-  d["capture_format"] = static_cast<uint32_t>(s.capture_format);
-  godot::Dictionary bundle;
-  godot::Array members;
-  for (const auto& m : s.still_image_bundle.members) {
-    godot::Dictionary item;
-    item["image_member_index"] = static_cast<int>(m.image_member_index);
-    item["role"] = static_cast<int>(m.role);
-    item["role_name"] = capture_still_image_member_role_name(m.role);
-    item["intended_exposure_compensation_milli_ev"] = static_cast<int>(m.intended_exposure_compensation_milli_ev);
-    members.append(item);
-  }
-  bundle["members"] = members;
-  d["still_image_bundle"] = bundle;
+  d["capture_profile"] = export_capture_profile(s.capture_profile);
+  d["camera_state"] = export_device_camera_state(s.camera_state);
   d["captures_triggered"] = static_cast<uint64_t>(s.captures_triggered);
   d["captures_completed"] = static_cast<uint64_t>(s.captures_completed);
   d["captures_failed"] = static_cast<uint64_t>(s.captures_failed);

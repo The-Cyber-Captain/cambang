@@ -262,11 +262,13 @@ func _try_verify_stream_result() -> void:
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
 		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
-		_capture_profile_version_after_set = int(device_snapshot_after_set.get("capture_profile_version", -1))
+		var profile_after_set: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_set)
+		_capture_profile_version_after_set = int(profile_after_set.get("version", -1))
 		return
 
 	var device_snapshot_after_trigger := _get_device_snapshot_record(_device_instance_id)
-	var capture_profile_version_after_trigger := int(device_snapshot_after_trigger.get("capture_profile_version", -1))
+	var profile_after_trigger: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_trigger)
+	var capture_profile_version_after_trigger := int(profile_after_trigger.get("version", -1))
 	if capture_profile_version_after_trigger < 0:
 		return
 	_require(
@@ -411,19 +413,17 @@ func _refresh_member_inspection_strip(capture_result, expected_members: Array) -
 		item_col.add_child(preview)
 
 		var image_member: Dictionary = capture_result.get_image_member(i)
-		var intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
-		var applied_ev := int(image_member.get("applied_exposure_compensation_milli_ev", 0))
-		var realized_tag := "unknown"
+		var role_value := int(image_member.get("role", expected_member.get("role", -1)))
+		var role_label := _role_name(role_value)
+		var realized_ev_label := "unknown"
 		if bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)):
-			realized_tag = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
+			realized_ev_label = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
 		var meta := Label.new()
 		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		meta.text = "idx=%d role=%s i=%d a=%d r=%s" % [
-			int(expected_member.get("image_member_index", -1)),
-			_role_name(int(expected_member.get("role", -1))),
-			intended_ev,
-			applied_ev,
-			realized_tag,
+		meta.text = "idx=%d role=%s ev=%s" % [
+			int(image_member.get("image_member_index", -1)),
+			role_label,
+			realized_ev_label,
 		]
 		item_col.add_child(meta)
 
@@ -532,6 +532,17 @@ func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
 		if int(rec.get("instance_id", 0)) == device_instance_id:
 			return rec
 	return {}
+
+
+func _extract_snapshot_still_profile(device_snapshot: Dictionary) -> Dictionary:
+	var capture_profile_v: Variant = device_snapshot.get("capture_profile", null)
+	if typeof(capture_profile_v) != TYPE_DICTIONARY:
+		return {}
+	var capture_profile: Dictionary = capture_profile_v
+	var still_v: Variant = capture_profile.get("still", null)
+	if typeof(still_v) != TYPE_DICTIONARY:
+		return {}
+	return still_v
 
 
 func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictionary:

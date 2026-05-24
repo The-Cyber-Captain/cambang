@@ -426,7 +426,7 @@ RigState {
 
 ### 6.2 `DeviceState`
 
-`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+`capture_profile.still.width`, `capture_profile.still.height`, and `capture_profile.still.format` form part of the applied still capture
 profile for this device.
 
 ``` text
@@ -442,18 +442,45 @@ DeviceState {
   rig_id: uint64                         // 0 if not a rig member
 
   camera_spec_version: uint64            // effective CameraSpec version
-  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
-  capture_width: uint32
-  capture_height: uint32
-  capture_format: uint32                 // FourCC-style CamBANG pixel format
-  still_image_bundle: {
+  camera_state: {
+    version: uint64
+    exposure: {
+      ae_mode: {
+        support: SUPPORTED | UNSUPPORTED | UNIMPLEMENTED | UNKNOWN
+        has_target: bool
+        target: String
+        has_applied: bool
+        applied: String
+        apply_status: APPLIED | PENDING | REJECTED | CONSTRAINED | UNKNOWN
+        apply_error_code: int32
+      }
+      baseline_exposure_compensation_milli_ev: {
+        support: SUPPORTED | UNSUPPORTED | UNIMPLEMENTED | UNKNOWN
+        has_target: bool
+        target: int32
+        has_applied: bool
+        applied: int32
+        apply_status: APPLIED | PENDING | REJECTED | CONSTRAINED | UNKNOWN
+        apply_error_code: int32
+      }
+    }
+  }                                   // target/applied device camera posture; no realized per-image truth
+  capture_profile: {
+    still: {
+      version: uint64                    // monotonic change lineage for the applied still capture profile
+      width: uint32
+      height: uint32
+      format: uint32                     // FourCC-style CamBANG pixel format
+      still_image_bundle: {
     members: Array<{
       image_member_index: uint32
       role: uint32
       role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
       intended_exposure_compensation_milli_ev: int32
     }>
-  }                                      // applied still-image bundle profile truth
+      }                                  // applied still-image bundle profile truth
+    }
+  }
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming
@@ -498,18 +525,22 @@ AcquisitionSessionState {
 
   phase: phase
 
-  capture_profile_version: uint64
-  capture_width: uint32
-  capture_height: uint32
-  capture_format: uint32
-  still_image_bundle: {
+  capture_profile: {
+    still: {
+      version: uint64
+      width: uint32
+      height: uint32
+      format: uint32
+      still_image_bundle: {
     members: Array<{
       image_member_index: uint32
       role: uint32
       role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
       intended_exposure_compensation_milli_ev: int32
     }>
-  }                                      // applied still-image bundle profile truth for this acquisition-session context
+      }                                  // still-image bundle profile truth latched for this acquisition-session context
+    }
+  }
 
   captures_triggered: uint64
   captures_completed: uint64

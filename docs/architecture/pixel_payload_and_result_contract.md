@@ -863,3 +863,5 @@ Case A (unsupported bundle shape/member count) remains admission/validation fail
 `CaptureResultSet` remains a rig/Core curation container for grouping device
 `CaptureResult` objects and must not be treated as the container for bracket
 members of a single device capture result.
+
+- Snapshot still-capture profile shape is nested at `capture_profile.still`; realized per-image metadata remains on `CaptureResult.image_member`.

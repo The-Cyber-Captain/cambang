@@ -77,7 +77,6 @@ struct RigState {
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
-    CaptureStillImageBundleState still_image_bundle{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
@@ -88,6 +87,51 @@ struct RigState {
     uint64_t last_sync_skew_ns = 0;
 
     int32_t error_code = 0;
+};
+
+struct StillCaptureProfileState {
+    uint64_t version = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format = 0;
+    CaptureStillImageBundleState still_image_bundle{};
+};
+
+struct CaptureProfileState {
+    StillCaptureProfileState still{};
+};
+
+enum class CBCameraValueSupport : uint8_t { SUPPORTED=0, UNSUPPORTED=1, UNIMPLEMENTED=2, UNKNOWN=3 };
+enum class CBCameraApplyStatus : uint8_t { APPLIED=0, PENDING=1, REJECTED=2, CONSTRAINED=3, UNKNOWN=4 };
+
+struct CameraValueStateString {
+    CBCameraValueSupport support = CBCameraValueSupport::UNIMPLEMENTED;
+    bool has_target = false;
+    std::string target;
+    bool has_applied = false;
+    std::string applied;
+    CBCameraApplyStatus apply_status = CBCameraApplyStatus::UNKNOWN;
+    int32_t apply_error_code = 0;
+};
+
+struct CameraValueStateInt32 {
+    CBCameraValueSupport support = CBCameraValueSupport::UNIMPLEMENTED;
+    bool has_target = false;
+    int32_t target = 0;
+    bool has_applied = false;
+    int32_t applied = 0;
+    CBCameraApplyStatus apply_status = CBCameraApplyStatus::UNKNOWN;
+    int32_t apply_error_code = 0;
+};
+
+struct DeviceCameraExposureState {
+    CameraValueStateString ae_mode{};
+    CameraValueStateInt32 baseline_exposure_compensation_milli_ev{};
+};
+
+struct DeviceCameraState {
+    uint64_t version = 0;
+    DeviceCameraExposureState exposure{};
 };
 
 struct DeviceState {
@@ -101,11 +145,8 @@ struct DeviceState {
     uint64_t rig_id = 0;
 
     uint64_t camera_spec_version = 0;
-    uint64_t capture_profile_version = 0;
-    uint32_t capture_width = 0;
-    uint32_t capture_height = 0;
-    uint32_t capture_format = 0;
-    CaptureStillImageBundleState still_image_bundle{};
+    CaptureProfileState capture_profile{};
+    DeviceCameraState camera_state{};
 
     uint32_t warm_hold_ms = 0;
     uint32_t warm_remaining_ms = 0;
@@ -123,11 +164,8 @@ struct AcquisitionSessionState {
 
     CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
 
-    uint64_t capture_profile_version = 0;
-    uint32_t capture_width = 0;
-    uint32_t capture_height = 0;
-    uint32_t capture_format = 0;
-    CaptureStillImageBundleState still_image_bundle{};
+    CaptureProfileState capture_profile{};
+    DeviceCameraState camera_state{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;

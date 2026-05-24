@@ -570,3 +570,5 @@ A threshold value of `0` disables that specific temporal growth rule.
 - Stream rows surface `visibility_last_path` via `visibility:` info line alongside visibility counters.
 - Native support types (`gpu_backing`, `frame_buffer_lease`) are grouped under projection row `<stream|acquisition_session>/<id>/native_payload_support` when owners are present.
 - Native info lines now include non-zero `owner_provider_native_id` and `owner_rig_id` for ownership traceability.
+
+- StatusPanel reads still profile truth from `capture_profile.still` on device/acquisition rows.

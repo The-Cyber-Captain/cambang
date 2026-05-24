@@ -3698,6 +3698,17 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: device row has %d matching current-generation Device native objects."
 				% device_matches.size()
 			)
+		var still_profile := _capture_profile_still_dict(rec)
+		var camera_state_v: Variant = rec.get("camera_state", {})
+		if typeof(camera_state_v) == TYPE_DICTIONARY:
+			var camera_state: Dictionary = camera_state_v
+			var exposure_v: Variant = camera_state.get("exposure", {})
+			if typeof(exposure_v) == TYPE_DICTIONARY:
+				var exposure: Dictionary = exposure_v
+				var ae_mode: Dictionary = exposure.get("ae_mode", {})
+				var baseline_ev: Dictionary = exposure.get("baseline_exposure_compensation_milli_ev", {})
+				device_info.append("camera_state.ae_mode support=%s apply_status=%s" % [str(ae_mode.get("support", "UNKNOWN")), str(ae_mode.get("apply_status", "UNKNOWN"))])
+				device_info.append("camera_state.baseline_ev support=%s apply_status=%s" % [str(baseline_ev.get("support", "UNKNOWN")), str(baseline_ev.get("apply_status", "UNKNOWN"))])
 		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
 		if not device_bundle_count.is_empty():
 			device_info.append(device_bundle_count)
@@ -3721,12 +3732,14 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						["rebuild_count", "rebuild_count", 2],
 						["warm_hold_ms", "warm_hold_ms", 3],
 						["warm_remaining_ms", "warm_remaining_ms", 3],
-						["capture_w", "capture_width", 4],
-						["capture_h", "capture_height", 4],
-						["capture_fmt", "capture_format", 4],
-						["capture_prof", "capture_profile_version", 2],
+						
 					],
-					[],
+					[
+						_counter("capture_w", int(still_profile.get("width", 0)), 4),
+						_counter("capture_h", int(still_profile.get("height", 0)), 4),
+						_counter("capture_fmt", int(still_profile.get("format", 0)), 4),
+						_counter("capture_prof", int(still_profile.get("version", 0)), 2),
+					],
 					"device"
 				),
 			device_info,
@@ -3778,6 +3791,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"Contract ambiguity: acquisition_session row has %d matching current-generation AcquisitionSession native objects."
 				% acquisition_session_native_matches.size()
 			)
+		var acquisition_still_profile := _capture_profile_still_dict(rec)
 		var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
 		if not acquisition_bundle_summary.is_empty():
 			acquisition_session_info.append(acquisition_bundle_summary)
@@ -3796,10 +3810,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			_counters_from_record(
 				rec,
 				[
-					["capture_prof", "capture_profile_version", 2],
-					["capture_w", "capture_width", 4],
-					["capture_h", "capture_height", 4],
-					["capture_fmt", "capture_format", 4],
+					
 					["triggered", "captures_triggered", 3],
 					["completed", "captures_completed", 3],
 					["failed", "captures_failed", 3],
@@ -5688,9 +5699,29 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 	return "NONE"
 
 
+
+func _capture_profile_still_dict(rec: Dictionary) -> Dictionary:
+	if not rec.has("capture_profile"):
+		return {}
+	var cpv: Variant = rec.get("capture_profile")
+	if typeof(cpv) != TYPE_DICTIONARY:
+		return {}
+	var cp: Dictionary = cpv
+	var stillv: Variant = cp.get("still")
+	if typeof(stillv) != TYPE_DICTIONARY:
+		return {}
+	return stillv
+
 func _build_capture_profile_info_line(rec: Dictionary) -> String:
+	var still := _capture_profile_still_dict(rec)
+	var capture_rec: Dictionary = {
+		"capture_width": still.get("width", 0),
+		"capture_height": still.get("height", 0),
+		"capture_format": still.get("format", 0),
+		"capture_profile_version": still.get("version", 0),
+	}
 	var base_line := _build_info_line_from_parts(
-		rec,
+		capture_rec,
 		"capture",
 		[
 			["capture_width", "capture_width", "int"],
@@ -5731,9 +5762,19 @@ func _build_still_image_bundle_detail_line(rec: Dictionary) -> String:
 
 
 func _extract_still_image_bundle_members(rec: Dictionary) -> Variant:
-	if not rec.has("still_image_bundle"):
+	var bundle_variant: Variant = null
+	if rec.has("still_image_bundle"):
+		bundle_variant = rec.get("still_image_bundle")
+	elif rec.has("capture_profile"):
+		var cpv: Variant = rec.get("capture_profile")
+		if typeof(cpv) == TYPE_DICTIONARY:
+			var cp: Dictionary = cpv
+			var stillv: Variant = cp.get("still")
+			if typeof(stillv) == TYPE_DICTIONARY:
+				var still: Dictionary = stillv
+				bundle_variant = still.get("still_image_bundle")
+	if bundle_variant == null:
 		return null
-	var bundle_variant: Variant = rec.get("still_image_bundle")
 	if typeof(bundle_variant) != TYPE_DICTIONARY:
 		return null
 	var bundle: Dictionary = bundle_variant

@@ -151,3 +151,5 @@ for still-capture result assembly.
   for multi-member still bundles only: default-only capture remains valid even
   when capability is false, and multi-member authored bundles must be
   rejected/admission-failed when capability is false.
+
+- Device/acquisition still profile snapshot fields are nested under `capture_profile.still` (no flattened compatibility aliases).

@@ -537,3 +537,5 @@ support records does not redefine the Godot-facing result/object vocabulary.
 - **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
 - **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
 - **Native Payload Support**: projection grouping concept for provider-owned native support entities whose lifetime/release matters for payload/backing truth.
+
+- Snapshot still-capture profile truth uses nested `capture_profile.still.{version,width,height,format,still_image_bundle}` on `DeviceState` and `AcquisitionSessionState` (latched per-session context truth).

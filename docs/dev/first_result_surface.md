@@ -561,3 +561,5 @@ It exists to prevent future implementation from teaching the wrong lesson that
 a non-CPU primary payload removes the need for an available CPU-facing fallback.
 
 ---
+
+- Still-bundle authored intent is carried in snapshot under `capture_profile.still.still_image_bundle`; realized member truth remains result-level.

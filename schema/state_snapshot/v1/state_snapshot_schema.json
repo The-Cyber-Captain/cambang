@@ -287,16 +287,13 @@
         "engaged",
         "rig_id",
         "camera_spec_version",
-        "capture_profile_version",
-        "capture_width",
-        "capture_height",
-        "capture_format",
         "warm_hold_ms",
         "warm_remaining_ms",
         "rebuild_count",
         "errors_count",
         "last_error_code",
-        "still_image_bundle"
+        "capture_profile",
+        "camera_state"
       ],
       "properties": {
         "hardware_id": {
@@ -320,9 +317,6 @@
         "camera_spec_version": {
           "$ref": "#/$defs/uint64"
         },
-        "capture_profile_version": {
-          "$ref": "#/$defs/uint64"
-        },
         "warm_hold_ms": {
           "$ref": "#/$defs/uint32"
         },
@@ -338,17 +332,11 @@
         "last_error_code": {
           "$ref": "#/$defs/int32"
         },
-        "capture_width": {
-          "$ref": "#/$defs/uint32"
+        "capture_profile": {
+          "$ref": "#/$defs/capture_profile"
         },
-        "capture_height": {
-          "$ref": "#/$defs/uint32"
-        },
-        "capture_format": {
-          "$ref": "#/$defs/uint32"
-        },
-        "still_image_bundle": {
-          "$ref": "#/$defs/still_image_bundle"
+        "camera_state": {
+          "$ref": "#/$defs/device_camera_state"
         }
       }
     },
@@ -359,17 +347,13 @@
         "acquisition_session_id",
         "device_instance_id",
         "phase",
-        "capture_profile_version",
-        "capture_width",
-        "capture_height",
-        "capture_format",
         "captures_triggered",
         "captures_completed",
         "captures_failed",
         "last_capture_id",
         "last_capture_latency_ns",
         "error_code",
-        "still_image_bundle"
+        "capture_profile"
       ],
       "properties": {
         "acquisition_session_id": {
@@ -380,18 +364,6 @@
         },
         "phase": {
           "$ref": "#/$defs/lifecycle_phase"
-        },
-        "capture_profile_version": {
-          "$ref": "#/$defs/uint64"
-        },
-        "capture_width": {
-          "$ref": "#/$defs/uint32"
-        },
-        "capture_height": {
-          "$ref": "#/$defs/uint32"
-        },
-        "capture_format": {
-          "$ref": "#/$defs/uint32"
         },
         "captures_triggered": {
           "$ref": "#/$defs/uint64"
@@ -411,8 +383,8 @@
         "error_code": {
           "$ref": "#/$defs/int32"
         },
-        "still_image_bundle": {
-          "$ref": "#/$defs/still_image_bundle"
+        "capture_profile": {
+          "$ref": "#/$defs/capture_profile"
         }
       }
     },
@@ -678,6 +650,169 @@
         },
         "destroyed_ns": {
           "$ref": "#/$defs/uint64"
+        }
+      }
+    },
+    "still_capture_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "width",
+        "height",
+        "format",
+        "still_image_bundle"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "width": {
+          "$ref": "#/$defs/uint32"
+        },
+        "height": {
+          "$ref": "#/$defs/uint32"
+        },
+        "format": {
+          "$ref": "#/$defs/uint32"
+        },
+        "still_image_bundle": {
+          "$ref": "#/$defs/still_image_bundle"
+        }
+      }
+    },
+    "capture_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "still"
+      ],
+      "properties": {
+        "still": {
+          "$ref": "#/$defs/still_capture_profile"
+        }
+      }
+    },
+    "camera_value_support": {
+      "type": "string",
+      "enum": [
+        "SUPPORTED",
+        "UNSUPPORTED",
+        "UNIMPLEMENTED",
+        "UNKNOWN"
+      ]
+    },
+    "camera_apply_status": {
+      "type": "string",
+      "enum": [
+        "APPLIED",
+        "PENDING",
+        "REJECTED",
+        "CONSTRAINED",
+        "UNKNOWN"
+      ]
+    },
+    "camera_value_state_string": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "support",
+        "has_target",
+        "target",
+        "has_applied",
+        "applied",
+        "apply_status",
+        "apply_error_code"
+      ],
+      "properties": {
+        "support": {
+          "$ref": "#/$defs/camera_value_support"
+        },
+        "has_target": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string"
+        },
+        "has_applied": {
+          "type": "boolean"
+        },
+        "applied": {
+          "type": "string"
+        },
+        "apply_status": {
+          "$ref": "#/$defs/camera_apply_status"
+        },
+        "apply_error_code": {
+          "$ref": "#/$defs/int32"
+        }
+      }
+    },
+    "camera_value_state_int32": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "support",
+        "has_target",
+        "target",
+        "has_applied",
+        "applied",
+        "apply_status",
+        "apply_error_code"
+      ],
+      "properties": {
+        "support": {
+          "$ref": "#/$defs/camera_value_support"
+        },
+        "has_target": {
+          "type": "boolean"
+        },
+        "target": {
+          "$ref": "#/$defs/int32"
+        },
+        "has_applied": {
+          "type": "boolean"
+        },
+        "applied": {
+          "$ref": "#/$defs/int32"
+        },
+        "apply_status": {
+          "$ref": "#/$defs/camera_apply_status"
+        },
+        "apply_error_code": {
+          "$ref": "#/$defs/int32"
+        }
+      }
+    },
+    "device_camera_exposure_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ae_mode",
+        "baseline_exposure_compensation_milli_ev"
+      ],
+      "properties": {
+        "ae_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "baseline_exposure_compensation_milli_ev": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "exposure"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/uint64"
+        },
+        "exposure": {
+          "$ref": "#/$defs/device_camera_exposure_state"
         }
       }
     }

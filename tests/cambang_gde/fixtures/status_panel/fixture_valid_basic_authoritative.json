@@ -110,10 +110,6 @@
         "member_hardware_ids": [
           "synthetic:0"
         ],
-        "capture_profile_version": 13,
-        "capture_width": 4096,
-        "capture_height": 2160,
-        "capture_format": 542589266,
         "active_capture_id": 0,
         "captures_triggered": 0,
         "captures_completed": 0,
@@ -121,7 +117,25 @@
         "last_capture_id": 0,
         "last_capture_latency_ns": 0,
         "last_sync_skew_ns": 0,
-        "error_code": 0
+        "error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 13,
+            "width": 4096,
+            "height": 2160,
+            "format": 542589266,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "devices": [
@@ -133,15 +147,52 @@
         "errors_count": 0,
         "engaged": true,
         "rig_id": 7,
-        "capture_profile_version": 11,
-        "capture_width": 4032,
-        "capture_height": 3024,
-        "capture_format": 1195724874,
         "camera_spec_version": 0,
         "warm_hold_ms": 0,
         "warm_remaining_ms": 0,
         "rebuild_count": 0,
-        "last_error_code": 0
+        "last_error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 11,
+            "width": 4032,
+            "height": 3024,
+            "format": 1195724874,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        },
+        "camera_state": {
+          "version": 0,
+          "exposure": {
+            "ae_mode": {
+              "support": "UNIMPLEMENTED",
+              "has_target": false,
+              "target": "",
+              "has_applied": false,
+              "applied": "",
+              "apply_status": "UNKNOWN",
+              "apply_error_code": 0
+            },
+            "baseline_exposure_compensation_milli_ev": {
+              "support": "UNIMPLEMENTED",
+              "has_target": false,
+              "target": 0,
+              "has_applied": false,
+              "applied": 0,
+              "apply_status": "UNKNOWN",
+              "apply_error_code": 0
+            }
+          }
+        }
       }
     ],
     "streams": [
@@ -257,16 +308,30 @@
         "acquisition_session_id": 1,
         "device_instance_id": 1,
         "phase": "LIVE",
-        "capture_profile_version": 0,
-        "capture_width": 0,
-        "capture_height": 0,
-        "capture_format": 0,
         "captures_triggered": 0,
         "captures_completed": 0,
         "captures_failed": 0,
         "last_capture_id": 0,
         "last_capture_latency_ns": 0,
-        "error_code": 0
+        "error_code": 0,
+        "capture_profile": {
+          "still": {
+            "version": 0,
+            "width": 0,
+            "height": 0,
+            "format": 0,
+            "still_image_bundle": {
+              "members": [
+                {
+                  "image_member_index": 0,
+                  "role": 0,
+                  "role_name": "DEFAULT_METERED",
+                  "intended_exposure_compensation_milli_ev": 0
+                }
+              ]
+            }
+          }
+        }
       }
     ],
     "scoped_resource_telemetry": []
