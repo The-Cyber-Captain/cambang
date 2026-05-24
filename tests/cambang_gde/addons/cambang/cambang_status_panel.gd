@@ -5969,6 +5969,10 @@ func _is_anomaly_info_line(line: String) -> bool:
 func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool:
 	if entry == null:
 		return false
+	if line.begins_with("camera_state."):
+		return false
+	if line.begins_with("visibility_path="):
+		return false
 	if _entry_kind(entry) == "retained":
 		return (
 			line.begins_with("Panel-local continuity only.")
