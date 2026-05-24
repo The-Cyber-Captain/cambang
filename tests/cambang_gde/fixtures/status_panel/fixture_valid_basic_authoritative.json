@@ -73,6 +73,22 @@
         "members": 1
       }
     },
+    "required_counter_labels_by_row": {
+      "provider/100": [
+        "native_all*",
+        "native_cur*"
+      ],
+      "server/main": [
+        "gen",
+        "version"
+      ]
+    },
+    "forbidden_counter_labels_by_row": {
+      "server/main": [
+        "gen*",
+        "version*"
+      ]
+    },
     "required_info_substrings_by_row": {
       "native_object/103": [
         "owner_stream_id=1",

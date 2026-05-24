@@ -176,7 +176,8 @@ func _initialize() -> void:
 		projection_gaps,
 		row_ids,
 		visible_row_ids,
-		rendered_model
+		rendered_model,
+		panel
 	)
 	if not failures.is_empty():
 		for failure in failures:
@@ -711,6 +712,43 @@ func _collect_visible_row_ids(panel: Variant) -> Array[String]:
 	return visible_ids
 
 
+func _extract_rendered_counter_labels_by_row(panel: Variant) -> Dictionary:
+	var labels_by_row: Dictionary = {}
+	if panel == null:
+		return labels_by_row
+
+	var rows_container: Variant = panel.get("_status_rows")
+	if rows_container == null:
+		return labels_by_row
+
+	for child in rows_container.get_children():
+		if child == null or not bool(child.visible):
+			continue
+		var row_id := ""
+		if child.has_method("get_entry_id"):
+			row_id = str(child.call("get_entry_id"))
+		else:
+			row_id = str(child.get("_entry_id"))
+		if row_id == "":
+			continue
+
+		var labels: Array[String] = []
+		var counter_widgets: Variant = child.get("_counter_widgets")
+		if typeof(counter_widgets) == TYPE_ARRAY:
+			for raw_widget in counter_widgets:
+				var widget: Variant = raw_widget
+				if widget == null or not bool(widget.visible):
+					continue
+				if widget.get_child_count() < 2:
+					continue
+				var name_label := widget.get_child(0)
+				if name_label != null and name_label is Label and bool(name_label.visible):
+					labels.append(str(name_label.text))
+		labels_by_row[row_id] = labels
+
+	return labels_by_row
+
+
 func _classify_observed_outcome(
 	contract_gaps: Array,
 	projection_gaps: Array,
@@ -735,9 +773,11 @@ func _evaluate_expectations(
 	projection_gaps: Array,
 	row_ids: Array[String],
 	visible_row_ids: Array[String],
-	rendered_model: Variant
+	rendered_model: Variant,
+	panel: Variant
 ) -> Array[String]:
 	var failures: Array[String] = []
+	var rendered_counter_labels_by_row: Dictionary = _extract_rendered_counter_labels_by_row(panel)
 
 	if expected_panel_outcome.has("snapshot_state_contains"):
 		var needle := str(expected_panel_outcome.get("snapshot_state_contains", ""))
@@ -871,6 +911,24 @@ func _evaluate_expectations(
 			var needle := str(raw_substring)
 			if info_blob.find(needle) == -1:
 				failures.append("row %s missing info substring %s" % [str(row_id), needle])
+
+	var required_counter_labels_by_row: Dictionary = expected_panel_outcome.get("required_counter_labels_by_row", {})
+	for row_id in required_counter_labels_by_row.keys():
+		var labels: Array[String] = rendered_counter_labels_by_row.get(str(row_id), [])
+		var required_labels: Array = required_counter_labels_by_row.get(row_id, []) as Array
+		for raw_label in required_labels:
+			var label := str(raw_label)
+			if not labels.has(label):
+				failures.append("row %s missing rendered counter label %s" % [str(row_id), label])
+
+	var forbidden_counter_labels_by_row: Dictionary = expected_panel_outcome.get("forbidden_counter_labels_by_row", {})
+	for row_id in forbidden_counter_labels_by_row.keys():
+		var labels: Array[String] = rendered_counter_labels_by_row.get(str(row_id), [])
+		var forbidden_labels: Array = forbidden_counter_labels_by_row.get(row_id, []) as Array
+		for raw_label in forbidden_labels:
+			var label := str(raw_label)
+			if labels.has(label):
+				failures.append("row %s has forbidden rendered counter label %s" % [str(row_id), label])
 
 	return failures
 
