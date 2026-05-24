@@ -464,6 +464,46 @@ DeviceState {
         apply_error_code: int32
       }
     }
+    focus: {
+      af_mode: ValueState<String>
+      focus_distance_diopters_milli: ValueState<int32>
+    }
+    white_balance: {
+      awb_mode: ValueState<String>
+      color_temperature_kelvin: ValueState<int32>
+    }
+    stabilization: {
+      mode: ValueState<String>
+      strength_percent: ValueState<int32>
+    }
+    flash_torch: {
+      flash_mode: ValueState<String>
+      torch_level: ValueState<int32>
+    }
+    zoom_crop: {
+      zoom_ratio_milli: ValueState<int32>
+      crop_preset: ValueState<String>
+    }
+    processing: {
+      noise_reduction_mode: ValueState<String>
+      edge_enhancement_level: ValueState<int32>
+    }
+    metering: {
+      metering_mode: ValueState<String>
+      metering_region_preset: ValueState<String>
+    }
+    antibanding: {
+      mode: ValueState<String>
+      mains_frequency_hz: ValueState<int32>
+    }
+    orientation_mirroring: {
+      rotation_degrees: ValueState<int32>
+      mirror_mode: ValueState<String>
+    }
+    privacy_hardware_block: {
+      privacy_mode: ValueState<String>
+      hardware_block_reason: ValueState<String>
+    }
   }                                   // target/applied device camera posture; no realized per-image truth
   capture_profile: {
     still: {
@@ -540,6 +580,20 @@ AcquisitionSessionState {
     }>
       }                                  // still-image bundle profile truth latched for this acquisition-session context
     }
+  }
+  camera_state: {                      // latched target/applied camera posture for acquisition context; no realized per-image truth
+    version: uint64
+    exposure: {...}
+    focus: {...}
+    white_balance: {...}
+    stabilization: {...}
+    flash_torch: {...}
+    zoom_crop: {...}
+    processing: {...}
+    metering: {...}
+    antibanding: {...}
+    orientation_mirroring: {...}
+    privacy_hardware_block: {...}
   }
 
   captures_triggered: uint64

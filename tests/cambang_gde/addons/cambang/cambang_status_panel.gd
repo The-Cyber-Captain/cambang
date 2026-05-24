@@ -3699,16 +3699,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% device_matches.size()
 			)
 		var still_profile := _capture_profile_still_dict(rec)
-		var camera_state_v: Variant = rec.get("camera_state", {})
-		if typeof(camera_state_v) == TYPE_DICTIONARY:
-			var camera_state: Dictionary = camera_state_v
-			var exposure_v: Variant = camera_state.get("exposure", {})
-			if typeof(exposure_v) == TYPE_DICTIONARY:
-				var exposure: Dictionary = exposure_v
-				var ae_mode: Dictionary = exposure.get("ae_mode", {})
-				var baseline_ev: Dictionary = exposure.get("baseline_exposure_compensation_milli_ev", {})
-				device_info.append("camera_state.ae_mode support=%s apply_status=%s" % [str(ae_mode.get("support", "UNKNOWN")), str(ae_mode.get("apply_status", "UNKNOWN"))])
-				device_info.append("camera_state.baseline_ev support=%s apply_status=%s" % [str(baseline_ev.get("support", "UNKNOWN")), str(baseline_ev.get("apply_status", "UNKNOWN"))])
+		device_info.append_array(_build_camera_state_info_lines(rec))
 		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
 		if not device_bundle_count.is_empty():
 			device_info.append(device_bundle_count)
@@ -3792,6 +3783,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% acquisition_session_native_matches.size()
 			)
 		var acquisition_still_profile := _capture_profile_still_dict(rec)
+		acquisition_session_info.append_array(_build_camera_state_info_lines(rec))
 		var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
 		if not acquisition_bundle_summary.is_empty():
 			acquisition_session_info.append(acquisition_bundle_summary)
@@ -5759,6 +5751,54 @@ func _build_still_image_bundle_detail_line(rec: Dictionary) -> String:
 		return ""
 	var members: Array = bundle_members
 	return "bundle=[%s]" % _build_still_image_bundle_member_tokens(members)
+
+
+func _build_camera_state_info_lines(rec: Dictionary) -> Array[String]:
+	var lines: Array[String] = []
+	var camera_state_v: Variant = rec.get("camera_state", {})
+	if typeof(camera_state_v) != TYPE_DICTIONARY:
+		return lines
+	var camera_state: Dictionary = camera_state_v
+	var families := [
+		["exposure", "ae_mode"],
+		["exposure", "baseline_exposure_compensation_milli_ev"],
+		["focus", "af_mode"],
+		["focus", "focus_distance_diopters_milli"],
+		["white_balance", "awb_mode"],
+		["white_balance", "color_temperature_kelvin"],
+		["stabilization", "mode"],
+		["stabilization", "strength_percent"],
+		["flash_torch", "flash_mode"],
+		["flash_torch", "torch_level"],
+		["zoom_crop", "zoom_ratio_milli"],
+		["zoom_crop", "crop_preset"],
+		["processing", "noise_reduction_mode"],
+		["processing", "edge_enhancement_level"],
+		["metering", "metering_mode"],
+		["metering", "metering_region_preset"],
+		["antibanding", "mode"],
+		["antibanding", "mains_frequency_hz"],
+		["orientation_mirroring", "rotation_degrees"],
+		["orientation_mirroring", "mirror_mode"],
+		["privacy_hardware_block", "privacy_mode"],
+		["privacy_hardware_block", "hardware_block_reason"],
+	]
+	for pair in families:
+		var family_name := str(pair[0])
+		var field_name := str(pair[1])
+		var family_v: Variant = camera_state.get(family_name, {})
+		if typeof(family_v) != TYPE_DICTIONARY:
+			continue
+		var family: Dictionary = family_v
+		var value_v: Variant = family.get(field_name, {})
+		if typeof(value_v) != TYPE_DICTIONARY:
+			continue
+		var value: Dictionary = value_v
+		lines.append(
+			"camera_state.%s.%s support=%s apply_status=%s"
+			% [family_name, field_name, str(value.get("support", "UNKNOWN")), str(value.get("apply_status", "UNKNOWN"))]
+		)
+	return lines
 
 
 func _extract_still_image_bundle_members(rec: Dictionary) -> Variant:

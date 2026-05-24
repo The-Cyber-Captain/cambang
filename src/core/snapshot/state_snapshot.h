@@ -129,9 +129,69 @@ struct DeviceCameraExposureState {
     CameraValueStateInt32 baseline_exposure_compensation_milli_ev{};
 };
 
+struct DeviceCameraFocusState {
+    CameraValueStateString af_mode{};
+    CameraValueStateInt32 focus_distance_diopters_milli{};
+};
+
+struct DeviceCameraWhiteBalanceState {
+    CameraValueStateString awb_mode{};
+    CameraValueStateInt32 color_temperature_kelvin{};
+};
+
+struct DeviceCameraStabilizationState {
+    CameraValueStateString mode{};
+    CameraValueStateInt32 strength_percent{};
+};
+
+struct DeviceCameraFlashTorchState {
+    CameraValueStateString flash_mode{};
+    CameraValueStateInt32 torch_level{};
+};
+
+struct DeviceCameraZoomCropState {
+    CameraValueStateInt32 zoom_ratio_milli{};
+    CameraValueStateString crop_preset{};
+};
+
+struct DeviceCameraProcessingState {
+    CameraValueStateString noise_reduction_mode{};
+    CameraValueStateInt32 edge_enhancement_level{};
+};
+
+struct DeviceCameraMeteringState {
+    CameraValueStateString metering_mode{};
+    CameraValueStateString metering_region_preset{};
+};
+
+struct DeviceCameraAntibandingState {
+    CameraValueStateString mode{};
+    CameraValueStateInt32 mains_frequency_hz{};
+};
+
+struct DeviceCameraOrientationMirroringState {
+    CameraValueStateInt32 rotation_degrees{};
+    CameraValueStateString mirror_mode{};
+};
+
+struct DeviceCameraPrivacyHardwareBlockState {
+    CameraValueStateString privacy_mode{};
+    CameraValueStateString hardware_block_reason{};
+};
+
 struct DeviceCameraState {
     uint64_t version = 0;
     DeviceCameraExposureState exposure{};
+    DeviceCameraFocusState focus{};
+    DeviceCameraWhiteBalanceState white_balance{};
+    DeviceCameraStabilizationState stabilization{};
+    DeviceCameraFlashTorchState flash_torch{};
+    DeviceCameraZoomCropState zoom_crop{};
+    DeviceCameraProcessingState processing{};
+    DeviceCameraMeteringState metering{};
+    DeviceCameraAntibandingState antibanding{};
+    DeviceCameraOrientationMirroringState orientation_mirroring{};
+    DeviceCameraPrivacyHardwareBlockState privacy_hardware_block{};
 };
 
 struct DeviceState {
