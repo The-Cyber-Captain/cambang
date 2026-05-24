@@ -6098,8 +6098,6 @@ func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dict
 		["owner_device_instance_id", "owner_device_instance_id", "int"],
 		["root_id", "root_id", "int"],
 		["creation_gen", "creation_gen", "int"],
-		["created_ns", "created_ns", "int"],
-		["destroyed_ns", "destroyed_ns", "int"],
 		["bytes_allocated", "bytes_allocated", "int"],
 		["buffers_in_use", "buffers_in_use", "int"],
 	]
@@ -6114,6 +6112,11 @@ func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dict
 	var owner_rig_id := int(rec.get("owner_rig_id", 0))
 	if owner_rig_id > 0:
 		info_lines.append("owner_rig_id=%d" % owner_rig_id)
+	if rec.has("created_ns") and rec.has("destroyed_ns"):
+		info_lines.append(
+			"native_timestamps: created_ns=%s destroyed_ns=%s"
+			% [str(rec.get("created_ns")), str(rec.get("destroyed_ns"))]
+		)
 
 
 func _native_type_is_payload_support(native_type_key: String) -> bool:
@@ -6137,6 +6140,11 @@ func _apply_scoped_resource_telemetry_to_native_payload_support_group(panel: Pan
 				break
 		if not replaced:
 			group_row.counters.append(counter)
+	if telemetry.has("creation_gen") and telemetry.has("created_ns") and telemetry.has("destroyed_ns"):
+		group_row.info_lines.append(
+			"telemetry: creation_gen=%s created_ns=%s destroyed_ns=%s"
+			% [str(telemetry.get("creation_gen")), str(telemetry.get("created_ns")), str(telemetry.get("destroyed_ns"))]
+		)
 	_apply_native_payload_support_group_telemetry_health(panel, group_row)
 
 
