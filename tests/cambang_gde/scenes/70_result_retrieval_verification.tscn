@@ -35,7 +35,6 @@ theme_override_constants/margin_bottom = 10
 
 [node name="MainColumn" type="VBoxContainer" parent="RootMargin"]
 layout_mode = 2
-size_flags_horizontal = 4
 theme_override_constants/separation = 12
 
 [node name="Title" type="Label" parent="RootMargin/MainColumn"]
@@ -44,7 +43,7 @@ text = "Tranche-1 Result Retrieval Verification"
 
 [node name="ResultsRow" type="HBoxContainer" parent="RootMargin/MainColumn"]
 layout_mode = 2
-size_flags_stretch_ratio = 0.75
+size_flags_horizontal = 4
 theme_override_constants/separation = 20
 
 [node name="StreamPanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
@@ -58,7 +57,7 @@ layout_mode = 2
 text = "Latest Stream Result"
 
 [node name="StreamTexture" type="TextureRect" parent="RootMargin/MainColumn/ResultsRow/StreamPanel"]
-custom_minimum_size = Vector2(640, 360)
+custom_minimum_size = Vector2(480, 270)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -80,7 +79,7 @@ layout_mode = 2
 text = "Requested Image From Stream Result"
 
 [node name="RequestedStreamTexture" type="TextureRect" parent="RootMargin/MainColumn/ResultsRow/RequestedStreamPanel"]
-custom_minimum_size = Vector2(640, 360)
+custom_minimum_size = Vector2(470, 270)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -102,7 +101,7 @@ layout_mode = 2
 text = "Latest Capture Result"
 
 [node name="CaptureTexture" type="TextureRect" parent="RootMargin/MainColumn/ResultsRow/CapturePanel"]
-custom_minimum_size = Vector2(640, 360)
+custom_minimum_size = Vector2(480, 270)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -113,22 +112,23 @@ stretch_mode = 5
 layout_mode = 2
 text = "waiting for capture result..."
 
-
 [node name="MemberInspectionStrip" type="PanelContainer" parent="RootMargin/MainColumn"]
-custom_minimum_size = Vector2(0, 120)
+custom_minimum_size = Vector2(800, 120)
 layout_mode = 2
-size_flags_horizontal = 3
+size_flags_horizontal = 4
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.0
 
 [node name="StripScroll" type="ScrollContainer" parent="RootMargin/MainColumn/MemberInspectionStrip"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
-horizontal_scroll_mode = 1
 vertical_scroll_mode = 0
 
 [node name="MembersRow" type="HBoxContainer" parent="RootMargin/MainColumn/MemberInspectionStrip/StripScroll"]
 layout_mode = 2
 theme_override_constants/separation = 8
+
 [node name="GuiControls" type="HBoxContainer" parent="RootMargin/MainColumn"]
 layout_mode = 2
 theme_override_constants/separation = 10
@@ -149,6 +149,7 @@ disabled = true
 text = "Capture Again"
 
 [node name="CamBANGStatusPanel" type="PanelContainer" parent="RootMargin/MainColumn"]
+custom_minimum_size = Vector2(320, 0)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -157,6 +158,7 @@ script = ExtResource("2_dch17")
 metadata/_custom_type_script = "uid://djv2vyhmruoh2"
 
 [node name="StatusLabel" type="RichTextLabel" parent="RootMargin/MainColumn"]
+visible = false
 custom_minimum_size = Vector2(0, 100)
 layout_mode = 2
 size_flags_vertical = 3
