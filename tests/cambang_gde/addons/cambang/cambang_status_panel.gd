@@ -3809,20 +3809,25 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 			acquisition_session_badges,
-			_counters_from_record(
-				rec,
-				[
-					
-					["triggered", "captures_triggered", 3],
-					["completed", "captures_completed", 3],
-					["failed", "captures_failed", 3],
-					["last_capture_id", "last_capture_id", 3],
-					["last_capture_latency", "last_capture_latency_ns", 4],
-					["error_code", "error_code", 2],
-				],
-				[],
-				"acquisition_session"
-			),
+				_counters_from_record(
+					rec,
+					[
+						
+						["triggered", "captures_triggered", 3],
+						["completed", "captures_completed", 3],
+						["failed", "captures_failed", 3],
+						["last_capture_id", "last_capture_id", 3],
+						["last_capture_latency", "last_capture_latency_ns", 4],
+						["error_code", "error_code", 2],
+					],
+					[
+						_counter("capture_w", int(acquisition_still_profile.get("width", 0)), 4),
+						_counter("capture_h", int(acquisition_still_profile.get("height", 0)), 4),
+						_counter("capture_fmt", int(acquisition_still_profile.get("format", 0)), 4),
+						_counter("capture_prof", int(acquisition_still_profile.get("version", 0)), 2),
+					],
+					"acquisition_session"
+				),
 			acquisition_session_info,
 			"acquisition_session"
 		)
