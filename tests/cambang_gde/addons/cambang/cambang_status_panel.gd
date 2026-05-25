@@ -123,6 +123,9 @@ class RetainedSubtreeState extends RefCounted:
 @export var stream_drop_growth_rate_bad_threshold_per_sec: float = 0.0
 @export var stream_rej_fmt_growth_rate_bad_threshold_per_sec: float = 0.0
 @export var stream_rej_inv_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var acquisition_session_failed_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var rig_failed_growth_rate_bad_threshold_per_sec: float = 0.0
+@export var temporal_health_latch_duration_msec: int = 1500
 
 const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
 const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
@@ -146,6 +149,9 @@ var _retained_subtrees: Array[RetainedSubtreeState] = []
 var _observed_server_health_series: Array[Dictionary] = []
 var _observed_device_health_series_by_id: Dictionary = {}
 var _observed_stream_health_series_by_id: Dictionary = {}
+var _observed_acquisition_session_health_series_by_id: Dictionary = {}
+var _observed_rig_health_series_by_id: Dictionary = {}
+var _temporal_health_latches_by_row_id: Dictionary = {}
 
 
 func _ready() -> void:
@@ -570,6 +576,12 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_stream_health_summary(model, snapshot):
 		model_changed = true
+	if _apply_acquisition_session_health_summary(model, snapshot):
+		model_changed = true
+	if _apply_rig_health_summary(model, snapshot):
+		model_changed = true
+	if _apply_native_payload_support_group_health_summary(model):
+		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
@@ -992,6 +1004,50 @@ func _apply_stream_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	return changed
 
 
+func _apply_acquisition_session_health_summary(model: PanelModel, snapshot: Variant) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
+	for entry in model.entries:
+		if not _is_acquisition_session_health_target_entry(entry):
+			continue
+		var health_facts := _derive_acquisition_session_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
+		var next_health_label := _derive_acquisition_session_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_observe_acquisition_session_health_state(entry.id, health_facts)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
+func _apply_rig_health_summary(model: PanelModel, snapshot: Variant) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	var current_observed_msec := Time.get_ticks_msec()
+	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
+	for entry in model.entries:
+		if not _is_rig_health_target_entry(entry):
+			continue
+		var health_facts := _derive_rig_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
+		var next_health_label := _derive_rig_health_label(health_facts)
+		var next_health_role := _health_role_for_label(next_health_label)
+		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_observe_rig_health_state(entry.id, health_facts)
+		if _badge_labels(next_badges) == _badge_labels(entry.badges):
+			continue
+		entry.badges = next_badges
+		_apply_detail_policy_to_entry(entry)
+		changed = true
+	return changed
+
+
 func _stream_info_lines_with_bad_reason(existing_info_lines: Array[String], health_facts: Dictionary, health_label: String) -> Array[String]:
 	var next_info_lines: Array[String] = []
 	for line in existing_info_lines:
@@ -1059,6 +1115,32 @@ func _is_stream_health_target_entry(entry: StatusEntryModel) -> bool:
 	return entry != null and entry.visual_object_class == "stream" and not _is_native_health_target_entry(entry)
 
 
+func _is_acquisition_session_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "acquisition_session" and not _is_native_health_target_entry(entry)
+
+
+func _is_rig_health_target_entry(entry: StatusEntryModel) -> bool:
+	return entry != null and entry.visual_object_class == "rig" and not _is_native_health_target_entry(entry)
+
+
+func _apply_native_payload_support_group_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if entry == null:
+			continue
+		if str(entry.visual_object_class) != "native_payload_support_group":
+			continue
+		var before := _badge_labels(entry.badges)
+		_apply_native_payload_support_group_telemetry_health(model, entry)
+		var after := _badge_labels(entry.badges)
+		if before != after:
+			_apply_detail_policy_to_entry(entry)
+			changed = true
+	return changed
+
+
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
 	var current_version := _counter_value_by_name(server_entry, "version", -1)
 	var current_topology := _counter_value_by_name(server_entry, "topology", -1)
@@ -1098,6 +1180,7 @@ func _derive_device_health_facts(
 	) -> Dictionary:
 	var current_errors := _counter_value_by_name(device_entry, "errors", -1)
 	return {
+		"row_id": device_entry.id,
 		"has_contract_or_projection_failure": _device_has_contract_or_projection_failure(model, device_entry),
 		"has_counter_inconsistency": _device_has_counter_inconsistency(device_entry, current_errors),
 		"has_lifecycle_contradiction": _device_has_lifecycle_contradiction(device_entry),
@@ -1128,6 +1211,7 @@ func _derive_stream_health_facts(
 	var mode := _stream_mode_label(stream_entry)
 	var stop_reason := _stream_stop_reason_label(stream_entry)
 	return {
+		"row_id": stream_entry.id,
 		"has_contract_or_projection_failure": _stream_has_contract_or_projection_failure(model, stream_entry),
 		"contract_or_projection_failure_reason": _stream_contract_or_projection_failure_reason(model, stream_entry),
 		"has_lifecycle_contradiction": _stream_has_lifecycle_contradiction(stream_entry),
@@ -1165,6 +1249,64 @@ func _derive_stream_health_facts(
 	}
 
 
+
+
+func _derive_acquisition_session_health_facts(
+		model: PanelModel,
+		acquisition_session_entry: StatusEntryModel,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var failed := _counter_value_by_name(acquisition_session_entry, "failed", -1)
+	var error_code := _counter_value_by_name(acquisition_session_entry, "error_code", 0)
+	return {
+		"row_id": acquisition_session_entry.id,
+		"has_contract_or_projection_failure": _acquisition_session_has_contract_or_projection_failure(model, acquisition_session_entry),
+		"has_lifecycle_contradiction": _acquisition_session_has_lifecycle_contradiction(acquisition_session_entry),
+		"has_insufficient_local_truth": _acquisition_session_has_insufficient_local_truth(acquisition_session_entry),
+		"is_preserved": _acquisition_session_is_preserved(acquisition_session_entry),
+		"is_destroyed": _acquisition_session_is_destroyed(acquisition_session_entry),
+		"failed": failed,
+		"error_code": error_code,
+		"failed_growth_rate_per_sec": _acquisition_session_failed_growth_rate_per_sec_over_window(
+			acquisition_session_entry.id,
+			failed,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
+
+
+func _derive_rig_health_facts(
+		model: PanelModel,
+		rig_entry: StatusEntryModel,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> Dictionary:
+	var captures_failed := _counter_value_by_name(rig_entry, "captures_failed", -1)
+	var error_code := _counter_value_by_name(rig_entry, "error_code", 0)
+	var mode := _rig_mode_label(rig_entry)
+	return {
+		"row_id": rig_entry.id,
+		"has_contract_or_projection_failure": _rig_has_contract_or_projection_failure(model, rig_entry),
+		"has_lifecycle_contradiction": _rig_has_lifecycle_contradiction(rig_entry),
+		"has_insufficient_local_truth": _rig_has_insufficient_local_truth(rig_entry, mode),
+		"is_preserved": _rig_is_preserved(rig_entry),
+		"is_destroyed": _rig_is_destroyed(rig_entry),
+		"mode": mode,
+		"captures_failed": captures_failed,
+		"error_code": error_code,
+		"failed_growth_rate_per_sec": _rig_failed_growth_rate_per_sec_over_window(
+			rig_entry.id,
+			captures_failed,
+			current_observed_msec,
+			current_timestamp_ns
+		),
+		"current_observed_msec": current_observed_msec,
+		"current_timestamp_ns": current_timestamp_ns,
+	}
 
 
 func _derive_native_health_facts(model: PanelModel, native_entry: StatusEntryModel) -> Dictionary:
@@ -1251,6 +1393,26 @@ func _derive_stream_health_label(health_facts: Dictionary) -> String:
 	return "OK"
 
 
+func _derive_acquisition_session_health_label(health_facts: Dictionary) -> String:
+	if _acquisition_session_health_is_bad(health_facts):
+		return "BAD"
+	if _acquisition_session_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _acquisition_session_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
+func _derive_rig_health_label(health_facts: Dictionary) -> String:
+	if _rig_health_is_bad(health_facts):
+		return "BAD"
+	if _rig_health_is_unknown(health_facts):
+		return "UNKNOWN"
+	if _rig_health_is_attention(health_facts):
+		return "ATTN"
+	return "OK"
+
+
 func _server_health_is_bad(health_facts: Dictionary) -> bool:
 	if bool(health_facts.get("contract_or_projection_failure", false)):
 		return true
@@ -1273,7 +1435,12 @@ func _device_health_is_bad(health_facts: Dictionary) -> bool:
 	if is_zero_approx(threshold):
 		return false
 	var growth_rate := float(health_facts.get("error_growth_rate_per_sec", 0.0))
-	return growth_rate > threshold
+	return _temporal_bad_threshold_breached(
+		str(health_facts.get("row_id", "")),
+		"device_error_growth_bad",
+		growth_rate,
+		threshold
+	)
 
 
 
@@ -1337,16 +1504,22 @@ func _stream_health_is_bad(health_facts: Dictionary) -> bool:
 	if mode != "FLOWING" and mode != "STARVED":
 		return false
 	if _stream_growth_rate_exceeds_threshold(
+		str(health_facts.get("row_id", "")),
+		"stream_drop_growth_bad",
 		float(health_facts.get("drop_growth_rate_per_sec", 0.0)),
 		stream_drop_growth_rate_bad_threshold_per_sec
 	):
 		return true
 	if _stream_growth_rate_exceeds_threshold(
+		str(health_facts.get("row_id", "")),
+		"stream_rej_fmt_growth_bad",
 		float(health_facts.get("rej_fmt_growth_rate_per_sec", 0.0)),
 		stream_rej_fmt_growth_rate_bad_threshold_per_sec
 	):
 		return true
 	if _stream_growth_rate_exceeds_threshold(
+		str(health_facts.get("row_id", "")),
+		"stream_rej_inv_growth_bad",
 		float(health_facts.get("rej_inv_growth_rate_per_sec", 0.0)),
 		stream_rej_inv_growth_rate_bad_threshold_per_sec
 	):
@@ -1354,11 +1527,11 @@ func _stream_health_is_bad(health_facts: Dictionary) -> bool:
 	return false
 
 
-func _stream_growth_rate_exceeds_threshold(growth_rate: float, threshold_setting: float) -> bool:
+func _stream_growth_rate_exceeds_threshold(row_id: String, rule_key: String, growth_rate: float, threshold_setting: float) -> bool:
 	var threshold := max(threshold_setting, 0.0)
 	if is_zero_approx(threshold):
 		return false
-	return growth_rate > threshold
+	return _temporal_bad_threshold_breached(row_id, rule_key, growth_rate, threshold)
 
 
 func _server_health_is_unknown(health_facts: Dictionary) -> bool:
@@ -1384,7 +1557,7 @@ func _server_health_is_attention(health_facts: Dictionary) -> bool:
 	if is_zero_approx(threshold):
 		return false
 	var growth_rate := float(health_facts.get("topology_growth_rate_per_sec", 0.0))
-	return growth_rate > threshold
+	return _temporal_attention_threshold_breached("server/main", "server_topology_growth_attn", growth_rate, threshold)
 
 
 func _device_health_is_attention(health_facts: Dictionary) -> bool:
@@ -1423,6 +1596,63 @@ func _stream_health_is_attention(health_facts: Dictionary) -> bool:
 		if int(health_facts.get("rej_inv", 0)) > 0:
 			return true
 	return false
+
+
+func _acquisition_session_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	var threshold_bad := _temporal_bad_threshold_breached(
+		str(health_facts.get("row_id", "")),
+		"acquisition_session_failed_growth_bad",
+		float(health_facts.get("failed_growth_rate_per_sec", 0.0)),
+		acquisition_session_failed_growth_rate_bad_threshold_per_sec
+	)
+	return threshold_bad
+
+
+func _acquisition_session_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
+func _acquisition_session_health_is_attention(health_facts: Dictionary) -> bool:
+	if int(health_facts.get("error_code", 0)) != 0:
+		return true
+	if int(health_facts.get("failed", 0)) > 0:
+		return true
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	return is_preserved and not is_destroyed
+
+
+func _rig_health_is_bad(health_facts: Dictionary) -> bool:
+	if bool(health_facts.get("has_contract_or_projection_failure", false)):
+		return true
+	if bool(health_facts.get("has_lifecycle_contradiction", false)):
+		return true
+	if str(health_facts.get("mode", "")) == "ERROR":
+		return true
+	if int(health_facts.get("error_code", 0)) != 0:
+		return true
+	return _temporal_bad_threshold_breached(
+		str(health_facts.get("row_id", "")),
+		"rig_failed_growth_bad",
+		float(health_facts.get("failed_growth_rate_per_sec", 0.0)),
+		rig_failed_growth_rate_bad_threshold_per_sec
+	)
+
+
+func _rig_health_is_unknown(health_facts: Dictionary) -> bool:
+	return bool(health_facts.get("has_insufficient_local_truth", false))
+
+
+func _rig_health_is_attention(health_facts: Dictionary) -> bool:
+	if int(health_facts.get("captures_failed", 0)) > 0:
+		return true
+	var is_preserved := bool(health_facts.get("is_preserved", false))
+	var is_destroyed := bool(health_facts.get("is_destroyed", false))
+	return is_preserved and not is_destroyed
 
 
 func _observe_server_health_state(health_facts: Dictionary) -> void:
@@ -1470,6 +1700,34 @@ func _observe_stream_health_state(stream_id: String, health_facts: Dictionary) -
 	series.append(next_observation)
 	series = _prune_observed_stream_health_series(series)
 	_observed_stream_health_series_by_id[stream_id] = series
+
+
+func _observe_acquisition_session_health_state(acquisition_session_id: String, health_facts: Dictionary) -> void:
+	if acquisition_session_id.is_empty():
+		return
+	var next_observation := {
+		"failed": int(health_facts.get("failed", -1)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_acquisition_session_health_series_by_id.get(acquisition_session_id, []))
+	series.append(next_observation)
+	series = _prune_observed_device_health_series(series)
+	_observed_acquisition_session_health_series_by_id[acquisition_session_id] = series
+
+
+func _observe_rig_health_state(rig_id: String, health_facts: Dictionary) -> void:
+	if rig_id.is_empty():
+		return
+	var next_observation := {
+		"captures_failed": int(health_facts.get("captures_failed", -1)),
+		"observed_msec": int(health_facts.get("current_observed_msec", -1)),
+		"timestamp_ns": int(health_facts.get("current_timestamp_ns", -1)),
+	}
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_rig_health_series_by_id.get(rig_id, []))
+	series.append(next_observation)
+	series = _prune_observed_device_health_series(series)
+	_observed_rig_health_series_by_id[rig_id] = series
 
 
 func _latest_observed_server_health_state() -> Dictionary:
@@ -1716,6 +1974,128 @@ func _stream_counter_growth_rate_per_sec_over_window(
 	return float(counter_growth) / elapsed_seconds
 
 
+func _acquisition_session_failed_growth_rate_per_sec_over_window(
+		acquisition_session_id: String,
+		current_failed: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if acquisition_session_id.is_empty() or current_failed < 0:
+		return 0.0
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_acquisition_session_health_series_by_id.get(acquisition_session_id, []))
+	if series.is_empty():
+		return 0.0
+	var baseline := _find_device_observation_for_growth_window(series, current_observed_msec, current_timestamp_ns)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_failed := int(baseline.get("failed", -1))
+	if baseline_failed < 0:
+		return 0.0
+	var growth := maxi(0, current_failed - baseline_failed)
+	if growth <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds or elapsed_seconds <= 0.0:
+		return 0.0
+	return float(growth) / elapsed_seconds
+
+
+func _rig_failed_growth_rate_per_sec_over_window(
+		rig_id: String,
+		current_failed: int,
+		current_observed_msec: int,
+		current_timestamp_ns: int
+	) -> float:
+	if rig_id.is_empty() or current_failed < 0:
+		return 0.0
+	var series: Array[Dictionary] = _typed_observed_device_series(_observed_rig_health_series_by_id.get(rig_id, []))
+	if series.is_empty():
+		return 0.0
+	var baseline := _find_device_observation_for_growth_window(series, current_observed_msec, current_timestamp_ns)
+	if baseline.is_empty():
+		return 0.0
+	var baseline_failed := int(baseline.get("captures_failed", -1))
+	if baseline_failed < 0:
+		return 0.0
+	var growth := maxi(0, current_failed - baseline_failed)
+	if growth <= 0:
+		return 0.0
+	var elapsed_seconds := _server_health_elapsed_seconds(
+		current_observed_msec,
+		int(baseline.get("observed_msec", -1)),
+		current_timestamp_ns,
+		int(baseline.get("timestamp_ns", -1))
+	)
+	var minimum_elapsed_seconds := (
+		_SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC
+		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
+	)
+	if elapsed_seconds < minimum_elapsed_seconds or elapsed_seconds <= 0.0:
+		return 0.0
+	return float(growth) / elapsed_seconds
+
+
+func _temporal_bad_threshold_breached(row_id: String, rule_key: String, growth_rate: float, threshold: float) -> bool:
+	return _temporal_threshold_breached_with_latch(row_id, rule_key, growth_rate, threshold, "BAD")
+
+
+func _temporal_attention_threshold_breached(row_id: String, rule_key: String, growth_rate: float, threshold: float) -> bool:
+	return _temporal_threshold_breached_with_latch(row_id, rule_key, growth_rate, threshold, "ATTN")
+
+
+func _temporal_threshold_breached_with_latch(
+		row_id: String,
+		rule_key: String,
+		growth_rate: float,
+		threshold: float,
+		severity: String
+	) -> bool:
+	var clamped: float = max(threshold, 0.0)
+	if is_zero_approx(clamped):
+		return false
+	var live_breach: bool = growth_rate > clamped
+	var now_msec: int = Time.get_ticks_msec()
+	var effective_row_id: String = row_id
+	if effective_row_id.is_empty():
+		effective_row_id = "__global__"
+	if live_breach:
+		_record_temporal_latch_breach(effective_row_id, rule_key, severity, now_msec)
+		return true
+	return _temporal_latch_active(effective_row_id, rule_key, severity, now_msec)
+
+
+func _record_temporal_latch_breach(row_id: String, rule_key: String, severity: String, now_msec: int) -> void:
+	if row_id.is_empty() or rule_key.is_empty():
+		return
+	var row_state: Dictionary = _temporal_health_latches_by_row_id.get(row_id, {})
+	row_state[rule_key] = {"severity": severity, "breach_msec": now_msec}
+	_temporal_health_latches_by_row_id[row_id] = row_state
+
+
+func _temporal_latch_active(row_id: String, rule_key: String, severity: String, now_msec: int) -> bool:
+	if temporal_health_latch_duration_msec <= 0:
+		return false
+	var row_state: Dictionary = _temporal_health_latches_by_row_id.get(row_id, {})
+	if row_state.is_empty() or not row_state.has(rule_key):
+		return false
+	var latch: Dictionary = row_state.get(rule_key, {})
+	if str(latch.get("severity", "")) != severity:
+		return false
+	var breach_msec := int(latch.get("breach_msec", -1))
+	if breach_msec < 0:
+		return false
+	return (now_msec - breach_msec) <= temporal_health_latch_duration_msec
+
+
 func _prune_observed_server_health_series() -> void:
 	if _observed_server_health_series.is_empty():
 		return
@@ -1859,6 +2239,28 @@ func _stream_has_contract_or_projection_failure(model: PanelModel, stream_entry:
 	return false
 
 
+func _acquisition_session_has_contract_or_projection_failure(model: PanelModel, entry: StatusEntryModel) -> bool:
+	if _has_badge_label(entry, "contract-gap") or _has_badge_label(entry, "CONTRACT GAP") or _has_badge_label(entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % entry.id):
+		return true
+	for line in entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
+func _rig_has_contract_or_projection_failure(model: PanelModel, entry: StatusEntryModel) -> bool:
+	if _has_badge_label(entry, "contract-gap") or _has_badge_label(entry, "CONTRACT GAP") or _has_badge_label(entry, "snapshot-incompatible"):
+		return true
+	if _entry_exists(model.entries, "%s/contract_gaps" % entry.id):
+		return true
+	for line in entry.info_lines:
+		if _is_anomaly_info_line(line):
+			return true
+	return false
+
+
 func _stream_contract_or_projection_failure_reason(model: PanelModel, stream_entry: StatusEntryModel) -> String:
 	if _stream_has_badge_label(stream_entry, "contract-gap"):
 		return "contract-gap badge."
@@ -1910,6 +2312,79 @@ func _stream_has_insufficient_local_truth(stream_entry: StatusEntryModel, mode: 
 	if _stream_is_destroyed(stream_entry):
 		return false
 	return mode.is_empty()
+
+
+func _acquisition_session_has_lifecycle_contradiction(entry: StatusEntryModel) -> bool:
+	var phase_label := _acquisition_session_phase_label(entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	return phase_is_destroyed != _acquisition_session_is_destroyed(entry)
+
+
+func _acquisition_session_has_insufficient_local_truth(entry: StatusEntryModel) -> bool:
+	return _acquisition_session_phase_label(entry).is_empty()
+
+
+func _acquisition_session_is_preserved(entry: StatusEntryModel) -> bool:
+	return _is_retained_projection_entry(entry.id) or _has_badge_label(entry, "continuity-only")
+
+
+func _acquisition_session_is_destroyed(entry: StatusEntryModel) -> bool:
+	if _has_badge_label(entry, "destroyed"):
+		return true
+	return _acquisition_session_phase_label(entry).find("destroyed") >= 0
+
+
+func _acquisition_session_phase_label(entry: StatusEntryModel) -> String:
+	for badge in entry.badges:
+		if badge == null:
+			continue
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
+	return ""
+
+
+func _rig_has_lifecycle_contradiction(entry: StatusEntryModel) -> bool:
+	var phase_label := _rig_phase_label(entry)
+	if phase_label.is_empty():
+		return false
+	var phase_is_destroyed := phase_label.find("destroyed") >= 0
+	return phase_is_destroyed != _rig_is_destroyed(entry)
+
+
+func _rig_has_insufficient_local_truth(entry: StatusEntryModel, mode: String) -> bool:
+	return _rig_phase_label(entry).is_empty() or mode.is_empty()
+
+
+func _rig_is_preserved(entry: StatusEntryModel) -> bool:
+	return _is_retained_projection_entry(entry.id) or _has_badge_label(entry, "continuity-only")
+
+
+func _rig_is_destroyed(entry: StatusEntryModel) -> bool:
+	if _has_badge_label(entry, "destroyed"):
+		return true
+	return _rig_phase_label(entry).find("destroyed") >= 0
+
+
+func _rig_phase_label(entry: StatusEntryModel) -> String:
+	for badge in entry.badges:
+		if badge == null:
+			continue
+		var phase := _phase_label_from_badge_label(badge.label)
+		if not phase.is_empty():
+			return phase.to_lower()
+	return ""
+
+
+func _rig_mode_label(entry: StatusEntryModel) -> String:
+	for badge in entry.badges:
+		if badge == null:
+			continue
+		if badge.label.begins_with("mode="):
+			return badge.label.substr("mode=".length()).strip_edges().to_upper()
+	return ""
 
 
 func _provider_has_counter_inconsistency(native_all: int, native_cur: int, native_prev: int, native_dead: int) -> bool:
@@ -6167,6 +6642,14 @@ func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, gro
 	var gpu_total_new := _counter_value_by_name(group_row, "gpu_total_new", 0)
 	var gpu_total_rel := _counter_value_by_name(group_row, "gpu_total_rel", 0)
 	var health_reasons: Array[String] = []
+	var has_any_telemetry := (
+		_counter_value_by_name(group_row, "fbl_total_new", -1) >= 0
+		or _counter_value_by_name(group_row, "gpu_total_new", -1) >= 0
+	)
+	var telemetry_phase := _phase_label_from_badge_label(_first_badge_label(group_row.badges, ["LIVE", "DESTROYED"]))
+	if not has_any_telemetry or telemetry_phase.is_empty():
+		group_row.badges = _with_health_badge(group_row.badges, "neutral", "UNKNOWN")
+		return
 	if fbl_total_rel > fbl_total_new:
 		health_reasons.append("Health reason: framebuffer lease total_released exceeds total_created.")
 	if gpu_total_rel > gpu_total_new:
@@ -6179,13 +6662,10 @@ func _apply_native_payload_support_group_telemetry_health(panel: PanelModel, gro
 		health_reasons.append("Health reason: framebuffer lease current does not match total_created-total_released.")
 	if gpu_cur != (gpu_total_new - gpu_total_rel):
 		health_reasons.append("Health reason: gpu backing current does not match total_created-total_released.")
-	var parent_row := _find_panel_entry_by_id(panel, str(group_row.parent_id))
-	if _entry_phase_is_non_live_or_destroyed(parent_row) and (fbl_cur > 0 or gpu_cur > 0):
-		health_reasons.append("Health reason: owner ended with current native payload support resources.")
-	var telemetry_phase := _phase_label_from_badge_label(_first_badge_label(group_row.badges, ["LIVE", "DESTROYED"]))
-	if telemetry_phase == "DESTROYED" and _native_payload_support_has_live_concrete_child(panel, str(group_row.id)):
-		health_reasons.append("Health reason: destroyed native payload support group has LIVE concrete child resource.")
+	if _has_badge_label(group_row, "contract-gap") or _has_badge_label(group_row, "CONTRACT GAP") or _has_badge_label(group_row, "snapshot-incompatible"):
+		health_reasons.append("Health reason: contract/projection failure.")
 	if health_reasons.is_empty():
+		group_row.badges = _with_health_badge(group_row.badges, "success", "OK")
 		return
 	group_row.badges = _with_health_badge(group_row.badges, "warning", "BAD")
 	for reason in health_reasons:

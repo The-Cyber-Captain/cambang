@@ -56,6 +56,8 @@ classification when a descendant survives beyond its controlling AcquisitionSess
 - Future work may extend rig-member aliasing to retained visible provider-owned Device
   rows where hardware identity is truthfully available. Child-subtree aliasing under rig
   member aliases (AcquisitionSession/Stream/Native Payload Support) remains deferred.
+- Resolved rig-member aliases are visual aliases of resolved Device rows and therefore
+  inherit Device-row health behavior; there is no independent rig-member alias health evaluator.
 
 ## Capture profile counter surfacing policy (current implementation)
 
@@ -339,11 +341,14 @@ An AcquisitionSession row is considered:
 ### AcquisitionSession = `BAD` if any of:
 - contract/projection failure
 - lifecycle contradiction
+- failed-growth temporal threshold breach (`acquisition_session_failed_growth_rate_bad_threshold_per_sec`)
 
 ### AcquisitionSession = `UNKNOWN` if:
 - phase cannot be parsed from row badges
 
-### AcquisitionSession = `ATTN` if:
+### AcquisitionSession = `ATTN` if any of:
+- `error_code != 0`
+- `failed > 0`
 - preserved and not destroyed
 
 ### Otherwise:
@@ -355,6 +360,40 @@ Priority order:
 - `UNKNOWN`
 - `ATTN`
 - `OK`
+
+---
+
+## Rig health rules
+
+Rig health facts include:
+
+- contract/projection failure
+- lifecycle contradiction
+- parsed phase
+- parsed mode
+- `error_code`
+- `captures_failed`
+- preserved state
+- destroyed state
+- `captures_failed` growth rate over the observation window
+
+### Rig = `BAD` if any of:
+- contract/projection failure
+- lifecycle contradiction
+- mode is `ERROR`
+- `error_code != 0`
+- failed-growth temporal threshold breach (`rig_failed_growth_rate_bad_threshold_per_sec`)
+
+### Rig = `UNKNOWN` if:
+- phase cannot be parsed from row badges
+- or mode cannot be parsed from row badges
+
+### Rig = `ATTN` if any of:
+- `captures_failed > 0`
+- preserved and not destroyed
+
+### Otherwise:
+- Rig = `OK`
 
 ---
 
@@ -484,7 +523,7 @@ Priority order:
 
 ## Contract / projection failure detection
 
-For server, provider, device, AcquisitionSession, stream, and native rows, contract/projection failure is treated as a high-priority negative signal.
+For server, provider, device, AcquisitionSession, rig, stream, and native rows with explicit health evaluators, contract/projection failure is treated as a high-priority negative signal.
 
 Depending on row type, this is detected from some combination of:
 
@@ -503,6 +542,7 @@ Where present, these failures force `BAD` for:
 - stream
 - native rows
 - acquisition_session rows
+- rig rows
 
 ---
 
@@ -575,10 +615,20 @@ Current temporal checks are:
 - server topology growth rate
 - device error growth rate
 - stream growth rates for `drop`, `rej_fmt`, `rej_inv`
+- acquisition_session failed growth rate
+- rig captures_failed growth rate
 
 Elapsed time prefers snapshot `timestamp_ns`; if unavailable, it falls back to observed wall-clock milliseconds.
 
 A threshold value of `0` disables that specific temporal growth rule.
+
+Temporal threshold breaches now support a lightweight latch/hold window:
+
+- latch state is tracked per `row_id + rule_key`
+- breach timestamp and severity are recorded when a temporal threshold is exceeded
+- if the live predicate clears immediately, severity can remain active during the latch duration
+- latch duration is configurable by exported panel setting `temporal_health_latch_duration_msec`
+- `temporal_health_latch_duration_msec == 0` disables latch holding
 
 ---
 
