@@ -580,6 +580,8 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_rig_health_summary(model, snapshot):
 		model_changed = true
+	if _apply_native_payload_support_group_health_summary(model):
+		model_changed = true
 	if model_changed:
 		_render_panel_model(model, update_category)
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
@@ -1119,6 +1121,24 @@ func _is_acquisition_session_health_target_entry(entry: StatusEntryModel) -> boo
 
 func _is_rig_health_target_entry(entry: StatusEntryModel) -> bool:
 	return entry != null and entry.visual_object_class == "rig" and not _is_native_health_target_entry(entry)
+
+
+func _apply_native_payload_support_group_health_summary(model: PanelModel) -> bool:
+	if model == null:
+		return false
+	var changed := false
+	for entry in model.entries:
+		if entry == null:
+			continue
+		if str(entry.visual_object_class) != "native_payload_support_group":
+			continue
+		var before := _badge_labels(entry.badges)
+		_apply_native_payload_support_group_telemetry_health(model, entry)
+		var after := _badge_labels(entry.badges)
+		if before != after:
+			_apply_detail_policy_to_entry(entry)
+			changed = true
+	return changed
 
 
 func _derive_server_health_facts(model: PanelModel, server_entry: StatusEntryModel, snapshot: Variant) -> Dictionary:
