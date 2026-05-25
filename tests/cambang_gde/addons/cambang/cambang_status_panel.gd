@@ -128,10 +128,6 @@ const _SERVER_TOPOLOGY_GROWTH_RATE_WINDOW_SEC := 10.0
 const _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION := 0.5
 
 var _title_label: Label
-var _provider_mode_value: Label
-var _schema_version_value: Label
-var _counts_value: Label
-var _timestamp_value: Label
 var _status_rows_scroll: ScrollContainer
 var _status_rows: VBoxContainer
 var _expanded_by_row_id: Dictionary = {}
@@ -202,6 +198,24 @@ func _reconcile_post_stop_nil_boundary() -> bool:
 	if _server == null:
 		return false
 
+	var provider_mode := "unknown"
+	if _server.has_method("get_active_provider_config"):
+		var cfg: Variant = _server.get_active_provider_config()
+		if typeof(cfg) == TYPE_DICTIONARY:
+			var d: Dictionary = cfg
+			var provider_kind := int(d.get("provider_kind", -1))
+			if provider_kind == _server.PROVIDER_KIND_PLATFORM_BACKED:
+				provider_mode = "platform_backed"
+			elif provider_kind == _server.PROVIDER_KIND_SYNTHETIC:
+				provider_mode = "synthetic"
+				var synthetic_role := d.get("synthetic_role", null)
+				if synthetic_role != null and int(synthetic_role) == _server.SYNTHETIC_ROLE_TIMELINE:
+					provider_mode = "synthetic/timeline"
+					var timeline_reconciliation := str(d.get("timeline_reconciliation", ""))
+					if timeline_reconciliation == "completion_gated":
+						provider_mode += "/completion-gated"
+					elif timeline_reconciliation == "strict":
+						provider_mode += "/strict"
 	var snapshot := _fetch_snapshot()
 	if snapshot != null:
 		return false
@@ -257,16 +271,6 @@ func _build_ui_if_needed() -> void:
 	_title_label = Label.new()
 	_title_label.text = "CamBANG Status"
 	root.add_child(_title_label)
-
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_child(grid)
-
-	_provider_mode_value = _add_row(grid, "Provider Mode")
-	_schema_version_value = _add_row(grid, "Schema Version")
-	_counts_value = _add_row(grid, "Entity Counts")
-	_timestamp_value = _add_row(grid, "timestamp_ns")
 
 	_status_rows_scroll = ScrollContainer.new()
 	_status_rows_scroll.set_script(TOUCH_SCROLL_SCRIPT)
@@ -452,10 +456,10 @@ func _on_state_published(_gen: int, _version: int, _topology_version: int) -> vo
 
 func _refresh_from_server() -> void:
 	_build_ui_if_needed()
+	var provider_mode := ""
 	if _server == null:
 		_server = _get_server()
 	if _server == null:
-		_provider_mode_value.text = "unavailable"
 		_apply_snapshot_read({"state": "No server", "counts": "-", "timestamp": "-"})
 		_last_snapshot_meta.clear()
 		_clear_observed_device_health_history()
@@ -466,7 +470,6 @@ func _refresh_from_server() -> void:
 		_render_panel_and_maybe_dump(_last_panel_model, null)
 		return
 
-	var provider_mode := "unknown"
 	if _server.has_method("get_active_provider_config"):
 		var cfg: Variant = _server.get_active_provider_config()
 		if typeof(cfg) == TYPE_DICTIONARY:
@@ -484,7 +487,7 @@ func _refresh_from_server() -> void:
 						provider_mode += "/completion-gated"
 					elif timeline_reconciliation == "strict":
 						provider_mode += "/strict"
-	_provider_mode_value.text = provider_mode
+
 	var snapshot := _fetch_snapshot()
 	var reading := _read_snapshot(snapshot)
 	_apply_snapshot_read(reading)
@@ -3259,9 +3262,16 @@ func _build_runtime_compat_fallback_panel(contract_gaps: Array, projection_gaps:
 
 
 func _apply_snapshot_read(reading: Dictionary) -> void:
-	_schema_version_value.text = str(reading.get("schema_version", "-"))
-	_counts_value.text = str(reading.get("counts", "-"))
-	_timestamp_value.text = "%s (monotonic publish timestamp)" % str(reading.get("timestamp", "-"))
+	var segments: Array[String] = ["CamBANG Status"]
+	if reading.has("schema_version"):
+		var schema_value := str(reading.get("schema_version", "")).strip_edges()
+		if not schema_value.is_empty() and schema_value != "-":
+			segments.append("schema=%s" % schema_value)
+	if reading.has("timestamp"):
+		var timestamp_value := str(reading.get("timestamp", "")).strip_edges()
+		if not timestamp_value.is_empty() and timestamp_value != "-":
+			segments.append("t=%sns" % timestamp_value)
+	_title_label.text = " · ".join(segments)
 
 
 func _build_fake_panel_model() -> PanelModel:
@@ -3661,6 +3671,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var devices_by_instance := {}
 	var provider_device_ids_by_instance := {}
+	var provider_device_entry_by_hardware := {}
 	var acquisition_session_entry_id_by_session_id := {}
 	for i in range(devices.size()):
 		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
@@ -3699,19 +3710,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% device_matches.size()
 			)
 		var still_profile := _capture_profile_still_dict(rec)
-		var camera_state_v: Variant = rec.get("camera_state", {})
-		if typeof(camera_state_v) == TYPE_DICTIONARY:
-			var camera_state: Dictionary = camera_state_v
-			var exposure_v: Variant = camera_state.get("exposure", {})
-			if typeof(exposure_v) == TYPE_DICTIONARY:
-				var exposure: Dictionary = exposure_v
-				var ae_mode: Dictionary = exposure.get("ae_mode", {})
-				var baseline_ev: Dictionary = exposure.get("baseline_exposure_compensation_milli_ev", {})
-				device_info.append("camera_state.ae_mode support=%s apply_status=%s" % [str(ae_mode.get("support", "UNKNOWN")), str(ae_mode.get("apply_status", "UNKNOWN"))])
-				device_info.append("camera_state.baseline_ev support=%s apply_status=%s" % [str(baseline_ev.get("support", "UNKNOWN")), str(baseline_ev.get("apply_status", "UNKNOWN"))])
-		var device_bundle_count := _build_still_image_bundle_member_count_line(rec)
-		if not device_bundle_count.is_empty():
-			device_info.append(device_bundle_count)
+		device_info.append_array(_build_camera_state_info_lines(rec))
+		var device_bundle_count := _still_image_bundle_member_count(rec)
 		var device_bundle_detail := _build_still_image_bundle_detail_line(rec)
 		if not device_bundle_detail.is_empty():
 			device_info.append(device_bundle_detail)
@@ -3739,6 +3739,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 						_counter("capture_h", int(still_profile.get("height", 0)), 4),
 						_counter("capture_fmt", int(still_profile.get("format", 0)), 4),
 						_counter("capture_prof", int(still_profile.get("version", 0)), 2),
+						_counter("bundle", device_bundle_count, 2),
 					],
 					"device"
 				),
@@ -3748,6 +3749,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if device_matches.size() == 1:
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
 		panel.entries.append(device_entry)
+		provider_device_entry_by_hardware[str(rec.get("hardware_id", ""))] = device_entry
 
 	for i in range(acquisition_sessions.size()):
 		var rec := _safe_dict(acquisition_sessions[i], issues, "acquisition_sessions[%d]" % i)
@@ -3792,9 +3794,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				% acquisition_session_native_matches.size()
 			)
 		var acquisition_still_profile := _capture_profile_still_dict(rec)
-		var acquisition_bundle_summary := _build_still_image_bundle_member_count_line(rec)
-		if not acquisition_bundle_summary.is_empty():
-			acquisition_session_info.append(acquisition_bundle_summary)
+		acquisition_session_info.append_array(_build_camera_state_info_lines(rec))
+		var acquisition_bundle_count := _still_image_bundle_member_count(rec)
 		var acquisition_bundle_detail := _build_still_image_bundle_detail_line(rec)
 		if not acquisition_bundle_detail.is_empty():
 			acquisition_session_info.append(acquisition_bundle_detail)
@@ -3807,20 +3808,26 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			true,
 			true,
 			acquisition_session_badges,
-			_counters_from_record(
-				rec,
-				[
-					
-					["triggered", "captures_triggered", 3],
-					["completed", "captures_completed", 3],
-					["failed", "captures_failed", 3],
-					["last_capture_id", "last_capture_id", 3],
-					["last_capture_latency", "last_capture_latency_ns", 4],
-					["error_code", "error_code", 2],
-				],
-				[],
-				"acquisition_session"
-			),
+				_counters_from_record(
+					rec,
+					[
+						
+						["triggered", "captures_triggered", 3],
+						["completed", "captures_completed", 3],
+						["failed", "captures_failed", 3],
+						["last_capture_id", "last_capture_id", 3],
+						["last_capture_latency", "last_capture_latency_ns", 4],
+						["error_code", "error_code", 2],
+					],
+					[
+						_counter("capture_w", int(acquisition_still_profile.get("width", 0)), 4),
+						_counter("capture_h", int(acquisition_still_profile.get("height", 0)), 4),
+						_counter("capture_fmt", int(acquisition_still_profile.get("format", 0)), 4),
+						_counter("capture_prof", int(acquisition_still_profile.get("version", 0)), 2),
+						_counter("bundle", acquisition_bundle_count, 2),
+					],
+					"acquisition_session"
+				),
 			acquisition_session_info,
 			"acquisition_session"
 		)
@@ -3870,9 +3877,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				_badge("neutral", "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE"))),
 			]
 			var stream_info: Array[String] = []
-			var visibility_info_line := _build_stream_visibility_info_line(rec)
-			if not visibility_info_line.is_empty():
-				stream_info.append(visibility_info_line)
+			if rec.has("visibility_last_path"):
+				stream_info.append(
+					"visibility_path=%s"
+					% _format_info_value(rec.get("visibility_last_path"), "visibility_path")
+				)
 			var stream_matches: Array = current_stream_native_matches_by_stream_id.get(stream_id, [])
 			if stream_matches.size() == 1:
 				var stream_native_rec: Dictionary = stream_matches[0]
@@ -4060,22 +4069,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
 		for j in range(members.size()):
 			var hardware_id := str(members[j])
-			var member_device := _find_device_by_hardware(devices, hardware_id, issues)
-			var member_context_lines: Array[String] = ["context: rig member."]
-			var member_info: Array[String] = []
-			if member_device.is_empty():
-				member_info.append("Contract gap: rig member hardware_id not present in devices list.")
-			panel.entries.append(_entry(
-				"rig/%d/device/%s" % [rig_id, _safe_slug(hardware_id, "unknown")],
-				rig_entry_id,
-				3,
-				"device/%s" % _safe_label_component(hardware_id, "unknown"),
-				false,
-				false,
-				[],
-				[],
-				_append_lines(member_context_lines, member_info)
-			))
+			var source_device_entry: StatusEntryModel = provider_device_entry_by_hardware.get(hardware_id, null)
+			if source_device_entry == null:
+				var rig_entry := _find_panel_entry_by_id(panel, rig_entry_id)
+				if rig_entry != null:
+					rig_entry.info_lines.append(
+					"Contract gap: rig member hardware_id=%s has no matching current DeviceState."
+					% _safe_label_component(hardware_id, "unknown")
+					)
+				continue
+			var rig_member_alias := _clone_status_entry(source_device_entry)
+			rig_member_alias.id = "rig/%d/device/%s" % [rig_id, _safe_slug(hardware_id, "unknown")]
+			rig_member_alias.parent_id = rig_entry_id
+			rig_member_alias.depth = 3
+			rig_member_alias.label = "device/%s" % _safe_label_component(hardware_id, "unknown")
+			rig_member_alias.expanded = false
+			rig_member_alias.can_expand = false
+			panel.entries.append(rig_member_alias)
 
 	var orphan_rows: Array[StatusEntryModel] = []
 	var orphan_rows_by_id := {}
@@ -5322,6 +5332,7 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_prof": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"bundle": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 			}
 		"stream":
 			return {
@@ -5346,6 +5357,7 @@ func _counter_registry_for_row_kind(row_kind: String) -> Dictionary:
 				"capture_w": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_h": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"capture_fmt": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
+				"bundle": {"semantic_group": "configuration", "truth_class": "snapshot_backed", "required": false},
 				"triggered": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"completed": {"semantic_group": "activity", "truth_class": "snapshot_backed", "required": false},
 				"failed": {"semantic_group": "pressure_failure", "truth_class": "snapshot_backed", "required": false},
@@ -5564,7 +5576,7 @@ func _counter_preference_table() -> Dictionary:
 			"derived_aggregate": ["rigs", "devices", "acquisition_sessions", "streams", "native_all", "native_cur", "native_prev", "native_dead"],
 		},
 		"device": {
-			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof"],
+			"configuration": ["camera_spec_version", "errors", "last_error_code", "rebuild_count", "warm_hold_ms", "warm_remaining_ms", "capture_w", "capture_h", "capture_fmt", "capture_prof", "bundle"],
 		},
 		"stream": {
 			"configuration": ["width", "height", "fps_min", "fps_max", "fmt"],
@@ -5572,7 +5584,7 @@ func _counter_preference_table() -> Dictionary:
 			"pressure_failure": ["drop", "last_ts", "shown", "rej_inv", "rej_fmt"],
 		},
 		"acquisition_session": {
-			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt"],
+			"configuration": ["capture_prof", "capture_w", "capture_h", "capture_fmt", "bundle"],
 			"activity": ["triggered", "completed", "last_capture_id"],
 			"pressure_failure": ["failed", "last_capture_latency", "error_code"],
 		},
@@ -5730,7 +5742,7 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 			["capture_profile_version", "capture_profile_version", "int"],
 		]
 	)
-	var bundle_count_line := _build_still_image_bundle_member_count_line(rec)
+	var bundle_count_line := "still: bundle_members=%d" % _still_image_bundle_member_count(rec)
 	var bundle_detail_line := _build_still_image_bundle_detail_line(rec)
 	var bundle_segments: Array[String] = []
 	if not bundle_count_line.is_empty():
@@ -5745,12 +5757,12 @@ func _build_capture_profile_info_line(rec: Dictionary) -> String:
 	return "%s %s" % [base_line, bundle_fragment]
 
 
-func _build_still_image_bundle_member_count_line(rec: Dictionary) -> String:
+func _still_image_bundle_member_count(rec: Dictionary) -> int:
 	var bundle_members := _extract_still_image_bundle_members(rec)
 	if bundle_members == null:
-		return ""
+		return 0
 	var members: Array = bundle_members
-	return "still: bundle_members=%d" % members.size()
+	return members.size()
 
 
 func _build_still_image_bundle_detail_line(rec: Dictionary) -> String:
@@ -5759,6 +5771,66 @@ func _build_still_image_bundle_detail_line(rec: Dictionary) -> String:
 		return ""
 	var members: Array = bundle_members
 	return "bundle=[%s]" % _build_still_image_bundle_member_tokens(members)
+
+
+func _build_camera_state_info_lines(rec: Dictionary) -> Array[String]:
+	var lines: Array[String] = []
+	var camera_state_v: Variant = rec.get("camera_state", {})
+	if typeof(camera_state_v) != TYPE_DICTIONARY:
+		return lines
+	var camera_state: Dictionary = camera_state_v
+	if camera_state.has("version"):
+		lines.append("camera_state.version=%s" % str(camera_state.get("version")))
+	var families := [
+		["exposure", "ae_mode"],
+		["exposure", "baseline_exposure_compensation_milli_ev"],
+		["focus", "af_mode"],
+		["focus", "focus_distance_diopters_milli"],
+		["white_balance", "awb_mode"],
+		["white_balance", "color_temperature_kelvin"],
+		["stabilization", "mode"],
+		["stabilization", "strength_percent"],
+		["flash_torch", "flash_mode"],
+		["flash_torch", "torch_level"],
+		["zoom_crop", "zoom_ratio_milli"],
+		["zoom_crop", "crop_preset"],
+		["processing", "noise_reduction_mode"],
+		["processing", "edge_enhancement_level"],
+		["metering", "metering_mode"],
+		["metering", "metering_region_preset"],
+		["antibanding", "mode"],
+		["antibanding", "mains_frequency_hz"],
+		["orientation_mirroring", "rotation_degrees"],
+		["orientation_mirroring", "mirror_mode"],
+		["privacy_hardware_block", "privacy_mode"],
+		["privacy_hardware_block", "hardware_block_reason"],
+	]
+	for pair in families:
+		var family_name := str(pair[0])
+		var field_name := str(pair[1])
+		var family_v: Variant = camera_state.get(family_name, {})
+		if typeof(family_v) != TYPE_DICTIONARY:
+			continue
+		var family: Dictionary = family_v
+		var value_v: Variant = family.get(field_name, {})
+		if typeof(value_v) != TYPE_DICTIONARY:
+			continue
+		var value: Dictionary = value_v
+		var parts: Array[String] = []
+		parts.append("support=%s" % str(value.get("support", "UNKNOWN")))
+		var has_target := bool(value.get("has_target", false))
+		parts.append("has_target=%s" % ("true" if has_target else "false"))
+		if has_target and value.has("target"):
+			parts.append("target=%s" % str(value.get("target")))
+		var has_applied := bool(value.get("has_applied", false))
+		parts.append("has_applied=%s" % ("true" if has_applied else "false"))
+		if has_applied and value.has("applied"):
+			parts.append("applied=%s" % str(value.get("applied")))
+		parts.append("apply_status=%s" % str(value.get("apply_status", "UNKNOWN")))
+		if value.has("apply_error_code"):
+			parts.append("apply_error_code=%s" % str(value.get("apply_error_code")))
+		lines.append("camera_state.%s.%s %s" % [family_name, field_name, " ".join(parts)])
+	return lines
 
 
 func _extract_still_image_bundle_members(rec: Dictionary) -> Variant:
@@ -5906,6 +5978,8 @@ func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool
 			line.begins_with("Panel-local continuity only.")
 			or line.begins_with("continuity:")
 		)
+	if line == "Startup baseline published before any current-generation provider native object is visible.":
+		return true
 	if (
 		line.begins_with("profile:")
 		or line.begins_with("flow:")
@@ -5918,7 +5992,7 @@ func _should_show_line_in_summary(entry: StatusEntryModel, line: String) -> bool
 		return true
 	if entry.label == "contract_gaps" or entry.label == "projection_gaps":
 		return false
-	return entry.summary_info_lines.is_empty()
+	return false
 
 
 func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterModel) -> String:
@@ -5937,7 +6011,7 @@ func _counter_visibility_for_entry(entry: StatusEntryModel, counter: CounterMode
 	match counter.name:
 		"gen", "version", "topology", "rigs", "devices", "streams", "mode", "errors", "count", "members", "retained_from_gen":
 			return "core"
-		"capture_prof", "capture_w", "capture_h", "capture_fmt":
+		"capture_prof", "capture_w", "capture_h", "capture_fmt", "bundle":
 			if entry.visual_object_class == "device":
 				return "detail"
 			return "summary"
@@ -6023,7 +6097,7 @@ func _native_object_type_key(rec: Dictionary) -> String:
 
 func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dictionary) -> void:
 	if rec.has("type"):
-		info_lines.append("concrete type=%s" % str(rec.get("type")))
+		info_lines.append("native_type=%s" % str(rec.get("type")))
 
 	var native_traceability_specs := [
 		["owner_stream_id", "owner_stream_id", "int"],
@@ -6031,8 +6105,6 @@ func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dict
 		["owner_device_instance_id", "owner_device_instance_id", "int"],
 		["root_id", "root_id", "int"],
 		["creation_gen", "creation_gen", "int"],
-		["created_ns", "created_ns", "int"],
-		["destroyed_ns", "destroyed_ns", "int"],
 		["bytes_allocated", "bytes_allocated", "int"],
 		["buffers_in_use", "buffers_in_use", "int"],
 	]
@@ -6047,6 +6119,11 @@ func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dict
 	var owner_rig_id := int(rec.get("owner_rig_id", 0))
 	if owner_rig_id > 0:
 		info_lines.append("owner_rig_id=%d" % owner_rig_id)
+	if rec.has("created_ns") and rec.has("destroyed_ns"):
+		info_lines.append(
+			"native_timestamps: created_ns=%s destroyed_ns=%s"
+			% [str(rec.get("created_ns")), str(rec.get("destroyed_ns"))]
+		)
 
 
 func _native_type_is_payload_support(native_type_key: String) -> bool:
@@ -6070,6 +6147,11 @@ func _apply_scoped_resource_telemetry_to_native_payload_support_group(panel: Pan
 				break
 		if not replaced:
 			group_row.counters.append(counter)
+	if telemetry.has("creation_gen") and telemetry.has("created_ns") and telemetry.has("destroyed_ns"):
+		group_row.info_lines.append(
+			"telemetry: creation_gen=%s created_ns=%s destroyed_ns=%s"
+			% [str(telemetry.get("creation_gen")), str(telemetry.get("created_ns")), str(telemetry.get("destroyed_ns"))]
+		)
 	_apply_native_payload_support_group_telemetry_health(panel, group_row)
 
 

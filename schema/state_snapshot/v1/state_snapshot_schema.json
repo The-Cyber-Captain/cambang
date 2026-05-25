@@ -165,7 +165,7 @@
         "image_member_index",
         "role",
         "role_name",
-        "exposure_compensation_milli_ev"
+        "intended_exposure_compensation_milli_ev"
       ],
       "properties": {
         "image_member_index": {
@@ -177,7 +177,7 @@
         "role_name": {
           "type": "string"
         },
-        "exposure_compensation_milli_ev": {
+        "intended_exposure_compensation_milli_ev": {
           "type": "integer"
         }
       }
@@ -353,7 +353,8 @@
         "last_capture_id",
         "last_capture_latency_ns",
         "error_code",
-        "capture_profile"
+        "capture_profile",
+        "camera_state"
       ],
       "properties": {
         "acquisition_session_id": {
@@ -385,6 +386,9 @@
         },
         "capture_profile": {
           "$ref": "#/$defs/capture_profile"
+        },
+        "camera_state": {
+          "$ref": "#/$defs/device_camera_state"
         }
       }
     },
@@ -805,7 +809,17 @@
       "additionalProperties": false,
       "required": [
         "version",
-        "exposure"
+        "exposure",
+        "focus",
+        "white_balance",
+        "stabilization",
+        "flash_torch",
+        "zoom_crop",
+        "processing",
+        "metering",
+        "antibanding",
+        "orientation_mirroring",
+        "privacy_hardware_block"
       ],
       "properties": {
         "version": {
@@ -813,6 +827,196 @@
         },
         "exposure": {
           "$ref": "#/$defs/device_camera_exposure_state"
+        },
+        "focus": {
+          "$ref": "#/$defs/device_camera_focus_state"
+        },
+        "white_balance": {
+          "$ref": "#/$defs/device_camera_white_balance_state"
+        },
+        "stabilization": {
+          "$ref": "#/$defs/device_camera_stabilization_state"
+        },
+        "flash_torch": {
+          "$ref": "#/$defs/device_camera_flash_torch_state"
+        },
+        "zoom_crop": {
+          "$ref": "#/$defs/device_camera_zoom_crop_state"
+        },
+        "processing": {
+          "$ref": "#/$defs/device_camera_processing_state"
+        },
+        "metering": {
+          "$ref": "#/$defs/device_camera_metering_state"
+        },
+        "antibanding": {
+          "$ref": "#/$defs/device_camera_antibanding_state"
+        },
+        "orientation_mirroring": {
+          "$ref": "#/$defs/device_camera_orientation_mirroring_state"
+        },
+        "privacy_hardware_block": {
+          "$ref": "#/$defs/device_camera_privacy_hardware_block_state"
+        }
+      }
+    },
+    "device_camera_focus_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "af_mode",
+        "focus_distance_diopters_milli"
+      ],
+      "properties": {
+        "af_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "focus_distance_diopters_milli": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_white_balance_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "awb_mode",
+        "color_temperature_kelvin"
+      ],
+      "properties": {
+        "awb_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "color_temperature_kelvin": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_stabilization_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "strength_percent"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "strength_percent": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_flash_torch_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "flash_mode",
+        "torch_level"
+      ],
+      "properties": {
+        "flash_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "torch_level": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_zoom_crop_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zoom_ratio_milli",
+        "crop_preset"
+      ],
+      "properties": {
+        "zoom_ratio_milli": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        },
+        "crop_preset": {
+          "$ref": "#/$defs/camera_value_state_string"
+        }
+      }
+    },
+    "device_camera_processing_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "noise_reduction_mode",
+        "edge_enhancement_level"
+      ],
+      "properties": {
+        "noise_reduction_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "edge_enhancement_level": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_metering_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metering_mode",
+        "metering_region_preset"
+      ],
+      "properties": {
+        "metering_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "metering_region_preset": {
+          "$ref": "#/$defs/camera_value_state_string"
+        }
+      }
+    },
+    "device_camera_antibanding_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "mains_frequency_hz"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "mains_frequency_hz": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        }
+      }
+    },
+    "device_camera_orientation_mirroring_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rotation_degrees",
+        "mirror_mode"
+      ],
+      "properties": {
+        "rotation_degrees": {
+          "$ref": "#/$defs/camera_value_state_int32"
+        },
+        "mirror_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        }
+      }
+    },
+    "device_camera_privacy_hardware_block_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "privacy_mode",
+        "hardware_block_reason"
+      ],
+      "properties": {
+        "privacy_mode": {
+          "$ref": "#/$defs/camera_value_state_string"
+        },
+        "hardware_block_reason": {
+          "$ref": "#/$defs/camera_value_state_string"
         }
       }
     }

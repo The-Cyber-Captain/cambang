@@ -38,6 +38,25 @@ stream-level fallback where session ownership is available.
 The projection logic preserves explicit **Acquisition Session boundary breach**
 classification when a descendant survives beyond its controlling AcquisitionSession seam.
 
+## Rig-member alias projection limitation (current implementation)
+
+- Rig-member alias rows currently resolve only from **current `DeviceState` rows** by matching:
+  - `rigs[].member_hardware_ids[]` -> `devices[].hardware_id`.
+- During teardown/transition snapshots, provider-owned device continuity rows such as
+  `device/<instance_id> [destroyed]` may still be visible even when matching current
+  `devices[]` records are no longer present.
+- Those continuity rows are currently reconstructed from non-live native-device continuity
+  paths and are **not** used as rig-member alias sources unless a reliable hardware-id
+  mapping is available in the projection path.
+- Therefore, when a rig member cannot be resolved to a current `DeviceState`, the panel
+  intentionally surfaces a rig-row anomaly line:
+  - `Contract gap: rig member hardware_id=<id> has no matching current DeviceState.`
+- This is intentional anomaly visibility (contract/projection truth), not nominal
+  summary/info leakage.
+- Future work may extend rig-member aliasing to retained visible provider-owned Device
+  rows where hardware identity is truthfully available. Child-subtree aliasing under rig
+  member aliases (AcquisitionSession/Stream/Native Payload Support) remains deferred.
+
 ## Capture profile counter surfacing policy (current implementation)
 
 - Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
@@ -49,8 +68,8 @@ classification when a descendant survives beyond its controlling AcquisitionSess
   `capture_fmt` at summary level as the preferred session-context capture profile
   surface.
 - AcquisitionSession rows are the preferred summary surface for applied acquisition/
-  capture-context `still_image_bundle` truth (compact `bundle_members` count in
-  summary, full member tokens in detail).
+  capture-context `still_image_bundle` truth (`bundle` count as a counter in
+  summary, full member tokens as `bundle=[...]` in detail).
 - Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
   are not coupled to Device-vs-AcquisitionSession demotion policy.
 
@@ -567,8 +586,10 @@ A threshold value of `0` disables that specific temporal growth rule.
 - `server/main` now surfaces `imaging_spec_version` as a compact header counter.
 - top-level `scoped_resource_telemetry[]` projects onto scope-specific `.../native_payload_support` grouping rows (no dedicated resource_telemetry child row).
 - when present, scoped telemetry lifecycle phase (`LIVE`/`DESTROYED`) is surfaced as the NPS row `phase=...` badge using normal lifecycle badge grammar.
-- Stream rows surface `visibility_last_path` via `visibility:` info line alongside visibility counters.
+- Stream rows surface visibility counts as counters (`shown`, `rej_fmt`, `rej_inv`);
+  `visibility_last_path` is surfaced as detail-only `visibility_path=<value>`.
 - Native support types (`gpu_backing`, `frame_buffer_lease`) are grouped under projection row `<stream|acquisition_session>/<id>/native_payload_support` when owners are present.
-- Native info lines now include non-zero `owner_provider_native_id` and `owner_rig_id` for ownership traceability.
+- Native info lines now include `native_type=<...>` plus non-zero `owner_provider_native_id`
+  and `owner_rig_id` for ownership traceability.
 
 - StatusPanel reads still profile truth from `capture_profile.still` on device/acquisition rows.
