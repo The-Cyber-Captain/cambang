@@ -38,6 +38,25 @@ stream-level fallback where session ownership is available.
 The projection logic preserves explicit **Acquisition Session boundary breach**
 classification when a descendant survives beyond its controlling AcquisitionSession seam.
 
+## Rig-member alias projection limitation (current implementation)
+
+- Rig-member alias rows currently resolve only from **current `DeviceState` rows** by matching:
+  - `rigs[].member_hardware_ids[]` -> `devices[].hardware_id`.
+- During teardown/transition snapshots, provider-owned device continuity rows such as
+  `device/<instance_id> [destroyed]` may still be visible even when matching current
+  `devices[]` records are no longer present.
+- Those continuity rows are currently reconstructed from non-live native-device continuity
+  paths and are **not** used as rig-member alias sources unless a reliable hardware-id
+  mapping is available in the projection path.
+- Therefore, when a rig member cannot be resolved to a current `DeviceState`, the panel
+  intentionally surfaces a rig-row anomaly line:
+  - `Contract gap: rig member hardware_id=<id> has no matching current DeviceState.`
+- This is intentional anomaly visibility (contract/projection truth), not nominal
+  summary/info leakage.
+- Future work may extend rig-member aliasing to retained visible provider-owned Device
+  rows where hardware identity is truthfully available. Child-subtree aliasing under rig
+  member aliases (AcquisitionSession/Stream/Native Payload Support) remains deferred.
+
 ## Capture profile counter surfacing policy (current implementation)
 
 - Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
