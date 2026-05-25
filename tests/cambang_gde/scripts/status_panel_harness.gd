@@ -128,7 +128,7 @@ func _initialize() -> void:
 				_printerr(prelude_error)
 				quit(1)
 				return
-		var observed_error := _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
+		var observed_error: String = await _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
 		if observed_error != "":
 			_printerr(observed_error)
 			quit(1)
@@ -248,7 +248,7 @@ func _apply_authoritative_observed_payloads(panel: Variant, observed_payloads: A
 		panel.call("_set_last_active_panel_state", active_panel, true, snapshot_meta)
 		panel.call("_apply_snapshot_read", panel.call("_read_snapshot", snapshot))
 		panel.call("_render_panel_and_maybe_dump", rendered_model, snapshot)
-		var sleep_msec := max(int(spec.get("sleep_msec_after", 0)), 0)
+		var sleep_msec: int = max(int(spec.get("sleep_msec_after", 0)), 0)
 		if sleep_msec > 0:
 			await _sleep_msec(sleep_msec)
 	return ""
@@ -257,7 +257,7 @@ func _apply_authoritative_observed_payloads(panel: Variant, observed_payloads: A
 func _sleep_msec(duration_msec: int) -> void:
 	if duration_msec <= 0:
 		return
-	await get_tree().create_timer(float(duration_msec) / 1000.0).timeout
+	await create_timer(float(duration_msec) / 1000.0).timeout
 
 
 func _parse_cli_args(args: PackedStringArray) -> Dictionary:
