@@ -2039,12 +2039,12 @@ func _temporal_threshold_breached_with_latch(
 		threshold: float,
 		severity: String
 	) -> bool:
-	var clamped := max(threshold, 0.0)
+	var clamped: float = max(threshold, 0.0)
 	if is_zero_approx(clamped):
 		return false
-	var live_breach := growth_rate > clamped
-	var now_msec := Time.get_ticks_msec()
-	var effective_row_id := row_id
+	var live_breach: bool = growth_rate > clamped
+	var now_msec: int = Time.get_ticks_msec()
+	var effective_row_id: String = row_id
 	if effective_row_id.is_empty():
 		effective_row_id = "__global__"
 	if live_breach:
