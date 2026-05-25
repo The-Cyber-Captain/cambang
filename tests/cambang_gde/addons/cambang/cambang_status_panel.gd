@@ -6093,7 +6093,7 @@ func _native_object_type_key(rec: Dictionary) -> String:
 
 func _append_native_traceability_info_lines(info_lines: Array[String], rec: Dictionary) -> void:
 	if rec.has("type"):
-		info_lines.append("concrete type=%s" % str(rec.get("type")))
+		info_lines.append("native_type=%s" % str(rec.get("type")))
 
 	var native_traceability_specs := [
 		["owner_stream_id", "owner_stream_id", "int"],
