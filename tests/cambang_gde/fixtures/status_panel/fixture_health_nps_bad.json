@@ -1,0 +1,39 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_badges_by_row": {
+      "acquisition_session/1/native_payload_support": ["BAD", "phase=LIVE"]
+    },
+    "required_counter_values_by_row": {
+      "acquisition_session/1/native_payload_support": {
+        "created": 10,
+        "released": 11,
+        "current": -1,
+        "peak_current": 4
+      }
+    }
+  },
+  "payload": {
+    "schema_version": 1,
+    "gen": 1,
+    "version": 1,
+    "topology_version": 1,
+    "timestamp_ns": 1000000000,
+    "imaging_spec_version": 1,
+    "rigs": [],
+    "devices": [{"instance_id": 1, "hardware_id": "d1", "phase": "LIVE", "mode": "STREAMING", "errors_count": 0, "engaged": true, "rig_id": 0}],
+    "acquisition_sessions": [{"acquisition_session_id": 1, "device_instance_id": 1, "phase": "LIVE", "mode": "CAPTURING", "error_code": 0, "trigger_count": 0, "capture_count": 0, "failed_count": 0, "last_capture_id": 0}],
+    "streams": [],
+    "native_objects": [],
+    "detached_native_root_ids": [],
+    "retained_native_objects": [],
+    "native_payload_support_telemetry": [
+      {"acquisition_session_id": 1, "phase": "LIVE", "total_created": 10, "total_released": 11, "current": -1, "peak_current": 4}
+    ]
+  }
+}

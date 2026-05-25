@@ -1,0 +1,43 @@
+{
+  "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
+  "expected_validity": "valid",
+  "should_run_projector": true,
+  "panel_exports": {
+    "acquisition_session_failed_growth_rate_bad_threshold_per_sec": 1.0,
+    "rig_failed_growth_rate_bad_threshold_per_sec": 1.0,
+    "temporal_health_latch_duration_msec": 50
+  },
+  "authoritative_prelude_payload": {
+    "schema_version": 1, "gen": 1, "version": 1, "topology_version": 1, "timestamp_ns": 1000000000, "imaging_spec_version": 1,
+    "rigs": [{"rig_id": 10, "name": "r", "phase": "LIVE", "mode": "ARMED", "member_hardware_ids": ["d1"], "captures_failed": 0, "error_code": 0}],
+    "devices": [{"instance_id": 1, "hardware_id": "d1", "phase": "LIVE", "mode": "STREAMING", "errors_count": 0, "engaged": true, "rig_id": 10}],
+    "acquisition_sessions": [{"acquisition_session_id": 1, "device_instance_id": 1, "phase": "LIVE", "mode": "CAPTURING", "error_code": 0, "failed_count": 0}],
+    "streams": [], "native_objects": [], "detached_native_root_ids": [], "retained_native_objects": [], "native_payload_support_telemetry": []
+  },
+  "authoritative_observed_payloads": [
+    {
+      "payload": {
+        "schema_version": 1, "gen": 1, "version": 2, "topology_version": 1, "timestamp_ns": 1100000000, "imaging_spec_version": 1,
+        "rigs": [{"rig_id": 10, "name": "r", "phase": "LIVE", "mode": "ARMED", "member_hardware_ids": ["d1"], "captures_failed": 5, "error_code": 0}],
+        "devices": [{"instance_id": 1, "hardware_id": "d1", "phase": "LIVE", "mode": "STREAMING", "errors_count": 0, "engaged": true, "rig_id": 10}],
+        "acquisition_sessions": [{"acquisition_session_id": 1, "device_instance_id": 1, "phase": "LIVE", "mode": "CAPTURING", "error_code": 0, "failed_count": 5}],
+        "streams": [], "native_objects": [], "detached_native_root_ids": [], "retained_native_objects": [], "native_payload_support_telemetry": []
+      },
+      "sleep_msec_after": 70
+    }
+  ],
+  "expected_panel_outcome": {
+    "required_badges_by_row": {
+      "acquisition_session/1": ["ATTN"],
+      "rig/10": ["ATTN"]
+    }
+  },
+  "payload": {
+    "schema_version": 1, "gen": 1, "version": 3, "topology_version": 1, "timestamp_ns": 1200000000, "imaging_spec_version": 1,
+    "rigs": [{"rig_id": 10, "name": "r", "phase": "LIVE", "mode": "ARMED", "member_hardware_ids": ["d1"], "captures_failed": 5, "error_code": 0}],
+    "devices": [{"instance_id": 1, "hardware_id": "d1", "phase": "LIVE", "mode": "STREAMING", "errors_count": 0, "engaged": true, "rig_id": 10}],
+    "acquisition_sessions": [{"acquisition_session_id": 1, "device_instance_id": 1, "phase": "LIVE", "mode": "CAPTURING", "error_code": 0, "failed_count": 5}],
+    "streams": [], "native_objects": [], "detached_native_root_ids": [], "retained_native_objects": [], "native_payload_support_telemetry": []
+  }
+}

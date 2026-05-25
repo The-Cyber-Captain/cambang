@@ -73,6 +73,7 @@ func _initialize() -> void:
 		return
 
 	panel.name = "CamBANGStatusPanel"
+	_apply_fixture_panel_exports(panel, fixture.get("panel_exports", {}))
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -109,6 +110,7 @@ func _initialize() -> void:
 	var rendered_model = null
 	var snapshot_reading: Dictionary = {}
 	var authoritative_prelude_payload: Variant = fixture.get("authoritative_prelude_payload", null)
+	var authoritative_observed_payloads: Array = fixture.get("authoritative_observed_payloads", [])
 
 	if fixture_kind == "continuity_no_snapshot":
 		var continuity_prelude_payload: Variant = fixture.get("continuity_prelude_payload", null)
@@ -126,6 +128,11 @@ func _initialize() -> void:
 				_printerr(prelude_error)
 				quit(1)
 				return
+		var observed_error := _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
+		if observed_error != "":
+			_printerr(observed_error)
+			quit(1)
+			return
 		snapshot_reading = panel.call("_read_snapshot", payload)
 		if not should_run_projector:
 			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
@@ -193,6 +200,64 @@ func _initialize() -> void:
 		print("OK: expected-invalid fixture was rejected/handled as expected (%s): %s" % [observed_class, fixture_path])
 
 	quit(0)
+
+
+func _apply_fixture_panel_exports(panel: Variant, exports_cfg: Variant) -> void:
+	if typeof(exports_cfg) != TYPE_DICTIONARY:
+		return
+	var cfg: Dictionary = exports_cfg
+	for key in cfg.keys():
+		var property_name := str(key)
+		if property_name.is_empty():
+			continue
+		if not _panel_has_property(panel, property_name):
+			continue
+		panel.set(property_name, cfg[key])
+
+
+func _panel_has_property(panel: Variant, property_name: String) -> bool:
+	if panel == null or property_name.is_empty():
+		return false
+	var property_list: Array = panel.get_property_list()
+	for raw_prop in property_list:
+		if typeof(raw_prop) != TYPE_DICTIONARY:
+			continue
+		if str((raw_prop as Dictionary).get("name", "")) == property_name:
+			return true
+	return false
+
+
+func _apply_authoritative_observed_payloads(panel: Variant, observed_payloads: Array, provider_mode: String) -> String:
+	for i in range(observed_payloads.size()):
+		if typeof(observed_payloads[i]) != TYPE_DICTIONARY:
+			return "authoritative_observed_payloads[%d] must be Dictionary" % i
+		var spec: Dictionary = observed_payloads[i]
+		var payload: Variant = spec.get("payload", null)
+		if typeof(payload) != TYPE_DICTIONARY:
+			return "authoritative_observed_payloads[%d].payload must be Dictionary" % i
+		var snapshot: Dictionary = payload
+		var schema_errors: Array[String] = SnapshotValidator.validate_snapshot(snapshot)
+		if not schema_errors.is_empty():
+			return "authoritative_observed_payloads[%d] schema validation failed: %s" % [i, schema_errors]
+		var compat: Dictionary = panel.call("_check_snapshot_runtime_compat", snapshot)
+		if not bool(compat.get("ok", false)):
+			return "authoritative_observed_payloads[%d] runtime compatibility failed: %s" % [i, compat]
+		var active_panel = panel.call("_project_snapshot_to_panel_model", snapshot, provider_mode)
+		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", snapshot)
+		var rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+		panel.call("_set_last_active_panel_state", active_panel, true, snapshot_meta)
+		panel.call("_apply_snapshot_read", panel.call("_read_snapshot", snapshot))
+		panel.call("_render_panel_and_maybe_dump", rendered_model, snapshot)
+		var sleep_msec := max(int(spec.get("sleep_msec_after", 0)), 0)
+		if sleep_msec > 0:
+			await _sleep_msec(sleep_msec)
+	return ""
+
+
+func _sleep_msec(duration_msec: int) -> void:
+	if duration_msec <= 0:
+		return
+	await get_tree().create_timer(float(duration_msec) / 1000.0).timeout
 
 
 func _parse_cli_args(args: PackedStringArray) -> Dictionary:
