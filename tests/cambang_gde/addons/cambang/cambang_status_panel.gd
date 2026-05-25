@@ -3671,6 +3671,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 
 	var devices_by_instance := {}
 	var provider_device_ids_by_instance := {}
+	var provider_device_entry_by_hardware := {}
 	var acquisition_session_entry_id_by_session_id := {}
 	for i in range(devices.size()):
 		var rec := _safe_dict(devices[i], issues, "devices[%d]" % i)
@@ -3748,6 +3749,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		if device_matches.size() == 1:
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
 		panel.entries.append(device_entry)
+		provider_device_entry_by_hardware[str(rec.get("hardware_id", ""))] = device_entry
 
 	for i in range(acquisition_sessions.size()):
 		var rec := _safe_dict(acquisition_sessions[i], issues, "acquisition_sessions[%d]" % i)
@@ -4067,21 +4069,23 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
 		for j in range(members.size()):
 			var hardware_id := str(members[j])
-			var member_device := _find_device_by_hardware(devices, hardware_id, issues)
-			var member_info: Array[String] = []
-			if member_device.is_empty():
-				member_info.append("Contract gap: rig member hardware_id not present in devices list.")
-			panel.entries.append(_entry(
-				"rig/%d/device/%s" % [rig_id, _safe_slug(hardware_id, "unknown")],
-				rig_entry_id,
-				3,
-				"device/%s" % _safe_label_component(hardware_id, "unknown"),
-				false,
-				false,
-				[],
-				[],
-				member_info
-			))
+			var source_device_entry: StatusEntryModel = provider_device_entry_by_hardware.get(hardware_id, null)
+			if source_device_entry == null:
+				var rig_entry := _find_panel_entry_by_id(panel, rig_entry_id)
+				if rig_entry != null:
+					rig_entry.info_lines.append(
+					"Contract gap: rig member hardware_id=%s has no matching current DeviceState."
+					% _safe_label_component(hardware_id, "unknown")
+					)
+				continue
+			var rig_member_alias := _clone_status_entry(source_device_entry)
+			rig_member_alias.id = "rig/%d/device/%s" % [rig_id, _safe_slug(hardware_id, "unknown")]
+			rig_member_alias.parent_id = rig_entry_id
+			rig_member_alias.depth = 3
+			rig_member_alias.label = "device/%s" % _safe_label_component(hardware_id, "unknown")
+			rig_member_alias.expanded = false
+			rig_member_alias.can_expand = false
+			panel.entries.append(rig_member_alias)
 
 	var orphan_rows: Array[StatusEntryModel] = []
 	var orphan_rows_by_id := {}
