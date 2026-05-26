@@ -298,5 +298,8 @@ For a renderer-sensitive fixture family `<base>.json`, use:
 
 When only one renderer-specific payload is currently evidenced, keep the common fixture and the evidenced renderer fixture, and defer the other renderer-specific variant until real snapshot evidence is captured.
 
+Current review-fixture note:
+- active `review_multistream` fixtures currently model duplicate current-generation native Stream ambiguity; nominal active multistream variants, if desired, should be added as separate fixtures rather than weakening anomaly expectations in place.
+
 This keeps snapshot-contract testing, projection testing, and panel continuity
 checks decoupled but composable.

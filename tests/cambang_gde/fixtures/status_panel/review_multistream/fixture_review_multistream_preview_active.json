@@ -19,11 +19,19 @@
       "server/main": [
         "OK",
         "NATIVE COVERAGE: OK"
+      ],
+      "stream/1101": [
+        "BAD"
       ]
     },
     "required_info_substrings_by_row": {
       "native_object/1201": [
         "owner_stream_id=1101"
+      ],
+      "stream/1101": [
+        "Contract ambiguity: stream row has 2 matching current-generation Stream native objects.",
+        "Contract ambiguity: stream/1101 parent owner could not be resolved to one Acquisition Session.",
+        "Health reason: contract/projection failure: Contract ambiguity: stream row has 2 matching current-generation Stream native objects."
       ]
     }
   },
@@ -696,5 +704,5 @@
     "scoped_resource_telemetry": []
   },
   "renderer_profile": "any",
-  "nps_scope": "structural"
+  "nps_scope": "anomaly"
 }
