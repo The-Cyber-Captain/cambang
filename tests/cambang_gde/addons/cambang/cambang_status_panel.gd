@@ -632,22 +632,22 @@ func _debug_dump_rig_health_eval_if_enabled(
 		return
 	if entry == null:
 		return
-	var target_row_id := _debug_rig_health_target_row_id()
+	var target_row_id: String = _debug_rig_health_target_row_id()
 	if entry.id != target_row_id:
 		return
-	var phase_parsed := _rig_phase_label(entry)
-	var mode_parsed := _rig_mode_label(entry)
-	var captures_failed := _counter_value_by_name(entry, "captures_failed", -1)
-	var error_code := _counter_value_by_name(entry, "error_code", 0)
-	var counters_dump := _debug_counter_dump(entry)
-	var derived_label := ""
+	var phase_parsed: String = _rig_phase_label(entry)
+	var mode_parsed: String = _rig_mode_label(entry)
+	var captures_failed: int = _counter_value_by_name(entry, "captures_failed", -1)
+	var error_code: int = _counter_value_by_name(entry, "error_code", 0)
+	var counters_dump: Dictionary = _debug_counter_dump(entry)
+	var derived_label: String = ""
 	if not health_facts.is_empty():
 		derived_label = _derive_rig_health_label(health_facts)
-	var growth_rate := float(health_facts.get("failed_growth_rate_per_sec", 0.0))
-	var bad_threshold := max(rig_failed_growth_rate_bad_threshold_per_sec, 0.0)
-	var live_growth_breach := (not is_zero_approx(bad_threshold)) and growth_rate > bad_threshold
+	var growth_rate: float = float(health_facts.get("failed_growth_rate_per_sec", 0.0))
+	var bad_threshold: float = max(rig_failed_growth_rate_bad_threshold_per_sec, 0.0)
+	var live_growth_breach: bool = (not is_zero_approx(bad_threshold)) and growth_rate > bad_threshold
 	var latch_row_state: Dictionary = _temporal_health_latches_by_row_id.get(entry.id, {})
-	var raw_labels := _badge_labels(entry.badges)
+	var raw_labels: Array[String] = _badge_labels(entry.badges)
 	var projected_next_labels: Array[String] = []
 	if not next_badges.is_empty():
 		projected_next_labels = _badge_labels(next_badges)
@@ -685,7 +685,7 @@ func _debug_dump_rig_health_eval_if_enabled(
 
 
 func _debug_counter_dump(entry: StatusEntryModel) -> Dictionary:
-	var dump := {}
+	var dump: Dictionary = {}
 	if entry == null:
 		return dump
 	for counter in entry.counters:
