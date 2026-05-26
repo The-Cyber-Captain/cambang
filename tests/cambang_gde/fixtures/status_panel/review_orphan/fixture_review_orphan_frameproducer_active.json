@@ -665,6 +665,6 @@
     ],
     "scoped_resource_telemetry": []
   },
-  "renderer_profile": "ambiguous",
+  "renderer_profile": "any",
   "nps_scope": "structural"
 }
