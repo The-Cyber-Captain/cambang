@@ -3,6 +3,8 @@ extends SceneTree
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
 const DEFAULT_SCREENSHOT_VIEWPORT_SIZE := Vector2i(1400, 1600)
 const SnapshotValidator = preload("res://support/snapshot_schema_validator.gd")
+const VALID_RENDERER_PROFILES := ["any", "gpu", "compatibility", "ambiguous"]
+const VALID_NPS_SCOPES := ["none", "structural", "aggregate", "gpu_leaf", "compatibility_leaf", "anomaly"]
 
 func _initialize() -> void:
 	var parse_result := _parse_cli_args(OS.get_cmdline_user_args())
@@ -42,6 +44,8 @@ func _initialize() -> void:
 	print("HARNESS schema_errors: %s" % [schema_errors])
 
 	var expected_validity := str(fixture.get("expected_validity", "valid"))
+	var renderer_profile := _normalize_renderer_profile(str(fixture.get("renderer_profile", "any")))
+	var nps_scope := _normalize_nps_scope(str(fixture.get("nps_scope", "none")))
 	var should_run_projector := bool(fixture.get("should_run_projector", true))
 	var expected_panel_outcome: Dictionary = fixture.get("expected_panel_outcome", {})
 	var adversarial_projection: Dictionary = fixture.get("adversarial_projection", {})
@@ -97,6 +101,10 @@ func _initialize() -> void:
 	print("HARNESS contract_gaps: %s" % [contract_gaps])
 	print("HARNESS projection_gaps: %s" % [projection_gaps])
 	print("HARNESS schema_valid=%s projection_compatible=%s" % [is_schema_valid, is_projection_compatible])
+	print("HARNESS fixture_taxonomy renderer_profile=%s nps_scope=%s" % [renderer_profile, nps_scope])
+	var renderer_profile_warning := _renderer_profile_warning(renderer_profile)
+	if renderer_profile_warning != "":
+		print("HARNESS taxonomy_note: %s" % renderer_profile_warning)
 
 	if expected_validity == "valid" and not is_schema_valid:
 		_printerr("valid fixture failed schema validation: %s" % [schema_errors])
@@ -201,6 +209,26 @@ func _initialize() -> void:
 		print("OK: expected-invalid fixture was rejected/handled as expected (%s): %s" % [observed_class, fixture_path])
 
 	quit(0)
+
+
+func _normalize_renderer_profile(value: String) -> String:
+	if VALID_RENDERER_PROFILES.has(value):
+		return value
+	return "ambiguous"
+
+
+func _normalize_nps_scope(value: String) -> String:
+	if VALID_NPS_SCOPES.has(value):
+		return value
+	return "anomaly"
+
+
+func _renderer_profile_warning(renderer_profile: String) -> String:
+	if renderer_profile == "ambiguous":
+		return "fixture is renderer_profile=ambiguous; renderer-specific leaf assertions should be reconciled via split fixtures."
+	if renderer_profile == "gpu" or renderer_profile == "compatibility":
+		return "renderer-profile-specific fixture (%s). TODO: wire explicit renderer-mode gating once harness/runtime exposes a robust renderer profile signal." % renderer_profile
+	return ""
 
 
 func _parse_cli_args(args: PackedStringArray) -> Dictionary:
