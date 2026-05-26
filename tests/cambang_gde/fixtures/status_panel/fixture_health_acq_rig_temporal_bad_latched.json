@@ -18,7 +18,7 @@
     "gen": 1,
     "version": 3,
     "topology_version": 1,
-    "timestamp_ns": 6200000000,
+    "timestamp_ns": 7200000000,
     "imaging_spec_version": 1,
     "rigs": [
       {
@@ -36,7 +36,7 @@
         "capture_format": 0,
         "captures_triggered": 0,
         "captures_completed": 0,
-        "captures_failed": 6,
+        "captures_failed": 7,
         "last_capture_id": 0,
         "last_capture_latency_ns": 0,
         "last_sync_skew_ns": 0,
@@ -307,7 +307,7 @@
         "phase": "LIVE",
         "captures_triggered": 0,
         "captures_completed": 0,
-        "captures_failed": 6,
+        "captures_failed": 7,
         "last_capture_id": 0,
         "last_capture_latency_ns": 0,
         "error_code": 0,
@@ -1151,7 +1151,7 @@
         "gen": 1,
         "version": 2,
         "topology_version": 1,
-        "timestamp_ns": 6000000000,
+        "timestamp_ns": 7000000000,
         "imaging_spec_version": 1,
         "rigs": [
           {
@@ -1169,7 +1169,7 @@
             "capture_format": 0,
             "captures_triggered": 0,
             "captures_completed": 0,
-            "captures_failed": 6,
+            "captures_failed": 7,
             "last_capture_id": 0,
             "last_capture_latency_ns": 0,
             "last_sync_skew_ns": 0,
@@ -1440,7 +1440,7 @@
             "phase": "LIVE",
             "captures_triggered": 0,
             "captures_completed": 0,
-            "captures_failed": 6,
+            "captures_failed": 7,
             "last_capture_id": 0,
             "last_capture_latency_ns": 0,
             "error_code": 0,
