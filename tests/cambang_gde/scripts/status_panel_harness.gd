@@ -47,6 +47,8 @@ func _initialize() -> void:
 	var adversarial_projection: Dictionary = fixture.get("adversarial_projection", {})
 	var provider_mode := str(fixture.get("provider_mode", "fixture"))
 	var initial_expanded_row_ids: Array = fixture.get("initial_expanded_row_ids", [])
+	var panel_exports: Dictionary = fixture.get("panel_exports", {})
+	var authoritative_observed_payloads: Array = fixture.get("authoritative_observed_payloads", [])
 
 	var window := Window.new()
 	window.title = "status_panel_harness"
@@ -80,6 +82,7 @@ func _initialize() -> void:
 
 	await process_frame
 	panel.call("_disconnect_server")
+	_apply_panel_exports(panel, panel_exports)
 
 	var contract_gaps: Array = []
 	var projection_gaps: Array = []
@@ -126,6 +129,11 @@ func _initialize() -> void:
 				_printerr(prelude_error)
 				quit(1)
 				return
+		var observed_error := _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
+		if observed_error != "":
+			_printerr(observed_error)
+			quit(1)
+			return
 		snapshot_reading = panel.call("_read_snapshot", payload)
 		if not should_run_projector:
 			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
@@ -397,6 +405,47 @@ func _prime_authoritative_prelude(panel: Object, prelude_payload: Variant, provi
 	var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_snapshot)
 	panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
 	panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	return ""
+
+
+func _apply_panel_exports(panel: Object, exports: Dictionary) -> void:
+	if panel == null or exports.is_empty():
+		return
+	for key in exports.keys():
+		var export_name := str(key)
+		panel.set(export_name, exports[key])
+
+
+func _apply_authoritative_observed_payloads(panel: Object, observed_payloads: Array, provider_mode: String) -> String:
+	if panel == null or observed_payloads.is_empty():
+		return ""
+	for index in range(observed_payloads.size()):
+		var rec := observed_payloads[index]
+		if typeof(rec) != TYPE_DICTIONARY:
+			return "authoritative_observed_payloads[%d] must be Dictionary" % index
+		var payload := (rec as Dictionary).get("payload", null)
+		if typeof(payload) != TYPE_DICTIONARY:
+			return "authoritative_observed_payloads[%d].payload must be Dictionary" % index
+		var snapshot := payload as Dictionary
+		var schema_errors: Array[String] = SnapshotValidator.validate_snapshot(snapshot)
+		if not schema_errors.is_empty():
+			return "authoritative_observed_payloads[%d] failed schema validation: %s" % [index, schema_errors]
+		var compat: Dictionary = panel.call("_check_snapshot_runtime_compat", snapshot)
+		var contract_gaps: Array = compat.get("contract_gaps", [])
+		var projection_gaps: Array = compat.get("projection_gaps", [])
+		if not contract_gaps.is_empty() or not projection_gaps.is_empty():
+			return "authoritative_observed_payloads[%d] failed runtime compatibility: %s" % [index, compat]
+		var active_panel = panel.call("_project_snapshot_to_panel_model", snapshot, provider_mode)
+		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", snapshot)
+		var rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+		var snapshot_reading: Dictionary = panel.call("_read_snapshot", snapshot)
+		panel.call("_apply_snapshot_read", snapshot_reading)
+		panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(snapshot))
+		await process_frame
+		await process_frame
+		var sleep_msec_after := int((rec as Dictionary).get("sleep_msec_after", 0))
+		if sleep_msec_after > 0:
+			await create_timer(float(sleep_msec_after) / 1000.0).timeout
 	return ""
 
 
