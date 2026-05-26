@@ -208,6 +208,53 @@
               "apply_error_code": 0
             }
           }
+        },
+        "camera_state": {
+          "version": 0,
+          "exposure": {
+            "ae_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "baseline_exposure_compensation_milli_ev": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "focus": {
+            "af_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "focus_distance_diopters_milli": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "white_balance": {
+            "awb_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "color_temperature_kelvin": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "stabilization": {
+            "mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "strength_percent": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "flash_torch": {
+            "flash_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "torch_level": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "zoom_crop": {
+            "zoom_ratio_milli": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "crop_preset": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "processing": {
+            "noise_reduction_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "edge_enhancement_level": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "metering": {
+            "metering_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "metering_region_preset": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "antibanding": {
+            "mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "mains_frequency_hz": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "orientation_mirroring": {
+            "rotation_degrees": {"support": "UNIMPLEMENTED", "has_target": false, "target": 0, "has_applied": false, "applied": 0, "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "mirror_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0}
+          },
+          "privacy_hardware_block": {
+            "privacy_mode": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0},
+            "hardware_block_reason": {"support": "UNIMPLEMENTED", "has_target": false, "target": "", "has_applied": false, "applied": "", "apply_status": "UNKNOWN", "apply_error_code": 0}
+          }
         }
       }
     ],
