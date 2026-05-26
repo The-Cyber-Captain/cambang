@@ -893,13 +893,15 @@ func _lifecycle_badge_role_for_entry(entry: StatusEntryModel, badge: BadgeModel)
 
 
 func _phase_label_from_badge_label(label: String) -> String:
-	if label == "destroyed":
+	var normalized_label := label.strip_edges()
+	if normalized_label.to_lower() == "destroyed":
 		return "DESTROYED"
-	if label.begins_with("phase="):
-		return label.substr("phase=".length()).strip_edges().to_upper()
-	if label.begins_with("native_phase="):
-		return label.substr("native_phase=".length()).strip_edges().to_upper()
-	var canonical := label.strip_edges().to_upper()
+	var lower_label := normalized_label.to_lower()
+	if lower_label.begins_with("phase="):
+		return normalized_label.substr("phase=".length()).strip_edges().to_upper()
+	if lower_label.begins_with("native_phase="):
+		return normalized_label.substr("native_phase=".length()).strip_edges().to_upper()
+	var canonical := normalized_label.to_upper()
 	if ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"].has(canonical):
 		return canonical
 	return ""
@@ -2382,8 +2384,9 @@ func _rig_mode_label(entry: StatusEntryModel) -> String:
 	for badge in entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("mode="):
-			return badge.label.substr("mode=".length()).strip_edges().to_upper()
+		var label := str(badge.label).strip_edges()
+		if label.to_lower().begins_with("mode="):
+			return label.substr("mode=".length()).strip_edges().to_upper()
 	return ""
 
 
