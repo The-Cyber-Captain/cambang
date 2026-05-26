@@ -7,12 +7,11 @@
     "contract_gap_count": 0,
     "projection_gap_count": 0,
     "required_row_ids": [
-      "provider/100/native_payload_support",
       "stream/1/native_payload_support"
     ],
     "required_info_substrings_by_row": {
       "stream/1": [
-        "visibility_last_path=RGBA_DIRECT (1)"
+        "visibility_path=RGBA_DIRECT (1)"
       ]
     }
   },

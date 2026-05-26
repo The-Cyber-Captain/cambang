@@ -11,7 +11,7 @@
     ],
     "required_info_substrings_by_row": {
       "stream/1": [
-        "visibility_last_path=RGBA_DIRECT (1)"
+        "visibility_path=RGBA_DIRECT (1)"
       ]
     },
     "forbidden_row_ids": [
