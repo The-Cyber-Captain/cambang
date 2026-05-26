@@ -11,8 +11,6 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
-const DEBUG_RIG_HEALTH_ENV := "CAMBANG_STATUS_PANEL_DEBUG_RIG_HEALTH"
-const DEBUG_RIG_HEALTH_ROW_ENV := "CAMBANG_STATUS_PANEL_DEBUG_RIG_HEALTH_ROW_ID"
 # TEMP DEBUG EXPANSION TRACE
 const DEBUG_EXPANSION_TRACE := false
 const DEBUG_EXPANSION_WATCH_ROW_IDS := [
@@ -582,117 +580,11 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_rig_health_summary(model, snapshot):
 		model_changed = true
-	_debug_dump_rig_health_post_pass_if_enabled(model, "after_rig_health")
 	if _apply_native_payload_support_group_health_summary(model):
 		model_changed = true
-	_debug_dump_rig_health_post_pass_if_enabled(model, "after_native_payload_support_group_health")
 	if model_changed:
 		_render_panel_model(model, update_category)
-	_debug_dump_rig_health_post_pass_if_enabled(model, "final_before_runtime_evidence")
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
-
-
-func _debug_rig_health_enabled() -> bool:
-	if not OS.has_environment(DEBUG_RIG_HEALTH_ENV):
-		return false
-	var env_value := OS.get_environment(DEBUG_RIG_HEALTH_ENV).strip_edges().to_lower()
-	return ["1", "true", "yes", "on"].has(env_value)
-
-
-func _debug_rig_health_target_row_id() -> String:
-	if not OS.has_environment(DEBUG_RIG_HEALTH_ROW_ENV):
-		return "rig/10"
-	var row_id := OS.get_environment(DEBUG_RIG_HEALTH_ROW_ENV).strip_edges()
-	return row_id if not row_id.is_empty() else "rig/10"
-
-
-func _debug_dump_rig_health_post_pass_if_enabled(model: PanelModel, stage: String) -> void:
-	if not _debug_rig_health_enabled():
-		return
-	if model == null:
-		print("[rig-health-debug] stage=%s row=<none> model=null" % stage)
-		return
-	var row_id := _debug_rig_health_target_row_id()
-	var entry := _find_panel_entry_by_id(model, row_id)
-	if entry == null:
-		print("[rig-health-debug] stage=%s row=%s missing" % [stage, row_id])
-		return
-	print("[rig-health-debug] stage=%s row=%s badges=%s" % [stage, row_id, _badge_labels(entry.badges)])
-
-
-func _debug_dump_rig_health_eval_if_enabled(
-		stage: String,
-		entry: StatusEntryModel,
-		health_facts: Dictionary,
-		next_badges: Array[BadgeModel],
-		will_assign: bool,
-		was_assigned: bool
-	) -> void:
-	if not _debug_rig_health_enabled():
-		return
-	if entry == null:
-		return
-	var target_row_id: String = _debug_rig_health_target_row_id()
-	if entry.id != target_row_id:
-		return
-	var phase_parsed: String = _rig_phase_label(entry)
-	var mode_parsed: String = _rig_mode_label(entry)
-	var captures_failed: int = _counter_value_by_name(entry, "captures_failed", -1)
-	var error_code: int = _counter_value_by_name(entry, "error_code", 0)
-	var counters_dump: Dictionary = _debug_counter_dump(entry)
-	var derived_label: String = ""
-	if not health_facts.is_empty():
-		derived_label = _derive_rig_health_label(health_facts)
-	var growth_rate: float = float(health_facts.get("failed_growth_rate_per_sec", 0.0))
-	var bad_threshold: float = max(rig_failed_growth_rate_bad_threshold_per_sec, 0.0)
-	var live_growth_breach: bool = (not is_zero_approx(bad_threshold)) and growth_rate > bad_threshold
-	var latch_row_state: Dictionary = _temporal_health_latches_by_row_id.get(entry.id, {})
-	var raw_labels: Array[String] = _badge_labels(entry.badges)
-	var projected_next_labels: Array[String] = []
-	if not next_badges.is_empty():
-		projected_next_labels = _badge_labels(next_badges)
-	print(
-		"[rig-health-debug] stage=%s row_id=%s parent_id=%s label=%s visual=%s native=%s raw_badges=%s counters=%s phase_parsed=%s mode_parsed=%s captures_failed=%d error_code=%d preserved=%s destroyed=%s contract_or_projection_failure=%s lifecycle_contradiction=%s insufficient_local_truth=%s failed_growth_rate_per_sec=%.6f failed_growth_bad_threshold=%.6f failed_growth_live_breach=%s latch_state=%s facts=%s derived=%s next_badges=%s will_assign=%s was_assigned=%s"
-		% [
-			stage,
-			entry.id,
-			entry.parent_id,
-			entry.label,
-			entry.visual_object_class,
-			bool(entry.is_native_record),
-			raw_labels,
-			counters_dump,
-			phase_parsed,
-			mode_parsed,
-			captures_failed,
-			error_code,
-			bool(health_facts.get("is_preserved", false)),
-			bool(health_facts.get("is_destroyed", false)),
-			bool(health_facts.get("has_contract_or_projection_failure", false)),
-			bool(health_facts.get("has_lifecycle_contradiction", false)),
-			bool(health_facts.get("has_insufficient_local_truth", false)),
-			growth_rate,
-			bad_threshold,
-			live_growth_breach,
-			health_facts,
-			latch_row_state,
-			derived_label,
-			projected_next_labels,
-			will_assign,
-			was_assigned,
-		]
-	)
-
-
-func _debug_counter_dump(entry: StatusEntryModel) -> Dictionary:
-	var dump: Dictionary = {}
-	if entry == null:
-		return dump
-	for counter in entry.counters:
-		if counter == null:
-			continue
-		dump[counter.name] = counter.value
-	return dump
 
 
 func _debug_dump_runtime_evidence_if_enabled(snapshot: Variant, model: PanelModel) -> void:
@@ -1142,49 +1034,19 @@ func _apply_rig_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	var changed := false
 	var current_observed_msec := Time.get_ticks_msec()
 	var current_timestamp_ns := _snapshot_timestamp_ns(snapshot)
-	var debug_target_row_id := _debug_rig_health_target_row_id()
 	for entry in model.entries:
-		if _debug_rig_health_enabled() and entry != null and entry.id == debug_target_row_id:
-			var native_flag := bool(entry.is_native_record)
-			var visual_mismatch := entry.visual_object_class != "rig"
-			var retained_branch := _is_retained_projection_entry(entry.id)
-			print("RIG_HEALTH_EVAL_BEGIN %s" % entry.id)
-			print(
-				"[rig-health-debug] precheck row=%s native=%s visual=%s visual_mismatch=%s retained_branch=%s target_mismatch=%s"
-				% [entry.id, native_flag, entry.visual_object_class, visual_mismatch, retained_branch, false]
-			)
 		if not _is_rig_health_target_entry(entry):
-			if _debug_rig_health_enabled() and entry != null and entry.id == debug_target_row_id:
-				var skip_reasons: Array[String] = []
-				if bool(entry.is_native_record):
-					skip_reasons.append("native_record=true")
-				if entry.visual_object_class != "rig":
-					skip_reasons.append("visual_object_class=%s" % entry.visual_object_class)
-				if skip_reasons.is_empty():
-					skip_reasons.append("unknown_guard")
-				print("[rig-health-debug] skipped row=%s reasons=%s" % [entry.id, skip_reasons])
-				print("RIG_HEALTH_EVAL_END %s" % entry.id)
 			continue
-		_debug_dump_rig_health_eval_if_enabled("evaluate_start", entry, {}, [], false, false)
 		var health_facts := _derive_rig_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
 		var next_health_label := _derive_rig_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
-		var will_assign := _badge_labels(next_badges) != _badge_labels(entry.badges)
-		_debug_dump_rig_health_eval_if_enabled("evaluate_done", entry, health_facts, next_badges, will_assign, false)
 		_observe_rig_health_state(entry.id, health_facts)
 		if _badge_labels(next_badges) == _badge_labels(entry.badges):
-			if _debug_rig_health_enabled() and entry.id == debug_target_row_id:
-				print("RIG_HEALTH_EVAL_END %s" % entry.id)
 			continue
 		entry.badges = next_badges
-		_debug_dump_rig_health_eval_if_enabled("assigned", entry, health_facts, next_badges, true, true)
 		_apply_detail_policy_to_entry(entry)
 		changed = true
-		if _debug_rig_health_enabled() and entry.id == debug_target_row_id:
-			print("RIG_HEALTH_EVAL_END %s" % entry.id)
-	if _debug_rig_health_enabled() and _find_panel_entry_by_id(model, debug_target_row_id) == null:
-		print("[rig-health-debug] target row %s missing in _apply_rig_health_summary entries" % debug_target_row_id)
 	return changed
 
 
