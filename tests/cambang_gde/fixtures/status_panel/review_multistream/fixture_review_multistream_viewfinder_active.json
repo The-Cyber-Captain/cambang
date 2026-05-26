@@ -15,9 +15,6 @@
       "native_object/1202",
       "acquisition_session/1001"
     ],
-    "required_visible_row_ids": [
-      "native_object/1202"
-    ],
     "required_badges_by_row": {
       "server/main": [
         "OK",
@@ -698,6 +695,6 @@
     ],
     "scoped_resource_telemetry": []
   },
-  "renderer_profile": "ambiguous",
-  "nps_scope": "gpu_leaf"
+  "renderer_profile": "any",
+  "nps_scope": "structural"
 }
