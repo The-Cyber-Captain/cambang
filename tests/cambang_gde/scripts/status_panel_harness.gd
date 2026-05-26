@@ -115,7 +115,7 @@ func _initialize() -> void:
 
 	if fixture_kind == "continuity_no_snapshot":
 		var continuity_prelude_payload: Variant = fixture.get("continuity_prelude_payload", null)
-		var continuity_result := _build_continuity_no_snapshot_model(panel, continuity_prelude_payload, provider_mode)
+		var continuity_result: Dictionary = _build_continuity_no_snapshot_model(panel, continuity_prelude_payload, provider_mode)
 		if not bool(continuity_result.get("ok", false)):
 			_printerr(str(continuity_result.get("error", "continuity_no_snapshot setup failed")))
 			quit(1)
@@ -124,12 +124,12 @@ func _initialize() -> void:
 		snapshot_reading = continuity_result.get("snapshot_reading", {})
 	else:
 		if authoritative_prelude_payload != null:
-			var prelude_error := _prime_authoritative_prelude(panel, authoritative_prelude_payload, provider_mode)
+			var prelude_error: String = _prime_authoritative_prelude(panel, authoritative_prelude_payload, provider_mode)
 			if prelude_error != "":
 				_printerr(prelude_error)
 				quit(1)
 				return
-		var observed_error := _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
+		var observed_error: String = await _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
 		if observed_error != "":
 			_printerr(observed_error)
 			quit(1)
@@ -411,22 +411,24 @@ func _prime_authoritative_prelude(panel: Object, prelude_payload: Variant, provi
 func _apply_panel_exports(panel: Object, exports: Dictionary) -> void:
 	if panel == null or exports.is_empty():
 		return
-	for key in exports.keys():
-		var export_name := str(key)
-		panel.set(export_name, exports[key])
+		for key in exports.keys():
+			var export_name: String = str(key)
+			panel.set(export_name, exports[key])
 
 
 func _apply_authoritative_observed_payloads(panel: Object, observed_payloads: Array, provider_mode: String) -> String:
 	if panel == null or observed_payloads.is_empty():
 		return ""
 	for index in range(observed_payloads.size()):
-		var rec := observed_payloads[index]
-		if typeof(rec) != TYPE_DICTIONARY:
+		var raw_rec: Variant = observed_payloads[index]
+		if typeof(raw_rec) != TYPE_DICTIONARY:
 			return "authoritative_observed_payloads[%d] must be Dictionary" % index
-		var payload := (rec as Dictionary).get("payload", null)
-		if typeof(payload) != TYPE_DICTIONARY:
+		var rec: Dictionary = raw_rec as Dictionary
+		var payload_variant: Variant = rec.get("payload", null)
+		if typeof(payload_variant) != TYPE_DICTIONARY:
 			return "authoritative_observed_payloads[%d].payload must be Dictionary" % index
-		var snapshot := payload as Dictionary
+		var payload: Dictionary = payload_variant as Dictionary
+		var snapshot: Dictionary = payload
 		var schema_errors: Array[String] = SnapshotValidator.validate_snapshot(snapshot)
 		if not schema_errors.is_empty():
 			return "authoritative_observed_payloads[%d] failed schema validation: %s" % [index, schema_errors]
@@ -435,15 +437,15 @@ func _apply_authoritative_observed_payloads(panel: Object, observed_payloads: Ar
 		var projection_gaps: Array = compat.get("projection_gaps", [])
 		if not contract_gaps.is_empty() or not projection_gaps.is_empty():
 			return "authoritative_observed_payloads[%d] failed runtime compatibility: %s" % [index, compat]
-		var active_panel = panel.call("_project_snapshot_to_panel_model", snapshot, provider_mode)
+		var active_panel: Variant = panel.call("_project_snapshot_to_panel_model", snapshot, provider_mode)
 		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", snapshot)
-		var rendered_model = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+		var rendered_model: Variant = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
 		var snapshot_reading: Dictionary = panel.call("_read_snapshot", snapshot)
 		panel.call("_apply_snapshot_read", snapshot_reading)
 		panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(snapshot))
 		await process_frame
 		await process_frame
-		var sleep_msec_after := int((rec as Dictionary).get("sleep_msec_after", 0))
+		var sleep_msec_after: int = int(rec.get("sleep_msec_after", 0))
 		if sleep_msec_after > 0:
 			await create_timer(float(sleep_msec_after) / 1000.0).timeout
 	return ""
