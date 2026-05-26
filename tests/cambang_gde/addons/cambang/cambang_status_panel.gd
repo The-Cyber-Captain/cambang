@@ -893,13 +893,15 @@ func _lifecycle_badge_role_for_entry(entry: StatusEntryModel, badge: BadgeModel)
 
 
 func _phase_label_from_badge_label(label: String) -> String:
-	if label == "destroyed":
+	var normalized_label := label.strip_edges()
+	if normalized_label.to_lower() == "destroyed":
 		return "DESTROYED"
-	if label.begins_with("phase="):
-		return label.substr("phase=".length()).strip_edges().to_upper()
-	if label.begins_with("native_phase="):
-		return label.substr("native_phase=".length()).strip_edges().to_upper()
-	var canonical := label.strip_edges().to_upper()
+	var lower_label := normalized_label.to_lower()
+	if lower_label.begins_with("phase="):
+		return normalized_label.substr("phase=".length()).strip_edges().to_upper()
+	if lower_label.begins_with("native_phase="):
+		return normalized_label.substr("native_phase=".length()).strip_edges().to_upper()
+	var canonical := normalized_label.to_upper()
 	if ["CREATED", "LIVE", "TEARING_DOWN", "DESTROYED"].has(canonical):
 		return canonical
 	return ""
@@ -1401,6 +1403,8 @@ func _derive_acquisition_session_health_label(health_facts: Dictionary) -> Strin
 	if _acquisition_session_health_is_attention(health_facts):
 		return "ATTN"
 	return "OK"
+
+
 
 
 func _derive_rig_health_label(health_facts: Dictionary) -> String:
@@ -2006,7 +2010,8 @@ func _acquisition_session_failed_growth_rate_per_sec_over_window(
 	)
 	if elapsed_seconds < minimum_elapsed_seconds or elapsed_seconds <= 0.0:
 		return 0.0
-	return float(growth) / elapsed_seconds
+	var rate := float(growth) / elapsed_seconds
+	return rate
 
 
 func _rig_failed_growth_rate_per_sec_over_window(
@@ -2041,7 +2046,8 @@ func _rig_failed_growth_rate_per_sec_over_window(
 	)
 	if elapsed_seconds < minimum_elapsed_seconds or elapsed_seconds <= 0.0:
 		return 0.0
-	return float(growth) / elapsed_seconds
+	var rate := float(growth) / elapsed_seconds
+	return rate
 
 
 func _temporal_bad_threshold_breached(row_id: String, rule_key: String, growth_rate: float, threshold: float) -> bool:
@@ -2070,7 +2076,8 @@ func _temporal_threshold_breached_with_latch(
 	if live_breach:
 		_record_temporal_latch_breach(effective_row_id, rule_key, severity, now_msec)
 		return true
-	return _temporal_latch_active(effective_row_id, rule_key, severity, now_msec)
+	var active := _temporal_latch_active(effective_row_id, rule_key, severity, now_msec)
+	return active
 
 
 func _record_temporal_latch_breach(row_id: String, rule_key: String, severity: String, now_msec: int) -> void:
@@ -2382,8 +2389,9 @@ func _rig_mode_label(entry: StatusEntryModel) -> String:
 	for badge in entry.badges:
 		if badge == null:
 			continue
-		if badge.label.begins_with("mode="):
-			return badge.label.substr("mode=".length()).strip_edges().to_upper()
+		var label := str(badge.label).strip_edges()
+		if label.to_lower().begins_with("mode="):
+			return label.substr("mode=".length()).strip_edges().to_upper()
 	return ""
 
 
@@ -4519,11 +4527,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		]
 		if rec.has("mode"):
 			rig_badges.append(_badge("neutral", "mode=%s" % str(rec.get("mode"))))
-		panel.entries.append(_entry(
-			rig_entry_id,
-			provider_id,
-			2,
-			"rig/%s" % _safe_rig_name(rec),
+			panel.entries.append(_entry(
+				rig_entry_id,
+				provider_id,
+				2,
+				"rig/%s" % _safe_rig_name(rec),
 			false,
 			true,
 			rig_badges,
@@ -4536,10 +4544,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					[
 						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
 					],
-					"rig"
-				),
-			rig_info
-		))
+						"rig"
+					),
+				rig_info,
+				"rig"
+			))
 
 		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
 		for j in range(members.size()):
