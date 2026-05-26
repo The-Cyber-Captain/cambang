@@ -586,6 +586,6 @@
     ],
     "detached_root_ids": []
   },
-  "renderer_profile": "ambiguous",
-  "nps_scope": "gpu_leaf"
+  "renderer_profile": "any",
+  "nps_scope": "aggregate"
 }
