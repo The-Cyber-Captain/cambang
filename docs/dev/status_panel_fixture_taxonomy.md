@@ -288,5 +288,15 @@ Policy consequence:
 - Do not “fix” mismatches by making one fixture accept both leaf shapes.
 - Prefer split fixtures and explicit renderer-profile targeting for leaf-sensitive expectations.
 
+### Split naming convention (narrow rollout)
+
+For a renderer-sensitive fixture family `<base>.json`, use:
+
+- `<base>.json` (or `<base>_common.json`) for renderer-invariant structural/aggregate assertions
+- `<base>_gpu.json` for GPU leaf assertions
+- `<base>_compatibility.json` for compatibility leaf assertions
+
+When only one renderer-specific payload is currently evidenced, keep the common fixture and the evidenced renderer fixture, and defer the other renderer-specific variant until real snapshot evidence is captured.
+
 This keeps snapshot-contract testing, projection testing, and panel continuity
 checks decoupled but composable.

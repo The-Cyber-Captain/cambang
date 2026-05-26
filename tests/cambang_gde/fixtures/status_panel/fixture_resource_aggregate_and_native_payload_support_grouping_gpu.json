@@ -8,11 +8,22 @@
     "projection_gap_count": 0,
     "required_row_ids": [
       "provider/100/native_payload_support",
-      "stream/1/native_payload_support"
+      "stream/1/native_payload_support",
+      "native_object/103"
     ],
+    "required_counter_values_by_row": {
+      "provider/100/native_payload_support": {
+        "fbl_cur": 2,
+        "gpu_peak": 9
+      }
+    },
     "required_info_substrings_by_row": {
       "stream/1": [
         "visibility_last_path=RGBA_DIRECT (1)"
+      ],
+      "native_object/103": [
+        "owner_provider_native_id=100",
+        "owner_rig_id=9"
       ]
     }
   },
@@ -206,6 +217,6 @@
     "detached_root_ids": [],
     "scoped_resource_telemetry": []
   },
-  "renderer_profile": "any",
-  "nps_scope": "aggregate"
+  "renderer_profile": "gpu",
+  "nps_scope": "gpu_leaf"
 }
