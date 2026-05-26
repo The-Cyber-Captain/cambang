@@ -404,16 +404,19 @@ func _prime_authoritative_prelude(panel: Object, prelude_payload: Variant, provi
 	var prelude_active_panel = panel.call("_project_snapshot_to_panel_model", prelude_snapshot, provider_mode)
 	var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_snapshot)
 	panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
-	panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	var prelude_rendered_model = panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	var prelude_snapshot_reading: Dictionary = panel.call("_read_snapshot", prelude_snapshot)
+	panel.call("_apply_snapshot_read", prelude_snapshot_reading)
+	panel.call("_render_panel_and_maybe_dump", prelude_rendered_model, _resolve_render_snapshot(prelude_snapshot))
 	return ""
 
 
 func _apply_panel_exports(panel: Object, exports: Dictionary) -> void:
 	if panel == null or exports.is_empty():
 		return
-		for key in exports.keys():
-			var export_name: String = str(key)
-			panel.set(export_name, exports[key])
+	for key in exports.keys():
+		var export_name: String = str(key)
+		panel.set(export_name, exports[key])
 
 
 func _apply_authoritative_observed_payloads(panel: Object, observed_payloads: Array, provider_mode: String) -> String:
