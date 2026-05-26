@@ -252,5 +252,7 @@
       }
     ],
     "scoped_resource_telemetry": []
-  }
+  },
+  "renderer_profile": "ambiguous",
+  "nps_scope": "compatibility_leaf"
 }

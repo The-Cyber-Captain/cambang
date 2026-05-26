@@ -30,5 +30,7 @@
     "detached_root_ids": [],
     "acquisition_sessions": [],
     "scoped_resource_telemetry": []
-  }
+  },
+  "renderer_profile": "any",
+  "nps_scope": "none"
 }

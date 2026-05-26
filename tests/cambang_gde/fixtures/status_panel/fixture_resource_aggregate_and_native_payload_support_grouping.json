@@ -216,5 +216,7 @@
     ],
     "detached_root_ids": [],
     "scoped_resource_telemetry": []
-  }
+  },
+  "renderer_profile": "ambiguous",
+  "nps_scope": "aggregate"
 }

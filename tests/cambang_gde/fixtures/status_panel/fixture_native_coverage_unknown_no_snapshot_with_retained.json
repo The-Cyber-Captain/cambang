@@ -50,5 +50,7 @@
       ]
     }
   },
-  "payload": null
+  "payload": null,
+  "renderer_profile": "any",
+  "nps_scope": "none"
 }

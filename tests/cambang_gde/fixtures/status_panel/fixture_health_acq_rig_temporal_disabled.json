@@ -1711,5 +1711,7 @@
       },
       "sleep_msec_after": 70
     }
-  ]
+  ],
+  "renderer_profile": "any",
+  "nps_scope": "none"
 }
