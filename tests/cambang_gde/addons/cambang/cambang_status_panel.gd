@@ -11,6 +11,8 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
+const DEBUG_RIG_HEALTH_ENV := "CAMBANG_STATUS_PANEL_DEBUG_RIG_HEALTH"
+const DEBUG_RIG_HEALTH_ROW_ENV := "CAMBANG_STATUS_PANEL_DEBUG_RIG_HEALTH_ROW_ID"
 # TEMP DEBUG EXPANSION TRACE
 const DEBUG_EXPANSION_TRACE := false
 const DEBUG_EXPANSION_WATCH_ROW_IDS := [
@@ -580,11 +582,90 @@ func _render_panel_and_maybe_dump(
 		model_changed = true
 	if _apply_rig_health_summary(model, snapshot):
 		model_changed = true
+	_debug_dump_rig_health_post_pass_if_enabled(model, "after_rig_health")
 	if _apply_native_payload_support_group_health_summary(model):
 		model_changed = true
+	_debug_dump_rig_health_post_pass_if_enabled(model, "after_native_payload_support_group_health")
 	if model_changed:
 		_render_panel_model(model, update_category)
+	_debug_dump_rig_health_post_pass_if_enabled(model, "final_before_runtime_evidence")
 	_debug_dump_runtime_evidence_if_enabled(snapshot, model)
+
+
+func _debug_rig_health_enabled() -> bool:
+	if not OS.has_environment(DEBUG_RIG_HEALTH_ENV):
+		return false
+	var env_value := OS.get_environment(DEBUG_RIG_HEALTH_ENV).strip_edges().to_lower()
+	return ["1", "true", "yes", "on"].has(env_value)
+
+
+func _debug_rig_health_target_row_id() -> String:
+	if not OS.has_environment(DEBUG_RIG_HEALTH_ROW_ENV):
+		return "rig/10"
+	var row_id := OS.get_environment(DEBUG_RIG_HEALTH_ROW_ENV).strip_edges()
+	return row_id if not row_id.is_empty() else "rig/10"
+
+
+func _debug_dump_rig_health_post_pass_if_enabled(model: PanelModel, stage: String) -> void:
+	if not _debug_rig_health_enabled():
+		return
+	if model == null:
+		print("[rig-health-debug] stage=%s row=<none> model=null" % stage)
+		return
+	var row_id := _debug_rig_health_target_row_id()
+	var entry := _find_panel_entry_by_id(model, row_id)
+	if entry == null:
+		print("[rig-health-debug] stage=%s row=%s missing" % [stage, row_id])
+		return
+	print("[rig-health-debug] stage=%s row=%s badges=%s" % [stage, row_id, _badge_labels(entry.badges)])
+
+
+func _debug_dump_rig_health_eval_if_enabled(
+		stage: String,
+		entry: StatusEntryModel,
+		health_facts: Dictionary,
+		next_badges: Array[BadgeModel],
+		will_assign: bool,
+		was_assigned: bool
+	) -> void:
+	if not _debug_rig_health_enabled():
+		return
+	if entry == null:
+		return
+	var target_row_id := _debug_rig_health_target_row_id()
+	if entry.id != target_row_id:
+		return
+	var phase_parsed := _rig_phase_label(entry)
+	var mode_parsed := _rig_mode_label(entry)
+	var captures_failed := _counter_value_by_name(entry, "captures_failed", -1)
+	var error_code := _counter_value_by_name(entry, "error_code", 0)
+	var derived_label := ""
+	if not health_facts.is_empty():
+		derived_label = _derive_rig_health_label(health_facts)
+	var latch_row_state: Dictionary = _temporal_health_latches_by_row_id.get(entry.id, {})
+	var raw_labels := _badge_labels(entry.badges)
+	var projected_next_labels: Array[String] = []
+	if not next_badges.is_empty():
+		projected_next_labels = _badge_labels(next_badges)
+	print(
+		"[rig-health-debug] stage=%s row_id=%s visual=%s raw_badges=%s phase_parsed=%s mode_parsed=%s captures_failed=%d error_code=%d facts=%s latch_state=%s derived=%s next_badges=%s will_assign=%s was_assigned=%s"
+		% [
+			stage,
+			entry.id,
+			entry.visual_object_class,
+			raw_labels,
+			phase_parsed,
+			mode_parsed,
+			captures_failed,
+			error_code,
+			health_facts,
+			latch_row_state,
+			derived_label,
+			projected_next_labels,
+			will_assign,
+			was_assigned,
+		]
+	)
 
 
 func _debug_dump_runtime_evidence_if_enabled(snapshot: Variant, model: PanelModel) -> void:
@@ -1037,14 +1118,18 @@ func _apply_rig_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	for entry in model.entries:
 		if not _is_rig_health_target_entry(entry):
 			continue
+		_debug_dump_rig_health_eval_if_enabled("evaluate_start", entry, {}, [], false, false)
 		var health_facts := _derive_rig_health_facts(model, entry, current_observed_msec, current_timestamp_ns)
 		var next_health_label := _derive_rig_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		var will_assign := _badge_labels(next_badges) != _badge_labels(entry.badges)
+		_debug_dump_rig_health_eval_if_enabled("evaluate_done", entry, health_facts, next_badges, will_assign, false)
 		_observe_rig_health_state(entry.id, health_facts)
 		if _badge_labels(next_badges) == _badge_labels(entry.badges):
 			continue
 		entry.badges = next_badges
+		_debug_dump_rig_health_eval_if_enabled("assigned", entry, health_facts, next_badges, true, true)
 		_apply_detail_policy_to_entry(entry)
 		changed = true
 	return changed
