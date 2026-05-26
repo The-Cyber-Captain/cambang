@@ -4660,11 +4660,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 		]
 		if rec.has("mode"):
 			rig_badges.append(_badge("neutral", "mode=%s" % str(rec.get("mode"))))
-		panel.entries.append(_entry(
-			rig_entry_id,
-			provider_id,
-			2,
-			"rig/%s" % _safe_rig_name(rec),
+			panel.entries.append(_entry(
+				rig_entry_id,
+				provider_id,
+				2,
+				"rig/%s" % _safe_rig_name(rec),
 			false,
 			true,
 			rig_badges,
@@ -4677,10 +4677,11 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					[
 						_counter("members", _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id).size(), 1),
 					],
-					"rig"
-				),
-			rig_info
-		))
+						"rig"
+					),
+				rig_info,
+				"rig"
+			))
 
 		var members := _safe_array(rec.get("member_hardware_ids", []), issues, "rig/%d.member_hardware_ids" % rig_id)
 		for j in range(members.size()):
