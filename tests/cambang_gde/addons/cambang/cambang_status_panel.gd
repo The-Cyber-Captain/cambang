@@ -11,6 +11,8 @@ const PROVISIONAL_RETAINED_PRESENTATION_TTL_MSEC := 5000
 const RETAINED_PRESENTATION_ROOT_ID := "retained_presentation/prior_authoritative"
 const DEBUG_EVIDENCE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DUMP"
 const DEBUG_DISCLOSURE_ENV := "CAMBANG_STATUS_PANEL_DEBUG_DISCLOSURE"
+const DEBUG_TEMPORAL_HEALTH_ENV := "CAMBANG_STATUS_PANEL_DEBUG_TEMPORAL_HEALTH"
+const DEBUG_TEMPORAL_HEALTH_ROW_IDS_ENV := "CAMBANG_STATUS_PANEL_DEBUG_TEMPORAL_HEALTH_ROW_IDS"
 # TEMP DEBUG EXPANSION TRACE
 const DEBUG_EXPANSION_TRACE := false
 const DEBUG_EXPANSION_WATCH_ROW_IDS := [
@@ -1019,6 +1021,7 @@ func _apply_acquisition_session_health_summary(model: PanelModel, snapshot: Vari
 		var next_health_label := _derive_acquisition_session_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_debug_temporal_health_label_if_enabled("acquisition_session", snapshot, entry, health_facts, next_health_label, next_badges)
 		_observe_acquisition_session_health_state(entry.id, health_facts)
 		if _badge_labels(next_badges) == _badge_labels(entry.badges):
 			continue
@@ -1041,6 +1044,7 @@ func _apply_rig_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 		var next_health_label := _derive_rig_health_label(health_facts)
 		var next_health_role := _health_role_for_label(next_health_label)
 		var next_badges := _with_health_badge(entry.badges, next_health_role, next_health_label)
+		_debug_temporal_health_label_if_enabled("rig", snapshot, entry, health_facts, next_health_label, next_badges)
 		_observe_rig_health_state(entry.id, health_facts)
 		if _badge_labels(next_badges) == _badge_labels(entry.badges):
 			continue
@@ -1403,6 +1407,64 @@ func _derive_acquisition_session_health_label(health_facts: Dictionary) -> Strin
 	if _acquisition_session_health_is_attention(health_facts):
 		return "ATTN"
 	return "OK"
+
+
+func _debug_temporal_health_enabled() -> bool:
+	if not OS.has_environment(DEBUG_TEMPORAL_HEALTH_ENV):
+		return false
+	var env_value := OS.get_environment(DEBUG_TEMPORAL_HEALTH_ENV).strip_edges().to_lower()
+	return ["1", "true", "yes", "on"].has(env_value)
+
+
+func _debug_temporal_health_watched_row_ids() -> Dictionary:
+	var watched := {
+		"acquisition_session/1": true,
+		"rig/10": true,
+	}
+	if not OS.has_environment(DEBUG_TEMPORAL_HEALTH_ROW_IDS_ENV):
+		return watched
+	watched.clear()
+	var raw := OS.get_environment(DEBUG_TEMPORAL_HEALTH_ROW_IDS_ENV).strip_edges()
+	for token in raw.split(",", false):
+		var row_id := token.strip_edges()
+		if not row_id.is_empty():
+			watched[row_id] = true
+	return watched
+
+
+func _debug_temporal_health_label_if_enabled(
+		stage: String,
+		snapshot: Variant,
+		entry: StatusEntryModel,
+		health_facts: Dictionary,
+		final_label: String,
+		next_badges: Array[BadgeModel]
+	) -> void:
+	if not _debug_temporal_health_enabled() or entry == null:
+		return
+	var watched := _debug_temporal_health_watched_row_ids()
+	if not watched.has(entry.id):
+		return
+	var snap := {}
+	if snapshot != null and typeof(snapshot) == TYPE_DICTIONARY:
+		snap = snapshot
+	print(
+		"[temporal-health] stage=%s row=%s visual=%s snapshot(gen=%s ver=%s ts=%s) thresholds(acq=%.3f rig=%.3f latch=%d) facts=%s final_label=%s next_badges=%s"
+		% [
+			stage,
+			entry.id,
+			entry.visual_object_class,
+			str(snap.get("gen", "?")),
+			str(snap.get("version", "?")),
+			str(snap.get("timestamp_ns", "?")),
+			acquisition_session_failed_growth_rate_bad_threshold_per_sec,
+			rig_failed_growth_rate_bad_threshold_per_sec,
+			temporal_health_latch_duration_msec,
+			health_facts,
+			final_label,
+			_badge_labels(next_badges),
+		]
+	)
 
 
 func _derive_rig_health_label(health_facts: Dictionary) -> String:
@@ -2007,8 +2069,35 @@ func _acquisition_session_failed_growth_rate_per_sec_over_window(
 		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
 	)
 	if elapsed_seconds < minimum_elapsed_seconds or elapsed_seconds <= 0.0:
+		_debug_temporal_growth_if_enabled(
+			"acquisition_session_failed_growth_bad",
+			acquisition_session_id,
+			"failed",
+			baseline_failed,
+			int(baseline.get("timestamp_ns", -1)),
+			current_failed,
+			current_timestamp_ns,
+			elapsed_seconds,
+			minimum_elapsed_seconds,
+			growth,
+			0.0
+		)
 		return 0.0
-	return float(growth) / elapsed_seconds
+	var rate := float(growth) / elapsed_seconds
+	_debug_temporal_growth_if_enabled(
+		"acquisition_session_failed_growth_bad",
+		acquisition_session_id,
+		"failed",
+		baseline_failed,
+		int(baseline.get("timestamp_ns", -1)),
+		current_failed,
+		current_timestamp_ns,
+		elapsed_seconds,
+		minimum_elapsed_seconds,
+		growth,
+		rate
+	)
+	return rate
 
 
 func _rig_failed_growth_rate_per_sec_over_window(
@@ -2042,8 +2131,35 @@ func _rig_failed_growth_rate_per_sec_over_window(
 		* _SERVER_TOPOLOGY_GROWTH_RATE_MIN_ELAPSED_WINDOW_FRACTION
 	)
 	if elapsed_seconds < minimum_elapsed_seconds or elapsed_seconds <= 0.0:
+		_debug_temporal_growth_if_enabled(
+			"rig_failed_growth_bad",
+			rig_id,
+			"captures_failed",
+			baseline_failed,
+			int(baseline.get("timestamp_ns", -1)),
+			current_failed,
+			current_timestamp_ns,
+			elapsed_seconds,
+			minimum_elapsed_seconds,
+			growth,
+			0.0
+		)
 		return 0.0
-	return float(growth) / elapsed_seconds
+	var rate := float(growth) / elapsed_seconds
+	_debug_temporal_growth_if_enabled(
+		"rig_failed_growth_bad",
+		rig_id,
+		"captures_failed",
+		baseline_failed,
+		int(baseline.get("timestamp_ns", -1)),
+		current_failed,
+		current_timestamp_ns,
+		elapsed_seconds,
+		minimum_elapsed_seconds,
+		growth,
+		rate
+	)
+	return rate
 
 
 func _temporal_bad_threshold_breached(row_id: String, rule_key: String, growth_rate: float, threshold: float) -> bool:
@@ -2070,9 +2186,58 @@ func _temporal_threshold_breached_with_latch(
 	if effective_row_id.is_empty():
 		effective_row_id = "__global__"
 	if live_breach:
+		_debug_temporal_latch_if_enabled(row_id, rule_key, severity, growth_rate, clamped, true, now_msec, true)
 		_record_temporal_latch_breach(effective_row_id, rule_key, severity, now_msec)
 		return true
-	return _temporal_latch_active(effective_row_id, rule_key, severity, now_msec)
+	var active := _temporal_latch_active(effective_row_id, rule_key, severity, now_msec)
+	_debug_temporal_latch_if_enabled(row_id, rule_key, severity, growth_rate, clamped, false, now_msec, active)
+	return active
+
+
+func _debug_temporal_growth_if_enabled(
+		rule_key: String,
+		row_id: String,
+		counter_key: String,
+		baseline_value: int,
+		baseline_ts_ns: int,
+		current_value: int,
+		current_ts_ns: int,
+		elapsed_seconds: float,
+		minimum_elapsed_seconds: float,
+		growth: int,
+		rate: float
+	) -> void:
+	if not _debug_temporal_health_enabled():
+		return
+	var watched := _debug_temporal_health_watched_row_ids()
+	if not watched.has(row_id):
+		return
+	print("[temporal-health] growth row=%s rule=%s counter=%s baseline(value=%d ts=%d) current(value=%d ts=%d) elapsed=%.6f min_elapsed=%.6f growth=%d rate=%.6f" % [row_id, rule_key, counter_key, baseline_value, baseline_ts_ns, current_value, current_ts_ns, elapsed_seconds, minimum_elapsed_seconds, growth, rate])
+
+
+func _debug_temporal_latch_if_enabled(
+		row_id: String,
+		rule_key: String,
+		severity: String,
+		growth_rate: float,
+		threshold: float,
+		live_breach: bool,
+		now_msec: int,
+		active_result: bool
+	) -> void:
+	if not _debug_temporal_health_enabled():
+		return
+	var watched := _debug_temporal_health_watched_row_ids()
+	if not watched.has(row_id):
+		return
+	var effective_row_id := row_id if not row_id.is_empty() else "__global__"
+	var latch_row: Dictionary = _temporal_health_latches_by_row_id.get(effective_row_id, {})
+	var latch: Dictionary = latch_row.get(rule_key, {})
+	var breach_msec := int(latch.get("breach_msec", -1))
+	var elapsed_msec := -1
+	if breach_msec >= 0:
+		elapsed_msec = now_msec - breach_msec
+	print("[temporal-health] latch row=%s rule=%s severity=%s rate=%.6f threshold=%.6f cmp='>' live_breach=%s latch_before=%s now_msec=%d elapsed_msec=%d latch_duration_msec=%d active_result=%s" % [effective_row_id, rule_key, severity, growth_rate, threshold, live_breach, latch, now_msec, elapsed_msec, temporal_health_latch_duration_msec, active_result])
 
 
 func _record_temporal_latch_breach(row_id: String, rule_key: String, severity: String, now_msec: int) -> void:
