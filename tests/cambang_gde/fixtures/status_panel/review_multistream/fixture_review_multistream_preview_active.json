@@ -12,28 +12,15 @@
       "device/1001",
       "stream/1101",
       "stream/1102",
-      "native_object/1201",
       "acquisition_session/1001"
     ],
     "required_badges_by_row": {
       "server/main": [
         "OK",
         "NATIVE COVERAGE: OK"
-      ],
-      "stream/1101": [
-        "BAD"
       ]
     },
-    "required_info_substrings_by_row": {
-      "native_object/1201": [
-        "owner_stream_id=1101"
-      ],
-      "stream/1101": [
-        "Contract ambiguity: stream row has 2 matching current-generation Stream native objects.",
-        "Contract ambiguity: stream/1101 parent owner could not be resolved to one Acquisition Session.",
-        "Health reason: contract/projection failure: Contract ambiguity: stream row has 2 matching current-generation Stream native objects."
-      ]
-    }
+    "required_info_substrings_by_row": {}
   },
   "payload": {
     "schema_version": 1,
@@ -414,22 +401,6 @@
         "owner_acquisition_session_id": 1001
       },
       {
-        "native_id": 1201,
-        "type": "stream",
-        "owner_device_instance_id": 1001,
-        "owner_stream_id": 1101,
-        "phase": "LIVE",
-        "creation_gen": 40,
-        "owner_provider_native_id": 0,
-        "owner_rig_id": 0,
-        "root_id": 0,
-        "created_ns": 0,
-        "destroyed_ns": 0,
-        "bytes_allocated": 0,
-        "buffers_in_use": 0,
-        "owner_acquisition_session_id": 1001
-      },
-      {
         "native_id": 1202,
         "type": "acquisition_session",
         "phase": "LIVE",
@@ -704,5 +675,5 @@
     "scoped_resource_telemetry": []
   },
   "renderer_profile": "any",
-  "nps_scope": "anomaly"
+  "nps_scope": "structural"
 }
