@@ -27,24 +27,10 @@
         "last_capture_latency_ns": 10,
         "last_sync_skew_ns": 0,
         "error_code": 0,
-        "capture_profile": {
-          "still": {
-            "version": 11,
-            "width": 5000,
-            "height": 3000,
-            "format": 1,
-            "still_image_bundle": {
-              "members": [
-                {
-                  "image_member_index": 0,
-                  "role": 0,
-                  "role_name": "DEFAULT_METERED",
-                  "intended_exposure_compensation_milli_ev": 0
-                }
-              ]
-            }
-          }
-        }
+        "capture_profile_version": 11,
+        "capture_width": 5000,
+        "capture_height": 3000,
+        "capture_format": 1
       }
     ],
     "devices": [
@@ -568,24 +554,10 @@
         "last_capture_latency_ns": 11,
         "last_sync_skew_ns": 1,
         "error_code": 0,
-        "capture_profile": {
-          "still": {
-            "version": 33,
-            "width": 6000,
-            "height": 4000,
-            "format": 2,
-            "still_image_bundle": {
-              "members": [
-                {
-                  "image_member_index": 0,
-                  "role": 0,
-                  "role_name": "DEFAULT_METERED",
-                  "intended_exposure_compensation_milli_ev": 0
-                }
-              ]
-            }
-          }
-        }
+        "capture_profile_version": 33,
+        "capture_width": 6000,
+        "capture_height": 4000,
+        "capture_format": 2
       }
     ],
     "devices": [
