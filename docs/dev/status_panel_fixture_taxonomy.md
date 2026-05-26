@@ -296,7 +296,7 @@ For a renderer-sensitive fixture family `<base>.json`, use:
 - `<base>_gpu.json` for GPU leaf assertions
 - `<base>_compatibility.json` for compatibility leaf assertions
 
-When only one renderer-specific payload is currently evidenced, keep the common fixture and the evidenced renderer fixture, and defer the other renderer-specific variant until real snapshot evidence is captured.
+When only one renderer-specific payload is currently evidenced, keep the common fixture and the evidenced renderer fixture, and defer the other renderer-specific variant until real snapshot evidence is captured. A separate `_common` file is optional when `<base>.json` already serves as the canonical common fixture.
 
 This keeps snapshot-contract testing, projection testing, and panel continuity
 checks decoupled but composable.

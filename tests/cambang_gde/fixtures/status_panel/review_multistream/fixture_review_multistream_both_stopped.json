@@ -677,6 +677,6 @@
     ],
     "scoped_resource_telemetry": []
   },
-  "renderer_profile": "ambiguous",
-  "nps_scope": "compatibility_leaf"
+  "renderer_profile": "any",
+  "nps_scope": "structural"
 }
