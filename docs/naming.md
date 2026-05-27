@@ -495,8 +495,9 @@ These names appear in the native/core implementation, build system, and
 debugging logs.
 
 - `ICameraProvider`: platform backend interface
-- `CBLifecycleRegistry`: tracks CamBANG-owned native/core object lifecycles and retains recently destroyed records for inspection
-- `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot` and performs retention sweeps
+- `CoreNativeObjectRegistry`: tracks provider-reported native/core object records and retains recently destroyed records for inspection
+- `SnapshotBuilder`: assembles `CamBANGStateSnapshot` from current core registries and aggregate telemetry
+- `IStateSnapshotPublisher` / `StateSnapshotBuffer`: provide the current snapshot publication boundary and latest-snapshot buffer
 
 ### Timestamp conventions
 

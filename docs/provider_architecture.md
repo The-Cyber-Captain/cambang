@@ -127,8 +127,8 @@ Core owns and decides:
 - warm timing (`warm_hold_ms`) and teardown scheduling
 - validation and normalization of capture / picture configuration
 - provider-type defaulting via `StreamTemplate`
-- `CBLifecycleRegistry` and destroyed-record retention
-- `CBStatePublisher` and snapshot publication
+- `CoreNativeObjectRegistry` and destroyed-record retention
+- `SnapshotBuilder`, `IStateSnapshotPublisher`, and snapshot publication
 - Godot-facing observable publication semantics
 
 ### 4.2 Provider responsibilities
