@@ -496,6 +496,97 @@ Again, this is a preference order, not a correctness rule.
 
 ---
 
+## 10.6 Initial Godot-facing result-object surface guardrails
+
+To keep early implementation aligned with this contract, the initial Godot-facing
+result-object surface is intentionally constrained as follows.
+
+### 10.6.1 Stream Result initial surface
+
+Direct descriptive fields:
+
+- `width`
+- `height`
+- `format`
+- `payload_kind`
+- `capture_timestamp`
+- `stream_id`
+- `device_instance_id`
+- `intent`
+
+Capability checks:
+
+- `can_get_display_view()`
+- `can_to_image()`
+
+Explicit operations:
+
+- `get_display_view()`
+- `to_image()`
+
+Non-goals:
+
+- no encoded-byte access
+- no filesystem save operations
+- no stream history/sequence access
+- no backend-native public handles
+
+### 10.6.2 Capture Result initial surface
+
+Direct scalar/default-image convenience fields:
+
+- `width`
+- `height`
+- `format`
+- `payload_kind`
+- `capture_timestamp`
+- `device_instance_id`
+- `capture_id`
+
+Scalar/default-image convenience access describes member `0` where per-member
+image truth can vary. Structural homogeneous properties such as `width`,
+`height`, `format`, and `payload_kind` are result-level truth.
+
+Image-member access:
+
+- `IMAGE_ROLE_DEFAULT_METERED`
+- `IMAGE_ROLE_ADDITIONAL_BRACKET`
+- `get_image_count()`
+- `has_additional_images()`
+- `get_image_member(index)`
+- `can_to_image_member(index)`
+- `to_image_member(index)`
+
+`get_image_member(index)` returns metadata for the selected retained member,
+including applied and realized exposure truth. Invalid/out-of-range access
+returns an empty `Dictionary`.
+
+`get_image_count()` reports retained member count only and does not imply all
+authored/intended members were retained. Missing additional intended members are
+represented by absence, not sparse members and not public per-member failure
+objects.
+
+Existing default-image methods such as `to_image()` and `can_to_image()` remain
+member-0 conveniences.
+
+Non-goals:
+
+- no filesystem save APIs
+- no RAW processing/export APIs
+- no backend-native public handles
+
+### 10.6.3 Capture Result Set initial surface
+
+- `capture_id`
+- `size()`
+- `is_empty()`
+- `get_results()`
+- `get_result_for_device(device_instance_id)`
+
+`CaptureResultSet` is a grouping/container surface, not itself an image-bearing
+result object. `CaptureResultSet` is not the bracket-member container for a
+single-device `CaptureResult`.
+
 ## 11. Capability and cost-aware materialization
 
 ## 11.1 Core principle

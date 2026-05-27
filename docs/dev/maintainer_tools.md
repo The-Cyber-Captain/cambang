@@ -361,6 +361,28 @@ This means the case proves:
 This case should be stable under repetition and is suitable as a fast regression
 signal for default synthetic timeline realization behavior.
 
+## 6.2 Scene 65 (`65_public_boundary_verify`)
+
+**Category:** Godot-side boundary verification scene
+
+### Purpose
+
+Scene 65 verifies public provider-start/config boundary behavior at the Godot
+surface.
+
+It verifies:
+
+- deterministic invalid-argument rejection for invalid `start(...)` argument
+  combinations
+- applicable vs non-applicable `timeline_reconciliation` handling at start
+  boundary
+- `get_active_provider_config()` explicit-null shape for non-applicable
+  `timeline_reconciliation` modes
+
+This scene complements deterministic provider verification, but it does not
+replace `provider_compliance_verify` or change the role of
+`canonical_timeline_realization`.
+
 ---
 
 ## 7. `restart_boundary_verify`
@@ -417,8 +439,9 @@ Any failure indicates a regression in Godot-boundary snapshot exposure.
 
 ### Purpose
 
-`windows_mf_runtime_validate` validates the Windows Media Foundation
-provider under real asynchronous hardware-backed execution.
+`windows_mf_runtime_validate` validates the **current Windows Media
+Foundation dev accelerator** (`WindowsProvider`) against real hardware under
+asynchronous platform-backed execution.
 
 It exercises:
 
@@ -427,7 +450,8 @@ It exercises:
 - stream start / stop
 - shutdown behaviour
 
-This complements deterministic provider verification but does not replace it.
+Passing this tool complements deterministic provider verification, but it does
+**not** prove final Windows release-provider completeness.
 
 ### Build and usage
 
