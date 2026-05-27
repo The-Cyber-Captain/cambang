@@ -1223,6 +1223,9 @@ Areas expected to evolve in later revisions include:
 
 # 8. Status
 
-This document represents the **prototyping-phase baseline** for CamBANG UI.
+This document is retained as a dev UI design reference and historical prototyping
+baseline.
 
-It should evolve deliberately as additional UI components are designed and implemented.
+It may inform future UI work, especially global UI language, layout stability,
+theme/accessibility guidance, and presentation-model separation, but it must not
+override canonical StatusPanel policy or current implementation references.
