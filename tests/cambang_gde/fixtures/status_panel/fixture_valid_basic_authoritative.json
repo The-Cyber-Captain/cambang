@@ -71,10 +71,6 @@
       }
     },
     "required_counter_labels_by_row": {
-      "provider/100": [
-        "native_all",
-        "native_cur"
-      ],
       "server/main": [
         "gen",
         "version"
