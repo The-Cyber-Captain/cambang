@@ -252,10 +252,19 @@
               "applied": "",
               "apply_status": "UNKNOWN",
               "apply_error_code": 0
+            },
+            "mains_frequency_hz": {
+              "support": "UNIMPLEMENTED",
+              "has_target": false,
+              "target": 0,
+              "has_applied": false,
+              "applied": 0,
+              "apply_status": "UNKNOWN",
+              "apply_error_code": 0
             }
           },
           "orientation_mirroring": {
-            "sensor_orientation_degrees": {
+            "rotation_degrees": {
               "support": "UNIMPLEMENTED",
               "has_target": false,
               "target": 0,
@@ -275,7 +284,7 @@
             }
           },
           "privacy_hardware_block": {
-            "active": {
+            "privacy_mode": {
               "support": "UNIMPLEMENTED",
               "has_target": false,
               "target": "",
