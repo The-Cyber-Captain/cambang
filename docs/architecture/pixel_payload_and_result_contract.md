@@ -420,6 +420,27 @@ The Capture Sink is responsible for:
 
 A **Capture Result** is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same Capture Result.
 
+### 10.3.1 Retrieval / assembly success gate
+
+Device-level `CaptureResult` retrieval is successful only after assembly success.
+
+Assembly success requires both:
+
+- retained default image member `0`
+- terminal capture lifecycle success (`capture_completed`)
+
+`capture_failed` prevents successful `CaptureResult` retrieval even if a default
+image payload was retained.
+
+The following do not produce a successful retrievable `CaptureResult`:
+
+- `capture_completed` without a retained default image member
+- retained default image member without terminal completion
+
+Partial additional-member success is allowed: when member `0` is retained and
+capture terminal is `capture_completed`, retrieval succeeds and includes only
+the retained contiguous additional-member prefix.
+
 A Capture Result is **not** required to already be:
 
 - a CPU `Image`

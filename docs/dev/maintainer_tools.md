@@ -512,3 +512,19 @@ This removes ambiguity in the initial requested stream `to_image()` panel for
 scene 70.
 
 Capture-picture behavior was intentionally left unchanged in this correction.
+
+## Scene 73 rig capture result-set verification (`rig_capture_result_set_verification`)
+
+Contract truth for capture-result retrieval/assembly remains canonical in:
+
+- `docs/architecture/pixel_payload_and_result_contract.md`
+
+Maintainer proof inventory for Godot-visible rig capture uses:
+
+- Scene 73: `tests/cambang_gde/scenes/73_rig_capture_result_set_verification.tscn`
+- Scenario: `scenarios/rig_capture_result_basic.json`
+- Trigger path: `CamBANGRig.trigger_capture()`
+- Verification surface: `CaptureResultSet`
+
+Scene 70 remains the maintainer-facing stream/result teaching and verification
+coverage; Scene 73 is the canonical Godot-visible rig `CaptureResultSet` proof.
