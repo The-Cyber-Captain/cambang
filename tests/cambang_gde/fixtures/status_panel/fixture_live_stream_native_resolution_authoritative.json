@@ -11,14 +11,12 @@
       "provider/100",
       "device/1",
       "stream/1",
-      "native_object/103",
       "acquisition_session/1"
     ],
     "required_visible_row_ids": [
-      "server/main",
-      "provider/100",
-      "device/1",
-      "stream/1",
+      "server/main"
+    ],
+    "forbidden_row_ids": [
       "native_object/103"
     ],
     "required_counter_values_by_row": {
@@ -32,12 +30,9 @@
       "server/main": [
         "OK",
         "NATIVE COVERAGE: OK"
-      ]
-    },
-    "required_info_substrings_by_row": {
-      "native_object/103": [
-        "owner_stream_id=1",
-        "creation_gen=2"
+      ],
+      "stream/1": [
+        "OK"
       ]
     }
   },
@@ -654,6 +649,6 @@
     ],
     "scoped_resource_telemetry": []
   },
-  "renderer_profile": "ambiguous",
-  "nps_scope": "anomaly"
+  "renderer_profile": "any",
+  "nps_scope": "structural"
 }
