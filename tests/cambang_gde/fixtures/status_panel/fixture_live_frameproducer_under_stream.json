@@ -23,8 +23,8 @@
     ],
     "required_counter_values_by_row": {
       "provider/100": {
-        "native_all": 5,
-        "native_cur": 5,
+        "native_all": 4,
+        "native_cur": 4,
         "native_prev": 0
       }
     },
@@ -363,22 +363,6 @@
         "bytes_allocated": 0,
         "buffers_in_use": 0,
         "owner_acquisition_session_id": 0
-      },
-      {
-        "native_id": 102,
-        "type": "stream",
-        "owner_device_instance_id": 1,
-        "owner_stream_id": 1,
-        "phase": "LIVE",
-        "creation_gen": 2,
-        "owner_provider_native_id": 0,
-        "owner_rig_id": 0,
-        "root_id": 0,
-        "created_ns": 0,
-        "destroyed_ns": 0,
-        "bytes_allocated": 0,
-        "buffers_in_use": 0,
-        "owner_acquisition_session_id": 1
       },
       {
         "native_id": 103,
