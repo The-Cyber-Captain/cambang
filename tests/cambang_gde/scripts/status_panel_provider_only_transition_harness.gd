@@ -315,19 +315,46 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 
 
 func _collect_entry_ids(model: Variant) -> Array[String]:
-	var row_ids: Array[String] = []
+	var ids: Array[String] = []
 	if model == null:
-		return row_ids
-	var entries: Variant = model.get("entries") if model is Object else null
+		return ids
+	var entries: Variant = _extract_entries(model)
 	if typeof(entries) != TYPE_ARRAY:
-		return row_ids
+		_fail("status panel model entries is not Array")
+		return ids
 	for entry in entries:
-		if entry == null:
-			continue
-		var row_id := str(entry.get("id", ""))
-		if row_id != "":
-			row_ids.append(row_id)
-	return row_ids
+		var entry_id := _extract_entry_id(entry)
+		if entry_id != "":
+			ids.append(entry_id)
+	return ids
+
+
+func _extract_entries(model: Variant) -> Array:
+	if model == null:
+		return []
+	if typeof(model) == TYPE_ARRAY:
+		return model
+	if typeof(model) == TYPE_DICTIONARY:
+		var value: Variant = model.get("entries", [])
+		return value if typeof(value) == TYPE_ARRAY else []
+	if model is Object:
+		for prop in model.get_property_list():
+			if str(prop.get("name", "")) == "entries":
+				var value: Variant = model.get("entries")
+				return value if typeof(value) == TYPE_ARRAY else []
+	return []
+
+
+func _extract_entry_id(entry: Variant) -> String:
+	if entry == null:
+		return ""
+	if typeof(entry) == TYPE_DICTIONARY:
+		return str(entry.get("id", ""))
+	if entry is Object:
+		for prop in entry.get_property_list():
+			if str(prop.get("name", "")) == "id":
+				return str(entry.get("id"))
+	return ""
 
 
 func _fail(message: String) -> void:
