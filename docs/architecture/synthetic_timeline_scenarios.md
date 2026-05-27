@@ -142,6 +142,34 @@ To preserve existing verifier behavior while keeping explicit host controls:
 This is a compatibility arming rule, not a semantic ownership split:
 both paths remain SyntheticProvider-owned timeline execution.
 
+### 6.2 `timeline_reconciliation` applicability and mode intent
+
+`timeline_reconciliation` is a scoped synthetic timeline control, not a global
+provider option.
+
+It is valid only when all of the following are true:
+
+- provider kind is synthetic
+- synthetic role is timeline
+- timing driver is `virtual_time`
+
+Rules:
+
+- omitted in that applicable mode defaults to `completion_gated`
+- supplied outside that applicable mode is deterministic invalid-argument
+  rejection
+
+Mode intent:
+
+- `completion_gated` is the standard/default mode for synthetic timeline +
+  `virtual_time`; destructive progression waits for readiness truth before
+  parent/resource removal
+- for stream-destruction progression, readiness truth includes stream-stopped
+  truth and stream-buffer-release truth
+- `strict` remains a diagnostic/power-user mode; authored destructive intent is
+  exercised more directly and may fail in-band when readiness truth has not yet
+  arrived
+
 ---
 
 ## 7. Initial event vocabulary and expansion boundary
