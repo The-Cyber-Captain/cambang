@@ -39,29 +39,35 @@ cambang/
 │   │   ├── godot_boundary_contract.md
 │   │   ├── lifecycle_model.md
 │   │   ├── pattern_module.md
+│   │   ├── pixel_payload_and_result_contract.md
 │   │   ├── provider_state_machines.md
 │   │   ├── provider_strand_model.md
 │   │   ├── publication_counter_examples.md
-│   │   └── publication_model.md
+│   │   ├── publication_model.md
+│   │   ├── synthetic_picture_appearance_in_scenarios.md
+│   │   └── synthetic_timeline_scenarios.md
 │   ├── dev/
 │   │   ├── build_and_scaffolding.md
-│   │   ├── frameview_stage.md
-│   │   ├── godot_boundary_verification_scenes.md
+│   │   ├── cambang_ui_design_standard_integrated.md
+│   │   ├── cambangstatuspanel_mappings.md
 │   │   ├── maintainer_tools.md
 │   │   ├── provider_compliance_checklist.md
-│   │   ├── snapshot_truth_rules.md
-│   │   ├── upstream_discrepancies.md
-│   │   └── windows_mf_visibility_phase.md
+│   │   ├── state_snapshot_schema_mapping.md
+│   │   ├── status_panel_fixture_taxonomy.md
+│   │   ├── testing_audit_lenses.md
+│   │   └── upstream_discrepancies.md
 │   └── screenshots/
 │       └── .gdignore
-├── thirdparty/                # if needed later
+├── external_scenarios/
+├── schema/
+│   └── state_snapshot/v1/state_snapshot_schema.json
 ├── src/
 │   ├── core/
+│   ├── dev/
+│   ├── godot/
 │   ├── imaging/
 │   ├── pixels/
-│   ├── godot/
-│   ├── smoke/
-│   └── util/
+│   └── smoke/
 └── tests/
 ```
 
@@ -93,26 +99,31 @@ Responsibilities include:
 - capture ID issuance
 - warm scheduling
 - retention scheduling
-- `CBLifecycleRegistry`
-- `CBStatePublisher`
-- snapshot assembly
-- spec stores (`CameraSpec`, `ImagingSpec`)
+- `CoreNativeObjectRegistry`
+- `ResourceAggregateTelemetry`
+- `SnapshotBuilder`
+- `IStateSnapshotPublisher` publication boundary and `StateSnapshotBuffer` latest-snapshot buffer
+- spec state (`CoreSpecState`)
+- result/capture assembly registries
 
-Suggested layout:
+Current layout includes:
 
 ```text
 src/core/
+├── core_runtime.h/.cpp
 ├── core_thread.h/.cpp
-├── arbitration.h/.cpp
-├── lifecycle_registry.h/.cpp
-├── state_publisher.h/.cpp
+├── core_dispatcher.h/.cpp
+├── core_*_registry.h/.cpp
+├── core_spec_state.h/.cpp
+├── core_result_store.h/.cpp
+├── provider_callback_ingress.h/.cpp
+├── resource_aggregate_telemetry.h/.cpp
+├── state_snapshot_buffer.h
+├── i_state_snapshot_publisher.h
 ├── snapshot/
-│   ├── snapshot_types.h
+│   ├── state_snapshot.h
 │   └── snapshot_builder.h/.cpp
-├── spec/
-│   ├── camera_spec_store.h/.cpp
-│   └── imaging_spec_store.h/.cpp
-└── ids.h
+└── synthetic_timeline_request_binding.h/.cpp
 ```
 
 Core must not include platform headers.
@@ -129,16 +140,21 @@ src/imaging/
 ├── api/
 │   ├── icamera_provider.h
 │   ├── provider_contract_datatypes.h
-│   └── provider_error_string.h/.cpp
+│   ├── provider_error_string.h/.cpp
+│   ├── provider_strand.h/.cpp
+│   └── timeline_teardown_trace.h/.cpp
 ├── broker/
-│   ├── provider_broker.h/.cpp
-│   └── mode.h/.cpp
+│   ├── banner_info.h/.cpp
+│   ├── mode.h
+│   └── provider_broker.h/.cpp
 ├── platform/
-│   └── <platform>/
-│       ├── provider.h/.cpp
-│       └── <platform-specific>/
+│   └── windows/
+│       └── provider.h/.cpp
 ├── synthetic/
-│   └── provider.h/.cpp
+│   ├── provider.h/.cpp
+│   ├── scenario*.h/.cpp
+│   ├── virtual_clock.h
+│   └── gpu_*
 └── stub/
     └── provider.h/.cpp
 ```
@@ -205,15 +221,20 @@ src/godot/
 ├── cambang_server.h/.cpp
 ├── cambang_rig.h/.cpp
 ├── cambang_device.h/.cpp
-├── cambang_stream.h/.cpp
-├── registration.cpp
-└── bindings/
+├── cambang_capture_result.h/.cpp
+├── cambang_capture_result_set.h/.cpp
+├── cambang_stream_result.h/.cpp
+├── cambang_stream_result_internal.h/.cpp
+├── cambang_result_convert.h/.cpp
+├── state_snapshot_export.h/.cpp
+├── synthetic_gpu_backing_bridge*.h/.cpp
+└── module_init.cpp
 ```
 
 Responsibilities:
 
 - wrap core command enqueue operations
-- expose snapshot pointer safely
+- expose snapshot copies safely
 - emit `state_published` signal
 - map error codes to Godot-friendly form
 - keep logic minimal (no arbitration here)
@@ -254,20 +275,11 @@ Smoke-only code paths are gated behind:
 
 ---
 
-## 7. `src/util/`
+## 7. `src/dev/`
 
-Shared utilities.
+Development-only helpers. Current contents include `cli_log.h`.
 
-```text
-src/util/
-├── fourcc.h
-├── thread_utils.h
-├── time_utils.h
-├── lockfree_queue.h
-└── logging.h
-```
-
-Utilities must remain platform-neutral.
+Development helpers must not become public API or platform contract authority.
 
 ---
 
@@ -275,24 +287,24 @@ Utilities must remain platform-neutral.
 
 Test suites and deterministic integration tests.
 
-Illustrative layout:
+Current layout includes the Godot/GDE harness under:
 
 ```text
-tests/
-├── synthetic_arbitration_tests.cpp
-├── lifecycle_tests.cpp
-├── warm_policy_tests.cpp
-└── snapshot_tests.cpp
+tests/cambang_gde/
+├── addons/
+├── fixtures/status_panel/
+├── scenes/
+└── scripts/
 ```
 
 Tests should:
 
-- use `SyntheticProvider`
-- validate snapshot determinism
-- validate preemption correctness
-- validate retention sweep logic
+- use the smallest harness that proves the intended invariant
+- validate snapshot determinism and publication semantics
+- validate provider-independent Core invariants separately from platform-backed provider behavior
+- treat fixtures as authored verification artifacts, not disposable output to mutate until green
 
-CI should run deterministic tests with synthetic support enabled.
+CI/local validation should run deterministic tests with synthetic support where relevant.
 
 ---
 
@@ -300,23 +312,26 @@ CI should run deterministic tests with synthetic support enabled.
 
 ### Build targets
 
-Examples:
+Examples from the current SCons entrypoint:
 
-- `cambang` (GDExtension shared library)
-- optional test or validation binaries
+- `gde=yes` — build the GDExtension artifact
+- `smoke=yes` — build smoke/verification binaries
+- `platform_validate=yes` — build platform validation where available
 
 ### Platform selection
 
 Illustrative flags:
 
 ```text
-scons platform=android provider=android_camera2
-scons platform=linux provider=stub
-scons synthetic=yes
+scons platform=windows provider=stub
+scons platform=windows provider=windows_mediafoundation
+scons platform=windows provider=stub synthetic=yes
 ```
 
-Provider selection must compile exactly one **platform provider implementation**
-into the final build.
+Provider selection must compile exactly one selected provider implementation
+into the final build. The current temporary build entrypoint explicitly rejects
+`platform=android`; Android/Camera2 remains future platform work rather than a
+current build path.
 
 A platform provider may internally delegate to multiple backend modules,
 but Core binds to exactly one `ICameraProvider` instance at runtime.
@@ -326,8 +341,7 @@ but Core binds to exactly one `ICameraProvider` instance at runtime.
 Common flags include:
 
 - `CAMBANG_ENABLE_SYNTHETIC`
-- `CAMBANG_DEBUG_LIFECYCLE`
-- `CAMBANG_STRICT_ASSERTS`
+- `CAMBANG_INTERNAL_SMOKE`
 
 ---
 
@@ -335,9 +349,9 @@ Common flags include:
 
 - `core/` must not depend on `godot/`
 - `core/` must not depend on platform-specific provider headers
-- `provider/` may depend on platform headers
-- `godot/` depends on `core/`
-- `synthetic/` depends on provider interface only
+- platform-backed provider code under `imaging/platform/` may depend on platform headers
+- `godot/` depends on `core/` and the selected provider/broker surface through supported boundaries
+- `imaging/synthetic/` depends on provider interface and provider-agnostic pixel modules only
 
 This preserves architectural layering.
 
@@ -347,7 +361,7 @@ This preserves architectural layering.
 
 This structure supports:
 
-- multiple providers without structural refactor
+- additional provider implementations without Core structural refactor
 - test-only builds without full platform SDKs
 - headless simulation builds
 - new stream intents

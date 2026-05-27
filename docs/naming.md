@@ -19,8 +19,8 @@ To prevent cross-layer ambiguity:
   discussions).
 - **Scenario library** is the umbrella term for scenario collections.
   - **Built-in scenario library**: current C++-authored scenario set.
-  - **External scenario library**: future file-backed/user-provided scenario collections.
-  - **Scenario loader**: future serialized ingestion path for external scenario libraries.
+  - **External scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader.
+  - **Scenario loader**: serialized ingestion path for external scenario JSON into canonical SyntheticProvider timeline scenarios.
 - **Verification case** is the canonical prose term for maintainer-authored
   smoke/CLI validation inputs.
 - Code identifiers may use compact `verify_case` forms for smoke tooling, but
@@ -495,8 +495,9 @@ These names appear in the native/core implementation, build system, and
 debugging logs.
 
 - `ICameraProvider`: platform backend interface
-- `CBLifecycleRegistry`: tracks CamBANG-owned native/core object lifecycles and retains recently destroyed records for inspection
-- `CBStatePublisher`: assembles and publishes `CamBANGStateSnapshot` and performs retention sweeps
+- `CoreNativeObjectRegistry`: tracks provider-reported native/core object records and retains recently destroyed records for inspection
+- `SnapshotBuilder`: assembles `CamBANGStateSnapshot` from current core registries and aggregate telemetry
+- `IStateSnapshotPublisher` / `StateSnapshotBuffer`: provide the current snapshot publication boundary and latest-snapshot buffer
 
 ### Timestamp conventions
 

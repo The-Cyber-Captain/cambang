@@ -1,42 +1,56 @@
 # CamBANG
 
-## Synchronous multi-camera[^camera2] capture for Godot.  
-[^camera2]:*Leveraging Camera2, so Android-only.*
+CamBANG is a Godot 4.5+ GDExtension project for camera-provider experimentation,
+synthetic provider verification, runtime diagnostics, and snapshot-backed status
+surfacing.
 
-## Requirements
-- **Godot 4.5 or higher**
+The project is currently in active development. The current repository contains:
 
-## Compatibility
-- Built against: ??
-- Tested with: ??
-- Should work with future Godot 4.x releases
+- platform-independent Core runtime and snapshot publication code
+- provider contract definitions under `src/imaging/api/`
+- stub and synthetic providers for deterministic verification
+- a Windows Media Foundation provider implementation path marked as development-stage
+- Godot-facing GDExtension bindings under `src/godot/`
+- snapshot schema v1 under `schema/state_snapshot/v1/`
+- Godot StatusPanel harnesses and fixtures under `tests/cambang_gde/`
 
-### How to use:
+## Current platform status
 
-TBD
+The current SCons entrypoint explicitly rejects `platform=android`. Android /
+Camera2 support is therefore future work, not the current build path.
 
-### Output:
+Current provider work should follow the provider contract and architecture docs
+rather than platform-specific assumptions from older drafts.
 
-TBD
+## Documentation map
 
-### Installation
+Start with:
 
-#### Release:
+- `docs/INDEX.md` — documentation authority and reading order
+- `docs/provider_architecture.md` — provider/Core contract boundaries
+- `docs/core_runtime_model.md` — Core runtime authority model
+- `docs/state_snapshot.md` — human-readable snapshot schema and truth model
+- `schema/state_snapshot/v1/state_snapshot_schema.json` — machine-readable schema
 
-TBD
-  
-#### Building from source:
+Development-stage notes live under `docs/dev/` and are subordinate to the
+canonical documents listed in `docs/INDEX.md`.
 
-TDB
+## Build and validation
 
-### Demo
+Build and validation are SCons-based. See:
 
-TBD
+- `docs/dev/build_and_scaffolding.md`
+- `docs/dev/maintainer_tools.md`
+- `tests/cambang_gde/README.md`
 
-### Licensing
-Code: The Unlicense  
+Treat verifier fixtures as authored verification artifacts. Do not weaken or
+mutate fixtures merely to match current output; classify any mismatch first.
 
-TBD
+## Licensing
+
+Code: The Unlicense.
+
+See `docs/THIRD_PARTY_NOTICES.md` for third-party notices.
 
 ### Support me! 🥛🍞
 

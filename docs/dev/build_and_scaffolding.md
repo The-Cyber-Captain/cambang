@@ -94,13 +94,22 @@ Godot / `godot-cpp` ecosystem.
 
 ## 3. Compilation database / IDE integration
 
-CamBANG provides a SCons-native compilation database generator at:
+The current `SConstruct` references a SCons-native compilation database tool at:
 
 ```text
 site_scons/site_tools/compdb.py
 ```
 
-Behaviour:
+Audit status: the uploaded repository tree used for this documentation pass does
+not contain `site_scons/site_tools/compdb.py`. Because `SConstruct` still calls
+`env.Tool("compdb", toolpath=["site_scons/site_tools"])`, this is not safe to
+treat as documentation drift alone. Classify before changing source/build files:
+
+- documentation drift, if the compile-database integration was intentionally removed
+- repo packaging/build-configuration issue, if the tool should be present in source control
+- missing generated/ignored file, if local workflows generate or restore it before build
+
+Behavior intended when that tool is present:
 
 - the tool wraps compile actions and records commands for C/C++ translation units
 - the database is written to `compile_commands.json` at repo root by default
@@ -327,23 +336,34 @@ Important additional notes:
   accessors that differ between SDK/toolchain environments
 - use `MFVideoFormat_RGB32` rather than `RGBA32`
 
-### Visibility-phase constraint
+### Current Windows MF dev-accelerator status
 
-During the initial Windows visibility phase:
+`windows_mediafoundation` is currently the Windows platform-backed
+**dev accelerator** / real-hardware validation scaffold.
 
-- `MF_READWRITE_DISABLE_CONVERTERS` is enabled
-- only native output types are selectable
-- many consumer cameras therefore expose only YUV-native formats
+- It is a real SCons build option (`provider=windows_mediafoundation`).
+- In that build, `RuntimeMode::platform_backed` resolves to `WindowsProvider`.
+- The provider reports itself as `windows_mediafoundation(dev)` and remains
+  explicitly marked `DEV ACCELERATOR ONLY` in provider header documentation.
 
-If no RGB32-like subtype is advertised natively, visible pixels will not
-appear. This is expected and validates lifecycle / contract behaviour
-without silently introducing conversion.
+Current source intentionally allows MF Source Reader video processing /
+conversion so RGB32-like frames can be requested from common YUV-only devices.
+CamBANG still does not implement its own CPU YUV→RGB conversion in this provider
+path.
 
-For the dev-phase record and counter interpretation, see:
+This is a dev-accelerator visibility choice and does **not** define the final
+Windows release-provider strategy.
 
-```text
-docs/dev/windows_mf_visibility_phase.md
-```
+Pending platform-provider work must still explicitly decide:
+
+- negotiation policy
+- conversion policy and ownership boundaries
+- GPU/native presentation paths
+- still capture
+- multi-stream
+- rig support
+- spec/control support
+- release-grade validation criteria
 
 ### Windows macro collision: `OPAQUE`
 

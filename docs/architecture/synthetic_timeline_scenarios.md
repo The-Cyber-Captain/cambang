@@ -32,8 +32,8 @@ The following terms are distinct and must not be conflated:
 - **scenario**: user-facing / Godot / SyntheticProvider timeline recording-storage-execution concept
 - **scenario library**: umbrella term for collections of scenarios
   - **built-in scenario library**: current C++-authored scenario collection
-  - **external scenario library**: future file-backed/user-provided scenario collections
-  - **scenario loader**: future serialized ingestion path used to load external scenario libraries
+  - **external scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader
+  - **scenario loader**: serialized ingestion path for external scenario JSON into canonical SyntheticProvider timeline scenarios
 - **verification case**: maintainer-authored smoke/CLI procedural validation input
 - **verification case catalog**: maintainer tooling selector/list for verification cases (`verify_case_catalog`)
 - **fixture**: static payload/data artifact, often consumed by tooling or UI/scene checks
@@ -141,6 +141,34 @@ To preserve existing verifier behavior while keeping explicit host controls:
 
 This is a compatibility arming rule, not a semantic ownership split:
 both paths remain SyntheticProvider-owned timeline execution.
+
+### 6.2 `timeline_reconciliation` applicability and mode intent
+
+`timeline_reconciliation` is a scoped synthetic timeline control, not a global
+provider option.
+
+It is valid only when all of the following are true:
+
+- provider kind is synthetic
+- synthetic role is timeline
+- timing driver is `virtual_time`
+
+Rules:
+
+- omitted in that applicable mode defaults to `completion_gated`
+- supplied outside that applicable mode is deterministic invalid-argument
+  rejection
+
+Mode intent:
+
+- `completion_gated` is the standard/default mode for synthetic timeline +
+  `virtual_time`; destructive progression waits for readiness truth before
+  parent/resource removal
+- for stream-destruction progression, readiness truth includes stream-stopped
+  truth and stream-buffer-release truth
+- `strict` remains a diagnostic/power-user mode; authored destructive intent is
+  exercised more directly and may fail in-band when readiness truth has not yet
+  arrived
 
 ---
 

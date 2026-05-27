@@ -281,21 +281,29 @@ CamBANGStateSnapshot {
 
   native_objects: Array<NativeObjectRecord>
 
-  scoped_resource_telemetry: ScopedResourceTelemetry
-
   detached_root_ids: Array<uint64> // computed by core (see §7)
+
+  scoped_resource_telemetry: Array<ScopedResourceTelemetry>
 }
 ```
 
-`scoped_resource_telemetry` is aggregate counter telemetry for high-frequency resources.
-It does not imply per-frame `native_objects[]` churn.
+`scoped_resource_telemetry[]` is aggregate counter telemetry for high-frequency resources.
+It is a top-level array of scoped aggregate records and does not imply per-frame
+`native_objects[]` churn.
 
 ```text
 ScopedResourceTelemetry {
+  telemetry_scope: STREAM | ACQUISITION_SESSION | DEVICE | PROVIDER | UNKNOWN
+
   phase: phase                        // LIVE | DESTROYED
   creation_gen: uint64
   created_ns: uint64
   destroyed_ns: uint64                // 0 unless phase=DESTROYED
+
+  provider_native_id: uint64          // 0 if none/unknown
+  device_instance_id: uint64          // 0 if none/unknown
+  acquisition_session_id: uint64      // 0 if none/unknown
+  stream_id: uint64                   // 0 if none/unknown
 
   framebuffer_lease_current: uint64
   framebuffer_lease_total_created: uint64
@@ -372,10 +380,11 @@ current event loop iteration (see `core_runtime_model.md`).
 
 On successful core loop start, core begins in a logically dirty state and
 will publish a baseline snapshot on the first loop iteration. This first
-published snapshot has:
+published snapshot for generation `gen = N` has:
 
-- `gen = 0`
-- `topology_gen = 0`
+- `gen = N`
+- `version = 0`
+- `topology_version = 0`
 - a valid monotonic `timestamp_ns`
 
 This guarantees that each core generation (`gen`) produces at least one
@@ -721,7 +730,7 @@ producer row.
 ``` text
 NativeObjectRecord {
   native_id: uint64
-  type: provider | device | acquisition_session | stream | support_resource
+  type: provider | device | acquisition_session | stream | frame_buffer_lease | gpu_backing
 
   phase: phase
 

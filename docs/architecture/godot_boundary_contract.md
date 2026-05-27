@@ -8,9 +8,9 @@ This document describes **observable behaviour only**. It intentionally does **n
 
 ---
 
-# Canonical Observable Surface
+# Canonical Observable Snapshot / Publication Surface
 
-Godot consumers interact with the runtime exclusively through:
+This document specifies the stable observable snapshot/publication lifecycle surface:
 
 ```
 CamBANGServer.start()
@@ -20,7 +20,7 @@ CamBANGServer.get_state_snapshot()
 signal state_published(gen, version, topology_version)
 ```
 
-No other Godot‑facing runtime surface is considered part of the stable observable contract.
+Other Godot-facing APIs may exist for object access, scenario/dev control, provider configuration, or result retrieval. They are outside the scope of this document unless explicitly tied to snapshot visibility, generation boundaries, or tick-bounded publication semantics. New Godot-facing API surface must still be added deliberately and documented at the appropriate boundary; this clarification must not be read as permission for ad-hoc public API growth.
 
 ---
 

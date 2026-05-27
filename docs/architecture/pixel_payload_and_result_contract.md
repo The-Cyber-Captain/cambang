@@ -420,6 +420,27 @@ The Capture Sink is responsible for:
 
 A **Capture Result** is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same Capture Result.
 
+### 10.3.1 Retrieval / assembly success gate
+
+Device-level `CaptureResult` retrieval is successful only after assembly success.
+
+Assembly success requires both:
+
+- retained default image member `0`
+- terminal capture lifecycle success (`capture_completed`)
+
+`capture_failed` prevents successful `CaptureResult` retrieval even if a default
+image payload was retained.
+
+The following do not produce a successful retrievable `CaptureResult`:
+
+- `capture_completed` without a retained default image member
+- retained default image member without terminal completion
+
+Partial additional-member success is allowed: when member `0` is retained and
+capture terminal is `capture_completed`, retrieval succeeds and includes only
+the retained contiguous additional-member prefix.
+
 A Capture Result is **not** required to already be:
 
 - a CPU `Image`
@@ -474,6 +495,97 @@ Preferred retained form order is roughly:
 Again, this is a preference order, not a correctness rule.
 
 ---
+
+## 10.6 Initial Godot-facing result-object surface guardrails
+
+To keep early implementation aligned with this contract, the initial Godot-facing
+result-object surface is intentionally constrained as follows.
+
+### 10.6.1 Stream Result initial surface
+
+Direct descriptive fields:
+
+- `width`
+- `height`
+- `format`
+- `payload_kind`
+- `capture_timestamp`
+- `stream_id`
+- `device_instance_id`
+- `intent`
+
+Capability checks:
+
+- `can_get_display_view()`
+- `can_to_image()`
+
+Explicit operations:
+
+- `get_display_view()`
+- `to_image()`
+
+Non-goals:
+
+- no encoded-byte access
+- no filesystem save operations
+- no stream history/sequence access
+- no backend-native public handles
+
+### 10.6.2 Capture Result initial surface
+
+Direct scalar/default-image convenience fields:
+
+- `width`
+- `height`
+- `format`
+- `payload_kind`
+- `capture_timestamp`
+- `device_instance_id`
+- `capture_id`
+
+Scalar/default-image convenience access describes member `0` where per-member
+image truth can vary. Structural homogeneous properties such as `width`,
+`height`, `format`, and `payload_kind` are result-level truth.
+
+Image-member access:
+
+- `IMAGE_ROLE_DEFAULT_METERED`
+- `IMAGE_ROLE_ADDITIONAL_BRACKET`
+- `get_image_count()`
+- `has_additional_images()`
+- `get_image_member(index)`
+- `can_to_image_member(index)`
+- `to_image_member(index)`
+
+`get_image_member(index)` returns metadata for the selected retained member,
+including applied and realized exposure truth. Invalid/out-of-range access
+returns an empty `Dictionary`.
+
+`get_image_count()` reports retained member count only and does not imply all
+authored/intended members were retained. Missing additional intended members are
+represented by absence, not sparse members and not public per-member failure
+objects.
+
+Existing default-image methods such as `to_image()` and `can_to_image()` remain
+member-0 conveniences.
+
+Non-goals:
+
+- no filesystem save APIs
+- no RAW processing/export APIs
+- no backend-native public handles
+
+### 10.6.3 Capture Result Set initial surface
+
+- `capture_id`
+- `size()`
+- `is_empty()`
+- `get_results()`
+- `get_result_for_device(device_instance_id)`
+
+`CaptureResultSet` is a grouping/container surface, not itself an image-bearing
+result object. `CaptureResultSet` is not the bracket-member container for a
+single-device `CaptureResult`.
 
 ## 11. Capability and cost-aware materialization
 
@@ -708,15 +820,12 @@ Provenance is attached per fact (or per small fact group), not as one result-wid
 
 Recommended first-pass provenance vocabulary:
 
-- `HARDWARE_REPORTED`
-- `PROVIDER_DERIVED`
-- `RUNTIME_INJECTED`
-- `USER_DEFAULT`
-- `USER_OVERRIDE`
-- `UNKNOWN`
-
-The intended meaning of these values is documented in the direction note:
-- `docs/dev/pixel_result_architecture_direction.md`
+- `HARDWARE_REPORTED` — reported directly by platform/hardware/provider API metadata.
+- `PROVIDER_DERIVED` — derived by the provider from backend/platform data before handing truth to Core.
+- `RUNTIME_INJECTED` — supplied by CamBANG runtime/Core because it is runtime context rather than image-origin metadata.
+- `USER_DEFAULT` — supplied from user/application default configuration when no more specific fact is available.
+- `USER_OVERRIDE` — supplied from explicit user/application correction or override.
+- `UNKNOWN` — no authoritative source for the fact is currently known or retained.
 
 ### 14.1 Important distinction
 
