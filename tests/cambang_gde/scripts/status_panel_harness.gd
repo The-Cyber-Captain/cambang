@@ -833,6 +833,15 @@ func _extract_rendered_counter_labels_by_row(panel: Variant) -> Dictionary:
 	return labels_by_row
 
 
+func _coerce_string_array(value: Variant) -> Array[String]:
+	var result: Array[String] = []
+	if typeof(value) != TYPE_ARRAY:
+		return result
+	for item in value:
+		result.append(str(item))
+	return result
+
+
 func _classify_observed_outcome(
 	contract_gaps: Array,
 	projection_gaps: Array,
@@ -998,7 +1007,7 @@ func _evaluate_expectations(
 
 	var required_counter_labels_by_row: Dictionary = expected_panel_outcome.get("required_counter_labels_by_row", {})
 	for row_id in required_counter_labels_by_row.keys():
-		var labels: Array[String] = rendered_counter_labels_by_row.get(str(row_id), [])
+		var labels: Array[String] = _coerce_string_array(rendered_counter_labels_by_row.get(str(row_id), []))
 		var required_labels: Array = required_counter_labels_by_row.get(row_id, []) as Array
 		for raw_label in required_labels:
 			var label := str(raw_label)
@@ -1007,7 +1016,7 @@ func _evaluate_expectations(
 
 	var forbidden_counter_labels_by_row: Dictionary = expected_panel_outcome.get("forbidden_counter_labels_by_row", {})
 	for row_id in forbidden_counter_labels_by_row.keys():
-		var labels: Array[String] = rendered_counter_labels_by_row.get(str(row_id), [])
+		var labels: Array[String] = _coerce_string_array(rendered_counter_labels_by_row.get(str(row_id), []))
 		var forbidden_labels: Array = forbidden_counter_labels_by_row.get(row_id, []) as Array
 		for raw_label in forbidden_labels:
 			var label := str(raw_label)
