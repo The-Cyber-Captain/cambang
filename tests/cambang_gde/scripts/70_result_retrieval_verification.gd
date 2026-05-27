@@ -1,12 +1,12 @@
 extends Control
 
-# Tranche-1 result verification scope:
+# Result retrieval verification scope:
 # - proves CamBANGStreamResult from Godot boundary
 # - proves CamBANGCaptureResult from Godot boundary
 # - proves grouped facts/provenance accessor shape (Dictionary)
 # - proves to_image() for both
 # Non-goals intentionally preserved:
-# - no CamBANGRig.trigger_sync_capture()
+# - no CamBANGRig.trigger_capture()
 # - no CamBANGCaptureResultSet realization proof
 # - no grouped-capture curation policy proof
 # - no mailbox coupling
@@ -26,9 +26,11 @@ const PAYLOAD_KIND_GPU_SURFACE := 2
 @onready var _stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/StreamPanel/StreamTexture
 @onready var _requested_stream_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/RequestedStreamPanel/RequestedStreamTexture
 @onready var _capture_texture_rect: TextureRect = $RootMargin/MainColumn/ResultsRow/CapturePanel/CaptureTexture
+@onready var _member_strip_row: HBoxContainer = $RootMargin/MainColumn/MemberInspectionStrip/StripScroll/MembersRow
 @onready var _gui_controls: HBoxContainer = $RootMargin/MainColumn/GuiControls
 @onready var _request_stream_image_button: Button = $RootMargin/MainColumn/GuiControls/RequestStreamImageButton
 @onready var _capture_again_button: Button = $RootMargin/MainColumn/GuiControls/CaptureAgainButton
+@onready var _status_panel: CamBANGStatusPanel = $RootMargin/MainColumn/CamBANGStatusPanel
 
 var _step := 0
 var _done := false
@@ -44,6 +46,31 @@ var _device_instance_id := 0
 var _stream_id := 0
 var _capture_id := 0
 var _inspection_capture_id := 0
+var _capture_profile_version_after_set := -1
+var _still_profile_set_applied := false
+var _capture_triggered := false
+var _stream_baseline_verified := false
+var _device_seam_verified := false
+var _status_panel_acquisition_session_detail_requested := false
+
+func _make_scene70_still_image_bundle_members() -> Array:
+	return [
+		{
+			"image_member_index": 0,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			"intended_exposure_compensation_milli_ev": 0,
+		},
+		{
+			"image_member_index": 1,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			"intended_exposure_compensation_milli_ev": -1000,
+		},
+		{
+			"image_member_index": 2,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			"intended_exposure_compensation_milli_ev": 1000,
+		},
+	]
 
 func _ready() -> void:
 	_status_label.clear()
@@ -100,7 +127,10 @@ func _process(_delta: float) -> void:
 		return
 
 	if _capture_id == 0:
-		if Time.get_ticks_msec() - _stream_poll_start_ms > STREAM_TIMEOUT_MS:
+		# Stream timeout only applies to initial stream-baseline acquisition.
+		# After stream baseline passes, we may still be waiting for snapshot bundle
+		# catch-up gates before triggering capture; that must not reuse stream timeout.
+		if not _stream_baseline_verified and Time.get_ticks_msec() - _stream_poll_start_ms > STREAM_TIMEOUT_MS:
 			_fail("step %d FAIL: latest stream result did not appear within timeout" % _step)
 			return
 		_try_verify_stream_result()
@@ -150,66 +180,106 @@ func _try_verify_stream_result() -> void:
 	if stream_result == null:
 		return
 
-	_require(stream_result.get_class() == "CamBANGStreamResult", "step %d FAIL: stream result must be CamBANGStreamResult" % _step)
-	_step_ok("stream result object branding verified")
+	if not _stream_baseline_verified:
+		_require(stream_result.get_class() == "CamBANGStreamResult", "step %d FAIL: stream result must be CamBANGStreamResult" % _step)
+		_step_ok("stream result object branding verified")
 
-	_require(stream_result.get_width() > 0, "step %d FAIL: stream width invalid" % _step)
-	_require(stream_result.get_height() > 0, "step %d FAIL: stream height invalid" % _step)
-	_require(stream_result.get_format() != 0, "step %d FAIL: stream format invalid" % _step)
-	var stream_payload_kind := int(stream_result.get_payload_kind())
-	_require(
-		stream_payload_kind == PAYLOAD_KIND_CPU_PACKED or stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
-		"step %d FAIL: stream payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
-	)
-	_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
-	_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
-	_step_ok("stream direct properties verified")
+		_require(stream_result.get_width() > 0, "step %d FAIL: stream width invalid" % _step)
+		_require(stream_result.get_height() > 0, "step %d FAIL: stream height invalid" % _step)
+		_require(stream_result.get_format() != 0, "step %d FAIL: stream format invalid" % _step)
+		var stream_payload_kind := int(stream_result.get_payload_kind())
+		_require(
+			stream_payload_kind == PAYLOAD_KIND_CPU_PACKED or stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
+			"step %d FAIL: stream payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
+		)
+		_require(stream_result.get_stream_id() == _stream_id, "step %d FAIL: stream_id mismatch" % _step)
+		_require(stream_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: stream device_instance_id mismatch" % _step)
+		_step_ok("stream direct properties verified")
 
-	_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
-	_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
-	_require(typeof(stream_result.get_location_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes accessor must return Dictionary" % _step)
-	_require(typeof(stream_result.get_optical_calibration()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration accessor must return Dictionary" % _step)
-	_step_ok("stream grouped fact accessors verified (Dictionary)")
+		_require(typeof(stream_result.get_image_properties()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties accessor must return Dictionary" % _step)
+		_require(typeof(stream_result.get_capture_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes accessor must return Dictionary" % _step)
+		_require(typeof(stream_result.get_location_attributes()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes accessor must return Dictionary" % _step)
+		_require(typeof(stream_result.get_optical_calibration()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration accessor must return Dictionary" % _step)
+		_step_ok("stream grouped fact accessors verified (Dictionary)")
 
-	_require(typeof(stream_result.get_image_properties_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties_provenance must return Dictionary" % _step)
-	_require(typeof(stream_result.get_capture_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes_provenance must return Dictionary" % _step)
-	_require(typeof(stream_result.get_location_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes_provenance must return Dictionary" % _step)
-	_require(typeof(stream_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration_provenance must return Dictionary" % _step)
-	_step_ok("stream provenance grouped accessors verified (Dictionary)")
+		_require(typeof(stream_result.get_image_properties_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream image_properties_provenance must return Dictionary" % _step)
+		_require(typeof(stream_result.get_capture_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream capture_attributes_provenance must return Dictionary" % _step)
+		_require(typeof(stream_result.get_location_attributes_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream location_attributes_provenance must return Dictionary" % _step)
+		_require(typeof(stream_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: stream optical_calibration_provenance must return Dictionary" % _step)
+		_step_ok("stream provenance grouped accessors verified (Dictionary)")
 
-	var stream_can_to_image := int(stream_result.can_to_image())
-	_require(stream_can_to_image != int(stream_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: stream can_to_image() unexpectedly unsupported" % _step)
-	_step_ok("stream can_to_image capability verified")
+		var stream_can_to_image := int(stream_result.can_to_image())
+		_require(stream_can_to_image != int(stream_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: stream can_to_image() unexpectedly unsupported" % _step)
+		_step_ok("stream can_to_image capability verified")
 
-	# to_image() is explicit materialization onto CPU-backed storage; it is not
-	# the normal live display path.
-	var stream_image: Image = stream_result.to_image()
-	_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
-	_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
-	_step_ok("stream to_image materialization verified")
-	_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request")
-	_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
-	_step_ok("requested stream image panel populated from explicit request")
+		# to_image() is explicit materialization onto CPU-backed storage; it is not
+		# the normal live display path.
+		var stream_image: Image = stream_result.to_image()
+		_require(stream_image != null, "step %d FAIL: stream to_image() returned null" % _step)
+		_require(stream_image.get_width() > 0 and stream_image.get_height() > 0, "step %d FAIL: stream image dimensions invalid" % _step)
+		_step_ok("stream to_image materialization verified")
+		_materialize_requested_stream_image(stream_result, "mode=initial stream to_image request")
+		_require(_requested_stream_texture_rect.texture != null, "step %d FAIL: requested stream image panel not populated" % _step)
+		_step_ok("requested stream image panel populated from explicit request")
 
-	var stream_display_view = stream_result.get_display_view()
-	if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
-		_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
-	else:
-		_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
-	_step_ok("stream display_view path verified")
+		var stream_display_view = stream_result.get_display_view()
+		if stream_payload_kind == PAYLOAD_KIND_GPU_SURFACE:
+			_require(stream_display_view is Texture2D, "step %d FAIL: GPU_SURFACE stream display_view must be Texture2D" % _step)
+		else:
+			_require(stream_display_view is Texture2D, "step %d FAIL: CPU_PACKED stream display_view must be Texture2D" % _step)
+		_step_ok("stream display_view path verified")
 
-	_ensure_stream_panel_display_view_bound(stream_result, true)
-	_step_ok("stream image displayed")
+		_ensure_stream_panel_display_view_bound(stream_result, true)
+		_step_ok("stream image displayed")
+		_stream_baseline_verified = true
 
 	var device = CamBANGServer.get_device(_device_instance_id)
 	_require(device != null, "step %d FAIL: CamBANGServer.get_device() returned null" % _step)
 	_require(device.get_class() == "CamBANGDevice", "step %d FAIL: get_device() must return CamBANGDevice" % _step)
-	_step_ok("device seam verified")
+	if not _device_seam_verified:
+		_step_ok("device seam verified")
+		_device_seam_verified = true
 
-	_capture_id = int(device.trigger_capture())
-	_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
-	_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
-	_capture_poll_start_ms = Time.get_ticks_msec()
+	if not _still_profile_set_applied:
+		var expected_members := _make_scene70_still_image_bundle_members()
+		var bracket_profile := {
+			"still_image_bundle": {
+				"members": expected_members,
+			},
+		}
+		var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
+		_require(
+			set_profile_err == OK,
+			"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
+		)
+		_step_ok("device still capture profile set (three-member bracket)")
+		_still_profile_set_applied = true
+
+	if not _capture_triggered:
+		_capture_id = int(device.trigger_capture())
+		_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
+		_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
+		_capture_triggered = true
+		_capture_poll_start_ms = Time.get_ticks_msec()
+		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
+		var profile_after_set: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_set)
+		_capture_profile_version_after_set = int(profile_after_set.get("version", -1))
+		return
+
+	var device_snapshot_after_trigger := _get_device_snapshot_record(_device_instance_id)
+	var profile_after_trigger: Dictionary = _extract_snapshot_still_profile(device_snapshot_after_trigger)
+	var capture_profile_version_after_trigger := int(profile_after_trigger.get("version", -1))
+	if capture_profile_version_after_trigger < 0:
+		return
+	_require(
+		capture_profile_version_after_trigger == _capture_profile_version_after_set,
+		"step %d FAIL: trigger_capture() must not change capture_profile_version (%d -> %d)" % [
+			_step,
+			_capture_profile_version_after_set,
+			capture_profile_version_after_trigger
+		]
+	)
+	_step_ok("capture_profile_version unchanged by trigger_capture")
 
 
 func _try_verify_capture_result() -> void:
@@ -223,7 +293,7 @@ func _try_verify_capture_result() -> void:
 	_require(capture_result.get_width() > 0, "step %d FAIL: capture width invalid" % _step)
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
 	_require(capture_result.get_format() != 0, "step %d FAIL: capture format invalid" % _step)
-	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: tranche-1 capture payload_kind must be CPU_PACKED" % _step)
+	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: capture payload_kind must be CPU_PACKED" % _step)
 	_require(capture_result.get_capture_id() == _capture_id, "step %d FAIL: capture_id mismatch" % _step)
 	_require(capture_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: capture device_instance_id mismatch" % _step)
 	_step_ok("capture direct properties verified")
@@ -240,31 +310,124 @@ func _try_verify_capture_result() -> void:
 	_require(typeof(capture_result.get_optical_calibration_provenance()) == TYPE_DICTIONARY, "step %d FAIL: capture optical_calibration_provenance must return Dictionary" % _step)
 	_step_ok("capture provenance grouped accessors verified (Dictionary)")
 
+	var expected_members := _make_scene70_still_image_bundle_members()
+	var expected_member_count := expected_members.size()
+	_require(int(capture_result.get_image_count()) == expected_member_count, "step %d FAIL: capture get_image_count() mismatch for bracket profile" % _step)
+	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for bracket profile" % _step)
+	var materialized_member_0: Image = null
+	for i in range(expected_member_count):
+		var expected_member: Dictionary = expected_members[i]
+		var image_member: Dictionary = capture_result.get_image_member(i)
+		_require(not image_member.is_empty(), "step %d FAIL: capture get_image_member(%d) must return non-empty Dictionary" % [_step, i])
+		_require(int(image_member.get("image_member_index", -1)) == int(expected_member.get("image_member_index", -1)), "step %d FAIL: capture image_member(%d).image_member_index mismatch" % [_step, i])
+		_require(int(image_member.get("role", -1)) == int(expected_member.get("role", -1)), "step %d FAIL: capture image_member(%d).role mismatch" % [_step, i])
+		var expected_intended_ev := int(expected_member.get("intended_exposure_compensation_milli_ev", 0))
+		_require(int(image_member.get("applied_exposure_compensation_milli_ev", 0)) == expected_intended_ev, "step %d FAIL: capture image_member(%d) applied EV mismatch" % [_step, i])
+		_require(bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)), "step %d FAIL: capture image_member(%d) realized EV must be present in synthetic normal mode" % [_step, i])
+		_require(int(image_member.get("realized_exposure_compensation_milli_ev", 0)) == int(image_member.get("applied_exposure_compensation_milli_ev", 0)), "step %d FAIL: capture image_member(%d) realized EV must equal applied EV in synthetic normal mode" % [_step, i])
+		var image_member_materialized: Image = capture_result.to_image_member(i)
+		_require(image_member_materialized != null, "step %d FAIL: capture to_image_member(%d) returned null" % [_step, i])
+		if i == 0:
+			materialized_member_0 = image_member_materialized
+	var out_of_range_member: Dictionary = capture_result.get_image_member(expected_member_count)
+	_require(out_of_range_member.is_empty(), "step %d FAIL: capture get_image_member(expected_count) must return empty Dictionary for out-of-range" % _step)
+	var out_of_range_image: Image = capture_result.to_image_member(expected_member_count)
+	_require(out_of_range_image == null, "step %d FAIL: capture to_image_member(expected_count) must be null for out-of-range member" % _step)
+	_step_ok("capture indexed image-member metadata verified (three-member profile)")
+
 	var capture_can_to_image := int(capture_result.can_to_image())
 	_require(capture_can_to_image != int(capture_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: capture can_to_image() unexpectedly unsupported" % _step)
 	_step_ok("capture can_to_image capability verified")
+	var capture_can_to_image_member_0 := int(capture_result.can_to_image_member(0))
+	_require(capture_can_to_image_member_0 != int(capture_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: capture can_to_image_member(0) unexpectedly unsupported" % _step)
+	_step_ok("capture can_to_image_member(0) capability verified")
 
-	# Tranche-1 honesty: encoded-byte access can remain unsupported.
+	# Honesty: encoded-byte access can remain unsupported.
 	var encoded_capability := int(capture_result.can_get_encoded_bytes())
 	if encoded_capability == int(capture_result.CAPABILITY_UNSUPPORTED):
-		_append_status("INFO: capture can_get_encoded_bytes() is UNSUPPORTED in tranche 1 (acceptable)")
+		_append_status("INFO: capture can_get_encoded_bytes() is UNSUPPORTED (acceptable)")
 	else:
 		_append_status("INFO: capture can_get_encoded_bytes() capability=%d" % encoded_capability)
 
 	var capture_image: Image = capture_result.to_image()
 	_require(capture_image != null, "step %d FAIL: capture to_image() returned null" % _step)
 	_require(capture_image.get_width() > 0 and capture_image.get_height() > 0, "step %d FAIL: capture image dimensions invalid" % _step)
+	_require(materialized_member_0 != null, "step %d FAIL: capture to_image_member(0) returned null" % _step)
+	_require(materialized_member_0.get_width() == capture_image.get_width(), "step %d FAIL: capture to_image_member(0) width must match to_image()" % _step)
+	_require(materialized_member_0.get_height() == capture_image.get_height(), "step %d FAIL: capture to_image_member(0) height must match to_image()" % _step)
+	_require(materialized_member_0.get_format() == capture_image.get_format(), "step %d FAIL: capture to_image_member(0) format must match to_image()" % _step)
 	_step_ok("capture to_image materialization verified")
 
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
+	_refresh_member_inspection_strip(capture_result, expected_members)
 	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=initial verification" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
 		capture_result.get_height(),
 		capture_result.get_capture_id()
 	]
+	_exercise_status_panel_acquisition_session_fixture_detail_visibility()
+	if _status_panel != null:
+		_status_panel.apply_fixture_detail_visible_rows([])
+		_status_panel.force_refresh()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
+
+
+
+func _role_name(role: int) -> String:
+	if role == CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED:
+		return "default"
+	if role == CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET:
+		return "bracket"
+	return str(role)
+
+
+func _clear_member_inspection_strip() -> void:
+	if _member_strip_row == null:
+		return
+	for child in _member_strip_row.get_children():
+		child.queue_free()
+
+
+func _refresh_member_inspection_strip(capture_result, expected_members: Array) -> void:
+	_clear_member_inspection_strip()
+	if _member_strip_row == null or capture_result == null:
+		return
+	for i in range(expected_members.size()):
+		var expected_member: Dictionary = expected_members[i]
+		var image_member_materialized: Image = capture_result.to_image_member(i)
+		if image_member_materialized == null:
+			continue
+
+		var item_col := VBoxContainer.new()
+		item_col.custom_minimum_size = Vector2(150, 0)
+		item_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var preview := TextureRect.new()
+		preview.custom_minimum_size = Vector2(140, 78)
+		preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		preview.texture = ImageTexture.create_from_image(image_member_materialized)
+		item_col.add_child(preview)
+
+		var image_member: Dictionary = capture_result.get_image_member(i)
+		var role_value := int(image_member.get("role", expected_member.get("role", -1)))
+		var role_label := _role_name(role_value)
+		var realized_ev_label := "unknown"
+		if bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)):
+			realized_ev_label = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
+		var meta := Label.new()
+		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		meta.text = "idx=%d role=%s ev=%s" % [
+			int(image_member.get("image_member_index", -1)),
+			role_label,
+			realized_ev_label,
+		]
+		item_col.add_child(meta)
+
+		_member_strip_row.add_child(item_col)
 
 
 func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind: bool = false) -> void:
@@ -347,12 +510,72 @@ func _request_manual_capture() -> void:
 	if device == null:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
+
+	_clear_member_inspection_strip()
 	_inspection_capture_id = int(device.trigger_capture())
 	if _inspection_capture_id == 0:
 		_append_status("WARN: manual capture request rejected (capture_id=0)")
 		return
 	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
 	_append_status("INFO: manual capture requested (capture_id=%d)" % _inspection_capture_id)
+
+
+func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return {}
+	var devices: Array = snapshot.get("devices", [])
+	for d in devices:
+		if typeof(d) != TYPE_DICTIONARY:
+			continue
+		var rec: Dictionary = d
+		if int(rec.get("instance_id", 0)) == device_instance_id:
+			return rec
+	return {}
+
+
+func _extract_snapshot_still_profile(device_snapshot: Dictionary) -> Dictionary:
+	var capture_profile_v: Variant = device_snapshot.get("capture_profile", null)
+	if typeof(capture_profile_v) != TYPE_DICTIONARY:
+		return {}
+	var capture_profile: Dictionary = capture_profile_v
+	var still_v: Variant = capture_profile.get("still", null)
+	if typeof(still_v) != TYPE_DICTIONARY:
+		return {}
+	return still_v
+
+
+func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictionary:
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null:
+		return {}
+	var acquisition_sessions: Array = snapshot.get("acquisition_sessions", [])
+	for s in acquisition_sessions:
+		if typeof(s) != TYPE_DICTIONARY:
+			continue
+		var rec: Dictionary = s
+		if int(rec.get("device_instance_id", 0)) == device_instance_id:
+			return rec
+	return {}
+
+
+func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> void:
+	if _status_panel_acquisition_session_detail_requested:
+		return
+	if _status_panel == null:
+		return
+	var acquisition_session_snapshot := _get_acquisition_session_snapshot_record(_device_instance_id)
+	if acquisition_session_snapshot.is_empty():
+		return
+	var acquisition_session_id := int(acquisition_session_snapshot.get("acquisition_session_id", 0))
+	if acquisition_session_id <= 0:
+		return
+	var row_id := "acquisition_session/%d" % acquisition_session_id
+	_status_panel.apply_fixture_expanded_rows([row_id])
+	_status_panel.apply_fixture_detail_visible_rows([row_id])
+	_status_panel.force_refresh()
+	_status_panel_acquisition_session_detail_requested = true
+	_append_status("INFO: status panel fixture detail visibility exercised (%s)" % row_id)
 
 
 func _poll_inspection_capture_result() -> void:
@@ -371,6 +594,7 @@ func _poll_inspection_capture_result() -> void:
 		_inspection_capture_id = 0
 		return
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
+	_refresh_member_inspection_strip(capture_result, _make_scene70_still_image_bundle_members())
 	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=manual capture" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
@@ -430,6 +654,7 @@ func _cleanup_and_quit(code: int) -> void:
 	_stream_texture_rect.texture = null
 	_requested_stream_texture_rect.texture = null
 	_capture_texture_rect.texture = null
+	_clear_member_inspection_strip()
 	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true

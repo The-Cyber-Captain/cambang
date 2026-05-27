@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 
 namespace cambang {
 
@@ -67,6 +68,15 @@ void CpuPackedPatternRenderer::render_into(
     const PatternSpec& spec,
     const PatternRenderTarget& dst,
     const PatternOverlayData& overlay) {
+  PatternRenderOptions options{};
+  render_into(spec, dst, overlay, options);
+}
+
+void CpuPackedPatternRenderer::render_into(
+    const PatternSpec& spec,
+    const PatternRenderTarget& dst,
+    const PatternOverlayData& overlay,
+    const PatternRenderOptions& options) {
   if (!dst.is_valid()) {
     return;
   }
@@ -139,12 +149,45 @@ void CpuPackedPatternRenderer::render_into(
   if (spec.overlay_moving_bar) {
     apply_moving_bar(spec, dst, overlay.frame_index);
   }
+  if (options.applied_exposure_compensation_milli_ev != 0) {
+    apply_exposure_compensation(dst, options.applied_exposure_compensation_milli_ev);
+  }
   const auto overlay_t1 = std::chrono::steady_clock::now();
   const uint64_t overlay_ns = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(overlay_t1 - overlay_t0).count());
   debug_stats_.overlay_total_ns += overlay_ns;
   debug_stats_.overlay_max_ns = std::max(debug_stats_.overlay_max_ns, overlay_ns);
   has_rendered_frame_ = true;
+}
+
+void CpuPackedPatternRenderer::apply_render_options_in_place(
+    const PatternRenderTarget& dst,
+    const PatternRenderOptions& options) const {
+  if (options.applied_exposure_compensation_milli_ev != 0) {
+    apply_exposure_compensation(dst, options.applied_exposure_compensation_milli_ev);
+  }
+}
+
+void CpuPackedPatternRenderer::apply_exposure_compensation(
+    const PatternRenderTarget& dst,
+    int32_t applied_exposure_compensation_milli_ev) const {
+  if (applied_exposure_compensation_milli_ev == 0) {
+    return;
+  }
+  const double gain = std::pow(2.0, static_cast<double>(applied_exposure_compensation_milli_ev) / 1000.0);
+  auto* base = static_cast<uint8_t*>(dst.data);
+  for (uint32_t y = 0; y < dst.height; ++y) {
+    uint8_t* row = base + static_cast<size_t>(y) * static_cast<size_t>(dst.stride_bytes);
+    for (uint32_t x = 0; x < dst.width; ++x) {
+      uint8_t* px = row + static_cast<size_t>(x) * 4u;
+      const double c0 = static_cast<double>(px[0]) * gain;
+      const double c1 = static_cast<double>(px[1]) * gain;
+      const double c2 = static_cast<double>(px[2]) * gain;
+      px[0] = static_cast<uint8_t>(std::clamp(c0, 0.0, 255.0));
+      px[1] = static_cast<uint8_t>(std::clamp(c1, 0.0, 255.0));
+      px[2] = static_cast<uint8_t>(std::clamp(c2, 0.0, 255.0));
+    }
+  }
 }
 
 void CpuPackedPatternRenderer::render_base_xy_xor(

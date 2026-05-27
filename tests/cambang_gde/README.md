@@ -44,7 +44,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
     `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
 - `scenes/70_result_retrieval_verification.tscn`
-  - Verifies Godot-facing tranche-1 result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Verifies Godot-facing result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Authors a three-member still capture profile via `still_image_bundle` (ordered still-event image members), not `image_sequence`.
+  - Triggers capture through the public device trigger flow and verifies `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+  - Scene 70 is a user-flow/result-wrapper verifier; exact Device/AcquisitionSession snapshot-shape proof belongs to native/snapshot verification harnesses.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
   - Expected pass string: `OK: result_retrieval_verification passed`
 - `scenes/71_capture_session_matrix_v3.tscn`
@@ -64,6 +67,11 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - `no_display_eager` is self-contained via `CAMBANG_EXERCISE`: it implies effective GPU update policy `always` when no explicit low-level policy is set.
   - Precedence: explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` > exercise-derived (`no_display_eager` => `always`) > default (`display_demanded`).
   - Conflict: `CAMBANG_EXERCISE=no_display_eager` with explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` not equal to `always` fails clearly.
+- `scenes/73_rig_capture_result_set_verification.tscn`
+  - Focused Godot proof for `CamBANGRig` object API: `CamBANGServer.get_rig(rig_id)`, `CamBANGRig.get_id()`, `CamBANGRig.trigger_capture()`, and `CamBANGServer.get_capture_result_set(capture_id)` consistency.
+  - Uses dedicated external scenario fixture `scenarios/rig_capture_result_basic.json`.
+  - Fixture topology: six devices A-F; Rig A = A+E; Rig B = B; Rig C = C+F; Device D standalone.
+  - Capture remains API-driven via `CamBANGRig.trigger_capture()` (not scenario timeline-triggered), and verification asserts `CaptureResultSet` contains exactly Rig A members.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -83,7 +91,7 @@ Migration guidance:
 - `40_frameview_mf_stress_test` → use `72_stream_load_isolation` for load/perf isolation and `60_restart_boundary_abuse` for restart semantics.
 - `50_frameview_cycling_patterns_chose_provider` → use `66_status_panel_scenario_runtime` for server-driven scenario/runtime observation.
 - `51_heavy_probe_registry` → use `63_snapshot_observer_minimal` for lightweight snapshot diagnostics plus `65_public_boundary_verify` for boundary contract checks.
-- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60-66` for boundary/status/snapshot confidence, `70` for result retrieval, `71` for capture/session matrix, and `72` for stream-load isolation.
+- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60-66` for boundary/status/snapshot confidence, `70` for result retrieval, `71` for capture/session matrix, `72` for stream-load isolation, and `73` for rig-capture result-set proof.
 
 
 ## Running
@@ -98,6 +106,7 @@ godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tsc
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/66_status_panel_scenario_runtime.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
+godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verification.tscn --quit-after 20
 ```
 
 Notes:
@@ -111,6 +120,9 @@ Notes:
   large value such as `--quit-after 1000`.
 - `60`, `61`, `62`, `63`, `65`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
+- Scene 70 exercises public device still-profile authoring using a three-member `still_image_bundle`.
+- Scene 70 verifies the resulting `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+- Exact Device/AcquisitionSession snapshot-shape proof remains in native/snapshot verification harnesses, not Scene 70 pre-trigger gating.
 - `66` is a manual runtime integration proof scene for status-panel observation of a server-driven
   builtin scenario; it prints concise publish diagnostics and is commonly run with `--quit-after`
   for bounded CLI execution.

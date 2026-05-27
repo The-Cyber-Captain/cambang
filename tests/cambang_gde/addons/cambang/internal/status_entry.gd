@@ -90,7 +90,7 @@ func set_model(model: CamBANGStatusPanel.StatusEntryModel) -> void:
 
 	_apply_row_palette(model)
 	_render_badges(_badges_for_render(model))
-	_render_counters(model.counters, detail_visible)
+	_render_counters(model.counters, model.detail_info_lines, detail_visible)
 	_render_info_lines(
 		model.depth,
 		model.summary_info_lines,
@@ -349,7 +349,11 @@ func _ensure_badge_pair(index: int) -> HBoxContainer:
 	return pair
 
 
-func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_visible: bool) -> void:
+func _render_counters(
+		counters: Array[CamBANGStatusPanel.CounterModel],
+		detail_info_lines: Array[String],
+		detail_visible: bool
+	) -> void:
 	var visible_counters: Array[CamBANGStatusPanel.CounterModel] = []
 	var has_detail_counters := false
 	var hidden_detail_count := 0
@@ -389,18 +393,22 @@ func _render_counters(counters: Array[CamBANGStatusPanel.CounterModel], detail_v
 	for i in range(visible_counters.size(), _counter_widgets.size()):
 		_counter_widgets[i].visible = false
 
+	var has_detail_lines := not detail_info_lines.is_empty()
 	var detail_hint: Button = _ensure_counter_detail_hint()
 	var detail_hint_visible := false
 	if detail_hint != null:
-		if has_detail_counters:
+		if has_detail_counters or has_detail_lines:
 			detail_hint.visible = true
 			detail_hint_visible = true
 			if detail_visible:
 				detail_hint.text = "HIDE DETAIL"
-				detail_hint.tooltip_text = "Hide row detail counters."
+				detail_hint.tooltip_text = "Hide row detail lines and counters."
 			else:
-				detail_hint.text = "SHOW +%d" % hidden_detail_count
-				detail_hint.tooltip_text = "Show hidden row detail counters."
+				detail_hint.text = "SHOW DETAIL"
+				if has_detail_counters and hidden_detail_count > 0:
+					detail_hint.tooltip_text = "Show hidden row detail lines and %d detail counters." % hidden_detail_count
+				else:
+					detail_hint.tooltip_text = "Show hidden row detail lines."
 		else:
 			detail_hint.visible = false
 			detail_hint.tooltip_text = ""

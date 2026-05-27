@@ -27,6 +27,7 @@ public:
   CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
+  bool supports_multi_image_still_sequence() const noexcept override { return false; }
 
 // Test instrumentation (thread-safe).
 uint64_t frames_emitted() const noexcept { return frames_emitted_.load(std::memory_order_relaxed); }
@@ -114,9 +115,9 @@ private:
       StubProvider* owner = nullptr;
       uint64_t stream_id = 0;
       std::vector<std::uint8_t> bytes;
-      bool in_use = false;
+      std::atomic<bool> in_use{false};
     };
-    std::vector<BufferSlot> pool;
+    std::vector<std::unique_ptr<BufferSlot>> pool;
     size_t pool_cursor = 0;
   };
 

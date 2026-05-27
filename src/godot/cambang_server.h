@@ -34,6 +34,7 @@ class CamBANGStreamResult;
 class CamBANGCaptureResult;
 class CamBANGCaptureResultSet;
 class CamBANGDevice;
+class CamBANGRig;
 
 // CamBANGServer is the release-facing lifecycle owner.
 //
@@ -91,6 +92,7 @@ public:
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
+  godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
   godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
   godot::Ref<CamBANGCaptureResultSet> get_capture_result_set(uint64_t capture_id) const;
@@ -98,11 +100,16 @@ public:
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
   uint64_t trigger_device_capture(uint64_t device_instance_id);
+  godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
+                                                const CaptureProfile& profile,
+                                                const CaptureStillImageBundle& still_image_bundle);
+  godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
 
 protected:
   static void _bind_methods();
 
 private:
+  friend class CamBANGRig;
   // Called on the Godot main thread via the SceneTree "process_frame" signal.
   void _on_godot_process_frame();
 
@@ -157,6 +164,9 @@ private:
       RuntimeMode mode,
       SyntheticRole synthetic_role,
       TimingDriver timing_driver);
+
+  // Server-internal helper for rig-trigger orchestration (not Godot-bound).
+  uint64_t trigger_rig_capture_internal_(uint64_t rig_id);
 
   // SceneTree tick hook state.
   bool tick_connected_ = false;

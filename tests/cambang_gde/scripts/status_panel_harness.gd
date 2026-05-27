@@ -3,6 +3,8 @@ extends SceneTree
 const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
 const DEFAULT_SCREENSHOT_VIEWPORT_SIZE := Vector2i(1400, 1600)
 const SnapshotValidator = preload("res://support/snapshot_schema_validator.gd")
+const VALID_RENDERER_PROFILES := ["any", "gpu", "compatibility", "ambiguous"]
+const VALID_NPS_SCOPES := ["none", "structural", "aggregate", "gpu_leaf", "compatibility_leaf", "anomaly"]
 
 func _initialize() -> void:
 	var parse_result := _parse_cli_args(OS.get_cmdline_user_args())
@@ -42,11 +44,15 @@ func _initialize() -> void:
 	print("HARNESS schema_errors: %s" % [schema_errors])
 
 	var expected_validity := str(fixture.get("expected_validity", "valid"))
+	var renderer_profile := _normalize_renderer_profile(str(fixture.get("renderer_profile", "any")))
+	var nps_scope := _normalize_nps_scope(str(fixture.get("nps_scope", "none")))
 	var should_run_projector := bool(fixture.get("should_run_projector", true))
 	var expected_panel_outcome: Dictionary = fixture.get("expected_panel_outcome", {})
 	var adversarial_projection: Dictionary = fixture.get("adversarial_projection", {})
 	var provider_mode := str(fixture.get("provider_mode", "fixture"))
 	var initial_expanded_row_ids: Array = fixture.get("initial_expanded_row_ids", [])
+	var panel_exports: Dictionary = fixture.get("panel_exports", {})
+	var authoritative_observed_payloads: Array = fixture.get("authoritative_observed_payloads", [])
 
 	var window := Window.new()
 	window.title = "status_panel_harness"
@@ -80,6 +86,7 @@ func _initialize() -> void:
 
 	await process_frame
 	panel.call("_disconnect_server")
+	_apply_panel_exports(panel, panel_exports)
 
 	var contract_gaps: Array = []
 	var projection_gaps: Array = []
@@ -94,6 +101,10 @@ func _initialize() -> void:
 	print("HARNESS contract_gaps: %s" % [contract_gaps])
 	print("HARNESS projection_gaps: %s" % [projection_gaps])
 	print("HARNESS schema_valid=%s projection_compatible=%s" % [is_schema_valid, is_projection_compatible])
+	print("HARNESS fixture_taxonomy renderer_profile=%s nps_scope=%s" % [renderer_profile, nps_scope])
+	var renderer_profile_warning := _renderer_profile_warning(renderer_profile)
+	if renderer_profile_warning != "":
+		print("HARNESS taxonomy_note: %s" % renderer_profile_warning)
 
 	if expected_validity == "valid" and not is_schema_valid:
 		_printerr("valid fixture failed schema validation: %s" % [schema_errors])
@@ -112,7 +123,7 @@ func _initialize() -> void:
 
 	if fixture_kind == "continuity_no_snapshot":
 		var continuity_prelude_payload: Variant = fixture.get("continuity_prelude_payload", null)
-		var continuity_result := _build_continuity_no_snapshot_model(panel, continuity_prelude_payload, provider_mode)
+		var continuity_result: Dictionary = _build_continuity_no_snapshot_model(panel, continuity_prelude_payload, provider_mode)
 		if not bool(continuity_result.get("ok", false)):
 			_printerr(str(continuity_result.get("error", "continuity_no_snapshot setup failed")))
 			quit(1)
@@ -121,11 +132,16 @@ func _initialize() -> void:
 		snapshot_reading = continuity_result.get("snapshot_reading", {})
 	else:
 		if authoritative_prelude_payload != null:
-			var prelude_error := _prime_authoritative_prelude(panel, authoritative_prelude_payload, provider_mode)
+			var prelude_error: String = _prime_authoritative_prelude(panel, authoritative_prelude_payload, provider_mode)
 			if prelude_error != "":
 				_printerr(prelude_error)
 				quit(1)
 				return
+		var observed_error: String = await _apply_authoritative_observed_payloads(panel, authoritative_observed_payloads, provider_mode)
+		if observed_error != "":
+			_printerr(observed_error)
+			quit(1)
+			return
 		snapshot_reading = panel.call("_read_snapshot", payload)
 		if not should_run_projector:
 			active_panel = panel.call("_build_runtime_compat_fallback_panel", contract_gaps, projection_gaps)
@@ -176,7 +192,8 @@ func _initialize() -> void:
 		projection_gaps,
 		row_ids,
 		visible_row_ids,
-		rendered_model
+		rendered_model,
+		panel
 	)
 	if not failures.is_empty():
 		for failure in failures:
@@ -192,6 +209,26 @@ func _initialize() -> void:
 		print("OK: expected-invalid fixture was rejected/handled as expected (%s): %s" % [observed_class, fixture_path])
 
 	quit(0)
+
+
+func _normalize_renderer_profile(value: String) -> String:
+	if VALID_RENDERER_PROFILES.has(value):
+		return value
+	return "ambiguous"
+
+
+func _normalize_nps_scope(value: String) -> String:
+	if VALID_NPS_SCOPES.has(value):
+		return value
+	return "anomaly"
+
+
+func _renderer_profile_warning(renderer_profile: String) -> String:
+	if renderer_profile == "ambiguous":
+		return "fixture is renderer_profile=ambiguous; renderer-specific leaf assertions should be reconciled via split fixtures."
+	if renderer_profile == "gpu" or renderer_profile == "compatibility":
+		return "renderer-profile-specific fixture (%s). TODO: wire explicit renderer-mode gating once harness/runtime exposes a robust renderer profile signal." % renderer_profile
+	return ""
 
 
 func _parse_cli_args(args: PackedStringArray) -> Dictionary:
@@ -395,7 +432,53 @@ func _prime_authoritative_prelude(panel: Object, prelude_payload: Variant, provi
 	var prelude_active_panel = panel.call("_project_snapshot_to_panel_model", prelude_snapshot, provider_mode)
 	var prelude_snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", prelude_snapshot)
 	panel.call("_set_last_active_panel_state", prelude_active_panel, true, prelude_snapshot_meta)
-	panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	var prelude_rendered_model = panel.call("_compose_presented_panel_model", prelude_active_panel, true, prelude_snapshot_meta)
+	var prelude_snapshot_reading: Dictionary = panel.call("_read_snapshot", prelude_snapshot)
+	panel.call("_apply_snapshot_read", prelude_snapshot_reading)
+	panel.call("_render_panel_and_maybe_dump", prelude_rendered_model, _resolve_render_snapshot(prelude_snapshot))
+	return ""
+
+
+func _apply_panel_exports(panel: Object, exports: Dictionary) -> void:
+	if panel == null or exports.is_empty():
+		return
+	for key in exports.keys():
+		var export_name: String = str(key)
+		panel.set(export_name, exports[key])
+
+
+func _apply_authoritative_observed_payloads(panel: Object, observed_payloads: Array, provider_mode: String) -> String:
+	if panel == null or observed_payloads.is_empty():
+		return ""
+	for index in range(observed_payloads.size()):
+		var raw_rec: Variant = observed_payloads[index]
+		if typeof(raw_rec) != TYPE_DICTIONARY:
+			return "authoritative_observed_payloads[%d] must be Dictionary" % index
+		var rec: Dictionary = raw_rec as Dictionary
+		var payload_variant: Variant = rec.get("payload", null)
+		if typeof(payload_variant) != TYPE_DICTIONARY:
+			return "authoritative_observed_payloads[%d].payload must be Dictionary" % index
+		var payload: Dictionary = payload_variant as Dictionary
+		var snapshot: Dictionary = payload
+		var schema_errors: Array[String] = SnapshotValidator.validate_snapshot(snapshot)
+		if not schema_errors.is_empty():
+			return "authoritative_observed_payloads[%d] failed schema validation: %s" % [index, schema_errors]
+		var compat: Dictionary = panel.call("_check_snapshot_runtime_compat", snapshot)
+		var contract_gaps: Array = compat.get("contract_gaps", [])
+		var projection_gaps: Array = compat.get("projection_gaps", [])
+		if not contract_gaps.is_empty() or not projection_gaps.is_empty():
+			return "authoritative_observed_payloads[%d] failed runtime compatibility: %s" % [index, compat]
+		var active_panel: Variant = panel.call("_project_snapshot_to_panel_model", snapshot, provider_mode)
+		var snapshot_meta: Dictionary = panel.call("_extract_authoritative_snapshot_meta", snapshot)
+		var rendered_model: Variant = panel.call("_compose_presented_panel_model", active_panel, true, snapshot_meta)
+		var snapshot_reading: Dictionary = panel.call("_read_snapshot", snapshot)
+		panel.call("_apply_snapshot_read", snapshot_reading)
+		panel.call("_render_panel_and_maybe_dump", rendered_model, _resolve_render_snapshot(snapshot))
+		await process_frame
+		await process_frame
+		var sleep_msec_after: int = int(rec.get("sleep_msec_after", 0))
+		if sleep_msec_after > 0:
+			await create_timer(float(sleep_msec_after) / 1000.0).timeout
 	return ""
 
 
@@ -711,6 +794,54 @@ func _collect_visible_row_ids(panel: Variant) -> Array[String]:
 	return visible_ids
 
 
+func _extract_rendered_counter_labels_by_row(panel: Variant) -> Dictionary:
+	var labels_by_row: Dictionary = {}
+	if panel == null:
+		return labels_by_row
+
+	var rows_container: Variant = panel.get("_status_rows")
+	if rows_container == null:
+		return labels_by_row
+
+	for child in rows_container.get_children():
+		if child == null or not bool(child.visible):
+			continue
+		var row_id := ""
+		if child.has_method("get_entry_id"):
+			row_id = str(child.call("get_entry_id"))
+		else:
+			row_id = str(child.get("_entry_id"))
+		if row_id == "":
+			continue
+
+		var labels: Array[String] = []
+		var counter_widgets: Variant = child.get("_counter_widgets")
+		if typeof(counter_widgets) == TYPE_ARRAY:
+			for raw_widget in counter_widgets:
+				var widget: Variant = raw_widget
+				if widget == null or not bool(widget.visible):
+					continue
+				if widget.get_child_count() < 2:
+					continue
+				var name_label: Label = widget.get_child(0) as Label
+				if name_label == null:
+					continue
+				if bool(name_label.visible):
+					labels.append(str(name_label.text))
+		labels_by_row[row_id] = labels
+
+	return labels_by_row
+
+
+func _coerce_string_array(value: Variant) -> Array[String]:
+	var result: Array[String] = []
+	if typeof(value) != TYPE_ARRAY:
+		return result
+	for item in value:
+		result.append(str(item))
+	return result
+
+
 func _classify_observed_outcome(
 	contract_gaps: Array,
 	projection_gaps: Array,
@@ -735,9 +866,11 @@ func _evaluate_expectations(
 	projection_gaps: Array,
 	row_ids: Array[String],
 	visible_row_ids: Array[String],
-	rendered_model: Variant
+	rendered_model: Variant,
+	panel: Variant
 ) -> Array[String]:
 	var failures: Array[String] = []
+	var rendered_counter_labels_by_row: Dictionary = _extract_rendered_counter_labels_by_row(panel)
 
 	if expected_panel_outcome.has("snapshot_state_contains"):
 		var needle := str(expected_panel_outcome.get("snapshot_state_contains", ""))
@@ -871,6 +1004,24 @@ func _evaluate_expectations(
 			var needle := str(raw_substring)
 			if info_blob.find(needle) == -1:
 				failures.append("row %s missing info substring %s" % [str(row_id), needle])
+
+	var required_counter_labels_by_row: Dictionary = expected_panel_outcome.get("required_counter_labels_by_row", {})
+	for row_id in required_counter_labels_by_row.keys():
+		var labels: Array[String] = _coerce_string_array(rendered_counter_labels_by_row.get(str(row_id), []))
+		var required_labels: Array = required_counter_labels_by_row.get(row_id, []) as Array
+		for raw_label in required_labels:
+			var label := str(raw_label)
+			if not labels.has(label):
+				failures.append("row %s missing rendered counter label %s" % [str(row_id), label])
+
+	var forbidden_counter_labels_by_row: Dictionary = expected_panel_outcome.get("forbidden_counter_labels_by_row", {})
+	for row_id in forbidden_counter_labels_by_row.keys():
+		var labels: Array[String] = _coerce_string_array(rendered_counter_labels_by_row.get(str(row_id), []))
+		var forbidden_labels: Array = forbidden_counter_labels_by_row.get(row_id, []) as Array
+		for raw_label in forbidden_labels:
+			var label := str(raw_label)
+			if labels.has(label):
+				failures.append("row %s has forbidden rendered counter label %s" % [str(row_id), label])
 
 	return failures
 

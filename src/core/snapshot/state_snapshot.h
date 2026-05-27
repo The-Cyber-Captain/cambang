@@ -53,7 +53,17 @@ enum class CBVisibilityLastPath : uint8_t {
     REJECTED_INVALID = 4,
 };
 
-struct CamBANGRigState {
+struct CaptureStillImageMemberState {
+    uint32_t image_member_index = 0;
+    cambang::CaptureStillImageMemberRole role = cambang::CaptureStillImageMemberRole::DEFAULT_METERED;
+    int32_t intended_exposure_compensation_milli_ev = 0;
+};
+
+struct CaptureStillImageBundleState {
+    std::vector<CaptureStillImageMemberState> members;
+};
+
+struct RigState {
     uint64_t rig_id = 0;
     std::string name;
 
@@ -79,7 +89,112 @@ struct CamBANGRigState {
     int32_t error_code = 0;
 };
 
-struct CamBANGDeviceState {
+struct StillCaptureProfileState {
+    uint64_t version = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format = 0;
+    CaptureStillImageBundleState still_image_bundle{};
+};
+
+struct CaptureProfileState {
+    StillCaptureProfileState still{};
+};
+
+enum class CBCameraValueSupport : uint8_t { SUPPORTED=0, UNSUPPORTED=1, UNIMPLEMENTED=2, UNKNOWN=3 };
+enum class CBCameraApplyStatus : uint8_t { APPLIED=0, PENDING=1, REJECTED=2, CONSTRAINED=3, UNKNOWN=4 };
+
+struct CameraValueStateString {
+    CBCameraValueSupport support = CBCameraValueSupport::UNIMPLEMENTED;
+    bool has_target = false;
+    std::string target;
+    bool has_applied = false;
+    std::string applied;
+    CBCameraApplyStatus apply_status = CBCameraApplyStatus::UNKNOWN;
+    int32_t apply_error_code = 0;
+};
+
+struct CameraValueStateInt32 {
+    CBCameraValueSupport support = CBCameraValueSupport::UNIMPLEMENTED;
+    bool has_target = false;
+    int32_t target = 0;
+    bool has_applied = false;
+    int32_t applied = 0;
+    CBCameraApplyStatus apply_status = CBCameraApplyStatus::UNKNOWN;
+    int32_t apply_error_code = 0;
+};
+
+struct DeviceCameraExposureState {
+    CameraValueStateString ae_mode{};
+    CameraValueStateInt32 baseline_exposure_compensation_milli_ev{};
+};
+
+struct DeviceCameraFocusState {
+    CameraValueStateString af_mode{};
+    CameraValueStateInt32 focus_distance_diopters_milli{};
+};
+
+struct DeviceCameraWhiteBalanceState {
+    CameraValueStateString awb_mode{};
+    CameraValueStateInt32 color_temperature_kelvin{};
+};
+
+struct DeviceCameraStabilizationState {
+    CameraValueStateString mode{};
+    CameraValueStateInt32 strength_percent{};
+};
+
+struct DeviceCameraFlashTorchState {
+    CameraValueStateString flash_mode{};
+    CameraValueStateInt32 torch_level{};
+};
+
+struct DeviceCameraZoomCropState {
+    CameraValueStateInt32 zoom_ratio_milli{};
+    CameraValueStateString crop_preset{};
+};
+
+struct DeviceCameraProcessingState {
+    CameraValueStateString noise_reduction_mode{};
+    CameraValueStateInt32 edge_enhancement_level{};
+};
+
+struct DeviceCameraMeteringState {
+    CameraValueStateString metering_mode{};
+    CameraValueStateString metering_region_preset{};
+};
+
+struct DeviceCameraAntibandingState {
+    CameraValueStateString mode{};
+    CameraValueStateInt32 mains_frequency_hz{};
+};
+
+struct DeviceCameraOrientationMirroringState {
+    CameraValueStateInt32 rotation_degrees{};
+    CameraValueStateString mirror_mode{};
+};
+
+struct DeviceCameraPrivacyHardwareBlockState {
+    CameraValueStateString privacy_mode{};
+    CameraValueStateString hardware_block_reason{};
+};
+
+struct DeviceCameraState {
+    uint64_t version = 0;
+    DeviceCameraExposureState exposure{};
+    DeviceCameraFocusState focus{};
+    DeviceCameraWhiteBalanceState white_balance{};
+    DeviceCameraStabilizationState stabilization{};
+    DeviceCameraFlashTorchState flash_torch{};
+    DeviceCameraZoomCropState zoom_crop{};
+    DeviceCameraProcessingState processing{};
+    DeviceCameraMeteringState metering{};
+    DeviceCameraAntibandingState antibanding{};
+    DeviceCameraOrientationMirroringState orientation_mirroring{};
+    DeviceCameraPrivacyHardwareBlockState privacy_hardware_block{};
+};
+
+struct DeviceState {
     std::string hardware_id;
     uint64_t instance_id = 0;
 
@@ -90,10 +205,8 @@ struct CamBANGDeviceState {
     uint64_t rig_id = 0;
 
     uint64_t camera_spec_version = 0;
-    uint64_t capture_profile_version = 0;
-    uint32_t capture_width = 0;
-    uint32_t capture_height = 0;
-    uint32_t capture_format = 0;
+    CaptureProfileState capture_profile{};
+    DeviceCameraState camera_state{};
 
     uint32_t warm_hold_ms = 0;
     uint32_t warm_remaining_ms = 0;
@@ -111,10 +224,8 @@ struct AcquisitionSessionState {
 
     CBLifecyclePhase phase = CBLifecyclePhase::CREATED;
 
-    uint64_t capture_profile_version = 0;
-    uint32_t capture_width = 0;
-    uint32_t capture_height = 0;
-    uint32_t capture_format = 0;
+    CaptureProfileState capture_profile{};
+    DeviceCameraState camera_state{};
 
     uint64_t captures_triggered = 0;
     uint64_t captures_completed = 0;
@@ -126,7 +237,7 @@ struct AcquisitionSessionState {
     int32_t error_code = 0;
 };
 
-struct CamBANGStreamState {
+struct StreamState {
     uint64_t stream_id = 0;
     uint64_t device_instance_id = 0;
 
@@ -214,10 +325,10 @@ struct CamBANGStateSnapshot {
 
     uint64_t imaging_spec_version = 0;
 
-    std::vector<CamBANGRigState> rigs;
-    std::vector<CamBANGDeviceState> devices;
+    std::vector<RigState> rigs;
+    std::vector<DeviceState> devices;
     std::vector<AcquisitionSessionState> acquisition_sessions;
-    std::vector<CamBANGStreamState> streams;
+    std::vector<StreamState> streams;
 
     std::vector<NativeObjectRecord> native_objects;
     std::vector<uint64_t> detached_root_ids;

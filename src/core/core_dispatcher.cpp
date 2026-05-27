@@ -148,6 +148,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
       uint32_t capture_height = 0;
       uint32_t capture_format = 0;
       uint64_t capture_profile_version = 0;
+      CaptureStillImageBundle capture_still_image_bundle = make_default_metered_still_image_bundle();
       if (devices_ && p.owner_device_instance_id != 0) {
         if (const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.owner_device_instance_id);
             device != nullptr) {
@@ -155,6 +156,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
           capture_height = device->capture_height;
           capture_format = device->capture_format;
           capture_profile_version = device->capture_profile_version;
+          capture_still_image_bundle = device->capture_still_image_bundle;
         }
       }
       state_changed =
@@ -166,7 +168,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
               capture_width,
               capture_height,
               capture_format,
-              capture_profile_version) ||
+              capture_profile_version,
+              capture_still_image_bundle) ||
           state_changed;
     }
   }
@@ -201,6 +204,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       uint32_t capture_height = 0;
       uint32_t capture_format = 0;
       uint64_t capture_profile_version = 0;
+      CaptureStillImageBundle capture_still_image_bundle = make_default_metered_still_image_bundle();
       if (devices_ && p.device_instance_id != 0) {
         if (const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
             device != nullptr) {
@@ -208,6 +212,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           capture_height = device->capture_height;
           capture_format = device->capture_format;
           capture_profile_version = device->capture_profile_version;
+          capture_still_image_bundle = device->capture_still_image_bundle;
         }
       }
       const uint64_t started_ns = now_ns_ ? now_ns_() : 0;
@@ -217,7 +222,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
                                                                 capture_width,
                                                                 capture_height,
                                                                 capture_format,
-                                                                capture_profile_version);
+                                                                capture_profile_version,
+                                                                capture_still_image_bundle);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;
@@ -232,6 +238,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       state_changed = acquisition_sessions_->on_capture_completed(
           p.device_instance_id, p.capture_id, completed_ns);
     }
+    if (capture_assembly_registry_) {
+      capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
+    }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;
   }
@@ -244,6 +253,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       const uint64_t failed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_failed(
           p.device_instance_id, p.capture_id, p.error_code, failed_ns);
+    }
+    if (capture_assembly_registry_) {
+      capture_assembly_registry_->mark_capture_failed(p.capture_id, p.device_instance_id, p.error_code);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
     break;
@@ -273,12 +285,41 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     } else {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
     }
+    const bool is_additional_bracket =
+        p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
+    const uint32_t frame_member_index = p.frame.capture_image.image_member_index;
+    const int32_t frame_member_applied_ev = p.frame.capture_image.applied_exposure_compensation_milli_ev;
+    const bool frame_member_has_realized_ev = p.frame.capture_image.has_realized_exposure_compensation_milli_ev;
+    const int32_t frame_member_realized_ev = p.frame.capture_image.realized_exposure_compensation_milli_ev;
     if (result_store_) {
       const bool lifecycle_allows_retention =
           result_retention_allowed_ ? result_retention_allowed_() : true;
       if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
-        retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+        if (is_additional_bracket) {
+          // This tranche only accepts still-capture-only bracket frames.
+          // Reject malformed/unsupported bracket routes deterministically.
+          if (p.frame.capture_id == 0 || p.frame.stream_id != 0) {
+            retained_for_result = false;
+          } else {
+          CoreCaptureResultData::ImageMemberData image_member{};
+          image_member.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+          image_member.image_member_index = frame_member_index;
+          image_member.applied_exposure_compensation_milli_ev = frame_member_applied_ev;
+          image_member.has_realized_exposure_compensation_milli_ev = frame_member_has_realized_ev;
+          image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
+          image_member.capture_timestamp_ns = integrated_ts_ns;
+          if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
+            retained_for_result = result_store_->append_additional_capture_image(
+                p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
+          }
+          }
+        } else {
+          retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+        }
       }
+    }
+    if (capture_assembly_registry_ && retained_for_result && p.frame.capture_id != 0 && !is_additional_bracket) {
+      capture_assembly_registry_->mark_default_image_retained(p.frame.capture_id, p.frame.device_instance_id);
     }
 
     if (frame_sink_) {

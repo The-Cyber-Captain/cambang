@@ -3,6 +3,7 @@
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream_result.h"
+#include "godot/cambang_rig.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
@@ -84,6 +85,16 @@ static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexce
     case ProviderError::ERR_INVALID_ARGUMENT: return godot::ERR_INVALID_PARAMETER;
     case ProviderError::ERR_BAD_STATE: return godot::ERR_INVALID_PARAMETER;
     case ProviderError::ERR_NOT_SUPPORTED: return godot::ERR_UNAVAILABLE;
+    default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_set_still_capture_profile_status(TrySetStillCaptureProfileStatus s) noexcept {
+  switch (s) {
+    case TrySetStillCaptureProfileStatus::OK: return godot::OK;
+    case TrySetStillCaptureProfileStatus::NotSupported: return godot::ERR_UNAVAILABLE;
+    case TrySetStillCaptureProfileStatus::Busy: return godot::ERR_BUSY;
+    case TrySetStillCaptureProfileStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
     default: return godot::FAILED;
   }
 }
@@ -336,6 +347,16 @@ godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id)
   return out;
 }
 
+godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
+  if (rig_id == 0 || !is_running()) {
+    return godot::Ref<CamBANGRig>();
+  }
+  godot::Ref<CamBANGRig> out;
+  out.instantiate();
+  out->set_server_and_id(const_cast<CamBANGServer*>(this), rig_id);
+  return out;
+}
+
 godot::Ref<CamBANGStreamResult> CamBANGServer::get_latest_stream_result(uint64_t stream_id) const {
   SharedStreamResultData data = runtime_.get_latest_stream_result(stream_id);
   if (!data) {
@@ -403,9 +424,71 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
     capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
   req.capture_id = capture_id;
+  if (!is_valid_capture_still_image_bundle(
+          req.still_image_bundle,
+          provider_->supports_multi_image_still_sequence())) {
+    return 0;
+  }
 
   const ProviderResult pr = provider_->trigger_capture(req);
   if (!pr.ok()) {
+    return 0;
+  }
+  return capture_id;
+}
+
+godot::Error CamBANGServer::set_device_still_capture_profile(
+    uint64_t device_instance_id,
+    const CaptureProfile& profile,
+    const CaptureStillImageBundle& still_image_bundle) {
+  if (device_instance_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_BUSY;
+  }
+  return map_try_set_still_capture_profile_status(
+      runtime_.try_set_device_still_capture_profile(device_instance_id, profile, still_image_bundle));
+}
+
+godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
+  godot::Dictionary out;
+  if (device_instance_id == 0) {
+    return out;
+  }
+  CaptureRequest req{};
+  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
+    return out;
+  }
+  out["width"] = static_cast<int64_t>(req.width);
+  out["height"] = static_cast<int64_t>(req.height);
+  out["format_fourcc"] = static_cast<int64_t>(req.format_fourcc);
+  godot::Dictionary seq;
+  godot::Array members;
+  for (const auto& m : req.still_image_bundle.members) {
+    godot::Dictionary md;
+    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
+    md["role"] = static_cast<int64_t>(m.role);
+    md["role_name"] = (m.role == CaptureStillImageMemberRole::DEFAULT_METERED)
+        ? godot::String("DEFAULT_METERED")
+        : godot::String("ADDITIONAL_BRACKET");
+    md["intended_exposure_compensation_milli_ev"] = static_cast<int64_t>(m.intended_exposure_compensation_milli_ev);
+    members.push_back(md);
+  }
+  seq["members"] = members;
+  out["still_image_bundle"] = seq;
+  return out;
+}
+
+uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
+  if (rig_id == 0 || !is_running() || !provider_) {
+    return 0;
+  }
+
+  uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  if (capture_id == 0) {
+    capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  const auto orchestration = runtime_.orchestrate_rig_capture_with_capture_id_for_server(rig_id, capture_id);
+  if (!orchestration.ok) {
     return 0;
   }
   return capture_id;
@@ -657,6 +740,12 @@ godot::Error CamBANGServer::start_scenario() {
   const ProviderResult pr = broker->start_timeline_scenario_for_host();
   if (pr.ok()) {
     strict_scenario_unmet_logged_ = false;
+    std::vector<SyntheticStagedRigTopology> staged_rigs;
+    if (broker->get_synthetic_staged_rig_topology_for_host(staged_rigs)) {
+      for (const auto& r : staged_rigs) {
+        (void)runtime_.retain_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids);
+      }
+    }
   }
   return map_provider_result_to_godot_error(pr);
 }
@@ -805,6 +894,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result);
   godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set", "capture_id"), &CamBANGServer::get_capture_result_set);

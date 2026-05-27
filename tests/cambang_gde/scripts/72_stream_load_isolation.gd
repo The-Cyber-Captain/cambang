@@ -1,6 +1,6 @@
 extends Control
 
-const DEFAULT_SCENARIO_FILE := "stream_load_2x_720p30.json"
+const DEFAULT_SCENARIO_FILE := "stream_load_2x_1080p30_moving_bar.json"#"stream_load_2x_720p30.json"
 const DEFAULT_DURATION_SEC := 20.0
 const DEFAULT_POLL_RESULTS := true
 const DEFAULT_BIND_DISPLAY := true
@@ -473,8 +473,8 @@ func _repo_external_scenario_path(filename: String) -> String:
 	return repo_root.path_join("external_scenarios").path_join(filename)
 
 
-func _env_bool(name: String, default_value: bool) -> bool:
-	var raw := OS.get_environment(name).strip_edges().to_lower()
+func _env_bool(env_key: String, default_value: bool) -> bool:
+	var raw := OS.get_environment(env_key).strip_edges().to_lower()
 	if raw == "":
 		return default_value
 	if raw == "1" or raw == "true" or raw == "yes" or raw == "on":
@@ -484,8 +484,8 @@ func _env_bool(name: String, default_value: bool) -> bool:
 	return default_value
 
 
-func _env_float(name: String, default_value: float) -> float:
-	var raw := OS.get_environment(name).strip_edges()
+func _env_float(env_key: String, default_value: float) -> float:
+	var raw := OS.get_environment(env_key).strip_edges()
 	if raw == "":
 		return default_value
 	if not raw.is_valid_float():

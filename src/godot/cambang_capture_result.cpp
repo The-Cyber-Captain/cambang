@@ -4,18 +4,18 @@
 
 namespace cambang {
 
-uint32_t CamBANGCaptureResult::get_width() const { return data_ ? data_->payload.width : 0; }
-uint32_t CamBANGCaptureResult::get_height() const { return data_ ? data_->payload.height : 0; }
-uint32_t CamBANGCaptureResult::get_format() const { return data_ ? data_->payload.format_fourcc : 0; }
+uint32_t CamBANGCaptureResult::get_width() const { return data_ ? data_->image_width : 0; }
+uint32_t CamBANGCaptureResult::get_height() const { return data_ ? data_->image_height : 0; }
+uint32_t CamBANGCaptureResult::get_format() const { return data_ ? data_->image_format_fourcc : 0; }
 int CamBANGCaptureResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }
-uint64_t CamBANGCaptureResult::get_capture_timestamp() const { return data_ ? data_->capture_timestamp_ns : 0; }
+uint64_t CamBANGCaptureResult::get_capture_timestamp() const { return data_ ? data_->default_image.capture_timestamp_ns : 0; }
 uint64_t CamBANGCaptureResult::get_device_instance_id() const { return data_ ? data_->device_instance_id : 0; }
 uint64_t CamBANGCaptureResult::get_capture_id() const { return data_ ? data_->capture_id : 0; }
 
 bool CamBANGCaptureResult::has_image_properties() const { return data_ && data_->facts.has_image_properties; }
-bool CamBANGCaptureResult::has_capture_attributes() const { return data_ && data_->facts.has_capture_attributes; }
+bool CamBANGCaptureResult::has_capture_attributes() const { return data_ && data_->default_image.has_capture_attributes; }
 bool CamBANGCaptureResult::has_location_attributes() const { return data_ && data_->facts.has_location_attributes; }
 bool CamBANGCaptureResult::has_optical_calibration() const { return data_ && data_->facts.has_optical_calibration; }
 
@@ -23,7 +23,7 @@ godot::Dictionary CamBANGCaptureResult::get_image_properties() const {
   return has_image_properties() ? to_dict(data_->facts.image_properties) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_capture_attributes() const {
-  return has_capture_attributes() ? to_dict(data_->facts.capture_attributes) : godot::Dictionary();
+  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_location_attributes() const {
   return has_location_attributes() ? to_dict(data_->facts.location_attributes) : godot::Dictionary();
@@ -36,7 +36,7 @@ godot::Dictionary CamBANGCaptureResult::get_image_properties_provenance() const 
   return has_image_properties() ? to_dict(data_->facts.image_properties_provenance) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_capture_attributes_provenance() const {
-  return has_capture_attributes() ? to_dict(data_->facts.capture_attributes_provenance) : godot::Dictionary();
+  return has_capture_attributes() ? to_dict(data_->default_image.capture_attributes_provenance) : godot::Dictionary();
 }
 godot::Dictionary CamBANGCaptureResult::get_location_attributes_provenance() const {
   return has_location_attributes() ? to_dict(data_->facts.location_attributes_provenance) : godot::Dictionary();
@@ -50,7 +50,67 @@ int CamBANGCaptureResult::can_get_display_view() const {
 }
 
 int CamBANGCaptureResult::can_to_image() const {
-  return data_ ? CAPABILITY_CHEAP : CAPABILITY_UNSUPPORTED;
+  return can_to_image_member(0);
+}
+
+int CamBANGCaptureResult::get_image_count() const {
+  return data_ ? static_cast<int>(data_->image_member_count()) : 0;
+}
+
+bool CamBANGCaptureResult::has_additional_images() const {
+  return data_ && data_->has_additional_images();
+}
+
+godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index) const {
+  if (!data_ || image_member_index < 0) {
+    return godot::Dictionary();
+  }
+  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member) {
+    return godot::Dictionary();
+  }
+  godot::Dictionary out;
+  const int role = static_cast<int>(member->role);
+  out["image_member_index"] = static_cast<int64_t>(member->image_member_index);
+  out["role"] = role;
+  out["role_name"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED)
+      ? godot::String("DEFAULT_METERED")
+      : godot::String("ADDITIONAL_BRACKET");
+  out["capture_timestamp"] = static_cast<int64_t>(member->capture_timestamp_ns);
+  out["applied_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->applied_exposure_compensation_milli_ev);
+  out["has_realized_exposure_compensation_milli_ev"] = member->has_realized_exposure_compensation_milli_ev;
+  out["realized_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->realized_exposure_compensation_milli_ev);
+  out["is_default"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED);
+  out["is_additional_bracket"] = (member->role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
+  return out;
+}
+
+int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
+  if (!data_ || image_member_index < 0) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  if (member->payload.width == 0 || member->payload.height == 0 || member->payload.bytes.empty()) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  if (member->payload.format_fourcc != FOURCC_RGBA && member->payload.format_fourcc != FOURCC_BGRA) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  return CAPABILITY_CHEAP;
+}
+
+godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
+  if (!data_ || image_member_index < 0) {
+    return godot::Ref<godot::Image>();
+  }
+  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member) {
+    return godot::Ref<godot::Image>();
+  }
+  return payload_to_image(member->payload);
 }
 
 int CamBANGCaptureResult::can_get_encoded_bytes() const {
@@ -62,10 +122,7 @@ godot::Variant CamBANGCaptureResult::get_display_view() const {
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image() const {
-  if (!data_) {
-    return godot::Ref<godot::Image>();
-  }
-  return payload_to_image(data_->payload);
+  return to_image_member(0);
 }
 
 godot::PackedByteArray CamBANGCaptureResult::get_encoded_bytes() const {
@@ -98,6 +155,11 @@ void CamBANGCaptureResult::_bind_methods() {
 
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_display_view"), &CamBANGCaptureResult::can_get_display_view);
   godot::ClassDB::bind_method(godot::D_METHOD("can_to_image"), &CamBANGCaptureResult::can_to_image);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_image_count"), &CamBANGCaptureResult::get_image_count);
+  godot::ClassDB::bind_method(godot::D_METHOD("has_additional_images"), &CamBANGCaptureResult::has_additional_images);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_image_member", "image_member_index"), &CamBANGCaptureResult::get_image_member);
+  godot::ClassDB::bind_method(godot::D_METHOD("can_to_image_member", "image_member_index"), &CamBANGCaptureResult::can_to_image_member);
+  godot::ClassDB::bind_method(godot::D_METHOD("to_image_member", "image_member_index"), &CamBANGCaptureResult::to_image_member);
   godot::ClassDB::bind_method(godot::D_METHOD("can_get_encoded_bytes"), &CamBANGCaptureResult::can_get_encoded_bytes);
 
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_view"), &CamBANGCaptureResult::get_display_view);
@@ -108,6 +170,8 @@ void CamBANGCaptureResult::_bind_methods() {
   BIND_CONSTANT(CAPABILITY_CHEAP);
   BIND_CONSTANT(CAPABILITY_EXPENSIVE);
   BIND_CONSTANT(CAPABILITY_UNSUPPORTED);
+  BIND_CONSTANT(IMAGE_ROLE_DEFAULT_METERED);
+  BIND_CONSTANT(IMAGE_ROLE_ADDITIONAL_BRACKET);
 }
 
 } // namespace cambang

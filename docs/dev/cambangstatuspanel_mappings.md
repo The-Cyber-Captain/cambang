@@ -29,8 +29,12 @@ Current projection order is:
 - `device/<instance_id>`
 - `acquisition_session/<acquisition_session_id>`
 - `stream/<stream_id>`
-- optional `frameproducer/<id>` rows (native projection)
 - other `native/*` descendants
+
+Native/support truth is projected from ownership context (for example
+`owner_stream_id` / `owner_acquisition_session_id`) and Native Payload Support
+grouping where applicable. A `FrameProducer` row is not part of the current
+StatusPanel structural contract.
 
 For native ancestry reconstruction, `owner_acquisition_session_id` is used before
 stream-level fallback where session ownership is available.
@@ -38,14 +42,40 @@ stream-level fallback where session ownership is available.
 The projection logic preserves explicit **Acquisition Session boundary breach**
 classification when a descendant survives beyond its controlling AcquisitionSession seam.
 
+## Rig-member alias projection limitation (current implementation)
+
+- Rig-member alias rows currently resolve only from **current `DeviceState` rows** by matching:
+  - `rigs[].member_hardware_ids[]` -> `devices[].hardware_id`.
+- During teardown/transition snapshots, provider-owned device continuity rows such as
+  `device/<instance_id> [destroyed]` may still be visible even when matching current
+  `devices[]` records are no longer present.
+- Those continuity rows are currently reconstructed from non-live native-device continuity
+  paths and are **not** used as rig-member alias sources unless a reliable hardware-id
+  mapping is available in the projection path.
+- Therefore, when a rig member cannot be resolved to a current `DeviceState`, the panel
+  intentionally surfaces a rig-row anomaly line:
+  - `Contract gap: rig member hardware_id=<id> has no matching current DeviceState.`
+- This is intentional anomaly visibility (contract/projection truth), not nominal
+  summary/info leakage.
+- Future work may extend rig-member aliasing to retained visible provider-owned Device
+  rows where hardware identity is truthfully available. Child-subtree aliasing under rig
+  member aliases (AcquisitionSession/Stream/Native Payload Support) remains deferred.
+- Resolved rig-member aliases are visual aliases of resolved Device rows and therefore
+  inherit Device-row health behavior; there is no independent rig-member alias health evaluator.
+
 ## Capture profile counter surfacing policy (current implementation)
 
 - Device rows keep `capture_prof`, `capture_w`, `capture_h`, and `capture_fmt` as
   inspectable retained device-bound capture profile truth, but these counters are
   detail-level in panel visibility.
+- Device rows may include detail-level `still_image_bundle` traceability as current
+  intended/applied device profile truth.
 - AcquisitionSession rows surface `capture_prof`, `capture_w`, `capture_h`, and
   `capture_fmt` at summary level as the preferred session-context capture profile
   surface.
+- AcquisitionSession rows are the preferred summary surface for applied acquisition/
+  capture-context `still_image_bundle` truth (`bundle` count as a counter in
+  summary, full member tokens as `bundle=[...]` in detail).
 - Rig rows retain summary capture posture counters (`capture_w`, `capture_h`) and
   are not coupled to Device-vs-AcquisitionSession demotion policy.
 
@@ -315,11 +345,14 @@ An AcquisitionSession row is considered:
 ### AcquisitionSession = `BAD` if any of:
 - contract/projection failure
 - lifecycle contradiction
+- failed-growth temporal threshold breach (`acquisition_session_failed_growth_rate_bad_threshold_per_sec`)
 
 ### AcquisitionSession = `UNKNOWN` if:
 - phase cannot be parsed from row badges
 
-### AcquisitionSession = `ATTN` if:
+### AcquisitionSession = `ATTN` if any of:
+- `error_code != 0`
+- `failed > 0`
 - preserved and not destroyed
 
 ### Otherwise:
@@ -331,6 +364,40 @@ Priority order:
 - `UNKNOWN`
 - `ATTN`
 - `OK`
+
+---
+
+## Rig health rules
+
+Rig health facts include:
+
+- contract/projection failure
+- lifecycle contradiction
+- parsed phase
+- parsed mode
+- `error_code`
+- `captures_failed`
+- preserved state
+- destroyed state
+- `captures_failed` growth rate over the observation window
+
+### Rig = `BAD` if any of:
+- contract/projection failure
+- lifecycle contradiction
+- mode is `ERROR`
+- `error_code != 0`
+- failed-growth temporal threshold breach (`rig_failed_growth_rate_bad_threshold_per_sec`)
+
+### Rig = `UNKNOWN` if:
+- phase cannot be parsed from row badges
+- or mode cannot be parsed from row badges
+
+### Rig = `ATTN` if any of:
+- `captures_failed > 0`
+- preserved and not destroyed
+
+### Otherwise:
+- Rig = `OK`
 
 ---
 
@@ -460,7 +527,7 @@ Priority order:
 
 ## Contract / projection failure detection
 
-For server, provider, device, AcquisitionSession, stream, and native rows, contract/projection failure is treated as a high-priority negative signal.
+For server, provider, device, AcquisitionSession, rig, stream, and native rows with explicit health evaluators, contract/projection failure is treated as a high-priority negative signal.
 
 Depending on row type, this is detected from some combination of:
 
@@ -479,6 +546,7 @@ Where present, these failures force `BAD` for:
 - stream
 - native rows
 - acquisition_session rows
+- rig rows
 
 ---
 
@@ -551,10 +619,20 @@ Current temporal checks are:
 - server topology growth rate
 - device error growth rate
 - stream growth rates for `drop`, `rej_fmt`, `rej_inv`
+- acquisition_session failed growth rate
+- rig captures_failed growth rate
 
 Elapsed time prefers snapshot `timestamp_ns`; if unavailable, it falls back to observed wall-clock milliseconds.
 
 A threshold value of `0` disables that specific temporal growth rule.
+
+Temporal threshold breaches now support a lightweight latch/hold window:
+
+- latch state is tracked per `row_id + rule_key`
+- breach timestamp and severity are recorded when a temporal threshold is exceeded
+- if the live predicate clears immediately, severity can remain active during the latch duration
+- latch duration is configurable by exported panel setting `temporal_health_latch_duration_msec`
+- `temporal_health_latch_duration_msec == 0` disables latch holding
 
 ---
 
@@ -562,6 +640,10 @@ A threshold value of `0` disables that specific temporal growth rule.
 - `server/main` now surfaces `imaging_spec_version` as a compact header counter.
 - top-level `scoped_resource_telemetry[]` projects onto scope-specific `.../native_payload_support` grouping rows (no dedicated resource_telemetry child row).
 - when present, scoped telemetry lifecycle phase (`LIVE`/`DESTROYED`) is surfaced as the NPS row `phase=...` badge using normal lifecycle badge grammar.
-- Stream rows surface `visibility_last_path` via `visibility:` info line alongside visibility counters.
+- Stream rows surface visibility counts as counters (`shown`, `rej_fmt`, `rej_inv`);
+  `visibility_last_path` is surfaced as detail-only `visibility_path=<value>`.
 - Native support types (`gpu_backing`, `frame_buffer_lease`) are grouped under projection row `<stream|acquisition_session>/<id>/native_payload_support` when owners are present.
-- Native info lines now include non-zero `owner_provider_native_id` and `owner_rig_id` for ownership traceability.
+- Native info lines now include `native_type=<...>` plus non-zero `owner_provider_native_id`
+  and `owner_rig_id` for ownership traceability.
+
+- StatusPanel reads still profile truth from `capture_profile.still` on device/acquisition rows.

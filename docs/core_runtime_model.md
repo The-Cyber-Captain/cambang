@@ -109,10 +109,16 @@ should be documented as a constant.
 Commands represent requests from Godot-facing objects, e.g.: -
 engage/disengage device - set warm policy - create/destroy stream -
 start/stop stream - set capture profile(s) - trigger device capture -
-arm/disarm rig - trigger rig sync capture - apply spec patches
+arm/disarm rig - trigger rig capture - apply spec patches
 (`ApplyMode` handled by core)
 
 Commands are immutable message objects; core owns command execution.
+
+Current public Godot-facing trigger surface is object-oriented:
+- device capture via `CamBANGDevice.trigger_capture()`
+- rig capture via `CamBANGRig.trigger_capture()` (rig object obtained with
+  `CamBANGServer.get_rig(rig_id)`)
+- no public singleton `CamBANGServer.trigger_rig_capture(...)` entry.
 
 ### 4.2 Provider event queue (Provider → Core)
 
@@ -124,6 +130,10 @@ notifications
 
 Provider events must be enqueued from the provider's serialized callback
 context.
+
+Scenario execution note (current): scenarios stage provider/world/topology/config
+state. Triggered capture remains API/GDScript-driven and is not modeled as a
+scenario timeline capture action.
 
 ------------------------------------------------------------------------
 
@@ -371,7 +381,7 @@ complete.
 
 Frame production is halted:
 
-- repeating frame producers stop
+- repeating stream-production work is stopped
 - platform capture loops are disabled
 - synthetic schedulers or timers are cancelled
 
@@ -381,14 +391,18 @@ This phase may generate lifecycle stop events or provider error events.
 
 Providers release owned resources in dependency order:
 
-1. FrameProducer
+1. Stream-scoped provider-owned/native resources and stream-owned resources
 2. Stream
-3. AcquisitionSession (when realized)
+3. AcquisitionSession (when realized), including acquisition-session-scoped provider/native resources
 4. Device
 5. Provider
 
 At each boundary the provider emits the appropriate lifecycle and
 native-object events reflecting the actual state transition.
+
+Native-object lifecycle truth is emitted against current structural owner
+contexts (stream, acquisition_session, device, provider) rather than through a
+separate `FrameProducer` structural participant.
 
 Native-object destruction events must be emitted **only when the
 resource has actually been released**.

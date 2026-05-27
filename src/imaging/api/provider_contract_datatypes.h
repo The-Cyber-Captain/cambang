@@ -147,6 +147,58 @@ struct CaptureTemplate {
   PictureConfig picture{};
 };
 
+enum class CaptureStillImageMemberRole : uint8_t {
+  DEFAULT_METERED = 0,
+  ADDITIONAL_BRACKET = 1,
+};
+
+struct CaptureStillImageMember {
+  uint32_t image_member_index = 0;
+  CaptureStillImageMemberRole role = CaptureStillImageMemberRole::DEFAULT_METERED;
+  int32_t intended_exposure_compensation_milli_ev = 0;
+};
+
+struct CaptureStillImageBundle {
+  std::vector<CaptureStillImageMember> members{};
+};
+
+inline CaptureStillImageBundle make_default_metered_still_image_bundle() {
+  CaptureStillImageBundle seq{};
+  seq.members.push_back(CaptureStillImageMember{0u, CaptureStillImageMemberRole::DEFAULT_METERED});
+  return seq;
+}
+
+inline bool is_valid_capture_still_image_bundle(
+    const CaptureStillImageBundle& seq,
+    bool supports_multi_image_still_sequence) noexcept {
+  if (seq.members.empty()) {
+    return false;
+  }
+  if (seq.members[0].image_member_index != 0u ||
+      seq.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED ||
+      seq.members[0].intended_exposure_compensation_milli_ev != 0) {
+    return false;
+  }
+  for (size_t i = 0; i < seq.members.size(); ++i) {
+    const auto& m = seq.members[i];
+    if (m.image_member_index != static_cast<uint32_t>(i)) {
+      return false;
+    }
+    if (i > 0) {
+      if (m.role == CaptureStillImageMemberRole::DEFAULT_METERED) {
+        return false;
+      }
+      if (m.role != CaptureStillImageMemberRole::ADDITIONAL_BRACKET) {
+        return false;
+      }
+    }
+  }
+  if (seq.members.size() > 1 && !supports_multi_image_still_sequence) {
+    return false;
+  }
+  return true;
+}
+
 // Convert PictureConfig + geometry to a renderer PatternSpec.
 // If out_preset_valid is provided, it is set to whether cfg.preset existed in registry.
 // Invalid presets deterministically fall back to XyXor.
@@ -218,6 +270,7 @@ struct CaptureRequest {
   uint32_t height = 0;
   uint32_t format_fourcc = 0;        // e.g., 'JPEG', 'RAW '
   PictureConfig picture{};
+  CaptureStillImageBundle still_image_bundle{};
 
   uint64_t profile_version = 0;      // core bookkeeping
 };
@@ -270,6 +323,24 @@ struct CaptureTimestamp {
   CaptureTimestampDomain domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
 };
 
+// Internal still-capture image routing marker (provider -> core).
+//
+// Default-initialized and legacy-populated frames remain DEFAULT_METERED.
+// Providers that begin emitting bracket stills can set ADDITIONAL_BRACKET
+// to route those frames into capture additional_images.
+enum class CaptureImageRouting : uint8_t {
+  DEFAULT_METERED = 0,
+  ADDITIONAL_BRACKET = 1,
+};
+
+struct CaptureImageFrameMetadata {
+  CaptureImageRouting routing = CaptureImageRouting::DEFAULT_METERED;
+  uint32_t image_member_index = 0;
+  int32_t applied_exposure_compensation_milli_ev = 0;
+  bool has_realized_exposure_compensation_milli_ev = false;
+  int32_t realized_exposure_compensation_milli_ev = 0;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -279,6 +350,7 @@ struct FrameView {
   uint64_t stream_id = 0;    // 0 if this frame belongs only to a still capture
   uint64_t acquisition_session_id = 0; // 0 if unavailable/unknown
   uint64_t capture_id = 0;   // 0 if this is a repeating stream frame
+  CaptureImageFrameMetadata capture_image{};
 
   // Image metadata
   uint32_t width = 0;

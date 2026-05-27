@@ -4,6 +4,7 @@
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 
 namespace cambang {
 
@@ -20,9 +21,11 @@ public:
     device_instance_id_ = device_instance_id;
   }
 
-  uint64_t get_device_instance_id() const { return device_instance_id_; }
+  uint64_t get_instance_id() const { return device_instance_id_; }
 
   uint64_t trigger_capture();
+  godot::Error set_still_capture_profile(const godot::Dictionary& profile);
+  godot::Dictionary get_still_capture_profile() const;
 
 protected:
   static void _bind_methods();

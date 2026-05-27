@@ -274,10 +274,10 @@ CamBANGStateSnapshot {
 
   imaging_spec_version: uint64     // effective ImagingSpec version
 
-  rigs: Array<CamBANGRigState>
-  devices: Array<CamBANGDeviceState>
+  rigs: Array<RigState>
+  devices: Array<DeviceState>
   acquisition_sessions: Array<AcquisitionSessionState>
-  streams: Array<CamBANGStreamState>
+  streams: Array<StreamState>
 
   native_objects: Array<NativeObjectRecord>
 
@@ -390,13 +390,13 @@ deterministic baseline snapshot after `CamBANGServer.start()` completes.
 - Represents change lineage only.
 - Must not be used to infer configuration contents.
 
-### 6.1 `CamBANGRigState`
+### 6.1 `RigState`
 
 `capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
 profile for this rig.
 
 ``` text
-CamBANGRigState {
+RigState {
   rig_id: uint64
   name: String
 
@@ -424,13 +424,13 @@ CamBANGRigState {
 }
 ```
 
-### 6.2 `CamBANGDeviceState`
+### 6.2 `DeviceState`
 
-`capture_width`, `capture_height`, and `capture_format` form part of the applied still capture
+`capture_profile.still.width`, `capture_profile.still.height`, and `capture_profile.still.format` form part of the applied still capture
 profile for this device.
 
 ``` text
-CamBANGDeviceState {
+DeviceState {
   hardware_id: String
   instance_id: uint64
 
@@ -442,10 +442,85 @@ CamBANGDeviceState {
   rig_id: uint64                         // 0 if not a rig member
 
   camera_spec_version: uint64            // effective CameraSpec version
-  capture_profile_version: uint64        // monotonic change lineage for the applied still capture profile
-  capture_width: uint32
-  capture_height: uint32
-  capture_format: uint32                 // FourCC-style CamBANG pixel format
+  camera_state: {
+    version: uint64
+    exposure: {
+      ae_mode: {
+        support: SUPPORTED | UNSUPPORTED | UNIMPLEMENTED | UNKNOWN
+        has_target: bool
+        target: String
+        has_applied: bool
+        applied: String
+        apply_status: APPLIED | PENDING | REJECTED | CONSTRAINED | UNKNOWN
+        apply_error_code: int32
+      }
+      baseline_exposure_compensation_milli_ev: {
+        support: SUPPORTED | UNSUPPORTED | UNIMPLEMENTED | UNKNOWN
+        has_target: bool
+        target: int32
+        has_applied: bool
+        applied: int32
+        apply_status: APPLIED | PENDING | REJECTED | CONSTRAINED | UNKNOWN
+        apply_error_code: int32
+      }
+    }
+    focus: {
+      af_mode: ValueState<String>
+      focus_distance_diopters_milli: ValueState<int32>
+    }
+    white_balance: {
+      awb_mode: ValueState<String>
+      color_temperature_kelvin: ValueState<int32>
+    }
+    stabilization: {
+      mode: ValueState<String>
+      strength_percent: ValueState<int32>
+    }
+    flash_torch: {
+      flash_mode: ValueState<String>
+      torch_level: ValueState<int32>
+    }
+    zoom_crop: {
+      zoom_ratio_milli: ValueState<int32>
+      crop_preset: ValueState<String>
+    }
+    processing: {
+      noise_reduction_mode: ValueState<String>
+      edge_enhancement_level: ValueState<int32>
+    }
+    metering: {
+      metering_mode: ValueState<String>
+      metering_region_preset: ValueState<String>
+    }
+    antibanding: {
+      mode: ValueState<String>
+      mains_frequency_hz: ValueState<int32>
+    }
+    orientation_mirroring: {
+      rotation_degrees: ValueState<int32>
+      mirror_mode: ValueState<String>
+    }
+    privacy_hardware_block: {
+      privacy_mode: ValueState<String>
+      hardware_block_reason: ValueState<String>
+    }
+  }                                   // target/applied device camera posture; no realized per-image truth
+  capture_profile: {
+    still: {
+      version: uint64                    // monotonic change lineage for the applied still capture profile
+      width: uint32
+      height: uint32
+      format: uint32                     // FourCC-style CamBANG pixel format
+      still_image_bundle: {
+    members: Array<{
+      image_member_index: uint32
+      role: uint32
+      role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
+      intended_exposure_compensation_milli_ev: int32
+    }>
+      }                                  // applied still-image bundle profile truth
+    }
+  }
 
   warm_hold_ms: uint32                   // 0 = full teardown immediately
   warm_remaining_ms: uint32              // 0 if not warming
@@ -490,10 +565,36 @@ AcquisitionSessionState {
 
   phase: phase
 
-  capture_profile_version: uint64
-  capture_width: uint32
-  capture_height: uint32
-  capture_format: uint32
+  capture_profile: {
+    still: {
+      version: uint64
+      width: uint32
+      height: uint32
+      format: uint32
+      still_image_bundle: {
+    members: Array<{
+      image_member_index: uint32
+      role: uint32
+      role_name: String                  // e.g. DEFAULT_METERED / ADDITIONAL_BRACKET
+      intended_exposure_compensation_milli_ev: int32
+    }>
+      }                                  // still-image bundle profile truth latched for this acquisition-session context
+    }
+  }
+  camera_state: {                      // latched target/applied camera posture for acquisition context; no realized per-image truth
+    version: uint64
+    exposure: {...}
+    focus: {...}
+    white_balance: {...}
+    stabilization: {...}
+    flash_torch: {...}
+    zoom_crop: {...}
+    processing: {...}
+    metering: {...}
+    antibanding: {...}
+    orientation_mirroring: {...}
+    privacy_hardware_block: {...}
+  }
 
   captures_triggered: uint64
   captures_completed: uint64
@@ -506,13 +607,13 @@ AcquisitionSessionState {
 }
 ```
 
-### 6.4 `CamBANGStreamState`
+### 6.4 `StreamState`
 
 A repeating stream. Each device supports at most **one active repeating
 stream** at a time (design choice).
 
 ``` text
-CamBANGStreamState {
+StreamState {
   stream_id: uint64
   device_instance_id: uint64
 

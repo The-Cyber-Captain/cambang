@@ -101,12 +101,56 @@ CoreRuntime::CoreRuntime()
         return state.active;
       }) {
   dispatcher_.set_result_store(&result_store_);
+  dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
   const bool result_routing_enabled = !disable_result_routing_requested();
   dispatcher_.set_result_routing_enabled(result_routing_enabled);
 }
 
 CoreRuntime::~CoreRuntime() {
   stop();
+}
+
+SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+  if (!capture_assembly_registry_.is_assembly_successful(capture_id, device_instance_id)) {
+    return nullptr;
+  }
+  return result_store_.get_capture_result(capture_id, device_instance_id);
+}
+
+std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_t capture_id) const {
+  if (const auto* cohort = capture_cohort_registry_.find(capture_id); cohort != nullptr) {
+    if (cohort->state == CoreCaptureCohortRegistry::CohortState::FAILED) {
+      return {};
+    }
+    std::vector<SharedCaptureResultData> cohort_results;
+    cohort_results.reserve(cohort->expected_participants.size());
+    for (const auto& participant : cohort->expected_participants) {
+      const uint64_t device_instance_id = participant.device_instance_id;
+      if (!capture_assembly_registry_.is_assembly_successful(capture_id, device_instance_id)) {
+        return {};
+      }
+      SharedCaptureResultData result = result_store_.get_capture_result(capture_id, device_instance_id);
+      if (!result) {
+        return {};
+      }
+      cohort_results.push_back(std::move(result));
+    }
+    return curate_capture_result_set_accept_all_assembly_successful_(std::move(cohort_results));
+  }
+
+  std::vector<SharedCaptureResultData> candidates = result_store_.get_capture_result_set(capture_id);
+  std::vector<SharedCaptureResultData> assembly_successful;
+  assembly_successful.reserve(candidates.size());
+  for (auto& candidate : candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (!capture_assembly_registry_.is_assembly_successful(capture_id, candidate->device_instance_id)) {
+      continue;
+    }
+    assembly_successful.push_back(std::move(candidate));
+  }
+  return curate_capture_result_set_accept_all_assembly_successful_(std::move(assembly_successful));
 }
 
 bool CoreRuntime::start() {
@@ -153,6 +197,8 @@ bool CoreRuntime::start() {
 
   // Reset core-thread-only pump state.
   rigs_.clear();
+  capture_assembly_registry_.clear();
+  capture_cohort_registry_.clear();
   provider_facts_.clear();
   requests_.clear();
   shutdown_requested_ = false;
@@ -170,6 +216,13 @@ bool CoreRuntime::start() {
     state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
   }
   return ok;
+}
+
+std::vector<SharedCaptureResultData> CoreRuntime::curate_capture_result_set_accept_all_assembly_successful_(
+    std::vector<SharedCaptureResultData> candidates) const {
+  // Placeholder curation seam: current policy accepts all assembly-successful
+  // device captures. Future rig/cohort-aware policy can replace this step.
+  return candidates;
 }
 
 void CoreRuntime::stop() {
@@ -995,6 +1048,67 @@ TrySetCapturePictureStatus CoreRuntime::try_set_capture_picture_config(
                                                   : TrySetCapturePictureStatus::Busy;
 }
 
+TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profile(
+    uint64_t device_instance_id,
+    const CaptureProfile& profile,
+    const CaptureStillImageBundle& still_image_bundle) noexcept {
+  if (device_instance_id == 0 || profile.width == 0 || profile.height == 0 || profile.format_fourcc == 0) {
+    return TrySetStillCaptureProfileStatus::InvalidArgument;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TrySetStillCaptureProfileStatus::Busy;
+  }
+  const bool supports_multi_image = prov->supports_multi_image_still_sequence();
+  if (!is_valid_capture_still_image_bundle(still_image_bundle, supports_multi_image)) {
+    return supports_multi_image
+        ? TrySetStillCaptureProfileStatus::InvalidArgument
+        : TrySetStillCaptureProfileStatus::NotSupported;
+  }
+
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, profile, still_image_bundle]() {
+    uint64_t next_version = 1;
+    if (const auto* rec = devices_.find(device_instance_id)) {
+      bool same_sequence = (rec->capture_still_image_bundle.members.size() == still_image_bundle.members.size());
+      if (same_sequence) {
+        for (size_t i = 0; i < rec->capture_still_image_bundle.members.size(); ++i) {
+          const auto& a = rec->capture_still_image_bundle.members[i];
+          const auto& b = still_image_bundle.members[i];
+          if (a.image_member_index != b.image_member_index ||
+              a.role != b.role ||
+              a.intended_exposure_compensation_milli_ev != b.intended_exposure_compensation_milli_ev) {
+            same_sequence = false;
+            break;
+          }
+        }
+      }
+      const bool unchanged =
+          rec->capture_width == profile.width &&
+          rec->capture_height == profile.height &&
+          rec->capture_format == profile.format_fourcc &&
+          same_sequence;
+      if (unchanged) {
+        return;
+      }
+      next_version = rec->capture_profile_version + 1;
+      if (next_version == 0) next_version = 1;
+    }
+    (void)devices_.retain_capture_profile(
+        device_instance_id,
+        profile.width,
+        profile.height,
+        profile.format_fourcc,
+        next_version);
+    (void)devices_.set_capture_still_image_bundle(device_instance_id, still_image_bundle, next_version);
+    request_publish_from_core_unchecked();
+  });
+
+  return (pr == CoreThread::PostResult::Enqueued)
+      ? TrySetStillCaptureProfileStatus::OK
+      : TrySetStillCaptureProfileStatus::Busy;
+}
+
 bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
   if (device_instance_id == 0) {
     return false;
@@ -1003,6 +1117,7 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   if (!prov) {
     return false;
   }
+  const bool supports_multi_image = prov->supports_multi_image_still_sequence();
 
   const CaptureTemplate tmpl = prov->capture_template();
   out.device_instance_id = device_instance_id;
@@ -1012,6 +1127,7 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   out.format_fourcc = tmpl.profile.format_fourcc == 0 ? FOURCC_RGBA : tmpl.profile.format_fourcc;
   out.profile_version = 0;
   out.picture = tmpl.picture;
+  out.still_image_bundle = make_default_metered_still_image_bundle();
 
   if (const auto* rec = devices_.find(device_instance_id)) {
     if (rec->capture_width > 0) {
@@ -1025,9 +1141,299 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
     }
     out.profile_version = rec->capture_profile_version;
     out.picture = rec->capture_picture;
+    out.still_image_bundle = rec->capture_still_image_bundle;
   }
 
-  return out.width > 0 && out.height > 0;
+  if (!(out.width > 0 && out.height > 0)) {
+    return false;
+  }
+  return is_valid_capture_still_image_bundle(out.still_image_bundle, supports_multi_image);
+}
+
+CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
+  RigPreflightResult out{};
+  out.rig_id = rig_id;
+  if (rig_id == 0) {
+    out.failure = RigPreflightFailure::RigNotFound;
+    return out;
+  }
+
+  const auto* rig = rigs_.find(rig_id);
+  if (!rig) {
+    out.failure = RigPreflightFailure::RigNotFound;
+    return out;
+  }
+  if (rig->member_hardware_ids.empty()) {
+    out.failure = RigPreflightFailure::EmptyMembership;
+    return out;
+  }
+
+  out.participants.reserve(rig->member_hardware_ids.size());
+  std::map<uint64_t, bool> seen_devices;
+
+  for (size_t i = 0; i < rig->member_hardware_ids.size(); ++i) {
+    const std::string& hardware_id = rig->member_hardware_ids[i];
+    uint64_t resolved_device_id = 0;
+    size_t matches = 0;
+    for (const auto& [device_instance_id, rec] : devices_.all()) {
+      if (rec.hardware_id == hardware_id && rec.open) {
+        ++matches;
+        resolved_device_id = device_instance_id;
+      }
+    }
+
+    if (matches == 0) {
+      out.failure = RigPreflightFailure::HardwareIdUnresolved;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      return out;
+    }
+    if (matches > 1) {
+      out.failure = RigPreflightFailure::HardwareIdAmbiguous;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      return out;
+    }
+    if (seen_devices.find(resolved_device_id) != seen_devices.end()) {
+      out.failure = RigPreflightFailure::DuplicateResolvedDevice;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      out.failure_device_instance_id = resolved_device_id;
+      return out;
+    }
+    seen_devices.emplace(resolved_device_id, true);
+
+    CaptureRequest req{};
+    if (!materialize_capture_request(resolved_device_id, req)) {
+      out.failure = RigPreflightFailure::MaterializeFailed;
+      out.failure_member_index = i;
+      out.failure_hardware_id = hardware_id;
+      out.failure_device_instance_id = resolved_device_id;
+      return out;
+    }
+
+    RigPreflightParticipant participant{};
+    participant.hardware_id = hardware_id;
+    participant.device_instance_id = resolved_device_id;
+    participant.request = req;
+    out.participants.push_back(std::move(participant));
+  }
+
+  out.ok = true;
+  out.failure = RigPreflightFailure::None;
+  return out;
+}
+
+CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflight_(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    const RigPreflightResult& preflight) {
+  RigAdmittedRequestBundle out{};
+  out.capture_id = capture_id;
+  out.rig_id = rig_id;
+
+  if (capture_id == 0 || rig_id == 0) {
+    out.failure = RigCohortAdmissionFailure::InvalidCaptureId;
+    return out;
+  }
+  if (!preflight.ok || preflight.failure != RigPreflightFailure::None || preflight.rig_id != rig_id) {
+    out.failure = RigCohortAdmissionFailure::PreflightFailed;
+    return out;
+  }
+  if (preflight.participants.empty()) {
+    out.failure = RigCohortAdmissionFailure::EmptyParticipants;
+    return out;
+  }
+
+  CoreCaptureCohortRegistry::CohortRecord cohort{};
+  cohort.capture_id = capture_id;
+  cohort.rig_id = rig_id;
+  cohort.expected_participants.reserve(preflight.participants.size());
+  out.participants.reserve(preflight.participants.size());
+  for (const auto& p : preflight.participants) {
+    if (p.device_instance_id == 0) {
+      out.failure = RigCohortAdmissionFailure::PreflightFailed;
+      out.participants.clear();
+      return out;
+    }
+    cohort.expected_participants.push_back({p.device_instance_id, p.hardware_id});
+    RigAdmittedParticipantRequest ap{};
+    ap.hardware_id = p.hardware_id;
+    ap.request = p.request;
+    ap.request.capture_id = capture_id;
+    ap.request.rig_id = rig_id;
+    ap.request.device_instance_id = p.device_instance_id;
+    out.participants.push_back(std::move(ap));
+  }
+
+  if (!capture_cohort_registry_.insert(std::move(cohort))) {
+    out.failure = RigCohortAdmissionFailure::DuplicateCaptureId;
+    out.participants.clear();
+    return out;
+  }
+
+  out.ok = true;
+  out.failure = RigCohortAdmissionFailure::None;
+  return out;
+}
+
+CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
+    const RigAdmittedRequestBundle& bundle) {
+  RigSubmissionResult out{};
+  out.capture_id = bundle.capture_id;
+  out.rig_id = bundle.rig_id;
+
+  if (!bundle.ok || bundle.capture_id == 0 || bundle.rig_id == 0 || bundle.participants.empty()) {
+    out.failure = RigSubmissionFailure::InvalidBundle;
+    return out;
+  }
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    out.failure = RigSubmissionFailure::ProviderUnavailable;
+    for (const auto& participant : bundle.participants) {
+      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                     participant.request.device_instance_id,
+                                                     static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
+    }
+    (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                               0,
+                                               static_cast<uint32_t>(ProviderError::ERR_BAD_STATE),
+                                               CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+    out.provider_error_code = static_cast<uint32_t>(ProviderError::ERR_BAD_STATE);
+    return out;
+  }
+
+  for (size_t i = 0; i < bundle.participants.size(); ++i) {
+    const auto& participant = bundle.participants[i];
+    if (!is_valid_capture_still_image_bundle(
+            participant.request.still_image_bundle,
+            prov->supports_multi_image_still_sequence())) {
+      out.failure = RigSubmissionFailure::TriggerFailed;
+      out.failed_index = i;
+      out.failed_device_instance_id = participant.request.device_instance_id;
+      out.provider_error_code = static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT);
+      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                     participant.request.device_instance_id,
+                                                     static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
+      (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                                 participant.request.device_instance_id,
+                                                 static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT),
+                                                 CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+      return out;
+    }
+    const ProviderResult pr = prov->trigger_capture(participant.request);
+    if (!pr.ok()) {
+      out.failure = RigSubmissionFailure::TriggerFailed;
+      out.failed_index = i;
+      out.failed_device_instance_id = participant.request.device_instance_id;
+      out.provider_error_code = static_cast<uint32_t>(pr.code);
+      capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
+                                                     participant.request.device_instance_id,
+                                                     static_cast<uint32_t>(pr.code));
+      (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                                 participant.request.device_instance_id,
+                                                 static_cast<uint32_t>(pr.code),
+                                                 CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+      return out;
+    }
+    out.submitted_count++;
+  }
+
+  out.ok = true;
+  out.failure = RigSubmissionFailure::None;
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  RigTriggerOrchestrationResult out{};
+  out.rig_id = rig_id;
+  out.capture_id = capture_id;
+
+  const RigPreflightResult preflight = preflight_rig_participants_materialize_(rig_id);
+  if (!preflight.ok) {
+    out.failure = RigOrchestrationFailure::PreflightFailed;
+    out.preflight_failure = preflight.failure;
+    return out;
+  }
+
+  if (capture_id == 0) {
+    out.failure = RigOrchestrationFailure::InvalidCaptureId;
+    return out;
+  }
+
+  const RigAdmittedRequestBundle admitted = admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+  if (!admitted.ok) {
+    out.failure = RigOrchestrationFailure::AdmissionFailed;
+    out.admission_failure = admitted.failure;
+    return out;
+  }
+
+  const RigSubmissionResult submitted = submit_admitted_rig_bundle_(admitted);
+  if (!submitted.ok) {
+    out.failure = RigOrchestrationFailure::SubmissionFailed;
+    out.submission_failure = submitted.failure;
+    out.submitted_count = submitted.submitted_count;
+    out.failed_index = submitted.failed_index;
+    out.failed_device_instance_id = submitted.failed_device_instance_id;
+    out.provider_error_code = submitted.provider_error_code;
+    return out;
+  }
+
+  out.ok = true;
+  out.failure = RigOrchestrationFailure::None;
+  out.submitted_count = submitted.submitted_count;
+  return out;
+}
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize(uint64_t rig_id) const {
+  return preflight_rig_participants_materialize_(rig_id);
+}
+
+bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
+  return retain_rig_member_hardware_ids(rig_id, member_hardware_ids);
+}
+
+CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_preflight(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    const RigPreflightResult& preflight) {
+  return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+}
+
+CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
+    const RigAdmittedRequestBundle& bundle) {
+  return submit_admitted_rig_bundle_(bundle);
+}
+
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_with_capture_id(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+}
+
+#endif
+
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_for_server(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+}
+
+bool CoreRuntime::retain_rig_member_hardware_ids(
+    uint64_t rig_id,
+    const std::vector<std::string>& member_hardware_ids) {
+  if (rig_id == 0) {
+    return false;
+  }
+  auto pr = try_post([this, rig_id, member_hardware_ids]() {
+    (void)rigs_.retain_member_hardware_ids(rig_id, member_hardware_ids);
+    request_publish_from_core_unchecked();
+  });
+  return pr == CoreThread::PostResult::Enqueued;
 }
 
 CoreRuntime::Stats CoreRuntime::stats_copy() const noexcept {

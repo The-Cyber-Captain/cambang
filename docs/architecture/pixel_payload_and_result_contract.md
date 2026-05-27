@@ -418,7 +418,7 @@ The Capture Sink is responsible for:
 
 ## 10.3 Capture Result semantics
 
-A **Capture Result** represents a discrete device-associated still-capture artifact.
+A **Capture Result** is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same Capture Result.
 
 A Capture Result is **not** required to already be:
 
@@ -426,7 +426,7 @@ A Capture Result is **not** required to already be:
 - a display-ready RGB pixel buffer
 - an encoded artifact
 
-A Capture Result may retain one or more of:
+A retained image under a Capture Result may use one or more retained or materializable representations, such as:
 
 - encoded still artifact
 - raw still artifact
@@ -435,9 +435,32 @@ A Capture Result may retain one or more of:
 - CPU packed payload
 - derived forms requested or retained by policy
 
+A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, capture timestamp, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
+
+For the current still-capture bracket tranche:
+
+- member `0` is required and is the default metered member identity;
+- additional bracket members are optional members under the same Capture Result;
+- retained additional members must remain a contiguous ordered prefix (`1..K`);
+- malformed sparse/gapped/duplicate/non-sequential additional output is rejected
+  rather than normalized into sparse member retention;
+- missing intended additional members are represented by absence, not fabricated
+  members and not public per-member failure objects.
+
+Provider-reported exposure truth is preserved at the per-member boundary:
+
+- `applied_exposure_compensation_milli_ev` is provider execution truth;
+- realized exposure truth is represented by
+  `has_realized_exposure_compensation_milli_ev` +
+  `realized_exposure_compensation_milli_ev`;
+- unknown realized exposure uses `has_realized_exposure_compensation_milli_ev=false`
+  (no sentinel numeric value);
+- `realized_exposure_compensation_milli_ev != applied_exposure_compensation_milli_ev`
+  remains representable when `has_realized_exposure_compensation_milli_ev=true`.
+
 ## 10.4 Capture Result Set semantics
 
-A **Capture Result Set** represents the grouped result of a rig-triggered capture and contains the subset of device-associated Capture Results that actually realized.
+A **Capture Result Set** is the rig/Core-curated grouping of selected device Capture Results for a rig-triggered synchronised capture. Capture Result Set curation is distinct from the definition of Capture Result.
 
 ## 10.5 Preferred capture retention direction
 
@@ -596,10 +619,7 @@ explicit materialization outcome and must not silently return stale content:
 Still-capture public result semantics remain distinct from repeating-stream
 display-view semantics.
 
-A capture result is a **discrete artifact** at the public result seam. Future
-capture support may internally use whatever retained/runtime state is appropriate,
-but this stream-side live GPU-backed display model must not be generalized into a
-public model of retained or exposed per-capture GPU artifacts.
+A Capture Result is the device-level still-capture result at the public result seam. Its still-capture backing and materialization behaviour must remain explicit and capture-result-specific; the stream-side live GPU-backed display model must not be generalized into a public model of retained or exposed per-capture GPU artifacts.
 
 ---
 
@@ -811,3 +831,37 @@ CamBANG’s release-facing image path is a **multi-representation, provider-adap
 - Original image truth is preserved, while derived materializations remain explicit.
 
 ---
+
+
+---
+
+## 7.x Still-capture image-member contract clarification
+
+For still capture, `CaptureResult` is image-member based.
+
+- The canonical minimum valid image-member bundle is one member: index `0`, role
+  `DEFAULT_METERED`, with exposure-compensation baseline `0` milli-eV.
+- Bracketed still capture uses the same image-member model with additional members at
+  indices `1..N`, role `ADDITIONAL_BRACKET`.
+
+This means a one-image capture is the minimum valid still image bundle (ordered
+image-member bundle for one still event), not a separate legacy path.
+
+For public still-profile authoring at the Godot boundary, the profile Dictionary
+key is `still_image_bundle` (not `image_sequence`) to avoid implying a
+video/time sequence.
+
+
+Exposure-compensation semantics for still image members are intentionally split:
+
+- `intended_exposure_compensation_milli_ev`: authored profile/bundle member intent.
+- `applied_exposure_compensation_milli_ev`: execution/result member identity instruction.
+- `has_realized_exposure_compensation_milli_ev` + `realized_exposure_compensation_milli_ev`: provider-observed effective truth when known (presence-flag based; no sentinel).
+
+Case A (unsupported bundle shape/member count) remains admission/validation failure; Case B (executed member with differing effective exposure) is represented by applied vs realized divergence when realized is present.
+
+`CaptureResultSet` remains a rig/Core curation container for grouping device
+`CaptureResult` objects and must not be treated as the container for bracket
+members of a single device capture result.
+
+- Snapshot still-capture profile shape is nested at `capture_profile.still`; realized per-image metadata remains on `CaptureResult.image_member`.

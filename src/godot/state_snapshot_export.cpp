@@ -108,6 +108,18 @@ static inline godot::String stream_stop_reason_token(CBStreamStopReason reason) 
   }
 }
 
+static inline godot::String capture_still_image_member_role_name(
+    cambang::CaptureStillImageMemberRole role) {
+  switch (role) {
+    case cambang::CaptureStillImageMemberRole::DEFAULT_METERED:
+      return "DEFAULT_METERED";
+    case cambang::CaptureStillImageMemberRole::ADDITIONAL_BRACKET:
+      return "ADDITIONAL_BRACKET";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 static inline godot::String native_object_type_token(uint32_t raw_type) {
   switch (static_cast<NativeObjectType>(raw_type)) {
     case NativeObjectType::Provider:
@@ -180,7 +192,124 @@ static godot::Dictionary export_scoped_resource_telemetry(const ScopedResourceTe
   return d;
 }
 
-static godot::Dictionary export_rig(const CamBANGRigState& r) {
+
+static godot::String camera_value_support_token(CBCameraValueSupport s) {
+  switch (s) {
+    case CBCameraValueSupport::SUPPORTED: return gs("SUPPORTED");
+    case CBCameraValueSupport::UNSUPPORTED: return gs("UNSUPPORTED");
+    case CBCameraValueSupport::UNIMPLEMENTED: return gs("UNIMPLEMENTED");
+    default: return gs("UNKNOWN");
+  }
+}
+
+static godot::String camera_apply_status_token(CBCameraApplyStatus s) {
+  switch (s) {
+    case CBCameraApplyStatus::APPLIED: return gs("APPLIED");
+    case CBCameraApplyStatus::PENDING: return gs("PENDING");
+    case CBCameraApplyStatus::REJECTED: return gs("REJECTED");
+    case CBCameraApplyStatus::CONSTRAINED: return gs("CONSTRAINED");
+    default: return gs("UNKNOWN");
+  }
+}
+
+static godot::Dictionary export_camera_value_state_string(const CameraValueStateString& v) {
+  godot::Dictionary d;
+  d["support"] = camera_value_support_token(v.support);
+  d["has_target"] = v.has_target;
+  d["target"] = gs(v.target);
+  d["has_applied"] = v.has_applied;
+  d["applied"] = gs(v.applied);
+  d["apply_status"] = camera_apply_status_token(v.apply_status);
+  d["apply_error_code"] = static_cast<int>(v.apply_error_code);
+  return d;
+}
+
+static godot::Dictionary export_camera_value_state_int32(const CameraValueStateInt32& v) {
+  godot::Dictionary d;
+  d["support"] = camera_value_support_token(v.support);
+  d["has_target"] = v.has_target;
+  d["target"] = static_cast<int>(v.target);
+  d["has_applied"] = v.has_applied;
+  d["applied"] = static_cast<int>(v.applied);
+  d["apply_status"] = camera_apply_status_token(v.apply_status);
+  d["apply_error_code"] = static_cast<int>(v.apply_error_code);
+  return d;
+}
+
+static godot::Dictionary export_device_camera_state(const DeviceCameraState& c) {
+  godot::Dictionary d;
+  d["version"] = static_cast<uint64_t>(c.version);
+  godot::Dictionary exposure;
+  exposure["ae_mode"] = export_camera_value_state_string(c.exposure.ae_mode);
+  exposure["baseline_exposure_compensation_milli_ev"] = export_camera_value_state_int32(c.exposure.baseline_exposure_compensation_milli_ev);
+  d["exposure"] = exposure;
+  godot::Dictionary focus;
+  focus["af_mode"] = export_camera_value_state_string(c.focus.af_mode);
+  focus["focus_distance_diopters_milli"] = export_camera_value_state_int32(c.focus.focus_distance_diopters_milli);
+  d["focus"] = focus;
+  godot::Dictionary white_balance;
+  white_balance["awb_mode"] = export_camera_value_state_string(c.white_balance.awb_mode);
+  white_balance["color_temperature_kelvin"] = export_camera_value_state_int32(c.white_balance.color_temperature_kelvin);
+  d["white_balance"] = white_balance;
+  godot::Dictionary stabilization;
+  stabilization["mode"] = export_camera_value_state_string(c.stabilization.mode);
+  stabilization["strength_percent"] = export_camera_value_state_int32(c.stabilization.strength_percent);
+  d["stabilization"] = stabilization;
+  godot::Dictionary flash_torch;
+  flash_torch["flash_mode"] = export_camera_value_state_string(c.flash_torch.flash_mode);
+  flash_torch["torch_level"] = export_camera_value_state_int32(c.flash_torch.torch_level);
+  d["flash_torch"] = flash_torch;
+  godot::Dictionary zoom_crop;
+  zoom_crop["zoom_ratio_milli"] = export_camera_value_state_int32(c.zoom_crop.zoom_ratio_milli);
+  zoom_crop["crop_preset"] = export_camera_value_state_string(c.zoom_crop.crop_preset);
+  d["zoom_crop"] = zoom_crop;
+  godot::Dictionary processing;
+  processing["noise_reduction_mode"] = export_camera_value_state_string(c.processing.noise_reduction_mode);
+  processing["edge_enhancement_level"] = export_camera_value_state_int32(c.processing.edge_enhancement_level);
+  d["processing"] = processing;
+  godot::Dictionary metering;
+  metering["metering_mode"] = export_camera_value_state_string(c.metering.metering_mode);
+  metering["metering_region_preset"] = export_camera_value_state_string(c.metering.metering_region_preset);
+  d["metering"] = metering;
+  godot::Dictionary antibanding;
+  antibanding["mode"] = export_camera_value_state_string(c.antibanding.mode);
+  antibanding["mains_frequency_hz"] = export_camera_value_state_int32(c.antibanding.mains_frequency_hz);
+  d["antibanding"] = antibanding;
+  godot::Dictionary orientation_mirroring;
+  orientation_mirroring["rotation_degrees"] = export_camera_value_state_int32(c.orientation_mirroring.rotation_degrees);
+  orientation_mirroring["mirror_mode"] = export_camera_value_state_string(c.orientation_mirroring.mirror_mode);
+  d["orientation_mirroring"] = orientation_mirroring;
+  godot::Dictionary privacy_hardware_block;
+  privacy_hardware_block["privacy_mode"] = export_camera_value_state_string(c.privacy_hardware_block.privacy_mode);
+  privacy_hardware_block["hardware_block_reason"] = export_camera_value_state_string(c.privacy_hardware_block.hardware_block_reason);
+  d["privacy_hardware_block"] = privacy_hardware_block;
+  return d;
+}
+
+static godot::Dictionary export_capture_profile(const CaptureProfileState& c) {
+  godot::Dictionary profile;
+  godot::Dictionary still;
+  still["version"] = static_cast<uint64_t>(c.still.version);
+  still["width"] = static_cast<uint32_t>(c.still.width);
+  still["height"] = static_cast<uint32_t>(c.still.height);
+  still["format"] = static_cast<uint32_t>(c.still.format);
+  godot::Dictionary bundle;
+  godot::Array members;
+  for (const auto& m : c.still.still_image_bundle.members) {
+    godot::Dictionary md;
+    md["image_member_index"] = static_cast<int64_t>(m.image_member_index);
+    md["role"] = static_cast<int64_t>(m.role);
+    md["role_name"] = capture_still_image_member_role_name(m.role);
+    md["intended_exposure_compensation_milli_ev"] = static_cast<int64_t>(m.intended_exposure_compensation_milli_ev);
+    members.push_back(md);
+  }
+  bundle["members"] = members;
+  still["still_image_bundle"] = bundle;
+  profile["still"] = still;
+  return profile;
+}
+
+static godot::Dictionary export_rig(const RigState& r) {
   godot::Dictionary d;
   d["rig_id"] = static_cast<uint64_t>(r.rig_id);
   d["name"] = gs(r.name);
@@ -212,7 +341,7 @@ static godot::Dictionary export_rig(const CamBANGRigState& r) {
   return d;
 }
 
-static godot::Dictionary export_device(const CamBANGDeviceState& s) {
+static godot::Dictionary export_device(const DeviceState& s) {
   godot::Dictionary d;
   d["hardware_id"] = gs(s.hardware_id);
   d["instance_id"] = static_cast<uint64_t>(s.instance_id);
@@ -221,10 +350,8 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   d["engaged"] = static_cast<bool>(s.engaged);
   d["rig_id"] = static_cast<uint64_t>(s.rig_id);
   d["camera_spec_version"] = static_cast<uint64_t>(s.camera_spec_version);
-  d["capture_profile_version"] = static_cast<uint64_t>(s.capture_profile_version);
-  d["capture_width"] = static_cast<uint32_t>(s.capture_width);
-  d["capture_height"] = static_cast<uint32_t>(s.capture_height);
-  d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  d["capture_profile"] = export_capture_profile(s.capture_profile);
+  d["camera_state"] = export_device_camera_state(s.camera_state);
   d["warm_hold_ms"] = static_cast<uint32_t>(s.warm_hold_ms);
   d["warm_remaining_ms"] = static_cast<uint32_t>(s.warm_remaining_ms);
   d["rebuild_count"] = static_cast<uint64_t>(s.rebuild_count);
@@ -233,7 +360,7 @@ static godot::Dictionary export_device(const CamBANGDeviceState& s) {
   return d;
 }
 
-static godot::Dictionary export_stream(const CamBANGStreamState& s) {
+static godot::Dictionary export_stream(const StreamState& s) {
   godot::Dictionary d;
   d["stream_id"] = static_cast<uint64_t>(s.stream_id);
   d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);
@@ -266,10 +393,8 @@ static godot::Dictionary export_acquisition_session(const AcquisitionSessionStat
   d["acquisition_session_id"] = static_cast<uint64_t>(s.acquisition_session_id);
   d["device_instance_id"] = static_cast<uint64_t>(s.device_instance_id);
   d["phase"] = lifecycle_phase_token(s.phase);
-  d["capture_profile_version"] = static_cast<uint64_t>(s.capture_profile_version);
-  d["capture_width"] = static_cast<uint32_t>(s.capture_width);
-  d["capture_height"] = static_cast<uint32_t>(s.capture_height);
-  d["capture_format"] = static_cast<uint32_t>(s.capture_format);
+  d["capture_profile"] = export_capture_profile(s.capture_profile);
+  d["camera_state"] = export_device_camera_state(s.camera_state);
   d["captures_triggered"] = static_cast<uint64_t>(s.captures_triggered);
   d["captures_completed"] = static_cast<uint64_t>(s.captures_completed);
   d["captures_failed"] = static_cast<uint64_t>(s.captures_failed);

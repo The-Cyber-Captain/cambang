@@ -37,6 +37,11 @@ struct SyntheticMetricsSnapshot {
   uint64_t catchup_frames_dropped = 0;
 };
 
+struct SyntheticStagedRigTopology {
+  std::uint64_t rig_id = 0;
+  std::vector<std::string> member_hardware_ids;
+};
+
 class SyntheticProvider final : public ICameraProvider {
 public:
   using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
@@ -52,6 +57,7 @@ public:
   CaptureTemplate capture_template() const override;
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
+  bool supports_multi_image_still_sequence() const noexcept override { return true; }
 
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
@@ -117,6 +123,7 @@ public:
   ProviderResult set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation);
   void set_timeline_request_dispatch_hook_for_host(TimelineRequestDispatchHook hook);
   SyntheticMetricsSnapshot get_metrics_snapshot_for_host() const;
+  std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
 
 private:
   CBProviderStrand strand_;
@@ -136,7 +143,7 @@ private:
   bool timeline_destructive_prereq_ready_(const SyntheticScheduledEvent& ev, const char*& reason) const;
   bool timeline_is_destructive_primitive_(SyntheticEventType type) const;
   void timeline_pump_();
-  bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::string& error) const;
+  bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::vector<SyntheticStagedRigTopology>& rigs_out, std::string& error) const;
   static bool has_runtime_gpu_backing_path_() noexcept;
   ProducerBackingCapabilities query_stream_producer_capabilities_(
       const CaptureProfile& profile,
@@ -195,6 +202,7 @@ private:
 
   static void release_frame_(void* user, const FrameView* frame);
   bool is_known_hardware_id_(const std::string& hardware_id) const;
+  uint32_t effective_endpoint_count_() const noexcept;
 
   uint64_t alloc_native_id_(NativeObjectType type);
   void emit_native_create_device_(const DeviceState& d);
@@ -208,6 +216,7 @@ private:
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
+  void quiesce_provider_strand_before_stream_gpu_backing_release_();
   bool ensure_stream_live_gpu_backing_(StreamState& s, uint32_t width, uint32_t height, uint32_t stride);
   void release_stream_live_gpu_backing_(StreamState& s);
   void emit_triage_trace_if_due_();
@@ -234,6 +243,8 @@ private:
   uint64_t timeline_seq_ = 0;
   SyntheticTimelineScenario timeline_scenario_{};
   SyntheticCanonicalScenario timeline_canonical_scenario_{};
+  std::vector<SyntheticStagedRigTopology> staged_rig_topology_{};
+  uint32_t staged_required_endpoint_count_ = 0;
   bool timeline_canonical_staged_ = false;
   bool timeline_running_ = false;
   bool timeline_paused_ = false;

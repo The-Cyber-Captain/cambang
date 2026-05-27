@@ -142,7 +142,7 @@ func _refresh_panel_with_snapshot(panel: Variant, server: MockServer, snapshot: 
 
 
 func _assert_rows(model: Variant, required: Array[String], forbidden: Array[String]) -> void:
-	var row_ids := _collect_entry_ids(model)
+	var row_ids: Array[String] = _collect_entry_ids(model)
 	for row_id in required:
 		if not row_ids.has(row_id):
 			_fail("missing expected row_id=%s; got=%s" % [row_id, row_ids])
@@ -245,10 +245,7 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 				"acquisition_session_id": 1,
 				"device_instance_id": 1,
 				"phase": "LIVE",
-				"capture_profile_version": 0,
-				"capture_width": 0,
-				"capture_height": 0,
-				"capture_format": 0,
+				"capture_profile": {"still": {"version": 0, "width": 0, "height": 0, "format": 0, "still_image_bundle": {"members": []}}},
 				"captures_triggered": 0,
 				"captures_completed": 0,
 				"captures_failed": 0,
@@ -315,3 +312,62 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		],
 		"detached_root_ids": []
 	}
+
+
+func _collect_entry_ids(model: Variant) -> Array[String]:
+	var ids: Array[String] = []
+	if model == null:
+		return ids
+	var entries: Variant = _extract_entries(model)
+	if typeof(entries) != TYPE_ARRAY:
+		_fail("status panel model entries is not Array")
+		return ids
+	for entry in entries:
+		var entry_id := _extract_entry_id(entry)
+		if entry_id != "":
+			ids.append(entry_id)
+	return ids
+
+
+func _extract_entries(model: Variant) -> Array:
+	if model == null:
+		return []
+	if typeof(model) == TYPE_ARRAY:
+		return model
+	if typeof(model) == TYPE_DICTIONARY:
+		var value: Variant = model.get("entries", [])
+		return value if typeof(value) == TYPE_ARRAY else []
+	if model is Object:
+		for prop in model.get_property_list():
+			if str(prop.get("name", "")) == "entries":
+				var value: Variant = model.get("entries")
+				return value if typeof(value) == TYPE_ARRAY else []
+	return []
+
+
+func _extract_entry_id(entry: Variant) -> String:
+	if entry == null:
+		return ""
+	if typeof(entry) == TYPE_DICTIONARY:
+		return str(entry.get("id", ""))
+	if entry is Object:
+		for prop in entry.get_property_list():
+			if str(prop.get("name", "")) == "id":
+				return str(entry.get("id"))
+	return ""
+
+
+func _fail(message: String) -> void:
+	push_error(message)
+	print("FAIL: %s" % message)
+	_quit_with_cleanup(1)
+
+
+func _quit_with_cleanup(code: int) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		_panel.call("_disconnect_server")
+	if _window != null and is_instance_valid(_window):
+		_window.queue_free()
+	if _server != null and is_instance_valid(_server):
+		_server.queue_free()
+	quit(code)

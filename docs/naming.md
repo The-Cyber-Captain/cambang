@@ -73,6 +73,7 @@ Observable boundary contract:
 
 - `CamBANGServer.start()`
 - `CamBANGServer.stop()`
+- `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
 - `signal state_published(gen, version, topology_version)`
 
@@ -84,15 +85,18 @@ The full behavioural contract for the Godot-facing runtime boundary
 tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
+Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
+entry point; rig capture is triggered via `CamBANGRig.trigger_capture()`.
+
 ### `CamBANGRig`
 
-User-created multi-camera coordinator used to perform synchronised
+Godot-facing multi-camera coordinator used to perform synchronised
 capture across multiple devices.
 
 Primary lifecycle controls:
 
-- `arm()` / `disarm()`
-- `trigger_sync_capture()`
+- `get_id()`
+- `trigger_capture()`
 
 Rig-triggered sync capture has priority over standalone activity on
 member devices when conflicts arise.
@@ -107,11 +111,16 @@ Primary lifecycle controls:
 - `engage()` / `disengage()`
 - `set_warm_policy(...)`
 - `set_still_capture_profile(profile)`
+- `get_instance_id()`
 - `trigger_capture()`
 
 `CamBANGDevice` is the public Godot-facing control point for device-level
 still capture. That public surface does not imply any required 1:1 parity
 with provider-internal or native-object execution details.
+
+Compatibility note:
+
+- `CamBANGDevice.get_device_instance_id()` has been removed.
 
 ### `CamBANGStream`
 
@@ -266,9 +275,9 @@ and exposed for polling/inspection.
 
 Records inside the snapshot that correspond to user-facing/runtime-facing state:
 
-- `CamBANGRigState`
-- `CamBANGDeviceState`
-- `CamBANGStreamState`
+- `RigState`
+- `DeviceState`
+- `StreamState`
 - `AcquisitionSessionState`
 
 Native/core objects created by the provider on behalf of CamBANG are tracked as registry records:
@@ -528,3 +537,5 @@ support records does not redefine the Godot-facing result/object vocabulary.
 - **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
 - **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
 - **Native Payload Support**: projection grouping concept for provider-owned native support entities whose lifetime/release matters for payload/backing truth.
+
+- Snapshot still-capture profile truth uses nested `capture_profile.still.{version,width,height,format,still_image_bundle}` on `DeviceState` and `AcquisitionSessionState` (latched per-session context truth).

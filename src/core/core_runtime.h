@@ -6,9 +6,12 @@
 #include <cstring>
 #include <deque>
 #include <string>
+#include <vector>
 
 #include "core/core_dispatcher.h"
 #include "core/core_acquisition_session_registry.h"
+#include "core/core_capture_assembly_registry.h"
+#include "core/core_capture_cohort_registry.h"
 #include "core/core_device_registry.h"
 #include "core/core_native_object_registry.h"
 #include "core/core_result_store.h"
@@ -39,6 +42,13 @@ enum class TrySetStreamPictureStatus : uint8_t {
 };
 
 enum class TrySetCapturePictureStatus : uint8_t {
+  OK = 0,
+  NotSupported = 1,
+  Busy = 2,
+  InvalidArgument = 3,
+};
+
+enum class TrySetStillCaptureProfileStatus : uint8_t {
   OK = 0,
   NotSupported = 1,
   Busy = 2,
@@ -160,8 +170,120 @@ enum class TryCloseDeviceStatus : uint8_t {
   TrySetStreamPictureStatus try_set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) noexcept;
   // Device-scoped capture-picture update path.
   TrySetCapturePictureStatus try_set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) noexcept;
+  TrySetStillCaptureProfileStatus try_set_device_still_capture_profile(
+      uint64_t device_instance_id,
+      const CaptureProfile& profile,
+      const CaptureStillImageBundle& still_image_bundle) noexcept;
 
   bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
+
+  enum class RigPreflightFailure : uint8_t {
+    None = 0,
+    RigNotFound = 1,
+    EmptyMembership = 2,
+    HardwareIdUnresolved = 3,
+    HardwareIdAmbiguous = 4,
+    DuplicateResolvedDevice = 5,
+    MaterializeFailed = 6,
+  };
+
+  struct RigPreflightParticipant {
+    std::string hardware_id;
+    uint64_t device_instance_id = 0;
+    CaptureRequest request{};
+  };
+
+  struct RigPreflightResult {
+    bool ok = false;
+    RigPreflightFailure failure = RigPreflightFailure::None;
+    uint64_t rig_id = 0;
+    size_t failure_member_index = 0;
+    std::string failure_hardware_id;
+    uint64_t failure_device_instance_id = 0;
+    std::vector<RigPreflightParticipant> participants;
+  };
+
+  enum class RigCohortAdmissionFailure : uint8_t {
+    None = 0,
+    InvalidCaptureId = 1,
+    PreflightFailed = 2,
+    EmptyParticipants = 3,
+    DuplicateCaptureId = 4,
+  };
+
+  struct RigAdmittedParticipantRequest {
+    std::string hardware_id;
+    CaptureRequest request{};
+  };
+
+  struct RigAdmittedRequestBundle {
+    bool ok = false;
+    RigCohortAdmissionFailure failure = RigCohortAdmissionFailure::None;
+    uint64_t capture_id = 0;
+    uint64_t rig_id = 0;
+    std::vector<RigAdmittedParticipantRequest> participants;
+  };
+
+  enum class RigSubmissionFailure : uint8_t {
+    None = 0,
+    InvalidBundle = 1,
+    ProviderUnavailable = 2,
+    TriggerFailed = 3,
+  };
+
+  struct RigSubmissionResult {
+    bool ok = false;
+    RigSubmissionFailure failure = RigSubmissionFailure::None;
+    uint64_t capture_id = 0;
+    uint64_t rig_id = 0;
+    size_t submitted_count = 0;
+    size_t failed_index = 0;
+    uint64_t failed_device_instance_id = 0;
+    uint32_t provider_error_code = 0;
+  };
+
+  enum class RigOrchestrationFailure : uint8_t {
+    None = 0,
+    InvalidCaptureId = 1,
+    PreflightFailed = 2,
+    AdmissionFailed = 3,
+    SubmissionFailed = 4,
+  };
+
+  struct RigTriggerOrchestrationResult {
+    bool ok = false;
+    RigOrchestrationFailure failure = RigOrchestrationFailure::None;
+    uint64_t rig_id = 0;
+    uint64_t capture_id = 0;
+    RigPreflightFailure preflight_failure = RigPreflightFailure::None;
+    RigCohortAdmissionFailure admission_failure = RigCohortAdmissionFailure::None;
+    RigSubmissionFailure submission_failure = RigSubmissionFailure::None;
+    size_t submitted_count = 0;
+    size_t failed_index = 0;
+    uint64_t failed_device_instance_id = 0;
+    uint32_t provider_error_code = 0;
+  };
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
+  bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
+  RigAdmittedRequestBundle smoke_admit_rig_cohort_from_preflight(
+      uint64_t rig_id,
+      uint64_t capture_id,
+      const RigPreflightResult& preflight);
+  RigSubmissionResult smoke_submit_admitted_rig_bundle(const RigAdmittedRequestBundle& bundle);
+  RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_with_capture_id(
+      uint64_t rig_id,
+      uint64_t capture_id);
+
+#endif
+
+  bool retain_rig_member_hardware_ids(uint64_t rig_id, const std::vector<std::string>& member_hardware_ids);
+
+  // Server-internal adapter: caller supplies capture_id (no allocation here).
+  RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
+      uint64_t rig_id,
+      uint64_t capture_id);
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
   CoreThread::PostResult try_post_core_thread_unchecked(CoreThread::Task task) {
@@ -205,13 +327,8 @@ enum class TryCloseDeviceStatus : uint8_t {
     return result_store_.get_latest_stream_result(stream_id);
   }
 
-  SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
-    return result_store_.get_capture_result(capture_id, device_instance_id);
-  }
-
-  std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const {
-    return result_store_.get_capture_result_set(capture_id);
-  }
+  SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
+  std::vector<SharedCaptureResultData> get_capture_result_set(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id) {
     const auto now = std::chrono::steady_clock::now();
     const uint64_t now_ns = static_cast<uint64_t>(
@@ -284,6 +401,17 @@ private:
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
+  RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
+      uint64_t rig_id,
+      uint64_t capture_id,
+      const RigPreflightResult& preflight);
+  RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
+  RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
+      uint64_t rig_id,
+      uint64_t capture_id);
+  std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
+      std::vector<SharedCaptureResultData> candidates) const;
 
 private:
   CoreThread core_thread_;
@@ -294,6 +422,8 @@ private:
   CoreStreamRegistry streams_;
   CoreNativeObjectRegistry native_objects_;
   CoreResultStore result_store_;
+  CoreCaptureAssemblyRegistry capture_assembly_registry_;
+  CoreCaptureCohortRegistry capture_cohort_registry_;
 
   // Snapshot header counters (schema v1).
   // gen: core generation counter, monotonic across app/server lifetime.

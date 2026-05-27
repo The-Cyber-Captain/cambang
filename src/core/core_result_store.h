@@ -57,11 +57,53 @@ struct CoreStreamResultData {
 };
 
 struct CoreCaptureResultData {
+  enum class ImageMemberRole : uint8_t {
+    DEFAULT_METERED = 0,
+    ADDITIONAL_BRACKET = 1,
+  };
+
+  // Image member of a single CaptureResult.
+  // Result-level shared facts stay on CoreCaptureResultData; only genuinely
+  // per-image fields live here.
+  struct ImageMemberData {
+    uint32_t image_member_index = 0;
+    ImageMemberRole role = ImageMemberRole::DEFAULT_METERED;
+    int32_t applied_exposure_compensation_milli_ev = 0;
+    bool has_realized_exposure_compensation_milli_ev = false;
+    int32_t realized_exposure_compensation_milli_ev = 0;
+    uint64_t capture_timestamp_ns = 0;
+    CoreResultPayloadCpuPacked payload{};
+
+    bool has_capture_attributes = false;
+    ResultCaptureAttributesFacts capture_attributes{};
+    ResultCaptureAttributesProvenance capture_attributes_provenance{};
+  };
+
   uint64_t capture_id = 0;
   uint64_t device_instance_id = 0;
-  uint64_t capture_timestamp_ns = 0;
+
+  uint32_t image_width = 0;
+  uint32_t image_height = 0;
+  uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
-  CoreResultPayloadCpuPacked payload{};
+
+  ImageMemberData default_image{};
+  std::vector<ImageMemberData> additional_images{};
+  bool has_additional_images() const noexcept { return !additional_images.empty(); }
+  uint32_t image_member_count() const noexcept { return 1u + static_cast<uint32_t>(additional_images.size()); }
+  const ImageMemberData* image_member_at(uint32_t image_member_index) const noexcept {
+    if (image_member_index == 0) return &default_image;
+    const uint32_t additional_index = image_member_index - 1u;
+    if (additional_index >= static_cast<uint32_t>(additional_images.size())) return nullptr;
+    return &additional_images[additional_index];
+  }
+  ImageMemberData* image_member_at(uint32_t image_member_index) noexcept {
+    if (image_member_index == 0) return &default_image;
+    const uint32_t additional_index = image_member_index - 1u;
+    if (additional_index >= static_cast<uint32_t>(additional_images.size())) return nullptr;
+    return &additional_images[additional_index];
+  }
+
   CoreImageFactBundle facts{};
 };
 
@@ -87,6 +129,11 @@ public:
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
                     uint64_t capture_timestamp_ns);
+  bool append_additional_capture_image(uint64_t capture_id,
+                                       uint64_t device_instance_id,
+                                       CoreCaptureResultData::ImageMemberData image_member);
+  static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
+                                                              CoreResultPayloadCpuPacked& out_payload);
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
@@ -102,6 +149,10 @@ public:
 private:
   static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
+  static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
+  static SharedCaptureResultData build_default_image_capture_result(const FrameView& frame,
+                                                                    const CoreResultPayloadCpuPacked& payload,
+                                                                    uint64_t capture_timestamp_ns);
 
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;

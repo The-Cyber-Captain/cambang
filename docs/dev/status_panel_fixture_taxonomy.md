@@ -252,5 +252,51 @@ selection rather than duplicating large payloads.
 - Add a CI summary table grouped by classification labels above.
 - Treat manifest/schema drift as a blocking failure, not warning-only.
 
+---
+
+## 8) Renderer/NPS taxonomy metadata (current fixture-level extension)
+
+StatusPanel fixtures now carry two explicit classification fields:
+
+- `renderer_profile` (enum):
+  - `any`
+  - `gpu`
+  - `compatibility`
+  - `ambiguous`
+- `nps_scope` (enum):
+  - `none`
+  - `structural`
+  - `aggregate`
+  - `gpu_leaf`
+  - `compatibility_leaf`
+  - `anomaly`
+
+### Meaning
+
+- `renderer_profile=any` means expectations are intended to be renderer-invariant.
+- `renderer_profile=gpu` means fixture expectations are specifically tied to GPU renderer behavior.
+- `renderer_profile=compatibility` means fixture expectations are specifically tied to compatibility/non-GPU renderer behavior.
+- `renderer_profile=ambiguous` means current expectations likely mix invariant and renderer-sensitive assumptions and need reconciliation.
+
+### Native Payload Support (NPS) sensitivity rule
+
+NPS leaf-level expectations are not globally invariant: GPU and compatibility renderers can legitimately produce different native-support leaf shapes and therefore different leaf-level rows/badges/counters/info details.
+
+Policy consequence:
+
+- Keep renderer-invariant structural assertions (e.g. parent grouping, existence of NPS grouping rows) separate from renderer-specific leaf assertions.
+- Do not “fix” mismatches by making one fixture accept both leaf shapes.
+- Prefer split fixtures and explicit renderer-profile targeting for leaf-sensitive expectations.
+
+### Split naming convention (narrow rollout)
+
+For a renderer-sensitive fixture family `<base>.json`, use:
+
+- `<base>.json` (or `<base>_common.json`) for renderer-invariant structural/aggregate assertions
+- `<base>_gpu.json` for GPU leaf assertions
+- `<base>_compatibility.json` for compatibility leaf assertions
+
+When only one renderer-specific payload is currently evidenced, keep the common fixture and the evidenced renderer fixture, and defer the other renderer-specific variant until real snapshot evidence is captured. A separate `_common` file is optional when `<base>.json` already serves as the canonical common fixture.
+
 This keeps snapshot-contract testing, projection testing, and panel continuity
 checks decoupled but composable.

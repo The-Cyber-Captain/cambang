@@ -257,6 +257,17 @@ Dynamic-base patterns must **not** include per-frame values in the base-cache ke
 This mechanism allows animated patterns (e.g., animated noise) without
 misusing overlay toggles or introducing hidden time sources.
 
+### 3.1.y Capture render options seam
+
+Pattern Module also accepts optional **per-render** options for capture-member
+realization (for example, exposure-compensation EV adjustment).
+
+- This seam is represented by `PatternRenderOptions`.
+- `applied_exposure_compensation_milli_ev` is per-render/per-capture-member applied execution instruction.
+- It is not part of `PatternSpec` base identity and must not affect base-cache key generation.
+- It is not `PictureConfig` stream appearance vocabulary.
+- Default/zero EV performs no additional exposure adjustment pass.
+
 
 ### 3.2 Determinism
 

@@ -120,7 +120,7 @@ void StubProvider::release_test_frame(void* user, const FrameView* /*frame*/) {
   if (slot->owner) {
     slot->owner->frames_released_.fetch_add(1, std::memory_order_relaxed);
   }
-  slot->in_use = false;
+  slot->in_use.store(false, std::memory_order_release);
 }
 
 ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
@@ -264,6 +264,10 @@ ProviderResult StubProvider::destroy_stream(uint64_t stream_id) {
   if (st_it->second.started) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  // Quiescence barrier: ensure any previously posted frame callbacks/release hooks
+  // that may reference this stream's buffer-slot storage have completed before
+  // stream storage is erased.
+  strand_.flush();
   // Clear device link.
   const uint64_t dev_id = st_it->second.req.device_instance_id;
   auto dev_it = devices_.find(dev_id);
@@ -318,14 +322,16 @@ ProviderResult StubProvider::start_stream(
   constexpr size_t kPoolSize = 1200;
   const size_t row_bytes = static_cast<size_t>(w) * 4u;
   const size_t total = row_bytes * static_cast<size_t>(h);
-  if (st.pool.size() != kPoolSize || (st.pool.empty() ? 0 : st.pool[0].bytes.size()) != total) {
+  if (st.pool.size() != kPoolSize || (st.pool.empty() || !st.pool[0] ? 0 : st.pool[0]->bytes.size()) != total) {
     st.pool.clear();
-    st.pool.resize(kPoolSize);
-    for (auto& slot : st.pool) {
-      slot.owner = this;
-      slot.stream_id = stream_id;
-      slot.bytes.resize(total);
-      slot.in_use = false;
+    st.pool.reserve(kPoolSize);
+    for (size_t i = 0; i < kPoolSize; ++i) {
+      auto slot = std::make_unique<StreamState::BufferSlot>();
+      slot->owner = this;
+      slot->stream_id = stream_id;
+      slot->bytes.resize(total);
+      slot->in_use.store(false, std::memory_order_release);
+      st.pool.push_back(std::move(slot));
     }
     st.pool_cursor = 0;
   }
@@ -425,10 +431,17 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     }
     for (size_t probe = 0; probe < n; ++probe) {
       const size_t idx = (st.pool_cursor + probe) % n;
-      auto& cand = st.pool[idx];
-      if (!cand.in_use) {
-        cand.in_use = true;
-        slot = &cand;
+      auto* cand = st.pool[idx].get();
+      if (!cand) {
+        continue;
+      }
+      bool expected = false;
+      if (cand->in_use.compare_exchange_strong(
+              expected,
+              true,
+              std::memory_order_acq_rel,
+              std::memory_order_acquire)) {
+        slot = cand;
         st.pool_cursor = (idx + 1) % n;
         break;
       }
@@ -607,6 +620,10 @@ ProviderResult StubProvider::shutdown() {
       strand_.post_stream_stopped(stream_id, ProviderError::OK);
     }
   }
+
+  // Quiescence barrier: drain any in-flight frame callbacks/release hooks while
+  // stream slot storage is still alive.
+  strand_.flush();
 
   // Destroy all streams.
   for (auto it = streams_.begin(); it != streams_.end(); ) {

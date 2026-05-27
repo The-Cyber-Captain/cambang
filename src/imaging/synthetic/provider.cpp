@@ -390,8 +390,10 @@ void SyntheticProvider::timeline_activate_or_dispatch_(const SyntheticScheduledE
 
 bool SyntheticProvider::materialize_staged_canonical_scenario_(
     SyntheticTimelineScenario& out,
+    std::vector<SyntheticStagedRigTopology>& rigs_out,
     std::string& error) const {
   out = {};
+  rigs_out.clear();
   SyntheticScenarioMaterializationOptions opts{};
   SyntheticScenarioMaterializationResult materialized{};
   if (!materialize_synthetic_canonical_scenario(
@@ -406,6 +408,14 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
   // canonical schedule is lowered to executable request-like timeline events.
   // Lifecycle actions must be explicit in the canonical timed actions.
   // EmitFrame remains provider-internal and is not emitted here.
+  rigs_out.reserve(materialized.rigs.size());
+  for (const auto& r : materialized.rigs) { SyntheticStagedRigTopology t{}; t.rig_id = r.rig_id; t.member_hardware_ids = r.member_hardware_ids; rigs_out.push_back(std::move(t)); }
+  uint32_t required_endpoint_count = 0;
+  for (const auto& d : materialized.devices) {
+    required_endpoint_count = std::max(required_endpoint_count, d.endpoint_index + 1u);
+  }
+  const_cast<SyntheticProvider*>(this)->staged_required_endpoint_count_ = required_endpoint_count;
+
   std::vector<SyntheticScheduledEvent> events;
   events.reserve(materialized.executable_schedule.events.size());
 
@@ -608,7 +618,11 @@ bool SyntheticProvider::is_known_hardware_id_(const std::string& hardware_id) co
   if (!end || *end != '\0' || idx < 0) {
     return false;
   }
-  return static_cast<uint32_t>(idx) < cfg_.endpoint_count;
+  return static_cast<uint32_t>(idx) < effective_endpoint_count_();
+}
+
+uint32_t SyntheticProvider::effective_endpoint_count_() const noexcept {
+  return std::max(cfg_.endpoint_count, staged_required_endpoint_count_);
 }
 
 uint64_t SyntheticProvider::alloc_native_id_(NativeObjectType type) {
@@ -953,6 +967,9 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
     s.producing = false;
   }
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
+  // Drain queued frame callbacks before destructive runtime release of the
+  // stream-live GPU backing object they may still reference.
+  quiesce_provider_strand_before_stream_gpu_backing_release_();
   release_stream_live_gpu_backing_(s);
   return ProviderResult::success();
 }
@@ -1010,10 +1027,7 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   const uint32_t stride = req.width * 4u;
   const size_t frame_size = static_cast<size_t>(stride) * static_cast<size_t>(req.height);
-  auto bytes = std::make_shared<std::vector<std::uint8_t>>();
-  bytes->resize(frame_size);
-  std::vector<std::uint8_t> gpu_staging;
-  gpu_staging.resize(frame_size);
+  std::vector<std::uint8_t> gpu_staging(frame_size);
 
   bool preset_valid = true;
   PatternSpec spec = to_pattern_spec(req.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
@@ -1037,22 +1051,6 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   CpuPackedPatternRenderer renderer{};
   renderer.render_into(spec, dst, ov);
-  const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
-      gpu_staging.data(),
-      req.width,
-      req.height,
-      stride,
-      *bytes);
-  if (!gpu_ok) {
-    std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
-  }
-
-  if (fmt == FOURCC_BGRA) {
-    for (size_t i = 0; i + 3 < bytes->size(); i += 4) {
-      std::swap((*bytes)[i], (*bytes)[i + 2]);
-    }
-  }
-
   retain_native_acquisition_session_for_capture_(dev_it->second);
   if (dev_it->second.acquisition_session_capture_refs == 0) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -1063,28 +1061,89 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  FrameView fv{};
-  fv.device_instance_id = req.device_instance_id;
-  fv.stream_id = 0;
-  fv.acquisition_session_id = capture_acquisition_session_id;
-  fv.capture_id = req.capture_id;
-  fv.width = req.width;
-  fv.height = req.height;
-  fv.format_fourcc = fmt;
-  fv.capture_timestamp.value = capture_ts_ns;
-  fv.capture_timestamp.tick_ns = 1;
-  fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = bytes->data();
-  fv.size_bytes = bytes->size();
-  fv.stride_bytes = stride;
-
-  auto* lease = new FrameReleaseLease();
-  lease->bytes = bytes;
-  fv.release = &SyntheticProvider::release_frame_;
-  fv.release_user = lease;
-
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
-  strand_.post_frame(fv);
+  CaptureStillImageBundle fallback_default_sequence;
+  const auto* members = &req.still_image_bundle.members;
+  if (members->empty()) {
+    fallback_default_sequence = make_default_metered_still_image_bundle();
+    members = &fallback_default_sequence.members;
+  }
+  for (size_t i = 0; i < members->size(); ++i) {
+    const auto& member = (*members)[i];
+    auto bytes = std::make_shared<std::vector<std::uint8_t>>();
+    bytes->resize(frame_size);
+    const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
+        gpu_staging.data(),
+        req.width,
+        req.height,
+        stride,
+        *bytes);
+    if (!gpu_ok) {
+      std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
+    }
+    if (member.intended_exposure_compensation_milli_ev != 0) {
+      PatternRenderOptions render_options{};
+      render_options.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
+      PatternRenderTarget member_dst{};
+      member_dst.data = bytes->data();
+      member_dst.size_bytes = bytes->size();
+      member_dst.width = req.width;
+      member_dst.height = req.height;
+      member_dst.stride_bytes = stride;
+      member_dst.format = PatternSpec::PackedFormat::RGBA8;
+      renderer.apply_render_options_in_place(member_dst, render_options);
+    }
+    if (fmt == FOURCC_BGRA) {
+      for (size_t bi = 0; bi + 3 < bytes->size(); bi += 4) {
+        std::swap((*bytes)[bi], (*bytes)[bi + 2]);
+      }
+    }
+
+    FrameView fv{};
+    fv.device_instance_id = req.device_instance_id;
+    fv.stream_id = 0;
+    fv.acquisition_session_id = capture_acquisition_session_id;
+    fv.capture_id = req.capture_id;
+    fv.width = req.width;
+    fv.height = req.height;
+    fv.format_fourcc = fmt;
+    fv.capture_timestamp.value = capture_ts_ns;
+    fv.capture_timestamp.tick_ns = 1;
+    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    fv.capture_image.routing = (i == 0)
+        ? CaptureImageRouting::DEFAULT_METERED
+        : CaptureImageRouting::ADDITIONAL_BRACKET;
+    fv.capture_image.image_member_index = member.image_member_index;
+    fv.capture_image.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
+    fv.capture_image.has_realized_exposure_compensation_milli_ev = true;
+    {
+      const auto realized_known_override_it =
+          cfg_.verification_has_realized_exposure_compensation_override_by_member_index.find(member.image_member_index);
+      if (realized_known_override_it !=
+              cfg_.verification_has_realized_exposure_compensation_override_by_member_index.end() &&
+          !realized_known_override_it->second) {
+        fv.capture_image.has_realized_exposure_compensation_milli_ev = false;
+      }
+    }
+    {
+      const auto realized_override_it =
+          cfg_.verification_realized_exposure_compensation_override_by_member_index.find(member.image_member_index);
+      if (fv.capture_image.has_realized_exposure_compensation_milli_ev &&
+          realized_override_it != cfg_.verification_realized_exposure_compensation_override_by_member_index.end()) {
+        fv.capture_image.realized_exposure_compensation_milli_ev = realized_override_it->second;
+      } else {
+        fv.capture_image.realized_exposure_compensation_milli_ev = fv.capture_image.applied_exposure_compensation_milli_ev;
+      }
+    }
+    fv.data = bytes->data();
+    fv.size_bytes = bytes->size();
+    fv.stride_bytes = stride;
+    auto* lease = new FrameReleaseLease();
+    lease->bytes = bytes;
+    fv.release = &SyntheticProvider::release_frame_;
+    fv.release_user = lease;
+    strand_.post_frame(fv);
+  }
   strand_.post_capture_completed(req.capture_id, req.device_instance_id);
   release_native_acquisition_session_for_capture_(req.device_instance_id);
   return ProviderResult::success();
@@ -1133,6 +1192,9 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   if (emit_stop_event && had_started) {
     strand_.post_stream_stopped(stream_id, stop_error);
   }
+  // Drain queued frame callbacks before destructive runtime release of the
+  // stream-live GPU backing object they may still reference.
+  quiesce_provider_strand_before_stream_gpu_backing_release_();
   release_stream_live_gpu_backing_(s);
   s.started = false;
   emit_native_destroy_(s.native_id);
@@ -1300,6 +1362,8 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_scenario_ = scenario;
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
+  staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1321,6 +1385,8 @@ ProviderResult SyntheticProvider::set_timeline_scenario_for_host(const Synthetic
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = scenario;
   timeline_canonical_staged_ = true;
+  staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1338,12 +1404,14 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
   timeline_pending_destructive_.clear();
   if (timeline_canonical_staged_) {
     std::string error;
-    if (!materialize_staged_canonical_scenario_(timeline_scenario_, error)) {
+    std::vector<SyntheticStagedRigTopology> staged_rigs;
+    if (!materialize_staged_canonical_scenario_(timeline_scenario_, staged_rigs, error)) {
       if (!error.empty()) {
         std::fprintf(stderr, "[Synthetic] canonical scenario materialization failed: %s\n", error.c_str());
       }
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
+    staged_rig_topology_ = std::move(staged_rigs);
   }
   for (const auto& ev : timeline_scenario_.events) {
     timeline_schedule_(ev);
@@ -1367,6 +1435,7 @@ ProviderResult SyntheticProvider::stop_timeline_scenario_for_host() {
   timeline_running_ = false;
   timeline_paused_ = false;
   timeline_pending_destructive_.clear();
+  staged_required_endpoint_count_ = 0;
   return ProviderResult::success();
 }
 
@@ -1442,6 +1511,8 @@ ProviderResult SyntheticProvider::shutdown() {
   timeline_scenario_ = {};
   timeline_canonical_scenario_ = {};
   timeline_canonical_staged_ = false;
+  staged_rig_topology_.clear();
+  staged_required_endpoint_count_ = 0;
   timeline_running_ = false;
   timeline_paused_ = false;
 
@@ -1470,6 +1541,13 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
     lease->slot->in_use.store(false, std::memory_order_release);
   }
   delete lease;
+}
+
+void SyntheticProvider::quiesce_provider_strand_before_stream_gpu_backing_release_() {
+  if (!strand_.running()) {
+    return;
+  }
+  strand_.flush();
 }
 
 bool SyntheticProvider::ensure_stream_live_gpu_backing_(
@@ -2047,3 +2125,5 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
 }
 
 } // namespace cambang
+
+std::vector<cambang::SyntheticStagedRigTopology> cambang::SyntheticProvider::get_staged_rig_topology_for_host() const { return staged_rig_topology_; }

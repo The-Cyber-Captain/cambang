@@ -491,18 +491,20 @@ bool parse_document_object(const JsonValue& root,
     set_error(error, "scenario json root must be object");
     return false;
   }
-  if (!require_only_fields(root, {"schema_version", "devices", "streams", "timeline"}, error, "root")) {
+  if (!require_only_fields(root, {"schema_version", "devices", "streams", "rigs", "timeline"}, error, "root")) {
     return false;
   }
 
   const JsonValue* schema_version = find_field(root, "schema_version");
   const JsonValue* devices = find_field(root, "devices");
   const JsonValue* streams = find_field(root, "streams");
+  const JsonValue* rigs = find_field(root, "rigs");
   const JsonValue* timeline = find_field(root, "timeline");
 
   if (!require_type(schema_version, JsonValue::Type::Number, "schema_version", error) ||
       !require_type(devices, JsonValue::Type::Array, "devices", error) ||
       !require_type(streams, JsonValue::Type::Array, "streams", error) ||
+      (rigs && !require_type(rigs, JsonValue::Type::Array, "rigs", error)) ||
       !require_type(timeline, JsonValue::Type::Array, "timeline", error)) {
     return false;
   }
@@ -575,6 +577,33 @@ bool parse_document_object(const JsonValue& root,
     }
 
     out.streams.push_back(std::move(s));
+  }
+
+
+  if (rigs) {
+    out.rigs.reserve(rigs->array_value.size());
+    for (size_t i = 0; i < rigs->array_value.size(); ++i) {
+      const auto& item = rigs->array_value[i];
+      const std::string ctx = "rigs[" + std::to_string(i) + "]";
+      if (item.type != JsonValue::Type::Object) { set_error(error, ctx + " must be object"); return false; }
+      if (!require_only_fields(item, {"key", "rig_id", "members"}, error, ctx)) { return false; }
+      const JsonValue* key = find_field(item, "key");
+      const JsonValue* rig_id = find_field(item, "rig_id");
+      const JsonValue* members = find_field(item, "members");
+      if (!require_type(key, JsonValue::Type::String, ctx + ".key", error) ||
+          !require_type(rig_id, JsonValue::Type::Number, ctx + ".rig_id", error) ||
+          !require_type(members, JsonValue::Type::Array, ctx + ".members", error)) { return false; }
+      SyntheticScenarioLoaderParsedRig r{};
+      r.key = key->string_value;
+      if (!parse_u64(*rig_id, ctx + ".rig_id", r.rig_id, error)) { return false; }
+      r.members.reserve(members->array_value.size());
+      for (size_t j = 0; j < members->array_value.size(); ++j) {
+        const auto& m = members->array_value[j];
+        if (m.type != JsonValue::Type::String) { set_error(error, ctx + ".members[" + std::to_string(j) + "] must be string"); return false; }
+        r.members.push_back(m.string_value);
+      }
+      out.rigs.push_back(std::move(r));
+    }
   }
 
   out.timeline.reserve(timeline->array_value.size());

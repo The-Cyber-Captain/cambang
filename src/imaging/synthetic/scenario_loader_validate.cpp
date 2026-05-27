@@ -95,6 +95,30 @@ bool validate_parsed_synthetic_scenario_loader_document(
     }
   }
 
+
+  std::unordered_set<std::string> rig_keys;
+  std::unordered_set<std::uint64_t> rig_ids;
+  std::unordered_set<std::string> members_claimed;
+  rig_keys.reserve(parsed.rigs.size());
+  rig_ids.reserve(parsed.rigs.size());
+  for (size_t i = 0; i < parsed.rigs.size(); ++i) {
+    const auto& r = parsed.rigs[i];
+    const std::string ctx = "rigs[" + std::to_string(i) + "]";
+    if (r.key.empty()) { set_error(error, ctx + ".key must be non-empty"); return false; }
+    if (!rig_keys.emplace(r.key).second) { set_error(error, "duplicate rig key: " + r.key); return false; }
+    if (r.rig_id == 0) { set_error(error, ctx + ".rig_id must be nonzero"); return false; }
+    if (!rig_ids.emplace(r.rig_id).second) { set_error(error, "duplicate rig_id: " + std::to_string(r.rig_id)); return false; }
+    if (r.members.empty()) { set_error(error, ctx + ".members must be non-empty"); return false; }
+    std::unordered_set<std::string> local;
+    for (size_t j = 0; j < r.members.size(); ++j) {
+      const auto& m = r.members[j];
+      if (m.empty()) { set_error(error, ctx + ".members[" + std::to_string(j) + "] must be non-empty"); return false; }
+      if (device_keys.find(m) == device_keys.end()) { set_error(error, ctx + ".members references unknown device key: " + m); return false; }
+      if (!local.emplace(m).second) { set_error(error, ctx + " duplicate member: " + m); return false; }
+      if (!members_claimed.emplace(m).second) { set_error(error, "overlapping rig membership is not supported: " + m); return false; }
+    }
+  }
+
   for (size_t i = 0; i < parsed.timeline.size(); ++i) {
     const auto& a = parsed.timeline[i];
     const std::string ctx = "timeline[" + std::to_string(i) + "]";

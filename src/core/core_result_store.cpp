@@ -111,17 +111,109 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!has_cpu_payload) {
       return false;
     }
-    auto capture_result = std::make_shared<CoreCaptureResultData>();
-    capture_result->capture_id = frame.capture_id;
-    capture_result->device_instance_id = frame.device_instance_id;
-    capture_result->capture_timestamp_ns = capture_timestamp_ns;
-    capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
-    capture_result->payload = payload;
-    facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
-    capture_result->facts = facts;
+    SharedCaptureResultData capture_result =
+        build_default_image_capture_result(frame, payload, capture_timestamp_ns);
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
   return frame.stream_id != 0 || frame.capture_id != 0;
+}
+
+bool CoreResultStore::append_additional_capture_image(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    CoreCaptureResultData::ImageMemberData image_member) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto cap_it = capture_results_by_capture_id_.find(capture_id);
+  if (cap_it == capture_results_by_capture_id_.end()) {
+    return false;
+  }
+  auto dev_it = cap_it->second.find(device_instance_id);
+  if (dev_it == cap_it->second.end() || !dev_it->second) {
+    return false;
+  }
+  if (!has_valid_capture_image_member_payload(image_member.payload)) {
+    return false;
+  }
+  if (image_member.role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET) {
+    return false;
+  }
+  if (image_member.image_member_index == 0u) {
+    return false;
+  }
+
+  auto updated = std::make_shared<CoreCaptureResultData>(*dev_it->second);
+  const uint32_t expected_member_index =
+      1u + static_cast<uint32_t>(updated->additional_images.size());
+  if (image_member.image_member_index != expected_member_index) {
+    return false;
+  }
+  updated->additional_images.push_back(std::move(image_member));
+  dev_it->second = std::move(updated);
+  return true;
+}
+
+bool CoreResultStore::try_build_capture_image_member_data_from_frame(const FrameView& frame,
+                                                                     CoreResultPayloadCpuPacked& out_payload) {
+  if (!has_cpu_packed_payload(frame)) {
+    return false;
+  }
+  if (!try_copy_cpu_packed_payload(frame, out_payload)) {
+    return false;
+  }
+  return has_valid_capture_image_member_payload(out_payload);
+}
+
+SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
+    const FrameView& frame,
+    const CoreResultPayloadCpuPacked& payload,
+    uint64_t capture_timestamp_ns) {
+  if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
+      frame.capture_image.image_member_index != 0u) {
+    return nullptr;
+  }
+  auto capture_result = std::make_shared<CoreCaptureResultData>();
+  capture_result->capture_id = frame.capture_id;
+  capture_result->device_instance_id = frame.device_instance_id;
+  capture_result->image_width = payload.width;
+  capture_result->image_height = payload.height;
+  capture_result->image_format_fourcc = payload.format_fourcc;
+  capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
+
+  // Current default-only still-capture behavior: retained still payload is
+  // accepted as the CaptureResult default image.
+  capture_result->default_image.image_member_index = 0;
+  capture_result->default_image.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
+  capture_result->default_image.applied_exposure_compensation_milli_ev =
+      frame.capture_image.applied_exposure_compensation_milli_ev;
+  capture_result->default_image.has_realized_exposure_compensation_milli_ev =
+      frame.capture_image.has_realized_exposure_compensation_milli_ev;
+  capture_result->default_image.realized_exposure_compensation_milli_ev =
+      frame.capture_image.realized_exposure_compensation_milli_ev;
+  if (capture_result->default_image.applied_exposure_compensation_milli_ev != 0) {
+    return nullptr;
+  }
+  capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
+  capture_result->default_image.payload = payload;
+
+  CoreImageFactBundle facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
+  facts.has_capture_attributes = false;
+  facts.capture_attributes = ResultCaptureAttributesFacts{};
+  facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
+  capture_result->facts = facts;
+  return capture_result;
+}
+
+bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload) {
+  if (payload.width == 0 || payload.height == 0) {
+    return false;
+  }
+  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+    return false;
+  }
+  if (payload.bytes.empty()) {
+    return false;
+  }
+  return true;
 }
 
 SharedStreamResultData CoreResultStore::get_latest_stream_result(uint64_t stream_id) const {

@@ -1003,7 +1003,7 @@ native object but still has:
 
 - zero devices
 - zero streams
-- no frameproducer subtree
+- no native-support descendants
 
 then the panel must render a normal Provider row with no descendants. That state
 is authoritative startup truth, not a `provider_pending` placeholder.
