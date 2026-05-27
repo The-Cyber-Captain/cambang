@@ -372,10 +372,11 @@ current event loop iteration (see `core_runtime_model.md`).
 
 On successful core loop start, core begins in a logically dirty state and
 will publish a baseline snapshot on the first loop iteration. This first
-published snapshot has:
+published snapshot for generation `gen = N` has:
 
-- `gen = 0`
-- `topology_gen = 0`
+- `gen = N`
+- `version = 0`
+- `topology_version = 0`
 - a valid monotonic `timestamp_ns`
 
 This guarantees that each core generation (`gen`) produces at least one

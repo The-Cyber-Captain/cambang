@@ -150,24 +150,18 @@ operation.
 ## 5. Snapshot truth requirements
 
 Maintainer tools and Godot-side verification scenes assume that providers
-follow the snapshot truth rules.
+follow the canonical snapshot and publication rules.
 
-Those rules define how snapshots represent:
+Canonical authority lives in:
 
-- absence and unknown values
-- retained identity
-- publication consistency
-- non-fabricated state
+- `docs/state_snapshot.md` for public snapshot schema, retained runtime truth,
+  timestamp semantics, and snapshot field meaning.
+- `docs/architecture/godot_boundary_contract.md` for Godot-facing observable
+  start/stop/restart, NIL-before-baseline, generation baseline, and tick-bounded
+  publication behaviour.
 
-The canonical source for those requirements is:
-
-```text
-docs/dev/snapshot_truth_rules.md
-```
-
-This document does not restate the rules. When diagnosing a suspected
-truth-discipline failure, consult the canonical rules document first and
-then interpret the relevant verifier output in that light.
+The notes below are maintainer interpretation guidance for verifier output.
+They are an audit/triage aid, not a second source of truth.
 
 ### Interpreting verifier output
 
