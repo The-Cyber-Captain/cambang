@@ -29,8 +29,12 @@ Current projection order is:
 - `device/<instance_id>`
 - `acquisition_session/<acquisition_session_id>`
 - `stream/<stream_id>`
-- optional `frameproducer/<id>` rows (native projection)
 - other `native/*` descendants
+
+Native/support truth is projected from ownership context (for example
+`owner_stream_id` / `owner_acquisition_session_id`) and Native Payload Support
+grouping where applicable. A `FrameProducer` row is not part of the current
+StatusPanel structural contract.
 
 For native ancestry reconstruction, `owner_acquisition_session_id` is used before
 stream-level fallback where session ownership is available.

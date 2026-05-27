@@ -1,20 +1,53 @@
 {
-  "fixture_kind": "continuity_no_snapshot",
+  "fixture_kind": "authoritative_snapshot",
   "provider_mode": "synthetic",
   "expected_validity": "valid",
   "should_run_projector": true,
-  "continuity_prelude_payload": {
+  "expected_panel_outcome": {
+    "contract_gap_count": 0,
+    "projection_gap_count": 0,
+    "required_row_ids": [
+      "server/main",
+      "provider/100",
+      "device/1",
+      "stream/1",
+      "acquisition_session/1"
+    ],
+    "required_visible_row_ids": [
+      "server/main"
+    ],
+    "forbidden_row_ids": [
+      "native_object/103"
+    ],
+    "required_counter_values_by_row": {
+      "provider/100": {
+        "native_all": 4,
+        "native_cur": 4,
+        "native_prev": 0
+      }
+    },
+    "required_badges_by_row": {
+      "server/main": [
+        "OK",
+        "NATIVE COVERAGE: OK"
+      ],
+      "stream/1": [
+        "OK"
+      ]
+    }
+  },
+  "payload": {
     "schema_version": 1,
-    "gen": 55,
-    "version": 9,
-    "topology_version": 4,
-    "timestamp_ns": 40000000090,
+    "gen": 2,
+    "version": 21,
+    "topology_version": 1,
+    "timestamp_ns": 40096504700,
     "imaging_spec_version": 1,
     "rigs": [],
     "devices": [
       {
-        "instance_id": 1001,
-        "hardware_id": "synthetic:review:0",
+        "instance_id": 1,
+        "hardware_id": "synthetic:0",
         "phase": "LIVE",
         "mode": "STREAMING",
         "errors_count": 0,
@@ -270,37 +303,14 @@
     ],
     "streams": [
       {
-        "stream_id": 1101,
-        "device_instance_id": 1001,
+        "stream_id": 1,
+        "device_instance_id": 1,
         "phase": "LIVE",
-        "mode": "STOPPED",
+        "mode": "FLOWING",
         "intent": "PREVIEW",
-        "stop_reason": "USER",
-        "target_fps_max": 60,
-        "frames_received": 400,
-        "width": 1280,
-        "height": 720,
-        "format": 1094862674,
-        "target_fps_min": 24,
-        "profile_version": 77,
-        "frames_delivered": 0,
-        "frames_dropped": 0,
-        "queue_depth": 0,
-        "last_frame_ts_ns": 0,
-        "visibility_frames_presented": 0,
-        "visibility_frames_rejected_unsupported": 0,
-        "visibility_frames_rejected_invalid": 0,
-        "visibility_last_path": "NONE"
-      },
-      {
-        "stream_id": 1102,
-        "device_instance_id": 1001,
-        "phase": "LIVE",
-        "mode": "STOPPED",
-        "intent": "VIEWFINDER",
-        "stop_reason": "USER",
+        "stop_reason": "NONE",
         "target_fps_max": 30,
-        "frames_received": 210,
+        "frames_received": 1024,
         "width": 1280,
         "height": 720,
         "format": 1094862674,
@@ -318,15 +328,15 @@
     ],
     "native_objects": [
       {
-        "native_id": 1000,
+        "native_id": 100,
         "type": "provider",
         "phase": "LIVE",
-        "creation_gen": 55,
+        "creation_gen": 2,
         "owner_device_instance_id": 0,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
-        "root_id": 1000,
+        "root_id": 0,
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
@@ -334,15 +344,15 @@
         "owner_acquisition_session_id": 0
       },
       {
-        "native_id": 1001,
+        "native_id": 101,
         "type": "device",
-        "owner_device_instance_id": 1001,
+        "owner_device_instance_id": 1,
         "phase": "LIVE",
-        "creation_gen": 55,
+        "creation_gen": 2,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
-        "root_id": 1000,
+        "root_id": 0,
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
@@ -350,76 +360,28 @@
         "owner_acquisition_session_id": 0
       },
       {
-        "native_id": 1101,
+        "native_id": 103,
         "type": "stream",
-        "owner_device_instance_id": 1001,
-        "owner_stream_id": 1101,
+        "owner_device_instance_id": 1,
+        "owner_stream_id": 1,
         "phase": "LIVE",
-        "creation_gen": 55,
+        "creation_gen": 2,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
-        "root_id": 1000,
+        "root_id": 0,
         "created_ns": 0,
         "destroyed_ns": 0,
         "bytes_allocated": 0,
         "buffers_in_use": 0,
-        "owner_acquisition_session_id": 1001
+        "owner_acquisition_session_id": 1
       },
       {
-        "native_id": 1102,
-        "type": "stream",
-        "owner_device_instance_id": 1001,
-        "owner_stream_id": 1102,
-        "phase": "LIVE",
-        "creation_gen": 55,
-        "owner_provider_native_id": 0,
-        "owner_rig_id": 0,
-        "root_id": 1000,
-        "created_ns": 0,
-        "destroyed_ns": 0,
-        "bytes_allocated": 0,
-        "buffers_in_use": 0,
-        "owner_acquisition_session_id": 1001
-      },
-      {
-        "native_id": 1201,
-        "type": "stream",
-        "owner_device_instance_id": 1001,
-        "owner_stream_id": 1101,
-        "phase": "LIVE",
-        "creation_gen": 55,
-        "owner_provider_native_id": 0,
-        "owner_rig_id": 0,
-        "root_id": 1000,
-        "created_ns": 0,
-        "destroyed_ns": 0,
-        "bytes_allocated": 0,
-        "buffers_in_use": 0,
-        "owner_acquisition_session_id": 1001
-      },
-      {
-        "native_id": 1202,
-        "type": "stream",
-        "owner_device_instance_id": 1001,
-        "owner_stream_id": 1102,
-        "phase": "DESTROYED",
-        "creation_gen": 55,
-        "destroyed_ns": 40000000089,
-        "owner_provider_native_id": 0,
-        "owner_rig_id": 0,
-        "root_id": 1000,
-        "created_ns": 0,
-        "bytes_allocated": 0,
-        "buffers_in_use": 0,
-        "owner_acquisition_session_id": 1001
-      },
-      {
-        "native_id": 1203,
+        "native_id": 104,
         "type": "acquisition_session",
         "phase": "LIVE",
-        "creation_gen": 55,
-        "owner_device_instance_id": 1001,
-        "owner_acquisition_session_id": 1001,
+        "creation_gen": 2,
+        "owner_device_instance_id": 1,
+        "owner_acquisition_session_id": 1,
         "owner_stream_id": 0,
         "owner_provider_native_id": 0,
         "owner_rig_id": 0,
@@ -433,8 +395,8 @@
     "detached_root_ids": [],
     "acquisition_sessions": [
       {
-        "acquisition_session_id": 1001,
-        "device_instance_id": 1001,
+        "acquisition_session_id": 1,
+        "device_instance_id": 1,
         "phase": "LIVE",
         "captures_triggered": 0,
         "captures_completed": 0,
@@ -687,28 +649,6 @@
     ],
     "scoped_resource_telemetry": []
   },
-  "expected_panel_outcome": {
-    "contract_gap_count": 0,
-    "projection_gap_count": 0,
-    "required_row_ids": [
-      "server/main",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/provider/1000",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/device/1001",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/stream/1101",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/stream/1102",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/native_object/1201",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/native_object/1202",
-      "retained_presentation/prior_authoritative/subtree/0/gen_55/acquisition_session/1001"
-    ],
-    "required_badges_by_row": {
-      "server/main": [
-        "UNKNOWN",
-        "NATIVE COVERAGE: UNKNOWN",
-        "NO SNAPSHOT"
-      ]
-    }
-  },
-  "payload": null,
   "renderer_profile": "any",
-  "nps_scope": "none"
+  "nps_scope": "structural"
 }
