@@ -708,15 +708,12 @@ Provenance is attached per fact (or per small fact group), not as one result-wid
 
 Recommended first-pass provenance vocabulary:
 
-- `HARDWARE_REPORTED`
-- `PROVIDER_DERIVED`
-- `RUNTIME_INJECTED`
-- `USER_DEFAULT`
-- `USER_OVERRIDE`
-- `UNKNOWN`
-
-The intended meaning of these values is documented in the direction note:
-- `docs/dev/pixel_result_architecture_direction.md`
+- `HARDWARE_REPORTED` — reported directly by platform/hardware/provider API metadata.
+- `PROVIDER_DERIVED` — derived by the provider from backend/platform data before handing truth to Core.
+- `RUNTIME_INJECTED` — supplied by CamBANG runtime/Core because it is runtime context rather than image-origin metadata.
+- `USER_DEFAULT` — supplied from user/application default configuration when no more specific fact is available.
+- `USER_OVERRIDE` — supplied from explicit user/application correction or override.
+- `UNKNOWN` — no authoritative source for the fact is currently known or retained.
 
 ### 14.1 Important distinction
 
