@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 #include <string>
 
 #include <godot_cpp/classes/object.hpp>
@@ -108,6 +109,8 @@ public:
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
+  godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
+  uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
 protected:
   static void _bind_methods();
@@ -189,6 +192,17 @@ private:
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
   std::atomic<uint64_t> next_capture_id_{1};
+  std::atomic<uint64_t> next_direct_device_instance_id_{1};
+  std::atomic<uint64_t> next_direct_root_id_{1};
+
+  struct EndpointLifecycleState {
+    godot::String hardware_id;
+    godot::String display_name;
+    uint64_t device_instance_id = 0;
+    uint64_t root_id = 0;
+    bool open_requested = false;
+  };
+  std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
 };
 
 } // namespace cambang

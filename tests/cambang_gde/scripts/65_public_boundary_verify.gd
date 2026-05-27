@@ -200,6 +200,24 @@ func _ready() -> void:
 	if not bool(handle_a.is_endpoint_handle()) or not bool(handle_b.is_endpoint_handle()):
 		_fail("FAIL: endpoint handles must report is_endpoint_handle() true")
 		return
+	var engage_a_err = handle_a.engage()
+	if engage_a_err != OK:
+		_fail("FAIL: endpoint handle engage() must return OK for known synthetic endpoint")
+		return
+	var engaged_instance_id := int(handle_a.get_instance_id())
+	if engaged_instance_id == 0:
+		_fail("FAIL: endpoint handle get_instance_id() must become nonzero after engage()")
+		return
+	if int(handle_b.get_instance_id()) != engaged_instance_id:
+		_fail("FAIL: endpoint handles for same hardware_id must resolve the same instance id after engage()")
+		return
+	var engage_b_err = handle_b.engage()
+	if engage_b_err != OK:
+		_fail("FAIL: second endpoint handle engage() must return OK for already engaged endpoint")
+		return
+	if int(handle_b.get_instance_id()) != engaged_instance_id:
+		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
+		return
 	CamBANGServer.stop()
 
 	var synthetic_role_default_timing_err := CamBANGServer.start(
