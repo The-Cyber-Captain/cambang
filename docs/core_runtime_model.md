@@ -381,7 +381,7 @@ complete.
 
 Frame production is halted:
 
-- repeating frame producers stop
+- repeating stream-production work is stopped
 - platform capture loops are disabled
 - synthetic schedulers or timers are cancelled
 
