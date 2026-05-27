@@ -1,6 +1,12 @@
 ﻿# CamBANG – Upstream Discrepancies Log
 
-> Working Note — Not Frozen
+**Status:** Current dev discrepancy log.
+
+This file records observed discrepancies between CamBANG development needs and upstream Godot / godot-cpp / godot-cpp-template documentation, APIs, or build conventions.
+
+It is a non-canonical log of upstream references, local workarounds, and removal criteria.
+
+It must not define CamBANG architecture, provider behavior, public API, or release policy.
 
 This document records deviations from:
 - godot-cpp-template

@@ -1,5 +1,22 @@
 # CamBANG Test Suite Audit Lenses
 
+**Status:** Current dev process/audit reference.
+
+This document is a process-discipline aid for test/harness/fixture failure
+triage.
+
+It is subordinate to canonical architecture docs, current source behavior,
+fixture taxonomy docs, schema-mapping docs, and verifier/tool behavior.
+It must not override canonical architecture or verifier source behavior.
+
+Cross-reference anchors:
+- `docs/dev/status_panel_fixture_taxonomy.md` for fixture taxonomy and
+  renderer/NPS fixture classification.
+- `docs/dev/state_snapshot_schema_mapping.md` for schema-vs-semantic
+  validation layering.
+- `docs/dev/maintainer_tools.md` for verifier/tool roles.
+- `docs/naming.md` for scenario / verification case / fixture terminology.
+
 This document defines the **three required lenses** for reviewing,
 maintaining, and evolving the CamBANG test suite.
 
@@ -140,6 +157,35 @@ New:
 -   ❌ Do not weaken assertions\
 -   ❌ Do not delete failing checks\
 -   ✅ preserve semantic strength
+
+------------------------------------------------------------------------
+
+## Failure classification before patching
+
+Before changing source, tests, fixtures, or harnesses, classify the
+failure as one primary class:
+
+- fixture schema drift
+- fixture expectation drift
+- stale fixture intent
+- projection / health bug
+- harness bug
+- suite-runner / parser bug
+- renderer-mode mismatch
+- actual production/runtime bug
+- documentation drift
+
+Rules:
+
+- Do not patch from one observed failure alone.
+- Do not weaken tests merely to match current output.
+- Do not mutate fixtures until green without first classifying intent
+  and failure stage.
+- Prefer read-only audit, then narrow patch, then smallest relevant
+  validation, then broader validation.
+- When renderer-sensitive expectations are involved, check
+  `renderer_profile` and `nps_scope` rather than making one fixture
+  accept all shapes.
 
 ------------------------------------------------------------------------
 

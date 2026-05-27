@@ -1,7 +1,21 @@
 # Provider Compliance Checklist
 
-This checklist is for maintainers verifying that a provider
+**Status:** Current dev maintainer checklist.
+
+This checklist helps maintainers audit whether a provider
 implementation conforms to the CamBANG provider contract.
+
+Canonical provider/runtime authority lives in:
+- `docs/provider_architecture.md`
+- `docs/core_runtime_model.md`
+- relevant `docs/architecture/` supplements
+
+Maintainer tool and validation layering guidance lives in:
+- `docs/dev/maintainer_tools.md`
+
+This checklist is subordinate to canonical architecture and current
+verifier source behavior. It must not be treated as an independent
+provider contract.
 
 It is intentionally provider-agnostic: a minimal backend adapter and a
 release-quality backend adapter must both satisfy the same contract,

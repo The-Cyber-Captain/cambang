@@ -134,18 +134,24 @@ These documents describe:
 
 They are intentionally non-canonical and may evolve or be removed.
 
-Current dev notes:
+Current dev references (grouped by purpose):
 
+Build / platform scaffolding:
 - `dev/build_and_scaffolding.md`
-- `dev/frameview_stage.md`
-- `dev/godot_boundary_verification_scenes.md`
-- `dev/maintainer_tools.md`
-- `dev/pixel_result_architecture_direction.md`
-- `dev/provider_compliance_checklist.md`
-- `dev/snapshot_truth_rules.md`
-- `dev/synthetic_timeline_reconciliation_notes.md`
 - `dev/upstream_discrepancies.md`
-- `dev/windows_mf_visibility_phase.md`
+
+Maintainer tooling / provider validation:
+- `dev/maintainer_tools.md`
+- `dev/provider_compliance_checklist.md`
+
+Snapshot / schema / test audit aids:
+- `dev/state_snapshot_schema_mapping.md`
+- `dev/testing_audit_lenses.md`
+
+StatusPanel / UI references:
+- `dev/status_panel_fixture_taxonomy.md`
+- `dev/cambangstatuspanel_mappings.md`
+- `dev/cambang_ui_design_standard_integrated.md`
 
 These documents must clearly state when code is:
 
@@ -187,7 +193,9 @@ and resistant to drift as the project evolves.
 | Former Topic | Current Location |
 |---|---|
 | Provider strand detail | `architecture/provider_strand_model.md` |
-| Snapshot truth guidance | `dev/snapshot_truth_rules.md` |
-| Godot boundary verification scenes | `dev/godot_boundary_verification_scenes.md` |
-| Pixel/result architecture direction | `dev/pixel_result_architecture_direction.md` |
-| Payload/result contract | `architecture/pixel_payload_and_result_contract.md` |
+| Snapshot truth guidance | `state_snapshot.md`; `architecture/godot_boundary_contract.md`; verifier interpretation guidance in `dev/maintainer_tools.md` |
+| Godot boundary verification scenes | `dev/maintainer_tools.md` |
+| Result/payload/backing/provenance surface | `architecture/pixel_payload_and_result_contract.md` |
+| Synthetic timeline reconciliation | `architecture/synthetic_timeline_scenarios.md`; `dev/maintainer_tools.md` |
+| Windows MF visibility phase | `dev/build_and_scaffolding.md`; `dev/maintainer_tools.md` |
+| StatusPanel policy/mapping | `status_panel_surface_policy.md`; `dev/cambangstatuspanel_mappings.md`; `dev/status_panel_fixture_taxonomy.md` |

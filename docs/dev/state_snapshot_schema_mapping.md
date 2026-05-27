@@ -1,9 +1,10 @@
 # State Snapshot Schema Mapping (v1)
 
-Status: Dev note (authoring and review aid)
+Status: Current dev schema/source/fixture audit aid (subordinate reference).
 
 This note explains how to interpret the v1 snapshot contract layers without
-mixing concerns.
+mixing concerns. It is subordinate to canonical snapshot docs, the canonical
+JSON Schema artifact, and current source/verifier behavior.
 
 ## 1) Layer separation (what governs what)
 
@@ -12,7 +13,9 @@ Primary docs:
 - `docs/state_snapshot.md`
 - `docs/architecture/godot_boundary_contract.md`
 - `docs/architecture/publication_model.md`
-- `docs/dev/snapshot_truth_rules.md`
+
+Verifier/tool interpretation guidance:
+- `docs/dev/maintainer_tools.md` (non-canonical for snapshot contract authority)
 
 This layer defines:
 - Godot-facing observable behavior (`state_published`, tick-bounded coalescing,
@@ -146,9 +149,9 @@ fully exercised in the current scaffolding slice.
 3. Lifecycle `phase` domain includes `TEARING_DOWN`, even if current retained
    projections may not populate that state across all record categories yet.
 
-4. Rigs are structurally present in the contract and required at top level, but
-   may be an empty array in current scaffolding where rig population is not yet
-   fully implemented.
+4. `rigs` is structurally present in the contract and required at top level;
+   it may be an empty array when no rig truth is retained for the current
+   snapshot.
 
 5. `type` in `NativeObjectRecord` is defined as `uint32` (CamBANG-owned
    vocabulary). The schema intentionally does not freeze to a closed enum in v1 to
