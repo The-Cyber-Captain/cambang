@@ -391,14 +391,18 @@ This phase may generate lifecycle stop events or provider error events.
 
 Providers release owned resources in dependency order:
 
-1. FrameProducer
+1. Stream-scoped provider-owned/native resources and stream-owned resources
 2. Stream
-3. AcquisitionSession (when realized)
+3. AcquisitionSession (when realized), including acquisition-session-scoped provider/native resources
 4. Device
 5. Provider
 
 At each boundary the provider emits the appropriate lifecycle and
 native-object events reflecting the actual state transition.
+
+Native-object lifecycle truth is emitted against current structural owner
+contexts (stream, acquisition_session, device, provider) rather than through a
+separate `FrameProducer` structural participant.
 
 Native-object destruction events must be emitted **only when the
 resource has actually been released**.
