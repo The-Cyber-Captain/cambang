@@ -32,8 +32,8 @@ The following terms are distinct and must not be conflated:
 - **scenario**: user-facing / Godot / SyntheticProvider timeline recording-storage-execution concept
 - **scenario library**: umbrella term for collections of scenarios
   - **built-in scenario library**: current C++-authored scenario collection
-  - **external scenario library**: future file-backed/user-provided scenario collections
-  - **scenario loader**: future serialized ingestion path used to load external scenario libraries
+  - **external scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader
+  - **scenario loader**: serialized ingestion path for external scenario JSON into canonical SyntheticProvider timeline scenarios
 - **verification case**: maintainer-authored smoke/CLI procedural validation input
 - **verification case catalog**: maintainer tooling selector/list for verification cases (`verify_case_catalog`)
 - **fixture**: static payload/data artifact, often consumed by tooling or UI/scene checks

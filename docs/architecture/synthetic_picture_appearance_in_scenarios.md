@@ -41,8 +41,10 @@ This is a legitimate scenario capability, including replay of recorded platform 
 Terminology alignment:
 
 - current C++ authored scenarios live in the **built-in scenario library**
-- future file-backed collections belong to the **external scenario library**
-- serialized ingestion for external libraries belongs to **scenario loader**
+- file-backed/user-provided collections belong to the **external scenario library**
+- serialized ingestion for external scenario JSON belongs to **scenario loader**
+
+Implemented external loading does not by itself define a finalized recording/editor UX or broad public scenario-file product surface.
 
 Godot/host layers may request scenario execution, but must not become the semantic owner of appearance-timeline meaning.
 
