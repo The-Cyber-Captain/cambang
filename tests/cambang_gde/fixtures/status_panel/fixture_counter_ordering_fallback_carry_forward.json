@@ -655,17 +655,17 @@
       ],
       "device/1": [
         "errors",
-        "still_w",
-        "still_h",
-        "still_fmt",
-        "still_prof"
+        "capture_w",
+        "capture_h",
+        "capture_fmt",
+        "capture_prof"
       ]
     },
     "required_counter_values_by_row": {
       "device/1": {
         "errors": 3,
-        "still_w": 4032,
-        "still_h": 3024
+        "capture_w": 4032,
+        "capture_h": 3024
       }
     },
     "required_badges_by_row": {
@@ -681,10 +681,10 @@
         "rebuild_count",
         "warm_hold_ms",
         "warm_remaining_ms",
-        "still_w",
-        "still_h",
-        "still_fmt",
-        "still_prof"
+        "capture_w",
+        "capture_h",
+        "capture_fmt",
+        "capture_prof"
       ],
       "device/2": [
         "camera_spec_version",
@@ -693,10 +693,10 @@
         "rebuild_count",
         "warm_hold_ms",
         "warm_remaining_ms",
-        "still_w",
-        "still_h",
-        "still_fmt",
-        "still_prof"
+        "capture_w",
+        "capture_h",
+        "capture_fmt",
+        "capture_prof"
       ],
       "stream/2": [
         "width",
@@ -715,8 +715,10 @@
         "rej_fmt"
       ],
       "rig/7": [
-        "still_h",
-        "still_w",
+        "capture_w",
+        "capture_h",
+        "capture_format",
+        "capture_profile_version",
         "members"
       ],
       "provider/100": [
