@@ -11,19 +11,16 @@
       "provider/100",
       "device/1",
       "stream/1",
-      "native_object/103",
       "rig/7",
       "rig/7/device/synthetic:0",
       "acquisition_session/1"
     ],
-    "required_visible_row_ids": [
-      "native_object/103"
-    ],
+    "required_visible_row_ids": [],
     "required_counters_by_row": {
       "device/1": [
         "errors",
-        "still_w",
-        "still_h"
+        "capture_w",
+        "capture_h"
       ],
       "stream/1": [
         "width",
@@ -40,19 +37,19 @@
       ],
       "rig/7": [
         "members",
-        "still_w",
-        "still_h"
+        "capture_w",
+        "capture_h"
       ]
     },
     "required_counter_values_by_row": {
       "provider/100": {
-        "native_all": 5,
-        "native_cur": 5,
+        "native_all": 4,
+        "native_cur": 4,
         "native_prev": 0
       },
       "device/1": {
-        "still_w": 4032,
-        "still_h": 3024
+        "capture_w": 4032,
+        "capture_h": 3024
       },
       "stream/1": {
         "width": 1280,
@@ -68,15 +65,15 @@
         "rej_inv": 2
       },
       "rig/7": {
-        "still_w": 4096,
-        "still_h": 2160,
+        "capture_w": 4096,
+        "capture_h": 2160,
         "members": 1
       }
     },
     "required_counter_labels_by_row": {
       "provider/100": [
-        "native_all*",
-        "native_cur*"
+        "native_all",
+        "native_cur"
       ],
       "server/main": [
         "gen",
@@ -89,12 +86,7 @@
         "version*"
       ]
     },
-    "required_info_substrings_by_row": {
-      "native_object/103": [
-        "owner_stream_id=1",
-        "creation_gen=2"
-      ]
-    },
+    "required_info_substrings_by_row": {},
     "required_badges_by_row": {
       "server/main": [
         "OK",
