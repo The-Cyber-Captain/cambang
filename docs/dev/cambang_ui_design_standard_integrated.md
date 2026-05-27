@@ -2,7 +2,20 @@
 
 ## Status
 
-Prototyping baseline.
+Status: Dev UI design reference / historical prototyping baseline.
+
+This document preserves global CamBANG UI language and early StatusPanel design guidance. It is not the canonical StatusPanel snapshot-surfacing policy.
+
+Canonical StatusPanel snapshot-surfacing policy lives in:
+- `docs/status_panel_surface_policy.md`
+
+Exact current StatusPanel implementation mapping lives in:
+- `docs/dev/cambangstatuspanel_mappings.md`
+
+Fixture taxonomy and renderer/NPS fixture classification live in:
+- `docs/dev/status_panel_fixture_taxonomy.md`
+
+This document may inform future UI work, especially global UI language, layout stability, theme/accessibility guidance, and presentation-model separation, but it must not override canonical policy or current implementation references.
 
 This document defines the architectural rules, global UI language, and component-specific guidance governing CamBANG UI during the prototyping phase.
 
