@@ -5,6 +5,7 @@ const DEFAULT_VIEWPORT_SIZE := Vector2i(1280, 720)
 var _window: Window = null
 var _panel: Node = null
 var _server: Node = null
+var _done := false
 
 class MockServer:
 	extends Node
@@ -32,8 +33,89 @@ class MockServer:
 
 
 func _initialize() -> void:
+	if not _setup_panel_with_mock_server("status_panel_provider_only_transition_harness"):
+		return
+
+	await _refresh_panel_with_snapshot(_provider_pending_snapshot())
+	if _panel.get("_last_authoritative_panel_model") != null:
+		_fail("provider_pending incorrectly seeded _last_authoritative_panel_model")
+		return
+	if not (_panel.get("_last_authoritative_snapshot_meta") as Dictionary).is_empty():
+		_fail("provider_pending incorrectly seeded _last_authoritative_snapshot_meta")
+		return
+	if not (_panel.get("_retained_subtrees") as Array).is_empty():
+		_fail("provider_pending incorrectly seeded retained history")
+		return
+	_assert_row_sets(
+		_panel.get("_last_panel_model"),
+		["server/main", "server/main/provider_pending"],
+		["provider/500", "device/1", "stream/1", "native_object/103"]
+	)
+	if _done:
+		return
+
+	await _refresh_panel_with_snapshot(_provider_only_snapshot(10, 500))
+	if not bool(_panel.get("_last_active_panel_is_authoritative")):
+		_fail("provider-only authoritative snapshot was not treated as authoritative")
+		return
+	if not (_panel.get("_retained_subtrees") as Array).is_empty():
+		_fail("provider-only authoritative snapshot incorrectly created retained history")
+		return
+	if _panel.get("_last_authoritative_panel_model") == null:
+		_fail("provider-only authoritative snapshot failed to seed retained-eligible authoritative state")
+		return
+	if _model_has_row_id(_panel.get("_last_authoritative_panel_model"), "server/main/provider_pending"):
+		_fail("provider_pending contaminated authoritative retained seed")
+		return
+	_assert_row_sets(
+		_panel.get("_last_panel_model"),
+		["server/main", "provider/500"],
+		["server/main/provider_pending", "device/1", "stream/1", "native_object/103"]
+	)
+	if _done:
+		return
+
+	await _refresh_panel_with_snapshot(_realized_snapshot(10, 500))
+	_assert_row_sets(
+		_panel.get("_last_panel_model"),
+		["server/main", "provider/500", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
+		["server/main/provider_pending"]
+	)
+	if _done:
+		return
+	if _retained_generation_list() != []:
+		_fail("provider-only -> realized same-gen should not demote into retained history")
+		return
+
+	await _refresh_panel_with_snapshot(_realized_snapshot(11, 600))
+	if _retained_generation_list() != [10]:
+		_fail("realized gen 10 -> gen 11 did not retain generation 10")
+		return
+	_assert_row_sets(
+		_panel.get("_last_panel_model"),
+		["server/main", "provider/600", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
+		["server/main/provider_pending"]
+	)
+	if _done:
+		return
+	if _retained_history_has_row_id("server/main/provider_pending"):
+		_fail("provider_pending leaked into retained history after realized->realized transition")
+		return
+
+	await _refresh_panel_with_snapshot(null)
+	if bool(_panel.get("_last_active_panel_is_authoritative")):
+		_fail("panel remained authoritative after NIL transition")
+		return
+	if _retained_history_has_row_id("server/main/provider_pending"):
+		_fail("provider_pending leaked into retained history across NIL transition")
+		return
+
+	_ok("OK: status panel provider-only transition harness PASS")
+
+
+func _setup_panel_with_mock_server(window_title: String) -> bool:
 	_window = Window.new()
-	_window.title = "status_panel_provider_only_transition_harness"
+	_window.title = window_title
 	_window.size = DEFAULT_VIEWPORT_SIZE
 	_window.mode = Window.MODE_WINDOWED
 	_window.visible = true
@@ -42,12 +124,12 @@ func _initialize() -> void:
 	var panel_script: Variant = load("res://addons/cambang/cambang_status_panel.gd")
 	if panel_script == null or not (panel_script is GDScript):
 		_fail("failed to load status panel script")
-		return
+		return false
 
 	var panel: Variant = panel_script.new()
 	if panel == null:
 		_fail("failed to instantiate status panel")
-		return
+		return false
 
 	_panel = panel
 	panel.name = "CamBANGStatusPanel"
@@ -63,85 +145,17 @@ func _initialize() -> void:
 	await process_frame
 	panel.call("_disconnect_server")
 	panel.set("_server", server)
-
-	await _refresh_panel_with_snapshot(panel, server, _provider_pending_snapshot())
-	if panel.get("_last_authoritative_panel_model") != null:
-		_fail("provider_pending incorrectly seeded _last_authoritative_panel_model")
-		return
-	if not (panel.get("_last_authoritative_snapshot_meta") as Dictionary).is_empty():
-		_fail("provider_pending incorrectly seeded _last_authoritative_snapshot_meta")
-		return
-	if not (panel.get("_retained_subtrees") as Array).is_empty():
-		_fail("provider_pending incorrectly seeded retained history")
-		return
-	_assert_rows(
-		panel.get("_last_panel_model"),
-		["server/main", "server/main/provider_pending"],
-		["provider/500", "device/1", "stream/1", "native_object/103"]
-	)
-
-	await _refresh_panel_with_snapshot(panel, server, _provider_only_snapshot(10, 500))
-	if not bool(panel.get("_last_active_panel_is_authoritative")):
-		_fail("provider-only authoritative snapshot was not treated as authoritative")
-		return
-	if not (panel.get("_retained_subtrees") as Array).is_empty():
-		_fail("provider-only authoritative snapshot incorrectly created retained history")
-		return
-	if panel.get("_last_authoritative_panel_model") == null:
-		_fail("provider-only authoritative snapshot failed to seed retained-eligible authoritative state")
-		return
-	if _model_contains_row_id(panel.get("_last_authoritative_panel_model"), "server/main/provider_pending"):
-		_fail("provider_pending poisoned retained-eligible authoritative cache")
-		return
-	_assert_rows(
-		panel.get("_last_panel_model"),
-		["server/main", "provider/500"],
-		["server/main/provider_pending", "device/1", "stream/1", "native_object/103"]
-	)
-
-	await _refresh_panel_with_snapshot(panel, server, _realized_snapshot(10, 500))
-	_assert_rows(
-		panel.get("_last_panel_model"),
-		["server/main", "provider/500", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
-		["server/main/provider_pending"]
-	)
-	if _retained_generation_list(panel) != []:
-		_fail("provider-only -> realized transition unexpectedly demoted current-generation state into retained history")
-		return
-
-	await _refresh_panel_with_snapshot(panel, server, _realized_snapshot(11, 600))
-	if _retained_generation_list(panel) != [10]:
-		_fail("realized -> next generation realized did not retain generation 10 subtree")
-		return
-	_assert_rows(
-		panel.get("_last_panel_model"),
-		["server/main", "provider/600", "device/1", "acquisition_session/1", "stream/1", "native_object/103"],
-		["server/main/provider_pending"]
-	)
-	if _retained_history_contains_provider_pending(panel):
-		_fail("provider_pending leaked into retained history after realized -> next generation realized transition")
-		return
-
-	await _refresh_panel_with_snapshot(panel, server, null)
-	if bool(panel.get("_last_active_panel_is_authoritative")):
-		_fail("panel remained authoritative after realized sequence returned to NIL")
-		return
-	if _retained_history_contains_provider_pending(panel):
-		_fail("provider_pending leaked into retained history across NIL transition")
-		return
-
-	print("OK: status panel provider-only transition harness PASS")
-	_quit_with_cleanup(0)
+	return true
 
 
-func _refresh_panel_with_snapshot(panel: Variant, server: MockServer, snapshot: Variant) -> void:
-	server.snapshot = snapshot
-	panel.call("_refresh_from_server")
+func _refresh_panel_with_snapshot(snapshot: Variant) -> void:
+	_server.snapshot = snapshot
+	_panel.call("_refresh_from_server")
 	await process_frame
 	await process_frame
 
 
-func _assert_rows(model: Variant, required: Array[String], forbidden: Array[String]) -> void:
+func _assert_row_sets(model: Variant, required: Array[String], forbidden: Array[String]) -> void:
 	var row_ids := _collect_entry_ids(model)
 	for row_id in required:
 		if not row_ids.has(row_id):
@@ -153,9 +167,29 @@ func _assert_rows(model: Variant, required: Array[String], forbidden: Array[Stri
 			return
 
 
-func _retained_generation_list(panel: Variant) -> Array[int]:
+func _collect_entry_ids(model: Variant) -> Array[String]:
+	var row_ids: Array[String] = []
+	if model == null:
+		return row_ids
+	var entries: Variant = model.get("entries") if model is Object else null
+	if typeof(entries) != TYPE_ARRAY:
+		return row_ids
+	for entry in entries:
+		if entry == null:
+			continue
+		var id_value: Variant = entry.get("id")
+		if typeof(id_value) == TYPE_STRING and str(id_value) != "":
+			row_ids.append(str(id_value))
+	return row_ids
+
+
+func _model_has_row_id(model: Variant, row_id: String) -> bool:
+	return _collect_entry_ids(model).has(row_id)
+
+
+func _retained_generation_list() -> Array[int]:
 	var generations: Array[int] = []
-	var retained_states: Array = panel.get("_retained_subtrees")
+	var retained_states: Array = _panel.get("_retained_subtrees")
 	for retained_state in retained_states:
 		if retained_state == null:
 			continue
@@ -163,18 +197,41 @@ func _retained_generation_list(panel: Variant) -> Array[int]:
 	return generations
 
 
-func _retained_history_contains_provider_pending(panel: Variant) -> bool:
-	var retained_states: Array = panel.get("_retained_subtrees")
+func _retained_history_has_row_id(row_id: String) -> bool:
+	var retained_states: Array = _panel.get("_retained_subtrees")
 	for retained_state in retained_states:
 		if retained_state == null:
 			continue
-		if _model_contains_row_id(retained_state.get("panel_model"), "server/main/provider_pending"):
+		if _model_has_row_id(retained_state.get("panel_model"), row_id):
 			return true
 	return false
 
 
-func _model_contains_row_id(model: Variant, row_id: String) -> bool:
-	return _collect_entry_ids(model).has(row_id)
+func _ok(msg: String) -> void:
+	if _done:
+		return
+	_done = true
+	print(msg)
+	_quit_with_cleanup(0)
+
+
+func _fail(msg: String) -> void:
+	if _done:
+		return
+	_done = true
+	push_error(msg)
+	print(msg)
+	_quit_with_cleanup(1)
+
+
+func _quit_with_cleanup(code: int) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		_panel.call("_disconnect_server")
+	if _window != null and is_instance_valid(_window):
+		_window.queue_free()
+	if _server != null and is_instance_valid(_server):
+		_server.queue_free()
+	quit(code)
 
 
 func _provider_pending_snapshot() -> Dictionary:
@@ -231,84 +288,15 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		"imaging_spec_version": 1,
 		"scoped_resource_telemetry": [],
 		"rigs": [],
-		"devices": [
-			{
-				"instance_id": 1,
-				"hardware_id": "synthetic:0",
-				"phase": "LIVE",
-				"mode": "STREAMING",
-				"errors_count": 0
-			}
-		],
-		"acquisition_sessions": [
-			{
-				"acquisition_session_id": 1,
-				"device_instance_id": 1,
-				"phase": "LIVE",
-				"capture_profile": {"still": {"version": 0, "width": 0, "height": 0, "format": 0, "still_image_bundle": {"members": []}}},
-				"captures_triggered": 0,
-				"captures_completed": 0,
-				"captures_failed": 0,
-				"last_capture_id": 0,
-				"last_capture_latency_ns": 0,
-				"error_code": 0
-			}
-		],
-		"streams": [
-			{
-				"stream_id": 1,
-				"device_instance_id": 1,
-				"phase": "LIVE",
-				"mode": "FLOWING",
-				"intent": "PREVIEW",
-				"stop_reason": "NONE",
-				"target_fps_max": 30,
-				"frames_received": 1
-			}
-		],
+		"devices": [{"instance_id": 1, "hardware_id": "synthetic:0", "phase": "LIVE", "mode": "STREAMING", "errors_count": 0}],
+		"acquisition_sessions": [{"acquisition_session_id": 1, "device_instance_id": 1, "phase": "LIVE", "capture_profile": {"still": {"version": 0, "width": 0, "height": 0, "format": 0, "still_image_bundle": {"members": []}}}, "captures_triggered": 0, "captures_completed": 0, "captures_failed": 0, "last_capture_id": 0, "last_capture_latency_ns": 0, "error_code": 0}],
+		"streams": [{"stream_id": 1, "device_instance_id": 1, "phase": "LIVE", "mode": "FLOWING", "intent": "PREVIEW", "stop_reason": "NONE", "target_fps_max": 30, "frames_received": 1024}],
 		"native_objects": [
-			{
-				"native_id": provider_native_id,
-				"type": "provider",
-				"phase": "LIVE",
-				"creation_gen": gen,
-				"owner_acquisition_session_id": 0
-			},
-			{
-				"native_id": 101,
-				"type": "device",
-				"owner_device_instance_id": 1,
-				"phase": "LIVE",
-				"creation_gen": gen,
-				"owner_acquisition_session_id": 0
-			},
-			{
-				"native_id": 104,
-				"type": "acquisition_session",
-				"owner_device_instance_id": 1,
-				"owner_acquisition_session_id": 1,
-				"owner_stream_id": 0,
-				"phase": "LIVE",
-				"creation_gen": gen
-			},
-			{
-				"native_id": 102,
-				"type": "stream",
-				"owner_device_instance_id": 1,
-				"owner_acquisition_session_id": 1,
-				"owner_stream_id": 1,
-				"phase": "LIVE",
-				"creation_gen": gen
-			},
-			{
-				"native_id": 103,
-				"type": "stream",
-				"owner_device_instance_id": 1,
-				"owner_acquisition_session_id": 1,
-				"owner_stream_id": 1,
-				"phase": "LIVE",
-				"creation_gen": gen
-			}
+			{"native_id": provider_native_id, "type": "provider", "phase": "LIVE", "creation_gen": gen, "owner_acquisition_session_id": 0},
+			{"native_id": 101, "type": "device", "owner_device_instance_id": 1, "phase": "LIVE", "creation_gen": gen, "owner_acquisition_session_id": 0},
+			{"native_id": 104, "type": "acquisition_session", "owner_device_instance_id": 1, "owner_acquisition_session_id": 1, "owner_stream_id": 0, "phase": "LIVE", "creation_gen": gen},
+			{"native_id": 102, "type": "stream", "owner_device_instance_id": 1, "owner_acquisition_session_id": 1, "owner_stream_id": 1, "phase": "LIVE", "creation_gen": gen},
+			{"native_id": 103, "type": "stream", "owner_device_instance_id": 1, "owner_acquisition_session_id": 1, "owner_stream_id": 1, "phase": "LIVE", "creation_gen": gen}
 		],
 		"detached_root_ids": []
 	}
