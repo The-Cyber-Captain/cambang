@@ -145,6 +145,55 @@ Maintainers should treat such modes as verification aids rather than as evidence
 that the synthetic producer truthfully supports those capability sets in normal
 operation.
 
+For backing-contract truth and result/payload semantics, use:
+
+- `docs/architecture/pixel_payload_and_result_contract.md`
+
+### 4.x.1 Synthetic stream GPU/update maintainer controls
+
+These controls are maintainer/verification aids only. They are not product or
+user runtime configuration and do not redefine provider-contract truth.
+
+- `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=display_demanded|always`
+  - default: `display_demanded`
+  - `always` is a maintainer eager-update comparison override
+
+Retained maintainer diagnostics:
+
+- `CAMBANG_DEV_SYNTH_TRIAGE_TRACE`
+- `CAMBANG_DEV_SYNTH_CATCHUP_CAP`
+  - default: `0` (uncapped catchup)
+  - normal `SyntheticProvider` runtime should leave catchup cap unset
+  - `2` is the smallest cap preserving common two-stream due-together behavior
+  - `1` is intentionally lossy for dual-stream steady flow and should be used
+    only for stress/loss diagnostics
+- `CAMBANG_DEV_DISPLAY_DEMAND_TRACE`
+- `CAMBANG_DEV_SYNTH_GPU_TRACE`
+- `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TRACE`
+- `CAMBANG_STREAM_LOAD_FRAME_SPIKE_TOP_N`
+
+Harness selector:
+
+- `CAMBANG_EXERCISE`
+  - maintainer harness selector (not product API configuration)
+  - `no_display_eager` resolves to effective
+    `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always` via exercise selection
+    unless explicitly conflicted
+
+Aggregate telemetry note:
+
+- Per-frame `FrameBufferLease` native-object create/destroy snapshot rows remain
+  removed.
+- High-frequency lease/backing observability is via
+  `scoped_resource_telemetry` counters, while long-lived identity-bearing native
+  resources remain in `native_objects`.
+
+Removed temporary knobs:
+
+- `CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED`
+- `CAMBANG_DEV_SYNTH_SKIP_GPU_TEXTURE_UPDATE`
+- `CAMBANG_DEV_SYNTH_REUSE_RENDERED_FRAME`
+
 ---
 
 ## 5. Snapshot truth requirements
@@ -463,3 +512,19 @@ This removes ambiguity in the initial requested stream `to_image()` panel for
 scene 70.
 
 Capture-picture behavior was intentionally left unchanged in this correction.
+
+## Scene 73 rig capture result-set verification (`rig_capture_result_set_verification`)
+
+Contract truth for capture-result retrieval/assembly remains canonical in:
+
+- `docs/architecture/pixel_payload_and_result_contract.md`
+
+Maintainer proof inventory for Godot-visible rig capture uses:
+
+- Scene 73: `tests/cambang_gde/scenes/73_rig_capture_result_set_verification.tscn`
+- Scenario: `scenarios/rig_capture_result_basic.json`
+- Trigger path: `CamBANGRig.trigger_capture()`
+- Verification surface: `CaptureResultSet`
+
+Scene 70 remains the maintainer-facing stream/result teaching and verification
+coverage; Scene 73 is the canonical Godot-visible rig `CaptureResultSet` proof.

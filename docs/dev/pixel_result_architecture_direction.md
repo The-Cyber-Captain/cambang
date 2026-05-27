@@ -1,7 +1,11 @@
 # Pixel / Result Architecture Direction
 
-Status: Dev note (design-direction consolidation)  
-Purpose: Records the agreed architectural direction for CamBANG’s release-facing image/result path and the split between State Snapshot, System Graph, and Result Objects.
+Status: Dev note (historical/directional background; subordinate to canonical contract)  
+Purpose: Records design-direction background for CamBANG’s release-facing image/result path and the split between State Snapshot, System Graph, and Result Objects.
+
+Canonical payload/result/provenance contract authority now lives in:
+
+- `docs/architecture/pixel_payload_and_result_contract.md`
 
 This note consolidates design direction reached during architecture review and is intended to reduce drift before implementation.
 

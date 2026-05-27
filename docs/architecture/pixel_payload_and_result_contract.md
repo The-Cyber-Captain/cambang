@@ -420,6 +420,27 @@ The Capture Sink is responsible for:
 
 A **Capture Result** is the device-level still-capture result. It has a default image. When no bracketing is involved, the default image is the only image. When bracketing is involved, additional bracket images may be represented within the same Capture Result.
 
+### 10.3.1 Retrieval / assembly success gate
+
+Device-level `CaptureResult` retrieval is successful only after assembly success.
+
+Assembly success requires both:
+
+- retained default image member `0`
+- terminal capture lifecycle success (`capture_completed`)
+
+`capture_failed` prevents successful `CaptureResult` retrieval even if a default
+image payload was retained.
+
+The following do not produce a successful retrievable `CaptureResult`:
+
+- `capture_completed` without a retained default image member
+- retained default image member without terminal completion
+
+Partial additional-member success is allowed: when member `0` is retained and
+capture terminal is `capture_completed`, retrieval succeeds and includes only
+the retained contiguous additional-member prefix.
+
 A Capture Result is **not** required to already be:
 
 - a CPU `Image`
@@ -708,15 +729,12 @@ Provenance is attached per fact (or per small fact group), not as one result-wid
 
 Recommended first-pass provenance vocabulary:
 
-- `HARDWARE_REPORTED`
-- `PROVIDER_DERIVED`
-- `RUNTIME_INJECTED`
-- `USER_DEFAULT`
-- `USER_OVERRIDE`
-- `UNKNOWN`
-
-The intended meaning of these values is documented in the direction note:
-- `docs/dev/pixel_result_architecture_direction.md`
+- `HARDWARE_REPORTED` — reported directly by platform/hardware/provider API metadata.
+- `PROVIDER_DERIVED` — derived by the provider from backend/platform data before handing truth to Core.
+- `RUNTIME_INJECTED` — supplied by CamBANG runtime/Core because it is runtime context rather than image-origin metadata.
+- `USER_DEFAULT` — supplied from user/application default configuration when no more specific fact is available.
+- `USER_OVERRIDE` — supplied from explicit user/application correction or override.
+- `UNKNOWN` — no authoritative source for the fact is currently known or retained.
 
 ### 14.1 Important distinction
 
