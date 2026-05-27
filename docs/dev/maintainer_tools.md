@@ -417,8 +417,9 @@ Any failure indicates a regression in Godot-boundary snapshot exposure.
 
 ### Purpose
 
-`windows_mf_runtime_validate` validates the Windows Media Foundation
-provider under real asynchronous hardware-backed execution.
+`windows_mf_runtime_validate` validates the **current Windows Media
+Foundation dev accelerator** (`WindowsProvider`) against real hardware under
+asynchronous platform-backed execution.
 
 It exercises:
 
@@ -427,7 +428,8 @@ It exercises:
 - stream start / stop
 - shutdown behaviour
 
-This complements deterministic provider verification but does not replace it.
+Passing this tool complements deterministic provider verification, but it does
+**not** prove final Windows release-provider completeness.
 
 ### Build and usage
 
