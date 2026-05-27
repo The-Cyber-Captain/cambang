@@ -281,3 +281,75 @@ func _authoritative_snapshot(gen: int, provider_native_id: int, version: int, to
 		],
 		"detached_root_ids": []
 	}
+
+
+func _collect_entry_ids(model: Variant) -> Array[String]:
+	var row_ids: Array[String] = []
+	if model == null:
+		return row_ids
+	var entries: Variant = model.get("entries") if model is Object else null
+	if typeof(entries) != TYPE_ARRAY:
+		return row_ids
+	for entry in entries:
+		if entry == null:
+			continue
+		var entry_id := str(entry.get("id", ""))
+		if entry_id != "":
+			row_ids.append(entry_id)
+	return row_ids
+
+
+func _find_entry(model: Variant, row_id: String) -> Variant:
+	if model == null:
+		return null
+	var entries: Variant = model.get("entries") if model is Object else null
+	if typeof(entries) != TYPE_ARRAY:
+		return null
+	for entry in entries:
+		if entry == null:
+			continue
+		if str(entry.get("id", "")) == row_id:
+			return entry
+	return null
+
+
+func _entry_has_badge(entry: Variant, badge_text: String) -> bool:
+	if entry == null:
+		return false
+	var badges: Variant = entry.get("badges")
+	if typeof(badges) != TYPE_ARRAY:
+		return false
+	for badge in badges:
+		if badge == null:
+			continue
+		if str(badge.get("label", "")) == badge_text:
+			return true
+	return false
+
+
+func _entry_info_contains(entry: Variant, substring: String) -> bool:
+	if entry == null:
+		return false
+	var info_lines: Variant = entry.get("info_lines")
+	if typeof(info_lines) != TYPE_ARRAY:
+		return false
+	for line in info_lines:
+		if str(line).findn(substring) != -1:
+			return true
+	return false
+
+
+func _fail(message: String) -> void:
+	push_error(message)
+	print("FAIL: %s" % message)
+	_quit_with_cleanup(1)
+
+
+func _quit_with_cleanup(code: int) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		_panel.call("_disconnect_server")
+	if _window != null and is_instance_valid(_window):
+		_window.queue_free()
+	if _server != null and is_instance_valid(_server):
+		_server.queue_free()
+	quit(code)

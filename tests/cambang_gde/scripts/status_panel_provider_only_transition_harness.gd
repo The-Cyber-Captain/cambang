@@ -312,3 +312,35 @@ func _realized_snapshot(gen: int, provider_native_id: int) -> Dictionary:
 		],
 		"detached_root_ids": []
 	}
+
+
+func _collect_entry_ids(model: Variant) -> Array[String]:
+	var row_ids: Array[String] = []
+	if model == null:
+		return row_ids
+	var entries: Variant = model.get("entries") if model is Object else null
+	if typeof(entries) != TYPE_ARRAY:
+		return row_ids
+	for entry in entries:
+		if entry == null:
+			continue
+		var row_id := str(entry.get("id", ""))
+		if row_id != "":
+			row_ids.append(row_id)
+	return row_ids
+
+
+func _fail(message: String) -> void:
+	push_error(message)
+	print("FAIL: %s" % message)
+	_quit_with_cleanup(1)
+
+
+func _quit_with_cleanup(code: int) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		_panel.call("_disconnect_server")
+	if _window != null and is_instance_valid(_window):
+		_window.queue_free()
+	if _server != null and is_instance_valid(_server):
+		_server.queue_free()
+	quit(code)
