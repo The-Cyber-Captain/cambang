@@ -8,7 +8,9 @@
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
@@ -91,6 +93,8 @@ public:
   // - Before the first publish, returns NIL.
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
+  godot::Array enumerate_devices() const;
+  godot::Ref<CamBANGDevice> get_device_for_hardware_id(const godot::String& hardware_id) const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
   godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;

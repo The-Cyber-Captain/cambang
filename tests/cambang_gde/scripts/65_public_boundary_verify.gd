@@ -168,6 +168,38 @@ func _ready() -> void:
 	if synth_default_cfg.get("timeline_reconciliation", "not_null") != null:
 		_fail("FAIL: start(SYNTHETIC) nominal config must report null timeline_reconciliation")
 		return
+	if not CamBANGServer.has_method("enumerate_devices"):
+		_fail("FAIL: CamBANGServer.enumerate_devices() missing")
+		return
+	if not CamBANGServer.has_method("get_device_for_hardware_id"):
+		_fail("FAIL: CamBANGServer.get_device_for_hardware_id() missing")
+		return
+	var endpoints = CamBANGServer.enumerate_devices()
+	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() < 1:
+		_fail("FAIL: synthetic enumerate_devices() must return at least one endpoint")
+		return
+	var endpoint0 = endpoints[0]
+	if typeof(endpoint0) != TYPE_DICTIONARY:
+		_fail("FAIL: enumerate_devices() entries must be Dictionary")
+		return
+	var hardware_id := str(endpoint0.get("hardware_id", ""))
+	if hardware_id.is_empty():
+		_fail("FAIL: enumerate_devices() endpoint hardware_id must be non-empty")
+		return
+	var handle_a = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	var handle_b = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	if handle_a == null or handle_b == null:
+		_fail("FAIL: get_device_for_hardware_id() must return non-null handles for known hardware_id")
+		return
+	if str(handle_a.get_hardware_id()) != hardware_id or str(handle_b.get_hardware_id()) != hardware_id:
+		_fail("FAIL: endpoint handles must expose matching hardware_id")
+		return
+	if int(handle_a.get_instance_id()) != 0 or int(handle_b.get_instance_id()) != 0:
+		_fail("FAIL: endpoint handles must have instance_id == 0")
+		return
+	if not bool(handle_a.is_endpoint_handle()) or not bool(handle_b.is_endpoint_handle()):
+		_fail("FAIL: endpoint handles must report is_endpoint_handle() true")
+		return
 	CamBANGServer.stop()
 
 	var synthetic_role_default_timing_err := CamBANGServer.start(

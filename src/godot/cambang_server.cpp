@@ -337,6 +337,48 @@ bool CamBANGServer::is_running() const {
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
 }
 
+godot::Array CamBANGServer::enumerate_devices() const {
+  godot::Array out;
+  if (!is_running() || !provider_) {
+    return out;
+  }
+  std::vector<CameraEndpoint> endpoints;
+  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+  if (!pr.ok()) {
+    return out;
+  }
+  for (const CameraEndpoint& endpoint : endpoints) {
+    godot::Dictionary entry;
+    entry["hardware_id"] = godot::String(endpoint.hardware_id.c_str());
+    entry["name"] = godot::String(endpoint.name.c_str());
+    out.push_back(entry);
+  }
+  return out;
+}
+
+godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot::String& hardware_id) const {
+  if (hardware_id.is_empty() || !is_running() || !provider_) {
+    return godot::Ref<CamBANGDevice>();
+  }
+  std::vector<CameraEndpoint> endpoints;
+  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+  if (!pr.ok()) {
+    return godot::Ref<CamBANGDevice>();
+  }
+  for (const CameraEndpoint& endpoint : endpoints) {
+    if (hardware_id == endpoint.hardware_id.c_str()) {
+      godot::Ref<CamBANGDevice> out;
+      out.instantiate();
+      out->set_server_and_endpoint(
+          const_cast<CamBANGServer*>(this),
+          hardware_id,
+          godot::String(endpoint.name.c_str()));
+      return out;
+    }
+  }
+  return godot::Ref<CamBANGDevice>();
+}
+
 godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id) const {
   if (device_instance_id == 0) {
     return godot::Ref<CamBANGDevice>();
@@ -893,6 +935,8 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
