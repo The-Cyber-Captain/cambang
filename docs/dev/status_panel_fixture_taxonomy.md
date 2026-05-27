@@ -1,9 +1,13 @@
 # Status Panel Fixture Taxonomy
 
-Status: Dev planning note (verification harness design)
+Status: Current dev reference (StatusPanel fixture taxonomy and harness intent)
 
-This note proposes a fixture taxonomy and harness flow for future
+This note documents the fixture taxonomy and harness intent used by
 `CamBANGStatusPanel` verification.
+
+It distinguishes expected-invalid fixtures from accidental invalidity,
+records intended validation stages, and documents current renderer/NPS
+fixture metadata used by the harness.
 
 ## 1) Scope and goals
 
