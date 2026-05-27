@@ -94,13 +94,22 @@ Godot / `godot-cpp` ecosystem.
 
 ## 3. Compilation database / IDE integration
 
-CamBANG provides a SCons-native compilation database generator at:
+The current `SConstruct` references a SCons-native compilation database tool at:
 
 ```text
 site_scons/site_tools/compdb.py
 ```
 
-Behaviour:
+Audit status: the uploaded repository tree used for this documentation pass does
+not contain `site_scons/site_tools/compdb.py`. Because `SConstruct` still calls
+`env.Tool("compdb", toolpath=["site_scons/site_tools"])`, this is not safe to
+treat as documentation drift alone. Classify before changing source/build files:
+
+- documentation drift, if the compile-database integration was intentionally removed
+- repo packaging/build-configuration issue, if the tool should be present in source control
+- missing generated/ignored file, if local workflows generate or restore it before build
+
+Behavior intended when that tool is present:
 
 - the tool wraps compile actions and records commands for C/C++ translation units
 - the database is written to `compile_commands.json` at repo root by default

@@ -30,7 +30,7 @@ CamBANG core runs on a **dedicated core thread**.
 
 All mutation of core-owned state occurs on that thread, including: -
 arbitration state - device/stream/rig core state machines -
-`CBLifecycleRegistry` - snapshot assembly/publish bookkeeping
+`CoreNativeObjectRegistry` - snapshot assembly/publish bookkeeping
 
 Godot-facing objects never mutate core state directly; they enqueue
 commands to core.
@@ -200,16 +200,18 @@ clear error code.
 
 ------------------------------------------------------------------------
 
-## 7. `CBLifecycleRegistry`
+## 7. `CoreNativeObjectRegistry` and snapshot publication
 
-`CBLifecycleRegistry` tracks all CamBANG-created native/core objects for
-introspection.
+`CoreNativeObjectRegistry` maintains the core-truth view of provider-reported
+native objects used to populate `CamBANGStateSnapshot.native_objects`.
 
-Responsibilities: - assign monotonic `native_id` - track `phase`
-transitions (CREATED → LIVE → TEARING_DOWN → DESTROYED) - retain
-DESTROYED records for a fixed retention window - compute
-`detached_root_ids` based on ended owners and retained records - expose
-registry view to `CBStatePublisher` (read-only on core thread)
+Responsibilities: - retain provider-reported native object records keyed by
+`native_id` - track created/destroyed state and timestamps - retain DESTROYED
+records for the retention window - provide registry truth to `SnapshotBuilder`
+(read-only on core thread). Snapshot publication is assembled by
+`SnapshotBuilder` and delivered through the `IStateSnapshotPublisher` boundary;
+`StateSnapshotBuffer` is the thread-safe latest-snapshot buffer used by current
+smoke/Godot bridging paths.
 
 Registry mutation occurs only on the core thread, based on provider
 events and core-directed teardown steps.

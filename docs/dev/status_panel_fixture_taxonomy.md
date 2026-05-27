@@ -93,65 +93,58 @@ Expected behavior:
 
 ---
 
-## 3) Proposed per-fixture manifest
+## 3) Current per-fixture metadata
 
-Each fixture directory includes a `manifest.json` (or `.yaml`) describing intent.
+Each current fixture is a single JSON file. Fixture intent and expected outcome
+are encoded as top-level fields in that same file, with the authoritative input
+under `payload` for snapshot fixtures.
 
 ```json
 {
-  "fixture_id": "snapshot_malformed_missing_stream_id",
   "fixture_kind": "authoritative_snapshot",
+  "provider_mode": "synthetic",
   "expected_validity": "invalid",
-  "expected_failure_stage": "snapshot_schema",
   "should_run_projector": false,
-  "expected_panel_outcome": "reject_input",
-  "inputs": {
-    "snapshot": "snapshot.json",
-    "retained": null,
-    "projection": null
+  "expected_panel_outcome": {
+    "contract_gap_count": 1,
+    "projection_gap_count": 0
   },
-  "notes": "Missing required field stream_id in streams[0]."
+  "payload": {
+    "schema_version": 1
+  },
+  "renderer_profile": "any",
+  "nps_scope": "none"
 }
 ```
 
-## Required manifest fields
+## Required fixture fields in the current harness
 
-- `fixture_id` (string)
-  - stable unique ID for reporting and golden linkage.
-- `fixture_kind` (enum)
-  - `authoritative_snapshot`
-  - `retained_model`
-  - `projection_only`
-  - `composite` (snapshot + retained/projection)
-- `expected_validity` (enum)
-  - `valid`
-  - `invalid`
-- `expected_failure_stage` (enum or `null`)
-  - `none` (for valid fixtures)
-  - `snapshot_decode`
-  - `snapshot_schema`
-  - `snapshot_semantic`
-  - `retained_schema`
-  - `projection_validation`
-  - `panel_runtime`
+- `fixture_kind` (string)
+  - current harness paths include `authoritative_snapshot` and
+    `continuity_no_snapshot`.
+- `expected_validity` (string)
+  - `valid` or `invalid`.
 - `should_run_projector` (boolean)
-  - explicit expectation to prevent accidental stage drift.
-- `expected_panel_outcome` (enum)
-  - `render_ok`
-  - `render_with_fallback`
-  - `reject_input`
-  - `error_state`
-- `inputs` (object)
-  - paths for `snapshot`, `retained`, `projection` (nullable where not used).
+  - explicit expectation to prevent accidental projector-stage drift.
+- `expected_panel_outcome` (object)
+  - rendered-row, badge, counter, and gap assertions consumed by the harness.
+- `payload`
+  - authoritative snapshot payload for `authoritative_snapshot` fixtures.
+- `renderer_profile`
+  - `any`, `gpu`, `compatibility`, or `ambiguous`.
+- `nps_scope`
+  - `none`, `structural`, `aggregate`, `gpu_leaf`, `compatibility_leaf`, or
+    `anomaly`.
 
-## Recommended optional fields
+## Common optional fixture fields
 
-- `expected_error_code` (string)
-- `expected_error_contains` (string/array)
-- `golden_output` (path)
-- `tags` (array; e.g. `schema`, `enum-edge`, `continuity`, `negative`)
-- `owner` (string)
-- `notes` (string)
+- `provider_mode`
+- `initial_expanded_row_ids`
+- `panel_exports`
+- `adversarial_projection`
+- `authoritative_prelude_payload`
+- `authoritative_observed_payloads`
+- `continuity_prelude_payload`
 
 ---
 
@@ -161,15 +154,16 @@ The harness must run a deterministic preflight before executing panel assertions
 
 ## Shared preflight (all fixtures)
 
-1. Load manifest.
-2. Validate manifest against manifest schema.
-3. Resolve declared input files and hash them (for reproducibility logs).
-4. Confirm fixture classification is internally consistent:
-   - invalid fixtures must declare non-`none` `expected_failure_stage`
-   - valid fixtures must declare `expected_failure_stage = none`
+1. Load fixture JSON.
+2. Confirm required top-level fixture metadata is present and internally
+   consistent for the fixture kind.
+3. Normalize taxonomy fields such as `renderer_profile` and `nps_scope`.
+4. For `authoritative_snapshot`, validate `payload` with the snapshot schema
+   validator before deciding whether projection should run.
 
-If any shared preflight step fails, classify as **harness/fixture-definition error**
-(not SUT behavior).
+If any shared preflight step fails because the fixture metadata is malformed or
+contradictory, classify as **harness/fixture-definition error** (not SUT
+behavior).
 
 ## Preflight for fixtures expected valid
 
@@ -185,13 +179,13 @@ accidental invalidity.
 
 ## Preflight for fixtures expected invalid
 
-1. Decode inputs as far as needed to reach declared failure stage.
-2. Execute gates in order until first failure.
-3. Assert the first failure stage matches `expected_failure_stage` exactly.
-4. Assert `should_run_projector` behavior is respected:
+1. Decode inputs as far as needed to validate the declared fixture kind.
+2. Execute schema/compatibility gates in order until the first failure or fallback
+   condition is observed.
+3. Assert `should_run_projector` behavior is respected:
    - if false, projector must not run,
-   - if true, failure must occur after projector entry.
-5. Optionally assert expected error code/message fragment.
+   - if true, failure/fallback must occur after projector entry.
+4. Assert expected panel outcome/gap/error fields match the fixture metadata.
 
 If fixture passes all gates unexpectedly, fail as **accidental validity drift**.
 If it fails at a different stage, fail as **taxonomy mismatch**.
@@ -211,50 +205,46 @@ Use explicit classification in test output:
 - `INVALID_STAGE_MISMATCH`
   - fixture marked invalid, failed but at different stage.
 - `HARNESS_CONFIG_ERROR`
-  - manifest malformed, missing files, or contradictory manifest fields.
+  - fixture metadata malformed, missing required data, or contradictory fields.
 
 This classification prevents silent acceptance of broken fixtures and keeps
 negative tests intentional.
 
 ---
 
-## 6) Suggested directory layout
+## 6) Current directory layout
+
+StatusPanel harness fixtures currently live under the Godot test project at:
 
 ```text
-tests/fixtures/status_panel/
-  authoritative/valid/
-    <fixture_id>/
-      manifest.json
-      snapshot.json
-  authoritative/invalid/
-    <fixture_id>/
-      manifest.json
-      snapshot.json
-  retained/valid/
-    <fixture_id>/
-      manifest.json
-      retained.json
-      projection.json
-      snapshot.json   # optional when composite
-  retained/invalid/
-    <fixture_id>/
-      manifest.json
-      retained.json
-      projection.json
-      snapshot.json   # optional when composite
+tests/cambang_gde/fixtures/status_panel/
+  fixture_<fixture_id>.json
+  review_multistream/
+    fixture_review_multistream_<fixture_id>.json
+  review_orphan/
+    fixture_review_orphan_<fixture_id>.json
 ```
 
-Keep fixture payloads small and purpose-specific; use tags for cross-cutting
-selection rather than duplicating large payloads.
+The active harness consumes these fixture JSON files directly, for example:
+
+```bash
+godot4 --headless --path tests/cambang_gde --script res://scripts/status_panel_harness.gd -- fixtures/status_panel/fixture_valid_basic_authoritative.json
+```
+
+The taxonomy concepts above describe how fixtures should be classified and
+reviewed; they do not imply a separate manifest-per-fixture directory layout in
+the current repository. Keep fixture payloads small and purpose-specific; use
+explicit fixture fields/tags for cross-cutting selection rather than duplicating
+large payloads.
 
 ---
 
 ## 7) Practical policy recommendations
 
-- Require every invalid fixture to declare exactly one intended first-failure stage.
-- Freeze fixture manifests under code review as strictly as test code.
+- Require every invalid fixture to declare explicit expected validity and panel outcome/gap expectations.
+- Freeze fixture metadata under code review as strictly as test code.
 - Add a CI summary table grouped by classification labels above.
-- Treat manifest/schema drift as a blocking failure, not warning-only.
+- Treat fixture metadata/schema drift as a blocking failure, not warning-only.
 
 ---
 

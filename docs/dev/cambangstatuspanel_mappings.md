@@ -1,6 +1,11 @@
 ## CamBANGStatusPanel: implemented health rules and lifecycle badge mapping
 
-This documents the rules currently applied by the packaged `CamBANGStatusPanel` code.
+**Status:** Current dev implementation reference.
+
+This document records the rules currently applied by the packaged `CamBANGStatusPanel` code.
+Canonical StatusPanel snapshot-surfacing policy lives in `docs/status_panel_surface_policy.md`.
+This document is subordinate to that canonical policy.
+It may document exact current implementation behavior and fixture-facing expectations, but must not override canonical policy.
 
 ### Health summary labels
 
