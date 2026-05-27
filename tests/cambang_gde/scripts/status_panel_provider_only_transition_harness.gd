@@ -142,7 +142,7 @@ func _refresh_panel_with_snapshot(panel: Variant, server: MockServer, snapshot: 
 
 
 func _assert_rows(model: Variant, required: Array[String], forbidden: Array[String]) -> void:
-	var row_ids := _collect_entry_ids(model)
+	var row_ids: Array[String] = _collect_entry_ids(model)
 	for row_id in required:
 		if not row_ids.has(row_id):
 			_fail("missing expected row_id=%s; got=%s" % [row_id, row_ids])

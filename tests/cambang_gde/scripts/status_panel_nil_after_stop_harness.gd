@@ -92,7 +92,7 @@ func _initialize() -> void:
 		return
 
 	var rendered_model: Variant = panel.get("_last_panel_model")
-	var row_ids := _collect_entry_ids(rendered_model)
+	var row_ids: Array[String] = _collect_entry_ids(rendered_model)
 	if row_ids.has("provider/100"):
 		_fail("authoritative provider row remained visible after NIL reconciliation")
 		return
@@ -140,7 +140,7 @@ func _initialize() -> void:
 		_fail("panel failed to re-enter authoritative mode for later snapshot B")
 		return
 
-	var row_ids_after_b := _collect_entry_ids(panel.get("_last_panel_model"))
+	var row_ids_after_b: Array[String] = _collect_entry_ids(panel.get("_last_panel_model"))
 	if not row_ids_after_b.has("provider/200"):
 		_fail("current authoritative provider/200 missing after later authoritative refresh")
 		return
