@@ -51,3 +51,7 @@ mutate fixtures merely to match current output; classify any mismatch first.
 Code: The Unlicense.
 
 See `docs/THIRD_PARTY_NOTICES.md` for third-party notices.
+
+### Support me! 🥛🍞
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/L4L81SGS9W)
