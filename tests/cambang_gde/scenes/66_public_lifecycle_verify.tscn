@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://dpu0f4x4v2l7a"]
+
+[ext_resource type="Script" path="res://scripts/66_public_lifecycle_verify.gd" id="1_script"]
+
+[node name="PublicLifecycleVerify" type="Node"]
+script = ExtResource("1_script")
