@@ -89,6 +89,35 @@ func _ready() -> void:
 		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
 		return
 
+	var realized_in_snapshot := false
+	for _realize_i in range(MAX_FRAMES):
+		var realize_snap = CamBANGServer.get_state_snapshot()
+		if typeof(realize_snap) == TYPE_DICTIONARY:
+			var realize_devices = realize_snap.get("devices", [])
+			if typeof(realize_devices) == TYPE_ARRAY:
+				for realize_dev in realize_devices:
+					if typeof(realize_dev) != TYPE_DICTIONARY:
+						continue
+					if int(realize_dev.get("instance_id", -1)) != engaged_instance_id:
+						continue
+					var has_engaged := realize_dev.has("engaged")
+					var has_phase := realize_dev.has("phase")
+					if has_engaged and bool(realize_dev.get("engaged", false)):
+						realized_in_snapshot = true
+					elif has_phase and str(realize_dev.get("phase", "")) == "LIVE":
+						realized_in_snapshot = true
+					elif not has_engaged and not has_phase:
+						# Fallback precondition for older snapshot shapes: matching row presence.
+						realized_in_snapshot = true
+					if realized_in_snapshot:
+						break
+		if realized_in_snapshot:
+			break
+		await get_tree().process_frame
+	if not realized_in_snapshot:
+		_fail("FAIL: snapshot must report engaged device before set_warm_policy")
+		return
+
 	if _handle_a.set_warm_policy({"warm_hold_ms": 1500}) != OK:
 		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
 		return
