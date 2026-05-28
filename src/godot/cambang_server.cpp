@@ -134,7 +134,7 @@ static godot::Error map_try_stop_stream_status(TryStopStreamStatus s) noexcept {
     case TryStopStreamStatus::OK: return godot::OK;
     case TryStopStreamStatus::Busy: return godot::ERR_BUSY;
     case TryStopStreamStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
-    case TryStopStreamStatus::ProviderRejected: return godot::ERR_CANT_CLOSE;
+    case TryStopStreamStatus::ProviderRejected: return godot::ERR_UNAVAILABLE;
     default: return godot::FAILED;
   }
 }
