@@ -165,18 +165,18 @@ func _ready() -> void:
 	if not warm_visible:
 		_fail(
 			"FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device"
-			+ " instance_id=%d last_warm_hold_ms=%d has_warm_remaining_ms=%s has_engaged_key=%s has_phase_key=%s has_open_key=%s"
-			+ " last_snap(gen=%d,version=%d,topology=%d) last_device=%s"
+			+ " instance_id=%s last_warm_hold_ms=%s has_warm_remaining_ms=%s has_engaged_key=%s has_phase_key=%s has_open_key=%s"
+			+ " last_snap(gen=%s,version=%s,topology=%s) last_device=%s"
 			% [
-				engaged_instance_id,
-				last_warm_hold_ms,
+				str(engaged_instance_id),
+				str(last_warm_hold_ms),
 				str(last_has_warm_remaining),
 				str(last_has_engaged_key),
 				str(last_has_phase_key),
 				str(last_has_open_key),
-				last_snap_gen,
-				last_snap_version,
-				last_snap_topology,
+				str(last_snap_gen),
+				str(last_snap_version),
+				str(last_snap_topology),
 				str(last_matching_device),
 			]
 		)
