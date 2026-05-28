@@ -120,6 +120,7 @@ public:
                                                 const CaptureStillImageBundle& still_image_bundle);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
+  godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
   uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
 protected:
@@ -132,6 +133,7 @@ private:
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
+  void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
   // Consume latest core snapshot (if published_seq advanced) and optionally emit
   // state_published for this boundary observation.
@@ -211,6 +213,7 @@ private:
     uint64_t device_instance_id = 0;
     uint64_t root_id = 0;
     bool open_requested = false;
+    bool close_requested = false;
   };
   std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
 };

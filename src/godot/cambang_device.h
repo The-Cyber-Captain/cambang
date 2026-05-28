@@ -37,6 +37,7 @@ public:
   godot::String get_display_name() const { return display_name_; }
   bool is_endpoint_handle() const { return device_instance_id_ == 0 && !hardware_id_.is_empty(); }
   godot::Error engage();
+  godot::Error disengage();
 
   uint64_t trigger_capture();
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);

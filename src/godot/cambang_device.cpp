@@ -114,6 +114,16 @@ godot::Error CamBANGDevice::engage() {
   return server_->engage_endpoint_handle(hardware_id_, display_name_);
 }
 
+godot::Error CamBANGDevice::disengage() {
+  if (!server_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  if (hardware_id_.is_empty()) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  return server_->disengage_endpoint_handle(hardware_id_);
+}
+
 uint64_t CamBANGDevice::trigger_capture() {
   const uint64_t device_instance_id = get_instance_id();
   if (!server_ || device_instance_id == 0) {
@@ -175,6 +185,7 @@ void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_display_name"), &CamBANGDevice::get_display_name);
   godot::ClassDB::bind_method(godot::D_METHOD("is_endpoint_handle"), &CamBANGDevice::is_endpoint_handle);
   godot::ClassDB::bind_method(godot::D_METHOD("engage"), &CamBANGDevice::engage);
+  godot::ClassDB::bind_method(godot::D_METHOD("disengage"), &CamBANGDevice::disengage);
   godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGDevice::trigger_capture);
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);
   godot::ClassDB::bind_method(godot::D_METHOD("get_still_capture_profile"), &CamBANGDevice::get_still_capture_profile);

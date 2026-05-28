@@ -194,6 +194,9 @@ func _ready() -> void:
 	if not handle_a.has_method("engage"):
 		_fail("FAIL: endpoint CamBANGDevice.engage() missing")
 		return
+	if not handle_a.has_method("disengage"):
+		_fail("FAIL: endpoint CamBANGDevice.disengage() missing")
+		return
 	if str(handle_a.get_hardware_id()) != hardware_id or str(handle_b.get_hardware_id()) != hardware_id:
 		_fail("FAIL: endpoint handles must expose matching hardware_id")
 		return
@@ -220,6 +223,14 @@ func _ready() -> void:
 		return
 	if int(handle_b.get_instance_id()) != engaged_instance_id:
 		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
+		return
+	var disengage_a_err = handle_a.disengage()
+	if disengage_a_err != OK:
+		_fail("FAIL: endpoint handle disengage() must return OK")
+		return
+	var disengage_b_err = handle_b.disengage()
+	if disengage_b_err != OK:
+		_fail("FAIL: second endpoint handle disengage() must return OK")
 		return
 	CamBANGServer.stop()
 
