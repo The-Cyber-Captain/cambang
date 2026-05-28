@@ -215,7 +215,14 @@ func _ready() -> void:
 	if not bool(handle_a.is_endpoint_handle()) or not bool(handle_b.is_endpoint_handle()):
 		_fail("FAIL: endpoint handles must report is_endpoint_handle() true")
 		return
-	var engage_a_err = handle_a.engage()
+	var engage_a_err := ERR_BUSY
+	for _engage_i in range(120):
+		engage_a_err = handle_a.engage()
+		if engage_a_err == OK:
+			break
+		if engage_a_err != ERR_BUSY and engage_a_err != ERR_UNAVAILABLE:
+			break
+		await get_tree().process_frame
 	if engage_a_err != OK:
 		_fail("FAIL: endpoint handle engage() must return OK for known synthetic endpoint")
 		return
