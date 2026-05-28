@@ -374,7 +374,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (became_not_in_use && !rec.warm_deadline_active) {
+    if (!rec.warm_deadline_active) {
       const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
       const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
           ? std::numeric_limits<uint64_t>::max()
@@ -385,7 +385,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (now_ns >= rec.warm_deadline_ns) {
+    if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
       if (!rec.warm_expired_close_requested && prov) {
         (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
         (void)prov->close_device(rec.device_instance_id);
@@ -967,11 +967,6 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(dr.code));
     }
-    if (dr.ok()) {
-      (void)streams_.on_stream_destroyed(stream_id);
-      // Ensure core does not retain a ghost record.
-      (void)streams_.forget_stream(stream_id);
-    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK
@@ -1160,13 +1155,22 @@ TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
   if (device_instance_id == 0) {
     return TrySetWarmHoldStatus::InvalidArgument;
   }
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms]() {
+  auto status_promise = std::make_shared<std::promise<TrySetWarmHoldStatus>>();
+  std::future<TrySetWarmHoldStatus> status_future = status_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms, status_promise]() {
+    const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
+    if (rec == nullptr || !rec->open) {
+      status_promise->set_value(TrySetWarmHoldStatus::Busy);
+      return;
+    }
     (void)devices_.set_warm_hold_ms(device_instance_id, warm_hold_ms);
     request_publish_from_core_unchecked();
+    status_promise->set_value(TrySetWarmHoldStatus::OK);
   });
-  return (pr == CoreThread::PostResult::Enqueued)
-      ? TrySetWarmHoldStatus::OK
-      : TrySetWarmHoldStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TrySetWarmHoldStatus::Busy;
+  }
+  return status_future.get();
 }
 
 bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {

@@ -231,6 +231,9 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
     if (in.streams) {
         snap.streams.reserve(in.streams->all().size());
         for (const auto& [sid, rec] : in.streams->all()) {
+            if (!rec.created) {
+                continue;
+            }
             StreamState s;
             s.stream_id = sid;
             s.device_instance_id = rec.device_instance_id;
@@ -364,9 +367,18 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         }
     }
     if (in.streams) {
-        fnv1a_u64(h, static_cast<uint64_t>(in.streams->all().size()));
+        uint64_t created_stream_count = 0;
         for (const auto& [sid, rec] : in.streams->all()) {
-            (void)rec;
+            (void)sid;
+            if (rec.created) {
+                ++created_stream_count;
+            }
+        }
+        fnv1a_u64(h, created_stream_count);
+        for (const auto& [sid, rec] : in.streams->all()) {
+            if (!rec.created) {
+                continue;
+            }
             fnv1a_u64(h, sid);
         }
     }

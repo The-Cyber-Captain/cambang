@@ -804,12 +804,14 @@ func _apply_server_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 	var next_health_label := _derive_server_health_label(health_facts)
 	var next_health_role := _health_role_for_label(next_health_label)
 	var next_badges := _with_health_badge(server_entry.badges, next_health_role, next_health_label)
+	var next_info_lines := _server_info_lines_with_temporal_diagnostic(server_entry.info_lines, health_facts)
 	var next_badge_labels := _badge_labels(next_badges)
 	var current_badge_labels := _badge_labels(server_entry.badges)
 	_observe_server_health_state(health_facts)
-	if next_badge_labels == current_badge_labels:
+	if next_badge_labels == current_badge_labels and next_info_lines == server_entry.info_lines:
 		return false
 	server_entry.badges = next_badges
+	server_entry.info_lines = next_info_lines
 	_apply_detail_policy_to_entry(server_entry)
 	return true
 
@@ -1048,6 +1050,21 @@ func _apply_rig_health_summary(model: PanelModel, snapshot: Variant) -> bool:
 		_apply_detail_policy_to_entry(entry)
 		changed = true
 	return changed
+
+
+func _server_info_lines_with_temporal_diagnostic(existing_info_lines: Array[String], health_facts: Dictionary) -> Array[String]:
+	var next_info_lines: Array[String] = []
+	for line in existing_info_lines:
+		if line.begins_with("Temporal diagnostic: observed snapshot version jump"):
+			continue
+		next_info_lines.append(line)
+	var version_delta := int(health_facts.get("version_delta", 0))
+	if version_delta > 1:
+		next_info_lines.append(
+			"Temporal diagnostic: observed snapshot version jump delta=%d; Godot publications may be coalesced."
+			% version_delta
+		)
+	return next_info_lines
 
 
 func _stream_info_lines_with_bad_reason(existing_info_lines: Array[String], health_facts: Dictionary, health_label: String) -> Array[String]:
@@ -1423,8 +1440,6 @@ func _server_health_is_bad(health_facts: Dictionary) -> bool:
 	var native_coverage_state := str(health_facts.get("native_coverage_state", ""))
 	if native_coverage_state == "MISSING":
 		return true
-	if int(health_facts.get("version_delta", 0)) > 1:
-		return true
 	return false
 
 
@@ -1557,6 +1572,8 @@ func _stream_health_is_unknown(health_facts: Dictionary) -> bool:
 
 
 func _server_health_is_attention(health_facts: Dictionary) -> bool:
+	if int(health_facts.get("version_delta", 0)) > 1:
+		return true
 	var threshold := max(server_topology_growth_rate_attn_threshold_per_sec, 0.0)
 	if is_zero_approx(threshold):
 		return false

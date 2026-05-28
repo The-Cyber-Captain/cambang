@@ -148,9 +148,9 @@ private:
   void _on_godot_tick(double delta);
   void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
-  // Consume latest core snapshot (if published_seq advanced) and optionally emit
+  // Consume latest core snapshot (if published_seq advanced) and emit
   // state_published for this boundary observation.
-  bool _consume_latest_core_snapshot(bool emit_signal);
+  bool _consume_latest_core_snapshot();
 
   static CamBANGServer* singleton_;
 

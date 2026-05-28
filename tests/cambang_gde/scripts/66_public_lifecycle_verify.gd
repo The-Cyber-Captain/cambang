@@ -89,9 +89,40 @@ func _ready() -> void:
 		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
 		return
 
-	if _handle_a.set_warm_policy({"warm_hold_ms": 1500}) != OK:
-		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
+	var realized_in_snapshot := false
+	for _realize_i in range(MAX_FRAMES):
+		var realize_snap = CamBANGServer.get_state_snapshot()
+		if typeof(realize_snap) == TYPE_DICTIONARY:
+			var realize_devices = realize_snap.get("devices", [])
+			if typeof(realize_devices) == TYPE_ARRAY:
+				for realize_dev in realize_devices:
+					if typeof(realize_dev) != TYPE_DICTIONARY:
+						continue
+					if int(realize_dev.get("instance_id", -1)) != engaged_instance_id:
+						continue
+					var has_engaged: bool = bool(realize_dev.has("engaged"))
+					var has_phase: bool = bool(realize_dev.has("phase"))
+					if has_engaged and bool(realize_dev.get("engaged", false)):
+						realized_in_snapshot = true
+					elif has_phase and str(realize_dev.get("phase", "")) == "LIVE":
+						realized_in_snapshot = true
+					elif not has_engaged and not has_phase:
+						# Fallback precondition for older snapshot shapes: matching row presence.
+						realized_in_snapshot = true
+					if realized_in_snapshot:
+						break
+		if realized_in_snapshot:
+			break
+		await get_tree().process_frame
+	if not realized_in_snapshot:
+		_fail("FAIL: snapshot must report engaged device before set_warm_policy")
 		return
+
+	var warm_set_err: int = int(_handle_a.set_warm_policy({"warm_hold_ms": 1500}))
+	if warm_set_err != OK:
+		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage (err=%d)" % warm_set_err)
+		return
+	print("INFO: warm policy set accepted for instance_id=%d" % engaged_instance_id)
 
 	var publish_baseline := _published_count
 	for _publish_i in range(MAX_FRAMES):
@@ -100,13 +131,31 @@ func _ready() -> void:
 		await get_tree().process_frame
 
 	var warm_visible := false
+	var last_warm_hold_ms := -1
+	var last_has_warm_remaining := false
+	var last_matching_device := {}
+	var last_has_engaged_key := false
+	var last_has_phase_key := false
+	var last_has_open_key := false
+	var last_snap_gen := -1
+	var last_snap_version := -1
+	var last_snap_topology := -1
 	for _warm_i in range(MAX_FRAMES):
 		var warm_snap = CamBANGServer.get_state_snapshot()
 		if typeof(warm_snap) == TYPE_DICTIONARY:
+			last_snap_gen = int(warm_snap.get("gen", -1))
+			last_snap_version = int(warm_snap.get("version", -1))
+			last_snap_topology = int(warm_snap.get("topology_version", -1))
 			var warm_devices = warm_snap.get("devices", [])
 			if typeof(warm_devices) == TYPE_ARRAY:
 				for warm_dev in warm_devices:
 					if typeof(warm_dev) == TYPE_DICTIONARY and int(warm_dev.get("instance_id", -1)) == engaged_instance_id:
+						last_matching_device = warm_dev
+						last_warm_hold_ms = int(warm_dev.get("warm_hold_ms", -1))
+						last_has_warm_remaining = warm_dev.has("warm_remaining_ms")
+						last_has_engaged_key = warm_dev.has("engaged")
+						last_has_phase_key = warm_dev.has("phase")
+						last_has_open_key = warm_dev.has("open")
 						if int(warm_dev.get("warm_hold_ms", -1)) == 1500 and warm_dev.has("warm_remaining_ms"):
 							warm_visible = true
 							break
@@ -114,7 +163,20 @@ func _ready() -> void:
 			break
 		await get_tree().process_frame
 	if not warm_visible:
-		_fail("FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device")
+		var warm_fail_message: String = (
+			"FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device"
+			+ " instance_id=" + str(engaged_instance_id)
+			+ " last_warm_hold_ms=" + str(last_warm_hold_ms)
+			+ " has_warm_remaining_ms=" + str(last_has_warm_remaining)
+			+ " has_engaged_key=" + str(last_has_engaged_key)
+			+ " has_phase_key=" + str(last_has_phase_key)
+			+ " has_open_key=" + str(last_has_open_key)
+			+ " last_snap(gen=" + str(last_snap_gen)
+			+ ",version=" + str(last_snap_version)
+			+ ",topology=" + str(last_snap_topology)
+			+ ") last_device=" + str(last_matching_device)
+		)
+		_fail(warm_fail_message)
 		return
 
 	_stream = _handle_a.create_stream()
