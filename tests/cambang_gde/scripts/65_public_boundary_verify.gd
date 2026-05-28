@@ -191,6 +191,9 @@ func _ready() -> void:
 	if handle_a == null or handle_b == null:
 		_fail("FAIL: get_device_for_hardware_id() must return non-null handles for known hardware_id")
 		return
+	if not handle_a.has_method("engage"):
+		_fail("FAIL: endpoint CamBANGDevice.engage() missing")
+		return
 	if str(handle_a.get_hardware_id()) != hardware_id or str(handle_b.get_hardware_id()) != hardware_id:
 		_fail("FAIL: endpoint handles must expose matching hardware_id")
 		return

@@ -55,6 +55,16 @@ class CamBANGServer final : public godot::Object {
   GDCLASS(CamBANGServer, godot::Object)
 
 public:
+  // Reserved direct-lifecycle ID namespace:
+  // - Low numeric IDs are commonly used by scenario-authored synthetic timeline
+  //   materialization.
+  // - Direct Godot lifecycle requests intentionally allocate from a high range
+  //   to avoid ambiguity/collision with low authored IDs.
+  // - These counters are process-monotonic and intentionally do not reset on
+  //   stop(); endpoint_lifecycle_by_hardware_id_ is the stop/reset boundary state.
+  static constexpr uint64_t DIRECT_DEVICE_INSTANCE_ID_BASE = 1000000000000ULL;
+  static constexpr uint64_t DIRECT_ROOT_ID_BASE = 2000000000000ULL;
+
   CamBANGServer();
   ~CamBANGServer() override;
 
@@ -192,8 +202,8 @@ private:
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
   std::atomic<uint64_t> next_capture_id_{1};
-  std::atomic<uint64_t> next_direct_device_instance_id_{1};
-  std::atomic<uint64_t> next_direct_root_id_{1};
+  std::atomic<uint64_t> next_direct_device_instance_id_{DIRECT_DEVICE_INSTANCE_ID_BASE};
+  std::atomic<uint64_t> next_direct_root_id_{DIRECT_ROOT_ID_BASE};
 
   struct EndpointLifecycleState {
     godot::String hardware_id;
