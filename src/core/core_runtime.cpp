@@ -967,11 +967,6 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(dr.code));
     }
-    if (dr.ok()) {
-      (void)streams_.on_stream_destroyed(stream_id);
-      // Ensure core does not retain a ghost record.
-      (void)streams_.forget_stream(stream_id);
-    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK
