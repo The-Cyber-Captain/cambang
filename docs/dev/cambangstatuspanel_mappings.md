@@ -188,15 +188,17 @@ Server health facts include:
 ### Server = `BAD` if any of:
 - contract or projection failure exists
 - native coverage state is `MISSING`
-- `version_delta > 1`
+
+`version_delta > 1` is not a release-facing `BAD` condition. It means the panel observed a snapshot-version jump between Godot-visible updates, which can happen when runtime publications are coalesced. The panel surfaces this as a temporal diagnostic instead.
 
 ### Server = `UNKNOWN` if any of:
 - server has `NO SNAPSHOT`
 - native coverage state is `UNKNOWN`
 
 ### Server = `ATTN` if:
+- `version_delta > 1`
 - topology growth rate exceeds `server_topology_growth_rate_attn_threshold_per_sec`
-- if that threshold is `0`, this rule is disabled
+- if that threshold is `0`, the topology-growth-rate rule is disabled
 
 ### Otherwise:
 - server = `OK`
