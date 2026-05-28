@@ -118,7 +118,7 @@ func _ready() -> void:
 		_fail("FAIL: snapshot must report engaged device before set_warm_policy")
 		return
 
-	var warm_set_err := _handle_a.set_warm_policy({"warm_hold_ms": 1500})
+	var warm_set_err: int = int(_handle_a.set_warm_policy({"warm_hold_ms": 1500}))
 	if warm_set_err != OK:
 		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage (err=%d)" % warm_set_err)
 		return
