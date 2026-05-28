@@ -237,7 +237,22 @@ func _ready() -> void:
 	if warm_policy_err != OK:
 		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
 		return
-	var warm_visible := await _wait_for_device_warm_hold_ms(engaged_instance_id, 1500, 120)
+	var warm_visible := false
+	for _warm_i in range(120):
+		var warm_snap = CamBANGServer.get_state_snapshot()
+		if typeof(warm_snap) == TYPE_DICTIONARY:
+			var warm_devices = warm_snap.get("devices", [])
+			if typeof(warm_devices) == TYPE_ARRAY:
+				for warm_dev in warm_devices:
+					if typeof(warm_dev) == TYPE_DICTIONARY and int(warm_dev.get("instance_id", -1)) == engaged_instance_id:
+						if int(warm_dev.get("warm_hold_ms", -1)) == 1500 and warm_dev.has("warm_remaining_ms"):
+							warm_visible = true
+							break
+				if warm_visible:
+					break
+		if warm_visible:
+			break
+		await get_tree().process_frame
 	if not warm_visible:
 		_fail("FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device")
 		return
@@ -549,16 +564,3 @@ func _wait_for_endpoint_instance_ids_zero(handle_a, handle_b, max_frames: int) -
 		await get_tree().process_frame
 	return int(handle_a.get_instance_id()) == 0 and int(handle_b.get_instance_id()) == 0
 
-
-func _wait_for_device_warm_hold_ms(device_instance_id: int, warm_hold_ms: int, max_frames: int) -> bool:
-	for _i in range(max_frames):
-		var snap = CamBANGServer.get_state_snapshot()
-		if typeof(snap) == TYPE_DICTIONARY:
-			var devices = snap.get("devices", [])
-			if typeof(devices) == TYPE_ARRAY:
-				for dev in devices:
-					if typeof(dev) == TYPE_DICTIONARY and int(dev.get("instance_id", -1)) == device_instance_id:
-						if int(dev.get("warm_hold_ms", -1)) == warm_hold_ms and dev.has("warm_remaining_ms"):
-							return true
-		await get_tree().process_frame
-	return false
