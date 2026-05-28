@@ -973,6 +973,9 @@ void CamBANGServer::_on_godot_tick(double delta) {
 }
 
 godot::Variant CamBANGServer::get_state_snapshot() const {
+  // Opportunistically latch newer core-published truth for synchronous polling callers.
+  // Use non-emitting consume path so this getter does not alter state_published semantics.
+  (void)const_cast<CamBANGServer*>(this)->_consume_latest_core_snapshot(/*emit_signal=*/false);
   if (!has_latest_export_) {
     return godot::Variant();
   }
