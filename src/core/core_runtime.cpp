@@ -1160,13 +1160,22 @@ TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
   if (device_instance_id == 0) {
     return TrySetWarmHoldStatus::InvalidArgument;
   }
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms]() {
+  std::promise<TrySetWarmHoldStatus> status_promise;
+  std::future<TrySetWarmHoldStatus> status_future = status_promise.get_future();
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms, p = std::move(status_promise)]() mutable {
+    const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
+    if (rec == nullptr || !rec->open) {
+      p.set_value(TrySetWarmHoldStatus::Busy);
+      return;
+    }
     (void)devices_.set_warm_hold_ms(device_instance_id, warm_hold_ms);
     request_publish_from_core_unchecked();
+    p.set_value(TrySetWarmHoldStatus::OK);
   });
-  return (pr == CoreThread::PostResult::Enqueued)
-      ? TrySetWarmHoldStatus::OK
-      : TrySetWarmHoldStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TrySetWarmHoldStatus::Busy;
+  }
+  return status_future.get();
 }
 
 bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
