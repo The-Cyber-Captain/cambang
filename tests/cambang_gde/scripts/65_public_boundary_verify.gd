@@ -200,6 +200,12 @@ func _ready() -> void:
 	if not handle_a.has_method("create_stream"):
 		_fail("FAIL: endpoint CamBANGDevice.create_stream() missing")
 		return
+	if not handle_a.has_method("set_warm_policy"):
+		_fail("FAIL: endpoint CamBANGDevice.set_warm_policy() missing")
+		return
+	if handle_a.set_warm_policy({"warm_hold_ms": 1500}) == OK:
+		_fail("FAIL: pre-engage set_warm_policy() must not return OK")
+		return
 	if str(handle_a.get_hardware_id()) != hardware_id or str(handle_b.get_hardware_id()) != hardware_id:
 		_fail("FAIL: endpoint handles must expose matching hardware_id")
 		return
@@ -226,6 +232,14 @@ func _ready() -> void:
 		return
 	if int(handle_b.get_instance_id()) != engaged_instance_id:
 		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
+		return
+	var warm_policy_err = handle_a.set_warm_policy({"warm_hold_ms": 1500})
+	if warm_policy_err != OK:
+		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
+		return
+	var warm_visible := await _wait_for_device_warm_hold_ms(engaged_instance_id, 1500, 120)
+	if not warm_visible:
+		_fail("FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device")
 		return
 	var stream = handle_a.create_stream()
 	if stream == null:
@@ -534,3 +548,17 @@ func _wait_for_endpoint_instance_ids_zero(handle_a, handle_b, max_frames: int) -
 			return true
 		await get_tree().process_frame
 	return int(handle_a.get_instance_id()) == 0 and int(handle_b.get_instance_id()) == 0
+
+
+func _wait_for_device_warm_hold_ms(device_instance_id: int, warm_hold_ms: int, max_frames: int) -> bool:
+	for _i in range(max_frames):
+		var snap = CamBANGServer.get_state_snapshot()
+		if typeof(snap) == TYPE_DICTIONARY:
+			var devices = snap.get("devices", [])
+			if typeof(devices) == TYPE_ARRAY:
+				for dev in devices:
+					if typeof(dev) == TYPE_DICTIONARY and int(dev.get("instance_id", -1)) == device_instance_id:
+						if int(dev.get("warm_hold_ms", -1)) == warm_hold_ms and dev.has("warm_remaining_ms"):
+							return true
+		await get_tree().process_frame
+	return false

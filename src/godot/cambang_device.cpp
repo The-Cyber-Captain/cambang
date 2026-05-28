@@ -144,6 +144,25 @@ uint64_t CamBANGDevice::trigger_capture() {
   return server_->trigger_device_capture(device_instance_id);
 }
 
+godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {
+  const uint64_t device_instance_id = get_instance_id();
+  if (!server_ || device_instance_id == 0) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  if (!policy.has("warm_hold_ms")) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  const godot::Variant v = policy.get("warm_hold_ms", godot::Variant());
+  if (v.get_type() != godot::Variant::INT) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  const int64_t warm_hold_ms_i = int64_t(v);
+  if (warm_hold_ms_i < 0 || warm_hold_ms_i > static_cast<int64_t>(UINT32_MAX)) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  return server_->set_device_warm_hold_ms(device_instance_id, static_cast<uint32_t>(warm_hold_ms_i));
+}
+
 godot::Error CamBANGDevice::set_still_capture_profile(const godot::Dictionary& profile) {
   const uint64_t device_instance_id = get_instance_id();
   if (!server_ || device_instance_id == 0) {
@@ -200,6 +219,7 @@ void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("disengage"), &CamBANGDevice::disengage);
   godot::ClassDB::bind_method(godot::D_METHOD("create_stream"), &CamBANGDevice::create_stream);
   godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGDevice::trigger_capture);
+  godot::ClassDB::bind_method(godot::D_METHOD("set_warm_policy", "policy"), &CamBANGDevice::set_warm_policy);
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);
   godot::ClassDB::bind_method(godot::D_METHOD("get_still_capture_profile"), &CamBANGDevice::get_still_capture_profile);
 }

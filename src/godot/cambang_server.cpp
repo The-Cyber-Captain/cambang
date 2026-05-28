@@ -101,6 +101,15 @@ static godot::Error map_try_set_still_capture_profile_status(TrySetStillCaptureP
   }
 }
 
+static godot::Error map_try_set_warm_hold_status(TrySetWarmHoldStatus s) noexcept {
+  switch (s) {
+    case TrySetWarmHoldStatus::OK: return godot::OK;
+    case TrySetWarmHoldStatus::Busy: return godot::ERR_BUSY;
+    case TrySetWarmHoldStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
 static godot::Error map_try_close_device_status(TryCloseDeviceStatus s) noexcept {
   switch (s) {
     case TryCloseDeviceStatus::OK: return godot::OK;
@@ -740,6 +749,13 @@ godot::Error CamBANGServer::set_device_still_capture_profile(
   }
   return map_try_set_still_capture_profile_status(
       runtime_.try_set_device_still_capture_profile(device_instance_id, profile, still_image_bundle));
+}
+
+godot::Error CamBANGServer::set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
+  if (device_instance_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_BUSY;
+  }
+  return map_try_set_warm_hold_status(runtime_.try_set_device_warm_hold_ms(device_instance_id, warm_hold_ms));
 }
 
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {

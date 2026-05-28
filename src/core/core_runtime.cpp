@@ -1154,6 +1154,21 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
       : TrySetStillCaptureProfileStatus::Busy;
 }
 
+TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
+    uint64_t device_instance_id,
+    uint32_t warm_hold_ms) noexcept {
+  if (device_instance_id == 0) {
+    return TrySetWarmHoldStatus::InvalidArgument;
+  }
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms]() {
+    (void)devices_.set_warm_hold_ms(device_instance_id, warm_hold_ms);
+    request_publish_from_core_unchecked();
+  });
+  return (pr == CoreThread::PostResult::Enqueued)
+      ? TrySetWarmHoldStatus::OK
+      : TrySetWarmHoldStatus::Busy;
+}
+
 bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
   if (device_instance_id == 0) {
     return false;

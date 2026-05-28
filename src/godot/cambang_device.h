@@ -43,6 +43,7 @@ public:
   godot::Ref<CamBANGStream> create_stream();
 
   uint64_t trigger_capture();
+  godot::Error set_warm_policy(const godot::Dictionary& policy);
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);
   godot::Dictionary get_still_capture_profile() const;
 
