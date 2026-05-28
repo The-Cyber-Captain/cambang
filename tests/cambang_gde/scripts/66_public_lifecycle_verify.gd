@@ -163,23 +163,20 @@ func _ready() -> void:
 			break
 		await get_tree().process_frame
 	if not warm_visible:
-		_fail(
+		var warm_fail_message: String = (
 			"FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device"
-			+ " instance_id=%s last_warm_hold_ms=%s has_warm_remaining_ms=%s has_engaged_key=%s has_phase_key=%s has_open_key=%s"
-			+ " last_snap(gen=%s,version=%s,topology=%s) last_device=%s"
-			% [
-				str(engaged_instance_id),
-				str(last_warm_hold_ms),
-				str(last_has_warm_remaining),
-				str(last_has_engaged_key),
-				str(last_has_phase_key),
-				str(last_has_open_key),
-				str(last_snap_gen),
-				str(last_snap_version),
-				str(last_snap_topology),
-				str(last_matching_device),
-			]
+			+ " instance_id=" + str(engaged_instance_id)
+			+ " last_warm_hold_ms=" + str(last_warm_hold_ms)
+			+ " has_warm_remaining_ms=" + str(last_has_warm_remaining)
+			+ " has_engaged_key=" + str(last_has_engaged_key)
+			+ " has_phase_key=" + str(last_has_phase_key)
+			+ " has_open_key=" + str(last_has_open_key)
+			+ " last_snap(gen=" + str(last_snap_gen)
+			+ ",version=" + str(last_snap_version)
+			+ ",topology=" + str(last_snap_topology)
+			+ ") last_device=" + str(last_matching_device)
 		)
+		_fail(warm_fail_message)
 		return
 
 	_stream = _handle_a.create_stream()
