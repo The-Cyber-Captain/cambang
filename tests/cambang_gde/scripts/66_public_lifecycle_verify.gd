@@ -118,9 +118,11 @@ func _ready() -> void:
 		_fail("FAIL: snapshot must report engaged device before set_warm_policy")
 		return
 
-	if _handle_a.set_warm_policy({"warm_hold_ms": 1500}) != OK:
-		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
+	var warm_set_err := _handle_a.set_warm_policy({"warm_hold_ms": 1500})
+	if warm_set_err != OK:
+		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage (err=%d)" % warm_set_err)
 		return
+	print("INFO: warm policy set accepted for instance_id=%d" % engaged_instance_id)
 
 	var publish_baseline := _published_count
 	for _publish_i in range(MAX_FRAMES):
@@ -129,13 +131,31 @@ func _ready() -> void:
 		await get_tree().process_frame
 
 	var warm_visible := false
+	var last_warm_hold_ms := -1
+	var last_has_warm_remaining := false
+	var last_matching_device := {}
+	var last_has_engaged_key := false
+	var last_has_phase_key := false
+	var last_has_open_key := false
+	var last_snap_gen := -1
+	var last_snap_version := -1
+	var last_snap_topology := -1
 	for _warm_i in range(MAX_FRAMES):
 		var warm_snap = CamBANGServer.get_state_snapshot()
 		if typeof(warm_snap) == TYPE_DICTIONARY:
+			last_snap_gen = int(warm_snap.get("gen", -1))
+			last_snap_version = int(warm_snap.get("version", -1))
+			last_snap_topology = int(warm_snap.get("topology_version", -1))
 			var warm_devices = warm_snap.get("devices", [])
 			if typeof(warm_devices) == TYPE_ARRAY:
 				for warm_dev in warm_devices:
 					if typeof(warm_dev) == TYPE_DICTIONARY and int(warm_dev.get("instance_id", -1)) == engaged_instance_id:
+						last_matching_device = warm_dev
+						last_warm_hold_ms = int(warm_dev.get("warm_hold_ms", -1))
+						last_has_warm_remaining = warm_dev.has("warm_remaining_ms")
+						last_has_engaged_key = warm_dev.has("engaged")
+						last_has_phase_key = warm_dev.has("phase")
+						last_has_open_key = warm_dev.has("open")
 						if int(warm_dev.get("warm_hold_ms", -1)) == 1500 and warm_dev.has("warm_remaining_ms"):
 							warm_visible = true
 							break
@@ -143,7 +163,23 @@ func _ready() -> void:
 			break
 		await get_tree().process_frame
 	if not warm_visible:
-		_fail("FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device")
+		_fail(
+			"FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device"
+			+ " instance_id=%d last_warm_hold_ms=%d has_warm_remaining_ms=%s has_engaged_key=%s has_phase_key=%s has_open_key=%s"
+			+ " last_snap(gen=%d,version=%d,topology=%d) last_device=%s"
+			% [
+				engaged_instance_id,
+				last_warm_hold_ms,
+				str(last_has_warm_remaining),
+				str(last_has_engaged_key),
+				str(last_has_phase_key),
+				str(last_has_open_key),
+				last_snap_gen,
+				last_snap_version,
+				last_snap_topology,
+				str(last_matching_device),
+			]
+		)
 		return
 
 	_stream = _handle_a.create_stream()
