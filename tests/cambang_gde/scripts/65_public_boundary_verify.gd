@@ -246,6 +246,7 @@ func _ready() -> void:
 	if not bool(stream.is_valid_stream_handle()):
 		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return true")
 		return
+	stream = null
 	var disengage_a_err = handle_a.disengage()
 	if disengage_a_err != OK:
 		_fail("FAIL: endpoint handle disengage() must return OK")
