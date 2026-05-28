@@ -1,8 +1,14 @@
 extends Node
 
 const MAX_FRAMES := 180
+const QUIT_FLUSH_FRAMES := 2
 
 var _done := false
+var _quit_requested := false
+var _handle_a = null
+var _handle_b = null
+var _stream = null
+var _endpoints: Array = []
 
 
 func _ready() -> void:
@@ -20,11 +26,11 @@ func _ready() -> void:
 		_fail("FAIL: start(SYNTHETIC) rejected")
 		return
 
-	var endpoints = CamBANGServer.enumerate_devices()
-	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() < 1:
+	_endpoints = CamBANGServer.enumerate_devices()
+	if typeof(_endpoints) != TYPE_ARRAY or _endpoints.size() < 1:
 		_fail("FAIL: synthetic enumerate_devices() must return at least one endpoint")
 		return
-	var endpoint0 = endpoints[0]
+	var endpoint0 = _endpoints[0]
 	if typeof(endpoint0) != TYPE_DICTIONARY:
 		_fail("FAIL: enumerate_devices() entries must be Dictionary")
 		return
@@ -33,27 +39,27 @@ func _ready() -> void:
 		_fail("FAIL: enumerate_devices() endpoint hardware_id must be non-empty")
 		return
 
-	var handle_a = CamBANGServer.get_device_for_hardware_id(hardware_id)
-	var handle_b = CamBANGServer.get_device_for_hardware_id(hardware_id)
-	if handle_a == null or handle_b == null:
+	_handle_a = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	_handle_b = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	if _handle_a == null or _handle_b == null:
 		_fail("FAIL: get_device_for_hardware_id() must return non-null handles for known hardware_id")
 		return
-	if not handle_a.has_method("engage") or not handle_a.has_method("disengage") or not handle_a.has_method("create_stream") or not handle_a.has_method("set_warm_policy"):
+	if not _handle_a.has_method("engage") or not _handle_a.has_method("disengage") or not _handle_a.has_method("create_stream") or not _handle_a.has_method("set_warm_policy"):
 		_fail("FAIL: endpoint CamBANGDevice lifecycle methods missing")
 		return
-	if handle_a.set_warm_policy({"warm_hold_ms": 1500}) == OK:
+	if _handle_a.set_warm_policy({"warm_hold_ms": 1500}) == OK:
 		_fail("FAIL: pre-engage set_warm_policy() must not return OK")
 		return
-	if str(handle_a.get_hardware_id()) != hardware_id or str(handle_b.get_hardware_id()) != hardware_id:
+	if str(_handle_a.get_hardware_id()) != hardware_id or str(_handle_b.get_hardware_id()) != hardware_id:
 		_fail("FAIL: endpoint handles must expose matching hardware_id")
 		return
-	if int(handle_a.get_instance_id()) != 0 or int(handle_b.get_instance_id()) != 0:
+	if int(_handle_a.get_instance_id()) != 0 or int(_handle_b.get_instance_id()) != 0:
 		_fail("FAIL: endpoint handles must have instance_id == 0")
 		return
 
 	var engage_a_err := ERR_BUSY
 	for _engage_i in range(MAX_FRAMES):
-		engage_a_err = handle_a.engage()
+		engage_a_err = _handle_a.engage()
 		if engage_a_err == OK:
 			break
 		if engage_a_err != ERR_BUSY and engage_a_err != ERR_UNAVAILABLE:
@@ -63,21 +69,21 @@ func _ready() -> void:
 		_fail("FAIL: endpoint handle engage() must return OK for known synthetic endpoint")
 		return
 
-	var engaged_instance_id := int(handle_a.get_instance_id())
+	var engaged_instance_id := int(_handle_a.get_instance_id())
 	if engaged_instance_id == 0:
 		_fail("FAIL: endpoint handle get_instance_id() must become nonzero after engage()")
 		return
-	if int(handle_b.get_instance_id()) != engaged_instance_id:
+	if int(_handle_b.get_instance_id()) != engaged_instance_id:
 		_fail("FAIL: endpoint handles for same hardware_id must resolve the same instance id after engage()")
 		return
-	if handle_b.engage() != OK:
+	if _handle_b.engage() != OK:
 		_fail("FAIL: second endpoint handle engage() must return OK for already engaged endpoint")
 		return
-	if int(handle_b.get_instance_id()) != engaged_instance_id:
+	if int(_handle_b.get_instance_id()) != engaged_instance_id:
 		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
 		return
 
-	if handle_a.set_warm_policy({"warm_hold_ms": 1500}) != OK:
+	if _handle_a.set_warm_policy({"warm_hold_ms": 1500}) != OK:
 		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
 		return
 
@@ -99,58 +105,58 @@ func _ready() -> void:
 		_fail("FAIL: snapshot must eventually report warm_hold_ms=1500 for engaged device")
 		return
 
-	var stream = handle_a.create_stream()
-	if stream == null:
+	_stream = _handle_a.create_stream()
+	if _stream == null:
 		_fail("FAIL: create_stream() must return a non-null CamBANGStream handle for engaged endpoint")
 		return
-	if not stream.has_method("get_stream_id") or not stream.has_method("get_device_instance_id") or not stream.has_method("get_hardware_id") or not stream.has_method("is_valid_stream_handle"):
+	if not _stream.has_method("get_stream_id") or not _stream.has_method("get_device_instance_id") or not _stream.has_method("get_hardware_id") or not _stream.has_method("is_valid_stream_handle"):
 		_fail("FAIL: CamBANGStream handle missing required identity methods")
 		return
-	if int(stream.get_stream_id()) == 0:
+	if int(_stream.get_stream_id()) == 0:
 		_fail("FAIL: CamBANGStream.get_stream_id() must be nonzero")
 		return
-	if int(stream.get_device_instance_id()) != engaged_instance_id:
+	if int(_stream.get_device_instance_id()) != engaged_instance_id:
 		_fail("FAIL: CamBANGStream.get_device_instance_id() must match engaged device instance id")
 		return
-	if str(stream.get_hardware_id()) != hardware_id:
+	if str(_stream.get_hardware_id()) != hardware_id:
 		_fail("FAIL: CamBANGStream.get_hardware_id() must match endpoint hardware_id")
 		return
-	if not bool(stream.is_valid_stream_handle()):
+	if not bool(_stream.is_valid_stream_handle()):
 		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return true")
 		return
-	if stream.start() != OK:
+	if _stream.start() != OK:
 		_fail("FAIL: CamBANGStream.start() must return OK")
 		return
-	if stream.start() != OK:
+	if _stream.start() != OK:
 		_fail("FAIL: CamBANGStream.start() second call must be idempotent and return OK")
 		return
-	if stream.stop() != OK:
+	if _stream.stop() != OK:
 		_fail("FAIL: CamBANGStream.stop() must return OK")
 		return
-	if stream.stop() != OK:
+	if _stream.stop() != OK:
 		_fail("FAIL: CamBANGStream.stop() second call must be idempotent and return OK")
 		return
-	if stream.destroy() != OK:
+	if _stream.destroy() != OK:
 		_fail("FAIL: CamBANGStream.destroy() must return OK")
 		return
-	if stream.destroy() != OK:
+	if _stream.destroy() != OK:
 		_fail("FAIL: CamBANGStream.destroy() second call must be idempotent and return OK")
 		return
-	if bool(stream.is_valid_stream_handle()):
+	if bool(_stream.is_valid_stream_handle()):
 		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return false after destroy")
 		return
 
-	stream = null
-	if handle_a.disengage() != OK:
+	_stream = null
+	if _handle_a.disengage() != OK:
 		_fail("FAIL: endpoint handle disengage() must return OK")
 		return
-	if handle_b.disengage() != OK:
+	if _handle_b.disengage() != OK:
 		_fail("FAIL: second endpoint handle disengage() must return OK")
 		return
 
 	var disengaged_to_zero := false
 	for _close_i in range(MAX_FRAMES):
-		if int(handle_a.get_instance_id()) == 0 and int(handle_b.get_instance_id()) == 0:
+		if int(_handle_a.get_instance_id()) == 0 and int(_handle_b.get_instance_id()) == 0:
 			disengaged_to_zero = true
 			break
 		await get_tree().process_frame
@@ -158,10 +164,6 @@ func _ready() -> void:
 		_fail("FAIL: endpoint handles must eventually resolve get_instance_id() == 0 after disengage close truth")
 		return
 
-	handle_a = null
-	handle_b = null
-	endpoints = []
-	CamBANGServer.stop()
 	_ok("OK: godot public lifecycle verify PASS")
 
 
@@ -170,8 +172,7 @@ func _ok(msg: String) -> void:
 		return
 	_done = true
 	print(msg)
-	CamBANGServer.stop()
-	get_tree().quit(0)
+	_cleanup_and_quit(0)
 
 
 func _fail(msg: String) -> void:
@@ -180,5 +181,22 @@ func _fail(msg: String) -> void:
 	_done = true
 	push_error(msg)
 	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _cleanup_and_quit(code: int) -> void:
+	set_process(false)
+	_stream = null
+	_handle_a = null
+	_handle_b = null
+	_endpoints = []
 	CamBANGServer.stop()
-	get_tree().quit(1)
+	if not _quit_requested:
+		_quit_requested = true
+		call_deferred("_quit_next_frame", code)
+
+
+func _quit_next_frame(code: int) -> void:
+	for _i in range(QUIT_FLUSH_FRAMES):
+		await get_tree().process_frame
+	get_tree().quit(code)
