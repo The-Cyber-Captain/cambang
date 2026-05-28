@@ -100,8 +100,8 @@ func _ready() -> void:
 						continue
 					if int(realize_dev.get("instance_id", -1)) != engaged_instance_id:
 						continue
-					var has_engaged := realize_dev.has("engaged")
-					var has_phase := realize_dev.has("phase")
+					var has_engaged: bool = bool(realize_dev.has("engaged"))
+					var has_phase: bool = bool(realize_dev.has("phase"))
 					if has_engaged and bool(realize_dev.get("engaged", false)):
 						realized_in_snapshot = true
 					elif has_phase and str(realize_dev.get("phase", "")) == "LIVE":
