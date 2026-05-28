@@ -189,7 +189,7 @@ Server health facts include:
 - contract or projection failure exists
 - native coverage state is `MISSING`
 
-`version_delta > 1` is not a release-facing `BAD` condition. It means the panel observed a snapshot-version jump between Godot-visible updates, which can happen when runtime publications are coalesced. The panel surfaces this as a temporal diagnostic instead.
+`version_delta > 1` is not a release-facing `BAD` condition. It means the panel observed a snapshot-version jump across its own observation history, such as missed/skipped panel observations, reconnect/rebuild edges, diagnostic observation boundaries, or a future publication-boundary regression. Ordinary connected-observer Godot tick coalescing should still produce one contiguous observable version increment. The panel surfaces a larger delta as a temporal diagnostic instead.
 
 ### Server = `UNKNOWN` if any of:
 - server has `NO SNAPSHOT`
