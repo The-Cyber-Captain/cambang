@@ -1,6 +1,5 @@
 extends Node
 
-const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 5000
 
 const PHASE_WAIT_FIRST_BASELINE := 0
@@ -536,18 +535,15 @@ func _fail(msg: String) -> void:
 func _cleanup_and_quit(code: int) -> void:
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
+		remove_child(_timer)
+		_timer.queue_free()
+		_timer = null
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
-
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	get_tree().quit(code)
+		get_tree().quit(code)
 
 
 func _phase_name(p: int) -> String:
