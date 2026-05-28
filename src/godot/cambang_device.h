@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
@@ -10,6 +11,7 @@
 namespace cambang {
 
 class CamBANGServer;
+class CamBANGStream;
 
 class CamBANGDevice final : public godot::RefCounted {
   GDCLASS(CamBANGDevice, godot::RefCounted)
@@ -38,6 +40,7 @@ public:
   bool is_endpoint_handle() const { return device_instance_id_ == 0 && !hardware_id_.is_empty(); }
   godot::Error engage();
   godot::Error disengage();
+  godot::Ref<CamBANGStream> create_stream();
 
   uint64_t trigger_capture();
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);

@@ -34,6 +34,7 @@
 
 namespace cambang {
 class CamBANGStreamResult;
+class CamBANGStream;
 class CamBANGCaptureResult;
 class CamBANGCaptureResultSet;
 class CamBANGDevice;
@@ -64,6 +65,7 @@ public:
   //   stop(); endpoint_lifecycle_by_hardware_id_ is the stop/reset boundary state.
   static constexpr uint64_t DIRECT_DEVICE_INSTANCE_ID_BASE = 1000000000000ULL;
   static constexpr uint64_t DIRECT_ROOT_ID_BASE = 2000000000000ULL;
+  static constexpr uint64_t DIRECT_STREAM_ID_BASE = 3000000000000ULL;
 
   CamBANGServer();
   ~CamBANGServer() override;
@@ -121,6 +123,7 @@ public:
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
+  godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(const godot::String& hardware_id);
   uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
 protected:
@@ -206,6 +209,7 @@ private:
   std::atomic<uint64_t> next_capture_id_{1};
   std::atomic<uint64_t> next_direct_device_instance_id_{DIRECT_DEVICE_INSTANCE_ID_BASE};
   std::atomic<uint64_t> next_direct_root_id_{DIRECT_ROOT_ID_BASE};
+  std::atomic<uint64_t> next_direct_stream_id_{DIRECT_STREAM_ID_BASE};
 
   struct EndpointLifecycleState {
     godot::String hardware_id;
@@ -216,6 +220,7 @@ private:
     bool close_requested = false;
   };
   std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
+  std::unordered_map<uint64_t, godot::String> direct_stream_hardware_id_by_stream_id_;
 };
 
 } // namespace cambang

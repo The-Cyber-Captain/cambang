@@ -2,6 +2,7 @@
 #include "godot/cambang_capture_result.h"
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_device.h"
+#include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_rig.h"
 
@@ -341,6 +342,7 @@ void CamBANGServer::stop() {
   active_session_id_ = 0;
   enforce_min_gen_gate_ = false;
   endpoint_lifecycle_by_hardware_id_.clear();
+  direct_stream_hardware_id_by_stream_id_.clear();
 }
 
 bool CamBANGServer::is_running() const {
@@ -489,6 +491,40 @@ godot::Error CamBANGServer::disengage_endpoint_handle(const godot::String& hardw
     state.close_requested = true;
   }
   return rc;
+}
+
+godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(const godot::String& hardware_id) {
+  if (hardware_id.is_empty() || !is_running() || !provider_) {
+    return godot::Ref<CamBANGStream>();
+  }
+  const auto state_it = endpoint_lifecycle_by_hardware_id_.find(std::string(hardware_id.utf8().get_data()));
+  if (state_it == endpoint_lifecycle_by_hardware_id_.end()) {
+    return godot::Ref<CamBANGStream>();
+  }
+  const EndpointLifecycleState& state = state_it->second;
+  if (state.device_instance_id == 0) {
+    return godot::Ref<CamBANGStream>();
+  }
+
+  uint64_t stream_id = next_direct_stream_id_.fetch_add(1, std::memory_order_relaxed);
+  if (stream_id == 0) {
+    stream_id = next_direct_stream_id_.fetch_add(1, std::memory_order_relaxed);
+  }
+  const TryCreateStreamStatus cs = runtime_.try_create_stream(
+      stream_id,
+      state.device_instance_id,
+      StreamIntent::PREVIEW,
+      nullptr,
+      nullptr,
+      0);
+  if (cs != TryCreateStreamStatus::OK) {
+    return godot::Ref<CamBANGStream>();
+  }
+  direct_stream_hardware_id_by_stream_id_[stream_id] = hardware_id;
+  godot::Ref<CamBANGStream> out;
+  out.instantiate();
+  out->set_identity(const_cast<CamBANGServer*>(this), hardware_id, state.device_instance_id, stream_id);
+  return out;
 }
 
 uint64_t CamBANGServer::resolve_endpoint_instance_id(const godot::String& hardware_id) const {

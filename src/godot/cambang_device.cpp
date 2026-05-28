@@ -1,6 +1,7 @@
 #include "godot/cambang_device.h"
 
 #include "godot/cambang_server.h"
+#include "godot/cambang_stream.h"
 
 #include "imaging/api/provider_contract_datatypes.h"
 
@@ -124,6 +125,17 @@ godot::Error CamBANGDevice::disengage() {
   return server_->disengage_endpoint_handle(hardware_id_);
 }
 
+godot::Ref<CamBANGStream> CamBANGDevice::create_stream() {
+  if (!server_ || hardware_id_.is_empty()) {
+    return godot::Ref<CamBANGStream>();
+  }
+  const uint64_t device_instance_id = get_instance_id();
+  if (device_instance_id == 0) {
+    return godot::Ref<CamBANGStream>();
+  }
+  return server_->create_stream_for_endpoint_hardware_id(hardware_id_);
+}
+
 uint64_t CamBANGDevice::trigger_capture() {
   const uint64_t device_instance_id = get_instance_id();
   if (!server_ || device_instance_id == 0) {
@@ -186,6 +198,7 @@ void CamBANGDevice::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("is_endpoint_handle"), &CamBANGDevice::is_endpoint_handle);
   godot::ClassDB::bind_method(godot::D_METHOD("engage"), &CamBANGDevice::engage);
   godot::ClassDB::bind_method(godot::D_METHOD("disengage"), &CamBANGDevice::disengage);
+  godot::ClassDB::bind_method(godot::D_METHOD("create_stream"), &CamBANGDevice::create_stream);
   godot::ClassDB::bind_method(godot::D_METHOD("trigger_capture"), &CamBANGDevice::trigger_capture);
   godot::ClassDB::bind_method(godot::D_METHOD("set_still_capture_profile", "profile"), &CamBANGDevice::set_still_capture_profile);
   godot::ClassDB::bind_method(godot::D_METHOD("get_still_capture_profile"), &CamBANGDevice::get_still_capture_profile);

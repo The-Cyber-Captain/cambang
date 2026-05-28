@@ -197,6 +197,9 @@ func _ready() -> void:
 	if not handle_a.has_method("disengage"):
 		_fail("FAIL: endpoint CamBANGDevice.disengage() missing")
 		return
+	if not handle_a.has_method("create_stream"):
+		_fail("FAIL: endpoint CamBANGDevice.create_stream() missing")
+		return
 	if str(handle_a.get_hardware_id()) != hardware_id or str(handle_b.get_hardware_id()) != hardware_id:
 		_fail("FAIL: endpoint handles must expose matching hardware_id")
 		return
@@ -223,6 +226,25 @@ func _ready() -> void:
 		return
 	if int(handle_b.get_instance_id()) != engaged_instance_id:
 		_fail("FAIL: second endpoint handle engage() must not change resolved instance id")
+		return
+	var stream = handle_a.create_stream()
+	if stream == null:
+		_fail("FAIL: create_stream() must return a non-null CamBANGStream handle for engaged endpoint")
+		return
+	if not stream.has_method("get_stream_id") or not stream.has_method("get_device_instance_id") or not stream.has_method("get_hardware_id") or not stream.has_method("is_valid_stream_handle"):
+		_fail("FAIL: CamBANGStream handle missing required identity methods")
+		return
+	if int(stream.get_stream_id()) == 0:
+		_fail("FAIL: CamBANGStream.get_stream_id() must be nonzero")
+		return
+	if int(stream.get_device_instance_id()) != engaged_instance_id:
+		_fail("FAIL: CamBANGStream.get_device_instance_id() must match engaged device instance id")
+		return
+	if str(stream.get_hardware_id()) != hardware_id:
+		_fail("FAIL: CamBANGStream.get_hardware_id() must match endpoint hardware_id")
+		return
+	if not bool(stream.is_valid_stream_handle()):
+		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return true")
 		return
 	var disengage_a_err = handle_a.disengage()
 	if disengage_a_err != OK:
