@@ -9,9 +9,12 @@ var _handle_a = null
 var _handle_b = null
 var _stream = null
 var _endpoints: Array = []
+var _published_count := 0
 
 
 func _ready() -> void:
+	if CamBANGServer.state_published.is_connected(_on_state_published):
+		CamBANGServer.state_published.disconnect(_on_state_published)
 	CamBANGServer.stop()
 
 	if not CamBANGServer.has_method("enumerate_devices"):
@@ -26,6 +29,9 @@ func _ready() -> void:
 		_fail("FAIL: start(SYNTHETIC) rejected")
 		return
 
+
+	if not CamBANGServer.state_published.is_connected(_on_state_published):
+		CamBANGServer.state_published.connect(_on_state_published)
 	_endpoints = CamBANGServer.enumerate_devices()
 	if typeof(_endpoints) != TYPE_ARRAY or _endpoints.size() < 1:
 		_fail("FAIL: synthetic enumerate_devices() must return at least one endpoint")
@@ -86,6 +92,12 @@ func _ready() -> void:
 	if _handle_a.set_warm_policy({"warm_hold_ms": 1500}) != OK:
 		_fail("FAIL: set_warm_policy({\"warm_hold_ms\":1500}) must return OK after engage")
 		return
+
+	var publish_baseline := _published_count
+	for _publish_i in range(MAX_FRAMES):
+		if _published_count > publish_baseline:
+			break
+		await get_tree().process_frame
 
 	var warm_visible := false
 	for _warm_i in range(MAX_FRAMES):
@@ -190,6 +202,8 @@ func _cleanup_and_quit(code: int) -> void:
 	_handle_a = null
 	_handle_b = null
 	_endpoints = []
+	if CamBANGServer.state_published.is_connected(_on_state_published):
+		CamBANGServer.state_published.disconnect(_on_state_published)
 	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
@@ -200,3 +214,7 @@ func _quit_next_frame(code: int) -> void:
 	for _i in range(QUIT_FLUSH_FRAMES):
 		await get_tree().process_frame
 	get_tree().quit(code)
+
+
+func _on_state_published(_gen: int, _version: int, _topology_version: int) -> void:
+	_published_count += 1
