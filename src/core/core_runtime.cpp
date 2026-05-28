@@ -374,7 +374,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (became_not_in_use && !rec.warm_deadline_active) {
+    if (!rec.warm_deadline_active) {
       const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
       const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
           ? std::numeric_limits<uint64_t>::max()
@@ -385,7 +385,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (now_ns >= rec.warm_deadline_ns) {
+    if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
       if (!rec.warm_expired_close_requested && prov) {
         (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
         (void)prov->close_device(rec.device_instance_id);
