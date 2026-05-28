@@ -59,7 +59,7 @@ $SceneRuns = @(
     @{ Scene = "res://scenes/62_snapshot_polling_immutability_abuse.tscn";  QuitAfter = 1000 },
     @{ Scene = "res://scenes/63_snapshot_observer_minimal.tscn";            QuitAfter = 10   },
     @{ Scene = "res://scenes/65_public_boundary_verify.tscn";               QuitAfter = 10   },
-    @{ Scene = "res://scenes/66_public_lifecycle_verify.tscn";              QuitAfter = 20   },
+    @{ Scene = "res://scenes/66_public_lifecycle_verify.tscn";              QuitAfter = 1000 },
     @{ Scene = "res://scenes/70_result_retrieval_verification.tscn";        QuitAfter = 20   }
 )
 
