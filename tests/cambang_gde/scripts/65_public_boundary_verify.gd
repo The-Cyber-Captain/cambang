@@ -237,6 +237,12 @@ func _ready() -> void:
 	if not stream.has_method("destroy"):
 		_fail("FAIL: CamBANGStream.destroy() missing")
 		return
+	if not stream.has_method("start"):
+		_fail("FAIL: CamBANGStream.start() missing")
+		return
+	if not stream.has_method("stop"):
+		_fail("FAIL: CamBANGStream.stop() missing")
+		return
 	if int(stream.get_stream_id()) == 0:
 		_fail("FAIL: CamBANGStream.get_stream_id() must be nonzero")
 		return
@@ -249,6 +255,22 @@ func _ready() -> void:
 	if not bool(stream.is_valid_stream_handle()):
 		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return true")
 		return
+	var start_stream_err = stream.start()
+	if start_stream_err != OK:
+		_fail("FAIL: CamBANGStream.start() must return OK")
+		return
+	var start_stream_second_err = stream.start()
+	if start_stream_second_err != OK:
+		_fail("FAIL: CamBANGStream.start() second call must be idempotent and return OK")
+		return
+	var stop_stream_err = stream.stop()
+	if stop_stream_err != OK:
+		_fail("FAIL: CamBANGStream.stop() must return OK")
+		return
+	var stop_stream_second_err = stream.stop()
+	if stop_stream_second_err != OK:
+		_fail("FAIL: CamBANGStream.stop() second call must be idempotent and return OK")
+		return
 	var destroy_stream_err = stream.destroy()
 	if destroy_stream_err != OK:
 		_fail("FAIL: CamBANGStream.destroy() must return OK")
@@ -256,6 +278,9 @@ func _ready() -> void:
 	var destroy_stream_second_err = stream.destroy()
 	if destroy_stream_second_err != OK:
 		_fail("FAIL: CamBANGStream.destroy() second call must be idempotent and return OK")
+		return
+	if bool(stream.is_valid_stream_handle()):
+		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return false after destroy")
 		return
 	stream = null
 	var disengage_a_err = handle_a.disengage()

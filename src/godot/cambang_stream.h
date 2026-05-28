@@ -33,6 +33,8 @@ public:
   bool is_valid_stream_handle() const {
     return !destroy_requested_ && server_ != nullptr && stream_id_ != 0 && device_instance_id_ != 0;
   }
+  godot::Error start();
+  godot::Error stop();
   godot::Error destroy();
 
 protected:

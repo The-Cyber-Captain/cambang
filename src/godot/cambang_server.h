@@ -127,6 +127,12 @@ public:
   godot::Error destroy_direct_stream_handle(uint64_t stream_id,
                                             const godot::String& hardware_id,
                                             uint64_t device_instance_id);
+  godot::Error start_direct_stream_handle(uint64_t stream_id,
+                                          const godot::String& hardware_id,
+                                          uint64_t device_instance_id);
+  godot::Error stop_direct_stream_handle(uint64_t stream_id,
+                                         const godot::String& hardware_id,
+                                         uint64_t device_instance_id);
   uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
 protected:
