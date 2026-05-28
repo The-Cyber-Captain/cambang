@@ -232,6 +232,10 @@ func _ready() -> void:
 	if disengage_b_err != OK:
 		_fail("FAIL: second endpoint handle disengage() must return OK")
 		return
+	var disengaged_to_zero := await _wait_for_endpoint_instance_ids_zero(handle_a, handle_b, 120)
+	if not disengaged_to_zero:
+		_fail("FAIL: endpoint handles must eventually resolve get_instance_id() == 0 after disengage close truth")
+		return
 	CamBANGServer.stop()
 
 	var synthetic_role_default_timing_err := CamBANGServer.start(
@@ -463,3 +467,11 @@ func _phase_name(p: int) -> String:
 			return "done"
 		_:
 			return "unknown"
+
+
+func _wait_for_endpoint_instance_ids_zero(handle_a, handle_b, max_frames: int) -> bool:
+	for _i in range(max_frames):
+		if int(handle_a.get_instance_id()) == 0 and int(handle_b.get_instance_id()) == 0:
+			return true
+		await get_tree().process_frame
+	return int(handle_a.get_instance_id()) == 0 and int(handle_b.get_instance_id()) == 0
