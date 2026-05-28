@@ -110,6 +110,15 @@ static godot::Error map_try_close_device_status(TryCloseDeviceStatus s) noexcept
   }
 }
 
+static godot::Error map_try_destroy_stream_status(TryDestroyStreamStatus s) noexcept {
+  switch (s) {
+    case TryDestroyStreamStatus::OK: return godot::OK;
+    case TryDestroyStreamStatus::Busy: return godot::ERR_BUSY;
+    case TryDestroyStreamStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
 static bool line_contains_token(const std::string& line, const char* token) {
   return token && line.find(token) != std::string::npos;
 }
@@ -525,6 +534,30 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
   out.instantiate();
   out->set_identity(const_cast<CamBANGServer*>(this), hardware_id, state.device_instance_id, stream_id);
   return out;
+}
+
+godot::Error CamBANGServer::destroy_direct_stream_handle(
+    uint64_t stream_id,
+    const godot::String& hardware_id,
+    uint64_t device_instance_id) {
+  if (stream_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
+  if (it == direct_stream_hardware_id_by_stream_id_.end()) {
+    return godot::OK;
+  }
+  if (!hardware_id.is_empty() && it->second != hardware_id) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (device_instance_id == 0) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  const godot::Error rc = map_try_destroy_stream_status(runtime_.try_destroy_stream(stream_id));
+  if (rc == godot::OK) {
+    direct_stream_hardware_id_by_stream_id_.erase(it);
+  }
+  return rc;
 }
 
 uint64_t CamBANGServer::resolve_endpoint_instance_id(const godot::String& hardware_id) const {

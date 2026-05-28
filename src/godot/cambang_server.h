@@ -124,6 +124,9 @@ public:
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
   godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(const godot::String& hardware_id);
+  godot::Error destroy_direct_stream_handle(uint64_t stream_id,
+                                            const godot::String& hardware_id,
+                                            uint64_t device_instance_id);
   uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
 protected:

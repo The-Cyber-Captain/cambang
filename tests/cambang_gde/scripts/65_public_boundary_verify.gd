@@ -234,6 +234,9 @@ func _ready() -> void:
 	if not stream.has_method("get_stream_id") or not stream.has_method("get_device_instance_id") or not stream.has_method("get_hardware_id") or not stream.has_method("is_valid_stream_handle"):
 		_fail("FAIL: CamBANGStream handle missing required identity methods")
 		return
+	if not stream.has_method("destroy"):
+		_fail("FAIL: CamBANGStream.destroy() missing")
+		return
 	if int(stream.get_stream_id()) == 0:
 		_fail("FAIL: CamBANGStream.get_stream_id() must be nonzero")
 		return
@@ -245,6 +248,14 @@ func _ready() -> void:
 		return
 	if not bool(stream.is_valid_stream_handle()):
 		_fail("FAIL: CamBANGStream.is_valid_stream_handle() must return true")
+		return
+	var destroy_stream_err = stream.destroy()
+	if destroy_stream_err != OK:
+		_fail("FAIL: CamBANGStream.destroy() must return OK")
+		return
+	var destroy_stream_second_err = stream.destroy()
+	if destroy_stream_second_err != OK:
+		_fail("FAIL: CamBANGStream.destroy() second call must be idempotent and return OK")
 		return
 	stream = null
 	var disengage_a_err = handle_a.disengage()
