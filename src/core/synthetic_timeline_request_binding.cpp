@@ -14,6 +14,7 @@ const char* stop_status_cstr(TryStopStreamStatus s) {
     case TryStopStreamStatus::OK: return "OK";
     case TryStopStreamStatus::InvalidArgument: return "INVALID_ARGUMENT";
     case TryStopStreamStatus::Busy: return "BUSY";
+    case TryStopStreamStatus::ProviderRejected: return "PROVIDER_REJECTED";
   }
   return "UNKNOWN";
 }

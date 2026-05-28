@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <map>
+#include <future>
 
 #include <utility>
 
@@ -852,25 +853,51 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     return TryStartStreamStatus::Busy;
   }
 
-  // NOTE: CoreStreamRegistry is core-thread-only. Do not read it on the caller thread.
-  // The start is dispatched onto the core thread where the record is resolved.
-  const CoreThread::PostResult pr = try_post([this, stream_id]() {
+  std::promise<TryStartStreamStatus> p;
+  std::future<TryStartStreamStatus> f = p.get_future();
+  const CoreThread::PostResult pr = try_post([this, stream_id, pr = std::move(p)]() mutable {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
-
-    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
-    if (!rec) {
-      // Stream record not declared (yet) or already destroyed.
-      // Non-blocking API: caller retries as needed.
+    if (!p) {
+      pr.set_value(TryStartStreamStatus::Busy);
       return;
     }
 
-    (void)p->start_stream(stream_id, rec->profile, rec->picture);
-    (void)streams_.on_stream_started(stream_id);
-  });
+    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+    if (!rec) {
+      pr.set_value(TryStartStreamStatus::InvalidArgument);
+      return;
+    }
+    if (rec->started) {
+      pr.set_value(TryStartStreamStatus::OK);
+      return;
+    }
+    const uint64_t owner_device_instance_id = rec->device_instance_id;
+    for (const auto& kv : streams_.all()) {
+      const auto& other = kv.second;
+      if (other.stream_id == stream_id) {
+        continue;
+      }
+      if (other.device_instance_id == owner_device_instance_id && other.created && other.started) {
+        pr.set_value(TryStartStreamStatus::Busy);
+        return;
+      }
+    }
 
-  return (pr == CoreThread::PostResult::Enqueued) ? TryStartStreamStatus::OK
-                                                  : TryStartStreamStatus::Busy;
+    const ProviderResult sr = p->start_stream(stream_id, rec->profile, rec->picture);
+    if (!sr.ok()) {
+      timeline_teardown_trace_emit("fail StartStream stream_id=%llu reason=provider_rc_%u",
+                                   static_cast<unsigned long long>(stream_id),
+                                   static_cast<unsigned>(sr.code));
+      pr.set_value(TryStartStreamStatus::ProviderRejected);
+      return;
+    }
+    (void)streams_.on_stream_started(stream_id);
+    pr.set_value(TryStartStreamStatus::OK);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryStartStreamStatus::Busy;
+  }
+  return f.get();
 }
 
 TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
@@ -883,21 +910,39 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     return TryStopStreamStatus::Busy;
   }
 
-  const CoreThread::PostResult pr = try_post([this, stream_id]() {
+  std::promise<TryStopStreamStatus> p;
+  std::future<TryStopStreamStatus> f = p.get_future();
+  const CoreThread::PostResult pr = try_post([this, stream_id, pr = std::move(p)]() mutable {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      pr.set_value(TryStopStreamStatus::Busy);
+      return;
+    }
+    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+    if (!rec) {
+      pr.set_value(TryStopStreamStatus::InvalidArgument);
+      return;
+    }
+    if (!rec->started) {
+      pr.set_value(TryStopStreamStatus::OK);
+      return;
+    }
     (void)streams_.mark_stop_requested_by_core(stream_id);
     const ProviderResult sr = p->stop_stream(stream_id);
     if (!sr.ok()) {
       timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(sr.code));
+      pr.set_value(TryStopStreamStatus::ProviderRejected);
+      return;
     }
     (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
+    pr.set_value(TryStopStreamStatus::OK);
   });
-
-  return (pr == CoreThread::PostResult::Enqueued) ? TryStopStreamStatus::OK
-                                                  : TryStopStreamStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryStopStreamStatus::Busy;
+  }
+  return f.get();
 }
 
 TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexcept {

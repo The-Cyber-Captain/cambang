@@ -65,12 +65,14 @@ enum class TryStartStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
 enum class TryStopStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
 enum class TryDestroyStreamStatus : uint8_t {
