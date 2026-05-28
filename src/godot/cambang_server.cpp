@@ -362,7 +362,7 @@ void CamBANGServer::stop() {
   // truth during deterministic shutdown. Drain one final boundary observation before
   // returning to NIL so the prior generation can be observed once more if changed.
   if (has_godot_counters_) {
-    (void)_consume_latest_core_snapshot(/*emit_signal=*/true);
+    (void)_consume_latest_core_snapshot();
   }
 
   if (has_godot_counters_) {
@@ -840,7 +840,7 @@ void CamBANGServer::_on_godot_process_frame() {
   _on_godot_tick(delta_s);
 }
 
-bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
+bool CamBANGServer::_consume_latest_core_snapshot() {
   const uint64_t published_seq = runtime_.published_seq();
   if (published_seq == last_seen_published_seq_) {
     return false;
@@ -853,8 +853,6 @@ bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
     // lose this publish if the marker becomes observable before buffer visibility.
     return false;
   }
-  last_seen_published_seq_ = published_seq;
-
   if (active_session_id_ == 0) {
     return false;
   }
@@ -866,6 +864,8 @@ bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
     }
     enforce_min_gen_gate_ = false;
   }
+
+  last_seen_published_seq_ = published_seq;
 
   // Establish / reset tick-bounded counters on new gen.
   // gen is defined from the Godot-facing perspective but still aligns with
@@ -896,14 +896,10 @@ bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
   latest_export_ = export_snapshot_to_godot(*snap, godot_gen_, godot_version_, godot_topology_version_);
   has_latest_export_ = true;
 
-  if (should_emit_signal) {
-    emitting_state_published_ = true;
-    emit_signal("state_published",
-                static_cast<uint64_t>(godot_gen_),
-                static_cast<uint64_t>(godot_version_),
-                static_cast<uint64_t>(godot_topology_version_));
-    emitting_state_published_ = false;
-  }
+  emit_signal("state_published",
+              static_cast<uint64_t>(godot_gen_),
+              static_cast<uint64_t>(godot_version_),
+              static_cast<uint64_t>(godot_topology_version_));
 
   return true;
 }
@@ -971,15 +967,10 @@ void CamBANGServer::_on_godot_tick(double delta) {
   // Core may publish multiple intermediate snapshots between Godot ticks.
   // We emit at most once per tick, and only if *anything* has changed since
   // the previous tick.
-  (void)_consume_latest_core_snapshot(/*emit_signal=*/true);
+  (void)_consume_latest_core_snapshot();
 }
 
 godot::Variant CamBANGServer::get_state_snapshot() const {
-  // Opportunistically latch newer core-published truth for synchronous polling callers.
-  // Use non-emitting consume path so this getter does not alter state_published semantics.
-  if (!emitting_state_published_) {
-    (void)const_cast<CamBANGServer*>(this)->_consume_latest_core_snapshot(/*emit_signal=*/false);
-  }
   if (!has_latest_export_) {
     return godot::Variant();
   }
