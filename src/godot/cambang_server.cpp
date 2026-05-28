@@ -768,8 +768,8 @@ void CamBANGServer::_reconcile_endpoint_lifecycle_from_snapshot(const CamBANGSta
   std::unordered_set<uint64_t> live_devices;
   live_devices.reserve(snap.devices.size());
   for (const auto& device : snap.devices) {
-    if (device.device_instance_id != 0) {
-      live_devices.insert(device.device_instance_id);
+    if (device.instance_id != 0) {
+      live_devices.insert(device.instance_id);
     }
   }
 
