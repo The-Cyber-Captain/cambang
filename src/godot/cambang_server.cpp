@@ -897,10 +897,12 @@ bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
   has_latest_export_ = true;
 
   if (should_emit_signal) {
+    emitting_state_published_ = true;
     emit_signal("state_published",
                 static_cast<uint64_t>(godot_gen_),
                 static_cast<uint64_t>(godot_version_),
                 static_cast<uint64_t>(godot_topology_version_));
+    emitting_state_published_ = false;
   }
 
   return true;
@@ -975,7 +977,9 @@ void CamBANGServer::_on_godot_tick(double delta) {
 godot::Variant CamBANGServer::get_state_snapshot() const {
   // Opportunistically latch newer core-published truth for synchronous polling callers.
   // Use non-emitting consume path so this getter does not alter state_published semantics.
-  (void)const_cast<CamBANGServer*>(this)->_consume_latest_core_snapshot(/*emit_signal=*/false);
+  if (!emitting_state_published_) {
+    (void)const_cast<CamBANGServer*>(this)->_consume_latest_core_snapshot(/*emit_signal=*/false);
+  }
   if (!has_latest_export_) {
     return godot::Variant();
   }

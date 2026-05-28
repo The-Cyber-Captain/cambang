@@ -163,6 +163,7 @@ private:
   // Godot-thread cached exported snapshot (struct-like Variant graph).
   bool has_latest_export_ = false;
   godot::Dictionary latest_export_;
+  bool emitting_state_published_ = false;
 
   // Godot-facing tick-bounded counters (truth model for state_published).
   // These are not the core's internal publication counters.
