@@ -2,6 +2,7 @@
 #include "godot/cambang_capture_result.h"
 #include "godot/cambang_capture_result_set.h"
 #include "godot/cambang_device.h"
+#include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_rig.h"
 
@@ -11,6 +12,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <chrono>
+#include <unordered_set>
 
 #include "core/synthetic_timeline_request_binding.h"
 #include "imaging/api/timeline_teardown_trace.h"
@@ -95,6 +97,53 @@ static godot::Error map_try_set_still_capture_profile_status(TrySetStillCaptureP
     case TrySetStillCaptureProfileStatus::NotSupported: return godot::ERR_UNAVAILABLE;
     case TrySetStillCaptureProfileStatus::Busy: return godot::ERR_BUSY;
     case TrySetStillCaptureProfileStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_set_warm_hold_status(TrySetWarmHoldStatus s) noexcept {
+  switch (s) {
+    case TrySetWarmHoldStatus::OK: return godot::OK;
+    case TrySetWarmHoldStatus::Busy: return godot::ERR_BUSY;
+    case TrySetWarmHoldStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_close_device_status(TryCloseDeviceStatus s) noexcept {
+  switch (s) {
+    case TryCloseDeviceStatus::OK: return godot::OK;
+    case TryCloseDeviceStatus::Busy: return godot::ERR_BUSY;
+    case TryCloseDeviceStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_destroy_stream_status(TryDestroyStreamStatus s) noexcept {
+  switch (s) {
+    case TryDestroyStreamStatus::OK: return godot::OK;
+    case TryDestroyStreamStatus::Busy: return godot::ERR_BUSY;
+    case TryDestroyStreamStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_start_stream_status(TryStartStreamStatus s) noexcept {
+  switch (s) {
+    case TryStartStreamStatus::OK: return godot::OK;
+    case TryStartStreamStatus::Busy: return godot::ERR_BUSY;
+    case TryStartStreamStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    case TryStartStreamStatus::ProviderRejected: return godot::ERR_CANT_OPEN;
+    default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_stop_stream_status(TryStopStreamStatus s) noexcept {
+  switch (s) {
+    case TryStopStreamStatus::OK: return godot::OK;
+    case TryStopStreamStatus::Busy: return godot::ERR_BUSY;
+    case TryStopStreamStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    case TryStopStreamStatus::ProviderRejected: return godot::ERR_UNAVAILABLE;
     default: return godot::FAILED;
   }
 }
@@ -330,11 +379,265 @@ void CamBANGServer::stop() {
   last_seen_published_seq_ = runtime_.published_seq();
   active_session_id_ = 0;
   enforce_min_gen_gate_ = false;
+  endpoint_lifecycle_by_hardware_id_.clear();
+  direct_stream_hardware_id_by_stream_id_.clear();
 }
 
 bool CamBANGServer::is_running() const {
   const CoreRuntimeState state = runtime_.state_copy();
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
+}
+
+godot::Array CamBANGServer::enumerate_devices() const {
+  godot::Array out;
+  if (!is_running() || !provider_) {
+    return out;
+  }
+  std::vector<CameraEndpoint> endpoints;
+  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+  if (!pr.ok()) {
+    return out;
+  }
+  for (const CameraEndpoint& endpoint : endpoints) {
+    godot::Dictionary entry;
+    entry["hardware_id"] = godot::String(endpoint.hardware_id.c_str());
+    entry["name"] = godot::String(endpoint.name.c_str());
+    out.push_back(entry);
+  }
+  return out;
+}
+
+godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot::String& hardware_id) const {
+  if (hardware_id.is_empty() || !is_running() || !provider_) {
+    return godot::Ref<CamBANGDevice>();
+  }
+  std::vector<CameraEndpoint> endpoints;
+  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+  if (!pr.ok()) {
+    return godot::Ref<CamBANGDevice>();
+  }
+  for (const CameraEndpoint& endpoint : endpoints) {
+    if (hardware_id == endpoint.hardware_id.c_str()) {
+      godot::Ref<CamBANGDevice> out;
+      out.instantiate();
+      out->set_server_and_endpoint(
+          const_cast<CamBANGServer*>(this),
+          hardware_id,
+          godot::String(endpoint.name.c_str()));
+      auto& state = const_cast<CamBANGServer*>(this)->endpoint_lifecycle_by_hardware_id_[endpoint.hardware_id];
+      state.hardware_id = hardware_id;
+      state.display_name = godot::String(endpoint.name.c_str());
+      return out;
+    }
+  }
+  return godot::Ref<CamBANGDevice>();
+}
+
+godot::Error CamBANGServer::engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name) {
+  if (hardware_id.is_empty() || !is_running() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  std::vector<CameraEndpoint> endpoints;
+  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+  if (!pr.ok()) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  bool found = false;
+  godot::String resolved_display_name = display_name;
+  for (const CameraEndpoint& endpoint : endpoints) {
+    if (hardware_id == endpoint.hardware_id.c_str()) {
+      found = true;
+      resolved_display_name = godot::String(endpoint.name.c_str());
+      break;
+    }
+  }
+  if (!found) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  EndpointLifecycleState& state = endpoint_lifecycle_by_hardware_id_[std::string(hardware_id.utf8().get_data())];
+  state.hardware_id = hardware_id;
+  state.display_name = resolved_display_name;
+  if (state.device_instance_id != 0 || state.open_requested) {
+    return godot::OK;
+  }
+
+  state.device_instance_id = next_direct_device_instance_id_.fetch_add(1, std::memory_order_relaxed);
+  state.root_id = next_direct_root_id_.fetch_add(1, std::memory_order_relaxed);
+  const TryOpenDeviceStatus open_status =
+      runtime_.try_open_device(std::string(hardware_id.utf8().get_data()), state.device_instance_id, state.root_id);
+  switch (open_status) {
+    case TryOpenDeviceStatus::OK:
+      state.open_requested = true;
+      state.close_requested = false;
+      return godot::OK;
+    case TryOpenDeviceStatus::Busy:
+      state.device_instance_id = 0;
+      state.root_id = 0;
+      return godot::ERR_BUSY;
+    case TryOpenDeviceStatus::InvalidArgument:
+    default:
+      state.device_instance_id = 0;
+      state.root_id = 0;
+      return godot::ERR_INVALID_PARAMETER;
+  }
+}
+
+godot::Error CamBANGServer::disengage_endpoint_handle(const godot::String& hardware_id) {
+  if (hardware_id.is_empty() || !is_running() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+
+  const std::string hardware_id_key(hardware_id.utf8().get_data());
+  auto state_it = endpoint_lifecycle_by_hardware_id_.find(hardware_id_key);
+  if (state_it == endpoint_lifecycle_by_hardware_id_.end()) {
+    std::vector<CameraEndpoint> endpoints;
+    const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+    if (!pr.ok()) {
+      return godot::ERR_UNAVAILABLE;
+    }
+    bool found = false;
+    for (const CameraEndpoint& endpoint : endpoints) {
+      if (hardware_id == endpoint.hardware_id.c_str()) {
+        EndpointLifecycleState state{};
+        state.hardware_id = hardware_id;
+        state.display_name = godot::String(endpoint.name.c_str());
+        endpoint_lifecycle_by_hardware_id_[hardware_id_key] = state;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return godot::ERR_INVALID_PARAMETER;
+    }
+    state_it = endpoint_lifecycle_by_hardware_id_.find(hardware_id_key);
+  }
+
+  EndpointLifecycleState& state = state_it->second;
+  if (state.device_instance_id == 0 && !state.open_requested && !state.close_requested) {
+    return godot::OK;
+  }
+  if (state.close_requested) {
+    return godot::OK;
+  }
+  if (state.device_instance_id == 0) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  const godot::Error rc = map_try_close_device_status(runtime_.try_close_device(state.device_instance_id));
+  if (rc == godot::OK) {
+    state.close_requested = true;
+  }
+  return rc;
+}
+
+godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(const godot::String& hardware_id) {
+  if (hardware_id.is_empty() || !is_running() || !provider_) {
+    return godot::Ref<CamBANGStream>();
+  }
+  const auto state_it = endpoint_lifecycle_by_hardware_id_.find(std::string(hardware_id.utf8().get_data()));
+  if (state_it == endpoint_lifecycle_by_hardware_id_.end()) {
+    return godot::Ref<CamBANGStream>();
+  }
+  const EndpointLifecycleState& state = state_it->second;
+  if (state.device_instance_id == 0) {
+    return godot::Ref<CamBANGStream>();
+  }
+
+  uint64_t stream_id = next_direct_stream_id_.fetch_add(1, std::memory_order_relaxed);
+  if (stream_id == 0) {
+    stream_id = next_direct_stream_id_.fetch_add(1, std::memory_order_relaxed);
+  }
+  const TryCreateStreamStatus cs = runtime_.try_create_stream(
+      stream_id,
+      state.device_instance_id,
+      StreamIntent::PREVIEW,
+      nullptr,
+      nullptr,
+      0);
+  if (cs != TryCreateStreamStatus::OK) {
+    return godot::Ref<CamBANGStream>();
+  }
+  direct_stream_hardware_id_by_stream_id_[stream_id] = hardware_id;
+  godot::Ref<CamBANGStream> out;
+  out.instantiate();
+  out->set_identity(const_cast<CamBANGServer*>(this), hardware_id, state.device_instance_id, stream_id);
+  return out;
+}
+
+godot::Error CamBANGServer::destroy_direct_stream_handle(
+    uint64_t stream_id,
+    const godot::String& hardware_id,
+    uint64_t device_instance_id) {
+  if (stream_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
+  if (it == direct_stream_hardware_id_by_stream_id_.end()) {
+    return godot::OK;
+  }
+  if (!hardware_id.is_empty() && it->second != hardware_id) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (device_instance_id == 0) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  const godot::Error rc = map_try_destroy_stream_status(runtime_.try_destroy_stream(stream_id));
+  if (rc == godot::OK) {
+    direct_stream_hardware_id_by_stream_id_.erase(it);
+  }
+  return rc;
+}
+
+godot::Error CamBANGServer::start_direct_stream_handle(
+    uint64_t stream_id,
+    const godot::String& hardware_id,
+    uint64_t device_instance_id) {
+  if (stream_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
+  if (it == direct_stream_hardware_id_by_stream_id_.end()) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (!hardware_id.is_empty() && it->second != hardware_id) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (device_instance_id == 0) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  return map_try_start_stream_status(runtime_.try_start_stream(stream_id));
+}
+
+godot::Error CamBANGServer::stop_direct_stream_handle(
+    uint64_t stream_id,
+    const godot::String& hardware_id,
+    uint64_t device_instance_id) {
+  if (stream_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
+  if (it == direct_stream_hardware_id_by_stream_id_.end()) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (!hardware_id.is_empty() && it->second != hardware_id) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (device_instance_id == 0) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  return map_try_stop_stream_status(runtime_.try_stop_stream(stream_id));
+}
+
+uint64_t CamBANGServer::resolve_endpoint_instance_id(const godot::String& hardware_id) const {
+  if (hardware_id.is_empty()) {
+    return 0;
+  }
+  const auto it = endpoint_lifecycle_by_hardware_id_.find(std::string(hardware_id.utf8().get_data()));
+  if (it == endpoint_lifecycle_by_hardware_id_.end()) {
+    return 0;
+  }
+  return it->second.device_instance_id;
 }
 
 godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id) const {
@@ -446,6 +749,13 @@ godot::Error CamBANGServer::set_device_still_capture_profile(
   }
   return map_try_set_still_capture_profile_status(
       runtime_.try_set_device_still_capture_profile(device_instance_id, profile, still_image_bundle));
+}
+
+godot::Error CamBANGServer::set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
+  if (device_instance_id == 0 || !is_running() || !provider_) {
+    return godot::ERR_BUSY;
+  }
+  return map_try_set_warm_hold_status(runtime_.try_set_device_warm_hold_ms(device_instance_id, warm_hold_ms));
 }
 
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
@@ -580,6 +890,7 @@ bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
   }
 
   latest_ = snap;
+  _reconcile_endpoint_lifecycle_from_snapshot(*snap);
 
   // Export as a struct-like Variant graph for Godot inspection.
   latest_export_ = export_snapshot_to_godot(*snap, godot_gen_, godot_version_, godot_topology_version_);
@@ -593,6 +904,32 @@ bool CamBANGServer::_consume_latest_core_snapshot(bool should_emit_signal) {
   }
 
   return true;
+}
+
+void CamBANGServer::_reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap) {
+  if (endpoint_lifecycle_by_hardware_id_.empty()) {
+    return;
+  }
+  std::unordered_set<uint64_t> live_devices;
+  live_devices.reserve(snap.devices.size());
+  for (const auto& device : snap.devices) {
+    if (device.instance_id != 0) {
+      live_devices.insert(device.instance_id);
+    }
+  }
+
+  for (auto& kv : endpoint_lifecycle_by_hardware_id_) {
+    EndpointLifecycleState& state = kv.second;
+    if (!state.close_requested || state.device_instance_id == 0) {
+      continue;
+    }
+    if (live_devices.find(state.device_instance_id) == live_devices.end()) {
+      state.device_instance_id = 0;
+      state.root_id = 0;
+      state.open_requested = false;
+      state.close_requested = false;
+    }
+  }
 }
 
 void CamBANGServer::_on_godot_tick(double delta) {
@@ -893,6 +1230,8 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("advance_timeline", "dt_ns"), &CamBANGServer::advance_timeline);
   godot::ClassDB::bind_method(godot::D_METHOD("get_state_snapshot"), &CamBANGServer::get_state_snapshot);
   godot::ClassDB::bind_method(godot::D_METHOD("get_synthetic_metrics_snapshot"), &CamBANGServer::get_synthetic_metrics_snapshot);
+  godot::ClassDB::bind_method(godot::D_METHOD("enumerate_devices"), &CamBANGServer::enumerate_devices);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
   godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);

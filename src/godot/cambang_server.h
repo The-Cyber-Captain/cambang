@@ -3,12 +3,15 @@
 #include <cstdint>
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 #include <string>
 
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/variant.hpp>
 
 #include "core/core_runtime.h"
@@ -31,6 +34,7 @@
 
 namespace cambang {
 class CamBANGStreamResult;
+class CamBANGStream;
 class CamBANGCaptureResult;
 class CamBANGCaptureResultSet;
 class CamBANGDevice;
@@ -52,6 +56,17 @@ class CamBANGServer final : public godot::Object {
   GDCLASS(CamBANGServer, godot::Object)
 
 public:
+  // Reserved direct-lifecycle ID namespace:
+  // - Low numeric IDs are commonly used by scenario-authored synthetic timeline
+  //   materialization.
+  // - Direct Godot lifecycle requests intentionally allocate from a high range
+  //   to avoid ambiguity/collision with low authored IDs.
+  // - These counters are process-monotonic and intentionally do not reset on
+  //   stop(); endpoint_lifecycle_by_hardware_id_ is the stop/reset boundary state.
+  static constexpr uint64_t DIRECT_DEVICE_INSTANCE_ID_BASE = 1000000000000ULL;
+  static constexpr uint64_t DIRECT_ROOT_ID_BASE = 2000000000000ULL;
+  static constexpr uint64_t DIRECT_STREAM_ID_BASE = 3000000000000ULL;
+
   CamBANGServer();
   ~CamBANGServer() override;
 
@@ -91,6 +106,8 @@ public:
   // - Before the first publish, returns NIL.
   // - After publish, returns a Dictionary matching docs/state_snapshot.md.
   godot::Variant get_state_snapshot() const;
+  godot::Array enumerate_devices() const;
+  godot::Ref<CamBANGDevice> get_device_for_hardware_id(const godot::String& hardware_id) const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
   godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;
@@ -103,7 +120,21 @@ public:
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
+  godot::Error set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
+  godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
+  godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
+  godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(const godot::String& hardware_id);
+  godot::Error destroy_direct_stream_handle(uint64_t stream_id,
+                                            const godot::String& hardware_id,
+                                            uint64_t device_instance_id);
+  godot::Error start_direct_stream_handle(uint64_t stream_id,
+                                          const godot::String& hardware_id,
+                                          uint64_t device_instance_id);
+  godot::Error stop_direct_stream_handle(uint64_t stream_id,
+                                         const godot::String& hardware_id,
+                                         uint64_t device_instance_id);
+  uint64_t resolve_endpoint_instance_id(const godot::String& hardware_id) const;
 
 protected:
   static void _bind_methods();
@@ -115,6 +146,7 @@ private:
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
+  void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
   // Consume latest core snapshot (if published_seq advanced) and optionally emit
   // state_published for this boundary observation.
@@ -185,6 +217,20 @@ private:
   // temporary dev scaffolding to attach/initialize the provider.
   std::unique_ptr<ICameraProvider> provider_;
   std::atomic<uint64_t> next_capture_id_{1};
+  std::atomic<uint64_t> next_direct_device_instance_id_{DIRECT_DEVICE_INSTANCE_ID_BASE};
+  std::atomic<uint64_t> next_direct_root_id_{DIRECT_ROOT_ID_BASE};
+  std::atomic<uint64_t> next_direct_stream_id_{DIRECT_STREAM_ID_BASE};
+
+  struct EndpointLifecycleState {
+    godot::String hardware_id;
+    godot::String display_name;
+    uint64_t device_instance_id = 0;
+    uint64_t root_id = 0;
+    bool open_requested = false;
+    bool close_requested = false;
+  };
+  std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
+  std::unordered_map<uint64_t, godot::String> direct_stream_hardware_id_by_stream_id_;
 };
 
 } // namespace cambang

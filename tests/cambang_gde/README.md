@@ -104,6 +104,7 @@ godot4 --headless --path . --scene res://scenes/61_tick_bounded_coalescing_abuse
 godot4 --headless --path . --scene res://scenes/62_snapshot_polling_immutability_abuse.tscn --quit-after 1000
 godot4 --headless --path . --scene res://scenes/63_snapshot_observer_minimal.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/65_public_boundary_verify.tscn --quit-after 10
+godot4 --headless --path . --scene res://scenes/66_public_lifecycle_verify.tscn --quit-after 1000
 godot4 --headless --path . --scene res://scenes/66_status_panel_scenario_runtime.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
 godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verification.tscn --quit-after 20
@@ -118,7 +119,7 @@ Notes:
   and then emit an explicit PASS/FAIL verdict based on the Godot-visible publishes they observed.
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
   large value such as `--quit-after 1000`.
-- `60`, `61`, `62`, `63`, `65`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
+- `60`, `61`, `62`, `63`, `65`, `66`, and `70` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
 - Scene 70 exercises public device still-profile authoring using a three-member `still_image_bundle`.
 - Scene 70 verifies the resulting `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.

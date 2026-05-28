@@ -55,6 +55,12 @@ enum class TrySetStillCaptureProfileStatus : uint8_t {
   InvalidArgument = 3,
 };
 
+enum class TrySetWarmHoldStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+};
+
 enum class TryCreateStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
@@ -65,12 +71,14 @@ enum class TryStartStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
 enum class TryStopStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
 enum class TryDestroyStreamStatus : uint8_t {
@@ -174,6 +182,7 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t device_instance_id,
       const CaptureProfile& profile,
       const CaptureStillImageBundle& still_image_bundle) noexcept;
+  TrySetWarmHoldStatus try_set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) noexcept;
 
   bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
 
