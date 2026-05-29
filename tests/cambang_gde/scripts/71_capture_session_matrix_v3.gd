@@ -430,7 +430,7 @@ func _bind_stream_slot(slot: String) -> bool:
 
 	# This matrix latches scenario-authored stream ids rather than public
 	# CamBANGStream handles, so it uses the advanced server stream-id lookup.
-	var result: Variant = CamBANGServer.get_latest_stream_result(stream_id)
+	var result: Variant = CamBANGServer.get_stream_result_by_stream_id(stream_id)
 	if result == null:
 		_append_log("WARN: latest stream result not ready yet for %s" % slot)
 		return false

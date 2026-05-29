@@ -25,7 +25,7 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGRig::get_result() const {
   if (!server_ || rig_id_ == 0 || current_capture_id_ == 0 || !server_->is_running()) {
     return godot::Ref<CamBANGCaptureResultSet>();
   }
-  godot::Ref<CamBANGCaptureResultSet> result_set = server_->get_capture_result_set(current_capture_id_);
+  godot::Ref<CamBANGCaptureResultSet> result_set = server_->get_capture_result_set_by_id(current_capture_id_);
   if (result_set.is_null() || result_set->is_empty()) {
     return godot::Ref<CamBANGCaptureResultSet>();
   }

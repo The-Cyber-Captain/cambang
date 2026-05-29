@@ -122,6 +122,10 @@ Current public Godot-facing trigger/result surface is object-oriented:
   current completed `CaptureResultSet`
 - stream observation via `CamBANGStream.get_result()` for the current observable
   `StreamResult`
+- advanced/dev/scenario result lookup by explicit IDs remains available as
+  `CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`,
+  `CamBANGServer.get_capture_result_set_by_id(capture_id)`, and
+  `CamBANGServer.get_stream_result_by_stream_id(stream_id)`
 - no public singleton `CamBANGServer.trigger_rig_capture(...)` entry.
 
 ### 4.2 Provider event queue (Provider → Core)

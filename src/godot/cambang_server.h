@@ -110,9 +110,9 @@ public:
   godot::Ref<CamBANGDevice> get_device_for_hardware_id(const godot::String& hardware_id) const;
   godot::Ref<CamBANGDevice> get_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
-  godot::Ref<CamBANGStreamResult> get_latest_stream_result(uint64_t stream_id) const;
-  godot::Ref<CamBANGCaptureResult> get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
-  godot::Ref<CamBANGCaptureResultSet> get_capture_result_set(uint64_t capture_id) const;
+  godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
+  godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
+  godot::Ref<CamBANGCaptureResultSet> get_capture_result_set_by_id(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id);
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
