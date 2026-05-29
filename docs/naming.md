@@ -86,7 +86,7 @@ tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
 Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
-entry point; rig capture is triggered via `CamBANGRig.trigger_capture()`.
+entry point; rig capture is triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`.
 
 ### `CamBANGRig`
 
@@ -96,7 +96,8 @@ capture across multiple devices.
 Primary lifecycle controls:
 
 - `get_id()`
-- `trigger_capture()`
+- `trigger_capture() -> Error`
+- `get_result()`
 
 Rig-triggered sync capture has priority over standalone activity on
 member devices when conflicts arise.
@@ -112,7 +113,8 @@ Primary lifecycle controls:
 - `set_warm_policy(...)`
 - `set_still_capture_profile(profile)`
 - `get_instance_id()`
-- `trigger_capture()`
+- `trigger_capture() -> Error`
+- `get_result()`
 
 `CamBANGDevice` is the public Godot-facing control point for device-level
 still capture. That public surface does not imply any required 1:1 parity
@@ -130,6 +132,7 @@ instance.
 Primary controls:
 
 - `start()` / `stop()`
+- `get_result()`
 
 Each device supports at most one active repeating stream at a time
 (i.e. a stream with `phase=LIVE` and `mode != STOPPED`).

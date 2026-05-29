@@ -114,10 +114,14 @@ arm/disarm rig - trigger rig capture - apply spec patches
 
 Commands are immutable message objects; core owns command execution.
 
-Current public Godot-facing trigger surface is object-oriented:
-- device capture via `CamBANGDevice.trigger_capture()`
-- rig capture via `CamBANGRig.trigger_capture()` (rig object obtained with
-  `CamBANGServer.get_rig(rig_id)`)
+Current public Godot-facing trigger/result surface is object-oriented:
+- device capture via `CamBANGDevice.trigger_capture() -> Error`, then
+  `CamBANGDevice.get_result()` for the current completed `CaptureResult`
+- rig capture via `CamBANGRig.trigger_capture() -> Error` (rig object obtained
+  with `CamBANGServer.get_rig(rig_id)`), then `CamBANGRig.get_result()` for the
+  current completed `CaptureResultSet`
+- stream observation via `CamBANGStream.get_result()` for the current observable
+  `StreamResult`
 - no public singleton `CamBANGServer.trigger_rig_capture(...)` entry.
 
 ### 4.2 Provider event queue (Provider → Core)

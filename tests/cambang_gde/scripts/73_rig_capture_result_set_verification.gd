@@ -18,7 +18,8 @@ var _done := false
 var _start_ms := 0
 var _result_set_poll_start_ms := 0
 
-var _capture_id := 0
+var _rig_a = null
+var _rig_a_capture_requested := false
 var _rig_a_id := 0
 var _rig_a_members: Array[int] = []
 var _excluded_device_ids: Array[int] = []
@@ -86,7 +87,7 @@ func _process(_delta: float) -> void:
 		_try_latch_rig_a_capture_readiness()
 		return
 
-	if _capture_id == 0:
+	if not _rig_a_capture_requested:
 		_trigger_rig_a_capture()
 		return
 
@@ -221,8 +222,8 @@ func _trigger_rig_a_capture() -> void:
 		return
 	_step_ok("selected Rig A object verified")
 
-	_capture_id = int(rig.trigger_capture())
-	if _capture_id == 0:
+	var capture_err := int(rig.trigger_capture())
+	if capture_err != OK:
 		var snapshot = CamBANGServer.get_state_snapshot()
 		var diag_lines: Array[String] = []
 		if snapshot != null:
@@ -240,26 +241,28 @@ func _trigger_rig_a_capture() -> void:
 					])
 				else:
 					diag_lines.append("id=%d missing-device-row" % int(member_id))
-		_fail("step %d FAIL: rig.trigger_capture() returned zero capture id; RigA member diagnostics: %s" % [_step, "; ".join(diag_lines)])
+		_fail("step %d FAIL: rig.trigger_capture() returned err=%d; RigA member diagnostics: %s" % [_step, capture_err, "; ".join(diag_lines)])
 		return
-	_step_ok("rig capture trigger accepted (capture_id=%d)" % _capture_id)
+	_rig_a = rig
+	_rig_a_capture_requested = true
+	_step_ok("rig capture trigger accepted")
 	_result_set_poll_start_ms = Time.get_ticks_msec()
 
 
 func _try_verify_capture_result_set() -> void:
-	var result_set = CamBANGServer.get_capture_result_set(_capture_id)
+	if _rig_a == null:
+		return
+	var result_set = _rig_a.get_result()
 	if result_set == null or result_set.is_empty():
 		return
 
 	_require(result_set.get_class() == "CamBANGCaptureResultSet", "step %d FAIL: result set must be CamBANGCaptureResultSet" % _step)
-	_require(int(result_set.get_capture_id()) == _capture_id, "step %d FAIL: result set capture_id mismatch" % _step)
 	_require(int(result_set.size()) == _rig_a_members.size(), "step %d FAIL: result set size mismatch" % _step)
 	_step_ok("capture result set materialized for selected rig")
 
 	var actual_ids: Array[int] = []
 	for result in result_set.get_results():
 		_require(result != null, "step %d FAIL: null capture result in result set" % _step)
-		_require(int(result.get_capture_id()) == _capture_id, "step %d FAIL: capture result capture_id mismatch" % _step)
 		actual_ids.append(int(result.get_device_instance_id()))
 
 	actual_ids.sort()

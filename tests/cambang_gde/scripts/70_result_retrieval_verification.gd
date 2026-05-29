@@ -44,8 +44,8 @@ var _inspection_capture_poll_start_ms := 0
 
 var _device_instance_id := 0
 var _stream_id := 0
-var _capture_id := 0
-var _inspection_capture_id := 0
+var _capture_device = null
+var _inspection_capture_device = null
 var _capture_profile_version_after_set := -1
 var _still_profile_set_applied := false
 var _capture_triggered := false
@@ -126,7 +126,7 @@ func _process(_delta: float) -> void:
 		_try_latch_ids_from_snapshot()
 		return
 
-	if _capture_id == 0:
+	if not _capture_triggered:
 		# Stream timeout only applies to initial stream-baseline acquisition.
 		# After stream baseline passes, we may still be waiting for snapshot bundle
 		# catch-up gates before triggering capture; that must not reuse stream timeout.
@@ -176,6 +176,8 @@ func _try_latch_ids_from_snapshot() -> void:
 
 
 func _try_verify_stream_result() -> void:
+	# This scenario is bootstrapped from a synthetic timeline stream snapshot, not a
+	# public CamBANGStream handle, so it uses the advanced server stream-id lookup.
 	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
 	if stream_result == null:
 		return
@@ -256,9 +258,10 @@ func _try_verify_stream_result() -> void:
 		_still_profile_set_applied = true
 
 	if not _capture_triggered:
-		_capture_id = int(device.trigger_capture())
-		_require(_capture_id != 0, "step %d FAIL: trigger_capture() returned zero capture id" % _step)
-		_step_ok("capture trigger accepted (capture_id=%d)" % _capture_id)
+		var capture_err := int(device.trigger_capture())
+		_require(capture_err == OK, "step %d FAIL: trigger_capture() returned err=%d" % [_step, capture_err])
+		_capture_device = device
+		_step_ok("capture trigger accepted")
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
 		var device_snapshot_after_set := _get_device_snapshot_record(_device_instance_id)
@@ -283,7 +286,9 @@ func _try_verify_stream_result() -> void:
 
 
 func _try_verify_capture_result() -> void:
-	var capture_result = CamBANGServer.get_capture_result(_capture_id, _device_instance_id)
+	if _capture_device == null:
+		return
+	var capture_result = _capture_device.get_result()
 	if capture_result == null:
 		return
 
@@ -294,7 +299,6 @@ func _try_verify_capture_result() -> void:
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
 	_require(capture_result.get_format() != 0, "step %d FAIL: capture format invalid" % _step)
 	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: capture payload_kind must be CPU_PACKED" % _step)
-	_require(capture_result.get_capture_id() == _capture_id, "step %d FAIL: capture_id mismatch" % _step)
 	_require(capture_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: capture device_instance_id mismatch" % _step)
 	_step_ok("capture direct properties verified")
 
@@ -360,11 +364,10 @@ func _try_verify_capture_result() -> void:
 
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
 	_refresh_member_inspection_strip(capture_result, expected_members)
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=initial verification" % [
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nmode=initial verification" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
-		capture_result.get_height(),
-		capture_result.get_capture_id()
+		capture_result.get_height()
 	]
 	_exercise_status_panel_acquisition_session_fixture_detail_visibility()
 	if _status_panel != null:
@@ -435,6 +438,8 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 	if latest_stream_result == null:
 		if _stream_id == 0:
 			return
+		# This scene only has a timeline-authored stream id here, not a public
+		# CamBANGStream object, so use the advanced server stream-id lookup.
 		latest_stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
 	if latest_stream_result == null:
 		return
@@ -469,9 +474,11 @@ func _on_request_stream_image_pressed() -> void:
 func _request_manual_stream_image() -> void:
 	if _is_headless or not _inspection_mode:
 		return
+	# This scene only has a timeline-authored stream id here, not a public
+	# CamBANGStream object, so use the advanced server stream-id lookup.
 	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
 	if stream_result == null:
-		_append_status("WARN: cannot request stream to_image(); latest stream result unavailable")
+		_append_status("WARN: cannot request stream to_image(); stream result unavailable")
 		return
 	_materialize_requested_stream_image(stream_result, "mode=manual stream to_image request")
 
@@ -503,7 +510,7 @@ func _materialize_requested_stream_image(stream_result, mode_text: String) -> vo
 func _request_manual_capture() -> void:
 	if _is_headless or not _inspection_mode:
 		return
-	if _inspection_capture_id != 0:
+	if _inspection_capture_device != null:
 		_append_status("INFO: capture already pending; wait for completion")
 		return
 	var device = CamBANGServer.get_device(_device_instance_id)
@@ -512,12 +519,13 @@ func _request_manual_capture() -> void:
 		return
 
 	_clear_member_inspection_strip()
-	_inspection_capture_id = int(device.trigger_capture())
-	if _inspection_capture_id == 0:
-		_append_status("WARN: manual capture request rejected (capture_id=0)")
+	var capture_err := int(device.trigger_capture())
+	if capture_err != OK:
+		_append_status("WARN: manual capture request rejected err=%d" % capture_err)
 		return
+	_inspection_capture_device = device
 	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
-	_append_status("INFO: manual capture requested (capture_id=%d)" % _inspection_capture_id)
+	_append_status("INFO: manual capture requested")
 
 
 func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
@@ -579,30 +587,29 @@ func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> v
 
 
 func _poll_inspection_capture_result() -> void:
-	if _inspection_capture_id == 0:
+	if _inspection_capture_device == null:
 		return
 	if Time.get_ticks_msec() - _inspection_capture_poll_start_ms > INSPECTION_CAPTURE_TIMEOUT_MS:
-		_append_status("WARN: manual capture timeout for capture_id=%d" % _inspection_capture_id)
-		_inspection_capture_id = 0
+		_append_status("WARN: manual capture timeout")
+		_inspection_capture_device = null
 		return
-	var capture_result = CamBANGServer.get_capture_result(_inspection_capture_id, _device_instance_id)
+	var capture_result = _inspection_capture_device.get_result()
 	if capture_result == null:
 		return
 	var capture_image: Image = capture_result.to_image()
 	if capture_image == null:
 		_append_status("WARN: manual capture image materialization failed")
-		_inspection_capture_id = 0
+		_inspection_capture_device = null
 		return
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
 	_refresh_member_inspection_strip(capture_result, _make_scene70_still_image_bundle_members())
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\ncapture_id=%d\nmode=manual capture" % [
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nmode=manual capture" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
-		capture_result.get_height(),
-		capture_result.get_capture_id()
+		capture_result.get_height()
 	]
-	_append_status("INFO: manual capture displayed (capture_id=%d)" % _inspection_capture_id)
-	_inspection_capture_id = 0
+	_append_status("INFO: manual capture displayed")
+	_inspection_capture_device = null
 
 
 func _step_ok(detail: String) -> void:

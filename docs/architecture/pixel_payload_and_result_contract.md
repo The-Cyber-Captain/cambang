@@ -533,6 +533,10 @@ Non-goals:
 
 ### 10.6.2 Capture Result initial surface
 
+Public Godot device capture uses `CamBANGDevice.trigger_capture() -> Error` and
+polls `CamBANGDevice.get_result()` for the current completed `CaptureResult`.
+Explicit `capture_id` lookup remains advanced/dev/scenario tooling.
+
 Direct scalar/default-image convenience fields:
 
 - `width`
@@ -576,6 +580,10 @@ Non-goals:
 - no backend-native public handles
 
 ### 10.6.3 Capture Result Set initial surface
+
+Public Godot rig capture uses `CamBANGRig.trigger_capture() -> Error` and polls
+`CamBANGRig.get_result()` for the current completed `CaptureResultSet`.
+Explicit `capture_id` result-set lookup remains advanced/dev/scenario tooling.
 
 - `capture_id`
 - `size()`

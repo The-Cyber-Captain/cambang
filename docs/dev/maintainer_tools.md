@@ -547,8 +547,8 @@ Maintainer proof inventory for Godot-visible rig capture uses:
 
 - Scene 73: `tests/cambang_gde/scenes/73_rig_capture_result_set_verification.tscn`
 - Scenario: `scenarios/rig_capture_result_basic.json`
-- Trigger path: `CamBANGRig.trigger_capture()`
-- Verification surface: `CaptureResultSet`
+- Trigger path: `CamBANGRig.trigger_capture() -> Error`
+- Verification surface: object-level `CamBANGRig.get_result()` returning `CaptureResultSet`
 
 Scene 70 remains the maintainer-facing stream/result teaching and verification
 coverage; Scene 73 is the canonical Godot-visible rig `CaptureResultSet` proof.

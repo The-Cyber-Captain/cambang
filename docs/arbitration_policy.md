@@ -20,9 +20,9 @@ reporting
 -   **Repeating stream**: a continuous frame flow for a device instance
     (`CamBANGStream`).
 -   **Triggered device capture**: a single still capture requested on a
-    device (`CamBANGDevice.trigger_capture()`).
+    device (`CamBANGDevice.trigger_capture() -> Error`, with result polling through `CamBANGDevice.get_result()`).
 -   **Triggered rig capture**: a synchronised capture requested on a rig
-    (`CamBANGRig.trigger_capture()`).
+    (`CamBANGRig.trigger_capture() -> Error`, with result polling through `CamBANGRig.get_result()`).
 
 ### 1.2 Ownership and membership
 
@@ -260,7 +260,7 @@ Numeric mapping is defined in code and documented separately.
 -   Deny/preempt/fail semantics are explicit and deterministic.
 
 Implementation-status guardrails (current):
-- Rig capture is publicly triggered via `CamBANGRig.trigger_capture()`;
+- Rig capture is publicly triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`;
   no public `CamBANGServer.trigger_rig_capture(...)` API.
 - Scenario timelines stage state/topology but do not define capture trigger actions.
 - Overlapping multi-rig membership is not supported (single membership per device).
