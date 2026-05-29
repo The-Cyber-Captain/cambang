@@ -726,16 +726,23 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
     return;
   }
 
-  (void)try_post([this, device_instance_id, hardware_id]() {
+  CaptureTemplate capture_tmpl{};
+  bool has_capture_template = false;
+  if (ICameraProvider* p = provider_.load(std::memory_order_acquire)) {
+    capture_tmpl = p->capture_template();
+    has_capture_template = true;
+  }
+
+  (void)try_post([this, device_instance_id, hardware_id, capture_tmpl, has_capture_template]() {
     if (!devices_.note_device_identity(device_instance_id, hardware_id)) {
       return;
     }
     devices_.set_camera_spec_version(
         device_instance_id,
         spec_state_.camera_spec_version(hardware_id));
-    if (ICameraProvider* p = provider_.load(std::memory_order_acquire)) {
+    if (has_capture_template) {
       (void)seed_retained_device_still_profile_from_template(
-          devices_, device_instance_id, p->capture_template());
+          devices_, device_instance_id, capture_tmpl);
     }
     request_publish_from_core_unchecked();
   });
