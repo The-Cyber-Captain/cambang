@@ -1,0 +1,92 @@
+[gd_scene load_steps=4 format=3 uid="uid://bxjewaui7mlaw"]
+
+[ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="1_xnvps"]
+
+[sub_resource type="GDScript" id="GDScript_xnvps"]
+resource_name = "100_control"
+script/source = "extends Control
+const WAIT_BEFORE_QUIT = 2.0
+
+
+func _ready():
+	CamBANGServer.start()
+	
+	
+func _do_teardown():
+	# some stuff
+	await get_tree().create_timer(WAIT_BEFORE_QUIT).timeout
+
+	get_tree().quit()
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key_event := event as InputEventKey
+		if key_event.keycode == KEY_ESCAPE:
+			%SceneInfoText.text += \"Esc pressed; quitting scene\\n\"
+			_do_teardown()
+	
+	
+#func _unhandled_input(event: InputEvent) -> void:
+	#if _is_headless:
+		#return
+	#if event is InputEventKey and event.pressed and not event.echo:
+		#var key_event := event as InputEventKey
+		#if key_event.keycode == KEY_ESCAPE:
+			#_append_status(\"INFO: Esc pressed; quitting scene\")
+			#_cleanup_and_quit(0)
+		#elif key_event.keycode == KEY_C and _inspection_mode:
+			#_request_manual_capture()
+"
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_xnvps"]
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
+
+[node name="100_basic_ux_demo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = SubResource("GDScript_xnvps")
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer"]
+layout_mode = 2
+
+[node name="Panel" type="Panel" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="CamBANGStatusPanel" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_xnvps")
+script = ExtResource("1_xnvps")
+metadata/_custom_type_script = "uid://djv2vyhmruoh2"
+
+[node name="SceneInfoPanel" type="Panel" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+
+[node name="SceneInfoText" type="Label" parent="MarginContainer/VBoxContainer/SceneInfoPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
