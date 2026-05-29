@@ -902,8 +902,8 @@ It should generally expose only the compact subset of image-path truth that is b
 Examples of possible compact summary truth might include:
 
 - whether a device/stream/capture currently has associated calibration available
-- whether a latest result contains attached location
-- whether latest result fact provenance is mixed
+- whether a current observable result contains attached location
+- whether current retained result fact provenance is mixed
 - compact visibility/materialization path summaries
 
 Full rich result-associated fact bundles should generally remain on Result Objects rather than in the hot snapshot path.

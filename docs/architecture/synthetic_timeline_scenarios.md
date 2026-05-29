@@ -20,7 +20,10 @@ This document exists to prevent terminology and authority drift while authored s
 Historically, dev-node micro-scenarios mixed “scenario” wording with Godot-side procedural triggers. This supplement sets the canonical model for Tranche 1 onward:
 
 - scenario semantics belong to SyntheticProvider timeline execution
+- scenarios are low-level provider/core timeline replay, diagnostics, metrics,
+  and fault-reproduction tooling rather than the primary public UX automation layer
 - Godot hosts execution but does not define timeline meaning
+- normal public UX automation should use the object-level Godot APIs
 - maintainer verification cases remain a separate concept
 
 ---
@@ -29,7 +32,7 @@ Historically, dev-node micro-scenarios mixed “scenario” wording with Godot-s
 
 The following terms are distinct and must not be conflated:
 
-- **scenario**: user-facing / Godot / SyntheticProvider timeline recording-storage-execution concept
+- **scenario**: SyntheticProvider/provider-core timeline replay artifact for diagnostics, metrics, fault reproduction, and recorded/authored behavior playback
 - **scenario library**: umbrella term for collections of scenarios
   - **built-in scenario library**: current C++-authored scenario collection
   - **external scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader
@@ -107,6 +110,9 @@ There is currently no alternate runtime scenario model that replaces primitive e
 ## 6. Host integration boundary
 
 Godot is a thin host/stepper/observer for scenario execution.
+
+Scenario playback is not the primary public UX automation layer; ordinary
+application/user flows should be expressed through the object-level Godot APIs.
 
 Godot may:
 

@@ -14,9 +14,9 @@ otherwise create architecture or implementation confusion.
 
 To prevent cross-layer ambiguity:
 
-- **Scenario** is reserved for the user-facing / Godot / SyntheticProvider
-  timeline concept (including timeline recording, storage, and execution
-  discussions).
+- **Scenario** is reserved for SyntheticProvider/provider-core timeline replay,
+  diagnostics, metrics, fault reproduction, and recorded/authored behavior
+  playback discussions.
 - **Scenario library** is the umbrella term for scenario collections.
   - **Built-in scenario library**: current C++-authored scenario set.
   - **External scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader.
