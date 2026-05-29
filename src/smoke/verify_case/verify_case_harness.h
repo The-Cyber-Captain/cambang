@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <limits>
 #include <map>
 #include <memory>
@@ -714,9 +715,9 @@ public:
 
   void stop_runtime() {
     if (provider_) {
+      drain_core_requests_before_provider_shutdown_();
       (void)provider_->shutdown();
       runtime_.attach_provider(nullptr);
-      provider_.reset();
     }
 
     const bool was_running = runtime_.is_running();
@@ -729,6 +730,7 @@ public:
     } else {
       last_snapshot_before_stop_clear_ = ObservedSnapshot{};
     }
+    provider_.reset();
 
     snapshot_buffer_.clear();
     callback_recorder_.clear();
@@ -1269,6 +1271,19 @@ private:
     std::vector<Event> events_;
     bool diagnostics_enabled_ = false;
   };
+
+  void drain_core_requests_before_provider_shutdown_() {
+    if (!runtime_.is_running()) {
+      return;
+    }
+
+    auto done = std::make_shared<std::promise<void>>();
+    auto future = done->get_future();
+    const CoreThread::PostResult pr = runtime_.try_post([done]() mutable { done->set_value(); });
+    if (pr == CoreThread::PostResult::Enqueued) {
+      (void)future.wait_for(std::chrono::seconds(2));
+    }
+  }
 
   std::unique_ptr<ICameraProvider> make_provider_() {
     if (provider_kind_ == VerifyCaseProviderKind::Stub) {
