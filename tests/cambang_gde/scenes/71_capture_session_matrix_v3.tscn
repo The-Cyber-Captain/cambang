@@ -52,7 +52,6 @@ fit_content = true
 scroll_active = false
 
 [node name="HBoxContainer" type="HBoxContainer" parent="RootMargin/MainColumn"]
-visible = false
 layout_mode = 2
 
 [node name="Grid" type="GridContainer" parent="RootMargin/MainColumn/HBoxContainer"]
