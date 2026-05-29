@@ -718,6 +718,116 @@ static int test_device_capture_request_materialization_smoke() {
   return 0;
 }
 
+static int test_open_device_snapshot_retains_default_capture_profile_smoke() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (default capture profile snapshot smoke)\n";
+    return 1;
+  }
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "Timeout waiting for initial snapshot (default capture profile snapshot smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!prov.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "Stub provider initialize failed (default capture profile snapshot smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Stub provider enumerate failed (default capture profile snapshot smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.attach_provider(&prov);
+  if (rt.try_open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId) != TryOpenDeviceStatus::OK) {
+    std::cerr << "try_open_device failed (default capture profile snapshot smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        for (const auto& d : s.devices) {
+          if (d.instance_id != kDeviceInstanceId || d.phase != CBLifecyclePhase::LIVE) continue;
+          const auto& still = d.capture_profile.still;
+          const auto& members = still.still_image_bundle.members;
+          return still.version == 0 &&
+                 still.width != 0 &&
+                 still.height != 0 &&
+                 still.format != 0 &&
+                 members.size() == 1 &&
+                 members[0].image_member_index == 0 &&
+                 members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
+                 members[0].intended_exposure_compensation_milli_ev == 0;
+        }
+        return false;
+      })) {
+    std::cerr << "Timeout waiting for opened device snapshot with retained default still profile\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest req{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req)) {
+    std::cerr << "Expected materialized request for default capture profile snapshot smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto snap = get_last_snapshot(buf);
+  if (!snap) {
+    std::cerr << "Snapshot missing after default capture profile wait\n";
+    rt.stop();
+    return 1;
+  }
+  const DeviceState* device = nullptr;
+  for (const auto& d : snap->devices) {
+    if (d.instance_id == kDeviceInstanceId) {
+      device = &d;
+      break;
+    }
+  }
+  if (!device) {
+    std::cerr << "Opened device missing from snapshot after default capture profile wait\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto& still = device->capture_profile.still;
+  if (still.version != 0 ||
+      still.width != req.width ||
+      still.height != req.height ||
+      still.format != req.format_fourcc) {
+    std::cerr << "Snapshot default still profile mismatch. snapshot version=" << still.version
+              << " width=" << still.width
+              << " height=" << still.height
+              << " format=" << still.format
+              << " materialized width=" << req.width
+              << " height=" << req.height
+              << " format=" << req.format_fourcc << "\n";
+    rt.stop();
+    return 1;
+  }
+  const auto& members = still.still_image_bundle.members;
+  if (members.size() != 1 ||
+      members[0].image_member_index != 0 ||
+      members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED ||
+      members[0].intended_exposure_compensation_milli_ev != 0) {
+    std::cerr << "Snapshot default still_image_bundle was not a single DEFAULT_METERED member\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuffer& buf) {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -1387,6 +1497,7 @@ int main(int argc, char** argv) {
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
     if (int r = test_device_capture_request_materialization_smoke()) return r;
+    if (int r = test_open_device_snapshot_retains_default_capture_profile_smoke()) return r;
     if (int r = test_still_capture_profile_version_idempotency_smoke(buf)) return r;
     if (int r = test_rig_preflight_materialization_smoke()) return r;
     if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
