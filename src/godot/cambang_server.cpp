@@ -660,7 +660,7 @@ godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
   return out;
 }
 
-godot::Ref<CamBANGStreamResult> CamBANGServer::get_latest_stream_result(uint64_t stream_id) const {
+godot::Ref<CamBANGStreamResult> CamBANGServer::get_stream_result_by_stream_id(uint64_t stream_id) const {
   SharedStreamResultData data = runtime_.get_latest_stream_result(stream_id);
   if (!data) {
     return godot::Ref<CamBANGStreamResult>();
@@ -671,7 +671,7 @@ godot::Ref<CamBANGStreamResult> CamBANGServer::get_latest_stream_result(uint64_t
   return out;
 }
 
-godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
+godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const {
   SharedCaptureResultData data = runtime_.get_capture_result(capture_id, device_instance_id);
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
@@ -682,7 +682,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result(uint64_t capt
   return out;
 }
 
-godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set(uint64_t capture_id) const {
+godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(uint64_t capture_id) const {
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
   godot::Ref<CamBANGCaptureResultSet> out;
   out.instantiate();
@@ -1232,9 +1232,9 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_for_hardware_id", "hardware_id"), &CamBANGServer::get_device_for_hardware_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device", "device_instance_id"), &CamBANGServer::get_device);
   godot::ClassDB::bind_method(godot::D_METHOD("get_rig", "rig_id"), &CamBANGServer::get_rig);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_latest_stream_result", "stream_id"), &CamBANGServer::get_latest_stream_result);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result);
-  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set", "capture_id"), &CamBANGServer::get_capture_result_set);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_stream_result_by_stream_id", "stream_id"), &CamBANGServer::get_stream_result_by_stream_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_by_id", "capture_id", "device_instance_id"), &CamBANGServer::get_capture_result_by_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_capture_result_set_by_id", "capture_id"), &CamBANGServer::get_capture_result_set_by_id);
 
   // Internal tick hook (connected to SceneTree.process_frame).
   godot::ClassDB::bind_method(godot::D_METHOD("_on_godot_process_frame"), &CamBANGServer::_on_godot_process_frame);

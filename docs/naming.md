@@ -75,6 +75,10 @@ Observable boundary contract:
 - `CamBANGServer.stop()`
 - `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
+- advanced/dev/scenario explicit-ID result lookups:
+  - `CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`
+  - `CamBANGServer.get_capture_result_set_by_id(capture_id)`
+  - `CamBANGServer.get_stream_result_by_stream_id(stream_id)`
 - `signal state_published(gen, version, topology_version)`
 
 `get_state_snapshot()` returns `NIL` before the first baseline publish of

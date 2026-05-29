@@ -37,7 +37,7 @@ godot::Ref<CamBANGStreamResult> CamBANGStream::get_result() const {
   if (!is_valid_stream_handle() || !server_->is_running()) {
     return godot::Ref<CamBANGStreamResult>();
   }
-  return server_->get_latest_stream_result(stream_id_);
+  return server_->get_stream_result_by_stream_id(stream_id_);
 }
 
 void CamBANGStream::_bind_methods() {

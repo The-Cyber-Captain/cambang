@@ -163,7 +163,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
   if (!server_ || device_instance_id == 0 || current_capture_id_ == 0 || !server_->is_running()) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  return server_->get_capture_result(current_capture_id_, device_instance_id);
+  return server_->get_capture_result_by_id(current_capture_id_, device_instance_id);
 }
 
 godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {

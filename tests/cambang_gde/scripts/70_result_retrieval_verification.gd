@@ -178,7 +178,7 @@ func _try_latch_ids_from_snapshot() -> void:
 func _try_verify_stream_result() -> void:
 	# This scenario is bootstrapped from a synthetic timeline stream snapshot, not a
 	# public CamBANGStream handle, so it uses the advanced server stream-id lookup.
-	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
+	var stream_result = CamBANGServer.get_stream_result_by_stream_id(_stream_id)
 	if stream_result == null:
 		return
 
@@ -440,7 +440,7 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 			return
 		# This scene only has a timeline-authored stream id here, not a public
 		# CamBANGStream object, so use the advanced server stream-id lookup.
-		latest_stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
+		latest_stream_result = CamBANGServer.get_stream_result_by_stream_id(_stream_id)
 	if latest_stream_result == null:
 		return
 	if int(latest_stream_result.can_get_display_view()) == int(latest_stream_result.CAPABILITY_UNSUPPORTED):
@@ -476,7 +476,7 @@ func _request_manual_stream_image() -> void:
 		return
 	# This scene only has a timeline-authored stream id here, not a public
 	# CamBANGStream object, so use the advanced server stream-id lookup.
-	var stream_result = CamBANGServer.get_latest_stream_result(_stream_id)
+	var stream_result = CamBANGServer.get_stream_result_by_stream_id(_stream_id)
 	if stream_result == null:
 		_append_status("WARN: cannot request stream to_image(); stream result unavailable")
 		return

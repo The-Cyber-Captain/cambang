@@ -7,9 +7,54 @@ resource_name = "100_control"
 script/source = "extends Control
 const WAIT_BEFORE_QUIT = 2.0
 
+var capture_profile_00 : Dictionary = {
+	\"width\": 1280,
+	\"height\": 720,
+	\"format_fourcc\": 0x00000020, # use the project/provider FOURCC value you intend
+	\"still_image_bundle\": {
+		\"members\": [
+			{
+				\"image_member_index\": 0,
+				\"role\": \"DEFAULT_METERED\",
+				\"intended_exposure_compensation_milli_ev\": 0,
+			},
+		],
+	},
+}
+#var device_roster : Array[CamBANGDevice] = [CamBANGDevice.new()]
 
 func _ready():
-	CamBANGServer.start()
+	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
+	var endpoints: Array = CamBANGServer.enumerate_devices()
+	if endpoints.is_empty():
+		push_error(\"KERR No CamBANG endpoints\")
+		return
+
+	var endpoint = endpoints[0]
+	print(\"ENDPOINTS: \", endpoints)
+	if typeof(endpoint) != TYPE_DICTIONARY:
+		push_error(\"KERR Endpoint entry was not a Dictionary\")
+		return
+
+	var hardware_id: String = str(endpoint.get(\"hardware_id\", \"\"))
+	if hardware_id.is_empty():
+		push_error(\"KERR Endpoint had no hardware_id\")
+		return
+		
+	var device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
+	var device_01 = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
+
+	device_00.engage()
+	device_01.engage()
+	device_00.set_still_capture_profile(capture_profile_00)
+	device_00.trigger_capture()
+	#device_00.
+
+
+#
+	#var endpoint : Array = CamBANGServer.enumerate_devices()[0]
+	#var hardware_id: String = str(endpoint.get(\"hardware_id\", \"\"))
+	#var device : CamBANGDevice = CamBANGServer.get_device_for_hardware_id(hardware_id)
 	
 	
 func _do_teardown():
