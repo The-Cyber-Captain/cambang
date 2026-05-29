@@ -47,9 +47,9 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
     `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
 - `scenes/70_result_retrieval_verification.tscn`
-  - Verifies Godot-facing result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Verifies Godot-facing object-level result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
   - Authors a three-member still capture profile via `still_image_bundle` (ordered still-event image members), not `image_sequence`.
-  - Triggers capture through the public device trigger flow and verifies `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+  - Triggers capture through the public `CamBANGDevice.trigger_capture() -> Error` flow, polls `CamBANGDevice.get_result()`, and verifies `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
   - Scene 70 is a user-flow/result-wrapper verifier; exact Device/AcquisitionSession snapshot-shape proof belongs to native/snapshot verification harnesses.
   - Uses builtin scenario `stream_inspection_live` so headed verification can stay open with a visibly live stream for manual inspection/capture.
   - Expected pass string: `OK: result_retrieval_verification passed`
@@ -71,10 +71,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Precedence: explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` > exercise-derived (`no_display_eager` => `always`) > default (`display_demanded`).
   - Conflict: `CAMBANG_EXERCISE=no_display_eager` with explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` not equal to `always` fails clearly.
 - `scenes/73_rig_capture_result_set_verification.tscn`
-  - Focused Godot proof for `CamBANGRig` object API: `CamBANGServer.get_rig(rig_id)`, `CamBANGRig.get_id()`, `CamBANGRig.trigger_capture()`, and `CamBANGServer.get_capture_result_set(capture_id)` consistency.
+  - Focused Godot proof for `CamBANGRig` object API: `CamBANGServer.get_rig(rig_id)`, `CamBANGRig.get_id()`, `CamBANGRig.trigger_capture() -> Error`, and `CamBANGRig.get_result()` consistency.
   - Uses dedicated external scenario fixture `scenarios/rig_capture_result_basic.json`.
   - Fixture topology: six devices A-F; Rig A = A+E; Rig B = B; Rig C = C+F; Device D standalone.
-  - Capture remains API-driven via `CamBANGRig.trigger_capture()` (not scenario timeline-triggered), and verification asserts `CaptureResultSet` contains exactly Rig A members.
+  - Capture remains API-driven via `CamBANGRig.trigger_capture()` (not scenario timeline-triggered), and verification asserts the object-level `CaptureResultSet` contains exactly Rig A members.
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -127,7 +127,7 @@ Notes:
   `70_result_retrieval_verification` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
 - Scene 70 exercises public device still-profile authoring using a three-member `still_image_bundle`.
-- Scene 70 verifies the resulting `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
+- Scene 70 verifies the object-level `CamBANGDevice.get_result()` `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
 - Exact Device/AcquisitionSession snapshot-shape proof remains in native/snapshot verification harnesses, not Scene 70 pre-trigger gating.
 - `67_status_panel_scenario_runtime` is a manual runtime integration proof scene for status-panel
   observation of a server-driven builtin scenario; it prints concise publish diagnostics and is

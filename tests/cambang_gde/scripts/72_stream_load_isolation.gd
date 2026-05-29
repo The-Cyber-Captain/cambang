@@ -312,6 +312,8 @@ func _poll_stream_results() -> float:
 	var display_sec := 0.0
 	for i: int in range(_latched_stream_ids.size()):
 		var stream_id := _latched_stream_ids[i]
+		# This load-isolation harness latches stream ids from snapshots rather than
+		# public CamBANGStream handles, so it uses the advanced server stream-id lookup.
 		var stream_result: Variant = CamBANGServer.get_latest_stream_result(stream_id)
 		if stream_result == null:
 			continue

@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/string.hpp>
@@ -10,6 +11,7 @@
 namespace cambang {
 
 class CamBANGServer;
+class CamBANGStreamResult;
 
 class CamBANGStream final : public godot::RefCounted {
   GDCLASS(CamBANGStream, godot::RefCounted)
@@ -36,6 +38,7 @@ public:
   godot::Error start();
   godot::Error stop();
   godot::Error destroy();
+  godot::Ref<CamBANGStreamResult> get_result() const;
 
 protected:
   static void _bind_methods();

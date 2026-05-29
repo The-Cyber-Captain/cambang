@@ -1,5 +1,6 @@
 #include "godot/cambang_stream.h"
 #include "godot/cambang_server.h"
+#include "godot/cambang_stream_result.h"
 
 namespace cambang {
 
@@ -31,6 +32,14 @@ godot::Error CamBANGStream::destroy() {
   return rc;
 }
 
+
+godot::Ref<CamBANGStreamResult> CamBANGStream::get_result() const {
+  if (!is_valid_stream_handle() || !server_->is_running()) {
+    return godot::Ref<CamBANGStreamResult>();
+  }
+  return server_->get_latest_stream_result(stream_id_);
+}
+
 void CamBANGStream::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_id"), &CamBANGStream::get_stream_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGStream::get_device_instance_id);
@@ -39,6 +48,7 @@ void CamBANGStream::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGStream::start);
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGStream::stop);
   godot::ClassDB::bind_method(godot::D_METHOD("destroy"), &CamBANGStream::destroy);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGStream::get_result);
 }
 
 } // namespace cambang

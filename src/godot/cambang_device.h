@@ -12,6 +12,7 @@ namespace cambang {
 
 class CamBANGServer;
 class CamBANGStream;
+class CamBANGCaptureResult;
 
 class CamBANGDevice final : public godot::RefCounted {
   GDCLASS(CamBANGDevice, godot::RefCounted)
@@ -24,6 +25,7 @@ public:
     device_instance_id_ = device_instance_id;
     hardware_id_ = godot::String();
     display_name_ = godot::String();
+    current_capture_id_ = 0;
   }
   void set_server_and_endpoint(CamBANGServer* server,
                                const godot::String& hardware_id,
@@ -32,6 +34,7 @@ public:
     device_instance_id_ = 0;
     hardware_id_ = hardware_id;
     display_name_ = display_name;
+    current_capture_id_ = 0;
   }
 
   uint64_t get_instance_id() const;
@@ -42,7 +45,8 @@ public:
   godot::Error disengage();
   godot::Ref<CamBANGStream> create_stream();
 
-  uint64_t trigger_capture();
+  godot::Error trigger_capture();
+  godot::Ref<CamBANGCaptureResult> get_result() const;
   godot::Error set_warm_policy(const godot::Dictionary& policy);
   godot::Error set_still_capture_profile(const godot::Dictionary& profile);
   godot::Dictionary get_still_capture_profile() const;
@@ -55,6 +59,7 @@ private:
   uint64_t device_instance_id_ = 0;
   godot::String hardware_id_;
   godot::String display_name_;
+  uint64_t current_capture_id_ = 0;
 };
 
 } // namespace cambang
