@@ -74,8 +74,9 @@ For maintainer smoke/CLI tooling, authored validation inputs are called
 **verification cases**.
 
 - Use **verification case** in prose/help text for smoke/CLI selections.
-- Reserve **scenario** for the user-facing / Godot / SyntheticProvider
-  timeline meaning.
+- Reserve **scenario** for SyntheticProvider/provider-core timeline replay,
+  diagnostics, metrics, fault reproduction, and recorded/authored behavior
+  playback.
 - Keep **fixture** distinct: fixtures are input artifacts; verification
   cases are authored validation procedures that may consume fixtures.
 
