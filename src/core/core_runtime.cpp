@@ -32,6 +32,31 @@ uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
   return static_cast<uint64_t>(warm_hold_ms) * kNsPerMs;
 }
 
+bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& devices,
+                                                      uint64_t device_instance_id,
+                                                      const CaptureTemplate& capture_tmpl) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  if (const auto* rec = devices.find(device_instance_id)) {
+    if (rec->capture_profile_version != 0 ||
+        rec->capture_width != 0 ||
+        rec->capture_height != 0 ||
+        rec->capture_format != 0) {
+      return false;
+    }
+  }
+
+  const uint32_t format = capture_tmpl.profile.format_fourcc == 0
+      ? FOURCC_RGBA
+      : capture_tmpl.profile.format_fourcc;
+  return devices.retain_capture_profile(device_instance_id,
+                                         capture_tmpl.profile.width,
+                                         capture_tmpl.profile.height,
+                                         format,
+                                         /*capture_profile_version=*/0);
+}
+
 } // namespace
 
 static bool banners_enabled() noexcept {
@@ -708,6 +733,10 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
     devices_.set_camera_spec_version(
         device_instance_id,
         spec_state_.camera_spec_version(hardware_id));
+    if (ICameraProvider* p = provider_.load(std::memory_order_acquire)) {
+      (void)seed_retained_device_still_profile_from_template(
+          devices_, device_instance_id, p->capture_template());
+    }
     request_publish_from_core_unchecked();
   });
 }
@@ -991,6 +1020,7 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
+    (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
     (void)p->open_device(hardware_id, device_instance_id, root_id);
   });
