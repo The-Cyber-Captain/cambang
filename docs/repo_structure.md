@@ -77,11 +77,14 @@ cambang/
 
 Documentation is structured deliberately to avoid drift:
 
-- top-level `docs/*.md` files define **canonical architecture and policy**
+- canonical documents are explicitly listed in `docs/INDEX.md`
+- top-level `docs/*.md` files may include canonical docs, policy docs,
+  entry points, or contributor/support docs depending on index classification
 - `docs/architecture/` contains **narrowly scoped supplements**
 - `docs/dev/` contains **development-stage notes** and tooling / scaffolding docs
 
-If contradiction appears, canonical documents take precedence.
+If contradiction appears, canonical documents listed in `docs/INDEX.md` take
+precedence.
 
 See `docs/INDEX.md` for the canonical / supplement / dev classification.
 

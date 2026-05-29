@@ -7,10 +7,11 @@ To prevent drift and contradiction, documents are categorised explicitly.
 
 ---
 
-## 1. Canonical architecture (source of truth)
+## 1. Canonical architecture and policy (source of truth)
 
-These documents define CamBANG’s architectural model and design intent.
-They are authoritative and must not be contradicted by other documents.
+These documents define CamBANG’s architectural model, design intent,
+and guard-rail policies. They are authoritative and must not be
+contradicted by other documents.
 
 - `provider_architecture.md`
 - `core_runtime_model.md`
@@ -18,6 +19,7 @@ They are authoritative and must not be contradicted by other documents.
 - `state_snapshot.md`
 - `naming.md`
 - `repo_structure.md`
+- `status_panel_surface_policy.md`
 
 Notes:
 
@@ -29,7 +31,7 @@ Notes:
 - Platform-specific validation documents must not redefine core invariants.
 
 If any supplementary document appears to conflict with these, canonical
-architecture documents take precedence.
+architecture and policy documents take precedence.
 
 Changes to canonical documents should be deliberate and reviewed carefully.
 
@@ -53,7 +55,7 @@ They must:
 - remain narrowly scoped
 
 The lists in this index are intended to be complete for the current canonical
-documentation set.
+and supplement documentation sets.
 Any change that adds, removes, renames, or reclassifies a canonical or
 supplement document must update this index in the same change.
 
