@@ -385,9 +385,22 @@ bool CamBANGServer::is_running() const {
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
 }
 
+bool CamBANGServer::is_public_boundary_ready_() const {
+  if (runtime_.state_copy() != CoreRuntimeState::LIVE) {
+    return false;
+  }
+  if (active_session_id_ == 0) {
+    return false;
+  }
+  if (!has_godot_counters_ || !has_latest_export_ || !latest_) {
+    return false;
+  }
+  return latest_->gen == godot_gen_;
+}
+
 godot::Array CamBANGServer::enumerate_devices() const {
   godot::Array out;
-  if (!is_running() || !provider_) {
+  if (!is_public_boundary_ready_() || !provider_) {
     return out;
   }
   std::vector<CameraEndpoint> endpoints;
@@ -405,7 +418,7 @@ godot::Array CamBANGServer::enumerate_devices() const {
 }
 
 godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot::String& hardware_id) const {
-  if (hardware_id.is_empty() || !is_running() || !provider_) {
+  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
     return godot::Ref<CamBANGDevice>();
   }
   std::vector<CameraEndpoint> endpoints;
@@ -431,7 +444,7 @@ godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot:
 }
 
 godot::Error CamBANGServer::engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name) {
-  if (hardware_id.is_empty() || !is_running() || !provider_) {
+  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_UNAVAILABLE;
   }
   std::vector<CameraEndpoint> endpoints;
@@ -481,7 +494,7 @@ godot::Error CamBANGServer::engage_endpoint_handle(const godot::String& hardware
 }
 
 godot::Error CamBANGServer::disengage_endpoint_handle(const godot::String& hardware_id) {
-  if (hardware_id.is_empty() || !is_running() || !provider_) {
+  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_UNAVAILABLE;
   }
 
@@ -529,7 +542,7 @@ godot::Error CamBANGServer::disengage_endpoint_handle(const godot::String& hardw
 }
 
 godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(const godot::String& hardware_id) {
-  if (hardware_id.is_empty() || !is_running() || !provider_) {
+  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
     return godot::Ref<CamBANGStream>();
   }
   const auto state_it = endpoint_lifecycle_by_hardware_id_.find(std::string(hardware_id.utf8().get_data()));
@@ -566,7 +579,7 @@ godot::Error CamBANGServer::destroy_direct_stream_handle(
     uint64_t stream_id,
     const godot::String& hardware_id,
     uint64_t device_instance_id) {
-  if (stream_id == 0 || !is_running() || !provider_) {
+  if (stream_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_UNAVAILABLE;
   }
   const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
@@ -590,7 +603,7 @@ godot::Error CamBANGServer::start_direct_stream_handle(
     uint64_t stream_id,
     const godot::String& hardware_id,
     uint64_t device_instance_id) {
-  if (stream_id == 0 || !is_running() || !provider_) {
+  if (stream_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_UNAVAILABLE;
   }
   const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
@@ -610,7 +623,7 @@ godot::Error CamBANGServer::stop_direct_stream_handle(
     uint64_t stream_id,
     const godot::String& hardware_id,
     uint64_t device_instance_id) {
-  if (stream_id == 0 || !is_running() || !provider_) {
+  if (stream_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_UNAVAILABLE;
   }
   const auto it = direct_stream_hardware_id_by_stream_id_.find(stream_id);
@@ -627,7 +640,7 @@ godot::Error CamBANGServer::stop_direct_stream_handle(
 }
 
 uint64_t CamBANGServer::resolve_endpoint_instance_id(const godot::String& hardware_id) const {
-  if (hardware_id.is_empty()) {
+  if (hardware_id.is_empty() || !is_public_boundary_ready_()) {
     return 0;
   }
   const auto it = endpoint_lifecycle_by_hardware_id_.find(std::string(hardware_id.utf8().get_data()));
@@ -638,7 +651,7 @@ uint64_t CamBANGServer::resolve_endpoint_instance_id(const godot::String& hardwa
 }
 
 godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id) const {
-  if (device_instance_id == 0) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return godot::Ref<CamBANGDevice>();
   }
   godot::Ref<CamBANGDevice> out;
@@ -648,7 +661,7 @@ godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id)
 }
 
 godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
-  if (rig_id == 0 || !is_running()) {
+  if (rig_id == 0 || !is_public_boundary_ready_()) {
     return godot::Ref<CamBANGRig>();
   }
   godot::Ref<CamBANGRig> out;
@@ -658,6 +671,9 @@ godot::Ref<CamBANGRig> CamBANGServer::get_rig(uint64_t rig_id) const {
 }
 
 godot::Ref<CamBANGStreamResult> CamBANGServer::get_stream_result_by_stream_id(uint64_t stream_id) const {
+  if (!is_public_boundary_ready_()) {
+    return godot::Ref<CamBANGStreamResult>();
+  }
   SharedStreamResultData data = runtime_.get_latest_stream_result(stream_id);
   if (!data) {
     return godot::Ref<CamBANGStreamResult>();
@@ -669,6 +685,9 @@ godot::Ref<CamBANGStreamResult> CamBANGServer::get_stream_result_by_stream_id(ui
 }
 
 godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const {
+  if (!is_public_boundary_ready_()) {
+    return godot::Ref<CamBANGCaptureResult>();
+  }
   SharedCaptureResultData data = runtime_.get_capture_result(capture_id, device_instance_id);
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
@@ -680,6 +699,9 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
 }
 
 godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(uint64_t capture_id) const {
+  if (!is_public_boundary_ready_()) {
+    return godot::Ref<CamBANGCaptureResultSet>();
+  }
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
   godot::Ref<CamBANGCaptureResultSet> out;
   out.instantiate();
@@ -689,28 +711,28 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(
 }
 
 void CamBANGServer::mark_stream_display_demand(uint64_t stream_id) {
-  if (stream_id == 0) {
+  if (stream_id == 0 || !is_public_boundary_ready_()) {
     return;
   }
   runtime_.mark_stream_display_demand(stream_id);
 }
 
 void CamBANGServer::retain_stream_display_demand(uint64_t stream_id) {
-  if (stream_id == 0) {
+  if (stream_id == 0 || !is_public_boundary_ready_()) {
     return;
   }
   runtime_.retain_stream_display_demand(stream_id);
 }
 
 void CamBANGServer::release_stream_display_demand(uint64_t stream_id) {
-  if (stream_id == 0) {
+  if (stream_id == 0 || !is_public_boundary_ready_()) {
     return;
   }
   runtime_.release_stream_display_demand(stream_id);
 }
 
 uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
-  if (device_instance_id == 0 || !is_running() || !provider_) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return 0;
   }
 
@@ -741,7 +763,7 @@ godot::Error CamBANGServer::set_device_still_capture_profile(
     uint64_t device_instance_id,
     const CaptureProfile& profile,
     const CaptureStillImageBundle& still_image_bundle) {
-  if (device_instance_id == 0 || !is_running() || !provider_) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_BUSY;
   }
   return map_try_set_still_capture_profile_status(
@@ -749,7 +771,7 @@ godot::Error CamBANGServer::set_device_still_capture_profile(
 }
 
 godot::Error CamBANGServer::set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
-  if (device_instance_id == 0 || !is_running() || !provider_) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_BUSY;
   }
   return map_try_set_warm_hold_status(runtime_.try_set_device_warm_hold_ms(device_instance_id, warm_hold_ms));
@@ -757,7 +779,7 @@ godot::Error CamBANGServer::set_device_warm_hold_ms(uint64_t device_instance_id,
 
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
   godot::Dictionary out;
-  if (device_instance_id == 0) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return out;
   }
   CaptureRequest req{};
@@ -785,7 +807,7 @@ godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t devic
 }
 
 uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
-  if (rig_id == 0 || !is_running() || !provider_) {
+  if (rig_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return 0;
   }
 
@@ -1036,6 +1058,9 @@ godot::Variant CamBANGServer::get_active_provider_config() const {
 }
 
 godot::Error CamBANGServer::select_builtin_scenario(const godot::String& scenario_name) {
+  if (!is_public_boundary_ready_()) {
+    return godot::ERR_BUSY;
+  }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -1050,6 +1075,9 @@ godot::Error CamBANGServer::select_builtin_scenario(const godot::String& scenari
 }
 
 godot::Error CamBANGServer::load_external_scenario(const godot::String& json_text) {
+  if (!is_public_boundary_ready_()) {
+    return godot::ERR_BUSY;
+  }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -1064,6 +1092,9 @@ godot::Error CamBANGServer::load_external_scenario(const godot::String& json_tex
 }
 
 godot::Error CamBANGServer::start_scenario() {
+  if (!is_public_boundary_ready_()) {
+    return godot::ERR_BUSY;
+  }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -1075,7 +1106,10 @@ godot::Error CamBANGServer::start_scenario() {
     std::vector<SyntheticStagedRigTopology> staged_rigs;
     if (broker->get_synthetic_staged_rig_topology_for_host(staged_rigs)) {
       for (const auto& r : staged_rigs) {
-        (void)runtime_.retain_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids);
+        if (!runtime_.retain_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids)) {
+          (void)broker->stop_timeline_scenario_for_host();
+          return godot::ERR_BUSY;
+        }
       }
     }
   }
@@ -1083,6 +1117,9 @@ godot::Error CamBANGServer::start_scenario() {
 }
 
 godot::Error CamBANGServer::stop_scenario() {
+  if (!is_public_boundary_ready_()) {
+    return godot::ERR_BUSY;
+  }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -1092,6 +1129,9 @@ godot::Error CamBANGServer::stop_scenario() {
 }
 
 godot::Error CamBANGServer::set_timeline_paused(bool paused) {
+  if (!is_public_boundary_ready_()) {
+    return godot::ERR_BUSY;
+  }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(
@@ -1101,6 +1141,9 @@ godot::Error CamBANGServer::set_timeline_paused(bool paused) {
 }
 
 godot::Error CamBANGServer::advance_timeline(uint64_t dt_ns) {
+  if (!is_public_boundary_ready_()) {
+    return godot::ERR_BUSY;
+  }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   if (!broker) {
     return map_provider_result_to_godot_error(

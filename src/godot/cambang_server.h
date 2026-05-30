@@ -151,6 +151,7 @@ private:
   // Consume latest core snapshot (if published_seq advanced) and emit
   // state_published for this boundary observation.
   bool _consume_latest_core_snapshot();
+  bool is_public_boundary_ready_() const;
 
   static CamBANGServer* singleton_;
 

@@ -31,6 +31,8 @@ not directly call `provider->shutdown()` while the provider is live/attached.
 
 # Runtime Start Behaviour
 
+`CamBANGServer.start()` reports that startup was accepted; it is not a synchronous readiness barrier for runtime commands.
+
 After:
 
 ```
@@ -43,7 +45,7 @@ the runtime may enter a short **pre‑baseline window** where:
 get_state_snapshot() == NIL
 ```
 
-No runtime state should be assumed during this period.
+No runtime state should be assumed during this period. Public runtime-command surfaces are not commandable until the generation baseline is observed at the Godot boundary. During the pre-baseline window, mutating/runtime commands fail visibly (for example `ERR_BUSY` or `ERR_UNAVAILABLE`, according to the method convention), commandable factories return no object/empty results, result lookups return no result, and commands are neither queued for later nor reported as successful while dropped.
 
 The first observable publish of a generation will always be:
 
@@ -53,7 +55,7 @@ The first observable publish of a generation will always be:
 
 This publish occurs on the **first eligible Godot tick** after runtime initialization.
 
-Consumers may treat this snapshot as the **baseline snapshot** for that generation.
+Consumers may treat this snapshot as the **baseline snapshot** for that generation. Consumers that need runtime commands should wait for the first `state_published(gen, 0, 0)` after `start()`; inside that baseline signal handler, `get_state_snapshot()` is non-`NIL` and command admission for the active generation is established. This contract does not introduce a public `is_ready()` or `is_command_ready()` getter.
 
 ---
 

@@ -379,6 +379,8 @@ It verifies:
   boundary
 - `get_active_provider_config()` explicit-null shape for non-applicable
   `timeline_reconciliation` modes
+- public runtime-command admission only after the first observable baseline
+  `state_published(gen, 0, 0)` for a generation, including reset across stop/restart
 
 This scene complements deterministic provider verification, but it does not
 replace `provider_compliance_verify` or change the role of
