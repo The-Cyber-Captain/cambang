@@ -293,6 +293,72 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
 
   return true;
 }
+
+static const char* rig_preflight_failure_name(CoreRuntime::RigPreflightFailure failure) {
+  switch (failure) {
+    case CoreRuntime::RigPreflightFailure::None:
+      return "None";
+    case CoreRuntime::RigPreflightFailure::RigNotFound:
+      return "RigNotFound";
+    case CoreRuntime::RigPreflightFailure::EmptyMembership:
+      return "EmptyMembership";
+    case CoreRuntime::RigPreflightFailure::HardwareIdUnresolved:
+      return "HardwareIdUnresolved";
+    case CoreRuntime::RigPreflightFailure::HardwareIdAmbiguous:
+      return "HardwareIdAmbiguous";
+    case CoreRuntime::RigPreflightFailure::DuplicateResolvedDevice:
+      return "DuplicateResolvedDevice";
+    case CoreRuntime::RigPreflightFailure::MaterializeFailed:
+      return "MaterializeFailed";
+  }
+  return "Unknown";
+}
+
+static void print_rig_preflight_result(
+    const char* prefix,
+    const CoreRuntime::RigPreflightResult& res) {
+  std::cerr << prefix
+            << " ok=" << (res.ok ? "true" : "false")
+            << " failure=" << rig_preflight_failure_name(res.failure)
+            << "(" << static_cast<int>(res.failure) << ")"
+            << " rig_id=" << res.rig_id
+            << " failure_member_index=" << res.failure_member_index
+            << " failure_hardware_id=" << res.failure_hardware_id
+            << " failure_device_instance_id=" << res.failure_device_instance_id
+            << " participants=" << res.participants.size() << "\n";
+}
+
+static CoreRuntime::RigPreflightResult wait_for_rig_preflight_ok(
+    CoreRuntime& rt,
+    uint64_t rig_id,
+    std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+  CoreRuntime::RigPreflightResult last{};
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  do {
+    last = rt.preflight_rig_participants_materialize(rig_id);
+    if (last.ok) {
+      return last;
+    }
+
+    auto barrier = std::make_shared<std::promise<void>>();
+    auto barrier_done = barrier->get_future();
+    const auto post_result = rt.try_post([barrier]() mutable { barrier->set_value(); });
+    if (post_result != CoreThread::PostResult::Enqueued) {
+      return last;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      break;
+    }
+    const auto remaining = deadline - now;
+    (void)barrier_done.wait_for(remaining);
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+
+  last = rt.preflight_rig_participants_materialize(rig_id);
+  return last;
+}
 #endif
 
 // ---- Tests (existing behaviour preserved) ----
@@ -643,9 +709,9 @@ static int test_rig_preflight_materialization_smoke() {
     return 1;
   }
   {
-    const auto res = rt.preflight_rig_participants_materialize(7003);
+    const auto res = wait_for_rig_preflight_ok(rt, 7003);
     if (!res.ok || res.failure != CoreRuntime::RigPreflightFailure::None || res.participants.size() != 1) {
-      std::cerr << "Expected successful single participant preflight\n";
+      print_rig_preflight_result("Expected successful single participant preflight", res);
       rt.stop();
       return 1;
     }
@@ -1078,9 +1144,9 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
     rt.stop();
     return 1;
   }
-  const auto preflight_ok = rt.preflight_rig_participants_materialize(8001);
+  const auto preflight_ok = wait_for_rig_preflight_ok(rt, 8001);
   if (!preflight_ok.ok) {
-    std::cerr << "Preflight failed unexpectedly (rig cohort admit smoke)\n";
+    print_rig_preflight_result("Preflight failed unexpectedly (rig cohort admit smoke)", preflight_ok);
     rt.stop();
     return 1;
   }
@@ -1160,7 +1226,12 @@ static int test_rig_bundle_submission_smoke() {
     return 1;
   }
 
-  const auto preflight_ok = rt.preflight_rig_participants_materialize(8101);
+  const auto preflight_ok = wait_for_rig_preflight_ok(rt, 8101);
+  if (!preflight_ok.ok) {
+    print_rig_preflight_result("Preflight failed before rig submit smoke success admission", preflight_ok);
+    rt.stop();
+    return 1;
+  }
   const auto admitted_ok = rt.smoke_admit_rig_cohort_from_preflight(8101, 9101, preflight_ok);
   if (!admitted_ok.ok) {
     std::cerr << "Failed to admit cohort for submit smoke success path\n";
@@ -1282,7 +1353,12 @@ static int test_cohort_aware_capture_result_set_smoke() {
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
   if (!rt.smoke_set_rig_member_hardware_ids(8201, {eps[0].hardware_id})) { rt.stop(); return 1; }
-  const auto preflight = rt.preflight_rig_participants_materialize(8201);
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8201);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before cohort result-set smoke admission", preflight);
+    rt.stop();
+    return 1;
+  }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8201, 9202, preflight);
   if (!admitted.ok) { rt.stop(); return 1; }
 
@@ -1339,6 +1415,12 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
   };
 
   if (!rt.smoke_set_rig_member_hardware_ids(8401, {live_hw})) { rt.stop(); return 1; }
+  const auto server_preflight = wait_for_rig_preflight_ok(rt, 8401);
+  if (!server_preflight.ok) {
+    print_rig_preflight_result("Preflight failed before server-facing rig orchestration success", server_preflight);
+    rt.stop();
+    return 1;
+  }
 
   const uint64_t ok_capture_id = allocate_capture_id();
   const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id);
@@ -1397,6 +1479,12 @@ static int test_rig_orchestration_helper_smoke() {
   }
 
   if (!rt.smoke_set_rig_member_hardware_ids(8301, {live_hw})) { rt.stop(); return 1; }
+  const auto orchestration_preflight = wait_for_rig_preflight_ok(rt, 8301);
+  if (!orchestration_preflight.ok) {
+    print_rig_preflight_result("Preflight failed before rig orchestration helper success", orchestration_preflight);
+    rt.stop();
+    return 1;
+  }
 
   // Invalid capture_id.
   const auto bad_capture_id = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 0);
@@ -1421,7 +1509,12 @@ static int test_rig_orchestration_helper_smoke() {
   if (!rt.smoke_set_rig_member_hardware_ids(8302, {live_hw, live_hw})) { rt.stop(); return 1; }
   // keep preflight/admission valid by using one member then mutate device in submit path via bad endpoint
   if (!rt.smoke_set_rig_member_hardware_ids(8302, {live_hw})) { rt.stop(); return 1; }
-  auto preflight = rt.preflight_rig_participants_materialize(8302);
+  auto preflight = wait_for_rig_preflight_ok(rt, 8302);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before rig orchestration submit-failure admission", preflight);
+    rt.stop();
+    return 1;
+  }
   auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8302, 9303, preflight);
   admitted.participants[0].request.device_instance_id = 777777;
   const auto submit_fail = rt.smoke_submit_admitted_rig_bundle(admitted);
