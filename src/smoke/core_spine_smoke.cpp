@@ -277,6 +277,13 @@ static bool converge_stub_provider_core(CoreRuntime& rt, StubProvider& prov) {
 }
 
 static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
+  if (!wait_until([&]() {
+        return rt.state_copy() == CoreRuntimeState::LIVE;
+      }, 200, 1)) {
+    std::cerr << "CoreRuntime did not become LIVE before stub provider setup\n";
+    return false;
+  }
+
   if (!prov.initialize(rt.provider_callbacks()).ok()) return false;
   rt.attach_provider(&prov);
 
