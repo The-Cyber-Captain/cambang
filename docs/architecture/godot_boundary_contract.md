@@ -22,6 +22,11 @@ signal state_published(gen, version, topology_version)
 
 Other Godot-facing APIs may exist for object access, scenario/dev control, provider configuration, or result retrieval. They are outside the scope of this document unless explicitly tied to snapshot visibility, generation boundaries, or tick-bounded publication semantics. New Godot-facing API surface must still be added deliberately and documented at the appropriate boundary; this clarification must not be read as permission for ad-hoc public API growth.
 
+Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
+that storage after a run, but once the provider is attached and the runtime is
+running, attached-provider shutdown belongs to `CoreRuntime::stop()`. Godot must
+not directly call `provider->shutdown()` while the provider is live/attached.
+
 ---
 
 # Runtime Start Behaviour
