@@ -45,7 +45,9 @@ the runtime may enter a short **pre‑baseline window** where:
 get_state_snapshot() == NIL
 ```
 
-No runtime state should be assumed during this period. Public runtime-command surfaces are not commandable until the generation baseline is observed at the Godot boundary. During the pre-baseline window, mutating/runtime commands fail visibly (for example `ERR_BUSY` or `ERR_UNAVAILABLE`, according to the method convention), commandable factories return no object/empty results, result lookups return no result, and commands are neither queued for later nor reported as successful while dropped.
+No runtime state should be assumed during this period. Public runtime-effect surfaces are not commandable until the generation baseline is observed at the Godot boundary. During the pre-baseline window, mutating runtime commands fail visibly (for example `ERR_BUSY` or `ERR_UNAVAILABLE`, according to the method convention), commandable factories return no object/empty results, result lookups return no result, and commands are neither queued for later nor reported as successful while dropped.
+
+Synthetic timeline scenario staging is a narrow exception because it is startup configuration intent, not a runtime-effect command: when synthetic timeline mode is active and provider storage exists, `select_builtin_scenario(...)` and `load_external_scenario(...)` may stage provider-owned scenario data during the pre-baseline window. If a valid scenario has been staged, `start_scenario()` may also be accepted during this window as pending playback intent. Actual scenario playback is not started until after the baseline `state_published(gen, 0, 0)` has been emitted and is latch-visible, so scenario effects must appear only after baseline (normally at `version >= 1`). This is not a general pre-baseline command queue; device, stream, rig, capture, profile, and `advance_timeline(...)` runtime effects remain baseline-gated.
 
 The first observable publish of a generation will always be:
 
@@ -55,7 +57,7 @@ The first observable publish of a generation will always be:
 
 This publish occurs on the **first eligible Godot tick** after runtime initialization.
 
-Consumers may treat this snapshot as the **baseline snapshot** for that generation. Consumers that need runtime commands should wait for the first `state_published(gen, 0, 0)` after `start()`; inside that baseline signal handler, `get_state_snapshot()` is non-`NIL` and command admission for the active generation is established. This contract does not introduce a public `is_ready()` or `is_command_ready()` getter.
+Consumers may treat this snapshot as the **baseline snapshot** for that generation. Consumers that need runtime-effect commands should wait for the first `state_published(gen, 0, 0)` after `start()`; inside that baseline signal handler, `get_state_snapshot()` is non-`NIL` and command admission for the active generation is established. This contract does not introduce a public `is_ready()` or `is_command_ready()` getter.
 
 ---
 

@@ -381,6 +381,9 @@ It verifies:
   `timeline_reconciliation` modes
 - public runtime-command admission only after the first observable baseline
   `state_published(gen, 0, 0)` for a generation, including reset across stop/restart
+- the narrow synthetic timeline UX exception where scenario staging and pending
+  `start_scenario()` intent may be accepted before baseline while effects remain
+  post-baseline
 
 This scene complements deterministic provider verification, but it does not
 replace `provider_compliance_verify` or change the role of

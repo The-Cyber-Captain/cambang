@@ -140,8 +140,16 @@ To preserve existing verifier behavior while keeping explicit host controls:
 - **host-submitted scenario path**
   - when a scenario is supplied later via host control entry points, it is
     staged provider-side and remains not-running until explicit host start
+  - Godot may accept this staging before the first observable runtime baseline
+    when synthetic timeline mode is active; the staged data remains provider-owned
+  - if Godot receives `start_scenario()` before that baseline, it may hold only
+    that high-level playback intent and begin actual provider playback after
+    `state_published(gen, 0, 0)` has been emitted
+  - this deferred playback intent is not a general pre-baseline command queue:
+    device/stream/rig/capture commands and `advance_timeline(...)` remain
+    governed by the Godot runtime boundary
   - purpose: preserve thin-host explicit-control semantics for
-    Godot/dev-hosted scenarios
+    Godot/dev-hosted scenarios while keeping the baseline snapshot clean
 
 This is a compatibility arming rule, not a semantic ownership split:
 both paths remain SyntheticProvider-owned timeline execution.

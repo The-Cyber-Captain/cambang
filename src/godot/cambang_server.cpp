@@ -16,6 +16,7 @@
 
 #include "core/synthetic_timeline_request_binding.h"
 #include "imaging/api/timeline_teardown_trace.h"
+#include "imaging/api/provider_error_string.h"
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
 
@@ -88,6 +89,19 @@ static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexce
     case ProviderError::ERR_BAD_STATE: return godot::ERR_INVALID_PARAMETER;
     case ProviderError::ERR_NOT_SUPPORTED: return godot::ERR_UNAVAILABLE;
     default: return godot::FAILED;
+  }
+}
+
+static const char* godot_error_to_cstr(godot::Error err) noexcept {
+  switch (err) {
+    case godot::OK: return "OK";
+    case godot::ERR_BUSY: return "ERR_BUSY";
+    case godot::ERR_UNAVAILABLE: return "ERR_UNAVAILABLE";
+    case godot::ERR_INVALID_PARAMETER: return "ERR_INVALID_PARAMETER";
+    case godot::ERR_ALREADY_IN_USE: return "ERR_ALREADY_IN_USE";
+    case godot::ERR_CANT_OPEN: return "ERR_CANT_OPEN";
+    case godot::FAILED: return "FAILED";
+    default: return "ERR_UNKNOWN";
   }
 }
 
@@ -317,6 +331,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   active_synthetic_role_ = synthetic_role;
   completion_gated_destructive_sequencing_enabled_ = completion_gated_destructive_sequencing_enabled;
   strict_scenario_unmet_logged_ = false;
+  _reset_scenario_session_state_();
   _refresh_timeline_teardown_trace_mode();
 
   // Defensive re-check: requested mode must be supported in this build.
@@ -340,6 +355,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   // Ensure a provider is attached + initialized (latched selection).
   // This is the canonical linkage point between Godot and the core runtime.
   if (!_ensure_provider_attached_and_initialized(mode, synthetic_role, timing_driver)) {
+    _reset_scenario_session_state_();
     return godot::FAILED;
   }
   return godot::OK;
@@ -353,6 +369,7 @@ void CamBANGServer::stop() {
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
 
   strict_scenario_unmet_logged_ = false;
+  _reset_scenario_session_state_();
   _refresh_timeline_teardown_trace_mode();
 
   // Stop is a boundary operation; core may have published final teardown/retirement
@@ -396,6 +413,27 @@ bool CamBANGServer::is_public_boundary_ready_() const {
     return false;
   }
   return latest_->gen == godot_gen_;
+}
+
+bool CamBANGServer::is_synthetic_timeline_session_active_() const {
+  return active_session_id_ != 0 &&
+         runtime_.is_running() &&
+         provider_ &&
+         active_runtime_mode_ == RuntimeMode::synthetic &&
+         active_synthetic_role_ == SyntheticRole::Timeline &&
+         dynamic_cast<ProviderBroker*>(provider_.get()) != nullptr;
+}
+
+void CamBANGServer::_clear_pending_scenario_start_() {
+  pending_scenario_start_after_baseline_ = false;
+  pending_scenario_start_session_id_ = 0;
+  pending_timeline_pause_after_scenario_start_ = false;
+  pending_timeline_pause_value_ = false;
+}
+
+void CamBANGServer::_reset_scenario_session_state_() {
+  scenario_config_staged_for_session_ = false;
+  _clear_pending_scenario_start_();
 }
 
 godot::Array CamBANGServer::enumerate_devices() const {
@@ -986,7 +1024,9 @@ void CamBANGServer::_on_godot_tick(double delta) {
   // Core may publish multiple intermediate snapshots between Godot ticks.
   // We emit at most once per tick, and only if *anything* has changed since
   // the previous tick.
-  (void)_consume_latest_core_snapshot();
+  if (_consume_latest_core_snapshot()) {
+    _drain_pending_scenario_start_after_baseline_();
+  }
 }
 
 godot::Variant CamBANGServer::get_state_snapshot() const {
@@ -1058,97 +1098,186 @@ godot::Variant CamBANGServer::get_active_provider_config() const {
 }
 
 godot::Error CamBANGServer::select_builtin_scenario(const godot::String& scenario_name) {
-  if (!is_public_boundary_ready_()) {
-    return godot::ERR_BUSY;
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: select_builtin_scenario requires synthetic timeline mode.");
+    _reset_scenario_session_state_();
+    return godot::ERR_UNAVAILABLE;
   }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  if (!broker) {
-    return map_provider_result_to_godot_error(
-        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
-  }
   const std::string scenario_utf8 = scenario_name.utf8().get_data();
   const ProviderResult pr = broker->select_timeline_builtin_scenario_for_host(scenario_utf8);
   if (pr.ok()) {
+    scenario_config_staged_for_session_ = true;
     strict_scenario_unmet_logged_ = false;
+  } else {
+    _reset_scenario_session_state_();
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: select_builtin_scenario failed; provider_error=%s.",
+        cambang::to_string(pr.code)));
   }
   return map_provider_result_to_godot_error(pr);
 }
 
 godot::Error CamBANGServer::load_external_scenario(const godot::String& json_text) {
-  if (!is_public_boundary_ready_()) {
-    return godot::ERR_BUSY;
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: load_external_scenario requires synthetic timeline mode.");
+    _reset_scenario_session_state_();
+    return godot::ERR_UNAVAILABLE;
   }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  if (!broker) {
-    return map_provider_result_to_godot_error(
-        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
-  }
   const std::string text_utf8 = json_text.utf8().get_data();
   const ProviderResult pr = broker->load_timeline_canonical_scenario_from_json_text_for_host(text_utf8);
   if (pr.ok()) {
+    scenario_config_staged_for_session_ = true;
     strict_scenario_unmet_logged_ = false;
+  } else {
+    _reset_scenario_session_state_();
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: load_external_scenario failed; provider_error=%s.",
+        cambang::to_string(pr.code)));
   }
   return map_provider_result_to_godot_error(pr);
 }
 
-godot::Error CamBANGServer::start_scenario() {
-  if (!is_public_boundary_ready_()) {
-    return godot::ERR_BUSY;
+godot::Error CamBANGServer::_start_scenario_now_() {
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: start_scenario requires synthetic timeline mode.");
+    return godot::ERR_UNAVAILABLE;
   }
+  if (!scenario_config_staged_for_session_) {
+    ERR_PRINT("CamBANGServer: start_scenario rejected because no scenario is staged for this session.");
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  if (!broker) {
-    return map_provider_result_to_godot_error(
-        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
-  }
   const ProviderResult pr = broker->start_timeline_scenario_for_host();
-  if (pr.ok()) {
-    strict_scenario_unmet_logged_ = false;
-    std::vector<SyntheticStagedRigTopology> staged_rigs;
-    if (broker->get_synthetic_staged_rig_topology_for_host(staged_rigs)) {
-      for (const auto& r : staged_rigs) {
-        if (!runtime_.retain_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids)) {
-          (void)broker->stop_timeline_scenario_for_host();
-          return godot::ERR_BUSY;
-        }
+  if (!pr.ok()) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: start_scenario rejected by provider; provider_error=%s.",
+        cambang::to_string(pr.code)));
+    return map_provider_result_to_godot_error(pr);
+  }
+
+  strict_scenario_unmet_logged_ = false;
+  std::vector<SyntheticStagedRigTopology> staged_rigs;
+  if (broker->get_synthetic_staged_rig_topology_for_host(staged_rigs)) {
+    for (const auto& r : staged_rigs) {
+      if (!runtime_.retain_rig_member_hardware_ids(r.rig_id, r.member_hardware_ids)) {
+        (void)broker->stop_timeline_scenario_for_host();
+        ERR_PRINT("CamBANGServer: start_scenario failed because staged rig topology could not be admitted to the runtime.");
+        return godot::ERR_BUSY;
       }
     }
   }
-  return map_provider_result_to_godot_error(pr);
+  return godot::OK;
+}
+
+godot::Error CamBANGServer::start_scenario() {
+  if (is_public_boundary_ready_()) {
+    return _start_scenario_now_();
+  }
+
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: start_scenario requires synthetic timeline mode.");
+    return godot::ERR_UNAVAILABLE;
+  }
+  if (!scenario_config_staged_for_session_) {
+    ERR_PRINT("CamBANGServer: start_scenario rejected because no scenario is staged for this session.");
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  pending_scenario_start_after_baseline_ = true;
+  pending_scenario_start_session_id_ = active_session_id_;
+  godot::UtilityFunctions::print(
+      "CamBANGServer: start_scenario accepted during startup; playback will begin after baseline state_published(gen, 0, 0).");
+  return godot::OK;
+}
+
+void CamBANGServer::_drain_pending_scenario_start_after_baseline_() {
+  if (!pending_scenario_start_after_baseline_) {
+    return;
+  }
+  if (pending_scenario_start_session_id_ != active_session_id_) {
+    _clear_pending_scenario_start_();
+    return;
+  }
+  if (!is_public_boundary_ready_()) {
+    return;
+  }
+
+  const godot::Error rc = _start_scenario_now_();
+  const bool apply_pending_pause = pending_timeline_pause_after_scenario_start_;
+  const bool pending_pause_value = pending_timeline_pause_value_;
+  _clear_pending_scenario_start_();
+
+  if (rc != godot::OK) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: deferred scenario playback failed after baseline; err=%d reason=%s.",
+        static_cast<int>(rc),
+        godot_error_to_cstr(rc)));
+    return;
+  }
+
+  if (apply_pending_pause) {
+    ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
+    if (!broker) {
+      ERR_PRINT("CamBANGServer: deferred scenario pause could not be applied after baseline; synthetic timeline provider is unavailable.");
+      return;
+    }
+    const ProviderResult pr = broker->set_timeline_scenario_paused_for_host(pending_pause_value);
+    if (!pr.ok()) {
+      ERR_PRINT(godot::vformat(
+          "CamBANGServer: deferred scenario pause failed after baseline; provider_error=%s.",
+          cambang::to_string(pr.code)));
+    }
+  }
 }
 
 godot::Error CamBANGServer::stop_scenario() {
+  if (pending_scenario_start_after_baseline_ && pending_scenario_start_session_id_ == active_session_id_) {
+    _clear_pending_scenario_start_();
+    return godot::OK;
+  }
   if (!is_public_boundary_ready_()) {
+    ERR_PRINT("CamBANGServer: stop_scenario rejected because runtime baseline is not observable yet.");
     return godot::ERR_BUSY;
   }
-  ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  if (!broker) {
-    return map_provider_result_to_godot_error(
-        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: stop_scenario requires synthetic timeline mode.");
+    return godot::ERR_UNAVAILABLE;
   }
+  ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   return map_provider_result_to_godot_error(broker->stop_timeline_scenario_for_host());
 }
 
 godot::Error CamBANGServer::set_timeline_paused(bool paused) {
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: set_timeline_paused requires synthetic timeline mode.");
+    return godot::ERR_UNAVAILABLE;
+  }
   if (!is_public_boundary_ready_()) {
+    if (pending_scenario_start_after_baseline_ && pending_scenario_start_session_id_ == active_session_id_) {
+      pending_timeline_pause_after_scenario_start_ = true;
+      pending_timeline_pause_value_ = paused;
+      return godot::OK;
+    }
+    ERR_PRINT("CamBANGServer: set_timeline_paused rejected because runtime baseline is not observable yet.");
     return godot::ERR_BUSY;
   }
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  if (!broker) {
-    return map_provider_result_to_godot_error(
-        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
-  }
   return map_provider_result_to_godot_error(broker->set_timeline_scenario_paused_for_host(paused));
 }
 
 godot::Error CamBANGServer::advance_timeline(uint64_t dt_ns) {
   if (!is_public_boundary_ready_()) {
+    ERR_PRINT("CamBANGServer: advance_timeline rejected because runtime baseline is not observable yet; wait for state_published(gen, 0, 0) after start().");
     return godot::ERR_BUSY;
   }
-  ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  if (!broker) {
-    return map_provider_result_to_godot_error(
-        ProviderResult::failure(ProviderError::ERR_BAD_STATE));
+  if (!is_synthetic_timeline_session_active_()) {
+    ERR_PRINT("CamBANGServer: advance_timeline requires synthetic timeline mode.");
+    return godot::ERR_UNAVAILABLE;
   }
+  ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
   return map_provider_result_to_godot_error(broker->advance_timeline_for_host(dt_ns));
 }
 
