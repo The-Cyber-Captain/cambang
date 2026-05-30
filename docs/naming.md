@@ -176,7 +176,8 @@ A profile used for triggered still capture (device-triggered or
 rig-triggered). Typical fields include:
 
 - Resolution
-- Pixel format (may include formats such as `'JPEG'` and `'RAW '` where supported)
+- Still-result format: a CamBANG FourCC-style value; encoded or RAW-domain
+  forms are valid only where the matching payload-kind/result path is supported
 - Optional processing hints
 
 Profiles define capture fidelity and intent, not hardware truth.
