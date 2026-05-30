@@ -227,6 +227,7 @@ bool CoreRuntime::start() {
   capture_cohort_registry_.clear();
   provider_facts_.clear();
   requests_.clear();
+  shutdown_requested_from_stop_.store(false, std::memory_order_release);
   shutdown_requested_ = false;
   shutdown_phase_ = ShutdownPhase::NONE;
   shutdown_phase_code_.store(0, std::memory_order_relaxed);
@@ -263,19 +264,13 @@ void CoreRuntime::stop() {
   // - Stop accepting new external requests immediately (state == TEARING_DOWN).
   // - Keep provider fact ingestion best-effort until the core thread closes.
   // - Core thread executes a deterministic shutdown pump and requests stop only at the end.
+  //
+  // This signal intentionally avoids the bounded best-effort CoreThread task queue:
+  // attached-provider shutdown must not be skipped because the ordinary queue is
+  // full or closed to new external work during stop.
   if (core_thread_.is_running()) {
-    const auto r = core_thread_.try_post([this]() {
-      assert(core_thread_.is_core_thread());
-      shutdown_requested_ = true;
-      core_thread_.request_timer_tick();
-    });
-
-    if (r != CoreThread::PostResult::Enqueued) {
-      // If we cannot schedule shutdown initiation (queue full / alloc fail / closed),
-      // fall back to an immediate stop request.
-      core_thread_.request_stop();
-    }
-
+    shutdown_requested_from_stop_.store(true, std::memory_order_release);
+    core_thread_.request_timer_tick();
     core_thread_.join();
   }
 
@@ -520,6 +515,10 @@ if (dispatcher_.consume_relevant_state_changed()) {
     published_seq_.fetch_add(1, std::memory_order_acq_rel);
   }
 
+  if (shutdown_requested_from_stop_.exchange(false, std::memory_order_acq_rel)) {
+    shutdown_requested_ = true;
+  }
+
   // 5) Shutdown choreography (§10).
   if (shutdown_requested_) {
     auto set_phase = [this](ShutdownPhase p) {
@@ -726,16 +725,23 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
     return;
   }
 
-  (void)try_post([this, device_instance_id, hardware_id]() {
+  CaptureTemplate capture_tmpl{};
+  bool has_capture_template = false;
+  if (ICameraProvider* p = provider_.load(std::memory_order_acquire)) {
+    capture_tmpl = p->capture_template();
+    has_capture_template = true;
+  }
+
+  (void)try_post([this, device_instance_id, hardware_id, capture_tmpl, has_capture_template]() {
     if (!devices_.note_device_identity(device_instance_id, hardware_id)) {
       return;
     }
     devices_.set_camera_spec_version(
         device_instance_id,
         spec_state_.camera_spec_version(hardware_id));
-    if (ICameraProvider* p = provider_.load(std::memory_order_acquire)) {
+    if (has_capture_template) {
       (void)seed_retained_device_still_profile_from_template(
-          devices_, device_instance_id, p->capture_template());
+          devices_, device_instance_id, capture_tmpl);
     }
     request_publish_from_core_unchecked();
   });
