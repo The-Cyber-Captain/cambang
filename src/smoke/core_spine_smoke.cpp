@@ -886,16 +886,26 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     return 1;
   }
 
+  auto is_one_member_default_bundle = [](const CaptureStillImageBundleState& bundle) {
+    return bundle.members.size() == 1 &&
+           bundle.members[0].image_member_index == 0 &&
+           bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
+           bundle.members[0].intended_exposure_compensation_milli_ev == 0;
+  };
+  auto is_still_profile = [](const StillCaptureProfileState& still, const CaptureProfile& profile) {
+    return still.width == profile.width &&
+           still.height == profile.height &&
+           still.format == profile.format_fourcc;
+  };
+
   CaptureProfile p{};
   p.width = req.width;
   p.height = req.height;
   p.format_fourcc = req.format_fourcc;
   CaptureStillImageBundle s = make_default_metered_still_image_bundle();
-  s.members.push_back(CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
-  s.members.push_back(CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
 
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
-    std::cerr << "Expected first still profile set success\n";
+    std::cerr << "Expected simple one-member still profile set success\n";
     rt.stop();
     return 1;
   }
@@ -903,28 +913,28 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
         CaptureRequest r{};
         return rt.materialize_capture_request(kDeviceInstanceId, r) && r.profile_version > v0;
       }, 400, 5)) {
-    std::cerr << "Expected profile_version increment after first still profile set\n";
+    std::cerr << "Expected profile_version increment after simple one-member still profile set\n";
     rt.stop();
     return 1;
   }
   CaptureRequest req_after_set{};
-  rt.materialize_capture_request(kDeviceInstanceId, req_after_set);
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_set)) {
+    std::cerr << "Expected materialized request after simple one-member still profile set\n";
+    rt.stop();
+    return 1;
+  }
   const uint64_t v1 = req_after_set.profile_version;
-  const auto device_three_member_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
-    for (const auto& d : s.devices) {
+  const auto device_one_member_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snap) {
+    for (const auto& d : snap.devices) {
       if (d.instance_id != kDeviceInstanceId) continue;
-      if (d.capture_profile.still.still_image_bundle.members.size() != 3) return false;
-      const auto& m0 = d.capture_profile.still.still_image_bundle.members[0];
-      const auto& m1 = d.capture_profile.still.still_image_bundle.members[1];
-      const auto& m2 = d.capture_profile.still.still_image_bundle.members[2];
-      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.intended_exposure_compensation_milli_ev == 0 &&
-             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.intended_exposure_compensation_milli_ev == -1000 &&
-             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.intended_exposure_compensation_milli_ev == 1000;
+      return d.capture_profile.still.version == v1 &&
+             is_still_profile(d.capture_profile.still, p) &&
+             is_one_member_default_bundle(d.capture_profile.still.still_image_bundle);
     }
     return false;
   });
-  if (!device_three_member_ready) {
-    std::cerr << "Expected three-member still_image_bundle snapshot on device after profile set\n";
+  if (!device_one_member_ready) {
+    std::cerr << "Expected one-member still_image_bundle and explicit still profile snapshot on device after simple set\n";
     rt.stop();
     return 1;
   }
@@ -936,14 +946,14 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
   }
 
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
-    std::cerr << "Expected second identical still profile set success\n";
+    std::cerr << "Expected identical one-member still profile set idempotency success\n";
     rt.stop();
     return 1;
   }
   CaptureRequest req_after_same{};
   if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_same) ||
       req_after_same.profile_version != v1) {
-    std::cerr << "Identical still profile set must be idempotent for profile_version\n";
+    std::cerr << "Identical one-member still profile set must preserve profile_version\n";
     rt.stop();
     return 1;
   }
@@ -951,7 +961,7 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
   CaptureProfile p2 = p;
   p2.width = p.width + 16;
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p2, s) != TrySetStillCaptureProfileStatus::OK) {
-    std::cerr << "Expected changed still profile set success\n";
+    std::cerr << "Expected changed one-member still profile set success\n";
     rt.stop();
     return 1;
   }
@@ -960,14 +970,18 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
         CaptureRequest r{};
         return rt.materialize_capture_request(kDeviceInstanceId, r) && r.profile_version == v1 + 1;
       }, 400, 5)) {
-    std::cerr << "Changed still profile set must increment profile_version once\n";
+    std::cerr << "Changed one-member still profile set must increment profile_version exactly once\n";
     rt.stop();
     return 1;
   }
-  rt.materialize_capture_request(kDeviceInstanceId, req_after_changed);
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_changed)) {
+    std::cerr << "Expected materialized request after changed one-member still profile set\n";
+    rt.stop();
+    return 1;
+  }
   req_after_changed.capture_id = 9902;
   if (!prov.trigger_capture(req_after_changed).ok()) {
-    std::cerr << "Expected trigger_capture success after profile change\n";
+    std::cerr << "Expected trigger_capture success after one-member profile change\n";
     rt.stop();
     return 1;
   }
@@ -978,21 +992,58 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     rt.stop();
     return 1;
   }
-  const auto acquisition_session_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
-    for (const auto& a : s.acquisition_sessions) {
+  const auto acquisition_session_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snap) {
+    for (const auto& a : snap.acquisition_sessions) {
       if (a.device_instance_id != kDeviceInstanceId) continue;
-      if (a.capture_profile.still.still_image_bundle.members.size() != 3) return false;
-      const auto& m0 = a.capture_profile.still.still_image_bundle.members[0];
-      const auto& m1 = a.capture_profile.still.still_image_bundle.members[1];
-      const auto& m2 = a.capture_profile.still.still_image_bundle.members[2];
-      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.intended_exposure_compensation_milli_ev == 0 &&
-             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.intended_exposure_compensation_milli_ev == -1000 &&
-             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.intended_exposure_compensation_milli_ev == 1000;
+      return a.capture_profile.still.version == v1 + 1 &&
+             is_still_profile(a.capture_profile.still, p2) &&
+             is_one_member_default_bundle(a.capture_profile.still.still_image_bundle);
     }
     return false;
   });
   if (!acquisition_session_bundle_ready) {
-    std::cerr << "Expected three-member still_image_bundle snapshot on acquisition session after capture-context realization\n";
+    std::cerr << "Expected one-member still_image_bundle snapshot on acquisition session after capture-context realization\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto snap_before_rejected_multi = get_last_snapshot(buf);
+  const uint64_t topo_before_rejected_multi = snap_before_rejected_multi ? snap_before_rejected_multi->topology_version : 0;
+  const uint64_t v_before_rejected_multi = req_after_trigger2.profile_version;
+  CaptureStillImageBundle multi = make_default_metered_still_image_bundle();
+  multi.members.push_back(CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  multi.members.push_back(CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
+
+  if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p2, multi) != TrySetStillCaptureProfileStatus::NotSupported) {
+    std::cerr << "Expected multi-member still_image_bundle NotSupported for StubProvider\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_rejected_multi{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_rejected_multi) ||
+      req_after_rejected_multi.profile_version != v_before_rejected_multi) {
+    std::cerr << "Unexpected profile_version mutation after rejected multi-member still_image_bundle\n";
+    rt.stop();
+    return 1;
+  }
+  auto snap_after_rejected_multi = get_last_snapshot(buf);
+  if (!snap_after_rejected_multi) {
+    std::cerr << "Expected snapshot after rejected multi-member still_image_bundle check\n";
+    rt.stop();
+    return 1;
+  }
+  bool accepted_one_member_still_retained = false;
+  for (const auto& d : snap_after_rejected_multi->devices) {
+    if (d.instance_id != kDeviceInstanceId) continue;
+    accepted_one_member_still_retained =
+        d.capture_profile.still.version == v_before_rejected_multi &&
+        is_still_profile(d.capture_profile.still, p2) &&
+        is_one_member_default_bundle(d.capture_profile.still.still_image_bundle);
+    break;
+  }
+  if (!accepted_one_member_still_retained ||
+      snap_after_rejected_multi->topology_version != topo_before_rejected_multi) {
+    std::cerr << "Unexpected mutation after rejected multi-member still_image_bundle\n";
     rt.stop();
     return 1;
   }
