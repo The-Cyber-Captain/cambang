@@ -563,18 +563,22 @@ int main(int argc, char** argv) {
   }
 
   rt.attach_provider(&prov);
+  auto stop_attached_runtime = [&]() {
+    rt.stop();
+    rt.attach_provider(nullptr);
+  };
 
   // Open the first endpoint deterministically.
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
     std::cerr << "FAIL: enumerate_endpoints failed\n";
-    rt.stop();
+    stop_attached_runtime();
     return 2;
   }
   rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
     std::cerr << "FAIL: open_device failed\n";
-    rt.stop();
+    stop_attached_runtime();
     return 2;
   }
 
@@ -585,7 +589,7 @@ int main(int argc, char** argv) {
   const uint64_t period = fps_period_ns(cfg.nominal.fps_num, cfg.nominal.fps_den);
   if (period == 0) {
     std::cerr << "FAIL: invalid fps period\n";
-    rt.stop();
+    stop_attached_runtime();
     return 2;
   }
 
@@ -611,12 +615,8 @@ int main(int argc, char** argv) {
     failure_reason = "case_returned_nonzero";
   }
 
-  // Provider shutdown choreography.
-  (void)prov.close_device(kDeviceInstanceId);
-  (void)prov.shutdown();
-
-  rt.attach_provider(nullptr);
-  rt.stop();
+  // CoreRuntime owns attached-provider shutdown while the core thread is live.
+  stop_attached_runtime();
 
   if (r == 0) {
     std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";

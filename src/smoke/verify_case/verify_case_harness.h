@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <cstdint>
 #include <functional>
-#include <future>
 #include <limits>
 #include <map>
 #include <memory>
@@ -682,8 +681,6 @@ public:
       synthetic->set_timeline_request_dispatch_hook_for_host(
           make_synthetic_timeline_request_dispatch_hook(runtime_));
     }
-    runtime_.attach_provider(provider_.get());
-
     // Wire callback observation in the authoritative path:
     // Provider -> RecordingProviderCallbacks -> CoreRuntime ingress callbacks.
     callback_recorder_.bind_delegate(runtime_.provider_callbacks());
@@ -691,7 +688,6 @@ public:
 
     if (!provider_->initialize(&callback_recorder_).ok()) {
       error = std::string("provider initialize failed (") + verify_case_provider_name(provider_kind_) + ")";
-      runtime_.attach_provider(nullptr);
       (void)provider_->shutdown();
       provider_.reset();
       runtime_.stop();
@@ -699,13 +695,13 @@ public:
     }
 
     if (!select_endpoints_(error)) {
-      runtime_.attach_provider(nullptr);
       (void)provider_->shutdown();
       provider_.reset();
       runtime_.stop();
       return false;
     }
 
+    runtime_.attach_provider(provider_.get());
     boundary_.reset(runtime_.published_seq());
     if (realization_profiler_) {
       realization_profiler_->reset();
@@ -714,12 +710,6 @@ public:
   }
 
   void stop_runtime() {
-    if (provider_) {
-      drain_core_requests_before_provider_shutdown_();
-      (void)provider_->shutdown();
-      runtime_.attach_provider(nullptr);
-    }
-
     const bool was_running = runtime_.is_running();
     if (was_running) {
       runtime_.stop();
@@ -730,6 +720,7 @@ public:
     } else {
       last_snapshot_before_stop_clear_ = ObservedSnapshot{};
     }
+    runtime_.attach_provider(nullptr);
     provider_.reset();
 
     snapshot_buffer_.clear();
@@ -1271,19 +1262,6 @@ private:
     std::vector<Event> events_;
     bool diagnostics_enabled_ = false;
   };
-
-  void drain_core_requests_before_provider_shutdown_() {
-    if (!runtime_.is_running()) {
-      return;
-    }
-
-    auto done = std::make_shared<std::promise<void>>();
-    auto future = done->get_future();
-    const CoreThread::PostResult pr = runtime_.try_post([done]() mutable { done->set_value(); });
-    if (pr == CoreThread::PostResult::Enqueued) {
-      (void)future.wait_for(std::chrono::seconds(2));
-    }
-  }
 
   std::unique_ptr<ICameraProvider> make_provider_() {
     if (provider_kind_ == VerifyCaseProviderKind::Stub) {

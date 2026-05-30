@@ -1724,26 +1724,16 @@ bool run_core_synthetic_three_member_capture_result_check() {
   cfg.nominal.height = 64;
   cfg.nominal.format_fourcc = FOURCC_RGBA;
   SyntheticProvider provider(cfg);
-  bool provider_initialized = false;
-  bool device_opened = false;
   const auto fail_with_cleanup = [&](const char* msg) -> bool {
     std::cerr << msg << "\n";
-    if (device_opened) {
-      (void)provider.close_device(64);
-      device_opened = false;
-    }
-    if (provider_initialized) {
-      (void)provider.shutdown();
-      provider_initialized = false;
-    }
     rt.stop();
+    rt.attach_provider(nullptr);
     return false;
   };
-  rt.attach_provider(&provider);
   if (!provider.initialize(rt.provider_callbacks()).ok()) {
     return fail_with_cleanup("FAIL core synthetic three-member provider init failed");
   }
-  provider_initialized = true;
+  rt.attach_provider(&provider);
   std::vector<CameraEndpoint> eps;
   if (!provider.enumerate_endpoints(eps).ok() || eps.empty()) {
     return fail_with_cleanup("FAIL core synthetic three-member enumerate failed");
@@ -1753,7 +1743,6 @@ bool run_core_synthetic_three_member_capture_result_check() {
   if (!provider.open_device(eps[0].hardware_id, device_id, 6401).ok()) {
     return fail_with_cleanup("FAIL core synthetic three-member open_device failed");
   }
-  device_opened = true;
 
   CaptureRequest req{};
   for (int i = 0; i < 50; ++i) {
@@ -1862,15 +1851,8 @@ bool run_core_synthetic_three_member_capture_result_check() {
   // verified in Godot/GDE-specific validation surfaces; this provider smoke
   // remains core/provider-only and must not depend on godot-cpp headers.
 
-  if (!provider.close_device(device_id).ok()) {
-    return fail_with_cleanup("FAIL core synthetic three-member close_device failed");
-  }
-  device_opened = false;
-  if (!provider.shutdown().ok()) {
-    return fail_with_cleanup("FAIL core synthetic three-member provider shutdown failed");
-  }
-  provider_initialized = false;
   rt.stop();
+  rt.attach_provider(nullptr);
   return true;
 }
 
@@ -1947,26 +1929,16 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
     return false;
   }
   SyntheticProvider core_provider(cfg);
-  bool provider_initialized = false;
-  bool device_opened = false;
   const auto fail_with_cleanup = [&](const char* msg) -> bool {
     std::cerr << msg << "\n";
-    if (device_opened) {
-      (void)core_provider.close_device(65);
-      device_opened = false;
-    }
-    if (provider_initialized) {
-      (void)core_provider.shutdown();
-      provider_initialized = false;
-    }
     rt.stop();
+    rt.attach_provider(nullptr);
     return false;
   };
-  rt.attach_provider(&core_provider);
   if (!core_provider.initialize(rt.provider_callbacks()).ok()) {
     return fail_with_cleanup("FAIL core synthetic mismatch provider init failed");
   }
-  provider_initialized = true;
+  rt.attach_provider(&core_provider);
   std::vector<CameraEndpoint> eps;
   if (!core_provider.enumerate_endpoints(eps).ok() || eps.empty()) {
     return fail_with_cleanup("FAIL core synthetic mismatch enumerate failed");
@@ -1976,7 +1948,6 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
   if (!core_provider.open_device(eps[0].hardware_id, device_id, 6501).ok()) {
     return fail_with_cleanup("FAIL core synthetic mismatch open_device failed");
   }
-  device_opened = true;
 
   CaptureRequest req{};
   for (int i = 0; i < 50; ++i) {
@@ -2033,15 +2004,8 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
     return fail_with_cleanup("FAIL core synthetic mismatch expected non-empty payloads");
   }
 
-  if (!core_provider.close_device(device_id).ok()) {
-    return fail_with_cleanup("FAIL core synthetic mismatch close_device failed");
-  }
-  device_opened = false;
-  if (!core_provider.shutdown().ok()) {
-    return fail_with_cleanup("FAIL core synthetic mismatch provider shutdown failed");
-  }
-  provider_initialized = false;
   rt.stop();
+  rt.attach_provider(nullptr);
   return true;
 }
 
@@ -2081,26 +2045,16 @@ bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   cfg.nominal.format_fourcc = FOURCC_RGBA;
   cfg.verification_has_realized_exposure_compensation_override_by_member_index[2u] = false;
   SyntheticProvider provider(cfg);
-  bool provider_initialized = false;
-  bool device_opened = false;
   const auto fail_with_cleanup = [&](const char* msg) -> bool {
     std::cerr << msg << "\n";
-    if (device_opened) {
-      (void)provider.close_device(66);
-      device_opened = false;
-    }
-    if (provider_initialized) {
-      (void)provider.shutdown();
-      provider_initialized = false;
-    }
     rt.stop();
+    rt.attach_provider(nullptr);
     return false;
   };
-  rt.attach_provider(&provider);
   if (!provider.initialize(rt.provider_callbacks()).ok()) {
     return fail_with_cleanup("FAIL core synthetic realized-unknown provider init failed");
   }
-  provider_initialized = true;
+  rt.attach_provider(&provider);
   std::vector<CameraEndpoint> eps;
   if (!provider.enumerate_endpoints(eps).ok() || eps.empty()) {
     return fail_with_cleanup("FAIL core synthetic realized-unknown enumerate failed");
@@ -2109,7 +2063,6 @@ bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   if (!provider.open_device(eps[0].hardware_id, device_id, 6601).ok()) {
     return fail_with_cleanup("FAIL core synthetic realized-unknown open_device failed");
   }
-  device_opened = true;
 
   CaptureRequest req{};
   for (int i = 0; i < 50; ++i) {
@@ -2155,15 +2108,8 @@ bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
     return fail_with_cleanup("FAIL core synthetic realized-unknown expected has_realized=false for member 2");
   }
 
-  if (!provider.close_device(device_id).ok()) {
-    return fail_with_cleanup("FAIL core synthetic realized-unknown close_device failed");
-  }
-  device_opened = false;
-  if (!provider.shutdown().ok()) {
-    return fail_with_cleanup("FAIL core synthetic realized-unknown provider shutdown failed");
-  }
-  provider_initialized = false;
   rt.stop();
+  rt.attach_provider(nullptr);
   return true;
 }
 

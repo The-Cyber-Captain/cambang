@@ -346,13 +346,10 @@ godot::Error CamBANGServer::_start_with_provider_config(
 }
 
 void CamBANGServer::stop() {
-  // Deterministic provider shutdown before stopping the core runtime.
-  if (provider_) {
-    (void)provider_->shutdown();
-    runtime_.attach_provider(nullptr);
-    provider_.reset();
-  }
+  // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
+  runtime_.attach_provider(nullptr);
+  provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
 
   strict_scenario_unmet_logged_ = false;
@@ -1191,15 +1188,14 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized(
     }
     provider_ = std::move(broker);
   }
-  runtime_.attach_provider(provider_.get());
-
   ProviderResult pr = provider_->initialize(runtime_.provider_callbacks());
   if (!pr.ok()) {
-    runtime_.attach_provider(nullptr);
     provider_.reset();
     ERR_PRINT("CamBANGServer: provider initialize failed.");
     return false;
   }
+
+  runtime_.attach_provider(provider_.get());
 
   // Banner 1: Godot-facing provider selection (effective runtime attachment).
   if (banners_enabled()) {
