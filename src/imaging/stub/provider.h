@@ -36,6 +36,9 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
   // Test-only helpers (not part of provider contract).
   void emit_test_frames(uint64_t stream_id, uint32_t count);
   void emit_fact_stream_stopped(uint64_t stream_id, ProviderError error_or_ok);
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  void flush_callbacks_for_smoke();
+#endif
 
   // Virtual-time driver (not part of provider contract).
   // In GDE, CamBANGServer pumps this via Godot's _process() loop.

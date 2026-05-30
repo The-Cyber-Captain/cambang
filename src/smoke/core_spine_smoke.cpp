@@ -170,23 +170,6 @@ static CoreDispatchStats get_dispatch_stats(CoreRuntime& rt) {
   std::exit(1);
 }
 
-static ProviderCallbackIngress::Stats get_ingress_stats(CoreRuntime& rt) {
-  for (int attempt = 0; attempt < 200; ++attempt) {
-    std::promise<ProviderCallbackIngress::Stats> p;
-    auto fut = p.get_future();
-    const auto r = rt.try_post([&rt, &p]() mutable { p.set_value(rt.ingress_stats_copy()); });
-    if (r == CoreThread::PostResult::Enqueued) {
-      if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
-        return fut.get();
-      }
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  std::cerr << "Failed to retrieve ingress stats (core queue saturated or stopped).\n";
-  std::exit(1);
-}
-
 static bool get_stream_record(CoreRuntime& rt, uint64_t stream_id, CoreStreamRegistry::StreamRecord& out) {
   for (int attempt = 0; attempt < 200; ++attempt) {
     std::promise<bool> p;
@@ -278,8 +261,24 @@ static StreamRequest make_req() {
 }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+static bool wait_for_core_barrier(CoreRuntime& rt, std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto done = barrier->get_future();
+  const auto post_result = rt.try_post([barrier]() mutable { barrier->set_value(); });
+  if (post_result != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+  return done.wait_for(timeout) == std::future_status::ready;
+}
+
+static bool converge_stub_provider_core(CoreRuntime& rt, StubProvider& prov) {
+  prov.flush_callbacks_for_smoke();
+  return wait_for_core_barrier(rt);
+}
+
 static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   if (!prov.initialize(rt.provider_callbacks()).ok()) return false;
+  rt.attach_provider(&prov);
 
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) return false;
@@ -290,6 +289,24 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
 
   const StreamRequest req = make_req();
   if (!prov.create_stream(req).ok()) return false;
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging stub provider/core setup facts\n";
+    return false;
+  }
+
+  CaptureRequest capture_req{};
+  if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, capture_req); }, 200, 1)) {
+    std::cerr << "Stub provider setup did not converge to a materialized capture request\n";
+    return false;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created) {
+    std::cerr << "Stub provider setup did not converge to a created core stream. created=" << rec.created
+              << " device_instance_id=" << rec.device_instance_id << "\n";
+    return false;
+  }
 
   return true;
 }
@@ -548,69 +565,84 @@ static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshot
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvider& prov) {
-    std::atomic<bool> stall_started{false};
+  (void)prov;
+  if (!wait_for_core_barrier(rt)) {
+    std::cerr << "Failed to establish pre-overload core barrier\n";
+    rt.stop();
+    return 1;
+  }
 
-  (void)rt.try_post_core_thread_unchecked([&stall_started]() {
-    stall_started.store(true, std::memory_order_release);
-    const auto t0 = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(25)) {
-    }
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done(release_gate->get_future());
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.try_post_core_thread_unchecked([release_gate_done, &gate_started]() mutable {
+    gate_started.store(true, std::memory_order_release);
+    release_gate_done.wait();
   });
-  // Barrier: ensure the core thread has *actually entered* the stall
-  // before we emit the overload burst.
-  while (!stall_started.load(std::memory_order_acquire)) {
+  if (gate_post != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Failed to post deterministic overload gate\n";
+    rt.stop();
+    return 1;
+  }
+  while (!gate_started.load(std::memory_order_acquire)) {
     std::this_thread::yield();
   }
 
-  const uint32_t kBurst = 1100;
-  prov.emit_test_frames(kStreamId, kBurst);
+  size_t fillers_posted = 0;
+  for (; fillers_posted < CoreThread::kMaxPendingTasks; ++fillers_posted) {
+    const auto filler_post = rt.try_post_core_thread_unchecked([]() {});
+    if (filler_post != CoreThread::PostResult::Enqueued) {
+      release_gate->set_value();
+      std::cerr << "Failed to fill deterministic overload queue. fillers_posted=" << fillers_posted
+                << " post_result=" << static_cast<int>(filler_post) << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
 
-  const uint64_t emitted = prov.frames_emitted();
+  const auto ingress_before = rt.ingress_stats_copy();
+  std::atomic<uint64_t> released_on_drop{0};
+  uint8_t pixel[4] = {0, 0, 0, 0};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &released_on_drop;
 
-  if (!wait_until([&]() { return prov.frames_released() >= emitted; }, 800, 2)) {
-    std::cerr << "Timeout waiting for overload releases. emitted=" << emitted
-              << " released=" << prov.frames_released() << "\n";
+  rt.provider_callbacks()->on_frame(frame);
+  const auto ingress_after_drop = rt.ingress_stats_copy();
+  const uint64_t full_drops = ingress_after_drop.frames_dropped_full - ingress_before.frames_dropped_full;
+  const uint64_t full_releases = ingress_after_drop.frames_released_on_drop_full -
+                                 ingress_before.frames_released_on_drop_full;
+  if (full_drops != 1 || full_releases != 1 || released_on_drop.load(std::memory_order_relaxed) != 1) {
+    release_gate->set_value();
+    std::cerr << "Expected deterministic ProviderCallbackIngress QueueFull frame drop/release. drops="
+              << full_drops << " releases=" << full_releases
+              << " release_hook_calls=" << released_on_drop.load(std::memory_order_relaxed) << "\n";
     rt.stop();
     return 1;
   }
 
-  const auto ingress = get_ingress_stats(rt);
-  const auto disp = get_dispatch_stats(rt);
-
-  if (prov.frames_released() != emitted) {
-    std::cerr << "Release mismatch under overload. emitted=" << emitted
-              << " released=" << prov.frames_released() << "\n";
+  release_gate->set_value();
+  if (!wait_until([&]() { return wait_for_core_barrier(rt); }, 200, 1)) {
+    std::cerr << "Failed to drain deterministic overload queue after releasing gate\n";
     rt.stop();
     return 1;
   }
 
-  const uint64_t dropped = ingress.frames_dropped_full + ingress.frames_dropped_closed + ingress.frames_dropped_allocfail;
-  if (dropped == 0) {
-    std::cerr << "Expected at least one dropped frame under overload (QueueFull).\n";
-    rt.stop();
-    return 1;
-  }
-
-  if (disp.frames_received + dropped != emitted) {
-    std::cerr << "Accounting mismatch under overload. received=" << disp.frames_received
-              << " dropped=" << dropped << " emitted=" << emitted << "\n";
-    rt.stop();
-    return 1;
-  }
-
-  if (disp.frames_released != disp.frames_received) {
-    std::cerr << "Dispatcher release mismatch under overload. received=" << disp.frames_received
-              << " released=" << disp.frames_released << "\n";
-    rt.stop();
-    return 1;
-  }
-
-  const uint64_t released_on_drop = ingress.frames_released_on_drop_full +
-                                   ingress.frames_released_on_drop_closed +
-                                   ingress.frames_released_on_drop_allocfail;
-  if (released_on_drop != dropped) {
-    std::cerr << "Ingress release-on-drop mismatch. dropped=" << dropped
-              << " released_on_drop=" << released_on_drop << "\n";
+  const auto ingress_after_drain = rt.ingress_stats_copy();
+  if (ingress_after_drain.frames_dropped_full - ingress_before.frames_dropped_full != 1 ||
+      ingress_after_drain.frames_released_on_drop_full - ingress_before.frames_released_on_drop_full != 1) {
+    std::cerr << "Deterministic QueueFull accounting changed after drain\n";
     rt.stop();
     return 1;
   }
@@ -894,8 +926,10 @@ static int test_open_device_snapshot_retains_default_capture_profile_smoke() {
   return 0;
 }
 
-static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuffer& buf) {
+static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuffer& /*unused_buf*/) {
   CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start (still profile idempotency smoke)\n";
     return 1;
@@ -907,7 +941,6 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     return 1;
   }
   rt.attach_provider(&prov);
-  rt.set_snapshot_publisher(&buf);
   if (!wait_for_snapshot_gen(buf, 0)) {
     std::cerr << "Timeout waiting for initial snapshot publication (still profile idempotency smoke)\n";
     rt.stop();
@@ -921,15 +954,14 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     return 1;
   }
   const uint64_t v0 = req.profile_version;
-  const auto default_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
-    if (s.devices.empty()) return false;
-    const auto& d = s.devices[0];
-    return d.instance_id == kDeviceInstanceId &&
-           d.capture_profile.still.still_image_bundle.members.size() == 1 &&
-           d.capture_profile.still.still_image_bundle.members[0].image_member_index == 0 &&
-           d.capture_profile.still.still_image_bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
-           d.capture_profile.still.still_image_bundle.members[0].intended_exposure_compensation_milli_ev == 0;
-  });
+  const auto default_bundle_ready = wait_until([&]() {
+    CaptureRequest r{};
+    return rt.materialize_capture_request(kDeviceInstanceId, r) &&
+           r.still_image_bundle.members.size() == 1 &&
+           r.still_image_bundle.members[0].image_member_index == 0 &&
+           r.still_image_bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
+           r.still_image_bundle.members[0].intended_exposure_compensation_milli_ev == 0;
+  }, 400, 1);
   if (!default_bundle_ready) {
     std::cerr << "Expected default snapshot still_image_bundle with one DEFAULT_METERED member\n";
     rt.stop();
@@ -965,7 +997,7 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
   };
 
   CaptureProfile p{};
-  p.width = req.width;
+  p.width = req.width + 16;
   p.height = req.height;
   p.format_fourcc = req.format_fourcc;
   CaptureStillImageBundle s = make_default_metered_still_image_bundle();

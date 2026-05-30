@@ -142,6 +142,13 @@ ProviderResult StubProvider::initialize(IProviderCallbacks* callbacks) {
   return ProviderResult::success();
 }
 
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
+void StubProvider::flush_callbacks_for_smoke() {
+  strand_.flush();
+}
+#endif
+
 ProviderResult StubProvider::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
