@@ -474,6 +474,9 @@ private:
     EXIT
   };
 
+  // Cross-thread stop signal. Consumed on the core thread and folded into
+  // shutdown_requested_ so shutdown choreography remains core-thread-owned.
+  std::atomic<bool> shutdown_requested_from_stop_{false};
   bool shutdown_requested_ = false;
   ShutdownPhase shutdown_phase_ = ShutdownPhase::NONE;
   std::atomic<uint8_t> shutdown_phase_code_{0};
