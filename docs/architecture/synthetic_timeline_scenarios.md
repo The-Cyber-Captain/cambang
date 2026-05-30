@@ -74,9 +74,13 @@ For this first authored slice, host advancement is expected through the existing
 
 ---
 
-## 5. Canonical scenario model (first slice)
+## 5. Canonical scenario model (current slice)
 
-The first supported canonical scenario form is **in-memory authored data**.
+The current supported canonical scenario forms are:
+
+- built-in C++ authored scenario data
+- external JSON text/file ingestion through the scenario loader into canonical
+  `SyntheticProvider` timeline scenarios
 
 In-scope representation characteristics:
 
@@ -85,15 +89,9 @@ In-scope representation characteristics:
 - deterministic intra-timestamp ordering (stable sequence/tie-breaker)
 - provider-owned execution against active stream/device state
 
-Tranche 1 persistence boundary:
-
-- execution support is in-memory authored data only
-- this is an implementation-slice constraint, not an architectural rejection of persisted/open forms
-
-Out of scope for this tranche:
-
-- file formats and schemas
-- persistence/recording pipeline design
+This JSON ingestion path is maintainer/provider-core tooling. It does not by
+itself define a finalized release UX scenario library, editor, recording
+pipeline, or broad product authoring surface.
 
 ### 5.1 Single-scenario-model clarification
 
@@ -116,7 +114,7 @@ application/user flows should be expressed through the object-level Godot APIs.
 
 Godot may:
 
-- select a scenario (from authored in-memory set)
+- select a built-in scenario or load an external JSON scenario
 - start / stop scenario execution
 - pause / resume execution
 - advance synthetic time
@@ -194,18 +192,7 @@ application path.
 
 This implemented slice is still a starting boundary, not the architectural ceiling.
 
-Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue.
-Tranche 1 executable vocabulary may begin with a small subset aligned with current timeline code shape:
-
-- `StartStream`
-- `StopStream`
-- `EmitFrame`
-
-That subset is an implementation starting point, not the architectural ceiling.
-
-Canonical scenario direction remains a self-contained authored/recorded timeline unit. The event model is therefore expected to expand with minimal lifecycle/realization events needed to author and replay scenarios without hidden host-side semantic reconstruction (for example, device/stream realization and create/destroy-style families).
-
-Tranche 1 intentionally does not freeze the complete long-term scenario event vocabulary.
+Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue. Current executable support already includes lifecycle/realization events needed for provider-owned replay; future vocabulary expansion must preserve that ownership boundary.
 
 ### 7.x AcquisitionSession guardrail
 
@@ -261,11 +248,13 @@ Any future work on this issue, if adopted later, must stay within the single sce
 Scenario architecture must remain compatible with all expected source families:
 
 - developer/maintainer authored scenarios
+- external JSON text/file inputs loaded through the scenario loader
 - recorded behavior from real hardware-backed providers for later synthetic playback
-- user/integrator hand-authored open serialized forms (for example JSON-like formats)
 - future GUI authoring tools built as separate layers
 
-This is a design-compatibility requirement. It is not a Tranche 1 decision about serialization format, recording pipeline, or editor UX.
+Current external JSON ingestion is an implemented loader path for SyntheticProvider
+timeline scenarios. It is not a completed release scenario-library UX, recording
+pipeline, or editor/product authoring surface.
 
 ---
 
@@ -287,10 +276,9 @@ But the scenario remains a SyntheticProvider timeline artifact, while the verifi
 
 This tranche explicitly excludes:
 
-- serialization format/schema decisions
+- final release scenario-library product UX
 - recording pipeline/format design
 - editor/authoring UI tooling
-- release UX design for scenario libraries (built-in/external)
 - redesign of smoke verification-case architecture
 - adversarial snapshot playback design
 - unrelated core/provider runtime redesign

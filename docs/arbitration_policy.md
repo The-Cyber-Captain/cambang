@@ -81,7 +81,9 @@ from running, core fails the request with a deterministic error code.
 For v1, core uses a conservative compatibility rule-set:
 
 -   Stream formats must be raw-only.
--   Still formats may include `'JPEG'` and `'RAW '` (where supported).
+-   Still-result formats are CamBANG FourCC-style values. Current displayable
+    still paths use packed pixel formats; encoded or RAW-domain still outputs
+    are valid only where the matching payload-kind/result path is supported.
 -   If a device is a rig member and rig is ARMED, any device-level
     capture or stream request must be compatible with the rig's
     configured requirements, otherwise it is rejected.

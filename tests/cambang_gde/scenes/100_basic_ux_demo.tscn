@@ -5,12 +5,26 @@
 [sub_resource type="GDScript" id="GDScript_xnvps"]
 resource_name = "100_control"
 script/source = "extends Control
-const WAIT_BEFORE_QUIT = 2.0
+const WAIT_BEFORE_QUIT = 1.0
+
+#var capture_profile_00 : Dictionary = {
+	#\"width\": 1280,
+	#\"height\": 720,
+	#\"format_fourcc\": 0x00000020, # use the project/provider FOURCC value you intend
+	#\"still_image_bundle\": {
+		#\"members\": [
+			#{
+				#\"image_member_index\": 0,
+				#\"role\": \"DEFAULT_METERED\",
+				#\"intended_exposure_compensation_milli_ev\": 0,
+			#},
+		#],
+	#},
+#}
 
 var capture_profile_00 : Dictionary = {
-	\"width\": 1280,
-	\"height\": 720,
-	\"format_fourcc\": 0x00000020, # use the project/provider FOURCC value you intend
+	\"width\": 2048,
+	\"height\": 1600,
 	\"still_image_bundle\": {
 		\"members\": [
 			{
@@ -21,7 +35,48 @@ var capture_profile_00 : Dictionary = {
 		],
 	},
 }
+
+var capture_profile_bun : Dictionary = {
+	\"still_image_bundle\": {
+		\"members\": [
+		{
+			\"image_member_index\": 0,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			\"intended_exposure_compensation_milli_ev\": 0,
+		},
+		{
+			\"image_member_index\": 1,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": -1000,
+		},
+		{
+			\"image_member_index\": 2,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": 1000,
+		},
+	]
+	},
+}
 #var device_roster : Array[CamBANGDevice] = [CamBANGDevice.new()]
+
+func _make_still_image_bundle_members() -> Array:
+	return [
+		{
+			\"image_member_index\": 0,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
+			\"intended_exposure_compensation_milli_ev\": 0,
+		},
+		{
+			\"image_member_index\": 1,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": -1000,
+		},
+		{
+			\"image_member_index\": 2,
+			\"role\": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			\"intended_exposure_compensation_milli_ev\": 1000,
+		},
+	]
 
 func _ready():
 	CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
@@ -46,8 +101,11 @@ func _ready():
 
 	device_00.engage()
 	device_01.engage()
-	device_00.set_still_capture_profile(capture_profile_00)
-	device_00.trigger_capture()
+	device_01.set_still_capture_profile(capture_profile_00)
+	await get_tree().create_timer(4.0).timeout
+	device_01.set_still_capture_profile(capture_profile_bun)
+
+	#device_00.trigger_capture()
 	#device_00.
 
 

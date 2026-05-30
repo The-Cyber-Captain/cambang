@@ -342,6 +342,22 @@ not implicit upward realization (`open/create/start`).
 During provider shutdown, ordered internal teardown is allowed so the
 provider can release resources cleanly.
 
+Once a provider is attached to `CoreRuntime`, attached-provider shutdown is
+owned by `CoreRuntime::stop()`. External owners may allocate and store the
+provider, but while the runtime is live and the provider is attached they must
+keep it alive and must not call `provider->shutdown()` directly. The normal
+release order is:
+
+```cpp
+runtime.stop();
+runtime.attach_provider(nullptr);
+// then release/reset provider ownership
+```
+
+Detaching before `runtime.stop()` is not the default: Core needs the attached
+provider during deterministic shutdown to stop streams, destroy streams, close
+devices, and call `provider->shutdown()`.
+
 Shutdown teardown must still be truthful:
 
 - destruction events must correspond to actual release

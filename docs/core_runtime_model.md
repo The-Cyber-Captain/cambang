@@ -364,6 +364,10 @@ When shutdown is requested:
 8.  Core thread exits
 
 Providers must not block indefinitely on shutdown (provider contract).
+For an attached provider, `CoreRuntime::stop()` is the shutdown owner: hosts
+keep the provider attached and alive until `stop()` returns, then detach and
+release external ownership. Detaching first skips the provider object Core needs
+for deterministic stream/device teardown and the provider shutdown call.
 Core may internally model shutdown as explicit ordered phases,
 but the architectural guarantee is completion of steps 1–8
 before thread termination.

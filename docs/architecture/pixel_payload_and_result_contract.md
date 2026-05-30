@@ -585,6 +585,11 @@ Non-goals:
 - no RAW processing/export APIs
 - no backend-native public handles
 
+`can_get_encoded_bytes()` / `get_encoded_bytes()` may be bound as capability
+probes, but currently report unsupported / empty. Encoded output requires a
+supported `ENCODED_IMAGE` payload/result path; it is not enabled by setting a
+FourCC-style format value alone.
+
 ### 10.6.3 Capture Result Set initial surface
 
 Public Godot rig capture uses `CamBANGRig.trigger_capture() -> Error` and polls
