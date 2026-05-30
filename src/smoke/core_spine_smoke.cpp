@@ -1424,25 +1424,29 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
 
   const uint64_t ok_capture_id = allocate_capture_id();
   const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id);
-  if (!success.ok || success.capture_id != ok_capture_id || success.submitted_count != 1) {
+  if (!success.ok || success.capture_id != ok_capture_id || success.rig_id != 8401 || success.submitted_count != 1) {
+    std::cerr << "Expected server-facing rig orchestration success. capture_id=" << ok_capture_id
+              << " rig_id=8401"
+              << " result_ok=" << (success.ok ? "true" : "false")
+              << " result_capture_id=" << success.capture_id
+              << " result_rig_id=" << success.rig_id
+              << " failure=" << static_cast<int>(success.failure)
+              << " preflight_failure=" << static_cast<int>(success.preflight_failure)
+              << " admission_failure=" << static_cast<int>(success.admission_failure)
+              << " submission_failure=" << static_cast<int>(success.submission_failure)
+              << " submitted_count=" << success.submitted_count
+              << " failed_index=" << success.failed_index
+              << " failed_device_instance_id=" << success.failed_device_instance_id
+              << " provider_error_code=" << success.provider_error_code << "\n";
     rt.stop();
     return 1;
   }
 
-  if (!wait_until([&]() { return rt.get_capture_result_set(ok_capture_id).size() == 1; }, 400, 5)) {
-    rt.stop();
-    return 1;
-  }
-
-  const auto set = rt.get_capture_result_set(ok_capture_id);
-  if (set.size() != 1 || !set[0] || set[0]->capture_id != ok_capture_id) {
-    rt.stop();
-    return 1;
-  }
-  if (!set[0]->additional_images.empty()) {
-    rt.stop();
-    return 1;
-  }
+  // StubProvider trigger_capture is lifecycle-only: it emits capture_started and
+  // capture_completed but no capture frame. A non-empty CaptureResultSet requires
+  // retained default-image assembly, which is covered by the cohort/result-set
+  // smoke path that injects capture frames. This adapter smoke only verifies the
+  // server-facing orchestration/admission/submission path succeeds.
 
   // Failure path: missing rig should fail and should not expose cohort result set.
   const uint64_t bad_capture_id = allocate_capture_id();
