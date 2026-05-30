@@ -1494,7 +1494,31 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
 }
 
 bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
-  return retain_rig_member_hardware_ids(rig_id, member_hardware_ids);
+  if (rig_id == 0) {
+    return false;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    const bool retained = rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
+    request_publish_from_core_unchecked();
+    return retained;
+  }
+
+  auto completion = std::make_shared<std::promise<bool>>();
+  std::future<bool> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, rig_id, member_hardware_ids = std::move(member_hardware_ids), completion]() mutable {
+    const bool retained = rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
+    request_publish_from_core_unchecked();
+    completion->set_value(retained);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return false;
+  }
+  return completed.get();
 }
 
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_preflight(

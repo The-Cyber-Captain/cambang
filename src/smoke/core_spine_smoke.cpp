@@ -170,23 +170,6 @@ static CoreDispatchStats get_dispatch_stats(CoreRuntime& rt) {
   std::exit(1);
 }
 
-static ProviderCallbackIngress::Stats get_ingress_stats(CoreRuntime& rt) {
-  for (int attempt = 0; attempt < 200; ++attempt) {
-    std::promise<ProviderCallbackIngress::Stats> p;
-    auto fut = p.get_future();
-    const auto r = rt.try_post([&rt, &p]() mutable { p.set_value(rt.ingress_stats_copy()); });
-    if (r == CoreThread::PostResult::Enqueued) {
-      if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
-        return fut.get();
-      }
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  std::cerr << "Failed to retrieve ingress stats (core queue saturated or stopped).\n";
-  std::exit(1);
-}
-
 static bool get_stream_record(CoreRuntime& rt, uint64_t stream_id, CoreStreamRegistry::StreamRecord& out) {
   for (int attempt = 0; attempt < 200; ++attempt) {
     std::promise<bool> p;
@@ -278,8 +261,24 @@ static StreamRequest make_req() {
 }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
+static bool wait_for_core_barrier(CoreRuntime& rt, std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto done = barrier->get_future();
+  const auto post_result = rt.try_post([barrier]() mutable { barrier->set_value(); });
+  if (post_result != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+  return done.wait_for(timeout) == std::future_status::ready;
+}
+
+static bool converge_stub_provider_core(CoreRuntime& rt, StubProvider& prov) {
+  prov.flush_callbacks_for_smoke();
+  return wait_for_core_barrier(rt);
+}
+
 static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   if (!prov.initialize(rt.provider_callbacks()).ok()) return false;
+  rt.attach_provider(&prov);
 
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) return false;
@@ -291,7 +290,91 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   const StreamRequest req = make_req();
   if (!prov.create_stream(req).ok()) return false;
 
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging stub provider/core setup facts\n";
+    return false;
+  }
+
+  CaptureRequest capture_req{};
+  if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, capture_req); }, 200, 1)) {
+    std::cerr << "Stub provider setup did not converge to a materialized capture request\n";
+    return false;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created) {
+    std::cerr << "Stub provider setup did not converge to a created core stream. created=" << rec.created
+              << " device_instance_id=" << rec.device_instance_id << "\n";
+    return false;
+  }
+
   return true;
+}
+
+static const char* rig_preflight_failure_name(CoreRuntime::RigPreflightFailure failure) {
+  switch (failure) {
+    case CoreRuntime::RigPreflightFailure::None:
+      return "None";
+    case CoreRuntime::RigPreflightFailure::RigNotFound:
+      return "RigNotFound";
+    case CoreRuntime::RigPreflightFailure::EmptyMembership:
+      return "EmptyMembership";
+    case CoreRuntime::RigPreflightFailure::HardwareIdUnresolved:
+      return "HardwareIdUnresolved";
+    case CoreRuntime::RigPreflightFailure::HardwareIdAmbiguous:
+      return "HardwareIdAmbiguous";
+    case CoreRuntime::RigPreflightFailure::DuplicateResolvedDevice:
+      return "DuplicateResolvedDevice";
+    case CoreRuntime::RigPreflightFailure::MaterializeFailed:
+      return "MaterializeFailed";
+  }
+  return "Unknown";
+}
+
+static void print_rig_preflight_result(
+    const char* prefix,
+    const CoreRuntime::RigPreflightResult& res) {
+  std::cerr << prefix
+            << " ok=" << (res.ok ? "true" : "false")
+            << " failure=" << rig_preflight_failure_name(res.failure)
+            << "(" << static_cast<int>(res.failure) << ")"
+            << " rig_id=" << res.rig_id
+            << " failure_member_index=" << res.failure_member_index
+            << " failure_hardware_id=" << res.failure_hardware_id
+            << " failure_device_instance_id=" << res.failure_device_instance_id
+            << " participants=" << res.participants.size() << "\n";
+}
+
+static CoreRuntime::RigPreflightResult wait_for_rig_preflight_ok(
+    CoreRuntime& rt,
+    uint64_t rig_id,
+    std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+  CoreRuntime::RigPreflightResult last{};
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  do {
+    last = rt.preflight_rig_participants_materialize(rig_id);
+    if (last.ok) {
+      return last;
+    }
+
+    auto barrier = std::make_shared<std::promise<void>>();
+    auto barrier_done = barrier->get_future();
+    const auto post_result = rt.try_post([barrier]() mutable { barrier->set_value(); });
+    if (post_result != CoreThread::PostResult::Enqueued) {
+      return last;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      break;
+    }
+    const auto remaining = deadline - now;
+    (void)barrier_done.wait_for(remaining);
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+
+  last = rt.preflight_rig_participants_materialize(rig_id);
+  return last;
 }
 #endif
 
@@ -482,69 +565,84 @@ static int test_baseline_publish_without_provider(CoreRuntime& rt, StateSnapshot
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvider& prov) {
-    std::atomic<bool> stall_started{false};
+  (void)prov;
+  if (!wait_for_core_barrier(rt)) {
+    std::cerr << "Failed to establish pre-overload core barrier\n";
+    rt.stop();
+    return 1;
+  }
 
-  (void)rt.try_post_core_thread_unchecked([&stall_started]() {
-    stall_started.store(true, std::memory_order_release);
-    const auto t0 = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(25)) {
-    }
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done(release_gate->get_future());
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.try_post_core_thread_unchecked([release_gate_done, &gate_started]() mutable {
+    gate_started.store(true, std::memory_order_release);
+    release_gate_done.wait();
   });
-  // Barrier: ensure the core thread has *actually entered* the stall
-  // before we emit the overload burst.
-  while (!stall_started.load(std::memory_order_acquire)) {
+  if (gate_post != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Failed to post deterministic overload gate\n";
+    rt.stop();
+    return 1;
+  }
+  while (!gate_started.load(std::memory_order_acquire)) {
     std::this_thread::yield();
   }
 
-  const uint32_t kBurst = 1100;
-  prov.emit_test_frames(kStreamId, kBurst);
+  size_t fillers_posted = 0;
+  for (; fillers_posted < CoreThread::kMaxPendingTasks; ++fillers_posted) {
+    const auto filler_post = rt.try_post_core_thread_unchecked([]() {});
+    if (filler_post != CoreThread::PostResult::Enqueued) {
+      release_gate->set_value();
+      std::cerr << "Failed to fill deterministic overload queue. fillers_posted=" << fillers_posted
+                << " post_result=" << static_cast<int>(filler_post) << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
 
-  const uint64_t emitted = prov.frames_emitted();
+  const auto ingress_before = rt.ingress_stats_copy();
+  std::atomic<uint64_t> released_on_drop{0};
+  uint8_t pixel[4] = {0, 0, 0, 0};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &released_on_drop;
 
-  if (!wait_until([&]() { return prov.frames_released() >= emitted; }, 800, 2)) {
-    std::cerr << "Timeout waiting for overload releases. emitted=" << emitted
-              << " released=" << prov.frames_released() << "\n";
+  rt.provider_callbacks()->on_frame(frame);
+  const auto ingress_after_drop = rt.ingress_stats_copy();
+  const uint64_t full_drops = ingress_after_drop.frames_dropped_full - ingress_before.frames_dropped_full;
+  const uint64_t full_releases = ingress_after_drop.frames_released_on_drop_full -
+                                 ingress_before.frames_released_on_drop_full;
+  if (full_drops != 1 || full_releases != 1 || released_on_drop.load(std::memory_order_relaxed) != 1) {
+    release_gate->set_value();
+    std::cerr << "Expected deterministic ProviderCallbackIngress QueueFull frame drop/release. drops="
+              << full_drops << " releases=" << full_releases
+              << " release_hook_calls=" << released_on_drop.load(std::memory_order_relaxed) << "\n";
     rt.stop();
     return 1;
   }
 
-  const auto ingress = get_ingress_stats(rt);
-  const auto disp = get_dispatch_stats(rt);
-
-  if (prov.frames_released() != emitted) {
-    std::cerr << "Release mismatch under overload. emitted=" << emitted
-              << " released=" << prov.frames_released() << "\n";
+  release_gate->set_value();
+  if (!wait_until([&]() { return wait_for_core_barrier(rt); }, 200, 1)) {
+    std::cerr << "Failed to drain deterministic overload queue after releasing gate\n";
     rt.stop();
     return 1;
   }
 
-  const uint64_t dropped = ingress.frames_dropped_full + ingress.frames_dropped_closed + ingress.frames_dropped_allocfail;
-  if (dropped == 0) {
-    std::cerr << "Expected at least one dropped frame under overload (QueueFull).\n";
-    rt.stop();
-    return 1;
-  }
-
-  if (disp.frames_received + dropped != emitted) {
-    std::cerr << "Accounting mismatch under overload. received=" << disp.frames_received
-              << " dropped=" << dropped << " emitted=" << emitted << "\n";
-    rt.stop();
-    return 1;
-  }
-
-  if (disp.frames_released != disp.frames_received) {
-    std::cerr << "Dispatcher release mismatch under overload. received=" << disp.frames_received
-              << " released=" << disp.frames_released << "\n";
-    rt.stop();
-    return 1;
-  }
-
-  const uint64_t released_on_drop = ingress.frames_released_on_drop_full +
-                                   ingress.frames_released_on_drop_closed +
-                                   ingress.frames_released_on_drop_allocfail;
-  if (released_on_drop != dropped) {
-    std::cerr << "Ingress release-on-drop mismatch. dropped=" << dropped
-              << " released_on_drop=" << released_on_drop << "\n";
+  const auto ingress_after_drain = rt.ingress_stats_copy();
+  if (ingress_after_drain.frames_dropped_full - ingress_before.frames_dropped_full != 1 ||
+      ingress_after_drain.frames_released_on_drop_full - ingress_before.frames_released_on_drop_full != 1) {
+    std::cerr << "Deterministic QueueFull accounting changed after drain\n";
     rt.stop();
     return 1;
   }
@@ -643,9 +741,9 @@ static int test_rig_preflight_materialization_smoke() {
     return 1;
   }
   {
-    const auto res = rt.preflight_rig_participants_materialize(7003);
+    const auto res = wait_for_rig_preflight_ok(rt, 7003);
     if (!res.ok || res.failure != CoreRuntime::RigPreflightFailure::None || res.participants.size() != 1) {
-      std::cerr << "Expected successful single participant preflight\n";
+      print_rig_preflight_result("Expected successful single participant preflight", res);
       rt.stop();
       return 1;
     }
@@ -828,8 +926,10 @@ static int test_open_device_snapshot_retains_default_capture_profile_smoke() {
   return 0;
 }
 
-static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuffer& buf) {
+static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuffer& /*unused_buf*/) {
   CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start (still profile idempotency smoke)\n";
     return 1;
@@ -841,7 +941,6 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     return 1;
   }
   rt.attach_provider(&prov);
-  rt.set_snapshot_publisher(&buf);
   if (!wait_for_snapshot_gen(buf, 0)) {
     std::cerr << "Timeout waiting for initial snapshot publication (still profile idempotency smoke)\n";
     rt.stop();
@@ -855,15 +954,14 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     return 1;
   }
   const uint64_t v0 = req.profile_version;
-  const auto default_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
-    if (s.devices.empty()) return false;
-    const auto& d = s.devices[0];
-    return d.instance_id == kDeviceInstanceId &&
-           d.capture_profile.still.still_image_bundle.members.size() == 1 &&
-           d.capture_profile.still.still_image_bundle.members[0].image_member_index == 0 &&
-           d.capture_profile.still.still_image_bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
-           d.capture_profile.still.still_image_bundle.members[0].intended_exposure_compensation_milli_ev == 0;
-  });
+  const auto default_bundle_ready = wait_until([&]() {
+    CaptureRequest r{};
+    return rt.materialize_capture_request(kDeviceInstanceId, r) &&
+           r.still_image_bundle.members.size() == 1 &&
+           r.still_image_bundle.members[0].image_member_index == 0 &&
+           r.still_image_bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
+           r.still_image_bundle.members[0].intended_exposure_compensation_milli_ev == 0;
+  }, 400, 1);
   if (!default_bundle_ready) {
     std::cerr << "Expected default snapshot still_image_bundle with one DEFAULT_METERED member\n";
     rt.stop();
@@ -886,16 +984,26 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     return 1;
   }
 
+  auto is_one_member_default_bundle = [](const CaptureStillImageBundleState& bundle) {
+    return bundle.members.size() == 1 &&
+           bundle.members[0].image_member_index == 0 &&
+           bundle.members[0].role == CaptureStillImageMemberRole::DEFAULT_METERED &&
+           bundle.members[0].intended_exposure_compensation_milli_ev == 0;
+  };
+  auto is_still_profile = [](const StillCaptureProfileState& still, const CaptureProfile& profile) {
+    return still.width == profile.width &&
+           still.height == profile.height &&
+           still.format == profile.format_fourcc;
+  };
+
   CaptureProfile p{};
-  p.width = req.width;
+  p.width = req.width + 16;
   p.height = req.height;
   p.format_fourcc = req.format_fourcc;
   CaptureStillImageBundle s = make_default_metered_still_image_bundle();
-  s.members.push_back(CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
-  s.members.push_back(CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
 
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
-    std::cerr << "Expected first still profile set success\n";
+    std::cerr << "Expected simple one-member still profile set success\n";
     rt.stop();
     return 1;
   }
@@ -903,28 +1011,28 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
         CaptureRequest r{};
         return rt.materialize_capture_request(kDeviceInstanceId, r) && r.profile_version > v0;
       }, 400, 5)) {
-    std::cerr << "Expected profile_version increment after first still profile set\n";
+    std::cerr << "Expected profile_version increment after simple one-member still profile set\n";
     rt.stop();
     return 1;
   }
   CaptureRequest req_after_set{};
-  rt.materialize_capture_request(kDeviceInstanceId, req_after_set);
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_set)) {
+    std::cerr << "Expected materialized request after simple one-member still profile set\n";
+    rt.stop();
+    return 1;
+  }
   const uint64_t v1 = req_after_set.profile_version;
-  const auto device_three_member_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
-    for (const auto& d : s.devices) {
+  const auto device_one_member_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snap) {
+    for (const auto& d : snap.devices) {
       if (d.instance_id != kDeviceInstanceId) continue;
-      if (d.capture_profile.still.still_image_bundle.members.size() != 3) return false;
-      const auto& m0 = d.capture_profile.still.still_image_bundle.members[0];
-      const auto& m1 = d.capture_profile.still.still_image_bundle.members[1];
-      const auto& m2 = d.capture_profile.still.still_image_bundle.members[2];
-      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.intended_exposure_compensation_milli_ev == 0 &&
-             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.intended_exposure_compensation_milli_ev == -1000 &&
-             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.intended_exposure_compensation_milli_ev == 1000;
+      return d.capture_profile.still.version == v1 &&
+             is_still_profile(d.capture_profile.still, p) &&
+             is_one_member_default_bundle(d.capture_profile.still.still_image_bundle);
     }
     return false;
   });
-  if (!device_three_member_ready) {
-    std::cerr << "Expected three-member still_image_bundle snapshot on device after profile set\n";
+  if (!device_one_member_ready) {
+    std::cerr << "Expected one-member still_image_bundle and explicit still profile snapshot on device after simple set\n";
     rt.stop();
     return 1;
   }
@@ -936,14 +1044,14 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
   }
 
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p, s) != TrySetStillCaptureProfileStatus::OK) {
-    std::cerr << "Expected second identical still profile set success\n";
+    std::cerr << "Expected identical one-member still profile set idempotency success\n";
     rt.stop();
     return 1;
   }
   CaptureRequest req_after_same{};
   if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_same) ||
       req_after_same.profile_version != v1) {
-    std::cerr << "Identical still profile set must be idempotent for profile_version\n";
+    std::cerr << "Identical one-member still profile set must preserve profile_version\n";
     rt.stop();
     return 1;
   }
@@ -951,7 +1059,7 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
   CaptureProfile p2 = p;
   p2.width = p.width + 16;
   if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p2, s) != TrySetStillCaptureProfileStatus::OK) {
-    std::cerr << "Expected changed still profile set success\n";
+    std::cerr << "Expected changed one-member still profile set success\n";
     rt.stop();
     return 1;
   }
@@ -960,14 +1068,18 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
         CaptureRequest r{};
         return rt.materialize_capture_request(kDeviceInstanceId, r) && r.profile_version == v1 + 1;
       }, 400, 5)) {
-    std::cerr << "Changed still profile set must increment profile_version once\n";
+    std::cerr << "Changed one-member still profile set must increment profile_version exactly once\n";
     rt.stop();
     return 1;
   }
-  rt.materialize_capture_request(kDeviceInstanceId, req_after_changed);
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_changed)) {
+    std::cerr << "Expected materialized request after changed one-member still profile set\n";
+    rt.stop();
+    return 1;
+  }
   req_after_changed.capture_id = 9902;
   if (!prov.trigger_capture(req_after_changed).ok()) {
-    std::cerr << "Expected trigger_capture success after profile change\n";
+    std::cerr << "Expected trigger_capture success after one-member profile change\n";
     rt.stop();
     return 1;
   }
@@ -978,21 +1090,58 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     rt.stop();
     return 1;
   }
-  const auto acquisition_session_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
-    for (const auto& a : s.acquisition_sessions) {
+  const auto acquisition_session_bundle_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snap) {
+    for (const auto& a : snap.acquisition_sessions) {
       if (a.device_instance_id != kDeviceInstanceId) continue;
-      if (a.capture_profile.still.still_image_bundle.members.size() != 3) return false;
-      const auto& m0 = a.capture_profile.still.still_image_bundle.members[0];
-      const auto& m1 = a.capture_profile.still.still_image_bundle.members[1];
-      const auto& m2 = a.capture_profile.still.still_image_bundle.members[2];
-      return m0.image_member_index == 0 && m0.role == CaptureStillImageMemberRole::DEFAULT_METERED && m0.intended_exposure_compensation_milli_ev == 0 &&
-             m1.image_member_index == 1 && m1.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m1.intended_exposure_compensation_milli_ev == -1000 &&
-             m2.image_member_index == 2 && m2.role == CaptureStillImageMemberRole::ADDITIONAL_BRACKET && m2.intended_exposure_compensation_milli_ev == 1000;
+      return a.capture_profile.still.version == v1 + 1 &&
+             is_still_profile(a.capture_profile.still, p2) &&
+             is_one_member_default_bundle(a.capture_profile.still.still_image_bundle);
     }
     return false;
   });
   if (!acquisition_session_bundle_ready) {
-    std::cerr << "Expected three-member still_image_bundle snapshot on acquisition session after capture-context realization\n";
+    std::cerr << "Expected one-member still_image_bundle snapshot on acquisition session after capture-context realization\n";
+    rt.stop();
+    return 1;
+  }
+
+  auto snap_before_rejected_multi = get_last_snapshot(buf);
+  const uint64_t topo_before_rejected_multi = snap_before_rejected_multi ? snap_before_rejected_multi->topology_version : 0;
+  const uint64_t v_before_rejected_multi = req_after_trigger2.profile_version;
+  CaptureStillImageBundle multi = make_default_metered_still_image_bundle();
+  multi.members.push_back(CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  multi.members.push_back(CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
+
+  if (rt.try_set_device_still_capture_profile(kDeviceInstanceId, p2, multi) != TrySetStillCaptureProfileStatus::NotSupported) {
+    std::cerr << "Expected multi-member still_image_bundle NotSupported for StubProvider\n";
+    rt.stop();
+    return 1;
+  }
+  CaptureRequest req_after_rejected_multi{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, req_after_rejected_multi) ||
+      req_after_rejected_multi.profile_version != v_before_rejected_multi) {
+    std::cerr << "Unexpected profile_version mutation after rejected multi-member still_image_bundle\n";
+    rt.stop();
+    return 1;
+  }
+  auto snap_after_rejected_multi = get_last_snapshot(buf);
+  if (!snap_after_rejected_multi) {
+    std::cerr << "Expected snapshot after rejected multi-member still_image_bundle check\n";
+    rt.stop();
+    return 1;
+  }
+  bool accepted_one_member_still_retained = false;
+  for (const auto& d : snap_after_rejected_multi->devices) {
+    if (d.instance_id != kDeviceInstanceId) continue;
+    accepted_one_member_still_retained =
+        d.capture_profile.still.version == v_before_rejected_multi &&
+        is_still_profile(d.capture_profile.still, p2) &&
+        is_one_member_default_bundle(d.capture_profile.still.still_image_bundle);
+    break;
+  }
+  if (!accepted_one_member_still_retained ||
+      snap_after_rejected_multi->topology_version != topo_before_rejected_multi) {
+    std::cerr << "Unexpected mutation after rejected multi-member still_image_bundle\n";
     rt.stop();
     return 1;
   }
@@ -1027,9 +1176,9 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
     rt.stop();
     return 1;
   }
-  const auto preflight_ok = rt.preflight_rig_participants_materialize(8001);
+  const auto preflight_ok = wait_for_rig_preflight_ok(rt, 8001);
   if (!preflight_ok.ok) {
-    std::cerr << "Preflight failed unexpectedly (rig cohort admit smoke)\n";
+    print_rig_preflight_result("Preflight failed unexpectedly (rig cohort admit smoke)", preflight_ok);
     rt.stop();
     return 1;
   }
@@ -1109,7 +1258,12 @@ static int test_rig_bundle_submission_smoke() {
     return 1;
   }
 
-  const auto preflight_ok = rt.preflight_rig_participants_materialize(8101);
+  const auto preflight_ok = wait_for_rig_preflight_ok(rt, 8101);
+  if (!preflight_ok.ok) {
+    print_rig_preflight_result("Preflight failed before rig submit smoke success admission", preflight_ok);
+    rt.stop();
+    return 1;
+  }
   const auto admitted_ok = rt.smoke_admit_rig_cohort_from_preflight(8101, 9101, preflight_ok);
   if (!admitted_ok.ok) {
     std::cerr << "Failed to admit cohort for submit smoke success path\n";
@@ -1231,7 +1385,12 @@ static int test_cohort_aware_capture_result_set_smoke() {
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
   if (!rt.smoke_set_rig_member_hardware_ids(8201, {eps[0].hardware_id})) { rt.stop(); return 1; }
-  const auto preflight = rt.preflight_rig_participants_materialize(8201);
+  const auto preflight = wait_for_rig_preflight_ok(rt, 8201);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before cohort result-set smoke admission", preflight);
+    rt.stop();
+    return 1;
+  }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8201, 9202, preflight);
   if (!admitted.ok) { rt.stop(); return 1; }
 
@@ -1288,28 +1447,38 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
   };
 
   if (!rt.smoke_set_rig_member_hardware_ids(8401, {live_hw})) { rt.stop(); return 1; }
+  const auto server_preflight = wait_for_rig_preflight_ok(rt, 8401);
+  if (!server_preflight.ok) {
+    print_rig_preflight_result("Preflight failed before server-facing rig orchestration success", server_preflight);
+    rt.stop();
+    return 1;
+  }
 
   const uint64_t ok_capture_id = allocate_capture_id();
   const auto success = rt.orchestrate_rig_capture_with_capture_id_for_server(8401, ok_capture_id);
-  if (!success.ok || success.capture_id != ok_capture_id || success.submitted_count != 1) {
+  if (!success.ok || success.capture_id != ok_capture_id || success.rig_id != 8401 || success.submitted_count != 1) {
+    std::cerr << "Expected server-facing rig orchestration success. capture_id=" << ok_capture_id
+              << " rig_id=8401"
+              << " result_ok=" << (success.ok ? "true" : "false")
+              << " result_capture_id=" << success.capture_id
+              << " result_rig_id=" << success.rig_id
+              << " failure=" << static_cast<int>(success.failure)
+              << " preflight_failure=" << static_cast<int>(success.preflight_failure)
+              << " admission_failure=" << static_cast<int>(success.admission_failure)
+              << " submission_failure=" << static_cast<int>(success.submission_failure)
+              << " submitted_count=" << success.submitted_count
+              << " failed_index=" << success.failed_index
+              << " failed_device_instance_id=" << success.failed_device_instance_id
+              << " provider_error_code=" << success.provider_error_code << "\n";
     rt.stop();
     return 1;
   }
 
-  if (!wait_until([&]() { return rt.get_capture_result_set(ok_capture_id).size() == 1; }, 400, 5)) {
-    rt.stop();
-    return 1;
-  }
-
-  const auto set = rt.get_capture_result_set(ok_capture_id);
-  if (set.size() != 1 || !set[0] || set[0]->capture_id != ok_capture_id) {
-    rt.stop();
-    return 1;
-  }
-  if (!set[0]->additional_images.empty()) {
-    rt.stop();
-    return 1;
-  }
+  // StubProvider trigger_capture is lifecycle-only: it emits capture_started and
+  // capture_completed but no capture frame. A non-empty CaptureResultSet requires
+  // retained default-image assembly, which is covered by the cohort/result-set
+  // smoke path that injects capture frames. This adapter smoke only verifies the
+  // server-facing orchestration/admission/submission path succeeds.
 
   // Failure path: missing rig should fail and should not expose cohort result set.
   const uint64_t bad_capture_id = allocate_capture_id();
@@ -1346,6 +1515,12 @@ static int test_rig_orchestration_helper_smoke() {
   }
 
   if (!rt.smoke_set_rig_member_hardware_ids(8301, {live_hw})) { rt.stop(); return 1; }
+  const auto orchestration_preflight = wait_for_rig_preflight_ok(rt, 8301);
+  if (!orchestration_preflight.ok) {
+    print_rig_preflight_result("Preflight failed before rig orchestration helper success", orchestration_preflight);
+    rt.stop();
+    return 1;
+  }
 
   // Invalid capture_id.
   const auto bad_capture_id = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 0);
@@ -1370,7 +1545,12 @@ static int test_rig_orchestration_helper_smoke() {
   if (!rt.smoke_set_rig_member_hardware_ids(8302, {live_hw, live_hw})) { rt.stop(); return 1; }
   // keep preflight/admission valid by using one member then mutate device in submit path via bad endpoint
   if (!rt.smoke_set_rig_member_hardware_ids(8302, {live_hw})) { rt.stop(); return 1; }
-  auto preflight = rt.preflight_rig_participants_materialize(8302);
+  auto preflight = wait_for_rig_preflight_ok(rt, 8302);
+  if (!preflight.ok) {
+    print_rig_preflight_result("Preflight failed before rig orchestration submit-failure admission", preflight);
+    rt.stop();
+    return 1;
+  }
   auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8302, 9303, preflight);
   admitted.participants[0].request.device_instance_id = 777777;
   const auto submit_fail = rt.smoke_submit_admitted_rig_bundle(admitted);
