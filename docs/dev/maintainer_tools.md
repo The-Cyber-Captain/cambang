@@ -388,6 +388,8 @@ It verifies:
   `timeline_reconciliation` modes
 - public runtime-command admission only after the first observable baseline
   `state_published(gen, 0, 0)` for a generation, including reset across stop/restart
+- provider discovery and hardware-id endpoint startup intent before baseline, with
+  actual endpoint effects delayed until after the clean baseline publish
 - the narrow synthetic timeline UX exception where scenario staging and pending
   `start_scenario()` intent may be accepted before baseline while effects remain
   post-baseline
