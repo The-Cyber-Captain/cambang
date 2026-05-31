@@ -73,6 +73,9 @@ ProviderCallbackIngress::Stats ProviderCallbackIngress::stats_copy() const noexc
   s.commands_dropped_closed = commands_dropped_closed_.load(std::memory_order_relaxed);
   s.commands_dropped_allocfail = commands_dropped_allocfail_.load(std::memory_order_relaxed);
 
+  s.non_frame_rejected_closed = non_frame_rejected_closed_.load(std::memory_order_relaxed);
+  s.non_frame_rejected_allocfail = non_frame_rejected_allocfail_.load(std::memory_order_relaxed);
+
   s.frames_dropped_full = frames_dropped_full_.load(std::memory_order_relaxed);
   s.frames_dropped_closed = frames_dropped_closed_.load(std::memory_order_relaxed);
   s.frames_dropped_allocfail = frames_dropped_allocfail_.load(std::memory_order_relaxed);
@@ -92,6 +95,10 @@ uint32_t ProviderCallbackIngress::ingress_depth_for_stream(uint64_t stream_id) c
   return (it != stream_ingress_depth_.end()) ? it->second : 0;
 }
 
+bool ProviderCallbackIngress::is_frame_command_(ProviderToCoreCommandType type) noexcept {
+  return type == ProviderToCoreCommandType::PROVIDER_FRAME;
+}
+
 void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
@@ -107,7 +114,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   // moved-from ProviderToCoreCommand contents after constructing the posted lambda.
   FrameView fail_frame;
   bool has_fail_frame = false;
-  if (type == ProviderToCoreCommandType::PROVIDER_FRAME) {
+  if (is_frame_command_(type)) {
     auto& frame_payload = std::get<CmdProviderFrame>(cmd.payload);
     fail_frame = frame_payload.frame;
     frame_stream_id = frame_payload.frame.stream_id;
@@ -119,7 +126,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
-  const CoreThread::PostResult r = core_thread_->try_post([this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
+  auto task = [this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
     if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       on_frame_ingress_dispatched_(frame_stream_id);
     }
@@ -136,22 +143,32 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
     }
-  });
+  };
+
+  const CoreThread::PostResult r = is_frame_command_(type)
+      ? core_thread_->try_post(std::move(task))
+      : core_thread_->try_post_essential(std::move(task));
 
   if (r == CoreThread::PostResult::Enqueued) {
     return;
   }
 
-  auto account_command_drop = [this](CoreThread::PostResult rr) {
+  auto account_command_drop = [this, type](CoreThread::PostResult rr) {
     switch (rr) {
       case CoreThread::PostResult::QueueFull:
         commands_dropped_full_.fetch_add(1, std::memory_order_relaxed);
         break;
       case CoreThread::PostResult::Closed:
         commands_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+        if (!is_frame_command_(type)) {
+          non_frame_rejected_closed_.fetch_add(1, std::memory_order_relaxed);
+        }
         break;
       case CoreThread::PostResult::AllocFail:
         commands_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        if (!is_frame_command_(type)) {
+          non_frame_rejected_allocfail_.fetch_add(1, std::memory_order_relaxed);
+        }
         break;
       case CoreThread::PostResult::Enqueued:
         break;
@@ -196,7 +213,9 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   };
 
   // Failure path: command never entered the core thread.
-  // Best-effort enqueue; otherwise drop-with-accounting.
+  // Frames remain pressure-droppable on the ordinary bounded queue. Non-frame
+  // provider facts use CoreThread's essential queue, so QueueFull is not an
+  // expected failure reason for lifecycle/native/error/capture-terminal truth.
   account_command_drop(r);
 
   if (has_fail_frame) {
