@@ -1471,6 +1471,13 @@ godot::Error CamBANGServer::_start_scenario_now_() {
       }
     }
   }
+
+  // Deferred scenario starts are drained after the baseline publish, but the
+  // Godot tick pumps provider virtual time before snapshot consumption. Pump once
+  // after arming so due-at-baseline timeline events do not depend on a later
+  // process_frame tick to begin producing public-boundary progress.
+  (void)broker->try_tick_virtual_time(0);
+
   return godot::OK;
 }
 
