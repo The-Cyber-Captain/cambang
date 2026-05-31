@@ -558,7 +558,9 @@ CamBANG distinguishes between **core invariant validation** and
 ### 13.1 Core invariant validation (portable)
 
 Core lifecycle and determinism invariants are validated in development
-builds via the `core_spine_smoke` smoke executable (stub-provider-only).
+builds via the `core_spine_smoke` smoke executable. It supports a providerless
+baseline mode and a stub-backed mode for paths that require a deterministic
+provider.
 
 The smoke executable validates:
 
@@ -569,7 +571,9 @@ The smoke executable validates:
 - EXIT phase reached before thread termination
 - No frame leaks across repeated start/stop cycles
 
-This validation is platform-independent and must remain stub-provider-only.
+This validation is platform-independent and must remain independent of
+platform-backed providers. Stub-backed stress/provider paths require a
+`provider=stub` smoke build.
 
 ### 13.2 Platform integration validation
 

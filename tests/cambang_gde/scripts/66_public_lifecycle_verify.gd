@@ -32,6 +32,9 @@ func _ready() -> void:
 
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
+	var baseline_ready := await _wait_for_baseline()
+	if not baseline_ready:
+		return
 	_endpoints = CamBANGServer.enumerate_devices()
 	if typeof(_endpoints) != TYPE_ARRAY or _endpoints.size() < 1:
 		_fail("FAIL: synthetic enumerate_devices() must return at least one endpoint")
@@ -239,6 +242,16 @@ func _ready() -> void:
 		return
 
 	_ok("OK: godot public lifecycle verify PASS")
+
+
+func _wait_for_baseline() -> bool:
+	for _i in range(MAX_FRAMES):
+		var snap = CamBANGServer.get_state_snapshot()
+		if typeof(snap) == TYPE_DICTIONARY and int(snap.get("version", -1)) == 0 and int(snap.get("topology_version", -1)) == 0:
+			return true
+		await get_tree().process_frame
+	_fail("FAIL: timed out waiting for initial baseline before lifecycle command use")
+	return false
 
 
 func _ok(msg: String) -> void:

@@ -151,6 +151,12 @@ private:
   // Consume latest core snapshot (if published_seq advanced) and emit
   // state_published for this boundary observation.
   bool _consume_latest_core_snapshot();
+  bool is_public_boundary_ready_() const;
+  bool is_synthetic_timeline_session_active_() const;
+  void _clear_pending_scenario_start_();
+  void _reset_scenario_session_state_();
+  godot::Error _start_scenario_now_();
+  void _drain_pending_scenario_start_after_baseline_();
 
   static CamBANGServer* singleton_;
 
@@ -212,6 +218,12 @@ private:
   SyntheticRole active_synthetic_role_ = SyntheticRole::Nominal;
   bool completion_gated_destructive_sequencing_enabled_ = true;
   bool strict_scenario_unmet_logged_ = false;
+
+  bool scenario_config_staged_for_session_ = false;
+  bool pending_scenario_start_after_baseline_ = false;
+  uint64_t pending_scenario_start_session_id_ = 0;
+  bool pending_timeline_pause_after_scenario_start_ = false;
+  bool pending_timeline_pause_value_ = false;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.

@@ -3,9 +3,10 @@ extends Node
 const TIMEOUT_MS := 5000
 
 const PHASE_WAIT_FIRST_BASELINE := 0
-const PHASE_RESTARTING := 1
-const PHASE_WAIT_SECOND_BASELINE := 2
-const PHASE_DONE := 3
+const PHASE_WAIT_PENDING_EFFECTS := 1
+const PHASE_RESTARTING := 2
+const PHASE_WAIT_SECOND_BASELINE := 3
+const PHASE_DONE := 4
 
 var _done := false
 var _quit_requested := false
@@ -55,6 +56,9 @@ func _ready() -> void:
 		return
 	if CamBANGServer.has_method("set_completion_gated_destructive_sequencing_enabled"):
 		_fail("FAIL: legacy live timeline reconciliation setter should be absent")
+		return
+	if CamBANGServer.has_method("is_ready") or CamBANGServer.has_method("is_command_ready"):
+		_fail("FAIL: public readiness getter must not be added on CamBANGServer")
 		return
 
 	if CamBANGServer.is_running():
@@ -245,21 +249,89 @@ func _ready() -> void:
 		_fail("FAIL: synthetic active config must report strict timeline_reconciliation")
 		return
 
-	var timeline_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
-	if timeline_stage_err != OK:
-		_fail("FAIL: timeline builtin staging should be available after Timeline-role synthetic configuration")
-		return
-	var start_scenario_err := CamBANGServer.start_scenario()
-	if start_scenario_err != OK:
-		_fail("FAIL: start_scenario() should accept staged builtin scenario")
-		return
-	var stop_scenario_err := CamBANGServer.stop_scenario()
-	if stop_scenario_err != OK:
-		_fail("FAIL: stop_scenario() should stop staged scenario")
+	if not _assert_pre_baseline_public_boundary("initial start"):
 		return
 
+
+func _assert_pre_baseline_public_boundary(context: String) -> bool:
+	if not CamBANGServer.is_running():
+		_fail("FAIL: " + context + " pre-baseline window should keep is_running() true after accepted start")
+		return false
 	if CamBANGServer.get_state_snapshot() != null:
-		_fail("FAIL: snapshot must remain NIL after start() until first Godot-visible baseline publish")
+		_fail("FAIL: " + context + " snapshot must remain NIL until first Godot-visible baseline publish")
+		return false
+	var endpoints = CamBANGServer.enumerate_devices()
+	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() != 0:
+		_fail("FAIL: " + context + " enumerate_devices() must return empty before baseline")
+		return false
+	if CamBANGServer.get_device(1) != null:
+		_fail("FAIL: " + context + " get_device() must return null before baseline")
+		return false
+	if CamBANGServer.get_device_for_hardware_id("synthetic-camera-0") != null:
+		_fail("FAIL: " + context + " get_device_for_hardware_id() must return null before baseline")
+		return false
+	if CamBANGServer.get_rig(1) != null:
+		_fail("FAIL: " + context + " get_rig() must return null before baseline")
+		return false
+	if CamBANGServer.get_stream_result_by_stream_id(1) != null:
+		_fail("FAIL: " + context + " stream result lookup must return null before baseline")
+		return false
+	if CamBANGServer.get_capture_result_by_id(1, 1) != null:
+		_fail("FAIL: " + context + " capture result lookup must return null before baseline")
+		return false
+	var result_set = CamBANGServer.get_capture_result_set_by_id(1)
+	if result_set != null:
+		_fail("FAIL: " + context + " capture result-set lookup must return null before baseline")
+		return false
+	var unstaged_start_err := CamBANGServer.start_scenario()
+	if unstaged_start_err == OK:
+		_fail("FAIL: " + context + " start_scenario() must fail before baseline when no scenario is staged")
+		return false
+	var scenario_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
+	if scenario_stage_err != OK:
+		_fail("FAIL: " + context + " select_builtin_scenario() should stage provider-owned data before baseline (err=%d)" % scenario_stage_err)
+		return false
+	var scenario_start_err := CamBANGServer.start_scenario()
+	if scenario_start_err != OK:
+		_fail("FAIL: " + context + " start_scenario() should accept pending playback before baseline (err=%d)" % scenario_start_err)
+		return false
+	var advance_err := CamBANGServer.advance_timeline(1)
+	if advance_err == OK:
+		_fail("FAIL: " + context + " advance_timeline() must remain rejected before baseline")
+		return false
+	return true
+
+
+func _assert_post_baseline_public_boundary() -> bool:
+	var endpoints = CamBANGServer.enumerate_devices()
+	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() < 1:
+		_fail("FAIL: enumerate_devices() must work after baseline")
+		return false
+	var endpoint0 = endpoints[0]
+	if typeof(endpoint0) != TYPE_DICTIONARY:
+		_fail("FAIL: enumerate_devices() entries must be Dictionary after baseline")
+		return false
+	var hardware_id := str(endpoint0.get("hardware_id", ""))
+	if hardware_id.is_empty():
+		_fail("FAIL: post-baseline endpoint hardware_id must be non-empty")
+		return false
+	if CamBANGServer.get_device_for_hardware_id(hardware_id) == null:
+		_fail("FAIL: get_device_for_hardware_id() must produce a handle after baseline")
+		return false
+	return true
+
+
+func _snapshot_has_scenario_effects(snapshot: Dictionary) -> bool:
+	var devices = snapshot.get("devices", [])
+	if typeof(devices) == TYPE_ARRAY and devices.size() > 0:
+		return true
+	var streams = snapshot.get("streams", [])
+	if typeof(streams) == TYPE_ARRAY and streams.size() > 0:
+		return true
+	var rigs = snapshot.get("rigs", [])
+	if typeof(rigs) == TYPE_ARRAY and rigs.size() > 0:
+		return true
+	return false
 
 
 func _on_timeout() -> void:
@@ -294,8 +366,21 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 			if version != 0 or topology_version != 0:
 				_fail("FAIL: first Godot-visible publish of generation must be baseline (version=0, topology_version=0)")
 				return
+			if _snapshot_has_scenario_effects(d):
+				_fail("FAIL: pending scenario effects must not be visible in the baseline snapshot")
+				return
+
+			if not _assert_post_baseline_public_boundary():
+				return
 
 			_first_gen = gen
+			_phase = PHASE_WAIT_PENDING_EFFECTS
+
+		PHASE_WAIT_PENDING_EFFECTS:
+			if version == 0:
+				return
+			if not _snapshot_has_scenario_effects(d):
+				return
 			_phase = PHASE_RESTARTING
 			call_deferred("_restart_and_assert_nil")
 
@@ -314,6 +399,9 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				return
 			if version != 0 or topology_version != 0:
 				_fail("FAIL: first publish of restarted generation must be baseline")
+				return
+			if _snapshot_has_scenario_effects(d):
+				_fail("FAIL: pending scenario effects must not be visible in restarted baseline snapshot")
 				return
 
 			_ok("OK: godot public boundary verify PASS")
@@ -344,8 +432,7 @@ func _restart_and_assert_nil() -> void:
 	if not CamBANGServer.is_running():
 		_fail("FAIL: is_running() must be true during restarted pre-baseline window")
 		return
-	if CamBANGServer.get_state_snapshot() != null:
-		_fail("FAIL: stale prior-generation snapshot leaked before next generation baseline")
+	if not _assert_pre_baseline_public_boundary("restart"):
 		return
 	_phase = PHASE_WAIT_SECOND_BASELINE
 
@@ -387,6 +474,8 @@ func _phase_name(p: int) -> String:
 	match p:
 		PHASE_WAIT_FIRST_BASELINE:
 			return "wait_first_baseline"
+		PHASE_WAIT_PENDING_EFFECTS:
+			return "wait_pending_effects"
 		PHASE_RESTARTING:
 			return "restarting"
 		PHASE_WAIT_SECOND_BASELINE:
