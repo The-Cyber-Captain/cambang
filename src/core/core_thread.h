@@ -18,7 +18,7 @@ namespace cambang {
 // - Exactly one dedicated CamBANG core thread owns all mutable core state.
 // - Core logic MUST execute only on the core thread.
 // - All external threads (providers, Godot, etc.) must marshal work into the core
-//   via post()/try_post() (and never touch core state directly).
+//   via post()/try_post()/try_post_provider_non_frame() (and never touch core state directly).
 // - All tasks are executed serially (no concurrent core execution).
 //
 // Determinism invariants:
@@ -32,9 +32,11 @@ namespace cambang {
 // - Scheduling semantics are owned by core; this class only provides wake primitives.
 //
 // Mailbox hardening (Build slice C):
-// - The posted-task queue is bounded.
-// - try_post() is best-effort; it returns false if the queue is full.
+// - The ordinary posted-task queue is bounded.
+// - try_post() is best-effort; it returns false if the ordinary queue is full.
 // - post() is best-effort and drops on overflow (accounted).
+// - Provider non-frame facts use a distinct non-lossy admission path that does
+//   not reject merely because ordinary pending tasks reached kMaxPendingTasks.
 class CoreThread final {
 public:
   // NOTE: std::function may allocate; acceptable for scaffolding.
@@ -131,6 +133,15 @@ public:
   // Use this for any pattern that would otherwise block waiting on completion.
   // If enqueue fails (QueueFull/Closed/AllocFail), the task will never run.
   PostResult try_post(Task task);
+
+  // Non-lossy provider-fact post; returns a reason on deterministic failure.
+  // - thread-safe
+  // - does not block
+  // - does not reject merely because ordinary pending tasks reached kMaxPendingTasks
+  //
+  // Use only for provider lifecycle/native-object/error facts. Provider frames
+  // and ordinary external requests MUST continue to use try_post().
+  PostResult try_post_provider_non_frame(Task task);
 
   // Accounting-only helper for external lifecycle gating layers.
   // Increments the Closed drop counter and returns PostResult::Closed.

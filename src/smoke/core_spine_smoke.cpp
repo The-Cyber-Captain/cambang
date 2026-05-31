@@ -579,6 +579,8 @@ static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvi
     return 1;
   }
 
+  const CoreDispatchStats dispatch_before_pressure = get_dispatch_stats(rt);
+
   auto release_gate = std::make_shared<std::promise<void>>();
   std::shared_future<void> release_gate_done(release_gate->get_future());
   std::atomic<bool> gate_started{false};
@@ -608,6 +610,20 @@ static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvi
   }
 
   const auto ingress_before = rt.ingress_stats_copy();
+
+  // Non-frame provider facts are non-lossy with respect to ordinary CoreThread queue
+  // pressure: a full ordinary queue must not make ingress account QueueFull.
+  rt.provider_callbacks()->on_stream_error(kStreamId, ProviderError::ERR_TRANSIENT_FAILURE);
+  const auto ingress_after_non_frame = rt.ingress_stats_copy();
+  if (ingress_after_non_frame.commands_dropped_full != ingress_before.commands_dropped_full) {
+    release_gate->set_value();
+    std::cerr << "Non-frame provider fact was rejected as QueueFull under ordinary queue pressure. before="
+              << ingress_before.commands_dropped_full
+              << " after=" << ingress_after_non_frame.commands_dropped_full << "\n";
+    rt.stop();
+    return 1;
+  }
+
   std::atomic<uint64_t> released_on_drop{0};
   uint8_t pixel[4] = {0, 0, 0, 0};
   FrameView frame{};
@@ -650,6 +666,18 @@ static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvi
   if (ingress_after_drain.frames_dropped_full - ingress_before.frames_dropped_full != 1 ||
       ingress_after_drain.frames_released_on_drop_full - ingress_before.frames_released_on_drop_full != 1) {
     std::cerr << "Deterministic QueueFull accounting changed after drain\n";
+    rt.stop();
+    return 1;
+  }
+
+  const CoreDispatchStats dispatch_after_pressure = get_dispatch_stats(rt);
+  if (dispatch_after_pressure.commands_total != dispatch_before_pressure.commands_total + 1 ||
+      dispatch_after_pressure.commands_handled != dispatch_before_pressure.commands_handled + 1) {
+    std::cerr << "Non-frame provider fact was not dispatched after pressure drained. before_total="
+              << dispatch_before_pressure.commands_total
+              << " after_total=" << dispatch_after_pressure.commands_total
+              << " before_handled=" << dispatch_before_pressure.commands_handled
+              << " after_handled=" << dispatch_after_pressure.commands_handled << "\n";
     rt.stop();
     return 1;
   }

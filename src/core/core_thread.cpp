@@ -99,8 +99,8 @@ void CoreThread::post(Task task) {
 }
 
 CoreThread::PostResult CoreThread::try_post(Task task) {
-  // External ingress point.
-  // All non-core threads must schedule work through this method.
+  // Ordinary external ingress point.
+  // Frame events and external requests are best-effort and bounded by kMaxPendingTasks.
   if (!task) {
     return PostResult::Enqueued; // nothing to do; treat as success
   }
@@ -121,6 +121,40 @@ CoreThread::PostResult CoreThread::try_post(Task task) {
     if (tasks_.size() >= kMaxPendingTasks) {
       tasks_dropped_full_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::QueueFull;
+    }
+
+    try {
+      tasks_.push_back(std::move(task));
+    } catch (...) {
+      // Allocation failure or unexpected exception while enqueueing.
+      tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::AllocFail;
+    }
+  }
+
+  tasks_enqueued_.fetch_add(1, std::memory_order_relaxed);
+  cv_.notify_one();
+  return PostResult::Enqueued;
+}
+
+CoreThread::PostResult CoreThread::try_post_provider_non_frame(Task task) {
+  // Provider lifecycle/native-object/error facts are non-lossy with respect to
+  // ordinary queue pressure. They may still be rejected when the runtime is
+  // closed/stopping, or when enqueue allocation fails.
+  if (!task) {
+    return PostResult::Enqueued; // nothing to do; treat as success
+  }
+
+  if (!running_.load(std::memory_order_acquire)) {
+    tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+    return PostResult::Closed;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (stop_requested_) {
+      tasks_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
+      return PostResult::Closed;
     }
 
     try {

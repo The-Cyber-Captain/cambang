@@ -119,7 +119,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
-  const CoreThread::PostResult r = core_thread_->try_post([this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
+  auto posted_task = [this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
     if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       on_frame_ingress_dispatched_(frame_stream_id);
     }
@@ -136,7 +136,12 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       p.frame.release = nullptr;
       p.frame.release_user = nullptr;
     }
-  });
+  };
+
+  const CoreThread::PostResult r =
+      (type == ProviderToCoreCommandType::PROVIDER_FRAME)
+          ? core_thread_->try_post(std::move(posted_task))
+          : core_thread_->try_post_provider_non_frame(std::move(posted_task));
 
   if (r == CoreThread::PostResult::Enqueued) {
     return;

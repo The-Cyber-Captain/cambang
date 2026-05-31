@@ -21,7 +21,9 @@ namespace cambang {
 // - No business logic exists here; this is a transport adapter only.
 //
 // Mailbox hardening (Build slice C):
-// - CoreThread posting is best-effort.
+// - Frame posting is best-effort.
+// - Non-frame provider facts use CoreThread's non-frame path and are not
+//   rejected merely because the ordinary task queue is full.
 // - If posting fails and the command contains a FrameView, ingress MUST release it
 //   (release-on-drop) to avoid leaks.
 class ProviderCallbackIngress final : public IProviderCallbacks {
