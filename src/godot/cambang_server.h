@@ -239,6 +239,8 @@ private:
   bool pending_timeline_pause_after_scenario_start_ = false;
   bool pending_timeline_pause_value_ = false;
 
+  static constexpr uint32_t PENDING_ENDPOINT_WARM_POLICY_MAX_DRAIN_TICKS = 120;
+
   struct PendingEndpointStartupIntent {
     uint64_t session_id = 0;
     godot::String hardware_id;
@@ -251,6 +253,7 @@ private:
     CaptureStillImageBundle still_image_bundle = make_default_metered_still_image_bundle();
     bool has_warm_policy = false;
     uint32_t warm_hold_ms = 0;
+    uint32_t warm_policy_wait_ticks = 0;
   };
   std::unordered_map<std::string, PendingEndpointStartupIntent> pending_endpoint_startup_intents_;
 

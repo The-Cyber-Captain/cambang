@@ -389,7 +389,8 @@ It verifies:
 - public runtime-command admission only after the first observable baseline
   `state_published(gen, 0, 0)` for a generation, including reset across stop/restart
 - provider discovery and hardware-id endpoint startup intent before baseline, with
-  actual endpoint effects delayed until after the clean baseline publish
+  actual endpoint effects delayed until after the clean baseline publish and
+  repeated profile/warm-policy startup calls resolved by last-write-wins
 - the narrow synthetic timeline UX exception where scenario staging and pending
   `start_scenario()` intent may be accepted before baseline while effects remain
   post-baseline

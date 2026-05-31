@@ -933,6 +933,7 @@ godot::Error CamBANGServer::set_endpoint_warm_hold_ms_startup_intent(const godot
   intent.display_name = resolved_display_name;
   intent.has_warm_policy = true;
   intent.warm_hold_ms = warm_hold_ms;
+  intent.warm_policy_wait_ticks = 0;
   return godot::OK;
 }
 
@@ -1073,8 +1074,16 @@ void CamBANGServer::_drain_pending_endpoint_startup_intents_after_baseline_() {
         }
       }
       if (!device_is_live) {
-        // Opening is asynchronous. Keep only the warm-policy tail until a later
-        // post-baseline publication proves the endpoint is live.
+        // Opening is asynchronous. Keep the warm-policy tail only for a bounded
+        // number of post-baseline drain ticks while waiting for live truth.
+        ++intent.warm_policy_wait_ticks;
+        if (intent.warm_policy_wait_ticks >= PENDING_ENDPOINT_WARM_POLICY_MAX_DRAIN_TICKS) {
+          ERR_PRINT(godot::vformat(
+              "CamBANGServer: pending startup warm policy for hardware_id=%s failed after baseline; endpoint did not become live within %d drain ticks.",
+              intent.hardware_id,
+              static_cast<int>(PENDING_ENDPOINT_WARM_POLICY_MAX_DRAIN_TICKS)));
+          pending_endpoint_startup_intents_.erase(it);
+        }
         continue;
       }
 
@@ -1277,6 +1286,8 @@ void CamBANGServer::_on_godot_tick(double delta) {
   if (_consume_latest_core_snapshot()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
     _drain_pending_scenario_start_after_baseline_();
+  } else if (!pending_endpoint_startup_intents_.empty()) {
+    _drain_pending_endpoint_startup_intents_after_baseline_();
   }
 }
 

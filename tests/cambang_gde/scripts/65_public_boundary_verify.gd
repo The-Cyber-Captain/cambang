@@ -9,10 +9,12 @@ const PHASE_WAIT_SECOND_BASELINE := 3
 const PHASE_WAIT_RESTART_PENDING_EFFECTS := 4
 const PHASE_DONE := 5
 
-const STARTUP_STILL_WIDTH := 320
+const STARTUP_INITIAL_STILL_WIDTH := 320
+const STARTUP_FINAL_STILL_WIDTH := 352
 const STARTUP_STILL_HEIGHT := 240
 const STARTUP_STILL_FORMAT_RGBA := 1094862674
-const STARTUP_WARM_HOLD_MS := 1
+const STARTUP_INITIAL_WARM_HOLD_MS := 1
+const STARTUP_FINAL_WARM_HOLD_MS := 2
 
 var _done := false
 var _quit_requested := false
@@ -301,22 +303,35 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 		return false
 	if accept_endpoint_startup_intent:
 		_startup_hardware_id = hardware_id
-		var startup_profile := {
-			"width": STARTUP_STILL_WIDTH,
+		var startup_profile_before_engage := {
+			"width": STARTUP_INITIAL_STILL_WIDTH,
 			"height": STARTUP_STILL_HEIGHT,
 			"format_fourcc": STARTUP_STILL_FORMAT_RGBA,
 		}
-		var profile_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile))
-		if profile_err != OK:
-			_fail("FAIL: " + context + " endpoint handle set_still_capture_profile() should accept startup intent before baseline (err=%d)" % profile_err)
+		var profile_before_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile_before_engage))
+		if profile_before_err != OK:
+			_fail("FAIL: " + context + " endpoint handle set_still_capture_profile() before engage should accept startup intent before baseline (err=%d)" % profile_before_err)
 			return false
 		var engage_err: int = int(endpoint_handle.engage())
 		if engage_err != OK:
 			_fail("FAIL: " + context + " endpoint handle engage() should accept startup intent before baseline (err=%d)" % engage_err)
 			return false
-		var warm_err: int = int(endpoint_handle.set_warm_policy({"warm_hold_ms": STARTUP_WARM_HOLD_MS}))
-		if warm_err != OK:
-			_fail("FAIL: " + context + " endpoint handle set_warm_policy() should accept startup intent before baseline (err=%d)" % warm_err)
+		var startup_profile_after_engage := {
+			"width": STARTUP_FINAL_STILL_WIDTH,
+			"height": STARTUP_STILL_HEIGHT,
+			"format_fourcc": STARTUP_STILL_FORMAT_RGBA,
+		}
+		var profile_after_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile_after_engage))
+		if profile_after_err != OK:
+			_fail("FAIL: " + context + " endpoint handle set_still_capture_profile() after engage should accept startup intent before baseline (err=%d)" % profile_after_err)
+			return false
+		var warm_initial_err: int = int(endpoint_handle.set_warm_policy({"warm_hold_ms": STARTUP_INITIAL_WARM_HOLD_MS}))
+		if warm_initial_err != OK:
+			_fail("FAIL: " + context + " endpoint handle initial set_warm_policy() should accept startup intent before baseline (err=%d)" % warm_initial_err)
+			return false
+		var warm_final_err: int = int(endpoint_handle.set_warm_policy({"warm_hold_ms": STARTUP_FINAL_WARM_HOLD_MS}))
+		if warm_final_err != OK:
+			_fail("FAIL: " + context + " endpoint handle final set_warm_policy() should accept startup intent before baseline (err=%d)" % warm_final_err)
 			return false
 	if CamBANGServer.get_device(1) != null:
 		_fail("FAIL: " + context + " get_device() must return null before baseline")
@@ -411,7 +426,7 @@ func _snapshot_has_startup_endpoint_effects(snapshot: Dictionary) -> bool:
 			continue
 		if not bool(device.get("engaged", false)):
 			continue
-		if int(device.get("warm_hold_ms", -1)) != STARTUP_WARM_HOLD_MS:
+		if int(device.get("warm_hold_ms", -1)) != STARTUP_FINAL_WARM_HOLD_MS:
 			continue
 		var capture_profile_v = device.get("capture_profile", null)
 		if typeof(capture_profile_v) != TYPE_DICTIONARY:
@@ -421,7 +436,7 @@ func _snapshot_has_startup_endpoint_effects(snapshot: Dictionary) -> bool:
 		if typeof(still_v) != TYPE_DICTIONARY:
 			continue
 		var still: Dictionary = still_v
-		if int(still.get("width", -1)) == STARTUP_STILL_WIDTH and int(still.get("height", -1)) == STARTUP_STILL_HEIGHT and int(still.get("format", -1)) == STARTUP_STILL_FORMAT_RGBA:
+		if int(still.get("width", -1)) == STARTUP_FINAL_STILL_WIDTH and int(still.get("height", -1)) == STARTUP_STILL_HEIGHT and int(still.get("format", -1)) == STARTUP_STILL_FORMAT_RGBA:
 			return true
 	return false
 
