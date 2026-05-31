@@ -152,6 +152,7 @@ private:
   // state_published for this boundary observation.
   bool _consume_latest_core_snapshot();
   bool is_public_boundary_ready_() const;
+  bool is_provider_discovery_available_() const;
   bool is_synthetic_timeline_session_active_() const;
   void _clear_pending_scenario_start_();
   void _reset_scenario_session_state_();

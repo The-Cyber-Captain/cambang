@@ -415,6 +415,18 @@ bool CamBANGServer::is_public_boundary_ready_() const {
   return latest_->gen == godot_gen_;
 }
 
+bool CamBANGServer::is_provider_discovery_available_() const {
+  if (active_session_id_ == 0) {
+    return false;
+  }
+  if (!provider_) {
+    return false;
+  }
+
+  const CoreRuntimeState state = runtime_.state_copy();
+  return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
+}
+
 bool CamBANGServer::is_synthetic_timeline_session_active_() const {
   return active_session_id_ != 0 &&
          runtime_.is_running() &&
@@ -438,7 +450,7 @@ void CamBANGServer::_reset_scenario_session_state_() {
 
 godot::Array CamBANGServer::enumerate_devices() const {
   godot::Array out;
-  if (!is_public_boundary_ready_() || !provider_) {
+  if (!is_provider_discovery_available_()) {
     return out;
   }
   std::vector<CameraEndpoint> endpoints;
@@ -456,7 +468,7 @@ godot::Array CamBANGServer::enumerate_devices() const {
 }
 
 godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot::String& hardware_id) const {
-  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
+  if (hardware_id.is_empty() || !is_provider_discovery_available_()) {
     return godot::Ref<CamBANGDevice>();
   }
   std::vector<CameraEndpoint> endpoints;

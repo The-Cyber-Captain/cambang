@@ -261,14 +261,41 @@ func _assert_pre_baseline_public_boundary(context: String) -> bool:
 		_fail("FAIL: " + context + " snapshot must remain NIL until first Godot-visible baseline publish")
 		return false
 	var endpoints = CamBANGServer.enumerate_devices()
-	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() != 0:
-		_fail("FAIL: " + context + " enumerate_devices() must return empty before baseline")
+	if typeof(endpoints) != TYPE_ARRAY:
+		_fail("FAIL: " + context + " enumerate_devices() must return an Array before baseline")
+		return false
+	if endpoints.size() < 1:
+		_fail("FAIL: " + context + " enumerate_devices() must expose synthetic endpoints before baseline")
+		return false
+	var endpoint0 = endpoints[0]
+	if typeof(endpoint0) != TYPE_DICTIONARY:
+		_fail("FAIL: " + context + " enumerate_devices() entries must be Dictionary before baseline")
+		return false
+	var hardware_id := str(endpoint0.get("hardware_id", ""))
+	if hardware_id.is_empty():
+		_fail("FAIL: " + context + " pre-baseline endpoint hardware_id must be non-empty")
+		return false
+	var endpoint_handle = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	if endpoint_handle == null:
+		_fail("FAIL: " + context + " get_device_for_hardware_id() must return a handle before baseline")
+		return false
+	if not endpoint_handle.has_method("engage") or not endpoint_handle.has_method("create_stream") or not endpoint_handle.has_method("set_warm_policy"):
+		_fail("FAIL: " + context + " pre-baseline endpoint handle must expose mutating lifecycle methods")
+		return false
+	if int(endpoint_handle.get_instance_id()) != 0:
+		_fail("FAIL: " + context + " pre-baseline endpoint handle must not resolve a runtime instance id")
+		return false
+	if endpoint_handle.engage() == OK:
+		_fail("FAIL: " + context + " endpoint handle engage() must remain rejected before baseline")
+		return false
+	if endpoint_handle.create_stream() != null:
+		_fail("FAIL: " + context + " endpoint handle create_stream() must return null before baseline")
+		return false
+	if endpoint_handle.set_warm_policy({"warm_hold_ms": 1}) == OK:
+		_fail("FAIL: " + context + " endpoint handle set_warm_policy() must remain rejected before baseline")
 		return false
 	if CamBANGServer.get_device(1) != null:
 		_fail("FAIL: " + context + " get_device() must return null before baseline")
-		return false
-	if CamBANGServer.get_device_for_hardware_id("synthetic-camera-0") != null:
-		_fail("FAIL: " + context + " get_device_for_hardware_id() must return null before baseline")
 		return false
 	if CamBANGServer.get_rig(1) != null:
 		_fail("FAIL: " + context + " get_rig() must return null before baseline")
