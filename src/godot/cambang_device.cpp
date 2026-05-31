@@ -167,8 +167,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
 }
 
 godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {
-  const uint64_t device_instance_id = get_instance_id();
-  if (!server_ || device_instance_id == 0) {
+  if (!server_) {
     return godot::ERR_UNAVAILABLE;
   }
   if (!policy.has("warm_hold_ms")) {
@@ -182,23 +181,41 @@ godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {
   if (warm_hold_ms_i < 0 || warm_hold_ms_i > static_cast<int64_t>(UINT32_MAX)) {
     return godot::ERR_INVALID_PARAMETER;
   }
-  return server_->set_device_warm_hold_ms(device_instance_id, static_cast<uint32_t>(warm_hold_ms_i));
+
+  const uint32_t warm_hold_ms = static_cast<uint32_t>(warm_hold_ms_i);
+  const uint64_t device_instance_id = get_instance_id();
+  if (device_instance_id == 0) {
+    if (!hardware_id_.is_empty()) {
+      return server_->set_endpoint_warm_hold_ms_startup_intent(hardware_id_, warm_hold_ms);
+    }
+    return godot::ERR_UNAVAILABLE;
+  }
+  return server_->set_device_warm_hold_ms(device_instance_id, warm_hold_ms);
 }
 
 godot::Error CamBANGDevice::set_still_capture_profile(const godot::Dictionary& profile) {
-  const uint64_t device_instance_id = get_instance_id();
-  if (!server_ || device_instance_id == 0) {
+  if (!server_) {
     return godot::ERR_BUSY;
   }
 
-  const godot::Dictionary current = server_->get_device_still_capture_profile(device_instance_id);
-  if (current.is_empty()) {
-    return godot::ERR_BUSY;
-  }
+  const uint64_t device_instance_id = get_instance_id();
   CaptureProfile next_profile{};
-  next_profile.width = static_cast<uint32_t>(int64_t(current.get("width", 0)));
-  next_profile.height = static_cast<uint32_t>(int64_t(current.get("height", 0)));
-  next_profile.format_fourcc = static_cast<uint32_t>(int64_t(current.get("format_fourcc", 0)));
+  if (device_instance_id == 0) {
+    if (hardware_id_.is_empty()) {
+      return godot::ERR_BUSY;
+    }
+    if (!server_->get_endpoint_capture_template_profile(hardware_id_, next_profile)) {
+      return godot::ERR_BUSY;
+    }
+  } else {
+    const godot::Dictionary current = server_->get_device_still_capture_profile(device_instance_id);
+    if (current.is_empty()) {
+      return godot::ERR_BUSY;
+    }
+    next_profile.width = static_cast<uint32_t>(int64_t(current.get("width", 0)));
+    next_profile.height = static_cast<uint32_t>(int64_t(current.get("height", 0)));
+    next_profile.format_fourcc = static_cast<uint32_t>(int64_t(current.get("format_fourcc", 0)));
+  }
 
   if (profile.has("width")) {
     const godot::Variant v = profile.get("width", godot::Variant());
@@ -220,6 +237,9 @@ godot::Error CamBANGDevice::set_still_capture_profile(const godot::Dictionary& p
   godot::Error parse_err = godot::OK;
   if (!parse_still_image_bundle_dict(profile, sequence, parse_err)) {
     return parse_err;
+  }
+  if (device_instance_id == 0) {
+    return server_->set_endpoint_still_capture_profile_startup_intent(hardware_id_, next_profile, sequence);
   }
   return server_->set_device_still_capture_profile(device_instance_id, next_profile, sequence);
 }

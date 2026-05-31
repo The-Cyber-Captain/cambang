@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <string>
 
+#include "imaging/api/provider_contract_datatypes.h"
+
 #include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -120,8 +122,14 @@ public:
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);
+  godot::Error set_endpoint_still_capture_profile_startup_intent(
+      const godot::String& hardware_id,
+      const CaptureProfile& profile,
+      const CaptureStillImageBundle& still_image_bundle);
   godot::Error set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
+  godot::Error set_endpoint_warm_hold_ms_startup_intent(const godot::String& hardware_id, uint32_t warm_hold_ms);
   godot::Dictionary get_device_still_capture_profile(uint64_t device_instance_id) const;
+  bool get_endpoint_capture_template_profile(const godot::String& hardware_id, CaptureProfile& out_profile) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
   godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(const godot::String& hardware_id);
@@ -152,9 +160,15 @@ private:
   // state_published for this boundary observation.
   bool _consume_latest_core_snapshot();
   bool is_public_boundary_ready_() const;
+  bool is_provider_discovery_available_() const;
   bool is_synthetic_timeline_session_active_() const;
   void _clear_pending_scenario_start_();
   void _reset_scenario_session_state_();
+  bool _resolve_provider_endpoint_(const godot::String& hardware_id, godot::String* out_display_name) const;
+  std::string _pending_endpoint_startup_key_(uint64_t session_id, const godot::String& hardware_id) const;
+  godot::Error _record_pending_endpoint_startup_engage_(const godot::String& hardware_id, const godot::String& display_name);
+  void _clear_pending_endpoint_startup_intents_();
+  void _drain_pending_endpoint_startup_intents_after_baseline_();
   godot::Error _start_scenario_now_();
   void _drain_pending_scenario_start_after_baseline_();
 
@@ -224,6 +238,24 @@ private:
   uint64_t pending_scenario_start_session_id_ = 0;
   bool pending_timeline_pause_after_scenario_start_ = false;
   bool pending_timeline_pause_value_ = false;
+
+  static constexpr uint32_t PENDING_ENDPOINT_WARM_POLICY_MAX_DRAIN_TICKS = 120;
+
+  struct PendingEndpointStartupIntent {
+    uint64_t session_id = 0;
+    godot::String hardware_id;
+    godot::String display_name;
+    bool engage_requested = false;
+    bool engage_applied = false;
+    bool has_still_profile = false;
+    bool still_profile_applied = false;
+    CaptureProfile still_profile{};
+    CaptureStillImageBundle still_image_bundle = make_default_metered_still_image_bundle();
+    bool has_warm_policy = false;
+    uint32_t warm_hold_ms = 0;
+    uint32_t warm_policy_wait_ticks = 0;
+  };
+  std::unordered_map<std::string, PendingEndpointStartupIntent> pending_endpoint_startup_intents_;
 
   // Godot-owned provider lifetime (e.g. ProviderBroker). This avoids relying on
   // temporary dev scaffolding to attach/initialize the provider.
