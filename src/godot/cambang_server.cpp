@@ -339,6 +339,25 @@ godot::Error CamBANGServer::_start_with_provider_config(
   _clear_pending_endpoint_startup_intents_();
   _refresh_timeline_teardown_trace_mode();
 
+  const auto clear_start_attempt_state = [this]() {
+    latest_.reset();
+    latest_export_.clear();
+    has_latest_export_ = false;
+    has_godot_counters_ = false;
+    snapshot_buffer_.clear();
+    last_seen_published_seq_ = runtime_.published_seq();
+    active_session_id_ = 0;
+    enforce_min_gen_gate_ = false;
+    endpoint_lifecycle_by_hardware_id_.clear();
+    direct_stream_hardware_id_by_stream_id_.clear();
+    CamBANGStreamResult::clear_live_stream_cpu_display_views();
+
+    strict_scenario_unmet_logged_ = false;
+    _reset_scenario_session_state_();
+    _clear_pending_endpoint_startup_intents_();
+    _refresh_timeline_teardown_trace_mode();
+  };
+
   // Defensive re-check: requested mode must be supported in this build.
   {
     ProviderResult cap = ProviderBroker::check_mode_supported_in_build(mode);
@@ -346,8 +365,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
       ERR_PRINT(godot::vformat(
           "CamBANGServer: cannot start; requested provider_mode='%s' is not supported in this build.",
           mode_to_cstr(mode)));
-      _reset_scenario_session_state_();
-      _clear_pending_endpoint_startup_intents_();
+      clear_start_attempt_state();
       return map_provider_result_to_godot_error(cap);
     }
   }
@@ -356,14 +374,19 @@ godot::Error CamBANGServer::_start_with_provider_config(
   _ensure_tick_connected();
 
   // Explicit user action: do not auto-start on launch.
-  runtime_.start();
+  if (!runtime_.start()) {
+    clear_start_attempt_state();
+    return godot::FAILED;
+  }
   _refresh_timeline_teardown_trace_mode();
 
   // Ensure a provider is attached + initialized (latched selection).
   // This is the canonical linkage point between Godot and the core runtime.
   if (!_ensure_provider_attached_and_initialized(mode, synthetic_role, timing_driver)) {
-    _reset_scenario_session_state_();
-    _clear_pending_endpoint_startup_intents_();
+    runtime_.stop();
+    runtime_.attach_provider(nullptr);
+    provider_.reset();
+    clear_start_attempt_state();
     return godot::FAILED;
   }
   return godot::OK;
