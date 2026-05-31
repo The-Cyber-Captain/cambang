@@ -6,13 +6,22 @@ const PHASE_WAIT_FIRST_BASELINE := 0
 const PHASE_WAIT_PENDING_EFFECTS := 1
 const PHASE_RESTARTING := 2
 const PHASE_WAIT_SECOND_BASELINE := 3
-const PHASE_DONE := 4
+const PHASE_WAIT_RESTART_PENDING_EFFECTS := 4
+const PHASE_DONE := 5
+
+const STARTUP_INITIAL_STILL_WIDTH := 320
+const STARTUP_FINAL_STILL_WIDTH := 352
+const STARTUP_STILL_HEIGHT := 240
+const STARTUP_STILL_FORMAT_RGBA := 1094862674
+const STARTUP_INITIAL_WARM_HOLD_MS := 1
+const STARTUP_FINAL_WARM_HOLD_MS := 2
 
 var _done := false
 var _quit_requested := false
 var _phase := PHASE_WAIT_FIRST_BASELINE
 var _timer: Timer
 var _first_gen := -1
+var _startup_hardware_id := ""
 
 
 func _ready() -> void:
@@ -253,7 +262,7 @@ func _ready() -> void:
 		return
 
 
-func _assert_pre_baseline_public_boundary(context: String) -> bool:
+func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_startup_intent: bool = true) -> bool:
 	if not CamBANGServer.is_running():
 		_fail("FAIL: " + context + " pre-baseline window should keep is_running() true after accepted start")
 		return false
@@ -261,14 +270,71 @@ func _assert_pre_baseline_public_boundary(context: String) -> bool:
 		_fail("FAIL: " + context + " snapshot must remain NIL until first Godot-visible baseline publish")
 		return false
 	var endpoints = CamBANGServer.enumerate_devices()
-	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() != 0:
-		_fail("FAIL: " + context + " enumerate_devices() must return empty before baseline")
+	if typeof(endpoints) != TYPE_ARRAY:
+		_fail("FAIL: " + context + " enumerate_devices() must return an Array before baseline")
 		return false
+	if endpoints.size() < 1:
+		_fail("FAIL: " + context + " enumerate_devices() must expose synthetic endpoints before baseline")
+		return false
+	var endpoint_index := 1 if endpoints.size() > 1 else 0
+	var endpoint0 = endpoints[endpoint_index]
+	if typeof(endpoint0) != TYPE_DICTIONARY:
+		_fail("FAIL: " + context + " enumerate_devices() entries must be Dictionary before baseline")
+		return false
+	var hardware_id := str(endpoint0.get("hardware_id", ""))
+	if hardware_id.is_empty():
+		_fail("FAIL: " + context + " pre-baseline endpoint hardware_id must be non-empty")
+		return false
+	var endpoint_handle = CamBANGServer.get_device_for_hardware_id(hardware_id)
+	if endpoint_handle == null:
+		_fail("FAIL: " + context + " get_device_for_hardware_id() must return a handle before baseline")
+		return false
+	if not endpoint_handle.has_method("engage") or not endpoint_handle.has_method("create_stream") or not endpoint_handle.has_method("set_warm_policy") or not endpoint_handle.has_method("set_still_capture_profile"):
+		_fail("FAIL: " + context + " pre-baseline endpoint handle must expose mutating lifecycle methods")
+		return false
+	if int(endpoint_handle.get_instance_id()) != 0:
+		_fail("FAIL: " + context + " pre-baseline endpoint handle must not resolve a runtime instance id")
+		return false
+	if endpoint_handle.create_stream() != null:
+		_fail("FAIL: " + context + " endpoint handle create_stream() must return null before baseline")
+		return false
+	if endpoint_handle.trigger_capture() == OK:
+		_fail("FAIL: " + context + " endpoint handle trigger_capture() must remain rejected before baseline")
+		return false
+	if accept_endpoint_startup_intent:
+		_startup_hardware_id = hardware_id
+		var startup_profile_before_engage := {
+			"width": STARTUP_INITIAL_STILL_WIDTH,
+			"height": STARTUP_STILL_HEIGHT,
+			"format_fourcc": STARTUP_STILL_FORMAT_RGBA,
+		}
+		var profile_before_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile_before_engage))
+		if profile_before_err != OK:
+			_fail("FAIL: " + context + " endpoint handle set_still_capture_profile() before engage should accept startup intent before baseline (err=%d)" % profile_before_err)
+			return false
+		var engage_err: int = int(endpoint_handle.engage())
+		if engage_err != OK:
+			_fail("FAIL: " + context + " endpoint handle engage() should accept startup intent before baseline (err=%d)" % engage_err)
+			return false
+		var startup_profile_after_engage := {
+			"width": STARTUP_FINAL_STILL_WIDTH,
+			"height": STARTUP_STILL_HEIGHT,
+			"format_fourcc": STARTUP_STILL_FORMAT_RGBA,
+		}
+		var profile_after_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile_after_engage))
+		if profile_after_err != OK:
+			_fail("FAIL: " + context + " endpoint handle set_still_capture_profile() after engage should accept startup intent before baseline (err=%d)" % profile_after_err)
+			return false
+		var warm_initial_err: int = int(endpoint_handle.set_warm_policy({"warm_hold_ms": STARTUP_INITIAL_WARM_HOLD_MS}))
+		if warm_initial_err != OK:
+			_fail("FAIL: " + context + " endpoint handle initial set_warm_policy() should accept startup intent before baseline (err=%d)" % warm_initial_err)
+			return false
+		var warm_final_err: int = int(endpoint_handle.set_warm_policy({"warm_hold_ms": STARTUP_FINAL_WARM_HOLD_MS}))
+		if warm_final_err != OK:
+			_fail("FAIL: " + context + " endpoint handle final set_warm_policy() should accept startup intent before baseline (err=%d)" % warm_final_err)
+			return false
 	if CamBANGServer.get_device(1) != null:
 		_fail("FAIL: " + context + " get_device() must return null before baseline")
-		return false
-	if CamBANGServer.get_device_for_hardware_id("synthetic-camera-0") != null:
-		_fail("FAIL: " + context + " get_device_for_hardware_id() must return null before baseline")
 		return false
 	if CamBANGServer.get_rig(1) != null:
 		_fail("FAIL: " + context + " get_rig() must return null before baseline")
@@ -334,6 +400,47 @@ func _snapshot_has_scenario_effects(snapshot: Dictionary) -> bool:
 	return false
 
 
+func _snapshot_has_hardware_id(snapshot: Dictionary, hardware_id: String) -> bool:
+	if hardware_id.is_empty():
+		return false
+	var devices = snapshot.get("devices", [])
+	if typeof(devices) != TYPE_ARRAY:
+		return false
+	for device_v in devices:
+		if typeof(device_v) == TYPE_DICTIONARY and str(device_v.get("hardware_id", "")) == hardware_id:
+			return true
+	return false
+
+
+func _snapshot_has_startup_endpoint_effects(snapshot: Dictionary) -> bool:
+	if _startup_hardware_id.is_empty():
+		return false
+	var devices = snapshot.get("devices", [])
+	if typeof(devices) != TYPE_ARRAY:
+		return false
+	for device_v in devices:
+		if typeof(device_v) != TYPE_DICTIONARY:
+			continue
+		var device: Dictionary = device_v
+		if str(device.get("hardware_id", "")) != _startup_hardware_id:
+			continue
+		if not bool(device.get("engaged", false)):
+			continue
+		if int(device.get("warm_hold_ms", -1)) != STARTUP_FINAL_WARM_HOLD_MS:
+			continue
+		var capture_profile_v = device.get("capture_profile", null)
+		if typeof(capture_profile_v) != TYPE_DICTIONARY:
+			continue
+		var capture_profile: Dictionary = capture_profile_v
+		var still_v = capture_profile.get("still", null)
+		if typeof(still_v) != TYPE_DICTIONARY:
+			continue
+		var still: Dictionary = still_v
+		if int(still.get("width", -1)) == STARTUP_FINAL_STILL_WIDTH and int(still.get("height", -1)) == STARTUP_STILL_HEIGHT and int(still.get("format", -1)) == STARTUP_STILL_FORMAT_RGBA:
+			return true
+	return false
+
+
 func _on_timeout() -> void:
 	_fail("FAIL: public boundary verify timed out")
 
@@ -367,7 +474,7 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				_fail("FAIL: first Godot-visible publish of generation must be baseline (version=0, topology_version=0)")
 				return
 			if _snapshot_has_scenario_effects(d):
-				_fail("FAIL: pending scenario effects must not be visible in the baseline snapshot")
+				_fail("FAIL: pending startup effects must not be visible in the baseline snapshot")
 				return
 
 			if not _assert_post_baseline_public_boundary():
@@ -380,6 +487,8 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 			if version == 0:
 				return
 			if not _snapshot_has_scenario_effects(d):
+				return
+			if not _snapshot_has_startup_endpoint_effects(d):
 				return
 			_phase = PHASE_RESTARTING
 			call_deferred("_restart_and_assert_nil")
@@ -401,9 +510,19 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				_fail("FAIL: first publish of restarted generation must be baseline")
 				return
 			if _snapshot_has_scenario_effects(d):
-				_fail("FAIL: pending scenario effects must not be visible in restarted baseline snapshot")
+				_fail("FAIL: pending startup effects must not be visible in restarted baseline snapshot")
 				return
 
+			_phase = PHASE_WAIT_RESTART_PENDING_EFFECTS
+
+		PHASE_WAIT_RESTART_PENDING_EFFECTS:
+			if version == 0:
+				return
+			if _snapshot_has_hardware_id(d, _startup_hardware_id):
+				_fail("FAIL: endpoint startup intent from previous session leaked into restarted generation")
+				return
+			if not _snapshot_has_scenario_effects(d):
+				return
 			_ok("OK: godot public boundary verify PASS")
 
 		PHASE_DONE:
@@ -432,7 +551,7 @@ func _restart_and_assert_nil() -> void:
 	if not CamBANGServer.is_running():
 		_fail("FAIL: is_running() must be true during restarted pre-baseline window")
 		return
-	if not _assert_pre_baseline_public_boundary("restart"):
+	if not _assert_pre_baseline_public_boundary("restart", false):
 		return
 	_phase = PHASE_WAIT_SECOND_BASELINE
 
@@ -480,6 +599,8 @@ func _phase_name(p: int) -> String:
 			return "restarting"
 		PHASE_WAIT_SECOND_BASELINE:
 			return "wait_second_baseline"
+		PHASE_WAIT_RESTART_PENDING_EFFECTS:
+			return "wait_restart_pending_effects"
 		PHASE_DONE:
 			return "done"
 		_:

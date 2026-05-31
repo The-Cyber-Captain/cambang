@@ -11,8 +11,10 @@
 #include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <unordered_set>
+#include <vector>
 
 #include "core/synthetic_timeline_request_binding.h"
 #include "imaging/api/timeline_teardown_trace.h"
@@ -308,7 +310,9 @@ godot::Error CamBANGServer::_start_with_provider_config(
     return godot::ERR_ALREADY_IN_USE;
   }
 
-  // New session starts with no Godot-latched snapshot until first publish.
+  // New session starts with no Godot-latched snapshot or pending endpoint startup
+  // intent until first publish.
+  _clear_pending_endpoint_startup_intents_();
   latest_.reset();
   latest_export_.clear();
   has_latest_export_ = false;
@@ -332,6 +336,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   completion_gated_destructive_sequencing_enabled_ = completion_gated_destructive_sequencing_enabled;
   strict_scenario_unmet_logged_ = false;
   _reset_scenario_session_state_();
+  _clear_pending_endpoint_startup_intents_();
   _refresh_timeline_teardown_trace_mode();
 
   // Defensive re-check: requested mode must be supported in this build.
@@ -341,6 +346,8 @@ godot::Error CamBANGServer::_start_with_provider_config(
       ERR_PRINT(godot::vformat(
           "CamBANGServer: cannot start; requested provider_mode='%s' is not supported in this build.",
           mode_to_cstr(mode)));
+      _reset_scenario_session_state_();
+      _clear_pending_endpoint_startup_intents_();
       return map_provider_result_to_godot_error(cap);
     }
   }
@@ -356,6 +363,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   // This is the canonical linkage point between Godot and the core runtime.
   if (!_ensure_provider_attached_and_initialized(mode, synthetic_role, timing_driver)) {
     _reset_scenario_session_state_();
+    _clear_pending_endpoint_startup_intents_();
     return godot::FAILED;
   }
   return godot::OK;
@@ -370,6 +378,7 @@ void CamBANGServer::stop() {
 
   strict_scenario_unmet_logged_ = false;
   _reset_scenario_session_state_();
+  _clear_pending_endpoint_startup_intents_();
   _refresh_timeline_teardown_trace_mode();
 
   // Stop is a boundary operation; core may have published final teardown/retirement
@@ -415,6 +424,18 @@ bool CamBANGServer::is_public_boundary_ready_() const {
   return latest_->gen == godot_gen_;
 }
 
+bool CamBANGServer::is_provider_discovery_available_() const {
+  if (active_session_id_ == 0) {
+    return false;
+  }
+  if (!provider_) {
+    return false;
+  }
+
+  const CoreRuntimeState state = runtime_.state_copy();
+  return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
+}
+
 bool CamBANGServer::is_synthetic_timeline_session_active_() const {
   return active_session_id_ != 0 &&
          runtime_.is_running() &&
@@ -436,9 +457,64 @@ void CamBANGServer::_reset_scenario_session_state_() {
   _clear_pending_scenario_start_();
 }
 
+bool CamBANGServer::_resolve_provider_endpoint_(const godot::String& hardware_id, godot::String* out_display_name) const {
+  if (hardware_id.is_empty() || !is_provider_discovery_available_()) {
+    return false;
+  }
+  std::vector<CameraEndpoint> endpoints;
+  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
+  if (!pr.ok()) {
+    return false;
+  }
+  for (const CameraEndpoint& endpoint : endpoints) {
+    if (hardware_id == endpoint.hardware_id.c_str()) {
+      if (out_display_name) {
+        *out_display_name = godot::String(endpoint.name.c_str());
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string CamBANGServer::_pending_endpoint_startup_key_(uint64_t session_id, const godot::String& hardware_id) const {
+  return std::to_string(session_id) + "\n" + std::string(hardware_id.utf8().get_data());
+}
+
+godot::Error CamBANGServer::_record_pending_endpoint_startup_engage_(
+    const godot::String& hardware_id,
+    const godot::String& display_name) {
+  if (hardware_id.is_empty() || active_session_id_ == 0) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  godot::String resolved_display_name;
+  if (!_resolve_provider_endpoint_(hardware_id, &resolved_display_name)) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (resolved_display_name.is_empty()) {
+    resolved_display_name = display_name;
+  }
+
+  PendingEndpointStartupIntent& intent =
+      pending_endpoint_startup_intents_[_pending_endpoint_startup_key_(active_session_id_, hardware_id)];
+  intent.session_id = active_session_id_;
+  intent.hardware_id = hardware_id;
+  intent.display_name = resolved_display_name;
+  intent.engage_requested = true;
+
+  EndpointLifecycleState& state = endpoint_lifecycle_by_hardware_id_[std::string(hardware_id.utf8().get_data())];
+  state.hardware_id = hardware_id;
+  state.display_name = resolved_display_name;
+  return godot::OK;
+}
+
+void CamBANGServer::_clear_pending_endpoint_startup_intents_() {
+  pending_endpoint_startup_intents_.clear();
+}
+
 godot::Array CamBANGServer::enumerate_devices() const {
   godot::Array out;
-  if (!is_public_boundary_ready_() || !provider_) {
+  if (!is_provider_discovery_available_()) {
     return out;
   }
   std::vector<CameraEndpoint> endpoints;
@@ -456,7 +532,7 @@ godot::Array CamBANGServer::enumerate_devices() const {
 }
 
 godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot::String& hardware_id) const {
-  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
+  if (hardware_id.is_empty() || !is_provider_discovery_available_()) {
     return godot::Ref<CamBANGDevice>();
   }
   std::vector<CameraEndpoint> endpoints;
@@ -482,24 +558,21 @@ godot::Ref<CamBANGDevice> CamBANGServer::get_device_for_hardware_id(const godot:
 }
 
 godot::Error CamBANGServer::engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name) {
-  if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
+  if (hardware_id.is_empty()) {
     return godot::ERR_UNAVAILABLE;
   }
-  std::vector<CameraEndpoint> endpoints;
-  const ProviderResult pr = provider_->enumerate_endpoints(endpoints);
-  if (!pr.ok()) {
-    return godot::ERR_UNAVAILABLE;
-  }
-  bool found = false;
-  godot::String resolved_display_name = display_name;
-  for (const CameraEndpoint& endpoint : endpoints) {
-    if (hardware_id == endpoint.hardware_id.c_str()) {
-      found = true;
-      resolved_display_name = godot::String(endpoint.name.c_str());
-      break;
+  if (!is_public_boundary_ready_()) {
+    if (is_provider_discovery_available_()) {
+      return _record_pending_endpoint_startup_engage_(hardware_id, display_name);
     }
+    return godot::ERR_UNAVAILABLE;
   }
-  if (!found) {
+  if (!provider_) {
+    return godot::ERR_UNAVAILABLE;
+  }
+
+  godot::String resolved_display_name = display_name;
+  if (!_resolve_provider_endpoint_(hardware_id, &resolved_display_name)) {
     return godot::ERR_INVALID_PARAMETER;
   }
 
@@ -808,11 +881,80 @@ godot::Error CamBANGServer::set_device_still_capture_profile(
       runtime_.try_set_device_still_capture_profile(device_instance_id, profile, still_image_bundle));
 }
 
+godot::Error CamBANGServer::set_endpoint_still_capture_profile_startup_intent(
+    const godot::String& hardware_id,
+    const CaptureProfile& profile,
+    const CaptureStillImageBundle& still_image_bundle) {
+  if (hardware_id.is_empty() || profile.width == 0 || profile.height == 0 || profile.format_fourcc == 0) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (!is_valid_capture_still_image_bundle(
+          still_image_bundle,
+          provider_ ? provider_->supports_multi_image_still_sequence() : false)) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  if (is_public_boundary_ready_()) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  godot::String resolved_display_name;
+  if (!_resolve_provider_endpoint_(hardware_id, &resolved_display_name)) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  PendingEndpointStartupIntent& intent =
+      pending_endpoint_startup_intents_[_pending_endpoint_startup_key_(active_session_id_, hardware_id)];
+  intent.session_id = active_session_id_;
+  intent.hardware_id = hardware_id;
+  intent.display_name = resolved_display_name;
+  intent.has_still_profile = true;
+  intent.still_profile_applied = false;
+  intent.still_profile = profile;
+  intent.still_image_bundle = still_image_bundle;
+  return godot::OK;
+}
+
+
+godot::Error CamBANGServer::set_endpoint_warm_hold_ms_startup_intent(const godot::String& hardware_id, uint32_t warm_hold_ms) {
+  if (hardware_id.is_empty()) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  if (is_public_boundary_ready_()) {
+    return godot::ERR_UNAVAILABLE;
+  }
+  godot::String resolved_display_name;
+  if (!_resolve_provider_endpoint_(hardware_id, &resolved_display_name)) {
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  PendingEndpointStartupIntent& intent =
+      pending_endpoint_startup_intents_[_pending_endpoint_startup_key_(active_session_id_, hardware_id)];
+  intent.session_id = active_session_id_;
+  intent.hardware_id = hardware_id;
+  intent.display_name = resolved_display_name;
+  intent.has_warm_policy = true;
+  intent.warm_hold_ms = warm_hold_ms;
+  intent.warm_policy_wait_ticks = 0;
+  return godot::OK;
+}
+
 godot::Error CamBANGServer::set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) {
   if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
     return godot::ERR_BUSY;
   }
   return map_try_set_warm_hold_status(runtime_.try_set_device_warm_hold_ms(device_instance_id, warm_hold_ms));
+}
+
+bool CamBANGServer::get_endpoint_capture_template_profile(const godot::String& hardware_id, CaptureProfile& out_profile) const {
+  out_profile = CaptureProfile{};
+  if (hardware_id.is_empty() || !_resolve_provider_endpoint_(hardware_id, nullptr) || !provider_) {
+    return false;
+  }
+  const CaptureTemplate tmpl = provider_->capture_template();
+  out_profile = tmpl.profile;
+  if (out_profile.format_fourcc == 0) {
+    out_profile.format_fourcc = FOURCC_RGBA;
+  }
+  return out_profile.width > 0 && out_profile.height > 0 && out_profile.format_fourcc != 0;
 }
 
 godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t device_instance_id) const {
@@ -842,6 +984,123 @@ godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t devic
   seq["members"] = members;
   out["still_image_bundle"] = seq;
   return out;
+}
+
+void CamBANGServer::_drain_pending_endpoint_startup_intents_after_baseline_() {
+  if (pending_endpoint_startup_intents_.empty()) {
+    return;
+  }
+  if (!is_public_boundary_ready_()) {
+    return;
+  }
+
+  std::vector<std::string> keys;
+  keys.reserve(pending_endpoint_startup_intents_.size());
+  for (const auto& kv : pending_endpoint_startup_intents_) {
+    keys.push_back(kv.first);
+  }
+  std::sort(keys.begin(), keys.end());
+
+  for (const std::string& key : keys) {
+    auto it = pending_endpoint_startup_intents_.find(key);
+    if (it == pending_endpoint_startup_intents_.end()) {
+      continue;
+    }
+    PendingEndpointStartupIntent& intent = it->second;
+    if (intent.session_id != active_session_id_) {
+      pending_endpoint_startup_intents_.erase(it);
+      continue;
+    }
+    if (intent.hardware_id.is_empty()) {
+      pending_endpoint_startup_intents_.erase(it);
+      continue;
+    }
+
+    if (intent.engage_requested && !intent.engage_applied) {
+      const godot::Error rc = engage_endpoint_handle(intent.hardware_id, intent.display_name);
+      if (rc != godot::OK) {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: pending startup engage for hardware_id=%s failed after baseline; err=%d reason=%s.",
+            intent.hardware_id,
+            static_cast<int>(rc),
+            godot_error_to_cstr(rc)));
+        pending_endpoint_startup_intents_.erase(it);
+        continue;
+      }
+      intent.engage_applied = true;
+    }
+
+    const uint64_t device_instance_id = resolve_endpoint_instance_id(intent.hardware_id);
+    if (intent.has_still_profile && !intent.still_profile_applied) {
+      if (device_instance_id == 0) {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: pending startup still profile for hardware_id=%s failed after baseline; no runtime device instance is available.",
+            intent.hardware_id));
+        pending_endpoint_startup_intents_.erase(it);
+        continue;
+      }
+      const godot::Error rc = set_device_still_capture_profile(
+          device_instance_id,
+          intent.still_profile,
+          intent.still_image_bundle);
+      if (rc != godot::OK) {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: pending startup still profile for hardware_id=%s failed after baseline; err=%d reason=%s.",
+            intent.hardware_id,
+            static_cast<int>(rc),
+            godot_error_to_cstr(rc)));
+        pending_endpoint_startup_intents_.erase(it);
+        continue;
+      }
+      intent.still_profile_applied = true;
+    }
+
+    if (intent.has_warm_policy) {
+      if (device_instance_id == 0) {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: pending startup warm policy for hardware_id=%s failed after baseline; no runtime device instance is available.",
+            intent.hardware_id));
+        pending_endpoint_startup_intents_.erase(it);
+        continue;
+      }
+
+      bool device_is_live = false;
+      if (latest_) {
+        for (const DeviceState& device : latest_->devices) {
+          if (device.instance_id == device_instance_id && device.engaged) {
+            device_is_live = true;
+            break;
+          }
+        }
+      }
+      if (!device_is_live) {
+        // Opening is asynchronous. Keep the warm-policy tail only for a bounded
+        // number of post-baseline drain ticks while waiting for live truth.
+        ++intent.warm_policy_wait_ticks;
+        if (intent.warm_policy_wait_ticks >= PENDING_ENDPOINT_WARM_POLICY_MAX_DRAIN_TICKS) {
+          ERR_PRINT(godot::vformat(
+              "CamBANGServer: pending startup warm policy for hardware_id=%s failed after baseline; endpoint did not become live within %d drain ticks.",
+              intent.hardware_id,
+              static_cast<int>(PENDING_ENDPOINT_WARM_POLICY_MAX_DRAIN_TICKS)));
+          pending_endpoint_startup_intents_.erase(it);
+        }
+        continue;
+      }
+
+      const godot::Error rc = set_device_warm_hold_ms(device_instance_id, intent.warm_hold_ms);
+      if (rc != godot::OK) {
+        ERR_PRINT(godot::vformat(
+            "CamBANGServer: pending startup warm policy for hardware_id=%s failed after baseline; err=%d reason=%s.",
+            intent.hardware_id,
+            static_cast<int>(rc),
+            godot_error_to_cstr(rc)));
+      }
+      pending_endpoint_startup_intents_.erase(it);
+      continue;
+    }
+
+    pending_endpoint_startup_intents_.erase(it);
+  }
 }
 
 uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
@@ -1025,7 +1284,10 @@ void CamBANGServer::_on_godot_tick(double delta) {
   // We emit at most once per tick, and only if *anything* has changed since
   // the previous tick.
   if (_consume_latest_core_snapshot()) {
+    _drain_pending_endpoint_startup_intents_after_baseline_();
     _drain_pending_scenario_start_after_baseline_();
+  } else if (!pending_endpoint_startup_intents_.empty()) {
+    _drain_pending_endpoint_startup_intents_after_baseline_();
   }
 }
 
