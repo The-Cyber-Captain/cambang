@@ -27,7 +27,7 @@ namespace cambang {
 
 void register_synthetic_gpu_backing_internal_classes();
 
-static void enqueue_pending_release(const godot::RID& rid);
+static bool enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
 static bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
@@ -66,8 +66,9 @@ struct RetainedSyntheticGpuBacking final {
     if (!rid.is_valid()) {
       return;
     }
-    enqueue_pending_release(rid);
-    request_pending_release_drain();
+    if (enqueue_pending_release(rid)) {
+      request_pending_release_drain();
+    }
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -103,8 +104,9 @@ public:
     if (!rid.is_valid()) {
       return;
     }
-    enqueue_pending_release(rid);
-    request_pending_release_drain();
+    if (enqueue_pending_release(rid)) {
+      request_pending_release_drain();
+    }
   }
 
 private:
@@ -124,21 +126,43 @@ static std::mutex g_pending_release_mutex;
 // RIDs that must be released from the render thread.
 static std::vector<godot::RID> g_pending_releases;
 static bool g_pending_release_drain_scheduled = false;
+static bool g_bridge_teardown_started = false;
 static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
 
-static RenderThreadDrainHelper* get_render_thread_drain_helper() {
-  if (g_render_thread_drain_helper.is_null()) {
-    g_render_thread_drain_helper.instantiate();
-  }
-  return g_render_thread_drain_helper.ptr();
-}
-
-static void enqueue_pending_release(const godot::RID& rid) {
+static bool enqueue_pending_release(const godot::RID& rid) {
   if (!rid.is_valid()) {
-    return;
+    return false;
   }
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (g_bridge_teardown_started) {
+    return false;
+  }
   g_pending_releases.push_back(rid);
+  return true;
+}
+
+static bool bridge_teardown_started() {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  return g_bridge_teardown_started;
+}
+
+static void clear_pending_releases_for_teardown() {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  g_bridge_teardown_started = true;
+  // After teardown starts, do not schedule render-thread callbacks back into this
+  // GDExtension. Pending RIDs are abandoned best-effort rather than risking a
+  // late callback into torn-down extension or RenderingServer state.
+  g_pending_releases.clear();
+  g_pending_release_drain_scheduled = false;
+  g_render_thread_drain_helper.unref();
+}
+
+static void reset_bridge_teardown_state_for_install() {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  g_bridge_teardown_started = false;
+  g_pending_releases.clear();
+  g_pending_release_drain_scheduled = false;
+  g_render_thread_drain_helper.unref();
 }
 
 static void request_pending_release_drain() {
@@ -147,25 +171,20 @@ static void request_pending_release_drain() {
     return;
   }
 
-  bool should_schedule = false;
-  {
-    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
-      g_pending_release_drain_scheduled = true;
-      should_schedule = true;
-    }
-  }
-  if (!should_schedule) {
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (g_bridge_teardown_started || g_pending_releases.empty() || g_pending_release_drain_scheduled) {
     return;
   }
 
-  RenderThreadDrainHelper* helper = get_render_thread_drain_helper();
+  if (g_render_thread_drain_helper.is_null()) {
+    g_render_thread_drain_helper.instantiate();
+  }
+  RenderThreadDrainHelper* helper = g_render_thread_drain_helper.ptr();
   if (!helper) {
-    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    g_pending_release_drain_scheduled = false;
     return;
   }
 
+  g_pending_release_drain_scheduled = true;
   rs->call_on_render_thread(callable_mp(helper, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
 }
 
@@ -173,6 +192,11 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (g_bridge_teardown_started) {
+      g_pending_releases.clear();
+      g_pending_release_drain_scheduled = false;
+      return;
+    }
     pending.swap(g_pending_releases);
     g_pending_release_drain_scheduled = false;
   }
@@ -184,6 +208,10 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
   if (!rd) {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (g_bridge_teardown_started) {
+      g_pending_release_drain_scheduled = false;
+      return;
+    }
     for (godot::RID &rid : pending) {
       g_pending_releases.push_back(std::move(rid));
     }
@@ -204,6 +232,11 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   }
 
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (g_bridge_teardown_started) {
+    g_pending_releases.clear();
+    g_pending_release_drain_scheduled = false;
+    return;
+  }
   if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
     g_pending_release_drain_scheduled = true;
     rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
@@ -286,6 +319,10 @@ bool snapshot_backing_for_use(
 }
 
 bool global_rd_available() noexcept {
+  if (bridge_teardown_started()) {
+    trace_runtime_query(false, false);
+    return false;
+  }
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
     trace_runtime_query(false, false);
@@ -303,6 +340,9 @@ bool global_rd_roundtrip_rgba8(
     uint32_t height,
     uint32_t stride_bytes,
     std::vector<uint8_t>& out) noexcept {
+  if (bridge_teardown_started()) {
+    return false;
+  }
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs || !src || width == 0 || height == 0) {
     trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=invalid_input_or_server");
@@ -365,6 +405,9 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
+  if (bridge_teardown_started()) {
+    return {};
+  }
   if (!src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
@@ -421,6 +464,9 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
+  if (bridge_teardown_started()) {
+    return {};
+  }
   if (width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
@@ -479,6 +525,9 @@ bool update_stream_live_gpu_backing_rgba8(
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
+  if (bridge_teardown_started()) {
+    return false;
+  }
   if (!backing || !src || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return false;
   }
@@ -607,17 +656,22 @@ const SyntheticGpuBackingRuntimeOps kOps{
 } // namespace
 
 void install_synthetic_gpu_backing_godot_bridge() {
+  reset_bridge_teardown_state_for_install();
   set_synthetic_gpu_backing_runtime_ops(&kOps);
   trace_gpu("bridge_install runtime_ops_registered=true");
 }
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
   clear_synthetic_gpu_backing_runtime_ops();
+  clear_pending_releases_for_teardown();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
   constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
+  if (bridge_teardown_started()) {
+    return {};
+  }
   request_pending_release_drain();
   if (!backing) {
     return {};
@@ -663,6 +717,9 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
+  if (bridge_teardown_started()) {
+    return false;
+  }
   request_pending_release_drain();
   if (!backing) {
     return false;
@@ -681,6 +738,9 @@ bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>&
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
+  if (bridge_teardown_started()) {
+    return {};
+  }
   request_pending_release_drain();
   if (!backing) {
     return {};
