@@ -866,12 +866,7 @@ void CamBANGServer::release_stream_display_demand(uint64_t stream_id) {
 }
 
 uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
-  if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
-    return 0;
-  }
-
-  CaptureRequest req{};
-  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return 0;
   }
 
@@ -879,15 +874,10 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   if (capture_id == 0) {
     capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
-  req.capture_id = capture_id;
-  if (!is_valid_capture_still_image_bundle(
-          req.still_image_bundle,
-          provider_->supports_multi_image_still_sequence())) {
-    return 0;
-  }
 
-  const ProviderResult pr = provider_->trigger_capture(req);
-  if (!pr.ok()) {
+  const TryTriggerDeviceCaptureStatus status =
+      runtime_.try_trigger_device_capture_with_capture_id_for_server(device_instance_id, capture_id);
+  if (status != TryTriggerDeviceCaptureStatus::OK) {
     return 0;
   }
   return capture_id;
@@ -986,7 +976,7 @@ godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t devic
     return out;
   }
   CaptureRequest req{};
-  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
+  if (!runtime_.materialize_capture_request_for_server(device_instance_id, req)) {
     return out;
   }
   out["width"] = static_cast<int64_t>(req.width);
@@ -1127,7 +1117,7 @@ void CamBANGServer::_drain_pending_endpoint_startup_intents_after_baseline_() {
 }
 
 uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
-  if (rig_id == 0 || !is_public_boundary_ready_() || !provider_) {
+  if (rig_id == 0 || !is_public_boundary_ready_()) {
     return 0;
   }
 

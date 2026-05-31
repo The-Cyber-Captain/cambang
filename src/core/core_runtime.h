@@ -61,6 +61,13 @@ enum class TrySetWarmHoldStatus : uint8_t {
   InvalidArgument = 2,
 };
 
+enum class TryTriggerDeviceCaptureStatus : uint8_t {
+  OK = 0,
+  Busy = 1,
+  InvalidArgument = 2,
+  ProviderRejected = 3,
+};
+
 enum class TryCreateStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
@@ -184,7 +191,15 @@ enum class TryCloseDeviceStatus : uint8_t {
       const CaptureStillImageBundle& still_image_bundle) noexcept;
   TrySetWarmHoldStatus try_set_device_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms) noexcept;
 
-  bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept;
+  // Server-facing synchronous wrappers. They marshal registry/provider access onto
+  // the core thread and only return success after the work was accepted/submitted.
+  TryTriggerDeviceCaptureStatus try_trigger_device_capture_with_capture_id_for_server(
+      uint64_t device_instance_id,
+      uint64_t capture_id);
+  bool materialize_capture_request_for_server(uint64_t device_instance_id, CaptureRequest& out) const;
+
+  // Compatibility alias for smoke/internal callers; still marshals to the core thread.
+  bool materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const;
 
   enum class RigPreflightFailure : uint8_t {
     None = 0,
@@ -410,6 +425,11 @@ private:
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  // Core-thread-only helpers. These read/write core-owned registries directly.
+  bool materialize_capture_request_(uint64_t device_instance_id, CaptureRequest& out) const;
+  TryTriggerDeviceCaptureStatus trigger_device_capture_with_capture_id_(
+      uint64_t device_instance_id,
+      uint64_t capture_id);
   RigPreflightResult preflight_rig_participants_materialize_(uint64_t rig_id) const;
   RigAdmittedRequestBundle admit_rig_cohort_from_preflight_(
       uint64_t rig_id,

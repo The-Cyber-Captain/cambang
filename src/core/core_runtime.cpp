@@ -1209,7 +1209,43 @@ TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
   return status_future.get();
 }
 
-bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
+bool CoreRuntime::materialize_capture_request_for_server(uint64_t device_instance_id, CaptureRequest& out) const {
+  out = CaptureRequest{};
+  if (device_instance_id == 0) {
+    return false;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    return materialize_capture_request_(device_instance_id, out);
+  }
+
+  auto completion = std::make_shared<std::promise<std::pair<bool, CaptureRequest>>>();
+  std::future<std::pair<bool, CaptureRequest>> completed = completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, device_instance_id, completion]() {
+    CaptureRequest request{};
+    const bool ok = materialize_capture_request_(device_instance_id, request);
+    completion->set_value(std::make_pair(ok, request));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+
+  const auto result = completed.get();
+  if (!result.first) {
+    return false;
+  }
+  out = result.second;
+  return true;
+}
+
+bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const {
+  return materialize_capture_request_for_server(device_instance_id, out);
+}
+
+bool CoreRuntime::materialize_capture_request_(uint64_t device_instance_id, CaptureRequest& out) const {
+  assert(core_thread_.is_core_thread());
+
   if (device_instance_id == 0) {
     return false;
   }
@@ -1250,7 +1286,56 @@ bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, Captu
   return is_valid_capture_still_image_bundle(out.still_image_bundle, supports_multi_image);
 }
 
+TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_id_(
+    uint64_t device_instance_id,
+    uint64_t capture_id) {
+  assert(core_thread_.is_core_thread());
+
+  if (device_instance_id == 0 || capture_id == 0) {
+    return TryTriggerDeviceCaptureStatus::InvalidArgument;
+  }
+
+  CaptureRequest req{};
+  if (!materialize_capture_request_(device_instance_id, req)) {
+    return TryTriggerDeviceCaptureStatus::Busy;
+  }
+  req.capture_id = capture_id;
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return TryTriggerDeviceCaptureStatus::Busy;
+  }
+  const ProviderResult pr = prov->trigger_capture(req);
+  return pr.ok() ? TryTriggerDeviceCaptureStatus::OK
+                 : TryTriggerDeviceCaptureStatus::ProviderRejected;
+}
+
+TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_capture_id_for_server(
+    uint64_t device_instance_id,
+    uint64_t capture_id) {
+  if (device_instance_id == 0 || capture_id == 0) {
+    return TryTriggerDeviceCaptureStatus::InvalidArgument;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
+  }
+
+  auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
+  std::future<TryTriggerDeviceCaptureStatus> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, capture_id, completion]() {
+    completion->set_value(trigger_device_capture_with_capture_id_(device_instance_id, capture_id));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryTriggerDeviceCaptureStatus::Busy;
+  }
+
+  return completed.get();
+}
+
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
+  assert(core_thread_.is_core_thread());
+
   RigPreflightResult out{};
   out.rig_id = rig_id;
   if (rig_id == 0) {
@@ -1304,7 +1389,7 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
     seen_devices.emplace(resolved_device_id, true);
 
     CaptureRequest req{};
-    if (!materialize_capture_request(resolved_device_id, req)) {
+    if (!materialize_capture_request_(resolved_device_id, req)) {
       out.failure = RigPreflightFailure::MaterializeFailed;
       out.failure_member_index = i;
       out.failure_hardware_id = hardware_id;
@@ -1448,6 +1533,8 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_(
     uint64_t rig_id,
     uint64_t capture_id) {
+  assert(core_thread_.is_core_thread());
+
   RigTriggerOrchestrationResult out{};
   out.rig_id = rig_id;
   out.capture_id = capture_id;
@@ -1490,7 +1577,23 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize(uint64_t rig_id) const {
-  return preflight_rig_participants_materialize_(rig_id);
+  if (core_thread_.is_core_thread()) {
+    return preflight_rig_participants_materialize_(rig_id);
+  }
+
+  auto completion = std::make_shared<std::promise<RigPreflightResult>>();
+  std::future<RigPreflightResult> completed = completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, rig_id, completion]() {
+    completion->set_value(preflight_rig_participants_materialize_(rig_id));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    RigPreflightResult out{};
+    out.rig_id = rig_id;
+    out.failure = RigPreflightFailure::RigNotFound;
+    return out;
+  }
+  return completed.get();
 }
 
 bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
@@ -1536,7 +1639,7 @@ CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_with_capture_id(
     uint64_t rig_id,
     uint64_t capture_id) {
-  return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+  return orchestrate_rig_capture_with_capture_id_for_server(rig_id, capture_id);
 }
 
 #endif
@@ -1544,7 +1647,25 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_ca
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_for_server(
     uint64_t rig_id,
     uint64_t capture_id) {
-  return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+  if (core_thread_.is_core_thread()) {
+    return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+  }
+
+  auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
+  std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion]() {
+    completion->set_value(orchestrate_rig_capture_with_capture_id_(rig_id, capture_id));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    RigTriggerOrchestrationResult out{};
+    out.rig_id = rig_id;
+    out.capture_id = capture_id;
+    out.failure = RigOrchestrationFailure::SubmissionFailed;
+    out.submission_failure = RigSubmissionFailure::ProviderUnavailable;
+    return out;
+  }
+
+  return completed.get();
 }
 
 bool CoreRuntime::retain_rig_member_hardware_ids(
