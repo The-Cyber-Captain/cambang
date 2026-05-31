@@ -191,6 +191,8 @@ CamBANGServer::CamBANGServer() {
 }
 
 CamBANGServer::~CamBANGServer() {
+  _disconnect_tick_if_connected_();
+
   // Ensure graceful stop if the extension is torn down.
   runtime_.stop();
   if (singleton_ == this) {
@@ -1153,6 +1155,31 @@ void CamBANGServer::_ensure_tick_connected() {
 
   tick_connected_ = true;
   last_tick_time_ns_ = 0;
+}
+
+void CamBANGServer::_disconnect_tick_if_connected_() {
+  if (!tick_connected_) {
+    return;
+  }
+
+  tick_connected_ = false;
+  last_tick_time_ns_ = 0;
+
+  godot::Engine* engine = godot::Engine::get_singleton();
+  if (!engine) {
+    return;
+  }
+
+  godot::MainLoop* ml = engine->get_main_loop();
+  godot::SceneTree* tree = godot::Object::cast_to<godot::SceneTree>(ml);
+  if (!tree) {
+    return;
+  }
+
+  godot::Callable cb(this, "_on_godot_process_frame");
+  if (tree->is_connected("process_frame", cb)) {
+    tree->disconnect("process_frame", cb);
+  }
 }
 
 void CamBANGServer::_on_godot_process_frame() {

@@ -207,6 +207,7 @@ private:
   uint64_t accepted_min_gen_ = 0;
 
   void _ensure_tick_connected();
+  void _disconnect_tick_if_connected_();
   godot::Error _start_with_provider_config(
       RuntimeMode mode,
       SyntheticRole synthetic_role,
