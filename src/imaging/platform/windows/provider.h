@@ -29,9 +29,10 @@ namespace cambang {
 // Purpose:
 // - Validate lifecycle + deterministic shutdown choreography on Windows.
 // - Deliver frames into CamBANG pipeline with strict release-on-drop semantics.
-// - Visibility is "best effort": we do NOT enable CPU format conversion. If the
-//   camera outputs YUV/RAW, frames will be delivered and later dropped+released
-//   by the dev sink.
+// - Visibility is "best effort": this dev accelerator may allow Media
+//   Foundation Source Reader video processing/conversion so RGB32-like frames
+//   can be requested from common YUV-only devices. CamBANG still does not
+//   implement its own CPU YUV->RGB conversion in this provider path.
 //
 // Non-goals (explicit):
 // - Production-quality device selection, profile negotiation, or colorspace conversion.

@@ -28,12 +28,14 @@ cambang/
 │   ├── README.md
 │   ├── CONTRIBUTING.md
 │   ├── HOWTO-build_draft.txt
+│   ├── THIRD_PARTY_NOTICES.md
 │   ├── naming.md
 │   ├── state_snapshot.md
 │   ├── provider_architecture.md
 │   ├── core_runtime_model.md
 │   ├── arbitration_policy.md
 │   ├── repo_structure.md
+│   ├── status_panel_surface_policy.md
 │   ├── architecture/
 │   │   ├── frame_sinks.md
 │   │   ├── godot_boundary_contract.md
@@ -152,7 +154,10 @@ src/imaging/
 │   └── provider_broker.h/.cpp
 ├── platform/
 │   └── windows/
-│       └── provider.h/.cpp
+│       ├── provider.h/.cpp
+│       └── mf/
+│           ├── com_ptr.h
+│           └── types.h
 ├── synthetic/
 │   ├── provider.h/.cpp
 │   ├── scenario*.h/.cpp
@@ -165,8 +170,14 @@ src/imaging/
 Rules:
 
 - `api/` defines semantic contract and provider-agnostic datatypes
-- `platform/` contains platform-backed providers; platform headers must not leak into Core
-- `stub/` is smoke-only; the smoke verifier target remains stub-provider-only
+- `platform/` contains platform-backed providers; platform-native headers and
+  API adaptation must not leak into Core, Godot public objects, or shared
+  provider API
+- a platform provider may use provider-local helper files and subdirectories
+  under `src/imaging/platform/<provider>/`
+- `stub/` is a deterministic dev/test provider used by smoke and provider
+  validation; it may be compiled into the GDE build with `provider=stub`, but it
+  is not a production platform-backed provider
 - `broker/` is the naming surface for the Core-bound façade term and does not
   imply multi-provider runtime arbitration
 
@@ -256,7 +267,8 @@ without involving Godot or platform camera stacks.
 Properties:
 
 - opt-in build
-- stub-provider-only by design
+- providerless baseline mode is available
+- stub-backed mode is enabled when built with `provider=stub`
 - not part of the GDExtension artifact
 - intended to exercise:
   - CoreRuntime lifecycle determinism
@@ -270,7 +282,9 @@ Primary location:
 src/smoke/core_spine_smoke.cpp
 ```
 
-The smoke verifier target must remain independent of `provider=...` platform selection.
+Smoke verification must remain independent of platform-backed provider implementations. The
+core spine smoke executable can run providerless baseline checks, while stub-backed
+coverage and stress mode require a `provider=stub` smoke build.
 
 Smoke-only code paths are gated behind:
 

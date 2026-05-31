@@ -250,10 +250,14 @@ Invalid selection behaviour:
 
 ## 4. Spec updates and `apply_mode`
 
-Spec updates follow a single API pattern:
+Spec update vocabulary follows a single intended API pattern:
 
 - `update_camera_spec(camera_id, patch, apply_mode=...)`
 - `update_imaging_spec(patch, apply_mode=...)`
+
+Current internal/provider seams include spec patch application concepts, but these
+method names must not be read as a currently bound Godot public API unless the
+Godot-facing surface explicitly exposes them.
 
 ### `ApplyMode`
 

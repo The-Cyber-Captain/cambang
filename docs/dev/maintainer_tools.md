@@ -273,8 +273,8 @@ destroy/close realization shape.
 In particular:
 
 - **strict** validation may legitimately result in either:
-    - retained stopped state with in-band destroy/close failure, or
-    - full in-band destroy/close success
+  - retained stopped state with in-band destroy/close failure, or
+  - full in-band destroy/close success
 
 - **completion-gated** validation proves eventual successful destructive
   realization once the relevant readiness truth exists
@@ -295,10 +295,17 @@ Those concerns belong to platform validation tools.
 
 ### Build and usage
 
-Typical build form:
+Typical smoke-only build form:
 
 ```text
-scons smoke=1 smoke
+scons smoke=1 gde=no smoke
+```
+
+If also building the GDExtension in the same invocation, pass an explicit
+provider selection because the GDE target requires `provider=...`:
+
+```text
+scons smoke=1 provider=stub smoke
 ```
 
 Usage:
