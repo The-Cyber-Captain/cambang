@@ -339,6 +339,25 @@ godot::Error CamBANGServer::_start_with_provider_config(
   _clear_pending_endpoint_startup_intents_();
   _refresh_timeline_teardown_trace_mode();
 
+  const auto clear_start_attempt_state = [this]() {
+    latest_.reset();
+    latest_export_.clear();
+    has_latest_export_ = false;
+    has_godot_counters_ = false;
+    snapshot_buffer_.clear();
+    last_seen_published_seq_ = runtime_.published_seq();
+    active_session_id_ = 0;
+    enforce_min_gen_gate_ = false;
+    endpoint_lifecycle_by_hardware_id_.clear();
+    direct_stream_hardware_id_by_stream_id_.clear();
+    CamBANGStreamResult::clear_live_stream_cpu_display_views();
+
+    strict_scenario_unmet_logged_ = false;
+    _reset_scenario_session_state_();
+    _clear_pending_endpoint_startup_intents_();
+    _refresh_timeline_teardown_trace_mode();
+  };
+
   // Defensive re-check: requested mode must be supported in this build.
   {
     ProviderResult cap = ProviderBroker::check_mode_supported_in_build(mode);
@@ -346,8 +365,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
       ERR_PRINT(godot::vformat(
           "CamBANGServer: cannot start; requested provider_mode='%s' is not supported in this build.",
           mode_to_cstr(mode)));
-      _reset_scenario_session_state_();
-      _clear_pending_endpoint_startup_intents_();
+      clear_start_attempt_state();
       return map_provider_result_to_godot_error(cap);
     }
   }
@@ -356,14 +374,19 @@ godot::Error CamBANGServer::_start_with_provider_config(
   _ensure_tick_connected();
 
   // Explicit user action: do not auto-start on launch.
-  runtime_.start();
+  if (!runtime_.start()) {
+    clear_start_attempt_state();
+    return godot::FAILED;
+  }
   _refresh_timeline_teardown_trace_mode();
 
   // Ensure a provider is attached + initialized (latched selection).
   // This is the canonical linkage point between Godot and the core runtime.
   if (!_ensure_provider_attached_and_initialized(mode, synthetic_role, timing_driver)) {
-    _reset_scenario_session_state_();
-    _clear_pending_endpoint_startup_intents_();
+    runtime_.stop();
+    runtime_.attach_provider(nullptr);
+    provider_.reset();
+    clear_start_attempt_state();
     return godot::FAILED;
   }
   return godot::OK;
@@ -843,12 +866,7 @@ void CamBANGServer::release_stream_display_demand(uint64_t stream_id) {
 }
 
 uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
-  if (device_instance_id == 0 || !is_public_boundary_ready_() || !provider_) {
-    return 0;
-  }
-
-  CaptureRequest req{};
-  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
+  if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return 0;
   }
 
@@ -856,15 +874,10 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   if (capture_id == 0) {
     capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
   }
-  req.capture_id = capture_id;
-  if (!is_valid_capture_still_image_bundle(
-          req.still_image_bundle,
-          provider_->supports_multi_image_still_sequence())) {
-    return 0;
-  }
 
-  const ProviderResult pr = provider_->trigger_capture(req);
-  if (!pr.ok()) {
+  const TryTriggerDeviceCaptureStatus status =
+      runtime_.try_trigger_device_capture_with_capture_id_for_server(device_instance_id, capture_id);
+  if (status != TryTriggerDeviceCaptureStatus::OK) {
     return 0;
   }
   return capture_id;
@@ -963,7 +976,7 @@ godot::Dictionary CamBANGServer::get_device_still_capture_profile(uint64_t devic
     return out;
   }
   CaptureRequest req{};
-  if (!runtime_.materialize_capture_request(device_instance_id, req)) {
+  if (!runtime_.materialize_capture_request_for_server(device_instance_id, req)) {
     return out;
   }
   out["width"] = static_cast<int64_t>(req.width);
@@ -1104,7 +1117,7 @@ void CamBANGServer::_drain_pending_endpoint_startup_intents_after_baseline_() {
 }
 
 uint64_t CamBANGServer::trigger_rig_capture_internal_(uint64_t rig_id) {
-  if (rig_id == 0 || !is_public_boundary_ready_() || !provider_) {
+  if (rig_id == 0 || !is_public_boundary_ready_()) {
     return 0;
   }
 
