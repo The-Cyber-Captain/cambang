@@ -20,7 +20,10 @@ This document exists to prevent terminology and authority drift while authored s
 Historically, dev-node micro-scenarios mixed “scenario” wording with Godot-side procedural triggers. This supplement sets the canonical model for Tranche 1 onward:
 
 - scenario semantics belong to SyntheticProvider timeline execution
+- scenarios are low-level provider/core timeline replay, diagnostics, metrics,
+  and fault-reproduction tooling rather than the primary public UX automation layer
 - Godot hosts execution but does not define timeline meaning
+- normal public UX automation should use the object-level Godot APIs
 - maintainer verification cases remain a separate concept
 
 ---
@@ -29,7 +32,7 @@ Historically, dev-node micro-scenarios mixed “scenario” wording with Godot-s
 
 The following terms are distinct and must not be conflated:
 
-- **scenario**: user-facing / Godot / SyntheticProvider timeline recording-storage-execution concept
+- **scenario**: SyntheticProvider/provider-core timeline replay artifact for diagnostics, metrics, fault reproduction, and recorded/authored behavior playback
 - **scenario library**: umbrella term for collections of scenarios
   - **built-in scenario library**: current C++-authored scenario collection
   - **external scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader
@@ -71,9 +74,13 @@ For this first authored slice, host advancement is expected through the existing
 
 ---
 
-## 5. Canonical scenario model (first slice)
+## 5. Canonical scenario model (current slice)
 
-The first supported canonical scenario form is **in-memory authored data**.
+The current supported canonical scenario forms are:
+
+- built-in C++ authored scenario data
+- external JSON text/file ingestion through the scenario loader into canonical
+  `SyntheticProvider` timeline scenarios
 
 In-scope representation characteristics:
 
@@ -82,15 +89,9 @@ In-scope representation characteristics:
 - deterministic intra-timestamp ordering (stable sequence/tie-breaker)
 - provider-owned execution against active stream/device state
 
-Tranche 1 persistence boundary:
-
-- execution support is in-memory authored data only
-- this is an implementation-slice constraint, not an architectural rejection of persisted/open forms
-
-Out of scope for this tranche:
-
-- file formats and schemas
-- persistence/recording pipeline design
+This JSON ingestion path is maintainer/provider-core tooling. It does not by
+itself define a finalized release UX scenario library, editor, recording
+pipeline, or broad product authoring surface.
 
 ### 5.1 Single-scenario-model clarification
 
@@ -108,9 +109,12 @@ There is currently no alternate runtime scenario model that replaces primitive e
 
 Godot is a thin host/stepper/observer for scenario execution.
 
+Scenario playback is not the primary public UX automation layer; ordinary
+application/user flows should be expressed through the object-level Godot APIs.
+
 Godot may:
 
-- select a scenario (from authored in-memory set)
+- select a built-in scenario or load an external JSON scenario
 - start / stop scenario execution
 - pause / resume execution
 - advance synthetic time
@@ -136,8 +140,16 @@ To preserve existing verifier behavior while keeping explicit host controls:
 - **host-submitted scenario path**
   - when a scenario is supplied later via host control entry points, it is
     staged provider-side and remains not-running until explicit host start
+  - Godot may accept this staging before the first observable runtime baseline
+    when synthetic timeline mode is active; the staged data remains provider-owned
+  - if Godot receives `start_scenario()` before that baseline, it may hold only
+    that high-level playback intent and begin actual provider playback after
+    `state_published(gen, 0, 0)` has been emitted
+  - this deferred playback intent is not a general pre-baseline command queue:
+    device/stream/rig/capture commands and `advance_timeline(...)` remain
+    governed by the Godot runtime boundary
   - purpose: preserve thin-host explicit-control semantics for
-    Godot/dev-hosted scenarios
+    Godot/dev-hosted scenarios while keeping the baseline snapshot clean
 
 This is a compatibility arming rule, not a semantic ownership split:
 both paths remain SyntheticProvider-owned timeline execution.
@@ -188,18 +200,7 @@ application path.
 
 This implemented slice is still a starting boundary, not the architectural ceiling.
 
-Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue.
-Tranche 1 executable vocabulary may begin with a small subset aligned with current timeline code shape:
-
-- `StartStream`
-- `StopStream`
-- `EmitFrame`
-
-That subset is an implementation starting point, not the architectural ceiling.
-
-Canonical scenario direction remains a self-contained authored/recorded timeline unit. The event model is therefore expected to expand with minimal lifecycle/realization events needed to author and replay scenarios without hidden host-side semantic reconstruction (for example, device/stream realization and create/destroy-style families).
-
-Tranche 1 intentionally does not freeze the complete long-term scenario event vocabulary.
+Canonical scenario direction remains a self-contained authored/recorded timeline unit, and event vocabulary may still expand further as needed without moving semantic authority into host glue. Current executable support already includes lifecycle/realization events needed for provider-owned replay; future vocabulary expansion must preserve that ownership boundary.
 
 ### 7.x AcquisitionSession guardrail
 
@@ -255,11 +256,13 @@ Any future work on this issue, if adopted later, must stay within the single sce
 Scenario architecture must remain compatible with all expected source families:
 
 - developer/maintainer authored scenarios
+- external JSON text/file inputs loaded through the scenario loader
 - recorded behavior from real hardware-backed providers for later synthetic playback
-- user/integrator hand-authored open serialized forms (for example JSON-like formats)
 - future GUI authoring tools built as separate layers
 
-This is a design-compatibility requirement. It is not a Tranche 1 decision about serialization format, recording pipeline, or editor UX.
+Current external JSON ingestion is an implemented loader path for SyntheticProvider
+timeline scenarios. It is not a completed release scenario-library UX, recording
+pipeline, or editor/product authoring surface.
 
 ---
 
@@ -281,10 +284,9 @@ But the scenario remains a SyntheticProvider timeline artifact, while the verifi
 
 This tranche explicitly excludes:
 
-- serialization format/schema decisions
+- final release scenario-library product UX
 - recording pipeline/format design
 - editor/authoring UI tooling
-- release UX design for scenario libraries (built-in/external)
 - redesign of smoke verification-case architecture
 - adversarial snapshot playback design
 - unrelated core/provider runtime redesign

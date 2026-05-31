@@ -14,9 +14,9 @@ otherwise create architecture or implementation confusion.
 
 To prevent cross-layer ambiguity:
 
-- **Scenario** is reserved for the user-facing / Godot / SyntheticProvider
-  timeline concept (including timeline recording, storage, and execution
-  discussions).
+- **Scenario** is reserved for SyntheticProvider/provider-core timeline replay,
+  diagnostics, metrics, fault reproduction, and recorded/authored behavior
+  playback discussions.
 - **Scenario library** is the umbrella term for scenario collections.
   - **Built-in scenario library**: current C++-authored scenario set.
   - **External scenario library**: file-backed/user-provided scenario collections loaded through the scenario loader.
@@ -75,6 +75,10 @@ Observable boundary contract:
 - `CamBANGServer.stop()`
 - `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
+- advanced/dev/scenario explicit-ID result lookups:
+  - `CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`
+  - `CamBANGServer.get_capture_result_set_by_id(capture_id)`
+  - `CamBANGServer.get_stream_result_by_stream_id(stream_id)`
 - `signal state_published(gen, version, topology_version)`
 
 `get_state_snapshot()` returns `NIL` before the first baseline publish of
@@ -86,7 +90,7 @@ tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
 Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
-entry point; rig capture is triggered via `CamBANGRig.trigger_capture()`.
+entry point; rig capture is triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`.
 
 ### `CamBANGRig`
 
@@ -96,7 +100,8 @@ capture across multiple devices.
 Primary lifecycle controls:
 
 - `get_id()`
-- `trigger_capture()`
+- `trigger_capture() -> Error`
+- `get_result()`
 
 Rig-triggered sync capture has priority over standalone activity on
 member devices when conflicts arise.
@@ -112,7 +117,8 @@ Primary lifecycle controls:
 - `set_warm_policy(...)`
 - `set_still_capture_profile(profile)`
 - `get_instance_id()`
-- `trigger_capture()`
+- `trigger_capture() -> Error`
+- `get_result()`
 
 `CamBANGDevice` is the public Godot-facing control point for device-level
 still capture. That public surface does not imply any required 1:1 parity
@@ -130,6 +136,7 @@ instance.
 Primary controls:
 
 - `start()` / `stop()`
+- `get_result()`
 
 Each device supports at most one active repeating stream at a time
 (i.e. a stream with `phase=LIVE` and `mode != STOPPED`).
@@ -169,7 +176,8 @@ A profile used for triggered still capture (device-triggered or
 rig-triggered). Typical fields include:
 
 - Resolution
-- Pixel format (may include formats such as `'JPEG'` and `'RAW '` where supported)
+- Still-result format: a CamBANG FourCC-style value; encoded or RAW-domain
+  forms are valid only where the matching payload-kind/result path is supported
 - Optional processing hints
 
 Profiles define capture fidelity and intent, not hardware truth.
@@ -242,10 +250,14 @@ Invalid selection behaviour:
 
 ## 4. Spec updates and `apply_mode`
 
-Spec updates follow a single API pattern:
+Spec update vocabulary follows a single intended API pattern:
 
 - `update_camera_spec(camera_id, patch, apply_mode=...)`
 - `update_imaging_spec(patch, apply_mode=...)`
+
+Current internal/provider seams include spec patch application concepts, but these
+method names must not be read as a currently bound Godot public API unless the
+Godot-facing surface explicitly exposes them.
 
 ### `ApplyMode`
 

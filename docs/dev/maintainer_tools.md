@@ -74,8 +74,9 @@ For maintainer smoke/CLI tooling, authored validation inputs are called
 **verification cases**.
 
 - Use **verification case** in prose/help text for smoke/CLI selections.
-- Reserve **scenario** for the user-facing / Godot / SyntheticProvider
-  timeline meaning.
+- Reserve **scenario** for SyntheticProvider/provider-core timeline replay,
+  diagnostics, metrics, fault reproduction, and recorded/authored behavior
+  playback.
 - Keep **fixture** distinct: fixtures are input artifacts; verification
   cases are authored validation procedures that may consume fixtures.
 
@@ -272,8 +273,8 @@ destroy/close realization shape.
 In particular:
 
 - **strict** validation may legitimately result in either:
-    - retained stopped state with in-band destroy/close failure, or
-    - full in-band destroy/close success
+  - retained stopped state with in-band destroy/close failure, or
+  - full in-band destroy/close success
 
 - **completion-gated** validation proves eventual successful destructive
   realization once the relevant readiness truth exists
@@ -294,10 +295,17 @@ Those concerns belong to platform validation tools.
 
 ### Build and usage
 
-Typical build form:
+Typical smoke-only build form:
 
 ```text
-scons smoke=1 smoke
+scons smoke=1 gde=no smoke
+```
+
+If also building the GDExtension in the same invocation, pass an explicit
+provider selection because the GDE target requires `provider=...`:
+
+```text
+scons smoke=1 provider=stub smoke
 ```
 
 Usage:
@@ -378,6 +386,11 @@ It verifies:
   boundary
 - `get_active_provider_config()` explicit-null shape for non-applicable
   `timeline_reconciliation` modes
+- public runtime-command admission only after the first observable baseline
+  `state_published(gen, 0, 0)` for a generation, including reset across stop/restart
+- the narrow synthetic timeline UX exception where scenario staging and pending
+  `start_scenario()` intent may be accepted before baseline while effects remain
+  post-baseline
 
 This scene complements deterministic provider verification, but it does not
 replace `provider_compliance_verify` or change the role of
@@ -547,8 +560,8 @@ Maintainer proof inventory for Godot-visible rig capture uses:
 
 - Scene 73: `tests/cambang_gde/scenes/73_rig_capture_result_set_verification.tscn`
 - Scenario: `scenarios/rig_capture_result_basic.json`
-- Trigger path: `CamBANGRig.trigger_capture()`
-- Verification surface: `CaptureResultSet`
+- Trigger path: `CamBANGRig.trigger_capture() -> Error`
+- Verification surface: object-level `CamBANGRig.get_result()` returning `CaptureResultSet`
 
 Scene 70 remains the maintainer-facing stream/result teaching and verification
 coverage; Scene 73 is the canonical Godot-visible rig `CaptureResultSet` proof.

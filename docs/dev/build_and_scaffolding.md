@@ -169,10 +169,17 @@ That file remains a log, not a narrative build guide.
 
 ## 6. Provider-selection scope in builds
 
-The SCons `provider=...` option selects the **single platform-backed backend
-implementation** compiled into the GDExtension build.
+The SCons `provider=...` option selects the **single concrete provider
+backend implementation** compiled into the GDExtension build.
 
-Exactly one platform-backed backend is compiled per build.
+Current selectable GDE provider backends include:
+
+- `provider=stub` — deterministic dev/test provider; not a production
+  platform-backed provider
+- `provider=windows_mediafoundation` — Windows Media Foundation dev
+  accelerator / real-hardware validation scaffold
+
+Exactly one concrete GDE provider backend is compiled per build.
 
 Synthetic support is controlled independently through:
 
@@ -188,8 +195,10 @@ At runtime, the provider instance may support:
 
 Core still binds to exactly one provider instance.
 
-These knobs must **not** alter the core smoke executable, which remains
-stub-provider-only by design.
+Provider selection is primarily a GDE/provider-factory build concern. Smoke and
+verification binaries remain deterministic and must not depend on platform-backed
+providers. The core spine smoke executable supports a providerless baseline mode;
+stub-backed smoke/stress coverage is enabled when built with `provider=stub`.
 
 ---
 
@@ -224,12 +233,19 @@ do not define final product constraints.
 During the scaffolding phase:
 
 - the default target builds the GDExtension (`gde`)
+- the GDExtension build requires an explicit `provider=...` selection
 - core smoke is opt-in via `smoke=1`
 
-If `smoke=1` is provided, the default build may also build the smoke target
-alongside `gde` as an implementation detail.
+If `smoke=1` is provided while `gde` remains enabled, the default build may build
+both the smoke target and the selected-provider GDE target. In that case, pass an
+explicit provider selection such as `provider=stub` or
+`provider=windows_mediafoundation`.
 
-If smoke-only output is desired, build the alias explicitly.
+If smoke-only output is desired, disable the GDE target explicitly:
+
+```sh
+scons smoke=1 gde=no smoke
+```
 
 Godot compatibility target:
 
@@ -423,7 +439,13 @@ Typical build loop:
 
 ```sh
 scons -c
-scons -j 8 gde platform=windows target=template_debug arch=x86_64 use_mingw=yes
+scons -j 8 gde platform=windows provider=windows_mediafoundation target=template_debug arch=x86_64 use_mingw=yes
+```
+
+For a deterministic dev/test GDE build without real camera access, use:
+
+```sh
+scons -j 8 gde platform=windows provider=stub target=template_debug arch=x86_64 use_mingw=yes
 ```
 
 Expected outputs include:
@@ -436,7 +458,7 @@ This build also refreshes `compile_commands.json` when compilation runs.
 To place the compilation database elsewhere:
 
 ```sh
-scons -j 8 gde platform=windows target=template_debug arch=x86_64 use_mingw=yes COMPDB_PATH=out/compile_commands.json
+scons -j 8 gde platform=windows provider=windows_mediafoundation target=template_debug arch=x86_64 use_mingw=yes COMPDB_PATH=out/compile_commands.json
 ```
 
 Then open the Godot test project:
@@ -487,14 +509,16 @@ src/smoke/core_spine_smoke.cpp
 Properties:
 
 - opt-in build
-- stub-provider-only by design
-- independent of `provider=...` platform selection
+- providerless baseline mode is available
+- stub-backed mode is enabled when built with `provider=stub`
+- independent of platform-backed provider implementations
 - not part of the GDExtension artifact
 
 Purpose:
 
 - deterministic invariant validation of core runtime
-- stub-provider-only lifecycle verification
+- providerless baseline/runtime-spine validation
+- stub-backed lifecycle verification where required
 - optional stress mode for repeated churn testing
 
 Smoke-only code paths are gated behind:
@@ -520,7 +544,8 @@ Stress mode validates:
 - exit-phase reachability
 - admission gating during teardown
 
-This remains stub-provider-only and must not depend on platform providers.
+Stress mode requires the stub-backed smoke build (`provider=stub`) and must not
+depend on platform-backed providers.
 
 ---
 

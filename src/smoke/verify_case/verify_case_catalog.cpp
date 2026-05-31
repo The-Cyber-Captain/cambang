@@ -2167,9 +2167,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
         core_dispatch(ev);
       });
 
-  runtime.attach_provider(&broker);
   if (!broker.initialize(runtime.provider_callbacks()).ok()) {
-    runtime.attach_provider(nullptr);
     runtime.stop();
     cli::error("FAIL: provider broker initialize failed");
     return 1;
@@ -2178,7 +2176,6 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   std::vector<CameraEndpoint> eps;
   if (!broker.enumerate_endpoints(eps).ok() || eps.empty()) {
     (void)broker.shutdown();
-    runtime.attach_provider(nullptr);
     runtime.stop();
     cli::error("FAIL: enumerate_endpoints failed");
     return 1;
@@ -2188,7 +2185,6 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   const uint32_t fps_num = st.profile.target_fps_max != 0 ? st.profile.target_fps_max : st.profile.target_fps_min;
   if (fps_num == 0) {
     (void)broker.shutdown();
-    runtime.attach_provider(nullptr);
     runtime.stop();
     cli::error("FAIL: synthetic stream template fps invalid");
     return 1;
@@ -2197,14 +2193,18 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
 
   bool broker_initialized = true;
   bool provider_attached = true;
+  runtime.attach_provider(&broker);
   auto cleanup = [&]() {
+    if (provider_attached) {
+      runtime.stop();
+      runtime.attach_provider(nullptr);
+      provider_attached = false;
+      broker_initialized = false;
+      return;
+    }
     if (broker_initialized) {
       (void)broker.shutdown();
       broker_initialized = false;
-    }
-    if (provider_attached) {
-      runtime.attach_provider(nullptr);
-      provider_attached = false;
     }
     runtime.stop();
   };
@@ -2445,18 +2445,10 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
 
-  if (!broker.shutdown().ok()) {
-    broker_initialized = false;
-    runtime.attach_provider(nullptr);
-    provider_attached = false;
-    runtime.stop();
-    cli::error("FAIL: broker shutdown failed");
-    return 1;
-  }
-  broker_initialized = false;
+  runtime.stop();
   runtime.attach_provider(nullptr);
   provider_attached = false;
-  runtime.stop();
+  broker_initialized = false;
 
   cli::line("Verification case PASSED");
   return 0;

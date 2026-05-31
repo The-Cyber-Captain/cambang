@@ -20,9 +20,9 @@ reporting
 -   **Repeating stream**: a continuous frame flow for a device instance
     (`CamBANGStream`).
 -   **Triggered device capture**: a single still capture requested on a
-    device (`CamBANGDevice.trigger_capture()`).
+    device (`CamBANGDevice.trigger_capture() -> Error`, with result polling through `CamBANGDevice.get_result()`).
 -   **Triggered rig capture**: a synchronised capture requested on a rig
-    (`CamBANGRig.trigger_capture()`).
+    (`CamBANGRig.trigger_capture() -> Error`, with result polling through `CamBANGRig.get_result()`).
 
 ### 1.2 Ownership and membership
 
@@ -81,7 +81,9 @@ from running, core fails the request with a deterministic error code.
 For v1, core uses a conservative compatibility rule-set:
 
 -   Stream formats must be raw-only.
--   Still formats may include `'JPEG'` and `'RAW '` (where supported).
+-   Still-result formats are CamBANG FourCC-style values. Current displayable
+    still paths use packed pixel formats; encoded or RAW-domain still outputs
+    are valid only where the matching payload-kind/result path is supported.
 -   If a device is a rig member and rig is ARMED, any device-level
     capture or stream request must be compatible with the rig's
     configured requirements, otherwise it is rejected.
@@ -260,7 +262,7 @@ Numeric mapping is defined in code and documented separately.
 -   Deny/preempt/fail semantics are explicit and deterministic.
 
 Implementation-status guardrails (current):
-- Rig capture is publicly triggered via `CamBANGRig.trigger_capture()`;
+- Rig capture is publicly triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`;
   no public `CamBANGServer.trigger_rig_capture(...)` API.
 - Scenario timelines stage state/topology but do not define capture trigger actions.
 - Overlapping multi-rig membership is not supported (single membership per device).

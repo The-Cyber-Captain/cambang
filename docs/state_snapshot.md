@@ -254,11 +254,14 @@ characters, e.g. `'NV12'`, `'I420'`, `'RGBA'`.
 CamBANG defines a **canonical set** of pixel format codes and each
 platform provider maps platform-native formats into this set.
 
-**v1 policy**: - Repeating streams (`PREVIEW`, `VIEWFINDER`) are
-**raw-only** formats (no compressed JPEG/MJPG). - Triggered capture
-profiles may include formats such as `'JPEG'` and `'RAW '` (the latter
-may not be implemented on all platforms in v1, but is part of the
-design).
+**v1 policy**: Repeating streams (`PREVIEW`, `VIEWFINDER`) use raw,
+displayable pixel formats (no compressed JPEG/MJPG). Still-capture
+profiles also carry a FourCC-style format field, but the field alone does
+not enable encoded JPEG or RAW still output. Future encoded/RAW still
+outputs remain a design possibility; they require matching
+`payload_kind`/result support in addition to any profile format value.
+Current implemented displayable still paths use packed pixel formats such
+as `FOURCC_RGBA` / `FOURCC_BGRA`.
 
 ------------------------------------------------------------------------
 
@@ -435,8 +438,11 @@ RigState {
 
 ### 6.2 `DeviceState`
 
-`capture_profile.still.width`, `capture_profile.still.height`, and `capture_profile.still.format` form part of the applied still capture
-profile for this device.
+`capture_profile.still.width`, `capture_profile.still.height`, and
+`capture_profile.still.format` form part of the applied still capture profile
+for this device. `capture_profile.still.format` is the retained/applied
+provider-agnostic still-result format FourCC and is the source behind
+status-panel `capture_fmt`.
 
 ``` text
 DeviceState {

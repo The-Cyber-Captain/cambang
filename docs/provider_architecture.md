@@ -181,38 +181,35 @@ rejections.
 
 ---
 
-## 6. StreamTemplate and provider-type defaults
+## 6. StreamTemplate, CaptureTemplate, and provider-type defaults
 
-Each provider type exposes a deterministic `StreamTemplate` containing:
+Each provider type exposes deterministic default templates:
 
-- `CaptureProfile profile`
-- `PictureConfig picture`
-
-The `StreamTemplate` defines that provider type's **default stream
-configuration**.
+- `StreamTemplate` defines default repeating-stream configuration:
+  `CaptureProfile profile` + `PictureConfig picture`.
+- `CaptureTemplate` defines default still-capture configuration:
+  `CaptureProfile profile` + `PictureConfig picture`.
 
 ### 6.1 Defaulting boundary
 
-Provider-type defaults are applied by **Core**, not by execution-time
-provider repair.
+Provider-type defaults are applied by **Core** at materialization and
+retention boundaries, not by execution-time provider repair.
 
-Core merges:
-
-- caller-supplied request
-- provider `StreamTemplate`
-
-into the **effective per-stream configuration** supplied to the provider.
+Core merges caller-supplied request state with the relevant provider
+template into the effective stream or still-capture configuration supplied
+to the provider.
 
 Providers must execute that effective configuration.
 
 ### 6.2 Provider prohibition
 
 Providers must not silently invent fallback values during
-`create_stream()` or `start_stream()` for fields such as:
+`create_stream()`, `start_stream()`, or `trigger_capture()` for fields
+such as:
 
 - width
 - height
-- pixel format
+- pixel / still-result format
 - picture defaults
 
 If the effective configuration reaching the provider is still invalid or
@@ -222,7 +219,8 @@ it silently.
 ### 6.3 Scope of current defaulting model
 
 The current model treats the provider template as the source of omitted
-configuration at the **request/template materialization** boundary.
+configuration at the **request/template materialization** boundary and as
+the source for retained baseline profile state.
 
 Providers must not add a second hidden layer of defaulting beneath that.
 
@@ -231,11 +229,22 @@ Providers must not add a second hidden layer of defaulting beneath that.
 - A capture profile provided by the caller represents requested configuration.
 - Core validates, normalizes, and materializes this into an applied profile.
 - The applied profile is the configuration actually governing runtime behaviour.
+- The provider default still-capture profile is snapshot-visible as the applied
+  still profile with `capture_profile.still.version` /
+  `capture_profile_version` equal to `0` until explicitly changed.
 
-### 6.5 Snapshot Policy
+### 6.5 Snapshot and format naming policy
 
 - Snapshot exposes the applied profile, not merely the requested profile or a version reference.
 - Snapshot-visible configuration must reflect the applied profile exactly (no transformation or inference).
+- `capture_profile.still.format`, CoreDeviceRegistry `capture_format`,
+  `CaptureRequest.format_fourcc`, and status-panel `capture_fmt` are the same
+  provider-agnostic CamBANG FourCC-style still-result format value at different
+  layers.
+- Current implemented displayable still paths use packed pixel formats such as
+  `FOURCC_RGBA` / `FOURCC_BGRA`; encoded JPEG or RAW still outputs require
+  matching payload-kind/result support and are not implied by writing those
+  names into the FourCC-style format field.
 
 ---
 
@@ -332,6 +341,22 @@ not implicit upward realization (`open/create/start`).
 
 During provider shutdown, ordered internal teardown is allowed so the
 provider can release resources cleanly.
+
+Once a provider is attached to `CoreRuntime`, attached-provider shutdown is
+owned by `CoreRuntime::stop()`. External owners may allocate and store the
+provider, but while the runtime is live and the provider is attached they must
+keep it alive and must not call `provider->shutdown()` directly. The normal
+release order is:
+
+```cpp
+runtime.stop();
+runtime.attach_provider(nullptr);
+// then release/reset provider ownership
+```
+
+Detaching before `runtime.stop()` is not the default: Core needs the attached
+provider during deterministic shutdown to stop streams, destroy streams, close
+devices, and call `provider->shutdown()`.
 
 Shutdown teardown must still be truthful:
 
@@ -485,7 +510,7 @@ platform-backed providers all owe the same contract.
 When adding a new provider, including future platform-backed providers:
 
 1. implement the provider as an adapter to the existing contract
-2. define provider-type defaults in `StreamTemplate`
+2. define provider-type defaults in `StreamTemplate` and `CaptureTemplate`
 3. route all provider → Core facts through the provider strand
 4. report native-object lifecycles truthfully
 5. pass the provider compliance verifier

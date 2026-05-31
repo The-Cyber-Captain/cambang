@@ -66,6 +66,7 @@ static void usage(const char* argv0) {
       << "  basic_lifecycle\n"
       << "  invalid_sequence\n"
       << "  catchup_stress\n"
+      << "  one_active_stream_admission\n"
       << "  staged_endpoint_span_inference\n"
       << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n";
 }
@@ -427,6 +428,53 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
   return 0;
 }
 
+static int run_one_active_stream_admission(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt) {
+  constexpr uint64_t kStreamA = 101;
+  constexpr uint64_t kStreamB = 102;
+
+  if (rt.try_create_stream(kStreamA, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1) != TryCreateStreamStatus::OK) {
+    std::cerr << "FAIL: stream A create not accepted\n";
+    return 1;
+  }
+  if (rt.try_create_stream(kStreamB, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1) != TryCreateStreamStatus::OK) {
+    std::cerr << "FAIL: stream B create not accepted\n";
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamA) != TryStartStreamStatus::OK) {
+    std::cerr << "FAIL: stream A start not accepted\n";
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamB) != TryStartStreamStatus::Busy) {
+    std::cerr << "FAIL: stream B start should be Busy while stream A is flowing\n";
+    return 1;
+  }
+
+  rt.request_publish();
+  if (!wait_until([&]() {
+        auto s = snapshot_copy(buf);
+        if (!s) return false;
+        if (opt.dump_snapshots) dump_snapshot(*s);
+        return stream_is_flowing(*s, kStreamA);
+      })) {
+    std::cerr << "FAIL: stream A did not reach flowing state\n";
+    return 1;
+  }
+
+  if (rt.try_stop_stream(kStreamA) != TryStopStreamStatus::OK) {
+    std::cerr << "FAIL: stream A stop not accepted\n";
+    return 1;
+  }
+  if (rt.try_destroy_stream(kStreamA) != TryDestroyStreamStatus::OK) {
+    std::cerr << "FAIL: stream A destroy not accepted\n";
+    return 1;
+  }
+  if (rt.try_destroy_stream(kStreamB) != TryDestroyStreamStatus::OK) {
+    std::cerr << "FAIL: stream B destroy not accepted\n";
+    return 1;
+  }
+  return 0;
+}
+
 static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov) {
   constexpr uint64_t kBaseRoot = 9000;
   constexpr uint64_t kDid0 = 9100;
@@ -515,18 +563,22 @@ int main(int argc, char** argv) {
   }
 
   rt.attach_provider(&prov);
+  auto stop_attached_runtime = [&]() {
+    rt.stop();
+    rt.attach_provider(nullptr);
+  };
 
   // Open the first endpoint deterministically.
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
     std::cerr << "FAIL: enumerate_endpoints failed\n";
-    rt.stop();
+    stop_attached_runtime();
     return 2;
   }
   rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
     std::cerr << "FAIL: open_device failed\n";
-    rt.stop();
+    stop_attached_runtime();
     return 2;
   }
 
@@ -537,7 +589,7 @@ int main(int argc, char** argv) {
   const uint64_t period = fps_period_ns(cfg.nominal.fps_num, cfg.nominal.fps_den);
   if (period == 0) {
     std::cerr << "FAIL: invalid fps period\n";
-    rt.stop();
+    stop_attached_runtime();
     return 2;
   }
 
@@ -549,6 +601,8 @@ int main(int argc, char** argv) {
     r = run_invalid_sequence(rt, buf, opt);
   } else if (opt.verify_case == "catchup_stress") {
     r = run_catchup_stress(rt, buf, opt, period);
+  } else if (opt.verify_case == "one_active_stream_admission") {
+    r = run_one_active_stream_admission(rt, buf, opt);
   } else if (opt.verify_case == "staged_endpoint_span_inference") {
     r = run_staged_endpoint_span_inference_regression(prov);
   } else {
@@ -561,12 +615,8 @@ int main(int argc, char** argv) {
     failure_reason = "case_returned_nonzero";
   }
 
-  // Provider shutdown choreography.
-  (void)prov.close_device(kDeviceInstanceId);
-  (void)prov.shutdown();
-
-  rt.attach_provider(nullptr);
-  rt.stop();
+  // CoreRuntime owns attached-provider shutdown while the core thread is live.
+  stop_attached_runtime();
 
   if (r == 0) {
     std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";

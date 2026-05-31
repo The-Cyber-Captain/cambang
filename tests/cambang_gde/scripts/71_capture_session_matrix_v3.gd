@@ -354,19 +354,19 @@ func _trigger_capture_for_device(device_key: String) -> bool:
 		_append_log("WARN: get_device returned null for %s" % device_key)
 		return false
 
-	var capture_id: int = int(device.trigger_capture())
-	if capture_id == 0:
-		_append_log("WARN: trigger_capture returned zero for %s" % device_key)
+	var capture_err: int = int(device.trigger_capture())
+	if capture_err != OK:
+		_append_log("WARN: trigger_capture returned err=%d for %s" % [capture_err, device_key])
 		return false
 
 	_pending_captures.append({
 		"device": device_key,
-		"capture_id": capture_id,
+		"device_object": device,
 		"device_instance_id": device_instance_id,
 		"bound": false
 	})
-	_append_log("Capture requested %s id=%d" % [device_key, capture_id])
-	_phase_marker("capture_requested", int(_current_checkpoint.get("id", -1)), "device=%s capture_id=%d" % [device_key, capture_id])
+	_append_log("Capture requested %s" % device_key)
+	_phase_marker("capture_requested", int(_current_checkpoint.get("id", -1)), "device=%s" % device_key)
 	return true
 
 
@@ -377,9 +377,11 @@ func _poll_pending_captures() -> float:
 		if bool(item.get("bound", false)):
 			continue
 
-		var capture_id: int = int(item.get("capture_id", 0))
 		var device_instance_id: int = int(item.get("device_instance_id", 0))
-		var result: Variant = CamBANGServer.get_capture_result(capture_id, device_instance_id)
+		var device: Variant = item.get("device_object", null)
+		if device == null:
+			continue
+		var result: Variant = device.get_result()
 		if result == null:
 			continue
 
@@ -393,18 +395,18 @@ func _poll_pending_captures() -> float:
 		var display_start_usec := Time.get_ticks_usec()
 		if device_key == DEVICE_A_KEY:
 			_capture_a_rect.texture = tex
-			_capture_a_facts.text = "Capture A\ncapture_id=%d\ndevice_instance_id=%d\nsize=%dx%d" % [
-				capture_id, device_instance_id, image.get_width(), image.get_height()
+			_capture_a_facts.text = "Capture A\ndevice_instance_id=%d\nsize=%dx%d" % [
+				device_instance_id, image.get_width(), image.get_height()
 			]
 		else:
 			_capture_b_rect.texture = tex
-			_capture_b_facts.text = "Capture B\ncapture_id=%d\ndevice_instance_id=%d\nsize=%dx%d" % [
-				capture_id, device_instance_id, image.get_width(), image.get_height()
+			_capture_b_facts.text = "Capture B\ndevice_instance_id=%d\nsize=%dx%d" % [
+				device_instance_id, image.get_width(), image.get_height()
 			]
 
 		item["bound"] = true
 		_pending_captures[i] = item
-		_append_log("Capture bound %s id=%d" % [device_key, capture_id])
+		_append_log("Capture bound %s" % device_key)
 		display_sec += _elapsed_sec_from_ticks(display_start_usec)
 	return display_sec
 
@@ -426,7 +428,9 @@ func _bind_stream_slot(slot: String) -> bool:
 		_append_log("WARN: stream id not latched for %s" % slot)
 		return false
 
-	var result: Variant = CamBANGServer.get_latest_stream_result(stream_id)
+	# This matrix latches scenario-authored stream ids rather than public
+	# CamBANGStream handles, so it uses the advanced server stream-id lookup.
+	var result: Variant = CamBANGServer.get_stream_result_by_stream_id(stream_id)
 	if result == null:
 		_append_log("WARN: latest stream result not ready yet for %s" % slot)
 		return false

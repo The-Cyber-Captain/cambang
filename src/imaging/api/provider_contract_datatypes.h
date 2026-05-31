@@ -100,7 +100,8 @@ enum class NativeObjectType : uint32_t {
 // PictureConfig:  picture appearance parameters (pattern selection + overlays).
 //
 // These are provider-agnostic datatypes and contain no platform headers.
-// Defaulting is performed by Core via StreamTemplate (provider default).
+// Defaulting is performed by Core via StreamTemplate and CaptureTemplate
+// (provider defaults).
 // -----------------------------------------------------------------------------
 
 struct CaptureProfile {
@@ -268,7 +269,11 @@ struct CaptureRequest {
 
   uint32_t width = 0;
   uint32_t height = 0;
-  uint32_t format_fourcc = 0;        // e.g., 'JPEG', 'RAW '
+  // Materialized provider-agnostic still-result format FourCC. Current
+  // implemented displayable still paths use packed pixel formats such as
+  // FOURCC_RGBA / FOURCC_BGRA; encoded or RAW representations require matching
+  // payload-kind/result support and are not enabled by this field alone.
+  uint32_t format_fourcc = 0;
   PictureConfig picture{};
   CaptureStillImageBundle still_image_bundle{};
 

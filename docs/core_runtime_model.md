@@ -114,10 +114,18 @@ arm/disarm rig - trigger rig capture - apply spec patches
 
 Commands are immutable message objects; core owns command execution.
 
-Current public Godot-facing trigger surface is object-oriented:
-- device capture via `CamBANGDevice.trigger_capture()`
-- rig capture via `CamBANGRig.trigger_capture()` (rig object obtained with
-  `CamBANGServer.get_rig(rig_id)`)
+Current public Godot-facing trigger/result surface is object-oriented:
+- device capture via `CamBANGDevice.trigger_capture() -> Error`, then
+  `CamBANGDevice.get_result()` for the current completed `CaptureResult`
+- rig capture via `CamBANGRig.trigger_capture() -> Error` (rig object obtained
+  with `CamBANGServer.get_rig(rig_id)`), then `CamBANGRig.get_result()` for the
+  current completed `CaptureResultSet`
+- stream observation via `CamBANGStream.get_result()` for the current observable
+  `StreamResult`
+- advanced/dev/scenario result lookup by explicit IDs remains available as
+  `CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`,
+  `CamBANGServer.get_capture_result_set_by_id(capture_id)`, and
+  `CamBANGServer.get_stream_result_by_stream_id(stream_id)`
 - no public singleton `CamBANGServer.trigger_rig_capture(...)` entry.
 
 ### 4.2 Provider event queue (Provider → Core)
@@ -356,6 +364,10 @@ When shutdown is requested:
 8.  Core thread exits
 
 Providers must not block indefinitely on shutdown (provider contract).
+For an attached provider, `CoreRuntime::stop()` is the shutdown owner: hosts
+keep the provider attached and alive until `stop()` returns, then detach and
+release external ownership. Detaching first skips the provider object Core needs
+for deterministic stream/device teardown and the provider shutdown call.
 Core may internally model shutdown as explicit ordered phases,
 but the architectural guarantee is completion of steps 1–8
 before thread termination.
@@ -546,7 +558,9 @@ CamBANG distinguishes between **core invariant validation** and
 ### 13.1 Core invariant validation (portable)
 
 Core lifecycle and determinism invariants are validated in development
-builds via the `core_spine_smoke` smoke executable (stub-provider-only).
+builds via the `core_spine_smoke` smoke executable. It supports a providerless
+baseline mode and a stub-backed mode for paths that require a deterministic
+provider.
 
 The smoke executable validates:
 
@@ -557,7 +571,9 @@ The smoke executable validates:
 - EXIT phase reached before thread termination
 - No frame leaks across repeated start/stop cycles
 
-This validation is platform-independent and must remain stub-provider-only.
+This validation is platform-independent and must remain independent of
+platform-backed providers. Stub-backed stress/provider paths require a
+`provider=stub` smoke build.
 
 ### 13.2 Platform integration validation
 

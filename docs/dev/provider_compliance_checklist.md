@@ -57,14 +57,17 @@ to be lost.
 
 ---
 
-## 4. StreamTemplate and defaulting boundary
+## 4. StreamTemplate, CaptureTemplate, and defaulting boundary
 
-- The provider exposes a deterministic `StreamTemplate`.
-- Provider-type defaults live in that template.
-- Core materializes the effective stream config from request + template.
+- The provider exposes deterministic `StreamTemplate` and `CaptureTemplate`
+  values.
+- Provider-type stream and still-capture defaults live in those templates.
+- Core materializes effective stream and still-capture config from requests,
+  provider templates, and retained profile state.
 - The provider executes the effective config it is given.
 - The provider does not silently invent width / height / format /
-  picture defaults during `create_stream()` or `start_stream()`.
+  picture defaults during `create_stream()`, `start_stream()`, or
+  `trigger_capture()`.
 - If the effective config reaching the provider is incomplete or
   invalid, the provider fails deterministically rather than repairing it
   silently.

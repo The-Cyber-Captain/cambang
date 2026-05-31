@@ -503,6 +503,11 @@ result-object surface is intentionally constrained as follows.
 
 ### 10.6.1 Stream Result initial surface
 
+Public Godot stream observation uses `CamBANGStream.get_result()` for the current
+observable `StreamResult`. Explicit `stream_id` lookup remains
+advanced/dev/scenario tooling via
+`CamBANGServer.get_stream_result_by_stream_id(stream_id)`.
+
 Direct descriptive fields:
 
 - `width`
@@ -532,6 +537,11 @@ Non-goals:
 - no backend-native public handles
 
 ### 10.6.2 Capture Result initial surface
+
+Public Godot device capture uses `CamBANGDevice.trigger_capture() -> Error` and
+polls `CamBANGDevice.get_result()` for the current completed `CaptureResult`.
+Explicit `capture_id` lookup remains advanced/dev/scenario tooling via
+`CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`.
 
 Direct scalar/default-image convenience fields:
 
@@ -575,7 +585,17 @@ Non-goals:
 - no RAW processing/export APIs
 - no backend-native public handles
 
+`can_get_encoded_bytes()` / `get_encoded_bytes()` may be bound as capability
+probes, but currently report unsupported / empty. Encoded output requires a
+supported `ENCODED_IMAGE` payload/result path; it is not enabled by setting a
+FourCC-style format value alone.
+
 ### 10.6.3 Capture Result Set initial surface
+
+Public Godot rig capture uses `CamBANGRig.trigger_capture() -> Error` and polls
+`CamBANGRig.get_result()` for the current completed `CaptureResultSet`.
+Explicit `capture_id` result-set lookup remains advanced/dev/scenario tooling via
+`CamBANGServer.get_capture_result_set_by_id(capture_id)`.
 
 - `capture_id`
 - `size()`
@@ -887,8 +907,8 @@ It should generally expose only the compact subset of image-path truth that is b
 Examples of possible compact summary truth might include:
 
 - whether a device/stream/capture currently has associated calibration available
-- whether a latest result contains attached location
-- whether latest result fact provenance is mixed
+- whether a current observable result contains attached location
+- whether current retained result fact provenance is mixed
 - compact visibility/materialization path summaries
 
 Full rich result-associated fact bundles should generally remain on Result Objects rather than in the hot snapshot path.

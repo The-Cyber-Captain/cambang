@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <map>
+#include <future>
 
 #include <utility>
 
@@ -29,6 +30,31 @@ uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
     return std::numeric_limits<uint64_t>::max();
   }
   return static_cast<uint64_t>(warm_hold_ms) * kNsPerMs;
+}
+
+bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& devices,
+                                                      uint64_t device_instance_id,
+                                                      const CaptureTemplate& capture_tmpl) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  if (const auto* rec = devices.find(device_instance_id)) {
+    if (rec->capture_profile_version != 0 ||
+        rec->capture_width != 0 ||
+        rec->capture_height != 0 ||
+        rec->capture_format != 0) {
+      return false;
+    }
+  }
+
+  const uint32_t format = capture_tmpl.profile.format_fourcc == 0
+      ? FOURCC_RGBA
+      : capture_tmpl.profile.format_fourcc;
+  return devices.retain_capture_profile(device_instance_id,
+                                         capture_tmpl.profile.width,
+                                         capture_tmpl.profile.height,
+                                         format,
+                                         /*capture_profile_version=*/0);
 }
 
 } // namespace
@@ -201,6 +227,7 @@ bool CoreRuntime::start() {
   capture_cohort_registry_.clear();
   provider_facts_.clear();
   requests_.clear();
+  shutdown_requested_from_stop_.store(false, std::memory_order_release);
   shutdown_requested_ = false;
   shutdown_phase_ = ShutdownPhase::NONE;
   shutdown_phase_code_.store(0, std::memory_order_relaxed);
@@ -237,19 +264,13 @@ void CoreRuntime::stop() {
   // - Stop accepting new external requests immediately (state == TEARING_DOWN).
   // - Keep provider fact ingestion best-effort until the core thread closes.
   // - Core thread executes a deterministic shutdown pump and requests stop only at the end.
+  //
+  // This signal intentionally avoids the bounded best-effort CoreThread task queue:
+  // attached-provider shutdown must not be skipped because the ordinary queue is
+  // full or closed to new external work during stop.
   if (core_thread_.is_running()) {
-    const auto r = core_thread_.try_post([this]() {
-      assert(core_thread_.is_core_thread());
-      shutdown_requested_ = true;
-      core_thread_.request_timer_tick();
-    });
-
-    if (r != CoreThread::PostResult::Enqueued) {
-      // If we cannot schedule shutdown initiation (queue full / alloc fail / closed),
-      // fall back to an immediate stop request.
-      core_thread_.request_stop();
-    }
-
+    shutdown_requested_from_stop_.store(true, std::memory_order_release);
+    core_thread_.request_timer_tick();
     core_thread_.join();
   }
 
@@ -373,7 +394,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (became_not_in_use && !rec.warm_deadline_active) {
+    if (!rec.warm_deadline_active) {
       const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
       const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
           ? std::numeric_limits<uint64_t>::max()
@@ -384,7 +405,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
       continue;
     }
 
-    if (now_ns >= rec.warm_deadline_ns) {
+    if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
       if (!rec.warm_expired_close_requested && prov) {
         (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
         (void)prov->close_device(rec.device_instance_id);
@@ -492,6 +513,10 @@ if (dispatcher_.consume_relevant_state_changed()) {
     // published_seq_ must not become visible before the corresponding snapshot
     // is visible to boundary consumers.
     published_seq_.fetch_add(1, std::memory_order_acq_rel);
+  }
+
+  if (shutdown_requested_from_stop_.exchange(false, std::memory_order_acq_rel)) {
+    shutdown_requested_ = true;
   }
 
   // 5) Shutdown choreography (§10).
@@ -700,13 +725,24 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
     return;
   }
 
-  (void)try_post([this, device_instance_id, hardware_id]() {
+  CaptureTemplate capture_tmpl{};
+  bool has_capture_template = false;
+  if (ICameraProvider* p = provider_.load(std::memory_order_acquire)) {
+    capture_tmpl = p->capture_template();
+    has_capture_template = true;
+  }
+
+  (void)try_post([this, device_instance_id, hardware_id, capture_tmpl, has_capture_template]() {
     if (!devices_.note_device_identity(device_instance_id, hardware_id)) {
       return;
     }
     devices_.set_camera_spec_version(
         device_instance_id,
         spec_state_.camera_spec_version(hardware_id));
+    if (has_capture_template) {
+      (void)seed_retained_device_still_profile_from_template(
+          devices_, device_instance_id, capture_tmpl);
+    }
     request_publish_from_core_unchecked();
   });
 }
@@ -852,25 +888,51 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     return TryStartStreamStatus::Busy;
   }
 
-  // NOTE: CoreStreamRegistry is core-thread-only. Do not read it on the caller thread.
-  // The start is dispatched onto the core thread where the record is resolved.
-  const CoreThread::PostResult pr = try_post([this, stream_id]() {
-    ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
-
-    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
-    if (!rec) {
-      // Stream record not declared (yet) or already destroyed.
-      // Non-blocking API: caller retries as needed.
+  auto result_promise = std::make_shared<std::promise<TryStartStreamStatus>>();
+  std::future<TryStartStreamStatus> f = result_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
+    ICameraProvider* prov_local = provider_.load(std::memory_order_acquire);
+    if (!prov_local) {
+      result_promise->set_value(TryStartStreamStatus::Busy);
       return;
     }
 
-    (void)p->start_stream(stream_id, rec->profile, rec->picture);
-    (void)streams_.on_stream_started(stream_id);
-  });
+    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+    if (!rec) {
+      result_promise->set_value(TryStartStreamStatus::InvalidArgument);
+      return;
+    }
+    if (rec->started) {
+      result_promise->set_value(TryStartStreamStatus::OK);
+      return;
+    }
+    const uint64_t owner_device_instance_id = rec->device_instance_id;
+    for (const auto& kv : streams_.all()) {
+      const auto& other = kv.second;
+      if (other.stream_id == stream_id) {
+        continue;
+      }
+      if (other.device_instance_id == owner_device_instance_id && other.created && other.started) {
+        result_promise->set_value(TryStartStreamStatus::Busy);
+        return;
+      }
+    }
 
-  return (pr == CoreThread::PostResult::Enqueued) ? TryStartStreamStatus::OK
-                                                  : TryStartStreamStatus::Busy;
+    const ProviderResult sr = prov_local->start_stream(stream_id, rec->profile, rec->picture);
+    if (!sr.ok()) {
+      timeline_teardown_trace_emit("fail StartStream stream_id=%llu reason=provider_rc_%u",
+                                   static_cast<unsigned long long>(stream_id),
+                                   static_cast<unsigned>(sr.code));
+      result_promise->set_value(TryStartStreamStatus::ProviderRejected);
+      return;
+    }
+    (void)streams_.on_stream_started(stream_id);
+    result_promise->set_value(TryStartStreamStatus::OK);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryStartStreamStatus::Busy;
+  }
+  return f.get();
 }
 
 TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
@@ -883,21 +945,39 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
     return TryStopStreamStatus::Busy;
   }
 
-  const CoreThread::PostResult pr = try_post([this, stream_id]() {
-    ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+  auto result_promise = std::make_shared<std::promise<TryStopStreamStatus>>();
+  std::future<TryStopStreamStatus> f = result_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
+    ICameraProvider* prov_local = provider_.load(std::memory_order_acquire);
+    if (!prov_local) {
+      result_promise->set_value(TryStopStreamStatus::Busy);
+      return;
+    }
+    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+    if (!rec) {
+      result_promise->set_value(TryStopStreamStatus::InvalidArgument);
+      return;
+    }
+    if (!rec->started) {
+      result_promise->set_value(TryStopStreamStatus::OK);
+      return;
+    }
     (void)streams_.mark_stop_requested_by_core(stream_id);
-    const ProviderResult sr = p->stop_stream(stream_id);
+    const ProviderResult sr = prov_local->stop_stream(stream_id);
     if (!sr.ok()) {
       timeline_teardown_trace_emit("fail StopStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(sr.code));
+      result_promise->set_value(TryStopStreamStatus::ProviderRejected);
+      return;
     }
     (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
+    result_promise->set_value(TryStopStreamStatus::OK);
   });
-
-  return (pr == CoreThread::PostResult::Enqueued) ? TryStopStreamStatus::OK
-                                                  : TryStopStreamStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryStopStreamStatus::Busy;
+  }
+  return f.get();
 }
 
 TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexcept {
@@ -921,11 +1001,6 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
       timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(dr.code));
-    }
-    if (dr.ok()) {
-      (void)streams_.on_stream_destroyed(stream_id);
-      // Ensure core does not retain a ghost record.
-      (void)streams_.forget_stream(stream_id);
     }
   });
 
@@ -951,6 +1026,7 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
     if (!p) return;
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
+    (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
     (void)p->open_device(hardware_id, device_instance_id, root_id);
   });
@@ -1107,6 +1183,30 @@ TrySetStillCaptureProfileStatus CoreRuntime::try_set_device_still_capture_profil
   return (pr == CoreThread::PostResult::Enqueued)
       ? TrySetStillCaptureProfileStatus::OK
       : TrySetStillCaptureProfileStatus::Busy;
+}
+
+TrySetWarmHoldStatus CoreRuntime::try_set_device_warm_hold_ms(
+    uint64_t device_instance_id,
+    uint32_t warm_hold_ms) noexcept {
+  if (device_instance_id == 0) {
+    return TrySetWarmHoldStatus::InvalidArgument;
+  }
+  auto status_promise = std::make_shared<std::promise<TrySetWarmHoldStatus>>();
+  std::future<TrySetWarmHoldStatus> status_future = status_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, warm_hold_ms, status_promise]() {
+    const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
+    if (rec == nullptr || !rec->open) {
+      status_promise->set_value(TrySetWarmHoldStatus::Busy);
+      return;
+    }
+    (void)devices_.set_warm_hold_ms(device_instance_id, warm_hold_ms);
+    request_publish_from_core_unchecked();
+    status_promise->set_value(TrySetWarmHoldStatus::OK);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TrySetWarmHoldStatus::Busy;
+  }
+  return status_future.get();
 }
 
 bool CoreRuntime::materialize_capture_request(uint64_t device_instance_id, CaptureRequest& out) const noexcept {
@@ -1394,7 +1494,31 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
 }
 
 bool CoreRuntime::smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids) {
-  return retain_rig_member_hardware_ids(rig_id, member_hardware_ids);
+  if (rig_id == 0) {
+    return false;
+  }
+
+  if (core_thread_.is_core_thread()) {
+    const bool retained = rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
+    request_publish_from_core_unchecked();
+    return retained;
+  }
+
+  auto completion = std::make_shared<std::promise<bool>>();
+  std::future<bool> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, rig_id, member_hardware_ids = std::move(member_hardware_ids), completion]() mutable {
+    const bool retained = rigs_.retain_member_hardware_ids(rig_id, std::move(member_hardware_ids));
+    request_publish_from_core_unchecked();
+    completion->set_value(retained);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return false;
+  }
+
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return false;
+  }
+  return completed.get();
 }
 
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_preflight(
