@@ -50,6 +50,13 @@ int CamBANGCaptureResult::can_get_display_view() const {
 }
 
 int CamBANGCaptureResult::can_to_image() const {
+  // CaptureResult.can_to_image() delegates to
+  // CaptureResult.can_to_image_member(index). These are capability/cost
+  // classification APIs, not readiness/progress APIs. Future lower-level
+  // materialization infrastructure can be shared with StreamResult.to_image(),
+  // while CaptureResult.to_image() and
+  // CaptureResult.to_image_member(index) must retain capture/member identity
+  // validation.
   return can_to_image_member(0);
 }
 
@@ -86,6 +93,10 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
 }
 
 int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
+  // CaptureResult.can_to_image_member(index) returns CHEAP only when the
+  // requested member already has a retained CPU representation. EXPENSIVE is
+  // reserved for a later safe explicit materialization route; unsupported
+  // members or members with no safe route remain UNSUPPORTED.
   if (!data_ || image_member_index < 0) {
     return CAPABILITY_UNSUPPORTED;
   }

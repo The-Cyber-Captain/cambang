@@ -346,6 +346,26 @@ struct CaptureImageFrameMetadata {
   int32_t realized_exposure_compensation_milli_ev = 0;
 };
 
+// Neutral description of a retained GPU backing. This struct intentionally
+// carries only scalar identity, shape, and capability facts so provider/core
+// metadata can describe GPU-backed frames without exposing rendering-resource
+// ownership details to CoreResultStore or Godot-facing result objects.
+struct RetainedGpuBackingDescriptor {
+  bool valid = false;
+  uint64_t stream_id = 0;
+  // Opaque provider-scoped backing identity or generation. Zero means the
+  // provider/core path knows a GPU backing exists but has no scalar identity.
+  uint64_t backing_id = 0;
+  uint64_t capture_timestamp_ns = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t format_fourcc = 0;
+  bool display_available = false;
+  bool materialization_available = false;
+  bool materialization_requires_gpu_readback = false;
+};
+
 // Frame view delivered from provider.
 // Provider retains buffer ownership until core calls release().
 // release() must be safe and non-blocking; it is called from core thread context.
@@ -373,6 +393,10 @@ struct FrameView {
   // For ProducerBackingKind::GPU this carries the authoritative provider->core
   // primary backing when available.
   std::shared_ptr<void> primary_backing_artifact{};
+  // Neutral metadata for the primary GPU backing above. This tranche keeps the
+  // legacy primary_backing_artifact path authoritative for behavior; the
+  // descriptor is passive scaffolding for later resource-ownership isolation.
+  RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;

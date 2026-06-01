@@ -181,6 +181,7 @@ private:
     std::vector<std::uint8_t> gpu_staging;
     std::shared_ptr<void> live_gpu_backing{};
     uint64_t live_gpu_backing_native_id = 0;
+    uint64_t live_gpu_backing_generation = 0;
     uint32_t live_gpu_width = 0;
     uint32_t live_gpu_height = 0;
     uint32_t live_gpu_stride_bytes = 0;

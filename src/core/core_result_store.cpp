@@ -61,6 +61,44 @@ bool has_valid_result_image_description(const FrameView& frame) {
   return frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA;
 }
 
+RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
+    const FrameView& frame,
+    uint64_t capture_timestamp_ns,
+    bool gpu_primary) {
+  RetainedGpuBackingDescriptor descriptor = frame.retained_gpu_backing_descriptor;
+  if (descriptor.valid) {
+    // The provider owns identity/capability truth; core only normalizes
+    // correlation and image fields that are already present on this FrameView.
+    descriptor.stream_id = frame.stream_id;
+    descriptor.capture_timestamp_ns = capture_timestamp_ns;
+    descriptor.width = frame.width;
+    descriptor.height = frame.height;
+    descriptor.stride_bytes = frame.stride_bytes;
+    descriptor.format_fourcc = frame.format_fourcc;
+    return descriptor;
+  }
+
+  if (!gpu_primary) {
+    return descriptor;
+  }
+
+  // Compatibility scaffold for legacy providers that expose a GPU primary
+  // artifact before they provide neutral descriptor metadata. Zero backing_id
+  // explicitly means no scalar provider identity/generation was supplied.
+  descriptor.valid = true;
+  descriptor.stream_id = frame.stream_id;
+  descriptor.backing_id = 0;
+  descriptor.capture_timestamp_ns = capture_timestamp_ns;
+  descriptor.width = frame.width;
+  descriptor.height = frame.height;
+  descriptor.stride_bytes = frame.stride_bytes;
+  descriptor.format_fourcc = frame.format_fourcc;
+  descriptor.display_available = static_cast<bool>(frame.primary_backing_artifact);
+  descriptor.materialization_available = false;
+  descriptor.materialization_requires_gpu_readback = false;
+  return descriptor;
+}
+
 } // namespace
 
 bool CoreResultStore::retain_frame(const FrameView& frame,
@@ -89,6 +127,8 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
       return false;
     }
     std::shared_ptr<void> retained_gpu_backing = frame.primary_backing_artifact;
+    RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
+        build_retained_gpu_backing_descriptor(frame, capture_timestamp_ns, gpu_primary);
 
     auto stream_result = std::make_shared<CoreStreamResultData>();
     stream_result->stream_id = frame.stream_id;
@@ -102,6 +142,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         ? ResultPayloadKind::GPU_SURFACE
         : ResultPayloadKind::CPU_PACKED;
     stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
+    stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
     stream_result->payload = payload;
     if (has_cpu_payload) {
       stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;

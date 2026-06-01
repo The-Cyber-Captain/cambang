@@ -277,6 +277,13 @@ int CamBANGStreamResult::can_get_display_view() const {
 }
 
 int CamBANGStreamResult::can_to_image() const {
+  // StreamResult.can_to_image() is a capability/cost classification API, not a
+  // readiness/progress API. CHEAP requires a current retained CPU
+  // representation for this stream result. EXPENSIVE is reserved for a later
+  // safe explicit materialization route when no current CPU representation is
+  // retained. UNSUPPORTED means no safe materialization route exists. A
+  // GPU-primary result with a current CPU auxiliary payload remains CHEAP via
+  // that CPU payload; a true GPU-only result must not report CHEAP.
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
