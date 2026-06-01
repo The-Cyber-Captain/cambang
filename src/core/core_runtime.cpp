@@ -897,7 +897,10 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     if (!r.ok()) {
       // Best-effort rollback; create_stream failure must not leave a ghost record.
       (void)streams_.forget_stream(effective.stream_id);
+      return;
     }
+    request_publish_from_core_unchecked();
+    core_thread_.request_timer_tick();
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryCreateStreamStatus::OK
@@ -953,6 +956,8 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
       return;
     }
     (void)streams_.on_stream_started(stream_id);
+    request_publish_from_core_unchecked();
+    core_thread_.request_timer_tick();
     result_promise->set_value(TryStartStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
@@ -1074,7 +1079,11 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
     (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
-    (void)p->open_device(hardware_id, device_instance_id, root_id);
+    const ProviderResult r = p->open_device(hardware_id, device_instance_id, root_id);
+    if (r.ok()) {
+      request_publish_from_core_unchecked();
+      core_thread_.request_timer_tick();
+    }
   });
 
   return (pr == CoreThread::PostResult::Enqueued) ? TryOpenDeviceStatus::OK
