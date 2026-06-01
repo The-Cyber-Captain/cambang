@@ -38,13 +38,25 @@ bool display_demand_trace_enabled() {
   return value && value[0] != '\0' && value[0] != '0';
 }
 
-bool has_retained_cpu_payload(const SharedStreamResultData& data) {
-  if (!data) {
+bool has_current_retained_cpu_payload(const SharedStreamResultData& data) {
+  if (!data || data->payload_capture_timestamp_ns != data->capture_timestamp_ns) {
     return false;
   }
-  return data->payload.width != 0 &&
-         data->payload.height != 0 &&
-         !data->payload.bytes.empty();
+  if (data->payload.width == 0 || data->payload.height == 0 || data->payload.bytes.empty()) {
+    return false;
+  }
+  if (data->payload.width != data->image_width ||
+      data->payload.height != data->image_height ||
+      data->payload.format_fourcc != data->image_format_fourcc) {
+    return false;
+  }
+  if (data->payload.format_fourcc != FOURCC_RGBA && data->payload.format_fourcc != FOURCC_BGRA) {
+    return false;
+  }
+  const size_t expected_size =
+      static_cast<size_t>(data->payload.width) * static_cast<size_t>(data->payload.height) * 4u;
+  return data->payload.stride_bytes == data->payload.width * 4u &&
+         data->payload.bytes.size() >= expected_size;
 }
 
 struct LiveCpuDisplayViewEntry final {
@@ -117,7 +129,7 @@ void attach_display_demand_token(const godot::Ref<godot::Texture2D>& texture, ui
 bool refresh_live_cpu_display_view_entry(
     LiveCpuDisplayViewEntry& entry,
     const SharedStreamResultData& data) {
-  if (!data || data->stream_id == 0 || !has_retained_cpu_payload(data)) {
+  if (!data || data->stream_id == 0 || !has_current_retained_cpu_payload(data)) {
     return false;
   }
   if (entry.last_capture_timestamp_ns == data->capture_timestamp_ns &&
@@ -165,7 +177,7 @@ bool refresh_live_cpu_display_view_entry(
 }
 
 godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResultData& data) {
-  if (!data || data->stream_id == 0 || !has_retained_cpu_payload(data)) {
+  if (!data || data->stream_id == 0 || !has_current_retained_cpu_payload(data)) {
     return {};
   }
   std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
@@ -268,7 +280,7 @@ int CamBANGStreamResult::can_to_image() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  if (has_retained_cpu_payload(data_)) {
+  if (has_current_retained_cpu_payload(data_)) {
     return CAPABILITY_CHEAP;
   }
   return CAPABILITY_UNSUPPORTED;
@@ -320,7 +332,7 @@ godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
   if (!data_) {
     return godot::Ref<godot::Image>();
   }
-  if (has_retained_cpu_payload(data_)) {
+  if (has_current_retained_cpu_payload(data_)) {
     return payload_to_image(data_->payload);
   }
   return godot::Ref<godot::Image>();
@@ -388,7 +400,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     if (it == g_live_cpu_display_views.end()) {
       continue;
     }
-    if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_retained_cpu_payload(data)) {
+    if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_current_retained_cpu_payload(data)) {
       (void)refresh_live_cpu_display_view_entry(it->second, data);
     }
   }

@@ -867,14 +867,6 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
 
-  // Do not retire pool storage while any frame buffer slot is still in use by
-  // core/dispatcher ownership. release_frame_ clears in_use when ownership ends.
-  for (const auto& slot : it->second.pool) {
-    if (slot && slot->in_use.load(std::memory_order_acquire)) {
-      return ProviderResult::failure(ProviderError::ERR_BUSY);
-    }
-  }
-
   emit_native_destroy_(it->second.native_id);
   release_native_acquisition_session_for_stream_(it->second.req.device_instance_id);
   strand_.post_stream_destroyed(stream_id);
@@ -967,9 +959,6 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
     s.producing = false;
   }
   strand_.post_stream_stopped(stream_id, ProviderError::OK);
-  // Drain queued frame callbacks before destructive runtime release of the
-  // stream-live GPU backing object they may still reference.
-  quiesce_provider_strand_before_stream_gpu_backing_release_();
   release_stream_live_gpu_backing_(s);
   return ProviderResult::success();
 }
@@ -1184,9 +1173,6 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   if (emit_stop_event && had_started) {
     strand_.post_stream_stopped(stream_id, stop_error);
   }
-  // Drain queued frame callbacks before destructive runtime release of the
-  // stream-live GPU backing object they may still reference.
-  quiesce_provider_strand_before_stream_gpu_backing_release_();
   release_stream_live_gpu_backing_(s);
   s.started = false;
   emit_native_destroy_(s.native_id);
@@ -1535,13 +1521,6 @@ void SyntheticProvider::release_frame_(void* user, const FrameView* frame) {
   delete lease;
 }
 
-void SyntheticProvider::quiesce_provider_strand_before_stream_gpu_backing_release_() {
-  if (!strand_.running()) {
-    return;
-  }
-  strand_.flush();
-}
-
 bool SyntheticProvider::ensure_stream_live_gpu_backing_(
     StreamState& s,
     uint32_t width,
@@ -1789,16 +1768,15 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       }
     }
   }
-  if (!gpu_ok) {
-    // Intentional current-slice behavior: renderer output stages in CPU memory
-    // each frame, then uploads to the stream-owned live GPU backing when used.
-    const auto copy_t0 = std::chrono::steady_clock::now();
-    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
-    const auto copy_t1 = std::chrono::steady_clock::now();
-    const uint64_t copy_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
-    record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
-  }
+  // Preserve a current CPU materialization source for the exact FrameView that
+  // is about to be retained, while keeping the GPU backing as the primary
+  // display path when the GPU update succeeds.
+  const auto copy_t0 = std::chrono::steady_clock::now();
+  std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+  const auto copy_t1 = std::chrono::steady_clock::now();
+  const uint64_t copy_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+  record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
@@ -1813,9 +1791,9 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = gpu_ok ? nullptr : slot->bytes.data();
-  fv.size_bytes = gpu_ok ? 0u : slot->bytes.size();
-  fv.stride_bytes = gpu_ok ? 0u : stride;
+  fv.data = slot->bytes.data();
+  fv.size_bytes = slot->bytes.size();
+  fv.stride_bytes = stride;
   const bool profile_compatible =
       fv.width == s.req.profile.width &&
       fv.height == s.req.profile.height &&
