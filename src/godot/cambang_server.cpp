@@ -1500,11 +1500,20 @@ godot::Error CamBANGServer::_start_scenario_now_() {
     }
   }
 
-  // Deferred scenario starts are drained after the baseline publish, but the
-  // Godot tick pumps provider virtual time before snapshot consumption. Pump once
-  // after arming so due-at-baseline timeline events do not depend on a later
-  // process_frame tick to begin producing public-boundary progress.
-  (void)broker->try_tick_virtual_time(0);
+  // Deterministic host-stepper guarantee for current-time timeline work:
+  // - deferred scenario starts are drained only after the clean baseline has been
+  //   emitted and latched at the Godot boundary;
+  // - start_timeline_scenario_for_host() arms/schedules provider-owned events but
+  //   does not itself advance or pump synthetic time;
+  // - this dt=0 pump executes events already due at the current provider virtual
+  //   time (notably at_ns=0 startup events) without depending on a later Godot
+  //   process_frame tick.
+  // This dispatches due timeline work only. It must not force publication here;
+  // descendant realization remains provider-fact-driven through callbacks, core
+  // fact dispatch, and the normal coalesced snapshot publish path.
+  if (!broker->try_tick_virtual_time(0)) {
+    WARN_PRINT("CamBANGServer: deferred scenario current-time pump was unavailable after successful scenario start; publication remains provider-fact-driven.");
+  }
 
   return godot::OK;
 }
@@ -1523,6 +1532,10 @@ godot::Error CamBANGServer::start_scenario() {
     return godot::ERR_INVALID_PARAMETER;
   }
 
+  // Narrow startup exception: before the first Godot-visible baseline,
+  // start_scenario() records only high-level playback intent. The intent is
+  // scoped to the active boundary session and is not a general pre-baseline
+  // runtime command queue for devices, streams, captures, or timeline advances.
   pending_scenario_start_after_baseline_ = true;
   pending_scenario_start_session_id_ = active_session_id_;
   godot::UtilityFunctions::print(
@@ -1535,6 +1548,7 @@ void CamBANGServer::_drain_pending_scenario_start_after_baseline_() {
     return;
   }
   if (pending_scenario_start_session_id_ != active_session_id_) {
+    // Discard stale startup playback intent from a prior stop/start boundary.
     _clear_pending_scenario_start_();
     return;
   }
@@ -1542,6 +1556,9 @@ void CamBANGServer::_drain_pending_scenario_start_after_baseline_() {
     return;
   }
 
+  // Actual provider playback starts only after the baseline snapshot is visible
+  // at the Godot boundary. Scenario effects after this point must still arrive
+  // through provider facts and the normal coalesced publication path.
   const godot::Error rc = _start_scenario_now_();
   const bool apply_pending_pause = pending_timeline_pause_after_scenario_start_;
   const bool pending_pause_value = pending_timeline_pause_value_;

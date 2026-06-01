@@ -435,6 +435,10 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
 }
 
 void SyntheticProvider::timeline_pump_() {
+  // Pump all events due at the current provider virtual time. A caller may reach
+  // this through advance(0), which is intentionally meaningful for deterministic
+  // deferred startup: already-due at_ns=0 events can dispatch without wall-clock
+  // advancement or a later host frame.
   const auto pump_t0 = std::chrono::steady_clock::now();
   struct PumpTimingScope final {
     SyntheticProvider* self = nullptr;
@@ -1391,6 +1395,10 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
     }
     staged_rig_topology_ = std::move(staged_rigs);
   }
+  // Host start arms the provider-owned scenario by scheduling authored events
+  // and marking the timeline running/unpaused. It intentionally does not advance
+  // or pump synthetic time; the host stepper is responsible for executing due
+  // events via advance(dt_ns), including a meaningful dt=0 current-time pump.
   for (const auto& ev : timeline_scenario_.events) {
     timeline_schedule_(ev);
   }
@@ -2078,7 +2086,9 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
     return;
   }
 
-  // v1: only VirtualTime is implemented.
+  // v1: only VirtualTime is implemented. Advancing by dt=0 is still a valid
+  // host-stepper operation because timeline_pump_() executes events already due
+  // at the current virtual time.
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
     timeline_pump_();
