@@ -1543,6 +1543,7 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
     return false;
   }
   const uint64_t native_id = alloc_native_id_(NativeObjectType::GpuBacking);
+  ++s.live_gpu_backing_generation;
   if (native_id != 0 && callbacks_) {
     const auto dit = devices_.find(s.req.device_instance_id);
     const uint64_t root_id = (dit != devices_.end()) ? dit->second.root_id : 0;
@@ -1787,6 +1788,20 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.height = h;
   fv.format_fourcc = FOURCC_RGBA;
   fv.primary_backing_kind = gpu_backing ? ProducerBackingKind::GPU : ProducerBackingKind::CPU;
+  if (gpu_backing) {
+    fv.retained_gpu_backing_descriptor.valid = true;
+    fv.retained_gpu_backing_descriptor.stream_id = s.req.stream_id;
+    fv.retained_gpu_backing_descriptor.backing_id =
+        (s.live_gpu_backing_native_id != 0) ? s.live_gpu_backing_native_id : s.live_gpu_backing_generation;
+    fv.retained_gpu_backing_descriptor.capture_timestamp_ns = scheduled_capture_ns;
+    fv.retained_gpu_backing_descriptor.width = w;
+    fv.retained_gpu_backing_descriptor.height = h;
+    fv.retained_gpu_backing_descriptor.stride_bytes = stride;
+    fv.retained_gpu_backing_descriptor.format_fourcc = FOURCC_RGBA;
+    fv.retained_gpu_backing_descriptor.display_available = true;
+    fv.retained_gpu_backing_descriptor.materialization_available = false;
+    fv.retained_gpu_backing_descriptor.materialization_requires_gpu_readback = false;
+  }
   fv.primary_backing_artifact = std::move(gpu_backing);
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
