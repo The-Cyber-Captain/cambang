@@ -1506,16 +1506,6 @@ godot::Error CamBANGServer::_start_scenario_now_() {
   // process_frame tick to begin producing public-boundary progress.
   (void)broker->try_tick_virtual_time(0);
 
-  // Timeline startup dispatches request-like scenario events into CoreRuntime.
-  // Provider lifecycle callbacks normally dirty publication, but a startup
-  // scenario start must also schedule a publish after those queued requests so
-  // core-owned declarations made by accepted OpenDevice/CreateStream/StartStream
-  // work cannot be stranded behind a provider-native-only publish. The request is
-  // still coalesced by CoreRuntime and preserves the baseline-first guarantee
-  // because _start_scenario_now_ is only reached once the public boundary is ready
-  // (or from the post-baseline deferred drain).
-  runtime_.request_publish();
-
   return godot::OK;
 }
 
