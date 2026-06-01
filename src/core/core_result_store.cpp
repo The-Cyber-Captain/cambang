@@ -75,6 +75,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     }
   }
 
+  SharedStreamResultData replaced_stream_result;
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (frame.stream_id != 0) {
@@ -107,7 +108,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     }
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
     stream_result->facts = facts;
-    latest_stream_results_[frame.stream_id] = std::move(stream_result);
+    auto& slot = latest_stream_results_[frame.stream_id];
+    replaced_stream_result = std::move(slot);
+    slot = std::move(stream_result);
   }
 
   if (frame.capture_id != 0) {
@@ -259,18 +262,29 @@ void CoreResultStore::remove_stream_result(uint64_t stream_id) {
   if (stream_id == 0) {
     return;
   }
-  std::lock_guard<std::mutex> lock(mutex_);
-  latest_stream_results_.erase(stream_id);
-  stream_display_demand_last_seen_ns_.erase(stream_id);
-  stream_display_demand_refcounts_.erase(stream_id);
+  SharedStreamResultData removed_stream_result;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = latest_stream_results_.find(stream_id);
+    if (it != latest_stream_results_.end()) {
+      removed_stream_result = std::move(it->second);
+      latest_stream_results_.erase(it);
+    }
+    stream_display_demand_last_seen_ns_.erase(stream_id);
+    stream_display_demand_refcounts_.erase(stream_id);
+  }
 }
 
 void CoreResultStore::clear() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  latest_stream_results_.clear();
-  capture_results_by_capture_id_.clear();
-  stream_display_demand_last_seen_ns_.clear();
-  stream_display_demand_refcounts_.clear();
+  std::map<uint64_t, SharedStreamResultData> old_stream_results;
+  std::map<uint64_t, std::map<uint64_t, SharedCaptureResultData>> old_capture_results;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    old_stream_results.swap(latest_stream_results_);
+    old_capture_results.swap(capture_results_by_capture_id_);
+    stream_display_demand_last_seen_ns_.clear();
+    stream_display_demand_refcounts_.clear();
+  }
 }
 
 void CoreResultStore::mark_stream_display_demand(uint64_t stream_id, uint64_t now_ns) {

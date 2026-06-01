@@ -888,6 +888,13 @@ void CamBANGServer::release_stream_display_demand(uint64_t stream_id) {
   runtime_.release_stream_display_demand(stream_id);
 }
 
+void CamBANGServer::release_stream_display_demand_async(uint64_t stream_id) {
+  if (stream_id == 0 || !is_public_boundary_ready_()) {
+    return;
+  }
+  runtime_.release_stream_display_demand_async(stream_id);
+}
+
 uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   if (device_instance_id == 0 || !is_public_boundary_ready_()) {
     return 0;
