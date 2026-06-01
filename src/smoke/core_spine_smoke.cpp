@@ -276,6 +276,16 @@ static bool converge_stub_provider_core(CoreRuntime& rt, StubProvider& prov) {
   return wait_for_core_barrier(rt);
 }
 
+static const char* try_start_stream_status_name(TryStartStreamStatus status) {
+  switch (status) {
+    case TryStartStreamStatus::OK: return "OK";
+    case TryStartStreamStatus::Busy: return "Busy";
+    case TryStartStreamStatus::InvalidArgument: return "InvalidArgument";
+    case TryStartStreamStatus::ProviderRejected: return "ProviderRejected";
+  }
+  return "Unknown";
+}
+
 static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   if (!wait_until([&]() {
         return rt.state_copy() == CoreRuntimeState::LIVE;
@@ -316,6 +326,170 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   }
 
   return true;
+}
+
+static bool setup_one_runtime_created_stream(CoreRuntime& rt, StubProvider& prov) {
+  if (!wait_until([&]() {
+        return rt.state_copy() == CoreRuntimeState::LIVE;
+      }, 200, 1)) {
+    std::cerr << "CoreRuntime did not become LIVE before runtime lifecycle setup\n";
+    return false;
+  }
+
+  if (!prov.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "Stub provider initialize failed for runtime lifecycle setup\n";
+    return false;
+  }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Stub provider endpoint enumeration failed for runtime lifecycle setup\n";
+    return false;
+  }
+
+  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+
+  const TryOpenDeviceStatus open_status = rt.try_open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId);
+  if (open_status != TryOpenDeviceStatus::OK) {
+    std::cerr << "try_open_device failed for runtime lifecycle setup; status="
+              << static_cast<int>(open_status) << "\n";
+    return false;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging runtime lifecycle open-device facts\n";
+    return false;
+  }
+
+  const StreamRequest req = make_req();
+  const TryCreateStreamStatus create_status = rt.try_create_stream(
+      kStreamId,
+      kDeviceInstanceId,
+      req.intent,
+      &req.profile,
+      &req.picture,
+      req.profile_version);
+  if (create_status != TryCreateStreamStatus::OK) {
+    std::cerr << "try_create_stream failed for runtime lifecycle setup; status="
+              << static_cast<int>(create_status) << "\n";
+    return false;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging runtime lifecycle create-stream facts\n";
+    return false;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created ||
+      rec.profile.width == 0 || rec.profile.height == 0 || rec.profile.format_fourcc == 0) {
+    std::cerr << "Runtime lifecycle setup did not converge to a created stream with effective profile. created="
+              << rec.created << " width=" << rec.profile.width
+              << " height=" << rec.profile.height
+              << " format=" << rec.profile.format_fourcc << "\n";
+    return false;
+  }
+
+  return true;
+}
+
+static int test_strict_destroy_rejects_started_stream_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start for strict destroy smoke\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_runtime_created_stream(rt, prov)) {
+    rt.stop();
+    return 1;
+  }
+
+  const TryStartStreamStatus start_status = rt.try_start_stream(kStreamId);
+  if (start_status != TryStartStreamStatus::OK) {
+    std::cerr << "Strict destroy smoke failed to start stream; status="
+              << try_start_stream_status_name(start_status)
+              << "(" << static_cast<int>(start_status) << ")\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto destroy_started = rt.try_destroy_stream(kStreamId);
+  if (destroy_started != TryDestroyStreamStatus::Started) {
+    std::cerr << "Expected destroy of started stream to return Started, got "
+              << static_cast<int>(destroy_started) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created || !rec.started) {
+    std::cerr << "Destroy-while-started should leave stream created and started\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK) {
+    std::cerr << "Strict destroy smoke failed to stop stream after rejected destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Destroy after explicit stop should succeed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging destroy-after-stop fact\n";
+    rt.stop();
+    return 1;
+  }
+  if (get_stream_record(rt, kStreamId, rec)) {
+    std::cerr << "Stream should be absent after successful destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_destroy_never_started_stream_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start for never-started destroy smoke\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_runtime_created_stream(rt, prov)) {
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Destroy of created but never-started stream should succeed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging never-started destroy fact\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (get_stream_record(rt, kStreamId, rec)) {
+    std::cerr << "Never-started stream should be absent after successful destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
 }
 
 static const char* rig_preflight_failure_name(CoreRuntime::RigPreflightFailure failure) {
@@ -1765,6 +1939,8 @@ int main(int argc, char** argv) {
     // Stub-provider integration tests (opt-in).
     StubProvider prov;
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
+    if (int r = test_destroy_never_started_stream_smoke()) { rt.stop(); return r; }
+    if (int r = test_strict_destroy_rejects_started_stream_smoke()) { rt.stop(); return r; }
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;

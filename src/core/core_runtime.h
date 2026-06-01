@@ -92,6 +92,8 @@ enum class TryDestroyStreamStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  Started = 3,
+  ProviderRejected = 4,
 };
 
 enum class TryOpenDeviceStatus : uint8_t {

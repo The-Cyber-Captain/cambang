@@ -990,22 +990,42 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
     return TryDestroyStreamStatus::Busy;
   }
 
-  const CoreThread::PostResult pr = try_post([this, stream_id]() {
+  auto result_promise = std::make_shared<std::promise<TryDestroyStreamStatus>>();
+  std::future<TryDestroyStreamStatus> f = result_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      result_promise->set_value(TryDestroyStreamStatus::Busy);
+      return;
+    }
 
-    // Best-effort: stop before destroy.
-    (void)p->stop_stream(stream_id);
+    const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
+    if (!rec) {
+      result_promise->set_value(TryDestroyStreamStatus::InvalidArgument);
+      return;
+    }
+    if (rec->started) {
+      timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=stream_started",
+                                   static_cast<unsigned long long>(stream_id));
+      result_promise->set_value(TryDestroyStreamStatus::Started);
+      return;
+    }
+
     const ProviderResult dr = p->destroy_stream(stream_id);
     if (!dr.ok()) {
       timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(dr.code));
+      result_promise->set_value(TryDestroyStreamStatus::ProviderRejected);
+      return;
     }
+    result_promise->set_value(TryDestroyStreamStatus::OK);
   });
 
-  return (pr == CoreThread::PostResult::Enqueued) ? TryDestroyStreamStatus::OK
-                                                  : TryDestroyStreamStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryDestroyStreamStatus::Busy;
+  }
+  return f.get();
 }
 
 TryOpenDeviceStatus CoreRuntime::try_open_device(
