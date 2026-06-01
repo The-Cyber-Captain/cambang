@@ -23,7 +23,7 @@ DisplayDemandToken::~DisplayDemandToken() {
   }
   if (stream_id_ != 0) {
     if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-      server->release_stream_display_demand(stream_id_);
+      server->release_stream_display_demand_async(stream_id_);
     }
   }
 }

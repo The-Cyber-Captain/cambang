@@ -367,6 +367,14 @@ enum class TryCloseDeviceStatus : uint8_t {
   void release_stream_display_demand(uint64_t stream_id) {
     result_store_.release_stream_display_demand(stream_id);
   }
+  void release_stream_display_demand_async(uint64_t stream_id) {
+    if (stream_id == 0) {
+      return;
+    }
+    (void)core_thread_.try_post_essential([this, stream_id]() {
+      result_store_.release_stream_display_demand(stream_id);
+    });
+  }
 
 
   void attach_provider(ICameraProvider* provider) noexcept {

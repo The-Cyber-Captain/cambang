@@ -9,6 +9,7 @@
 #include <memory>
 #include <map>
 #include <future>
+#include <vector>
 
 #include <utility>
 
@@ -560,12 +561,24 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
     switch (shutdown_phase_) {
       case ShutdownPhase::STOP_STREAMS: {
-        // Step 3: stop streams (deterministic order).
+        // Step 3: stop streams (deterministic order).  Public try_destroy_stream()
+        // remains strict, but shutdown is host-owned cleanup: when the provider
+        // stop call returns OK the provider has synchronously ceased production, so
+        // reflect that truth locally as well as accepting the later provider fact.
         if (prov) {
+          std::vector<uint64_t> started_stream_ids;
+          started_stream_ids.reserve(streams_.all().size());
           for (const auto& kv : streams_.all()) {
             const auto& rec = kv.second;
             if (rec.started) {
-              (void)prov->stop_stream(rec.stream_id);
+              started_stream_ids.push_back(rec.stream_id);
+            }
+          }
+          for (const uint64_t stream_id : started_stream_ids) {
+            (void)streams_.mark_stop_requested_by_core(stream_id);
+            const ProviderResult sr = prov->stop_stream(stream_id);
+            if (sr.ok()) {
+              (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
             }
           }
         }
@@ -588,11 +601,24 @@ if (dispatcher_.consume_relevant_state_changed()) {
 
       case ShutdownPhase::DESTROY_STREAMS: {
         // Step 4 (part): tear down stream instances (destroy) before closing devices.
+        // Provider destroy_stream() is still strict for ordinary callers; this phase
+        // only runs after shutdown stop convergence.  On OK, provider storage has
+        // been structurally destroyed, so make registry absence immediately
+        // observable instead of depending on a provider-strand round trip.
         if (prov) {
+          std::vector<uint64_t> created_stream_ids;
+          created_stream_ids.reserve(streams_.all().size());
           for (const auto& kv : streams_.all()) {
             const auto& rec = kv.second;
             if (rec.created) {
-              (void)prov->destroy_stream(rec.stream_id);
+              created_stream_ids.push_back(rec.stream_id);
+            }
+          }
+          for (const uint64_t stream_id : created_stream_ids) {
+            const ProviderResult dr = prov->destroy_stream(stream_id);
+            if (dr.ok()) {
+              (void)streams_.on_stream_destroyed(stream_id);
+              result_store_.remove_stream_result(stream_id);
             }
           }
         }
