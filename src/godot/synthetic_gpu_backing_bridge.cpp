@@ -5,8 +5,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <chrono>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -28,7 +31,9 @@ namespace cambang {
 void register_synthetic_gpu_backing_internal_classes();
 
 static bool enqueue_pending_release(const godot::RID& rid);
+static bool bridge_teardown_started();
 static void request_pending_release_drain();
+static void abandon_display_texture_after_failed_render_release(godot::Ref<godot::Texture2DRD>& texture);
 static bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
   return value && value[0] != '\0' && value[0] != '0';
@@ -45,31 +50,7 @@ struct RetainedSyntheticGpuBacking final {
   bool released = false;
   ScopedResourceTelemetryKey telemetry_key{};
 
-  void release_now() {
-    godot::RID rid;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      if (released) {
-        return;
-      }
-      released = true;
-      global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
-
-      if (rd_texture.is_valid()) {
-        rid = rd_texture;
-        rd_texture = godot::RID();
-      }
-
-      display_texture.unref();
-    }
-
-    if (!rid.is_valid()) {
-      return;
-    }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
-  }
+  void release_now();
 
   ~RetainedSyntheticGpuBacking() {
     release_now();
@@ -119,7 +100,145 @@ void register_synthetic_gpu_backing_internal_classes() {
   // Internal-only helpers: registered only so Ref<...>::instantiate() can
   // resolve through ClassDB. These are not user-facing CamBANG API classes.
   godot::ClassDB::register_class<RenderThreadDrainHelper>();
+  godot::ClassDB::register_class<RenderThreadTaskHelper>();
   godot::ClassDB::register_class<DisplayTextureRidOwner>();
+}
+
+
+struct RenderThreadTaskState final {
+  enum class Kind {
+    NONE,
+    TEXTURE_READBACK,
+    ROUNDTRIP_RGBA8,
+    CREATE_TEXTURE_RGBA8,
+    RELEASE_DISPLAY_TEXTURE,
+  };
+
+  std::mutex mutex;
+  std::condition_variable cv;
+  Kind kind = Kind::NONE;
+  bool done = false;
+  bool success = false;
+
+  godot::RID rid;
+  godot::PackedByteArray bytes;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t usage_bits = 0;
+  godot::PackedByteArray readback;
+  godot::Ref<godot::Texture2DRD> display_texture;
+};
+
+std::mutex g_render_thread_identity_mutex;
+std::thread::id g_known_render_thread_id{};
+
+void remember_render_thread() {
+  std::lock_guard<std::mutex> lock(g_render_thread_identity_mutex);
+  g_known_render_thread_id = std::this_thread::get_id();
+}
+
+bool current_thread_is_known_render_thread() {
+  std::lock_guard<std::mutex> lock(g_render_thread_identity_mutex);
+  return g_known_render_thread_id != std::thread::id{} && g_known_render_thread_id == std::this_thread::get_id();
+}
+
+void execute_render_thread_task(const std::shared_ptr<RenderThreadTaskState>& state);
+
+bool run_render_thread_task_sync(const std::shared_ptr<RenderThreadTaskState>& state) {
+  if (!state || bridge_teardown_started()) {
+    return false;
+  }
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  if (!rs) {
+    return false;
+  }
+  if (current_thread_is_known_render_thread()) {
+    execute_render_thread_task(state);
+    return state->success;
+  }
+
+  godot::Ref<RenderThreadTaskHelper> helper;
+  helper.instantiate();
+  if (helper.is_null()) {
+    return false;
+  }
+  helper->init(state);
+  // The helper owns a shared reference to the task state, and this stack frame
+  // keeps the helper alive while the caller waits for render-thread completion.
+  rs->call_on_render_thread(callable_mp(helper.ptr(), &RenderThreadTaskHelper::run_on_render_thread));
+
+  std::unique_lock<std::mutex> lock(state->mutex);
+  state->cv.wait(lock, [&]() { return state->done; });
+  return state->success;
+}
+
+void RenderThreadTaskHelper::init(const std::shared_ptr<RenderThreadTaskState>& state) {
+  state_ = state;
+}
+
+void RenderThreadTaskHelper::run_on_render_thread() {
+  remember_render_thread();
+  execute_render_thread_task(state_);
+  state_.reset();
+}
+
+
+
+
+static void abandon_display_texture_after_failed_render_release(godot::Ref<godot::Texture2DRD>& texture) {
+  if (texture.is_null()) {
+    return;
+  }
+  // If Godot is already tearing the render thread down, dropping the final
+  // Texture2DRD reference on the caller thread can invoke RenderingServer::free
+  // from the wrong thread. Keep the wrapper alive until process teardown instead
+  // of risking a shutdown hang or engine thread-guard error.
+  static auto* abandoned_textures = new std::vector<godot::Ref<godot::Texture2DRD>>();
+  abandoned_textures->push_back(texture);
+  texture.unref();
+}
+
+void RetainedSyntheticGpuBacking::release_now() {
+  godot::RID rid;
+  godot::Ref<godot::Texture2DRD> texture_to_release;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (released) {
+      return;
+    }
+    released = true;
+    global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
+
+    if (rd_texture.is_valid()) {
+      rid = rd_texture;
+      rd_texture = godot::RID();
+    }
+
+    if (display_texture.is_valid()) {
+      texture_to_release = display_texture;
+      rid = display_texture->get_texture_rd_rid();
+      display_texture.unref();
+    }
+  }
+
+  if (texture_to_release.is_valid()) {
+    auto state = std::make_shared<RenderThreadTaskState>();
+    state->kind = RenderThreadTaskState::Kind::RELEASE_DISPLAY_TEXTURE;
+    state->rid = rid;
+    state->display_texture = texture_to_release;
+    if (!run_render_thread_task_sync(state)) {
+      abandon_display_texture_after_failed_render_release(texture_to_release);
+    }
+    return;
+  }
+
+  if (!rid.is_valid()) {
+    return;
+  }
+  if (enqueue_pending_release(rid)) {
+    request_pending_release_drain();
+  }
 }
 
 static std::mutex g_pending_release_mutex;
@@ -189,6 +308,7 @@ static void request_pending_release_drain() {
 }
 
 void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
+  remember_render_thread();
   std::vector<godot::RID> pending;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
@@ -274,6 +394,101 @@ void trace_gpu(const char* message) {
   godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] ", message);
 }
 
+
+void finish_render_thread_task(const std::shared_ptr<RenderThreadTaskState>& state, bool success) {
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->success = success;
+    state->done = true;
+  }
+  state->cv.notify_all();
+}
+
+void execute_render_thread_task(const std::shared_ptr<RenderThreadTaskState>& state) {
+  remember_render_thread();
+  if (!state) {
+    return;
+  }
+
+  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
+  godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
+  bool success = false;
+
+  switch (state->kind) {
+    case RenderThreadTaskState::Kind::TEXTURE_READBACK: {
+      if (rd && state->rid.is_valid()) {
+        state->readback = rd->texture_get_data(state->rid, 0);
+        success = state->readback.size() > 0;
+      }
+    } break;
+
+    case RenderThreadTaskState::Kind::ROUNDTRIP_RGBA8: {
+      if (rd && state->width != 0 && state->height != 0 && state->stride_bytes == state->width * 4u &&
+          state->bytes.size() > 0) {
+        godot::Ref<godot::RDTextureFormat> format;
+        format.instantiate();
+        format->set_width(static_cast<int64_t>(state->width));
+        format->set_height(static_cast<int64_t>(state->height));
+        format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+        format->set_usage_bits(
+            godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
+            godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
+            godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
+
+        godot::Ref<godot::RDTextureView> view;
+        view.instantiate();
+        godot::Array data;
+        data.push_back(state->bytes);
+        const godot::RID tex = rd->texture_create(format, view, data);
+        if (tex.is_valid()) {
+          state->readback = rd->texture_get_data(tex, 0);
+          rd->free_rid(tex);
+          success = state->readback.size() > 0;
+        }
+      }
+    } break;
+
+    case RenderThreadTaskState::Kind::CREATE_TEXTURE_RGBA8: {
+      if (rd && state->width != 0 && state->height != 0 && state->stride_bytes == state->width * 4u &&
+          state->bytes.size() > 0) {
+        godot::Ref<godot::RDTextureFormat> format;
+        format.instantiate();
+        format->set_width(static_cast<int64_t>(state->width));
+        format->set_height(static_cast<int64_t>(state->height));
+        format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+        format->set_usage_bits(state->usage_bits);
+
+        godot::Ref<godot::RDTextureView> view;
+        view.instantiate();
+        godot::Array data;
+        data.push_back(state->bytes);
+        state->rid = rd->texture_create(format, view, data);
+        success = state->rid.is_valid();
+      }
+    } break;
+
+    case RenderThreadTaskState::Kind::RELEASE_DISPLAY_TEXTURE: {
+      if (state->display_texture.is_valid()) {
+        state->display_texture->set_texture_rd_rid(godot::RID());
+        state->display_texture.unref();
+      }
+      if (rd && state->rid.is_valid()) {
+        if (gpu_trace_enabled()) {
+          godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_free rid=", state->rid.get_id());
+        }
+        rd->free_rid(state->rid);
+      }
+      success = true;
+    } break;
+
+    case RenderThreadTaskState::Kind::NONE:
+    default:
+      break;
+  }
+
+  finish_render_thread_task(state, success);
+}
+
 void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
   if (!gpu_trace_enabled()) {
     return;
@@ -348,8 +563,7 @@ bool global_rd_roundtrip_rgba8(
     trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=invalid_input_or_server");
     return false;
   }
-  godot::RenderingDevice* rd = rs->get_rendering_device();
-  if (!rd) {
+  if (!rs->get_rendering_device()) {
     trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=no_global_rd");
     return false;
   }
@@ -358,44 +572,25 @@ bool global_rd_roundtrip_rgba8(
     return false;
   }
 
-  godot::Ref<godot::RDTextureFormat> format;
-  format.instantiate();
-  format->set_width(static_cast<int64_t>(width));
-  format->set_height(static_cast<int64_t>(height));
-  format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
-  format->set_usage_bits(
-      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
-
-  godot::Ref<godot::RDTextureView> view;
-  view.instantiate();
-
-  godot::PackedByteArray initial;
   const size_t expected_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
-  initial.resize(static_cast<int64_t>(expected_size));
-  std::memcpy(initial.ptrw(), src, static_cast<size_t>(initial.size()));
+  auto state = std::make_shared<RenderThreadTaskState>();
+  state->kind = RenderThreadTaskState::Kind::ROUNDTRIP_RGBA8;
+  state->width = width;
+  state->height = height;
+  state->stride_bytes = stride_bytes;
+  state->bytes.resize(static_cast<int64_t>(expected_size));
+  std::memcpy(state->bytes.ptrw(), src, expected_size);
 
-  godot::Array data;
-  data.push_back(initial);
-  const godot::RID tex = rd->texture_create(format, view, data);
-  if (!tex.is_valid()) {
-    trace_gpu("roundtrip_result texture_create=false readback=false success=false");
+  if (!run_render_thread_task_sync(state)) {
+    trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=render_thread_task_failed");
     return false;
   }
-
-  const godot::PackedByteArray readback = rd->texture_get_data(tex, 0);
-  rd->free_rid(tex);
-  if (readback.size() <= 0) {
-    trace_gpu("roundtrip_result texture_create=true readback=false success=false");
-    return false;
-  }
-  out.resize(expected_size);
-  if (static_cast<size_t>(readback.size()) < out.size()) {
+  if (static_cast<size_t>(state->readback.size()) < expected_size) {
     trace_gpu("roundtrip_result texture_create=true readback=false success=false reason=short_readback");
     return false;
   }
-  std::memcpy(out.data(), readback.ptr(), out.size());
+  out.resize(expected_size);
+  std::memcpy(out.data(), state->readback.ptr(), out.size());
   trace_gpu("roundtrip_result texture_create=true readback=true success=true");
   return true;
 }
@@ -421,29 +616,21 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
     return {};
   }
 
-  godot::Ref<godot::RDTextureFormat> format;
-  format.instantiate();
-  format->set_width(static_cast<int64_t>(width));
-  format->set_height(static_cast<int64_t>(height));
-  format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
-  format->set_usage_bits(
+  auto create_state = std::make_shared<RenderThreadTaskState>();
+  create_state->kind = RenderThreadTaskState::Kind::CREATE_TEXTURE_RGBA8;
+  create_state->width = width;
+  create_state->height = height;
+  create_state->stride_bytes = stride_bytes;
+  create_state->usage_bits =
       godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
       godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
-
-  godot::Ref<godot::RDTextureView> view;
-  view.instantiate();
-
-  godot::PackedByteArray bytes;
-  bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
-  std::memcpy(bytes.ptrw(), src, static_cast<size_t>(bytes.size()));
-
-  godot::Array data;
-  data.push_back(bytes);
-  const godot::RID texture = rd->texture_create(format, view, data);
-  if (!texture.is_valid()) {
+      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT;
+  create_state->bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
+  std::memcpy(create_state->bytes.ptrw(), src, static_cast<size_t>(create_state->bytes.size()));
+  if (!run_render_thread_task_sync(create_state) || !create_state->rid.is_valid()) {
     return {};
   }
+  const godot::RID texture = create_state->rid;
   if (gpu_trace_enabled()) {
     godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=retain_primary rid=", texture.get_id(),
                                    " w=", (long long)width,
@@ -480,29 +667,21 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
     return {};
   }
 
-  godot::Ref<godot::RDTextureFormat> format;
-  format.instantiate();
-  format->set_width(static_cast<int64_t>(width));
-  format->set_height(static_cast<int64_t>(height));
-  format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
-  format->set_usage_bits(
+  auto create_state = std::make_shared<RenderThreadTaskState>();
+  create_state->kind = RenderThreadTaskState::Kind::CREATE_TEXTURE_RGBA8;
+  create_state->width = width;
+  create_state->height = height;
+  create_state->stride_bytes = stride_bytes;
+  create_state->usage_bits =
       godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
       godot::RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
-
-  godot::Ref<godot::RDTextureView> view;
-  view.instantiate();
-
-  godot::PackedByteArray bytes;
-  bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
-  std::memset(bytes.ptrw(), 0, static_cast<size_t>(bytes.size()));
-
-  godot::Array data;
-  data.push_back(bytes);
-  const godot::RID texture = rd->texture_create(format, view, data);
-  if (!texture.is_valid()) {
+      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT;
+  create_state->bytes.resize(static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height));
+  std::memset(create_state->bytes.ptrw(), 0, static_cast<size_t>(create_state->bytes.size()));
+  if (!run_render_thread_task_sync(create_state) || !create_state->rid.is_valid()) {
     return {};
   }
+  const godot::RID texture = create_state->rid;
   if (gpu_trace_enabled()) {
     godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=stream_live rid=", texture.get_id(),
                                    " w=", (long long)width,
@@ -668,7 +847,6 @@ void uninstall_synthetic_gpu_backing_godot_bridge() {
 }
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
-  constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
   if (bridge_teardown_started()) {
     return {};
   }
@@ -700,16 +878,10 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     if (texture.is_null()) {
       return {};
     }
-    // Display view is a live wrapper over stream-owned backing. Texture2DRD
-    // does not own/free this RID; lifetime is carried by attached metadata.
+    // Display view is a live wrapper over stream-owned RD backing. The RD RID
+    // remains owned by RetainedSyntheticGpuBacking; Texture2DRD's RenderingServer
+    // wrapper is cleared on the render thread before the retained backing frees it.
     texture->set_texture_rd_rid(retained->rd_texture);
-    const godot::RID display_rid = retained->rd_texture;
-    godot::Ref<DisplayTextureRidOwner> rid_owner;
-    rid_owner.instantiate();
-    if (rid_owner.is_valid()) {
-      rid_owner->init(display_rid);
-      texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
-    }
     retained->rd_texture = godot::RID();
     retained->display_texture = texture;
   }
@@ -762,8 +934,10 @@ godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::s
   if (!snapshot_backing_for_use(retained, snapshot)) {
     return {};
   }
-  const godot::PackedByteArray readback = rd->texture_get_data(snapshot.rid, 0);
-  if (readback.size() <= 0) {
+  auto state = std::make_shared<RenderThreadTaskState>();
+  state->kind = RenderThreadTaskState::Kind::TEXTURE_READBACK;
+  state->rid = snapshot.rid;
+  if (!run_render_thread_task_sync(state) || state->readback.size() <= 0) {
     return {};
   }
 
@@ -780,7 +954,7 @@ godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::s
                   static_cast<int64_t>(snapshot.height),
                   false,
                   godot::Image::FORMAT_RGBA8,
-                  readback);
+                  state->readback);
   if (image->is_empty()) {
     return {};
   }
