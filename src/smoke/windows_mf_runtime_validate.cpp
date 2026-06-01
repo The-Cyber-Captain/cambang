@@ -3,6 +3,12 @@
 #include <string>
 #include <vector>
 
+// Nominal real-hardware check for windows_mediafoundation(dev accelerator).
+// This validator keeps platform_validate=1 meaningful for the quarantined MF
+// scaffold, but it is not Release Windows provider conformance evidence and does
+// not cover callback-drain, stop/destroy race, timeout, negative-stride, repeated
+// lifecycle, or frame-release stress coverage.
+
 #ifdef _WIN32
 #include "imaging/platform/windows/provider.h"
 

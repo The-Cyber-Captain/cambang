@@ -81,7 +81,7 @@ vars.Add(EnumVariable(
 # Provider selection applies to GDE build only.
 vars.Add(EnumVariable(
     "provider",
-    "Provider backend to build into the GDE (dev accelerator selection).",
+    "Provider backend to build into the GDE (stub or opt-in dev accelerator selection).",
     "unset",
     allowed_values=["unset", "stub", "windows_mediafoundation"],
 ))
@@ -385,6 +385,8 @@ else:
 
 # ---------------------------------------------------------------------------
 # Platform-backed runtime validation (alias: platform_validate)
+# Windows validation currently targets the opt-in windows_mediafoundation(dev accelerator)
+# scaffold only; it is not release-provider conformance evidence.
 # ---------------------------------------------------------------------------
 
 if env["platform_validate"]:
@@ -482,7 +484,8 @@ if env["gde"]:
     gde_sources += Glob(os.path.join(gde_obj_dir, "imaging", "broker", "*.cpp"))
     gde_sources += Glob(os.path.join(gde_obj_dir, "pixels", "pattern", "*.cpp"))
 
-    # Provider backend selection (dev accelerator).
+    # Provider backend selection. windows_mediafoundation remains accepted as an
+    # opt-in dev accelerator / historical scaffold, not a Release Windows provider.
     from SCons.Script import GetOption
     if env["provider"] == "unset":
         if not GetOption('clean'):

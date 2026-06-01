@@ -333,7 +333,7 @@ Examples from the current SCons entrypoint:
 
 - `gde=yes` — build the GDExtension artifact
 - `smoke=yes` — build smoke/verification binaries
-- `platform_validate=yes` — build platform validation where available
+- `platform_validate=yes` — build platform validation where available; on Windows this currently means nominal `windows_mediafoundation(dev accelerator)` validation
 
 ### Platform selection
 
@@ -341,7 +341,7 @@ Illustrative flags:
 
 ```text
 scons platform=windows provider=stub
-scons platform=windows provider=windows_mediafoundation
+scons platform=windows provider=windows_mediafoundation  # opt-in MF dev accelerator
 scons platform=windows provider=stub synthetic=yes
 ```
 

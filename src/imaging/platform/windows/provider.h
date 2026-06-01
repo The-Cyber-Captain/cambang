@@ -24,10 +24,15 @@
 
 namespace cambang {
 
-// Windows Media Foundation provider (DEV ACCELERATOR ONLY).
+// Windows Media Foundation provider (DEV ACCELERATOR / HISTORICAL SCAFFOLD ONLY).
+//
+// Quarantine status:
+// - Buildable opt-in local hardware/dev visibility accelerator.
+// - Not the Release Windows provider.
+// - Not the provider foundation to copy for the Release Windows provider.
 //
 // Purpose:
-// - Validate lifecycle + deterministic shutdown choreography on Windows.
+// - Exercise Windows/MF-backed behaviour for local development visibility.
 // - Deliver frames into CamBANG pipeline with strict release-on-drop semantics.
 // - Visibility is "best effort": this dev accelerator may allow Media
 //   Foundation Source Reader video processing/conversion so RGB32-like frames
@@ -37,6 +42,16 @@ namespace cambang {
 // Non-goals (explicit):
 // - Production-quality device selection, profile negotiation, or colorspace conversion.
 // - Multi-stream, still capture, rigs, and spec patch support.
+// - Serving as the lifecycle/threading/stride template for a Release Windows provider.
+//
+// Release Windows provider do-not-copy constraints:
+// - no worker detach while provider/stream state can still be accessed;
+// - no MF callback lifetime based on raw provider/stream pointers unless teardown proves drain;
+// - one consistent synchronization discipline for camera/reader handles;
+// - correct signed/negative stride handling or safe normalization;
+// - shutdown timeout must fail safely without leaving callbacks against destroyed state;
+// - validation must include repeated lifecycle, callback drain, stop/destroy races,
+//   timeout paths, and frame release semantics.
 //
 // Threading/COM rules (auditable):
 // - MFStartup/MFShutdown: once per provider lifetime (initialize/shutdown), not per stream.
@@ -54,6 +69,7 @@ public:
   WindowsProvider() = default;
   ~WindowsProvider() override;
 
+  // Diagnostic label remains dev-scoped; SCons provider=windows_mediafoundation stays compatible.
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }
   ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
 
