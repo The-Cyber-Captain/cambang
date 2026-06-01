@@ -15,7 +15,7 @@
 #include "core/core_runtime.h"
 #include "godot/cambang_result_convert.h"
 #include "godot/cambang_server.h"
-#include "godot/synthetic_gpu_backing_bridge.h"
+#include "godot/godot_gpu_display_service.h"
 #include "godot/cambang_stream_result_internal.h"
 
 namespace cambang {
@@ -317,7 +317,9 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   }
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
     if (data_->retained_gpu_backing) {
-      godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing);
+      godot::Ref<godot::Texture2D> retained = godot_gpu_display_get_texture_by_descriptor(
+          data_->retained_gpu_backing_descriptor,
+          data_->retained_gpu_backing);
       if (retained.is_valid()) {
         attach_display_demand_token(retained, data_->stream_id, "retained_gpu_backing");
         trace_stream_display_path("retained_gpu_backing");

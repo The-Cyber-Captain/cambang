@@ -1,5 +1,6 @@
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
+#include "godot/godot_gpu_display_service.h"
 #include "core/resource_aggregate_telemetry.h"
 
 #include <cstring>
@@ -607,6 +608,7 @@ void install_synthetic_gpu_backing_godot_bridge() {
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
   clear_synthetic_gpu_backing_runtime_ops();
+  godot_gpu_display_invalidate_all();
   clear_pending_releases_for_teardown();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
