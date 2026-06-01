@@ -55,7 +55,6 @@ struct LiveCpuDisplayViewEntry final {
   uint64_t last_capture_timestamp_ns = 0;
   uint32_t width = 0;
   uint32_t height = 0;
-  bool sourced_from_gpu_last = false;
 };
 
 bool upload_live_cpu_rgba_bytes(
@@ -162,33 +161,6 @@ bool refresh_live_cpu_display_view_entry(
   entry.last_capture_timestamp_ns = data->capture_timestamp_ns;
   entry.width = width;
   entry.height = height;
-  entry.sourced_from_gpu_last = false;
-  return true;
-}
-
-bool refresh_live_cpu_display_view_from_image(
-    LiveCpuDisplayViewEntry& entry,
-    const godot::Ref<godot::Image>& image) {
-  if (image.is_null() || image->is_empty()) {
-    return false;
-  }
-  const uint32_t width = static_cast<uint32_t>(image->get_width());
-  const uint32_t height = static_cast<uint32_t>(image->get_height());
-  const bool need_recreate =
-      entry.texture.is_null() ||
-      entry.width != width ||
-      entry.height != height;
-  if (need_recreate) {
-    entry.texture = godot::ImageTexture::create_from_image(image);
-    if (entry.texture.is_null()) {
-      return false;
-    }
-  } else {
-    entry.texture->update(image);
-  }
-  entry.width = width;
-  entry.height = height;
-  entry.sourced_from_gpu_last = true;
   return true;
 }
 
@@ -299,11 +271,6 @@ int CamBANGStreamResult::can_to_image() const {
   if (has_retained_cpu_payload(data_)) {
     return CAPABILITY_CHEAP;
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
-    return synthetic_gpu_backing_can_materialize_to_image(data_->retained_gpu_backing)
-        ? CAPABILITY_EXPENSIVE
-        : CAPABILITY_UNSUPPORTED;
-  }
   return CAPABILITY_UNSUPPORTED;
 }
 
@@ -355,9 +322,6 @@ godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
   }
   if (has_retained_cpu_payload(data_)) {
     return payload_to_image(data_->payload);
-  }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
-    return synthetic_gpu_backing_materialize_to_image(data_->retained_gpu_backing);
   }
   return godot::Ref<godot::Image>();
 }
@@ -425,26 +389,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
       continue;
     }
     if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_retained_cpu_payload(data)) {
-      const bool was_gpu = it->second.sourced_from_gpu_last;
       (void)refresh_live_cpu_display_view_entry(it->second, data);
-      if (display_demand_trace_enabled() && was_gpu && !it->second.sourced_from_gpu_last) {
-        godot::UtilityFunctions::print(
-            "[CamBANG][DemandTrace] cpu_live_adapter_source_transition stream_id=",
-            (long long)stream_id,
-            " source=cpu");
-      }
-      continue;
-    }
-    if (data->payload_kind == ResultPayloadKind::GPU_SURFACE && data->retained_gpu_backing) {
-      const bool was_gpu = it->second.sourced_from_gpu_last;
-      godot::Ref<godot::Image> frame_image =
-          synthetic_gpu_backing_materialize_to_image(data->retained_gpu_backing);
-      if (refresh_live_cpu_display_view_from_image(it->second, frame_image) && display_demand_trace_enabled() && !was_gpu) {
-        godot::UtilityFunctions::print(
-            "[CamBANG][DemandTrace] cpu_live_adapter_source_transition stream_id=",
-            (long long)stream_id,
-            " source=gpu");
-      }
     }
   }
 }

@@ -1072,15 +1072,7 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     const auto& member = (*members)[i];
     auto bytes = std::make_shared<std::vector<std::uint8_t>>();
     bytes->resize(frame_size);
-    const bool gpu_ok = synthetic_gpu_backing_realize_rgba8_via_global_gpu(
-        gpu_staging.data(),
-        req.width,
-        req.height,
-        stride,
-        *bytes);
-    if (!gpu_ok) {
-      std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
-    }
+    std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
     if (member.intended_exposure_compensation_milli_ev != 0) {
       PatternRenderOptions render_options{};
       render_options.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
