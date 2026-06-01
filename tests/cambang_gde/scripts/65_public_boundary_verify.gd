@@ -22,9 +22,19 @@ var _phase := PHASE_WAIT_FIRST_BASELINE
 var _timer: Timer
 var _first_gen := -1
 var _startup_hardware_id := ""
+var _diag_last_phase_name := "init"
+var _diag_waiting_for := "scene ready"
+var _diag_last_observed_gen := -1
+var _diag_last_observed_version := -1
+var _diag_last_observed_topology_version := -1
+var _diag_latest_snapshot_nil := true
+var _diag_latest_snapshot_gen := -1
+var _diag_latest_snapshot_version := -1
+var _diag_latest_snapshot_topology_version := -1
 
 
 func _ready() -> void:
+	_diag_mark("invalid_start_argument_checks_begin", "public API shape and invalid-start rejection checks")
 	CamBANGServer.stop()
 
 	if CamBANGServer.has_method("set_provider_mode") or CamBANGServer.has_method("get_provider_mode"):
@@ -198,8 +208,12 @@ func _ready() -> void:
 		return
 	CamBANGServer.stop()
 
-	print("RUN: godot public boundary verify")
+	_diag_mark("invalid_start_argument_checks_end", "main verification startup")
 
+	print("RUN: godot public boundary verify")
+	_diag_mark("main_verification_begin", "pre-start snapshot NIL check")
+
+	_diag_snapshot("main_verification_pre_start_snapshot")
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: snapshot must be NIL before start/baseline")
 		return
@@ -214,12 +228,15 @@ func _ready() -> void:
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
 
+	_diag_mark("runtime_start_requested", "CamBANGServer.start(SYNTHETIC, TIMELINE, VIRTUAL_TIME, STRICT) return")
 	var set_synth_start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
 		CamBANGServer.SYNTHETIC_ROLE_TIMELINE,
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
 		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
 	)
+	_diag_mark("runtime_start_returned", "post-start snapshot NIL/non-NIL check", {"return_code": set_synth_start_err})
+	_diag_snapshot("immediately_after_start")
 	if set_synth_start_err != OK:
 		_fail("FAIL: start(SYNTHETIC, TIMELINE, VIRTUAL_TIME, STRICT) rejected")
 		return
@@ -260,12 +277,15 @@ func _ready() -> void:
 
 	if not _assert_pre_baseline_public_boundary("initial start"):
 		return
+	_diag_mark("baseline_wait_begin", "first baseline state_published version=0 topology_version=0", {"expected_gen": "unknown"})
 
 
 func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_startup_intent: bool = true) -> bool:
+	_diag_mark("pre_baseline_public_boundary_checks_begin", context)
 	if not CamBANGServer.is_running():
 		_fail("FAIL: " + context + " pre-baseline window should keep is_running() true after accepted start")
 		return false
+	_diag_snapshot(context + " pre_baseline_snapshot")
 	if CamBANGServer.get_state_snapshot() != null:
 		_fail("FAIL: " + context + " snapshot must remain NIL until first Godot-visible baseline publish")
 		return false
@@ -349,15 +369,21 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	if result_set != null:
 		_fail("FAIL: " + context + " capture result-set lookup must return null before baseline")
 		return false
+	_diag_mark("start_scenario_unstaged_begin", context)
 	var unstaged_start_err := CamBANGServer.start_scenario()
+	_diag_mark("start_scenario_unstaged_end", context, {"return_code": unstaged_start_err})
 	if unstaged_start_err == OK:
 		_fail("FAIL: " + context + " start_scenario() must fail before baseline when no scenario is staged")
 		return false
+	_diag_mark("load_stage_scenario_begin", context)
 	var scenario_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
+	_diag_mark("load_stage_scenario_end", context, {"return_code": scenario_stage_err})
 	if scenario_stage_err != OK:
 		_fail("FAIL: " + context + " select_builtin_scenario() should stage provider-owned data before baseline (err=%d)" % scenario_stage_err)
 		return false
+	_diag_mark("start_scenario_during_startup_begin", context)
 	var scenario_start_err := CamBANGServer.start_scenario()
+	_diag_mark("start_scenario_during_startup_end", context, {"return_code": scenario_start_err})
 	if scenario_start_err != OK:
 		_fail("FAIL: " + context + " start_scenario() should accept pending playback before baseline (err=%d)" % scenario_start_err)
 		return false
@@ -365,6 +391,7 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	if advance_err == OK:
 		_fail("FAIL: " + context + " advance_timeline() must remain rejected before baseline")
 		return false
+	_diag_mark("pre_baseline_public_boundary_checks_end", context)
 	return true
 
 
@@ -442,6 +469,18 @@ func _snapshot_has_startup_endpoint_effects(snapshot: Dictionary) -> bool:
 
 
 func _on_timeout() -> void:
+	_diag_snapshot("timeout_handler_latest_snapshot")
+	print("DIAG65 timeout last_phase=%s last_observed_gen=%d last_observed_version=%d last_observed_topology_version=%d latest_snapshot_nil=%s latest_snapshot_gen=%d latest_snapshot_version=%d latest_snapshot_topology_version=%d waiting_for=%s" % [
+		_diag_last_phase_name,
+		_diag_last_observed_gen,
+		_diag_last_observed_version,
+		_diag_last_observed_topology_version,
+		str(_diag_latest_snapshot_nil),
+		_diag_latest_snapshot_gen,
+		_diag_latest_snapshot_version,
+		_diag_latest_snapshot_topology_version,
+		_diag_waiting_for
+	])
 	_fail("FAIL: public boundary verify timed out")
 
 
@@ -449,7 +488,13 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 	if _done:
 		return
 
+	_diag_last_observed_gen = gen
+	_diag_last_observed_version = version
+	_diag_last_observed_topology_version = topology_version
+	_diag_mark("state_published_observed", "snapshot validation and phase dispatch", {"gen": gen, "version": version, "topology_version": topology_version})
 	var snapshot = CamBANGServer.get_state_snapshot()
+	_diag_record_snapshot(snapshot)
+	_diag_print_snapshot("state_published_snapshot_read")
 	if snapshot == null:
 		_fail("FAIL: get_state_snapshot() returned NIL inside state_published handler")
 		return
@@ -471,25 +516,33 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 	match _phase:
 		PHASE_WAIT_FIRST_BASELINE:
 			if version != 0 or topology_version != 0:
+				_diag_mark("baseline_rejected", "first publish must be baseline", {"reason": "nonzero version/topology"})
 				_fail("FAIL: first Godot-visible publish of generation must be baseline (version=0, topology_version=0)")
 				return
 			if _snapshot_has_scenario_effects(d):
+				_diag_mark("baseline_rejected", "first baseline must not show pending startup effects", {"reason": "scenario effects visible"})
 				_fail("FAIL: pending startup effects must not be visible in the baseline snapshot")
 				return
 
 			if not _assert_post_baseline_public_boundary():
 				return
 
+			_diag_mark("baseline_accepted", "scenario playback start effects", {"gen": gen, "version": version, "topology_version": topology_version})
 			_first_gen = gen
 			_phase = PHASE_WAIT_PENDING_EFFECTS
+			_diag_mark("scenario_playback_start_observed", "pending startup effects publish", {"observed": false, "reason": "baseline only"})
 
 		PHASE_WAIT_PENDING_EFFECTS:
 			if version == 0:
+				_diag_mark("scenario_playback_start_observed", "nonzero version with scenario effects", {"observed": false, "reason": "version still zero"})
 				return
 			if not _snapshot_has_scenario_effects(d):
+				_diag_mark("scenario_playback_start_observed", "nonzero version with scenario effects", {"observed": false, "reason": "scenario effects absent"})
 				return
 			if not _snapshot_has_startup_endpoint_effects(d):
+				_diag_mark("scenario_playback_start_observed", "startup endpoint effects", {"observed": false, "reason": "startup endpoint effects absent"})
 				return
+			_diag_mark("scenario_playback_start_observed", "restart boundary", {"observed": true, "gen": gen, "version": version, "topology_version": topology_version})
 			_phase = PHASE_RESTARTING
 			call_deferred("_restart_and_assert_nil")
 
@@ -504,25 +557,32 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				gen
 			])
 			if gen != _first_gen + 1:
+				_diag_mark("baseline_rejected", "restart generation must advance exactly by one", {"reason": "unexpected generation", "expected": _first_gen + 1, "actual": gen})
 				_fail("FAIL: restart must advance generation exactly by one")
 				return
 			if version != 0 or topology_version != 0:
+				_diag_mark("baseline_rejected", "restarted first publish must be baseline", {"reason": "nonzero version/topology"})
 				_fail("FAIL: first publish of restarted generation must be baseline")
 				return
 			if _snapshot_has_scenario_effects(d):
+				_diag_mark("baseline_rejected", "restarted baseline must not show pending startup effects", {"reason": "scenario effects visible"})
 				_fail("FAIL: pending startup effects must not be visible in restarted baseline snapshot")
 				return
 
+			_diag_mark("baseline_accepted", "restart pending effects", {"gen": gen, "version": version, "topology_version": topology_version})
 			_phase = PHASE_WAIT_RESTART_PENDING_EFFECTS
 
 		PHASE_WAIT_RESTART_PENDING_EFFECTS:
 			if version == 0:
+				_diag_mark("scenario_playback_start_observed", "restart scenario effects", {"observed": false, "reason": "version still zero"})
 				return
 			if _snapshot_has_hardware_id(d, _startup_hardware_id):
 				_fail("FAIL: endpoint startup intent from previous session leaked into restarted generation")
 				return
 			if not _snapshot_has_scenario_effects(d):
+				_diag_mark("scenario_playback_start_observed", "restart scenario effects", {"observed": false, "reason": "scenario effects absent"})
 				return
+			_diag_mark("scenario_playback_start_observed", "final pass", {"observed": true, "gen": gen, "version": version, "topology_version": topology_version})
 			_ok("OK: godot public boundary verify PASS")
 
 		PHASE_DONE:
@@ -533,7 +593,10 @@ func _restart_and_assert_nil() -> void:
 	if _done:
 		return
 
+	_diag_mark("restart_boundary_begin", "stop before restart")
+	_diag_mark("stop_boundary_begin", "CamBANGServer.stop during restart")
 	CamBANGServer.stop()
+	_diag_mark("stop_boundary_end", "post-stop NIL checks during restart")
 	if CamBANGServer.is_running():
 		_fail("FAIL: is_running() must be false after completed stop()")
 		return
@@ -544,7 +607,10 @@ func _restart_and_assert_nil() -> void:
 		_fail("FAIL: get_state_snapshot() must be NIL after completed stop()")
 		return
 
+	_diag_mark("runtime_start_requested", "restart synthetic start return")
 	var restart_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)
+	_diag_mark("runtime_start_returned", "restart pre-baseline checks", {"return_code": restart_err})
+	_diag_snapshot("immediately_after_restart_start")
 	if restart_err != OK:
 		_fail("FAIL: restart synthetic start rejected")
 		return
@@ -554,11 +620,14 @@ func _restart_and_assert_nil() -> void:
 	if not _assert_pre_baseline_public_boundary("restart", false):
 		return
 	_phase = PHASE_WAIT_SECOND_BASELINE
+	_diag_mark("baseline_wait_begin", "second baseline state_published version=0 topology_version=0", {"expected_gen": _first_gen + 1})
+	_diag_mark("restart_boundary_end", "waiting for second baseline", {"expected_gen": _first_gen + 1})
 
 
 func _ok(msg: String) -> void:
 	if _done:
 		return
+	_diag_mark("final_pass_quit_begin", "cleanup and quit success")
 	_done = true
 	_phase = PHASE_DONE
 	print(msg)
@@ -576,6 +645,7 @@ func _fail(msg: String) -> void:
 
 
 func _cleanup_and_quit(code: int) -> void:
+	_diag_mark("final_pass_quit_end" if code == 0 else "final_fail_quit_begin", "cleanup stop/disconnect")
 	if _timer != null and is_instance_valid(_timer):
 		_timer.stop()
 		remove_child(_timer)
@@ -583,10 +653,54 @@ func _cleanup_and_quit(code: int) -> void:
 		_timer = null
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
+	_diag_mark("stop_boundary_begin", "cleanup stop")
 	CamBANGServer.stop()
+	_diag_mark("stop_boundary_end", "cleanup quit")
 	if not _quit_requested:
 		_quit_requested = true
 		get_tree().quit(code)
+
+
+func _diag_mark(name: String, waiting_for: String = "", details: Dictionary = {}) -> void:
+	_diag_last_phase_name = name
+	if not waiting_for.is_empty():
+		_diag_waiting_for = waiting_for
+	var detail_text := ""
+	if not details.is_empty():
+		detail_text = " details=" + str(details)
+	print("DIAG65 phase=%s logical_phase=%s waiting_for=%s%s" % [
+		name,
+		_phase_name(_phase),
+		_diag_waiting_for,
+		detail_text
+	])
+
+
+func _diag_record_snapshot(snapshot) -> void:
+	_diag_latest_snapshot_nil = snapshot == null
+	_diag_latest_snapshot_gen = -1
+	_diag_latest_snapshot_version = -1
+	_diag_latest_snapshot_topology_version = -1
+	if typeof(snapshot) == TYPE_DICTIONARY:
+		var d: Dictionary = snapshot
+		_diag_latest_snapshot_gen = int(d.get("gen", -1))
+		_diag_latest_snapshot_version = int(d.get("version", -1))
+		_diag_latest_snapshot_topology_version = int(d.get("topology_version", -1))
+
+
+func _diag_snapshot(label: String) -> void:
+	_diag_record_snapshot(CamBANGServer.get_state_snapshot())
+	_diag_print_snapshot(label)
+
+
+func _diag_print_snapshot(label: String) -> void:
+	print("DIAG65 snapshot label=%s nil=%s gen=%d version=%d topology_version=%d" % [
+		label,
+		str(_diag_latest_snapshot_nil),
+		_diag_latest_snapshot_gen,
+		_diag_latest_snapshot_version,
+		_diag_latest_snapshot_topology_version
+	])
 
 
 func _phase_name(p: int) -> String:
