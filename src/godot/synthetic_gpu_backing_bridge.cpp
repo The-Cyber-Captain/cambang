@@ -449,8 +449,10 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
+  retained_backing->upload_bytes = bytes;
   retained_backing->width = width;
   retained_backing->height = height;
+  retained_backing->stride_bytes = stride_bytes;
   return std::static_pointer_cast<void>(retained_backing);
 }
 
@@ -508,6 +510,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rd_texture = texture;
+  retained_backing->upload_bytes = bytes;
   retained_backing->width = width;
   retained_backing->height = height;
   retained_backing->stride_bytes = stride_bytes;
@@ -705,13 +708,65 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
-  (void)backing;
-  return false;
+  if (bridge_teardown_started() || !backing) {
+    return false;
+  }
+  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
+      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
+  if (!retained) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(retained->mutex);
+  if (retained->released || retained->width == 0 || retained->height == 0 || retained->stride_bytes != retained->width * 4u) {
+    return false;
+  }
+  const int64_t expected_size = static_cast<int64_t>(retained->stride_bytes) * static_cast<int64_t>(retained->height);
+  return expected_size > 0 && retained->upload_bytes.size() >= expected_size;
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
-  (void)backing;
-  return {};
+  if (bridge_teardown_started() || !backing) {
+    return {};
+  }
+  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
+      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
+  if (!retained) {
+    return {};
+  }
+
+  uint32_t width = 0;
+  uint32_t height = 0;
+  godot::PackedByteArray bytes;
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released || retained->width == 0 || retained->height == 0 ||
+        retained->stride_bytes != retained->width * 4u) {
+      return {};
+    }
+    const int64_t expected_size = static_cast<int64_t>(retained->stride_bytes) * static_cast<int64_t>(retained->height);
+    if (expected_size <= 0 || retained->upload_bytes.size() < expected_size) {
+      return {};
+    }
+    width = retained->width;
+    height = retained->height;
+    bytes.resize(expected_size);
+    std::memcpy(bytes.ptrw(), retained->upload_bytes.ptr(), static_cast<size_t>(expected_size));
+  }
+
+  godot::Ref<godot::Image> image;
+  image.instantiate();
+  if (image.is_null()) {
+    return {};
+  }
+  image->set_data(static_cast<int64_t>(width),
+                  static_cast<int64_t>(height),
+                  false,
+                  godot::Image::FORMAT_RGBA8,
+                  bytes);
+  if (image->is_empty()) {
+    return {};
+  }
+  return image;
 }
 
 } // namespace cambang
