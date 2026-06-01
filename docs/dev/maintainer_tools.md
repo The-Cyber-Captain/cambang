@@ -36,7 +36,7 @@ Maintainer tools fall into three broad categories.
 | `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication semantics | Verification |
 | `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
 | `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
-| `windows_mf_runtime_validate` | Opt-in Windows Media Foundation runtime validation against real hardware | Verification |
+| `windows_mf_runtime_validate` | Nominal opt-in `windows_mediafoundation(dev accelerator)` runtime validation against real hardware | Verification |
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
 | Godot boundary verification scenes | Validation of the Godot-facing runtime boundary | Verification |
 
@@ -455,9 +455,9 @@ Any failure indicates a regression in Godot-boundary snapshot exposure.
 
 ### Purpose
 
-`windows_mf_runtime_validate` validates the **current Windows Media
-Foundation dev accelerator** (`WindowsProvider`) against real hardware under
-asynchronous platform-backed execution.
+`windows_mf_runtime_validate` performs a nominal check of the quarantined
+**windows_mediafoundation(dev accelerator)** (`WindowsProvider`) against real
+hardware under asynchronous platform-backed execution.
 
 It exercises:
 
@@ -466,8 +466,10 @@ It exercises:
 - stream start / stop
 - shutdown behaviour
 
-Passing this tool complements deterministic provider verification, but it does
-**not** prove final Windows release-provider completeness.
+Passing this tool keeps `platform_validate=1` meaningful for the MF dev
+accelerator, but it does **not** prove final Windows release-provider
+completeness or conformance. It does not cover callback-drain, stop/destroy race,
+timeout, negative-stride, repeated lifecycle, or frame-release stress coverage.
 
 ### Build and usage
 

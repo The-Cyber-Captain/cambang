@@ -267,6 +267,11 @@ private:
 
 // -----------------------------------------------------------------------------
 // WindowsProvider
+//
+// Quarantine note: this implementation is retained as
+// windows_mediafoundation(dev accelerator) for opt-in local hardware visibility.
+// Do not copy its worker/callback teardown, reader synchronization, timeout, or
+// stride-handling patterns into a Release Windows provider.
 // -----------------------------------------------------------------------------
 
 ProviderResult WindowsProvider::ensure_com_initialized_() {

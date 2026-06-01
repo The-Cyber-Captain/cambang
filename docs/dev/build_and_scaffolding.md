@@ -176,8 +176,8 @@ Current selectable GDE provider backends include:
 
 - `provider=stub` — deterministic dev/test provider; not a production
   platform-backed provider
-- `provider=windows_mediafoundation` — Windows Media Foundation dev
-  accelerator / real-hardware validation scaffold
+- `provider=windows_mediafoundation` — `windows_mediafoundation(dev accelerator)`,
+  an opt-in Windows Media Foundation real-hardware/dev visibility scaffold
 
 Exactly one concrete GDE provider backend is compiled per build.
 
@@ -354,13 +354,18 @@ Important additional notes:
 
 ### Current Windows MF dev-accelerator status
 
-`windows_mediafoundation` is currently the Windows platform-backed
-**dev accelerator** / real-hardware validation scaffold.
+`windows_mediafoundation` is currently quarantined as
+`windows_mediafoundation(dev accelerator)`: an opt-in Windows Media Foundation
+real-hardware/dev visibility scaffold.
 
 - It is a real SCons build option (`provider=windows_mediafoundation`).
-- In that build, `RuntimeMode::platform_backed` resolves to `WindowsProvider`.
+- In that build, `RuntimeMode::platform_backed` resolves to `WindowsProvider`;
+  it is not silently mapped to stub or synthetic.
 - The provider reports itself as `windows_mediafoundation(dev)` and remains
-  explicitly marked `DEV ACCELERATOR ONLY` in provider header documentation.
+  explicitly marked as a dev accelerator / historical scaffold in provider header
+  documentation.
+- It is not the Release Windows provider and must not be used as the foundation
+  to copy for that provider.
 
 Current source intentionally allows MF Source Reader video processing /
 conversion so RGB32-like frames can be requested from common YUV-only devices.
@@ -369,6 +374,19 @@ path.
 
 This is a dev-accelerator visibility choice and does **not** define the final
 Windows release-provider strategy.
+
+Release Windows provider do-not-copy checklist:
+
+- no worker detach while provider/stream state can still be accessed
+- no MF callback lifetime based on raw provider/stream pointers unless teardown
+  proves drain
+- use one consistent synchronization discipline for camera/reader handles
+- handle signed/negative stride correctly or normalize buffers safely before
+  publishing frames
+- shutdown timeout must fail safely without leaving callbacks against destroyed
+  state
+- validation must include repeated lifecycle, callback drain, stop/destroy races,
+  timeout paths, and frame release semantics
 
 Pending platform-provider work must still explicitly decide:
 

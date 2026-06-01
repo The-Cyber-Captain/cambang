@@ -56,7 +56,7 @@ provider contract.
 
 Examples include:
 
-- `windows_mediafoundation`
+- `windows_mediafoundation` (currently quarantined as a dev accelerator)
 - future `android_camera2`
 - future additional platform providers
 
@@ -67,7 +67,7 @@ source of truth for what the contract means.
 
 CamBANG is designed to support platform-backed provider families including:
 
-- `windows_mediafoundation` — Windows / Media Foundation
+- `windows_mediafoundation` — Windows / Media Foundation dev accelerator; not the Release Windows provider
 - `android_camera2` — Android / Camera2
 - `linux_v4l2` — Linux / Video4Linux2
 - `apple_avfoundation` — macOS / iOS / iPadOS / AVFoundation
@@ -520,6 +520,9 @@ Do **not**:
 
 - copy incidental behaviour from a provisional backend adapter and treat
   it as canonical
+- copy the quarantined `windows_mediafoundation(dev accelerator)` teardown,
+  callback ownership, reader synchronization, timeout, or stride-handling
+  patterns into a Release Windows provider
 - add provider-side execution-time defaulting
 - normalize invalid lifecycle ordering by silent cleanup
 - special-case Core semantics to fit one backend API
@@ -538,3 +541,12 @@ Core/provider semantics.
 
 Release-quality providers extend functional coverage; they do not change
 what the provider contract means.
+
+For the future Release Windows provider specifically, do not copy the MF dev
+accelerator unless each unsafe pattern is replaced: no worker detach while
+provider/stream state can still be accessed; no callback lifetime based on raw
+provider/stream pointers unless teardown proves drain; one consistent
+synchronization discipline for camera/reader handles; correct signed/negative
+stride handling or safe normalization; shutdown timeout failure that leaves no
+callbacks against destroyed state; and validation for repeated lifecycle,
+callback drain, stop/destroy races, timeout paths, and frame release semantics.
