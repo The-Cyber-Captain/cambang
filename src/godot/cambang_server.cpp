@@ -140,8 +140,21 @@ static godot::Error map_try_destroy_stream_status(TryDestroyStreamStatus s) noex
     case TryDestroyStreamStatus::OK: return godot::OK;
     case TryDestroyStreamStatus::Busy: return godot::ERR_BUSY;
     case TryDestroyStreamStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    case TryDestroyStreamStatus::Started: return godot::ERR_UNAVAILABLE;
+    case TryDestroyStreamStatus::ProviderRejected: return godot::ERR_UNAVAILABLE;
     default: return godot::FAILED;
   }
+}
+
+static const char* try_destroy_stream_status_name(TryDestroyStreamStatus s) noexcept {
+  switch (s) {
+    case TryDestroyStreamStatus::OK: return "OK";
+    case TryDestroyStreamStatus::Busy: return "Busy";
+    case TryDestroyStreamStatus::InvalidArgument: return "InvalidArgument";
+    case TryDestroyStreamStatus::Started: return "Started";
+    case TryDestroyStreamStatus::ProviderRejected: return "ProviderRejected";
+  }
+  return "Unknown";
 }
 
 static godot::Error map_try_start_stream_status(TryStartStreamStatus s) noexcept {
@@ -728,9 +741,17 @@ godot::Error CamBANGServer::destroy_direct_stream_handle(
   if (device_instance_id == 0) {
     return godot::ERR_INVALID_PARAMETER;
   }
-  const godot::Error rc = map_try_destroy_stream_status(runtime_.try_destroy_stream(stream_id));
+  const TryDestroyStreamStatus status = runtime_.try_destroy_stream(stream_id);
+  const godot::Error rc = map_try_destroy_stream_status(status);
   if (rc == godot::OK) {
     direct_stream_hardware_id_by_stream_id_.erase(it);
+  } else if (status == TryDestroyStreamStatus::Started) {
+    ERR_PRINT("CamBANGServer: destroy_stream rejected because stream is started; call stop() before destroy().");
+  } else if (status == TryDestroyStreamStatus::ProviderRejected) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: destroy_stream rejected by provider for stream_id=%d; status=%s.",
+        static_cast<int64_t>(stream_id),
+        try_destroy_stream_status_name(status)));
   }
   return rc;
 }

@@ -24,6 +24,8 @@ const char* destroy_status_cstr(TryDestroyStreamStatus s) {
     case TryDestroyStreamStatus::OK: return "OK";
     case TryDestroyStreamStatus::InvalidArgument: return "INVALID_ARGUMENT";
     case TryDestroyStreamStatus::Busy: return "BUSY";
+    case TryDestroyStreamStatus::Started: return "STARTED";
+    case TryDestroyStreamStatus::ProviderRejected: return "PROVIDER_REJECTED";
   }
   return "UNKNOWN";
 }

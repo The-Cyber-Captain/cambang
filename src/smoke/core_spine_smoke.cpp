@@ -318,6 +318,103 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   return true;
 }
 
+static int test_strict_destroy_rejects_started_stream_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start for strict destroy smoke\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Strict destroy smoke failed to start stream\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto destroy_started = rt.try_destroy_stream(kStreamId);
+  if (destroy_started != TryDestroyStreamStatus::Started) {
+    std::cerr << "Expected destroy of started stream to return Started, got "
+              << static_cast<int>(destroy_started) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created || !rec.started) {
+    std::cerr << "Destroy-while-started should leave stream created and started\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK) {
+    std::cerr << "Strict destroy smoke failed to stop stream after rejected destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Destroy after explicit stop should succeed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging destroy-after-stop fact\n";
+    rt.stop();
+    return 1;
+  }
+  if (get_stream_record(rt, kStreamId, rec)) {
+    std::cerr << "Stream should be absent after successful destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_destroy_never_started_stream_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start for never-started destroy smoke\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Destroy of created but never-started stream should succeed\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging never-started destroy fact\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (get_stream_record(rt, kStreamId, rec)) {
+    std::cerr << "Never-started stream should be absent after successful destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static const char* rig_preflight_failure_name(CoreRuntime::RigPreflightFailure failure) {
   switch (failure) {
     case CoreRuntime::RigPreflightFailure::None:
@@ -1765,6 +1862,8 @@ int main(int argc, char** argv) {
     // Stub-provider integration tests (opt-in).
     StubProvider prov;
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
+    if (int r = test_destroy_never_started_stream_smoke()) return r;
+    if (int r = test_strict_destroy_rejects_started_stream_smoke()) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
