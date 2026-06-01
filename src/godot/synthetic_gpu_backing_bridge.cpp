@@ -404,6 +404,8 @@ void finish_render_thread_task(const std::shared_ptr<RenderThreadTaskState>& sta
   state->cv.notify_all();
 }
 
+} // namespace
+
 void execute_render_thread_task(const std::shared_ptr<RenderThreadTaskState>& state) {
   remember_render_thread();
   if (!state) {
@@ -488,6 +490,8 @@ void execute_render_thread_task(const std::shared_ptr<RenderThreadTaskState>& st
 
   finish_render_thread_task(state, success);
 }
+
+namespace {
 
 void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
   if (!gpu_trace_enabled()) {
