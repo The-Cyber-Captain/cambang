@@ -102,6 +102,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         : ResultPayloadKind::CPU_PACKED;
     stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     stream_result->payload = payload;
+    if (has_cpu_payload) {
+      stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
+    }
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
     stream_result->facts = facts;
     latest_stream_results_[frame.stream_id] = std::move(stream_result);

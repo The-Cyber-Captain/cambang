@@ -335,69 +335,13 @@ bool global_rd_available() noexcept {
 }
 
 bool global_rd_roundtrip_rgba8(
-    const uint8_t* src,
-    uint32_t width,
-    uint32_t height,
-    uint32_t stride_bytes,
-    std::vector<uint8_t>& out) noexcept {
-  if (bridge_teardown_started()) {
-    return false;
-  }
-  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (!rs || !src || width == 0 || height == 0) {
-    trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=invalid_input_or_server");
-    return false;
-  }
-  godot::RenderingDevice* rd = rs->get_rendering_device();
-  if (!rd) {
-    trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=no_global_rd");
-    return false;
-  }
-  if (stride_bytes != width * 4u) {
-    trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=unexpected_stride");
-    return false;
-  }
-
-  godot::Ref<godot::RDTextureFormat> format;
-  format.instantiate();
-  format->set_width(static_cast<int64_t>(width));
-  format->set_height(static_cast<int64_t>(height));
-  format->set_format(godot::RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
-  format->set_usage_bits(
-      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
-      godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT);
-
-  godot::Ref<godot::RDTextureView> view;
-  view.instantiate();
-
-  godot::PackedByteArray initial;
-  const size_t expected_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
-  initial.resize(static_cast<int64_t>(expected_size));
-  std::memcpy(initial.ptrw(), src, static_cast<size_t>(initial.size()));
-
-  godot::Array data;
-  data.push_back(initial);
-  const godot::RID tex = rd->texture_create(format, view, data);
-  if (!tex.is_valid()) {
-    trace_gpu("roundtrip_result texture_create=false readback=false success=false");
-    return false;
-  }
-
-  const godot::PackedByteArray readback = rd->texture_get_data(tex, 0);
-  rd->free_rid(tex);
-  if (readback.size() <= 0) {
-    trace_gpu("roundtrip_result texture_create=true readback=false success=false");
-    return false;
-  }
-  out.resize(expected_size);
-  if (static_cast<size_t>(readback.size()) < out.size()) {
-    trace_gpu("roundtrip_result texture_create=true readback=false success=false reason=short_readback");
-    return false;
-  }
-  std::memcpy(out.data(), readback.ptr(), out.size());
-  trace_gpu("roundtrip_result texture_create=true readback=true success=true");
-  return true;
+    const uint8_t*,
+    uint32_t,
+    uint32_t,
+    uint32_t,
+    std::vector<uint8_t>&) noexcept {
+  trace_gpu("roundtrip_result texture_create=false readback=false success=false reason=unsupported_non_render_thread");
+  return false;
 }
 
 std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
@@ -717,74 +661,13 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
-  if (bridge_teardown_started()) {
-    return false;
-  }
-  request_pending_release_drain();
-  if (!backing) {
-    return false;
-  }
-  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
-      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
-  if (!retained) {
-    return false;
-  }
-  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (!rs || !rs->get_rendering_device()) {
-    return false;
-  }
-  BackingSnapshot snapshot{};
-  return snapshot_backing_for_use(retained, snapshot);
+  (void)backing;
+  return false;
 }
 
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
-  if (bridge_teardown_started()) {
-    return {};
-  }
-  request_pending_release_drain();
-  if (!backing) {
-    return {};
-  }
-  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
-      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
-  if (!retained) {
-    return {};
-  }
-  godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
-  if (!rs) {
-    return {};
-  }
-  godot::RenderingDevice* rd = rs->get_rendering_device();
-  if (!rd) {
-    return {};
-  }
-  BackingSnapshot snapshot{};
-  if (!snapshot_backing_for_use(retained, snapshot)) {
-    return {};
-  }
-  const godot::PackedByteArray readback = rd->texture_get_data(snapshot.rid, 0);
-  if (readback.size() <= 0) {
-    return {};
-  }
-
-  if (snapshot.width == 0 || snapshot.height == 0) {
-    return {};
-  }
-
-  godot::Ref<godot::Image> image;
-  image.instantiate();
-  if (image.is_null()) {
-    return {};
-  }
-  image->set_data(static_cast<int64_t>(snapshot.width),
-                  static_cast<int64_t>(snapshot.height),
-                  false,
-                  godot::Image::FORMAT_RGBA8,
-                  readback);
-  if (image->is_empty()) {
-    return {};
-  }
-  return image;
+  (void)backing;
+  return {};
 }
 
 } // namespace cambang

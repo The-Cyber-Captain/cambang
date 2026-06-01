@@ -53,6 +53,10 @@ struct CoreStreamResultData {
   // per-frame GPU artifact identity.
   std::shared_ptr<void> retained_gpu_backing{};
   CoreResultPayloadCpuPacked payload{};
+  // Non-zero only when payload was copied from the same FrameView as this
+  // retained stream result. Used to distinguish current CPU materialization
+  // from unsupported GPU-only readback.
+  uint64_t payload_capture_timestamp_ns = 0;
   CoreImageFactBundle facts{};
 };
 
