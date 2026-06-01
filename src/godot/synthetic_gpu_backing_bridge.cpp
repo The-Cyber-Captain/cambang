@@ -66,9 +66,7 @@ struct RetainedSyntheticGpuBacking final {
     if (!rid.is_valid()) {
       return;
     }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
+    (void)enqueue_pending_release(rid);
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -104,9 +102,7 @@ public:
     if (!rid.is_valid()) {
       return;
     }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
+    (void)enqueue_pending_release(rid);
   }
 
 private:
