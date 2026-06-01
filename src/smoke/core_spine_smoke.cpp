@@ -657,6 +657,84 @@ static int test_overload_queuefull_release_accounting(CoreRuntime& rt, StubProvi
   return 0;
 }
 
+static int test_non_frame_provider_fact_survives_ordinary_queue_full(CoreRuntime& rt, StubProvider& prov) {
+  (void)prov;
+  if (!wait_for_core_barrier(rt)) {
+    std::cerr << "Failed to establish pre-essential-overload core barrier\n";
+    rt.stop();
+    return 1;
+  }
+
+  const CoreDispatchStats before = get_dispatch_stats(rt);
+
+  auto release_gate = std::make_shared<std::promise<void>>();
+  std::shared_future<void> release_gate_done(release_gate->get_future());
+  std::atomic<bool> gate_started{false};
+  const auto gate_post = rt.try_post_core_thread_unchecked([release_gate_done, &gate_started]() mutable {
+    gate_started.store(true, std::memory_order_release);
+    release_gate_done.wait();
+  });
+  if (gate_post != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Failed to post essential-overload gate\n";
+    rt.stop();
+    return 1;
+  }
+  while (!gate_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  size_t fillers_posted = 0;
+  for (; fillers_posted < CoreThread::kMaxPendingTasks; ++fillers_posted) {
+    const auto filler_post = rt.try_post_core_thread_unchecked([]() {});
+    if (filler_post != CoreThread::PostResult::Enqueued) {
+      release_gate->set_value();
+      std::cerr << "Failed to fill ordinary queue for essential-overload check. fillers_posted="
+                << fillers_posted << " post_result=" << static_cast<int>(filler_post) << "\n";
+      rt.stop();
+      return 1;
+    }
+  }
+
+  const auto ingress_before = rt.ingress_stats_copy();
+  rt.provider_callbacks()->on_device_error(kDeviceInstanceId, ProviderError::ERR_PROVIDER_FAILED);
+  const auto ingress_after_post = rt.ingress_stats_copy();
+
+  if (ingress_after_post.commands_dropped_full != ingress_before.commands_dropped_full ||
+      ingress_after_post.commands_dropped_closed != ingress_before.commands_dropped_closed ||
+      ingress_after_post.commands_dropped_allocfail != ingress_before.commands_dropped_allocfail ||
+      ingress_after_post.non_frame_rejected_closed != ingress_before.non_frame_rejected_closed ||
+      ingress_after_post.non_frame_rejected_allocfail != ingress_before.non_frame_rejected_allocfail) {
+    release_gate->set_value();
+    std::cerr << "Non-frame provider fact was rejected while ordinary queue was full. full_delta="
+              << (ingress_after_post.commands_dropped_full - ingress_before.commands_dropped_full)
+              << " closed_delta="
+              << (ingress_after_post.commands_dropped_closed - ingress_before.commands_dropped_closed)
+              << " alloc_delta="
+              << (ingress_after_post.commands_dropped_allocfail - ingress_before.commands_dropped_allocfail)
+              << " non_frame_closed_delta="
+              << (ingress_after_post.non_frame_rejected_closed - ingress_before.non_frame_rejected_closed)
+              << " non_frame_alloc_delta="
+              << (ingress_after_post.non_frame_rejected_allocfail - ingress_before.non_frame_rejected_allocfail)
+              << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  release_gate->set_value();
+
+  const bool observed = wait_until([&]() {
+    const CoreDispatchStats after = get_dispatch_stats(rt);
+    return after.commands_handled >= before.commands_handled + 1;
+  }, 1000, 2);
+  if (!observed) {
+    std::cerr << "Timed out waiting for non-frame provider fact dispatch after ordinary queue saturation\n";
+    rt.stop();
+    return 1;
+  }
+
+  return 0;
+}
+
 static int test_shutdown_choreography(CoreRuntime& rt, StubProvider& prov) {
   rt.stop();
 
@@ -1627,6 +1705,12 @@ static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_inde
       rt.stop();
       return r;
     }
+    const int essential_r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov);
+    if (essential_r != 0) {
+      std::cerr << "[iter " << iter_index << "] essential provider fact overload test failed\n";
+      rt.stop();
+      return essential_r;
+    }
   }
 
   maybe_jitter(opt, rng);
@@ -1682,6 +1766,7 @@ int main(int argc, char** argv) {
     StubProvider prov;
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
+    if (int r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
     if (int r = test_device_capture_request_materialization_smoke()) return r;
     if (int r = test_open_device_snapshot_retains_default_capture_profile_smoke()) return r;

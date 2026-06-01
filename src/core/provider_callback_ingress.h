@@ -31,6 +31,9 @@ public:
     uint64_t commands_dropped_closed = 0;
     uint64_t commands_dropped_allocfail = 0;
 
+    uint64_t non_frame_rejected_closed = 0;
+    uint64_t non_frame_rejected_allocfail = 0;
+
     uint64_t frames_dropped_full = 0;
     uint64_t frames_dropped_closed = 0;
     uint64_t frames_dropped_allocfail = 0;
@@ -85,6 +88,8 @@ private:
   void on_frame_ingress_failed_(uint64_t stream_id);
   void on_frame_ingress_dispatched_(uint64_t stream_id);
 
+  static bool is_frame_command_(ProviderToCoreCommandType type) noexcept;
+
   void post_command(ProviderToCoreCommand cmd);
 
   CoreThread* core_thread_ = nullptr; // non-owning
@@ -97,6 +102,9 @@ private:
   std::atomic<uint64_t> commands_dropped_full_{0};
   std::atomic<uint64_t> commands_dropped_closed_{0};
   std::atomic<uint64_t> commands_dropped_allocfail_{0};
+
+  std::atomic<uint64_t> non_frame_rejected_closed_{0};
+  std::atomic<uint64_t> non_frame_rejected_allocfail_{0};
 
   std::atomic<uint64_t> frames_dropped_full_{0};
   std::atomic<uint64_t> frames_dropped_closed_{0};

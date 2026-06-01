@@ -18,11 +18,11 @@ namespace cambang {
 // - Exactly one dedicated CamBANG core thread owns all mutable core state.
 // - Core logic MUST execute only on the core thread.
 // - All external threads (providers, Godot, etc.) must marshal work into the core
-//   via post()/try_post() (and never touch core state directly).
+//   via post()/try_post()/try_post_essential() (and never touch core state directly).
 // - All tasks are executed serially (no concurrent core execution).
 //
 // Determinism invariants:
-// - Tasks are executed in FIFO order.
+// - Essential tasks are drained before ordinary tasks; each queue preserves FIFO order.
 // - There is no implicit background work; all work is explicit via post() or hook ticks.
 // - Hooks are invoked only on the core thread.
 //
@@ -33,8 +33,10 @@ namespace cambang {
 //
 // Mailbox hardening (Build slice C):
 // - The posted-task queue is bounded.
-// - try_post() is best-effort; it returns false if the queue is full.
+// - try_post() is best-effort; it returns QueueFull if the ordinary queue is full.
 // - post() is best-effort and drops on overflow (accounted).
+// - try_post_essential() uses a separate unbounded-by-kMaxPendingTasks queue for
+//   lifecycle/fact delivery that must not be lost merely because ordinary work is full.
 class CoreThread final {
 public:
   // NOTE: std::function may allocate; acceptable for scaffolding.
@@ -50,6 +52,7 @@ public:
 
   struct Stats {
     uint64_t tasks_enqueued = 0;
+    uint64_t essential_tasks_enqueued = 0;
     uint64_t tasks_dropped_full = 0;
     uint64_t tasks_dropped_closed = 0;
     uint64_t tasks_dropped_allocfail = 0;
@@ -132,6 +135,16 @@ public:
   // If enqueue fails (QueueFull/Closed/AllocFail), the task will never run.
   PostResult try_post(Task task);
 
+  // Essential post; returns a reason on failure.
+  // - thread-safe
+  // - not subject to kMaxPendingTasks ordinary queue-full rejection
+  // - drained before ordinary tasks
+  //
+  // Use only for non-lossy core facts (for example provider lifecycle, native,
+  // terminal capture, topology, and error truth). Frame delivery must stay on
+  // try_post() so pressure can drop it and release provider payloads promptly.
+  PostResult try_post_essential(Task task);
+
   // Accounting-only helper for external lifecycle gating layers.
   // Increments the Closed drop counter and returns PostResult::Closed.
   // - thread-safe
@@ -159,8 +172,8 @@ public:
 private:
   void thread_main();
 
-  // Drain tasks into a local queue; mu_ must be held.
-  void drain_tasks_locked(std::deque<Task>& local);
+  // Drain tasks into local queues; mu_ must be held.
+  void drain_tasks_locked(std::deque<Task>& essential_local, std::deque<Task>& ordinary_local);
 
   // Synchronization
   mutable std::mutex mu_;
@@ -170,11 +183,13 @@ private:
   std::thread::id core_tid_{};
   IHooks* hooks_ = nullptr; // non-owning; must outlive stop()
 
-  // Work queue (protected by mu_).
+  // Work queues (protected by mu_).
+  std::deque<Task> essential_tasks_;
   std::deque<Task> tasks_;
 
   // Post accounting
   std::atomic<uint64_t> tasks_enqueued_{0};
+  std::atomic<uint64_t> essential_tasks_enqueued_{0};
   std::atomic<uint64_t> tasks_dropped_full_{0};
   std::atomic<uint64_t> tasks_dropped_closed_{0};
   std::atomic<uint64_t> tasks_dropped_allocfail_{0};
