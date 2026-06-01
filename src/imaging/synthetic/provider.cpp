@@ -761,8 +761,13 @@ ProviderResult SyntheticProvider::open_device(
   d.native_id = alloc_native_id_(NativeObjectType::Device);
   d.capture_picture = capture_template().picture;
 
-  emit_native_create_device_(d);
+  // Device-open lifecycle is the first Scene 65-visible scenario effect. Post
+  // it before provider-native metadata so the first post-baseline topology
+  // publication for a staged scenario is not a native-only snapshot with empty
+  // devices/streams/rigs. Native metadata remains ordered immediately after the
+  // lifecycle fact on the same provider strand.
   strand_.post_device_opened(device_instance_id);
+  emit_native_create_device_(d);
   return ProviderResult::success();
 }
 
