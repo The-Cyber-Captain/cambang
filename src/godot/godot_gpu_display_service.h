@@ -9,11 +9,12 @@
 
 namespace cambang {
 
-// Godot-side display-boundary scaffold for descriptor-keyed GPU display views.
-// This service owns Godot display wrappers/metadata. Core/provider/result-store
-// code should retain only neutral RetainedGpuBackingDescriptor metadata and any
-// temporary legacy compatibility artifacts until a later tranche completes the
-// ownership split.
+// Dormant Godot-side display-boundary scaffold for descriptor-keyed GPU display
+// views. This tranche declares the future boundary only: the service must not
+// own or retain Godot Texture2D refs until a later tranche explicitly activates
+// descriptor-native display resolution. Core/provider/result-store code should
+// retain only neutral RetainedGpuBackingDescriptor metadata and any temporary
+// legacy compatibility artifacts until that ownership split is completed.
 bool godot_gpu_display_descriptor_has_complete_identity(
     const RetainedGpuBackingDescriptor& descriptor) noexcept;
 
