@@ -3,20 +3,12 @@
 #include "core/core_dispatcher.h"
 #include "core/resource_aggregate_telemetry.h"
 
-#include <cstdio>
 #include <cstdlib>
 #include <variant>
 
 namespace cambang {
 
 namespace {
-// TEMPORARY Scene 65 diagnostic instrumentation. Remove after the deferred
-// startup due-zero chain break is identified; this is not a production trace
-// facility and intentionally has no env var, project setting, or public API.
-constexpr const char* kDeferredStartTracePrefix = "[CamBANG][DeferredStartTrace]";
-constexpr uint64_t kDeferredStartTraceDeviceInstanceId = 10001ull;
-constexpr uint64_t kDeferredStartTraceStreamId = 30001ull;
-
 uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
   if (ts.tick_ns == 0) {
     return 0;
@@ -48,22 +40,10 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
-    if (p.device_instance_id == kDeferredStartTraceDeviceInstanceId) {
-      std::fprintf(stderr,
-                   "%s core_dispatcher dispatch PROVIDER_DEVICE_OPENED device_instance_id=%llu\n",
-                   kDeferredStartTracePrefix,
-                   static_cast<unsigned long long>(p.device_instance_id));
-    }
     if (devices_) {
       devices_->on_device_opened(p.device_instance_id);
     }
     relevant_state_changed_ = true;
-    if (p.device_instance_id == kDeferredStartTraceDeviceInstanceId) {
-      std::fprintf(stderr,
-                   "%s core_dispatcher relevant_state_changed=true after PROVIDER_DEVICE_OPENED device_instance_id=%llu\n",
-                   kDeferredStartTracePrefix,
-                   static_cast<unsigned long long>(p.device_instance_id));
-    }
     break;
   }
 
@@ -80,22 +60,10 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
-    if (p.stream_id == kDeferredStartTraceStreamId) {
-      std::fprintf(stderr,
-                   "%s core_dispatcher dispatch PROVIDER_STREAM_CREATED stream_id=%llu\n",
-                   kDeferredStartTracePrefix,
-                   static_cast<unsigned long long>(p.stream_id));
-    }
     if (streams_) {
       streams_->on_stream_created(p.stream_id);
     }
     relevant_state_changed_ = true;
-    if (p.stream_id == kDeferredStartTraceStreamId) {
-      std::fprintf(stderr,
-                   "%s core_dispatcher relevant_state_changed=true after PROVIDER_STREAM_CREATED stream_id=%llu\n",
-                   kDeferredStartTracePrefix,
-                   static_cast<unsigned long long>(p.stream_id));
-    }
     break;
   }
 
@@ -115,22 +83,10 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
   case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
-    if (p.stream_id == kDeferredStartTraceStreamId) {
-      std::fprintf(stderr,
-                   "%s core_dispatcher dispatch PROVIDER_STREAM_STARTED stream_id=%llu\n",
-                   kDeferredStartTracePrefix,
-                   static_cast<unsigned long long>(p.stream_id));
-    }
     if (streams_) {
       streams_->on_stream_started(p.stream_id);
     }
     relevant_state_changed_ = true;
-    if (p.stream_id == kDeferredStartTraceStreamId) {
-      std::fprintf(stderr,
-                   "%s core_dispatcher relevant_state_changed=true after PROVIDER_STREAM_STARTED stream_id=%llu\n",
-                   kDeferredStartTracePrefix,
-                   static_cast<unsigned long long>(p.stream_id));
-    }
     break;
   }
 

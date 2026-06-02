@@ -1480,15 +1480,7 @@ godot::Error CamBANGServer::_start_scenario_now_() {
   }
 
   ProviderBroker* broker = dynamic_cast<ProviderBroker*>(provider_.get());
-  // TEMPORARY Scene 65 diagnostic instrumentation. Remove after the deferred
-  // startup due-zero chain break is identified; this is not a production trace
-  // facility and intentionally has no env var, project setting, or public API.
-  godot::UtilityFunctions::print("[CamBANG][DeferredStartTrace] server._start_scenario_now before provider_start");
   const ProviderResult pr = broker->start_timeline_scenario_for_host();
-  godot::UtilityFunctions::print(godot::vformat(
-      "[CamBANG][DeferredStartTrace] server._start_scenario_now after provider_start ok=%s provider_error=%s",
-      pr.ok() ? "true" : "false",
-      cambang::to_string(pr.code)));
   if (!pr.ok()) {
     ERR_PRINT(godot::vformat(
         "CamBANGServer: start_scenario rejected by provider; provider_error=%s.",
@@ -1519,12 +1511,7 @@ godot::Error CamBANGServer::_start_scenario_now_() {
   // This dispatches due timeline work only. It must not force publication here;
   // descendant realization remains provider-fact-driven through callbacks, core
   // fact dispatch, and the normal coalesced snapshot publish path.
-  godot::UtilityFunctions::print("[CamBANG][DeferredStartTrace] server._start_scenario_now before try_tick_virtual_time dt_ns=0");
-  const bool zero_pump_ok = broker->try_tick_virtual_time(0);
-  godot::UtilityFunctions::print(godot::vformat(
-      "[CamBANG][DeferredStartTrace] server._start_scenario_now after try_tick_virtual_time dt_ns=0 ok=%s",
-      zero_pump_ok ? "true" : "false"));
-  if (!zero_pump_ok) {
+  if (!broker->try_tick_virtual_time(0)) {
     WARN_PRINT("CamBANGServer: deferred scenario current-time pump was unavailable after successful scenario start; publication remains provider-fact-driven.");
   }
 
