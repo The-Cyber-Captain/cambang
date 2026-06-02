@@ -5,6 +5,7 @@
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_rig.h"
+#include "godot/synthetic_gpu_backing_bridge.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
@@ -410,6 +411,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
 void CamBANGServer::stop() {
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
+  synthetic_gpu_backing_drain_pending_godot_releases();
   runtime_.attach_provider(nullptr);
   provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
@@ -1315,6 +1317,8 @@ void CamBANGServer::_reconcile_endpoint_lifecycle_from_snapshot(const CamBANGSta
 }
 
 void CamBANGServer::_on_godot_tick(double delta) {
+  synthetic_gpu_backing_drain_pending_godot_releases();
+
   // If a virtual_time provider is active (stub heartbeat, synthetic virtual_time),
   // advance it using the Godot frame delta.
   if (runtime_.is_running()) {

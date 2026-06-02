@@ -1,8 +1,10 @@
+#include "godot/synthetic_gpu_backing_bridge.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
 #include "godot/godot_gpu_display_service.h"
 #include "core/resource_aggregate_telemetry.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
@@ -30,6 +32,9 @@ void register_synthetic_gpu_backing_internal_classes();
 
 static bool enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
+static void enqueue_pending_godot_release_payload(
+    godot::Ref<godot::Texture2DRD>&& display_texture,
+    const godot::RID& rd_texture);
 static bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
   return value && value[0] != '\0' && value[0] != '0';
@@ -47,7 +52,8 @@ struct RetainedSyntheticGpuBacking final {
   ScopedResourceTelemetryKey telemetry_key{};
 
   void release_now() {
-    godot::RID rid;
+    godot::RID detached_rid;
+    godot::Ref<godot::Texture2DRD> detached_display_texture;
     {
       std::lock_guard<std::mutex> lock(mutex);
       if (released) {
@@ -56,20 +62,16 @@ struct RetainedSyntheticGpuBacking final {
       released = true;
       global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
 
-      if (rd_texture.is_valid()) {
-        rid = rd_texture;
-        rd_texture = godot::RID();
+      if (display_texture.is_valid()) {
+        std::swap(detached_display_texture, display_texture);
+      } else if (rd_texture.is_valid()) {
+        detached_rid = rd_texture;
       }
-
-      display_texture.unref();
+      rd_texture = godot::RID();
+      upload_bytes = godot::PackedByteArray();
     }
 
-    if (!rid.is_valid()) {
-      return;
-    }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
+    enqueue_pending_godot_release_payload(std::move(detached_display_texture), detached_rid);
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -126,6 +128,14 @@ void register_synthetic_gpu_backing_internal_classes() {
 static std::mutex g_pending_release_mutex;
 // RIDs that must be released from the render thread.
 static std::vector<godot::RID> g_pending_releases;
+// Godot-facing objects/RIDs detached from provider/core-owned retained backing.
+// These payloads are only drained by Godot-boundary code and never participate
+// in display lookup or ownership selection.
+struct PendingGodotReleasePayload final {
+  godot::Ref<godot::Texture2DRD> display_texture;
+  godot::RID rd_texture;
+};
+static std::vector<PendingGodotReleasePayload> g_pending_godot_releases;
 static bool g_pending_release_drain_scheduled = false;
 static bool g_bridge_teardown_started = false;
 static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
@@ -142,18 +152,33 @@ static bool enqueue_pending_release(const godot::RID& rid) {
   return true;
 }
 
+static void enqueue_pending_godot_release_payload(
+    godot::Ref<godot::Texture2DRD>&& display_texture,
+    const godot::RID& rd_texture) {
+  if (display_texture.is_null() && !rd_texture.is_valid()) {
+    return;
+  }
+  PendingGodotReleasePayload payload{};
+  payload.display_texture = std::move(display_texture);
+  payload.rd_texture = rd_texture;
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  g_pending_godot_releases.push_back(std::move(payload));
+}
+
 static bool bridge_teardown_started() {
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   return g_bridge_teardown_started;
 }
 
 static void clear_pending_releases_for_teardown() {
+  synthetic_gpu_backing_drain_pending_godot_releases();
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   g_bridge_teardown_started = true;
   // After teardown starts, do not schedule render-thread callbacks back into this
   // GDExtension. Pending RIDs are abandoned best-effort rather than risking a
   // late callback into torn-down extension or RenderingServer state.
   g_pending_releases.clear();
+  g_pending_godot_releases.clear();
   g_pending_release_drain_scheduled = false;
   g_render_thread_drain_helper.unref();
 }
@@ -162,6 +187,7 @@ static void reset_bridge_teardown_state_for_install() {
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   g_bridge_teardown_started = false;
   g_pending_releases.clear();
+  g_pending_godot_releases.clear();
   g_pending_release_drain_scheduled = false;
   g_render_thread_drain_helper.unref();
 }
@@ -604,6 +630,33 @@ void install_synthetic_gpu_backing_godot_bridge() {
   reset_bridge_teardown_state_for_install();
   set_synthetic_gpu_backing_runtime_ops(&kOps);
   trace_gpu("bridge_install runtime_ops_registered=true");
+}
+
+void synthetic_gpu_backing_drain_pending_godot_releases() {
+  std::vector<PendingGodotReleasePayload> pending;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    pending.swap(g_pending_godot_releases);
+  }
+  if (pending.empty()) {
+    request_pending_release_drain();
+    return;
+  }
+
+  for (PendingGodotReleasePayload& payload : pending) {
+    if (payload.rd_texture.is_valid()) {
+      (void)enqueue_pending_release(payload.rd_texture);
+      payload.rd_texture = godot::RID();
+    }
+  }
+
+  // Clearing the vector releases detached Texture2DRD refs from this explicit
+  // Godot-boundary hook. If scene nodes still hold Texture2D refs, this only
+  // drops CamBANG's quarantined reference; RID-owner metadata remains attached
+  // to the Texture2D and will release nonblocking when the final scene ref goes
+  // away.
+  pending.clear();
+  request_pending_release_drain();
 }
 
 void uninstall_synthetic_gpu_backing_godot_bridge() {
