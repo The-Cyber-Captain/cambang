@@ -1,6 +1,5 @@
 extends Node
 
-const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 3000
 
 const PHASE_WAIT_INITIAL_PUBLISH := 0
@@ -122,10 +121,9 @@ func _finish_ok(msg: String) -> void:
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", 0)
+		CamBANGServer.stop_and_quit(0)
 
 
 func _finish_fail(msg: String) -> void:
@@ -143,13 +141,6 @@ func _finish_fail(msg: String) -> void:
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", 1)
-
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	get_tree().quit(code)
+		CamBANGServer.stop_and_quit(1)

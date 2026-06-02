@@ -90,6 +90,7 @@ public:
       const godot::Variant& timing_driver = godot::Variant(),
       const godot::Variant& timeline_reconciliation = godot::Variant());
   void stop();
+  void stop_and_quit(int64_t exit_code = 0);
   bool is_running() const;
 
   godot::Variant get_active_provider_config() const;
@@ -155,6 +156,7 @@ private:
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
+  void _drain_pending_stop_and_quit_();
   void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
   // Consume latest core snapshot (if published_seq advanced) and emit
@@ -225,6 +227,12 @@ private:
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
+
+  // Editor/debugger diagnostic flush workaround for stop_and_quit().
+  static constexpr uint32_t kEditorDiagnosticQuitFlushFrames = 2;
+  bool pending_stop_and_quit_ = false;
+  uint32_t pending_stop_and_quit_frames_remaining_ = 0;
+  int pending_stop_and_quit_exit_code_ = 0;
 
   void _refresh_timeline_teardown_trace_mode();
   void _handle_timeline_teardown_trace_line(const std::string& line);

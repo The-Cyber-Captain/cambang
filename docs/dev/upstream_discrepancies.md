@@ -60,9 +60,11 @@ Observation:
 CamBANG handling:
 - Keep DisplayLifetime diagnostics on Godot's warning channel because the condition is non-fatal and should remain warning-severity rather than error-severity.
 - Emit both the headline DisplayLifetime message and per-stream `live_gpu_display_view` detail through `UtilityFunctions::push_warning(...)`.
+- Provide the CamBANG-owned `CamBANGServer.stop_and_quit(exit_code := 0)` helper for verification scenes and other CamBANG-controlled flows that intentionally stop CamBANG and immediately exit.
+- `stop_and_quit(...)` calls the existing synchronous `CamBANGServer.stop()` first, then defers `SceneTree.quit(exit_code)` by a small fixed number of Godot `process_frame` ticks (`kEditorDiagnosticQuitFlushFrames = 2`) as an explicit editor/debugger diagnostic-flush workaround.
+- This helper is not a CamBANG runtime stop requirement and does not change `CamBANGServer.stop()` semantics; normal runtime stop flows should continue to call `stop()` directly.
 - Treat immediate-quit editor Debugger visibility as unreliable in affected Godot versions; shell/console output remains the more reliable diagnostic sink for this case.
-- Further CamBANG-side mitigation for editor Debugger visibility is not yet settled. Delay/defer-based workarounds are intentionally not adopted by this note.
 
 Removal criteria:
-- Godot editor/debugger reliably flushes warnings/errors emitted immediately before `get_tree().quit()` in CamBANG's targeted Godot version.
-- CamBANG no longer needs special documentation or harness awareness for immediate-quit diagnostic visibility.
+- Godot editor/debugger reliably surfaces diagnostics emitted immediately before quit in CamBANG's supported Godot versions.
+- CamBANG no longer needs a documented quit-flush workaround for immediate-exit verification flows.

@@ -1,7 +1,6 @@
 extends Node
 
 const MAX_FRAMES := 180
-const QUIT_FLUSH_FRAMES := 2
 
 var _done := false
 var _quit_requested := false
@@ -279,16 +278,10 @@ func _cleanup_and_quit(code: int) -> void:
 	_endpoints = []
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
+		CamBANGServer.stop_and_quit(code)
 
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	get_tree().quit(code)
 
 
 func _on_state_published(_gen: int, _version: int, _topology_version: int) -> void:

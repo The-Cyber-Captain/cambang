@@ -420,17 +420,12 @@ func _print_summary_and_quit() -> void:
 	])
 	_print_frame_spike_trace()
 	
-	# diagnostic test nulling
-	#_stream_a.texture = null
-	#_stream_b.texture = null
-	#
-	
-	print("INFO: before CamBANGServer.stop")
-	CamBANGServer.stop()
-	print("INFO: after CamBANGServer.stop")
-	#await get_tree().create_timer(0.2).timeout
-	await get_tree().process_frame
-	get_tree().quit(0)
+	_stream_a.texture = null
+	_stream_b.texture = null
+
+	print("INFO: before CamBANGServer.stop_and_quit")
+	CamBANGServer.stop_and_quit(0)
+	print("INFO: after CamBANGServer.stop_and_quit")
 
 
 func _record_frame_spike(process_call_index: int, delta_sec: float, process_sec: float, latch_sec: float, poll_sec: float, display_sec: float, log_sec: float) -> void:
@@ -520,6 +515,7 @@ func _require(condition: bool, message: String) -> void:
 		return
 	push_error(message)
 	_log("FAIL: %s" % message)
-	CamBANGServer.stop()
+	_stream_a.texture = null
+	_stream_b.texture = null
 	_done = true
-	get_tree().quit(1)
+	CamBANGServer.stop_and_quit(1)
