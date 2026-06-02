@@ -4,6 +4,7 @@
 #include "godot/cambang_device.h"
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
+#include "godot/cambang_stream_result_internal.h"
 #include "godot/cambang_rig.h"
 
 #include <godot_cpp/core/class_db.hpp>
@@ -408,6 +409,8 @@ godot::Error CamBANGServer::_start_with_provider_config(
 }
 
 void CamBANGServer::stop() {
+  warn_if_outstanding_gpu_display_views_before_stop();
+
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
   runtime_.attach_provider(nullptr);
