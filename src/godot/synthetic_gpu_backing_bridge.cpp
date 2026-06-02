@@ -20,6 +20,7 @@
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/rd_texture_format.hpp>
 #include <godot_cpp/classes/rd_texture_view.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/array.hpp>
@@ -32,6 +33,11 @@ void register_synthetic_gpu_backing_internal_classes();
 
 static bool enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
+
+struct SharedDisplayTextureRidState;
+static bool enqueue_pending_texture_wrapper_release(
+    godot::Ref<godot::Texture2DRD> texture,
+    std::shared_ptr<SharedDisplayTextureRidState> state);
 static bool gpu_trace_enabled() noexcept {
   const char* value = std::getenv("CAMBANG_DEV_SYNTH_GPU_TRACE");
   return value && value[0] != '\0' && value[0] != '0';
@@ -109,6 +115,50 @@ struct RetainedSyntheticGpuBacking final {
   }
 };
 
+class DeferredDisplayTexture2DRD : public godot::Texture2D {
+  GDCLASS(DeferredDisplayTexture2DRD, godot::Texture2D);
+
+public:
+  static void _bind_methods() {}
+
+  ~DeferredDisplayTexture2DRD() override;
+
+  void init(
+      godot::Ref<godot::Texture2DRD> texture,
+      std::shared_ptr<SharedDisplayTextureRidState> state,
+      uint32_t width,
+      uint32_t height);
+
+  int32_t _get_width() const override;
+  int32_t _get_height() const override;
+  bool _is_pixel_opaque(int32_t x, int32_t y) const override;
+  bool _has_alpha() const override;
+  void _draw(
+      const godot::RID& to_canvas_item,
+      const godot::Vector2& pos,
+      const godot::Color& modulate,
+      bool transpose) const override;
+  void _draw_rect(
+      const godot::RID& to_canvas_item,
+      const godot::Rect2& rect,
+      bool tile,
+      const godot::Color& modulate,
+      bool transpose) const override;
+  void _draw_rect_region(
+      const godot::RID& to_canvas_item,
+      const godot::Rect2& rect,
+      const godot::Rect2& src_rect,
+      const godot::Color& modulate,
+      bool transpose,
+      bool clip_uv) const override;
+
+private:
+  godot::Ref<godot::Texture2DRD> texture_;
+  std::shared_ptr<SharedDisplayTextureRidState> state_;
+  uint32_t width_ = 0;
+  uint32_t height_ = 0;
+};
+
 class DisplayTextureRidOwner : public godot::RefCounted {
   GDCLASS(DisplayTextureRidOwner, godot::RefCounted);
 
@@ -129,12 +179,25 @@ void register_synthetic_gpu_backing_internal_classes() {
   // Internal-only helpers: registered only so Ref<...>::instantiate() can
   // resolve through ClassDB. These are not user-facing CamBANG API classes.
   godot::ClassDB::register_class<RenderThreadDrainHelper>();
+  godot::ClassDB::register_class<DeferredDisplayTexture2DRD>();
   godot::ClassDB::register_class<DisplayTextureRidOwner>();
 }
 
 static std::mutex g_pending_release_mutex;
 // RIDs that must be released from the render thread.
 static std::vector<godot::RID> g_pending_releases;
+
+struct PendingTextureWrapperRelease final {
+  // Keep backing state alive until after Texture2DRD has freed its internal
+  // RenderingServer texture wrapper. Members are destroyed in reverse order,
+  // so texture is released before state.
+  std::shared_ptr<SharedDisplayTextureRidState> state;
+  godot::Ref<godot::Texture2DRD> texture;
+};
+
+// Texture2DRD wrappers that must be unreferenced on the render thread because
+// their destructor frees Godot's internal RenderingServer texture wrapper.
+static std::vector<PendingTextureWrapperRelease> g_pending_texture_wrapper_releases;
 static bool g_pending_release_drain_scheduled = false;
 static bool g_bridge_teardown_started = false;
 static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
@@ -151,6 +214,20 @@ static bool enqueue_pending_release(const godot::RID& rid) {
   return true;
 }
 
+static bool enqueue_pending_texture_wrapper_release(
+    godot::Ref<godot::Texture2DRD> texture,
+    std::shared_ptr<SharedDisplayTextureRidState> state) {
+  if (texture.is_null()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+  if (g_bridge_teardown_started) {
+    return false;
+  }
+  g_pending_texture_wrapper_releases.push_back(PendingTextureWrapperRelease{std::move(state), std::move(texture)});
+  return true;
+}
+
 static bool bridge_teardown_started() {
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   return g_bridge_teardown_started;
@@ -163,6 +240,7 @@ static void clear_pending_releases_for_teardown() {
   // GDExtension. Pending RIDs are abandoned best-effort rather than risking a
   // late callback into torn-down extension or RenderingServer state.
   g_pending_releases.clear();
+  g_pending_texture_wrapper_releases.clear();
   g_pending_release_drain_scheduled = false;
   g_render_thread_drain_helper.unref();
 }
@@ -171,6 +249,7 @@ static void reset_bridge_teardown_state_for_install() {
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   g_bridge_teardown_started = false;
   g_pending_releases.clear();
+  g_pending_texture_wrapper_releases.clear();
   g_pending_release_drain_scheduled = false;
   g_render_thread_drain_helper.unref();
 }
@@ -219,6 +298,77 @@ std::vector<LiveDisplayWrapperBorrow> snapshot_live_display_wrapper_borrows() {
 
 } // namespace
 
+void DeferredDisplayTexture2DRD::init(
+    godot::Ref<godot::Texture2DRD> texture,
+    std::shared_ptr<SharedDisplayTextureRidState> state,
+    uint32_t width,
+    uint32_t height) {
+  texture_ = std::move(texture);
+  state_ = std::move(state);
+  width_ = width;
+  height_ = height;
+}
+
+DeferredDisplayTexture2DRD::~DeferredDisplayTexture2DRD() {
+  godot::Ref<godot::Texture2DRD> texture = std::move(texture_);
+  std::shared_ptr<SharedDisplayTextureRidState> state = std::move(state_);
+  if (texture.is_valid()) {
+    if (enqueue_pending_texture_wrapper_release(std::move(texture), std::move(state))) {
+      request_pending_release_drain();
+      return;
+    }
+  }
+}
+
+int32_t DeferredDisplayTexture2DRD::_get_width() const {
+  return static_cast<int32_t>(width_);
+}
+
+int32_t DeferredDisplayTexture2DRD::_get_height() const {
+  return static_cast<int32_t>(height_);
+}
+
+bool DeferredDisplayTexture2DRD::_is_pixel_opaque(int32_t x, int32_t y) const {
+  return texture_.is_valid() ? texture_->is_pixel_opaque(x, y) : false;
+}
+
+bool DeferredDisplayTexture2DRD::_has_alpha() const {
+  return true;
+}
+
+void DeferredDisplayTexture2DRD::_draw(
+    const godot::RID& to_canvas_item,
+    const godot::Vector2& pos,
+    const godot::Color& modulate,
+    bool transpose) const {
+  if (texture_.is_valid()) {
+    texture_->draw(to_canvas_item, pos, modulate, transpose);
+  }
+}
+
+void DeferredDisplayTexture2DRD::_draw_rect(
+    const godot::RID& to_canvas_item,
+    const godot::Rect2& rect,
+    bool tile,
+    const godot::Color& modulate,
+    bool transpose) const {
+  if (texture_.is_valid()) {
+    texture_->draw_rect(to_canvas_item, rect, tile, modulate, transpose);
+  }
+}
+
+void DeferredDisplayTexture2DRD::_draw_rect_region(
+    const godot::RID& to_canvas_item,
+    const godot::Rect2& rect,
+    const godot::Rect2& src_rect,
+    const godot::Color& modulate,
+    bool transpose,
+    bool clip_uv) const {
+  if (texture_.is_valid()) {
+    texture_->draw_rect_region(to_canvas_item, rect, src_rect, modulate, transpose, clip_uv);
+  }
+}
+
 void DisplayTextureRidOwner::init(uint64_t stream_id, std::shared_ptr<SharedDisplayTextureRidState> state) {
   stream_id_ = stream_id;
   state_ = std::move(state);
@@ -237,7 +387,9 @@ static void request_pending_release_drain() {
   }
 
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  if (g_bridge_teardown_started || g_pending_releases.empty() || g_pending_release_drain_scheduled) {
+  if (g_bridge_teardown_started ||
+      (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
+      g_pending_release_drain_scheduled) {
     return;
   }
 
@@ -255,17 +407,34 @@ static void request_pending_release_drain() {
 
 void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
+  std::vector<PendingTextureWrapperRelease> pending_texture_wrappers;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
     if (g_bridge_teardown_started) {
       g_pending_releases.clear();
+      g_pending_texture_wrapper_releases.clear();
       g_pending_release_drain_scheduled = false;
       return;
     }
     pending.swap(g_pending_releases);
+    pending_texture_wrappers.swap(g_pending_texture_wrapper_releases);
     g_pending_release_drain_scheduled = false;
   }
+
+  // Drop Texture2DRD references on the render thread. Godot's Texture2DRD
+  // destructor frees its internal RenderingServer texture wrapper, and doing
+  // that synchronously from user unbind has been observed to wedge GPU-only
+  // Scene 71 release-streams.
+  pending_texture_wrappers.clear();
+
   if (pending.empty()) {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) {
+      g_pending_release_drain_scheduled = true;
+      if (godot::RenderingServer* rs = godot::RenderingServer::get_singleton()) {
+        rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+      }
+    }
     return;
   }
 
@@ -280,7 +449,9 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     for (godot::RID &rid : pending) {
       g_pending_releases.push_back(std::move(rid));
     }
-    if (rs && !g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+    if (rs &&
+        (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
+        !g_pending_release_drain_scheduled) {
       g_pending_release_drain_scheduled = true;
       rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
     }
@@ -302,7 +473,8 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     g_pending_release_drain_scheduled = false;
     return;
   }
-  if (!g_pending_releases.empty() && !g_pending_release_drain_scheduled) {
+  if ((!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
+      !g_pending_release_drain_scheduled) {
     g_pending_release_drain_scheduled = true;
     rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
   }
@@ -727,6 +899,8 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
 
   std::shared_ptr<SharedDisplayTextureRidState> state;
   uint64_t stream_id = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
   {
     std::lock_guard<std::mutex> lock(retained->mutex);
     if (retained->released || !retained->rid_state) {
@@ -734,6 +908,8 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     }
     state = retained->rid_state;
     stream_id = retained->stream_id;
+    width = retained->width;
+    height = retained->height;
   }
 
   const godot::RID display_rid = state->snapshot_rid();
@@ -746,18 +922,28 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   if (texture.is_null()) {
     return {};
   }
-  // Display view is a user-facing wrapper over stream-owned backing state.
-  // Texture2DRD does not own/free this RID; final RID cleanup is carried by
-  // shared metadata/lifetime state rather than by a retained Texture2DRD Ref.
   texture->set_texture_rd_rid(display_rid);
+
+  godot::Ref<DeferredDisplayTexture2DRD> display_view;
+  display_view.instantiate();
+  if (display_view.is_null()) {
+    return {};
+  }
+  display_view->init(texture, state, width, height);
+
+  // Display view is a user-facing wrapper over stream-owned backing state.
+  // The Texture2DRD delegate creates an internal RenderingServer texture wrapper
+  // for display, but DeferredDisplayTexture2DRD moves delegate destruction to a
+  // render-thread drain so ordinary TextureRect unbind does not synchronously
+  // free that internal wrapper on the main thread.
   godot::Ref<DisplayTextureRidOwner> rid_owner;
   rid_owner.instantiate();
   if (rid_owner.is_null()) {
     return {};
   }
   rid_owner->init(stream_id, std::move(state));
-  texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
-  return texture;
+  display_view->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
+  return display_view;
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
