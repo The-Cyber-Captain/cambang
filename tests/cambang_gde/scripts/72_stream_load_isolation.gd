@@ -428,7 +428,8 @@ func _print_summary_and_quit() -> void:
 	print("INFO: before CamBANGServer.stop")
 	CamBANGServer.stop()
 	print("INFO: after CamBANGServer.stop")
-	await get_tree().create_timer(1.0)
+	#await get_tree().create_timer(0.2).timeout
+	await get_tree().process_frame
 	get_tree().quit(0)
 
 
