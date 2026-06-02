@@ -1,11 +1,65 @@
 #include "core/provider_callback_ingress.h"
 
+#include <cstdio>
 #include <utility>
 
 #include "imaging/api/timeline_teardown_trace.h"
 #include "core/resource_aggregate_telemetry.h"
 
 namespace cambang {
+
+namespace {
+
+// TEMPORARY Scene 65 diagnostic instrumentation. Remove after the deferred
+// startup due-zero chain break is identified; this is not a production trace
+// facility and intentionally has no env var, project setting, or public API.
+constexpr const char* kDeferredStartTracePrefix = "[CamBANG][DeferredStartTrace]";
+constexpr uint64_t kDeferredStartTraceDeviceInstanceId = 10001ull;
+constexpr uint64_t kDeferredStartTraceStreamId = 30001ull;
+
+const char* ingress_post_result_trace_name(CoreThread::PostResult r) noexcept {
+  switch (r) {
+    case CoreThread::PostResult::Enqueued: return "ENQUEUED";
+    case CoreThread::PostResult::QueueFull: return "QUEUE_FULL";
+    case CoreThread::PostResult::Closed: return "CLOSED";
+    case CoreThread::PostResult::AllocFail: return "ALLOC_FAIL";
+  }
+  return "UNKNOWN";
+}
+
+const char* ingress_command_trace_name(ProviderToCoreCommandType type) noexcept {
+  switch (type) {
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: return "PROVIDER_DEVICE_OPENED";
+    case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: return "PROVIDER_STREAM_CREATED";
+    case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: return "PROVIDER_STREAM_STARTED";
+    default: return "OTHER";
+  }
+}
+
+bool ingress_trace_command(const ProviderToCoreCommand& cmd, uint64_t& id_out) {
+  id_out = 0;
+  switch (cmd.type) {
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
+      const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
+      id_out = p.device_instance_id;
+      return p.device_instance_id == kDeferredStartTraceDeviceInstanceId;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: {
+      const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
+      id_out = p.stream_id;
+      return p.stream_id == kDeferredStartTraceStreamId;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: {
+      const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
+      id_out = p.stream_id;
+      return p.stream_id == kDeferredStartTraceStreamId;
+    }
+    default:
+      return false;
+  }
+}
+
+} // namespace
 
 uint32_t ProviderCallbackIngress::on_frame_ingress_enqueued_(uint64_t stream_id) {
   if (stream_id == 0) {
@@ -108,6 +162,8 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   }
 
   const ProviderToCoreCommandType type = cmd.type;
+  uint64_t deferred_trace_id = 0;
+  const bool trace_deferred_command = ingress_trace_command(cmd, deferred_trace_id);
   uint64_t frame_stream_id = 0;
 
   // Preserve a copy of the frame for the failure-to-enqueue path. We must not rely on
@@ -148,6 +204,16 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   const CoreThread::PostResult r = is_frame_command_(type)
       ? core_thread_->try_post(std::move(task))
       : core_thread_->try_post_essential(std::move(task));
+
+  if (trace_deferred_command) {
+    std::fprintf(stderr,
+                 "%s provider_callback_ingress post_command type=%s id=%llu post_result=%s essential=%d\n",
+                 kDeferredStartTracePrefix,
+                 ingress_command_trace_name(type),
+                 static_cast<unsigned long long>(deferred_trace_id),
+                 ingress_post_result_trace_name(r),
+                 is_frame_command_(type) ? 0 : 1);
+  }
 
   if (r == CoreThread::PostResult::Enqueued) {
     return;
@@ -225,6 +291,12 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
 }
 
 void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {
+  if (device_instance_id == kDeferredStartTraceDeviceInstanceId) {
+    std::fprintf(stderr,
+                 "%s provider_callback_ingress on_device_opened callback_post device_instance_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(device_instance_id));
+  }
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED;
   cmd.payload = CmdProviderDeviceOpened{device_instance_id};
@@ -239,6 +311,12 @@ void ProviderCallbackIngress::on_device_closed(uint64_t device_instance_id) {
 }
 
 void ProviderCallbackIngress::on_stream_created(uint64_t stream_id) {
+  if (stream_id == kDeferredStartTraceStreamId) {
+    std::fprintf(stderr,
+                 "%s provider_callback_ingress on_stream_created callback_post stream_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(stream_id));
+  }
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_CREATED;
   cmd.payload = CmdProviderStreamCreated{stream_id};
@@ -253,6 +331,12 @@ void ProviderCallbackIngress::on_stream_destroyed(uint64_t stream_id) {
 }
 
 void ProviderCallbackIngress::on_stream_started(uint64_t stream_id) {
+  if (stream_id == kDeferredStartTraceStreamId) {
+    std::fprintf(stderr,
+                 "%s provider_callback_ingress on_stream_started callback_post stream_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(stream_id));
+  }
   ProviderToCoreCommand cmd;
   cmd.type = ProviderToCoreCommandType::PROVIDER_STREAM_STARTED;
   cmd.payload = CmdProviderStreamStarted{stream_id};

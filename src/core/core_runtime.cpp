@@ -2,6 +2,7 @@
 
 #include "core/core_runtime.h"
 
+#include <atomic>
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
@@ -10,6 +11,7 @@
 #include <map>
 #include <future>
 #include <vector>
+#include <variant>
 
 #include <utility>
 
@@ -22,6 +24,91 @@ namespace cambang {
 namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
+// TEMPORARY Scene 65 diagnostic instrumentation. Remove after the deferred
+// startup due-zero chain break is identified; this is not a production trace
+// facility and intentionally has no env var, project setting, or public API.
+constexpr const char* kDeferredStartTracePrefix = "[CamBANG][DeferredStartTrace]";
+constexpr uint64_t kDeferredStartTraceDeviceInstanceId = 10001ull;
+constexpr uint64_t kDeferredStartTraceStreamId = 30001ull;
+std::atomic<uint32_t> g_deferred_start_trace_request_enqueue_budget{0};
+
+bool deferred_trace_device(uint64_t device_instance_id) noexcept {
+  return device_instance_id == kDeferredStartTraceDeviceInstanceId;
+}
+
+bool deferred_trace_stream(uint64_t stream_id) noexcept {
+  return stream_id == kDeferredStartTraceStreamId;
+}
+
+const char* core_post_result_trace_name(CoreThread::PostResult r) noexcept {
+  switch (r) {
+    case CoreThread::PostResult::Enqueued: return "ENQUEUED";
+    case CoreThread::PostResult::QueueFull: return "QUEUE_FULL";
+    case CoreThread::PostResult::Closed: return "CLOSED";
+    case CoreThread::PostResult::AllocFail: return "ALLOC_FAIL";
+  }
+  return "UNKNOWN";
+}
+
+const char* core_command_trace_name(ProviderToCoreCommandType type) noexcept {
+  switch (type) {
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: return "PROVIDER_DEVICE_OPENED";
+    case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: return "PROVIDER_STREAM_CREATED";
+    case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: return "PROVIDER_STREAM_STARTED";
+    default: return "OTHER";
+  }
+}
+
+bool core_trace_command(const ProviderToCoreCommand& cmd, uint64_t& id_out) {
+  id_out = 0;
+  switch (cmd.type) {
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
+      const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
+      id_out = p.device_instance_id;
+      return deferred_trace_device(p.device_instance_id);
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: {
+      const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
+      id_out = p.stream_id;
+      return deferred_trace_stream(p.stream_id);
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: {
+      const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
+      id_out = p.stream_id;
+      return deferred_trace_stream(p.stream_id);
+    }
+    default:
+      return false;
+  }
+}
+
+bool snapshot_contains_deferred_trace_ids(const CamBANGStateSnapshot& snap) {
+  for (const auto& d : snap.devices) {
+    if (deferred_trace_device(d.instance_id)) {
+      return true;
+    }
+  }
+  for (const auto& s : snap.streams) {
+    if (deferred_trace_stream(s.stream_id) || deferred_trace_device(s.device_instance_id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool consume_deferred_trace_request_enqueue_budget() noexcept {
+  uint32_t budget = g_deferred_start_trace_request_enqueue_budget.load(std::memory_order_relaxed);
+  while (budget > 0) {
+    if (g_deferred_start_trace_request_enqueue_budget.compare_exchange_weak(
+            budget,
+            budget - 1,
+            std::memory_order_relaxed,
+            std::memory_order_relaxed)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
   if (warm_hold_ms == 0) {
@@ -347,7 +434,15 @@ void CoreRuntime::on_core_timer_tick() {
 
 
 // If provider facts mutated relevant state, request a coalesced publish.
-if (dispatcher_.consume_relevant_state_changed()) {
+const bool relevant_state_changed = dispatcher_.consume_relevant_state_changed();
+if (relevant_state_changed) {
+  if (devices_.find(kDeferredStartTraceDeviceInstanceId) || streams_.find(kDeferredStartTraceStreamId)) {
+    std::fprintf(stderr,
+                 "%s core.relevant_state_changed consumed=true request_coalesced_publish=true trace_device_present=%d trace_stream_present=%d\n",
+                 kDeferredStartTracePrefix,
+                 devices_.find(kDeferredStartTraceDeviceInstanceId) ? 1 : 0,
+                 streams_.find(kDeferredStartTraceStreamId) ? 1 : 0);
+  }
   request_publish_from_core_unchecked();
 }
 
@@ -502,6 +597,19 @@ if (dispatcher_.consume_relevant_state_changed()) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
 
     CamBANGStateSnapshot snap = snapshot_builder_.build(in, gen_out, ver_out, topo_out, timestamp_ns);
+    if (snapshot_contains_deferred_trace_ids(snap)) {
+      std::fprintf(stderr,
+                   "%s core.publish gen=%llu version=%llu topology_version=%llu providers_native=%zu devices=%zu streams=%zu rigs=%zu acquisitions=%zu\n",
+                   kDeferredStartTracePrefix,
+                   static_cast<unsigned long long>(gen_out),
+                   static_cast<unsigned long long>(ver_out),
+                   static_cast<unsigned long long>(topo_out),
+                   snap.native_objects.size(),
+                   snap.devices.size(),
+                   snap.streams.size(),
+                   snap.rigs.size(),
+                   snap.acquisition_sessions.size());
+    }
     auto shared = std::make_shared<CamBANGStateSnapshot>(std::move(snap));
 
     // Advance per-generation publish counter only after snapshot assembly succeeds.
@@ -863,6 +971,16 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
   const CaptureProfile request_profile_copy = has_request_profile ? *request_profile : CaptureProfile{};
   const PictureConfig request_picture_copy = has_request_picture ? *request_picture : PictureConfig{};
 
+  const bool trace_deferred_create = deferred_trace_stream(stream_id) || deferred_trace_device(device_instance_id);
+  if (trace_deferred_create) {
+    std::fprintf(stderr,
+                 "%s core.try_create_stream enter stream_id=%llu device_instance_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(stream_id),
+                 static_cast<unsigned long long>(device_instance_id));
+    g_deferred_start_trace_request_enqueue_budget.fetch_add(1, std::memory_order_relaxed);
+  }
+
   const CoreThread::PostResult pr = try_post([this,
                                               stream_id,
                                               device_instance_id,
@@ -873,8 +991,24 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
                                               request_profile_copy,
                                               has_request_picture,
                                               request_picture_copy]() {
+    if (deferred_trace_stream(stream_id) || deferred_trace_device(device_instance_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_create_stream task_begin stream_id=%llu device_instance_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   static_cast<unsigned long long>(stream_id),
+                   static_cast<unsigned long long>(device_instance_id));
+    }
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      if (deferred_trace_stream(stream_id) || deferred_trace_device(device_instance_id)) {
+        std::fprintf(stderr,
+                     "%s core.try_create_stream task_end reason=no_provider stream_id=%llu device_instance_id=%llu\n",
+                     kDeferredStartTracePrefix,
+                     static_cast<unsigned long long>(stream_id),
+                     static_cast<unsigned long long>(device_instance_id));
+      }
+      return;
+    }
 
     const uint64_t effective_profile_version =
         (profile_version != 0)
@@ -894,12 +1028,39 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     (void)streams_.declare_stream_effective(effective);
 
     const ProviderResult r = p->create_stream(effective);
+    if (deferred_trace_stream(stream_id) || deferred_trace_device(device_instance_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_create_stream provider_result ok=%d provider_error=%u stream_id=%llu device_instance_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   r.ok() ? 1 : 0,
+                   static_cast<unsigned>(r.code),
+                   static_cast<unsigned long long>(stream_id),
+                   static_cast<unsigned long long>(device_instance_id));
+    }
     if (!r.ok()) {
       // Best-effort rollback; create_stream failure must not leave a ghost record.
       (void)streams_.forget_stream(effective.stream_id);
     }
+    if (deferred_trace_stream(stream_id) || deferred_trace_device(device_instance_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_create_stream task_end stream_id=%llu device_instance_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   static_cast<unsigned long long>(stream_id),
+                   static_cast<unsigned long long>(device_instance_id));
+    }
   });
 
+  if (trace_deferred_create) {
+    if (pr != CoreThread::PostResult::Enqueued) {
+      (void)consume_deferred_trace_request_enqueue_budget();
+    }
+    std::fprintf(stderr,
+                 "%s core.try_create_stream enqueue_result=%s stream_id=%llu device_instance_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 core_post_result_trace_name(pr),
+                 static_cast<unsigned long long>(stream_id),
+                 static_cast<unsigned long long>(device_instance_id));
+  }
   return (pr == CoreThread::PostResult::Enqueued) ? TryCreateStreamStatus::OK
                                                   : TryCreateStreamStatus::Busy;
 }
@@ -914,21 +1075,54 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
     return TryStartStreamStatus::Busy;
   }
 
+  const bool trace_deferred_start = deferred_trace_stream(stream_id);
+  if (trace_deferred_start) {
+    std::fprintf(stderr,
+                 "%s core.try_start_stream enter stream_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(stream_id));
+    g_deferred_start_trace_request_enqueue_budget.fetch_add(1, std::memory_order_relaxed);
+  }
+
   auto result_promise = std::make_shared<std::promise<TryStartStreamStatus>>();
   std::future<TryStartStreamStatus> f = result_promise->get_future();
   const CoreThread::PostResult pr = try_post([this, stream_id, result_promise]() mutable {
+    if (deferred_trace_stream(stream_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_start_stream task_begin stream_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   static_cast<unsigned long long>(stream_id));
+    }
     ICameraProvider* prov_local = provider_.load(std::memory_order_acquire);
     if (!prov_local) {
+      if (deferred_trace_stream(stream_id)) {
+        std::fprintf(stderr,
+                     "%s core.try_start_stream task_end reason=no_provider stream_id=%llu\n",
+                     kDeferredStartTracePrefix,
+                     static_cast<unsigned long long>(stream_id));
+      }
       result_promise->set_value(TryStartStreamStatus::Busy);
       return;
     }
 
     const CoreStreamRegistry::StreamRecord* rec = streams_.find(stream_id);
     if (!rec) {
+      if (deferred_trace_stream(stream_id)) {
+        std::fprintf(stderr,
+                     "%s core.try_start_stream task_end reason=missing_record stream_id=%llu\n",
+                     kDeferredStartTracePrefix,
+                     static_cast<unsigned long long>(stream_id));
+      }
       result_promise->set_value(TryStartStreamStatus::InvalidArgument);
       return;
     }
     if (rec->started) {
+      if (deferred_trace_stream(stream_id)) {
+        std::fprintf(stderr,
+                     "%s core.try_start_stream task_end reason=already_started stream_id=%llu\n",
+                     kDeferredStartTracePrefix,
+                     static_cast<unsigned long long>(stream_id));
+      }
       result_promise->set_value(TryStartStreamStatus::OK);
       return;
     }
@@ -939,26 +1133,74 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
         continue;
       }
       if (other.device_instance_id == owner_device_instance_id && other.created && other.started) {
+        if (deferred_trace_stream(stream_id)) {
+          std::fprintf(stderr,
+                       "%s core.try_start_stream task_end reason=device_busy stream_id=%llu owner_device_instance_id=%llu other_stream_id=%llu\n",
+                       kDeferredStartTracePrefix,
+                       static_cast<unsigned long long>(stream_id),
+                       static_cast<unsigned long long>(owner_device_instance_id),
+                       static_cast<unsigned long long>(other.stream_id));
+        }
         result_promise->set_value(TryStartStreamStatus::Busy);
         return;
       }
     }
 
     const ProviderResult sr = prov_local->start_stream(stream_id, rec->profile, rec->picture);
+    if (deferred_trace_stream(stream_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_start_stream provider_result ok=%d provider_error=%u stream_id=%llu owner_device_instance_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   sr.ok() ? 1 : 0,
+                   static_cast<unsigned>(sr.code),
+                   static_cast<unsigned long long>(stream_id),
+                   static_cast<unsigned long long>(owner_device_instance_id));
+    }
     if (!sr.ok()) {
       timeline_teardown_trace_emit("fail StartStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(sr.code));
+      if (deferred_trace_stream(stream_id)) {
+        std::fprintf(stderr,
+                     "%s core.try_start_stream task_end reason=provider_rejected stream_id=%llu\n",
+                     kDeferredStartTracePrefix,
+                     static_cast<unsigned long long>(stream_id));
+      }
       result_promise->set_value(TryStartStreamStatus::ProviderRejected);
       return;
     }
     (void)streams_.on_stream_started(stream_id);
+    if (deferred_trace_stream(stream_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_start_stream task_end reason=ok stream_id=%llu owner_device_instance_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   static_cast<unsigned long long>(stream_id),
+                   static_cast<unsigned long long>(owner_device_instance_id));
+    }
     result_promise->set_value(TryStartStreamStatus::OK);
   });
+  if (trace_deferred_start) {
+    if (pr != CoreThread::PostResult::Enqueued) {
+      (void)consume_deferred_trace_request_enqueue_budget();
+    }
+    std::fprintf(stderr,
+                 "%s core.try_start_stream enqueue_result=%s stream_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 core_post_result_trace_name(pr),
+                 static_cast<unsigned long long>(stream_id));
+  }
   if (pr != CoreThread::PostResult::Enqueued) {
     return TryStartStreamStatus::Busy;
   }
-  return f.get();
+  const TryStartStreamStatus result = f.get();
+  if (deferred_trace_stream(stream_id)) {
+    std::fprintf(stderr,
+                 "%s core.try_start_stream return status=%u stream_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned>(result),
+                 static_cast<unsigned long long>(stream_id));
+  }
+  return result;
 }
 
 TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
@@ -1067,16 +1309,68 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     return TryOpenDeviceStatus::Busy;
   }
 
+  const bool trace_deferred_open = deferred_trace_device(device_instance_id);
+  if (trace_deferred_open) {
+    std::fprintf(stderr,
+                 "%s core.try_open_device enter hardware_id=%s device_instance_id=%llu root_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 hardware_id.c_str(),
+                 static_cast<unsigned long long>(device_instance_id),
+                 static_cast<unsigned long long>(root_id));
+    g_deferred_start_trace_request_enqueue_budget.fetch_add(1, std::memory_order_relaxed);
+  }
+
   const CaptureTemplate capture_tmpl = prov->capture_template();
   const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id, capture_tmpl]() {
+    if (deferred_trace_device(device_instance_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_open_device task_begin hardware_id=%s device_instance_id=%llu root_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   hardware_id.c_str(),
+                   static_cast<unsigned long long>(device_instance_id),
+                   static_cast<unsigned long long>(root_id));
+    }
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      if (deferred_trace_device(device_instance_id)) {
+        std::fprintf(stderr,
+                     "%s core.try_open_device task_end reason=no_provider device_instance_id=%llu\n",
+                     kDeferredStartTracePrefix,
+                     static_cast<unsigned long long>(device_instance_id));
+      }
+      return;
+    }
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
     (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
-    (void)p->open_device(hardware_id, device_instance_id, root_id);
+    const ProviderResult r = p->open_device(hardware_id, device_instance_id, root_id);
+    if (deferred_trace_device(device_instance_id)) {
+      std::fprintf(stderr,
+                   "%s core.try_open_device provider_result ok=%d provider_error=%u hardware_id=%s device_instance_id=%llu root_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   r.ok() ? 1 : 0,
+                   static_cast<unsigned>(r.code),
+                   hardware_id.c_str(),
+                   static_cast<unsigned long long>(device_instance_id),
+                   static_cast<unsigned long long>(root_id));
+      std::fprintf(stderr,
+                   "%s core.try_open_device task_end device_instance_id=%llu\n",
+                   kDeferredStartTracePrefix,
+                   static_cast<unsigned long long>(device_instance_id));
+    }
   });
 
+  if (trace_deferred_open) {
+    if (pr != CoreThread::PostResult::Enqueued) {
+      (void)consume_deferred_trace_request_enqueue_budget();
+    }
+    std::fprintf(stderr,
+                 "%s core.try_open_device enqueue_result=%s device_instance_id=%llu root_id=%llu\n",
+                 kDeferredStartTracePrefix,
+                 core_post_result_trace_name(pr),
+                 static_cast<unsigned long long>(device_instance_id),
+                 static_cast<unsigned long long>(root_id));
+  }
   return (pr == CoreThread::PostResult::Enqueued) ? TryOpenDeviceStatus::OK
                                                   : TryOpenDeviceStatus::Busy;
 }
@@ -1790,16 +2084,38 @@ void CoreRuntime::request_publish() {
 
 void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
   assert(core_thread_.is_core_thread());
+  uint64_t deferred_trace_id = 0;
+  const bool trace_deferred_fact = core_trace_command(cmd, deferred_trace_id);
+  if (trace_deferred_fact) {
+    std::fprintf(stderr,
+                 "%s core.enqueue_provider_fact type=%s id=%llu before_push\n",
+                 kDeferredStartTracePrefix,
+                 core_command_trace_name(cmd.type),
+                 static_cast<unsigned long long>(deferred_trace_id));
+  }
   provider_facts_.push_back(std::move(cmd));
   // Facts wake the core pump so descendant realization can be observed through
   // dispatcher state changes and the normal coalesced publish path. Scenario
   // start must not force host-side publication ahead of provider truth.
   core_thread_.request_timer_tick();
+  if (trace_deferred_fact) {
+    std::fprintf(stderr,
+                 "%s core.enqueue_provider_fact type_id=%llu requested_timer_tick=true\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(deferred_trace_id));
+  }
 }
 
 void CoreRuntime::enqueue_request(CoreThread::Task task) {
   assert(core_thread_.is_core_thread());
   requests_.push_back(std::move(task));
+  const bool trace_deferred_enqueue = consume_deferred_trace_request_enqueue_budget();
+  if (trace_deferred_enqueue) {
+    std::fprintf(stderr,
+                 "%s core.enqueue_request pushed_request_queue requested_timer_tick=true remaining_trace_budget=%u\n",
+                 kDeferredStartTracePrefix,
+                 g_deferred_start_trace_request_enqueue_budget.load(std::memory_order_relaxed));
+  }
   // Requests also wake the core pump; any snapshot publication remains a
   // consequence of provider facts or core-owned state mutation, not a broad
   // publish request from the host scenario-start path.

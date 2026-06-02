@@ -29,6 +29,31 @@ namespace {
 
 constexpr const char* kHardwareIdPrefix = "synthetic:";
 constexpr uint64_t kTriageLogIntervalNs = 1'000'000'000ull;
+// TEMPORARY Scene 65 diagnostic instrumentation. Remove after the deferred
+// startup due-zero chain break is identified; this is not a production trace
+// facility and intentionally has no env var, project setting, or public API.
+constexpr const char* kDeferredStartTracePrefix = "[CamBANG][DeferredStartTrace]";
+
+const char* synthetic_event_trace_name(SyntheticEventType type) noexcept {
+  switch (type) {
+    case SyntheticEventType::EmitFrame: return "EmitFrame";
+    case SyntheticEventType::StartStream: return "StartStream";
+    case SyntheticEventType::StopStream: return "StopStream";
+    case SyntheticEventType::OpenDevice: return "OpenDevice";
+    case SyntheticEventType::CloseDevice: return "CloseDevice";
+    case SyntheticEventType::CreateStream: return "CreateStream";
+    case SyntheticEventType::DestroyStream: return "DestroyStream";
+    case SyntheticEventType::UpdateStreamPicture: return "UpdateStreamPicture";
+    case SyntheticEventType::UpdateCapturePicture: return "UpdateCapturePicture";
+  }
+  return "Unknown";
+}
+
+bool deferred_trace_is_lifecycle_event(SyntheticEventType type) noexcept {
+  return type == SyntheticEventType::OpenDevice ||
+         type == SyntheticEventType::CreateStream ||
+         type == SyntheticEventType::StartStream;
+}
 
 void synthetic_triage_print_line(const std::string& line) {
 #if CAMBANG_SYNTH_TRIAGE_HAS_GODOT_UTILITY_PRINT
@@ -295,6 +320,17 @@ void SyntheticProvider::timeline_schedule_(const SyntheticScheduledEvent& src) {
 }
 
 void SyntheticProvider::timeline_dispatch_request_(const SyntheticScheduledEvent& ev) {
+  if (ev.at_ns == 0 && deferred_trace_is_lifecycle_event(ev.type)) {
+    synthetic_triage_printf(
+        "%s synthetic.timeline_dispatch_request event=%s at_ns=%llu device_instance_id=%llu root_id=%llu stream_id=%llu hook_present=%d",
+        kDeferredStartTracePrefix,
+        synthetic_event_trace_name(ev.type),
+        static_cast<unsigned long long>(ev.at_ns),
+        static_cast<unsigned long long>(ev.device_instance_id),
+        static_cast<unsigned long long>(ev.root_id),
+        static_cast<unsigned long long>(ev.stream_id),
+        timeline_request_dispatch_hook_ ? 1 : 0);
+  }
   if (timeline_request_dispatch_hook_) {
     timeline_request_dispatch_hook_(ev);
   }
@@ -466,7 +502,16 @@ void SyntheticProvider::timeline_pump_() {
     return;
   }
 
+  const bool trace_pump = !timeline_q_.empty() && timeline_q_.top().at_ns <= now && timeline_q_.top().at_ns == 0;
+  if (trace_pump) {
+    synthetic_triage_printf("%s synthetic.timeline_pump begin now_ns=%llu queued_top_at_ns=%llu",
+                            kDeferredStartTracePrefix,
+                            static_cast<unsigned long long>(now),
+                            static_cast<unsigned long long>(timeline_q_.top().at_ns));
+  }
+
   uint32_t emitted_this_pump = 0;
+  uint32_t due_events_executed = 0;
   bool catchup_tick_capped = false;
   while (!timeline_q_.empty()) {
     const SyntheticScheduledEvent ev = timeline_q_.top();
@@ -474,6 +519,17 @@ void SyntheticProvider::timeline_pump_() {
       break;
     }
     timeline_q_.pop();
+    ++due_events_executed;
+    if (ev.at_ns == 0 && deferred_trace_is_lifecycle_event(ev.type)) {
+      synthetic_triage_printf(
+          "%s synthetic.timeline_pump due_lifecycle event=%s at_ns=%llu device_instance_id=%llu root_id=%llu stream_id=%llu",
+          kDeferredStartTracePrefix,
+          synthetic_event_trace_name(ev.type),
+          static_cast<unsigned long long>(ev.at_ns),
+          static_cast<unsigned long long>(ev.device_instance_id),
+          static_cast<unsigned long long>(ev.root_id),
+          static_cast<unsigned long long>(ev.stream_id));
+    }
     const auto event_t0 = std::chrono::steady_clock::now();
 
     switch (ev.type) {
@@ -571,6 +627,15 @@ void SyntheticProvider::timeline_pump_() {
   if (emitted_this_pump > 0) {
     ++triage_catchup_bursts_total_;
     triage_catchup_max_frames_in_tick_ = std::max(triage_catchup_max_frames_in_tick_, emitted_this_pump);
+  }
+
+  if (trace_pump) {
+    synthetic_triage_printf("%s synthetic.timeline_pump end now_ns=%llu due_events_executed=%u emitted_frames=%u remaining_queue=%zu",
+                            kDeferredStartTracePrefix,
+                            static_cast<unsigned long long>(now),
+                            due_events_executed,
+                            emitted_this_pump,
+                            timeline_q_.size());
   }
 
   if (!completion_gated_destructive_sequencing_enabled_ || timeline_pending_destructive_.empty()) {
@@ -1399,11 +1464,33 @@ ProviderResult SyntheticProvider::start_timeline_scenario_for_host() {
   // and marking the timeline running/unpaused. It intentionally does not advance
   // or pump synthetic time; the host stepper is responsible for executing due
   // events via advance(dt_ns), including a meaningful dt=0 current-time pump.
+  synthetic_triage_printf("%s synthetic.start_timeline_scenario events=%zu canonical_staged=%d",
+                          kDeferredStartTracePrefix,
+                          timeline_scenario_.events.size(),
+                          timeline_canonical_staged_ ? 1 : 0);
+  const size_t preview_count = std::min<size_t>(timeline_scenario_.events.size(), 5);
+  for (size_t i = 0; i < preview_count; ++i) {
+    const auto& ev = timeline_scenario_.events[i];
+    synthetic_triage_printf(
+        "%s synthetic.start_timeline_scenario event[%zu]=%s at_ns=%llu device_instance_id=%llu root_id=%llu stream_id=%llu",
+        kDeferredStartTracePrefix,
+        i,
+        synthetic_event_trace_name(ev.type),
+        static_cast<unsigned long long>(ev.at_ns),
+        static_cast<unsigned long long>(ev.device_instance_id),
+        static_cast<unsigned long long>(ev.root_id),
+        static_cast<unsigned long long>(ev.stream_id));
+  }
   for (const auto& ev : timeline_scenario_.events) {
     timeline_schedule_(ev);
   }
   timeline_running_ = true;
   timeline_paused_ = false;
+  synthetic_triage_printf("%s synthetic.start_timeline_scenario armed running=%d paused=%d queued=%zu",
+                          kDeferredStartTracePrefix,
+                          timeline_running_ ? 1 : 0,
+                          timeline_paused_ ? 1 : 0,
+                          timeline_q_.size());
   return ProviderResult::success();
 }
 
@@ -2074,7 +2161,19 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
 }
 
 void SyntheticProvider::advance(uint64_t dt_ns) {
+  if (dt_ns == 0) {
+    synthetic_triage_printf("%s synthetic.advance enter dt_ns=0 initialized=%d shutting_down=%d now_before_ns=%llu running=%d paused=%d",
+                            kDeferredStartTracePrefix,
+                            initialized_ ? 1 : 0,
+                            shutting_down_ ? 1 : 0,
+                            static_cast<unsigned long long>(clock_.now_ns()),
+                            timeline_running_ ? 1 : 0,
+                            timeline_paused_ ? 1 : 0);
+  }
   if (!initialized_ || shutting_down_) {
+    if (dt_ns == 0) {
+      synthetic_triage_printf("%s synthetic.advance return early reason=not_initialized_or_shutting_down", kDeferredStartTracePrefix);
+    }
     return;
   }
 
@@ -2083,6 +2182,9 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   // events to accumulate and then burst on unpause, which breaks checkpointed
   // host/timeline synchronization.
   if (cfg_.synthetic_role == SyntheticRole::Timeline && timeline_running_ && timeline_paused_) {
+    if (dt_ns == 0) {
+      synthetic_triage_printf("%s synthetic.advance return early reason=paused", kDeferredStartTracePrefix);
+    }
     return;
   }
 
@@ -2091,7 +2193,13 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   // at the current virtual time.
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
+    if (dt_ns == 0) {
+      synthetic_triage_printf("%s synthetic.advance before timeline_pump now_ns=%llu", kDeferredStartTracePrefix, static_cast<unsigned long long>(clock_.now_ns()));
+    }
     timeline_pump_();
+    if (dt_ns == 0) {
+      synthetic_triage_printf("%s synthetic.advance after timeline_pump now_ns=%llu", kDeferredStartTracePrefix, static_cast<unsigned long long>(clock_.now_ns()));
+    }
     if (triage_trace_enabled_ && !triage_timeline_path_banner_emitted_) {
       synthetic_triage_printf("[CamBANG][SyntheticTriage] timeline-advance-path-reached");
       triage_timeline_path_banner_emitted_ = true;

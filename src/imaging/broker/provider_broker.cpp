@@ -1,6 +1,7 @@
 #include "imaging/broker/provider_broker.h"
 
 #include <cstring>
+#include <cstdio>
 #include <utility>
 
 #include "imaging/api/provider_error_string.h"
@@ -25,6 +26,28 @@
 namespace cambang {
 
 namespace {
+
+// TEMPORARY Scene 65 diagnostic instrumentation. Remove after the deferred
+// startup due-zero chain break is identified; this is not a production trace
+// facility and intentionally has no env var, project setting, or public API.
+constexpr const char* kDeferredStartTracePrefix = "[CamBANG][DeferredStartTrace]";
+
+const char* runtime_mode_trace_name(RuntimeMode mode) noexcept {
+  switch (mode) {
+    case RuntimeMode::platform_backed: return "platform_backed";
+    case RuntimeMode::synthetic: return "synthetic";
+  }
+  return "unknown";
+}
+
+const char* provider_kind_trace_name(ProviderKind kind) noexcept {
+  switch (kind) {
+    case ProviderKind::unknown: return "unknown";
+    case ProviderKind::platform_backed: return "platform_backed";
+    case ProviderKind::synthetic: return "synthetic";
+  }
+  return "unknown";
+}
 
 ProviderResult err_not_initialized() {
   return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -384,14 +407,33 @@ ProviderResult ProviderBroker::shutdown() {
 }
 
 bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
+  if (dt_ns == 0) {
+    std::fprintf(stderr,
+                 "%s broker.try_tick_virtual_time enter dt_ns=%llu initialized=%d has_active=%d mode=%s provider_kind=%s\n",
+                 kDeferredStartTracePrefix,
+                 static_cast<unsigned long long>(dt_ns),
+                 initialized_ ? 1 : 0,
+                 active_ ? 1 : 0,
+                 runtime_mode_trace_name(mode_latched_),
+                 provider_kind_trace_name(provider_kind()));
+  }
   if (!initialized_ || !active_) {
+    if (dt_ns == 0) {
+      std::fprintf(stderr, "%s broker.try_tick_virtual_time return=false reason=no_active\n", kDeferredStartTracePrefix);
+    }
     return false;
   }
 
   // Synthetic virtual_time driver.
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    if (dt_ns == 0) {
+      std::fprintf(stderr, "%s broker.try_tick_virtual_time call SyntheticProvider::advance dt_ns=0\n", kDeferredStartTracePrefix);
+    }
     syn->advance(dt_ns);
+    if (dt_ns == 0) {
+      std::fprintf(stderr, "%s broker.try_tick_virtual_time return=true path=synthetic\n", kDeferredStartTracePrefix);
+    }
     return true;
   }
 #endif
@@ -400,10 +442,16 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
 #if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
   if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
     stub->advance(dt_ns);
+    if (dt_ns == 0) {
+      std::fprintf(stderr, "%s broker.try_tick_virtual_time return=true path=stub\n", kDeferredStartTracePrefix);
+    }
     return true;
   }
 #endif
 
+  if (dt_ns == 0) {
+    std::fprintf(stderr, "%s broker.try_tick_virtual_time return=false reason=unsupported_provider\n", kDeferredStartTracePrefix);
+  }
   return false;
 }
 
