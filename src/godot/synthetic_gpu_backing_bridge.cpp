@@ -22,6 +22,7 @@
 #include <godot_cpp/classes/rd_texture_view.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
+#include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
@@ -33,6 +34,7 @@ void register_synthetic_gpu_backing_internal_classes();
 
 static bool enqueue_pending_release(const godot::RID& rid);
 static void request_pending_release_drain();
+static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThreadDrainHelper* helper);
 
 struct SharedDisplayTextureRidState;
 static bool enqueue_pending_texture_wrapper_release(
@@ -233,6 +235,13 @@ static bool bridge_teardown_started() {
   return g_bridge_teardown_started;
 }
 
+static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThreadDrainHelper* helper) {
+  if (!rs || !helper) {
+    return;
+  }
+  rs->call_on_render_thread(godot::Callable(helper, godot::StringName("drain_pending_releases_on_render_thread")));
+}
+
 static void clear_pending_releases_for_teardown() {
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   g_bridge_teardown_started = true;
@@ -402,7 +411,7 @@ static void request_pending_release_drain() {
   }
 
   g_pending_release_drain_scheduled = true;
-  rs->call_on_render_thread(callable_mp(helper, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+  schedule_render_thread_drain(rs, helper);
 }
 
 void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
@@ -432,7 +441,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     if (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) {
       g_pending_release_drain_scheduled = true;
       if (godot::RenderingServer* rs = godot::RenderingServer::get_singleton()) {
-        rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+        schedule_render_thread_drain(rs, this);
       }
     }
     return;
@@ -453,7 +462,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
         (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
         !g_pending_release_drain_scheduled) {
       g_pending_release_drain_scheduled = true;
-      rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+      schedule_render_thread_drain(rs, this);
     }
     return;
   }
@@ -476,7 +485,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   if ((!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
       !g_pending_release_drain_scheduled) {
     g_pending_release_drain_scheduled = true;
-    rs->call_on_render_thread(callable_mp(this, &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+    schedule_render_thread_drain(rs, this);
   }
 }
 
@@ -520,37 +529,6 @@ void trace_runtime_query(bool global_rd_ptr, bool runtime_truth_gpu_available) {
       global_rd_ptr,
       " runtime_truth_gpu_available=",
       runtime_truth_gpu_available);
-}
-
-struct BackingSnapshot final {
-  godot::RID rid;
-  uint32_t width = 0;
-  uint32_t height = 0;
-  uint32_t stride_bytes = 0;
-};
-
-bool snapshot_backing_for_use(
-    const std::shared_ptr<RetainedSyntheticGpuBacking>& retained,
-    BackingSnapshot& out) {
-  if (!retained) {
-    return false;
-  }
-  std::shared_ptr<SharedDisplayTextureRidState> state;
-  {
-    std::lock_guard<std::mutex> lock(retained->mutex);
-    if (retained->released || !retained->rid_state) {
-      return false;
-    }
-    state = retained->rid_state;
-    out.width = retained->width;
-    out.height = retained->height;
-    out.stride_bytes = retained->stride_bytes;
-  }
-  out.rid = state->snapshot_rid();
-  if (!out.rid.is_valid()) {
-    return false;
-  }
-  return true;
 }
 
 bool global_rd_available() noexcept {
@@ -862,8 +840,7 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
     "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view wrappers returned to Godot are still live. "
     "Release TextureRect.texture / display_view references before stop. Stop will continue; retained views may become stale after runtime teardown.";
 
-  godot::UtilityFunctions::push_warning(
-      "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view wrappers returned to Godot are still live. Release TextureRect.texture / display_view references before stop. Stop will continue; retained views may become stale after runtime teardown.");
+  godot::UtilityFunctions::push_warning(message);
 
   for (const auto& [stream_id, borrow_count] : counts_by_stream_id) {
     godot::UtilityFunctions::push_warning("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
