@@ -79,6 +79,7 @@ std::shared_ptr<void> synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
 
 std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
     uint64_t stream_id,
+    uint64_t backing_id,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
@@ -87,7 +88,7 @@ std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8
     trace_line("create_stream_live_gpu_backing success=false reason=ops_unset_or_missing_create_fn");
     return {};
   }
-  std::shared_ptr<void> backing = ops->create_stream_live_gpu_backing_rgba8(stream_id, width, height, stride_bytes);
+  std::shared_ptr<void> backing = ops->create_stream_live_gpu_backing_rgba8(stream_id, backing_id, width, height, stride_bytes);
   trace_line(backing ? "create_stream_live_gpu_backing success=true"
                      : "create_stream_live_gpu_backing success=false");
   return backing;
@@ -165,9 +166,12 @@ bool synthetic_gpu_backing_peek_update_timing_stats(
 #else
 std::shared_ptr<void> synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
     uint64_t stream_id,
+    uint64_t backing_id,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
+  (void)stream_id;
+  (void)backing_id;
   (void)width;
   (void)height;
   (void)stride_bytes;

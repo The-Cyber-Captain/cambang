@@ -241,9 +241,9 @@ int CamBANGStreamResult::can_get_display_view() const {
   // path, not by payload-kind family alone.
   //
   // READY:
-  //   The retained artifact is already directly suitable for display-view
-  //   access. In the current slice, this is GPU_SURFACE with retained GPU
-  //   backing.
+  //   A current Godot-boundary display backing is already registered and
+  //   directly suitable for display-view access. In the current slice, this is
+  //   GPU_SURFACE with complete retained GPU descriptor identity.
   //
   // CHEAP:
   //   Only explicitly whitelisted payload/path combinations known to require
@@ -265,7 +265,9 @@ int CamBANGStreamResult::can_get_display_view() const {
   // classification from the actual implemented display path.
   switch (data_->payload_kind) {
     case ResultPayloadKind::GPU_SURFACE:
-      return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
+      return synthetic_gpu_backing_display_texture_available(data_->retained_gpu_backing_descriptor)
+          ? CAPABILITY_READY
+          : CAPABILITY_UNSUPPORTED;
     case ResultPayloadKind::CPU_PACKED:
       return CAPABILITY_CHEAP;
     case ResultPayloadKind::CPU_PLANAR:
@@ -297,7 +299,8 @@ int CamBANGStreamResult::get_display_view_path_kind() const {
   if (!data_) {
     return DISPLAY_PATH_NONE;
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      synthetic_gpu_backing_display_texture_available(data_->retained_gpu_backing_descriptor)) {
     return DISPLAY_PATH_RETAINED_GPU_BACKING;
   }
   if (ensure_live_cpu_display_view(data_).is_valid()) {
@@ -316,13 +319,11 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
     }
   }
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
-    if (data_->retained_gpu_backing) {
-      godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing);
-      if (retained.is_valid()) {
-        attach_display_demand_token(retained, data_->stream_id, "retained_gpu_backing");
-        trace_stream_display_path("retained_gpu_backing");
-        return retained;
-      }
+    godot::Ref<godot::Texture2D> retained = synthetic_gpu_backing_display_texture(data_->retained_gpu_backing_descriptor);
+    if (retained.is_valid()) {
+      attach_display_demand_token(retained, data_->stream_id, "retained_gpu_backing");
+      trace_stream_display_path("retained_gpu_backing");
+      return retained;
     }
     return godot::Variant();
   }

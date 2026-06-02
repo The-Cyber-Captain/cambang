@@ -28,9 +28,9 @@ godot::Ref<godot::Texture2D> godot_gpu_display_get_texture_by_descriptor(
     const std::shared_ptr<void>& legacy_retained_gpu_backing) {
   (void)godot_gpu_display_descriptor_has_complete_identity(descriptor);
   (void)legacy_retained_gpu_backing;
-  // Dormant Tranche 2 scaffold only. StreamResult.get_display_view() must keep
-  // using the legacy retained_gpu_backing path directly in this tranche; do not
-  // adapt or return legacy textures through this service yet.
+  // Dormant Tranche 2 scaffold only. StreamResult.get_display_view() must not
+  // route through this service in this tranche; do not adapt or return legacy
+  // textures through this service yet.
   return {};
 }
 

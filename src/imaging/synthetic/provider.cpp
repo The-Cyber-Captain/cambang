@@ -1544,14 +1544,16 @@ bool SyntheticProvider::ensure_stream_live_gpu_backing_(
     ++triage_gpu_backing_recreate_total_;
   }
   release_stream_live_gpu_backing_(s);
+  const uint64_t native_id = alloc_native_id_(NativeObjectType::GpuBacking);
+  ++s.live_gpu_backing_generation;
+  const uint64_t backing_id = (native_id != 0) ? native_id : s.live_gpu_backing_generation;
   // Create and recreate share the same runtime helper so usage flags remain
   // identical for initial allocation and retry allocation.
-  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(s.req.stream_id, width, height, stride);
+  s.live_gpu_backing = synthetic_gpu_backing_create_stream_live_gpu_backing_rgba8(
+      s.req.stream_id, backing_id, width, height, stride);
   if (!s.live_gpu_backing) {
     return false;
   }
-  const uint64_t native_id = alloc_native_id_(NativeObjectType::GpuBacking);
-  ++s.live_gpu_backing_generation;
   if (native_id != 0 && callbacks_) {
     const auto dit = devices_.find(s.req.device_instance_id);
     const uint64_t root_id = (dit != devices_.end()) ? dit->second.root_id : 0;

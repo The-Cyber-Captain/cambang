@@ -2,6 +2,7 @@
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
 #include "godot/godot_gpu_display_service.h"
 #include "core/resource_aggregate_telemetry.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -10,6 +11,8 @@
 #include <chrono>
 #include <utility>
 #include <vector>
+#include <map>
+#include <memory>
 
 #include <godot_cpp/core/class_db.hpp>
 
@@ -35,41 +38,50 @@ static bool gpu_trace_enabled() noexcept {
   return value && value[0] != '\0' && value[0] != '0';
 }
 
-struct RetainedSyntheticGpuBacking final {
+struct GodotBoundaryGpuDisplayKey final {
+  uint64_t stream_id = 0;
+  uint64_t backing_id = 0;
+
+  bool operator<(const GodotBoundaryGpuDisplayKey& other) const noexcept {
+    if (stream_id != other.stream_id) {
+      return stream_id < other.stream_id;
+    }
+    return backing_id < other.backing_id;
+  }
+};
+
+struct GodotBoundaryGpuDisplayEntry final {
   std::mutex mutex;
-  godot::RID rd_texture;
+  GodotBoundaryGpuDisplayKey key{};
+  godot::RID texture_rid;
   godot::Ref<godot::Texture2DRD> display_texture;
   godot::PackedByteArray upload_bytes;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride_bytes = 0;
+  bool rid_owned_by_entry = true;
+  bool retired = false;
+};
+
+struct RetainedSyntheticGpuBacking final {
+  std::mutex mutex;
+  std::weak_ptr<GodotBoundaryGpuDisplayEntry> display_entry;
+  uint64_t stream_id = 0;
+  uint64_t backing_id = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
   bool released = false;
   ScopedResourceTelemetryKey telemetry_key{};
 
-  void release_now() {
-    godot::RID rid;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      if (released) {
-        return;
-      }
-      released = true;
-      global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
-
-      if (rd_texture.is_valid()) {
-        rid = rd_texture;
-        rd_texture = godot::RID();
-      }
-
-      display_texture.unref();
-    }
-
-    if (!rid.is_valid()) {
+  void release_now() noexcept {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (released) {
       return;
     }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
+    released = true;
+    display_entry.reset();
+    global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -129,6 +141,31 @@ static std::vector<godot::RID> g_pending_releases;
 static bool g_pending_release_drain_scheduled = false;
 static bool g_bridge_teardown_started = false;
 static godot::Ref<RenderThreadDrainHelper> g_render_thread_drain_helper;
+
+static std::mutex g_display_registry_mutex;
+static std::map<GodotBoundaryGpuDisplayKey, std::shared_ptr<GodotBoundaryGpuDisplayEntry>> g_display_registry;
+
+static bool descriptor_has_complete_display_identity(const RetainedGpuBackingDescriptor& descriptor) noexcept {
+  return descriptor.valid &&
+         descriptor.display_available &&
+         descriptor.stream_id != 0 &&
+         descriptor.backing_id != 0 &&
+         descriptor.width != 0 &&
+         descriptor.height != 0;
+}
+
+static std::shared_ptr<GodotBoundaryGpuDisplayEntry> lookup_display_entry(
+    const RetainedGpuBackingDescriptor& descriptor) {
+  if (!descriptor_has_complete_display_identity(descriptor)) {
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(g_display_registry_mutex);
+  const auto it = g_display_registry.find(GodotBoundaryGpuDisplayKey{descriptor.stream_id, descriptor.backing_id});
+  if (it == g_display_registry.end()) {
+    return {};
+  }
+  return it->second;
+}
 
 static bool enqueue_pending_release(const godot::RID& rid) {
   if (!rid.is_valid()) {
@@ -244,6 +281,69 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   }
 }
 
+static void release_display_entry_from_godot_boundary(
+    const std::shared_ptr<GodotBoundaryGpuDisplayEntry>& entry) {
+  if (!entry) {
+    return;
+  }
+  godot::RID rid;
+  godot::Ref<godot::Texture2DRD> texture;
+  {
+    std::lock_guard<std::mutex> lock(entry->mutex);
+    if (entry->retired) {
+      return;
+    }
+    entry->retired = true;
+    if (entry->rid_owned_by_entry && entry->texture_rid.is_valid()) {
+      rid = entry->texture_rid;
+      entry->texture_rid = godot::RID();
+      entry->rid_owned_by_entry = false;
+    }
+    texture = entry->display_texture;
+    entry->display_texture.unref();
+  }
+  texture.unref();
+  if (rid.is_valid() && enqueue_pending_release(rid)) {
+    request_pending_release_drain();
+  }
+}
+
+void synthetic_gpu_backing_invalidate_stream_godot_display(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::vector<std::shared_ptr<GodotBoundaryGpuDisplayEntry>> removed;
+  {
+    std::lock_guard<std::mutex> lock(g_display_registry_mutex);
+    for (auto it = g_display_registry.begin(); it != g_display_registry.end();) {
+      if (it->first.stream_id == stream_id) {
+        removed.push_back(std::move(it->second));
+        it = g_display_registry.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto& entry : removed) {
+    release_display_entry_from_godot_boundary(entry);
+  }
+}
+
+void synthetic_gpu_backing_invalidate_all_godot_display() {
+  std::vector<std::shared_ptr<GodotBoundaryGpuDisplayEntry>> removed;
+  {
+    std::lock_guard<std::mutex> lock(g_display_registry_mutex);
+    removed.reserve(g_display_registry.size());
+    for (auto& kv : g_display_registry) {
+      removed.push_back(std::move(kv.second));
+    }
+    g_display_registry.clear();
+  }
+  for (const auto& entry : removed) {
+    release_display_entry_from_godot_boundary(entry);
+  }
+}
+
 
 namespace {
 
@@ -299,23 +399,25 @@ bool snapshot_backing_for_use(
   if (!retained) {
     return false;
   }
-  std::lock_guard<std::mutex> lock(retained->mutex);
-  if (retained->released) {
+  std::shared_ptr<GodotBoundaryGpuDisplayEntry> entry;
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released) {
+      return false;
+    }
+    entry = retained->display_entry.lock();
+  }
+  if (!entry) {
     return false;
   }
-  if (retained->rd_texture.is_valid()) {
-    out.rid = retained->rd_texture;
-  } else if (retained->display_texture.is_valid()) {
-    out.rid = retained->display_texture->get_texture_rd_rid();
-  } else {
+  std::lock_guard<std::mutex> entry_lock(entry->mutex);
+  if (entry->retired || !entry->texture_rid.is_valid()) {
     return false;
   }
-  if (!out.rid.is_valid()) {
-    return false;
-  }
-  out.width = retained->width;
-  out.height = retained->height;
-  out.stride_bytes = retained->stride_bytes;
+  out.rid = entry->texture_rid;
+  out.width = entry->width;
+  out.height = entry->height;
+  out.stride_bytes = entry->stride_bytes;
   return true;
 }
 
@@ -395,24 +497,22 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
                                    " h=", (long long)height);
   }
 
-  auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
-  retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
-  global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
-  retained_backing->rd_texture = texture;
-  retained_backing->width = width;
-  retained_backing->height = height;
-  return std::static_pointer_cast<void>(retained_backing);
+  if (enqueue_pending_release(texture)) {
+    request_pending_release_drain();
+  }
+  return {};
 }
 
 std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
     uint64_t stream_id,
+    uint64_t backing_id,
     uint32_t width,
     uint32_t height,
     uint32_t stride_bytes) noexcept {
   if (bridge_teardown_started()) {
     return {};
   }
-  if (width == 0 || height == 0 || stride_bytes != width * 4u) {
+  if (stream_id == 0 || backing_id == 0 || width == 0 || height == 0 || stride_bytes != width * 4u) {
     return {};
   }
   request_pending_release_drain();
@@ -454,10 +554,27 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
                                    " h=", (long long)height);
   }
 
+  auto entry = std::make_shared<GodotBoundaryGpuDisplayEntry>();
+  entry->key = GodotBoundaryGpuDisplayKey{stream_id, backing_id};
+  entry->texture_rid = texture;
+  entry->width = width;
+  entry->height = height;
+  entry->stride_bytes = stride_bytes;
+  {
+    std::lock_guard<std::mutex> lock(g_display_registry_mutex);
+    auto& slot = g_display_registry[entry->key];
+    if (slot) {
+      return {};
+    }
+    slot = entry;
+  }
+
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
-  retained_backing->rd_texture = texture;
+  retained_backing->display_entry = entry;
+  retained_backing->stream_id = stream_id;
+  retained_backing->backing_id = backing_id;
   retained_backing->width = width;
   retained_backing->height = height;
   retained_backing->stride_bytes = stride_bytes;
@@ -491,7 +608,7 @@ bool update_stream_live_gpu_backing_rgba8(
   if (!retained) {
     return false;
   }
-  godot::RID texture_rid;
+  std::shared_ptr<GodotBoundaryGpuDisplayEntry> entry;
   {
     std::lock_guard<std::mutex> lock(retained->mutex);
     if (retained->released) {
@@ -500,24 +617,30 @@ bool update_stream_live_gpu_backing_rgba8(
     if (retained->width != width || retained->height != height || retained->stride_bytes != stride_bytes) {
       return false;
     }
-    if (retained->rd_texture.is_valid()) {
-      texture_rid = retained->rd_texture;
-    } else if (retained->display_texture.is_valid()) {
-      texture_rid = retained->display_texture->get_texture_rd_rid();
+    entry = retained->display_entry.lock();
+  }
+  if (!entry) {
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> entry_lock(entry->mutex);
+    if (entry->retired || entry->width != width || entry->height != height || entry->stride_bytes != stride_bytes) {
+      return false;
     }
+    const godot::RID texture_rid = entry->texture_rid;
     if (!texture_rid.is_valid()) {
       return false;
     }
 
     const int64_t frame_bytes = static_cast<int64_t>(stride_bytes) * static_cast<int64_t>(height);
-    if (retained->upload_bytes.size() != frame_bytes) {
-      retained->upload_bytes.resize(frame_bytes);
+    if (entry->upload_bytes.size() != frame_bytes) {
+      entry->upload_bytes.resize(frame_bytes);
     }
     const auto copy_t0 = std::chrono::steady_clock::now();
-    std::memcpy(retained->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
+    std::memcpy(entry->upload_bytes.ptrw(), src, static_cast<size_t>(frame_bytes));
     const auto copy_t1 = std::chrono::steady_clock::now();
     const auto update_t0 = copy_t1;
-    rd->texture_update(texture_rid, 0, retained->upload_bytes);
+    rd->texture_update(texture_rid, 0, entry->upload_bytes);
     const auto update_t1 = std::chrono::steady_clock::now();
     const uint64_t copy_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
@@ -609,22 +732,32 @@ void install_synthetic_gpu_backing_godot_bridge() {
 void uninstall_synthetic_gpu_backing_godot_bridge() {
   clear_synthetic_gpu_backing_runtime_ops();
   godot_gpu_display_invalidate_all();
+  synthetic_gpu_backing_invalidate_all_godot_display();
   clear_pending_releases_for_teardown();
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
-godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
+bool synthetic_gpu_backing_display_texture_available(const RetainedGpuBackingDescriptor& descriptor) {
+  std::shared_ptr<GodotBoundaryGpuDisplayEntry> entry = lookup_display_entry(descriptor);
+  if (!entry) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(entry->mutex);
+  return !entry->retired &&
+         entry->texture_rid.is_valid() &&
+         entry->width == descriptor.width &&
+         entry->height == descriptor.height &&
+         entry->stride_bytes == descriptor.stride_bytes;
+}
+
+godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const RetainedGpuBackingDescriptor& descriptor) {
   constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
   if (bridge_teardown_started()) {
     return {};
   }
   request_pending_release_drain();
-  if (!backing) {
-    return {};
-  }
-  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
-      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
-  if (!retained) {
+  std::shared_ptr<GodotBoundaryGpuDisplayEntry> entry = lookup_display_entry(descriptor);
+  if (!entry) {
     return {};
   }
 
@@ -633,33 +766,38 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     return {};
   }
   godot::RenderingDevice* rd = rs->get_rendering_device();
-  std::lock_guard<std::mutex> lock(retained->mutex);
-  if (retained->released) {
+  if (!rd) {
     return {};
   }
-  if (!rd || !retained->rd_texture.is_valid()) {
-    return retained->display_texture;
+  std::lock_guard<std::mutex> lock(entry->mutex);
+  if (entry->retired ||
+      entry->width != descriptor.width ||
+      entry->height != descriptor.height ||
+      entry->stride_bytes != descriptor.stride_bytes ||
+      !entry->texture_rid.is_valid()) {
+    return {};
   }
-  if (!retained->display_texture.is_valid()) {
+  if (!entry->display_texture.is_valid()) {
     godot::Ref<godot::Texture2DRD> texture;
     texture.instantiate();
     if (texture.is_null()) {
       return {};
     }
-    // Display view is a live wrapper over stream-owned backing. Texture2DRD
-    // does not own/free this RID; lifetime is carried by attached metadata.
-    texture->set_texture_rd_rid(retained->rd_texture);
-    const godot::RID display_rid = retained->rd_texture;
+    // Display view is a live Godot-boundary wrapper over the registered stream
+    // backing RID. Texture2DRD does not own/free this RID; lifetime is carried by
+    // attached metadata once the texture is exposed to Godot scene objects.
+    texture->set_texture_rd_rid(entry->texture_rid);
     godot::Ref<DisplayTextureRidOwner> rid_owner;
     rid_owner.instantiate();
-    if (rid_owner.is_valid()) {
-      rid_owner->init(display_rid);
-      texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
+    if (!rid_owner.is_valid()) {
+      return {};
     }
-    retained->rd_texture = godot::RID();
-    retained->display_texture = texture;
+    rid_owner->init(entry->texture_rid);
+    texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
+    entry->rid_owned_by_entry = false;
+    entry->display_texture = texture;
   }
-  return retained->display_texture;
+  return entry->display_texture;
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {

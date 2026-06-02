@@ -48,15 +48,12 @@ struct CoreStreamResultData {
   uint32_t image_height = 0;
   uint32_t image_format_fourcc = 0;
   ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
-  // For stream paths this may reference stream-owned live backing updated in
-  // place while flowing; this is display/live-state retention, not frozen
-  // per-frame GPU artifact identity.
-  std::shared_ptr<void> retained_gpu_backing{};
-  // Passive neutral descriptor for retained_gpu_backing. This does not drive
-  // display or materialization yet; it records scalar GPU-primary facts while
-  // legacy retained_gpu_backing remains the behavior path. If payload below is
-  // current for the same capture_timestamp_ns, classify the result as
-  // GPU-primary with CPU auxiliary data rather than GPU-only.
+  // Passive neutral descriptor for the provider/Godot-boundary GPU backing.
+  // CoreResultStore deliberately does not retain the provider primary_backing_artifact
+  // here: that artifact may own Godot rendering resources, and stream-result
+  // retention must remain scalar/passive plus optional CPU auxiliary data. If
+  // payload below is current for the same capture_timestamp_ns, classify the
+  // result as GPU-primary with CPU auxiliary data rather than GPU-only.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   CoreResultPayloadCpuPacked payload{};
   // Non-zero only when payload was copied from the same FrameView as this

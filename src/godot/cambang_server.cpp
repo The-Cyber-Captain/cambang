@@ -5,6 +5,7 @@
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_rig.h"
+#include "godot/synthetic_gpu_backing_bridge.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
@@ -410,6 +411,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
 void CamBANGServer::stop() {
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   runtime_.stop();
+  synthetic_gpu_backing_invalidate_all_godot_display();
   runtime_.attach_provider(nullptr);
   provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
@@ -744,6 +746,7 @@ godot::Error CamBANGServer::destroy_direct_stream_handle(
   const TryDestroyStreamStatus status = runtime_.try_destroy_stream(stream_id);
   const godot::Error rc = map_try_destroy_stream_status(status);
   if (rc == godot::OK) {
+    synthetic_gpu_backing_invalidate_stream_godot_display(stream_id);
     direct_stream_hardware_id_by_stream_id_.erase(it);
   } else if (status == TryDestroyStreamStatus::Started) {
     ERR_PRINT("CamBANGServer: destroy_stream rejected because stream is started; call stop() before destroy().");

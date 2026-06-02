@@ -126,7 +126,6 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!gpu_primary && !has_cpu_payload) {
       return false;
     }
-    std::shared_ptr<void> retained_gpu_backing = frame.primary_backing_artifact;
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
         build_retained_gpu_backing_descriptor(frame, capture_timestamp_ns, gpu_primary);
 
@@ -138,10 +137,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     stream_result->image_width = frame.width;
     stream_result->image_height = frame.height;
     stream_result->image_format_fourcc = frame.format_fourcc;
-    stream_result->payload_kind = retained_gpu_backing
+    stream_result->payload_kind = gpu_primary
         ? ResultPayloadKind::GPU_SURFACE
         : ResultPayloadKind::CPU_PACKED;
-    stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
     stream_result->payload = payload;
     if (has_cpu_payload) {
