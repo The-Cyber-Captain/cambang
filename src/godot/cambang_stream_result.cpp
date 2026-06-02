@@ -115,7 +115,8 @@ void attach_display_demand_token(const godot::Ref<godot::Texture2D>& texture, ui
   if (token.is_null()) {
     return;
   }
-  token->init(stream_id);
+  const bool gpu_display_view = path_kind && std::strcmp(path_kind, "retained_gpu_backing") == 0;
+  token->init(stream_id, gpu_display_view);
   texture->set_meta(godot::StringName(kDisplayDemandTokenMetaKey), token);
   if (display_demand_trace_enabled()) {
     const uint64_t tex_id = texture->get_instance_id();
