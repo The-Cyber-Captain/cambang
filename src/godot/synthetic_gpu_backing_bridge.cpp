@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <chrono>
@@ -39,6 +40,7 @@ static bool gpu_trace_enabled() noexcept {
 struct SharedDisplayTextureRidState final {
   std::mutex mutex;
   godot::RID rd_texture;
+  bool abandoned_after_runtime_stop = false;
 
   explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
 
@@ -51,14 +53,21 @@ struct SharedDisplayTextureRidState final {
     return rd_texture;
   }
 
+  void mark_abandoned_after_runtime_stop() {
+    std::lock_guard<std::mutex> lock(mutex);
+    abandoned_after_runtime_stop = true;
+  }
+
   void release_now() {
     godot::RID rid;
+    bool abandon_release = false;
     {
       std::lock_guard<std::mutex> lock(mutex);
       rid = rd_texture;
       rd_texture = godot::RID();
+      abandon_release = abandoned_after_runtime_stop;
     }
-    if (!rid.is_valid()) {
+    if (!rid.is_valid() || abandon_release) {
       return;
     }
     if (enqueue_pending_release(rid)) {
@@ -71,6 +80,7 @@ struct RetainedSyntheticGpuBacking final {
   std::mutex mutex;
   std::shared_ptr<SharedDisplayTextureRidState> rid_state;
   godot::PackedByteArray upload_bytes;
+  uint64_t stream_id = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
@@ -105,11 +115,13 @@ class DisplayTextureRidOwner : public godot::RefCounted {
 public:
   static void _bind_methods() {}
 
-  void init(std::shared_ptr<SharedDisplayTextureRidState> state) {
-    state_ = std::move(state);
-  }
+  ~DisplayTextureRidOwner() override;
+
+  void init(uint64_t stream_id, std::shared_ptr<SharedDisplayTextureRidState> state);
 
 private:
+  uint64_t stream_id_ = 0;
+  uint64_t borrow_id_ = 0;
   std::shared_ptr<SharedDisplayTextureRidState> state_;
 };
 
@@ -161,6 +173,61 @@ static void reset_bridge_teardown_state_for_install() {
   g_pending_releases.clear();
   g_pending_release_drain_scheduled = false;
   g_render_thread_drain_helper.unref();
+}
+
+namespace {
+
+struct LiveDisplayWrapperBorrow final {
+  uint64_t stream_id = 0;
+  std::shared_ptr<SharedDisplayTextureRidState> rid_state;
+};
+
+std::mutex g_live_display_wrapper_borrow_mutex;
+std::map<uint64_t, LiveDisplayWrapperBorrow> g_live_display_wrapper_borrows;
+uint64_t g_next_live_display_wrapper_borrow_id = 1;
+
+uint64_t register_live_display_wrapper_borrow(
+    uint64_t stream_id,
+    const std::shared_ptr<SharedDisplayTextureRidState>& state) {
+  if (stream_id == 0 || !state) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
+  const uint64_t borrow_id = g_next_live_display_wrapper_borrow_id++;
+  g_live_display_wrapper_borrows.emplace(borrow_id, LiveDisplayWrapperBorrow{stream_id, state});
+  return borrow_id;
+}
+
+void unregister_live_display_wrapper_borrow(uint64_t borrow_id) {
+  if (borrow_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
+  g_live_display_wrapper_borrows.erase(borrow_id);
+}
+
+std::vector<LiveDisplayWrapperBorrow> snapshot_live_display_wrapper_borrows() {
+  std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
+  std::vector<LiveDisplayWrapperBorrow> borrows;
+  borrows.reserve(g_live_display_wrapper_borrows.size());
+  for (const auto& [borrow_id, borrow] : g_live_display_wrapper_borrows) {
+    (void)borrow_id;
+    borrows.push_back(borrow);
+  }
+  return borrows;
+}
+
+} // namespace
+
+void DisplayTextureRidOwner::init(uint64_t stream_id, std::shared_ptr<SharedDisplayTextureRidState> state) {
+  stream_id_ = stream_id;
+  state_ = std::move(state);
+  borrow_id_ = register_live_display_wrapper_borrow(stream_id_, state_);
+}
+
+DisplayTextureRidOwner::~DisplayTextureRidOwner() {
+  unregister_live_display_wrapper_borrow(borrow_id_);
+  borrow_id_ = 0;
 }
 
 static void request_pending_release_drain() {
@@ -450,6 +517,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
+  retained_backing->stream_id = stream_id;
   retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
   retained_backing->rid_state = std::make_shared<SharedDisplayTextureRidState>(texture);
@@ -604,6 +672,30 @@ void uninstall_synthetic_gpu_backing_godot_bridge() {
   trace_gpu("bridge_uninstall runtime_ops_registered=false");
 }
 
+void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() {
+  const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
+  if (borrows.empty()) {
+    return;
+  }
+
+  std::map<uint64_t, uint64_t> counts_by_stream_id;
+  for (const LiveDisplayWrapperBorrow& borrow : borrows) {
+    if (borrow.rid_state) {
+      borrow.rid_state->mark_abandoned_after_runtime_stop();
+    }
+    ++counts_by_stream_id[borrow.stream_id];
+  }
+
+  godot::UtilityFunctions::push_warning(
+      "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view wrappers returned to Godot are still live. Release TextureRect.texture / display_view references before stop. Stop will continue; retained views may become stale after runtime teardown.");
+  for (const auto& [stream_id, borrow_count] : counts_by_stream_id) {
+    godot::UtilityFunctions::print("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
+                                   (long long)stream_id,
+                                   " wrapper_borrow_count=",
+                                   (long long)borrow_count);
+  }
+}
+
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
   constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
   if (bridge_teardown_started()) {
@@ -629,12 +721,14 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   }
 
   std::shared_ptr<SharedDisplayTextureRidState> state;
+  uint64_t stream_id = 0;
   {
     std::lock_guard<std::mutex> lock(retained->mutex);
     if (retained->released || !retained->rid_state) {
       return {};
     }
     state = retained->rid_state;
+    stream_id = retained->stream_id;
   }
 
   const godot::RID display_rid = state->snapshot_rid();
@@ -656,7 +750,7 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   if (rid_owner.is_null()) {
     return {};
   }
-  rid_owner->init(std::move(state));
+  rid_owner->init(stream_id, std::move(state));
   texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
   return texture;
 }
