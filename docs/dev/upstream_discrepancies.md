@@ -46,3 +46,23 @@ CamBANG workaround:
 
 Removal criteria:
 - CamBANG formally targets a Godot version where `EditorDock` is confirmed available and usable for the plugin path.
+
+
+## Godot editor debugger #112815 (diagnostic messages may not flush before immediate quit)
+
+Upstream: https://github.com/godotengine/godot/issues/112815
+
+Observation:
+- In Godot 4.5.1-stable, diagnostic messages emitted immediately before `get_tree().quit()` may reach the shell/console output while the editor Debugger panel/message indicator does not reliably update before the scene exits.
+- CamBANG observed this with `UtilityFunctions::push_warning(...)` in GPU DisplayLifetime teardown diagnostics: the warning is emitted and visible in shell output, but the editor UI may not surface the pending warning before immediate quit.
+- This is an editor/debugger diagnostic flush discrepancy, not a CamBANG runtime teardown failure.
+
+CamBANG handling:
+- Keep DisplayLifetime diagnostics on Godot's warning channel because the condition is non-fatal and should remain warning-severity rather than error-severity.
+- Emit both the headline DisplayLifetime message and per-stream `live_gpu_display_view` detail through `UtilityFunctions::push_warning(...)`.
+- Treat immediate-quit editor Debugger visibility as unreliable in affected Godot versions; shell/console output remains the more reliable diagnostic sink for this case.
+- Further CamBANG-side mitigation for editor Debugger visibility is not yet settled. Delay/defer-based workarounds are intentionally not adopted by this note.
+
+Removal criteria:
+- Godot editor/debugger reliably flushes warnings/errors emitted immediately before `get_tree().quit()` in CamBANG's targeted Godot version.
+- CamBANG no longer needs special documentation or harness awareness for immediate-quit diagnostic visibility.

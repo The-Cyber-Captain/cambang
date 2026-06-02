@@ -686,13 +686,18 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
     ++counts_by_stream_id[borrow.stream_id];
   }
 
+  const char* const message =
+    "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view wrappers returned to Godot are still live. "
+    "Release TextureRect.texture / display_view references before stop. Stop will continue; retained views may become stale after runtime teardown.";
+
   godot::UtilityFunctions::push_warning(
       "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view wrappers returned to Godot are still live. Release TextureRect.texture / display_view references before stop. Stop will continue; retained views may become stale after runtime teardown.");
+
   for (const auto& [stream_id, borrow_count] : counts_by_stream_id) {
-    godot::UtilityFunctions::print("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
-                                   (long long)stream_id,
-                                   " wrapper_borrow_count=",
-                                   (long long)borrow_count);
+    godot::UtilityFunctions::push_warning("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
+                                          (long long)stream_id,
+                                          " wrapper_borrow_count=",
+                                          (long long)borrow_count);
   }
 }
 
