@@ -655,11 +655,10 @@ func _cleanup_and_quit(code: int) -> void:
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 	_diag_mark("stop_boundary_begin", "cleanup stop")
-	CamBANGServer.stop()
-	_diag_mark("stop_boundary_end", "cleanup quit")
 	if not _quit_requested:
 		_quit_requested = true
-		get_tree().quit(code)
+		CamBANGServer.stop_and_quit(code)
+	_diag_mark("stop_boundary_end", "cleanup quit scheduled")
 
 
 func _diag_mark(name: String, waiting_for: String = "", details: Dictionary = {}) -> void:

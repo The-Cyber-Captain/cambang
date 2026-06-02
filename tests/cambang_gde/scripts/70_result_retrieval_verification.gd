@@ -11,7 +11,6 @@ extends Control
 # - no grouped-capture curation policy proof
 # - no mailbox coupling
 
-# const QUIT_FLUSH_FRAMES := 2
 const STREAM_TIMEOUT_MS := 4000
 const CAPTURE_TIMEOUT_MS := 4000
 const INSPECTION_CAPTURE_TIMEOUT_MS := 4000
@@ -653,32 +652,6 @@ func _fail(message: String) -> void:
 	_cleanup_and_quit(1)
 
 
-#func _cleanup_and_quit(code: int) -> void:
-	#if _quit_requested:
-		#return
-	#_quit_requested = true
-	#set_process(false)
-#
-	## Drop UI-held display/capture texture refs before runtime teardown. The
-	## stream display view may be backed by runtime-owned GPU state that becomes
-	## invalid after CamBANGServer.stop().
-	##
-	## Stop is deferred by one Godot boundary turn so metadata attached to the
-	## cleared Texture2D refs can be released before CamBANGServer.stop() checks
-	## for live GPU display-view tokens.
-	#_stream_texture_rect.texture = null
-	#_requested_stream_texture_rect.texture = null
-	#_capture_texture_rect.texture = null
-	#_clear_member_inspection_strip()
-#
-	#call_deferred("_stop_and_quit_after_texture_release", code)
-#
-#
-#func _stop_and_quit_after_texture_release(code: int) -> void:
-	#CamBANGServer.stop()
-	#print("INFO: quit requested code=%d" % code)
-	#get_tree().quit(code)
-
 func _cleanup_and_quit(code: int) -> void:
 	set_process(false)
 	# Drop UI-held display/capture texture refs before runtime teardown. The
@@ -688,14 +661,7 @@ func _cleanup_and_quit(code: int) -> void:
 	_requested_stream_texture_rect.texture = null
 	_capture_texture_rect.texture = null
 	_clear_member_inspection_strip()
-	CamBANGServer.stop()
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
-
-
-func _quit_next_frame(code: int) -> void:
-	#for _i in range(QUIT_FLUSH_FRAMES):
-		#await get_tree().process_frame
-	print("INFO: quit requested code=%d" % code)
-	get_tree().quit(code)
+		print("INFO: quit requested code=%d" % code)
+		CamBANGServer.stop_and_quit(code)

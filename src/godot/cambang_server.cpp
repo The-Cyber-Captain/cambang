@@ -448,6 +448,39 @@ void CamBANGServer::stop() {
   direct_stream_hardware_id_by_stream_id_.clear();
 }
 
+void CamBANGServer::stop_and_quit(int64_t exit_code) {
+  // Keep stop() as the synchronous teardown boundary. The quit delay belongs to
+  // this immediate-exit helper only, so normal stop() callers keep unchanged
+  // semantics and do not wait for editor/debugger diagnostics to flush.
+  stop();
+
+  if (pending_stop_and_quit_) {
+    return;
+  }
+
+  godot::Engine* engine = godot::Engine::get_singleton();
+  godot::SceneTree* tree = nullptr;
+  if (engine) {
+    tree = godot::Object::cast_to<godot::SceneTree>(engine->get_main_loop());
+  }
+  if (!tree) {
+    godot::UtilityFunctions::push_warning(
+        "CamBANGServer.stop_and_quit() could not schedule quit because no SceneTree main loop is available.");
+    return;
+  }
+
+  _ensure_tick_connected();
+  if (!tick_connected_) {
+    godot::UtilityFunctions::push_warning(
+        "CamBANGServer.stop_and_quit() could not schedule quit because the SceneTree process_frame hook is unavailable.");
+    return;
+  }
+
+  pending_stop_and_quit_ = true;
+  pending_stop_and_quit_frames_remaining_ = kEditorDiagnosticQuitFlushFrames;
+  pending_stop_and_quit_exit_code_ = static_cast<int>(exit_code);
+}
+
 bool CamBANGServer::is_running() const {
   const CoreRuntimeState state = runtime_.state_copy();
   return state == CoreRuntimeState::STARTING || state == CoreRuntimeState::LIVE;
@@ -1226,6 +1259,7 @@ void CamBANGServer::_on_godot_process_frame() {
   last_tick_time_ns_ = now_ns;
 
   _on_godot_tick(delta_s);
+  _drain_pending_stop_and_quit_();
 }
 
 bool CamBANGServer::_consume_latest_core_snapshot() {
@@ -1361,6 +1395,37 @@ void CamBANGServer::_on_godot_tick(double delta) {
   } else if (!pending_endpoint_startup_intents_.empty()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
   }
+}
+
+void CamBANGServer::_drain_pending_stop_and_quit_() {
+  if (!pending_stop_and_quit_) {
+    return;
+  }
+
+  if (pending_stop_and_quit_frames_remaining_ > 0) {
+    --pending_stop_and_quit_frames_remaining_;
+    if (pending_stop_and_quit_frames_remaining_ > 0) {
+      return;
+    }
+  }
+
+  godot::Engine* engine = godot::Engine::get_singleton();
+  godot::SceneTree* tree = nullptr;
+  if (engine) {
+    tree = godot::Object::cast_to<godot::SceneTree>(engine->get_main_loop());
+  }
+  if (!tree) {
+    pending_stop_and_quit_ = false;
+    godot::UtilityFunctions::push_warning(
+        "CamBANGServer.stop_and_quit() dropped pending quit because no SceneTree main loop is available.");
+    return;
+  }
+
+  const int exit_code = pending_stop_and_quit_exit_code_;
+  pending_stop_and_quit_ = false;
+  pending_stop_and_quit_frames_remaining_ = 0;
+  pending_stop_and_quit_exit_code_ = 0;
+  tree->quit(exit_code);
 }
 
 godot::Variant CamBANGServer::get_state_snapshot() const {
@@ -1744,6 +1809,7 @@ void CamBANGServer::_bind_methods() {
       DEFVAL(godot::Variant()),
       DEFVAL(godot::Variant()));
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGServer::stop);
+  godot::ClassDB::bind_method(godot::D_METHOD("stop_and_quit", "exit_code"), &CamBANGServer::stop_and_quit, DEFVAL(0));
   godot::ClassDB::bind_method(godot::D_METHOD("is_running"), &CamBANGServer::is_running);
   godot::ClassDB::bind_method(godot::D_METHOD("get_active_provider_config"), &CamBANGServer::get_active_provider_config);
   godot::ClassDB::bind_method(godot::D_METHOD("select_builtin_scenario", "scenario_name"), &CamBANGServer::select_builtin_scenario);

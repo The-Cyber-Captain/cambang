@@ -1,6 +1,5 @@
 extends Node
 
-const QUIT_FLUSH_FRAMES := 2
 const TIMEOUT_MS := 7000
 const FIRST_PUBLISH_TIMEOUT_MS := 2000
 const OBSERVATION_WINDOW_MS := 1200
@@ -282,15 +281,6 @@ func _cleanup_and_quit(code: int) -> void:
 	if CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.disconnect(_on_state_published)
 
-	CamBANGServer.stop()
-
 	if not _quit_requested:
 		_quit_requested = true
-		call_deferred("_quit_next_frame", code)
-
-
-func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
-	print("INFO: quit requested code=%d" % code)
-	get_tree().quit(code)
+		CamBANGServer.stop_and_quit(code)
