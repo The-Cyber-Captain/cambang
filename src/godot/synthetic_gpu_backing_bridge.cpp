@@ -338,7 +338,9 @@ int32_t DeferredDisplayTexture2DRD::_get_height() const {
 }
 
 bool DeferredDisplayTexture2DRD::_is_pixel_opaque(int32_t x, int32_t y) const {
-  return texture_.is_valid() ? texture_->is_pixel_opaque(x, y) : false;
+  (void)x;
+  (void)y;
+  return false;
 }
 
 bool DeferredDisplayTexture2DRD::_has_alpha() const {
