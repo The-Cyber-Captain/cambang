@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <chrono>
 #include <utility>
@@ -35,10 +36,40 @@ static bool gpu_trace_enabled() noexcept {
   return value && value[0] != '\0' && value[0] != '0';
 }
 
-struct RetainedSyntheticGpuBacking final {
+struct SharedDisplayTextureRidState final {
   std::mutex mutex;
   godot::RID rd_texture;
-  godot::Ref<godot::Texture2DRD> display_texture;
+
+  explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
+
+  ~SharedDisplayTextureRidState() {
+    release_now();
+  }
+
+  godot::RID snapshot_rid() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return rd_texture;
+  }
+
+  void release_now() {
+    godot::RID rid;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      rid = rd_texture;
+      rd_texture = godot::RID();
+    }
+    if (!rid.is_valid()) {
+      return;
+    }
+    if (enqueue_pending_release(rid)) {
+      request_pending_release_drain();
+    }
+  }
+};
+
+struct RetainedSyntheticGpuBacking final {
+  std::mutex mutex;
+  std::shared_ptr<SharedDisplayTextureRidState> rid_state;
   godot::PackedByteArray upload_bytes;
   uint32_t width = 0;
   uint32_t height = 0;
@@ -47,7 +78,7 @@ struct RetainedSyntheticGpuBacking final {
   ScopedResourceTelemetryKey telemetry_key{};
 
   void release_now() {
-    godot::RID rid;
+    std::shared_ptr<SharedDisplayTextureRidState> state;
     {
       std::lock_guard<std::mutex> lock(mutex);
       if (released) {
@@ -55,21 +86,12 @@ struct RetainedSyntheticGpuBacking final {
       }
       released = true;
       global_resource_aggregate_telemetry().retained_gpu_backing_released(telemetry_key);
-
-      if (rd_texture.is_valid()) {
-        rid = rd_texture;
-        rd_texture = godot::RID();
-      }
-
-      display_texture.unref();
+      state = std::move(rid_state);
     }
-
-    if (!rid.is_valid()) {
-      return;
-    }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
+    // Drop CamBANG's backing reference after releasing the backing lock. If
+    // user-facing display wrappers still hold metadata references to the same
+    // state, final RID cleanup is deferred until those wrappers are destroyed.
+    (void)state;
   }
 
   ~RetainedSyntheticGpuBacking() {
@@ -83,37 +105,12 @@ class DisplayTextureRidOwner : public godot::RefCounted {
 public:
   static void _bind_methods() {}
 
-  void init(const godot::RID& rid) {
-    rid_ = rid;
-  }
-
-  ~DisplayTextureRidOwner() override {
-    release_now();
-  }
-
-  void release_now() {
-    godot::RID rid;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (released_) {
-        return;
-      }
-      released_ = true;
-      rid = rid_;
-      rid_ = godot::RID();
-    }
-    if (!rid.is_valid()) {
-      return;
-    }
-    if (enqueue_pending_release(rid)) {
-      request_pending_release_drain();
-    }
+  void init(std::shared_ptr<SharedDisplayTextureRidState> state) {
+    state_ = std::move(state);
   }
 
 private:
-  std::mutex mutex_{};
-  godot::RID rid_{};
-  bool released_ = false;
+  std::shared_ptr<SharedDisplayTextureRidState> state_;
 };
 
 void register_synthetic_gpu_backing_internal_classes() {
@@ -299,23 +296,21 @@ bool snapshot_backing_for_use(
   if (!retained) {
     return false;
   }
-  std::lock_guard<std::mutex> lock(retained->mutex);
-  if (retained->released) {
-    return false;
+  std::shared_ptr<SharedDisplayTextureRidState> state;
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released || !retained->rid_state) {
+      return false;
+    }
+    state = retained->rid_state;
+    out.width = retained->width;
+    out.height = retained->height;
+    out.stride_bytes = retained->stride_bytes;
   }
-  if (retained->rd_texture.is_valid()) {
-    out.rid = retained->rd_texture;
-  } else if (retained->display_texture.is_valid()) {
-    out.rid = retained->display_texture->get_texture_rd_rid();
-  } else {
-    return false;
-  }
+  out.rid = state->snapshot_rid();
   if (!out.rid.is_valid()) {
     return false;
   }
-  out.width = retained->width;
-  out.height = retained->height;
-  out.stride_bytes = retained->stride_bytes;
   return true;
 }
 
@@ -398,7 +393,7 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->telemetry_key = make_unknown_scoped_resource_telemetry();
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
-  retained_backing->rd_texture = texture;
+  retained_backing->rid_state = std::make_shared<SharedDisplayTextureRidState>(texture);
   retained_backing->width = width;
   retained_backing->height = height;
   return std::static_pointer_cast<void>(retained_backing);
@@ -457,7 +452,7 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
   retained_backing->telemetry_key = make_stream_scoped_resource_telemetry(stream_id);
   global_resource_aggregate_telemetry().retained_gpu_backing_created(retained_backing->telemetry_key);
-  retained_backing->rd_texture = texture;
+  retained_backing->rid_state = std::make_shared<SharedDisplayTextureRidState>(texture);
   retained_backing->width = width;
   retained_backing->height = height;
   retained_backing->stride_bytes = stride_bytes;
@@ -494,17 +489,13 @@ bool update_stream_live_gpu_backing_rgba8(
   godot::RID texture_rid;
   {
     std::lock_guard<std::mutex> lock(retained->mutex);
-    if (retained->released) {
+    if (retained->released || !retained->rid_state) {
       return false;
     }
     if (retained->width != width || retained->height != height || retained->stride_bytes != stride_bytes) {
       return false;
     }
-    if (retained->rd_texture.is_valid()) {
-      texture_rid = retained->rd_texture;
-    } else if (retained->display_texture.is_valid()) {
-      texture_rid = retained->display_texture->get_texture_rd_rid();
-    }
+    texture_rid = retained->rid_state->snapshot_rid();
     if (!texture_rid.is_valid()) {
       return false;
     }
@@ -633,33 +624,41 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
     return {};
   }
   godot::RenderingDevice* rd = rs->get_rendering_device();
-  std::lock_guard<std::mutex> lock(retained->mutex);
-  if (retained->released) {
+  if (!rd) {
     return {};
   }
-  if (!rd || !retained->rd_texture.is_valid()) {
-    return retained->display_texture;
-  }
-  if (!retained->display_texture.is_valid()) {
-    godot::Ref<godot::Texture2DRD> texture;
-    texture.instantiate();
-    if (texture.is_null()) {
+
+  std::shared_ptr<SharedDisplayTextureRidState> state;
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released || !retained->rid_state) {
       return {};
     }
-    // Display view is a live wrapper over stream-owned backing. Texture2DRD
-    // does not own/free this RID; lifetime is carried by attached metadata.
-    texture->set_texture_rd_rid(retained->rd_texture);
-    const godot::RID display_rid = retained->rd_texture;
-    godot::Ref<DisplayTextureRidOwner> rid_owner;
-    rid_owner.instantiate();
-    if (rid_owner.is_valid()) {
-      rid_owner->init(display_rid);
-      texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
-    }
-    retained->rd_texture = godot::RID();
-    retained->display_texture = texture;
+    state = retained->rid_state;
   }
-  return retained->display_texture;
+
+  const godot::RID display_rid = state->snapshot_rid();
+  if (!display_rid.is_valid()) {
+    return {};
+  }
+
+  godot::Ref<godot::Texture2DRD> texture;
+  texture.instantiate();
+  if (texture.is_null()) {
+    return {};
+  }
+  // Display view is a user-facing wrapper over stream-owned backing state.
+  // Texture2DRD does not own/free this RID; final RID cleanup is carried by
+  // shared metadata/lifetime state rather than by a retained Texture2DRD Ref.
+  texture->set_texture_rd_rid(display_rid);
+  godot::Ref<DisplayTextureRidOwner> rid_owner;
+  rid_owner.instantiate();
+  if (rid_owner.is_null()) {
+    return {};
+  }
+  rid_owner->init(std::move(state));
+  texture->set_meta(godot::StringName(kDisplayTextureRidOwnerMetaKey), rid_owner);
+  return texture;
 }
 
 bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {

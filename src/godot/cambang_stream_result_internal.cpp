@@ -15,31 +15,31 @@ namespace cambang {
 
 namespace {
 
-std::mutex g_gpu_display_view_token_mutex;
-std::map<uint64_t, uint64_t> g_gpu_display_view_token_counts;
+std::mutex g_gpu_display_view_borrow_mutex;
+std::map<uint64_t, uint64_t> g_gpu_display_view_borrow_counts;
 
-void increment_gpu_display_view_token_count(uint64_t stream_id) {
-  std::lock_guard<std::mutex> lock(g_gpu_display_view_token_mutex);
-  ++g_gpu_display_view_token_counts[stream_id];
+void increment_gpu_display_view_borrow_count(uint64_t stream_id) {
+  std::lock_guard<std::mutex> lock(g_gpu_display_view_borrow_mutex);
+  ++g_gpu_display_view_borrow_counts[stream_id];
 }
 
-void decrement_gpu_display_view_token_count(uint64_t stream_id) {
-  std::lock_guard<std::mutex> lock(g_gpu_display_view_token_mutex);
-  auto it = g_gpu_display_view_token_counts.find(stream_id);
-  if (it == g_gpu_display_view_token_counts.end()) {
+void decrement_gpu_display_view_borrow_count(uint64_t stream_id) {
+  std::lock_guard<std::mutex> lock(g_gpu_display_view_borrow_mutex);
+  auto it = g_gpu_display_view_borrow_counts.find(stream_id);
+  if (it == g_gpu_display_view_borrow_counts.end()) {
     return;
   }
   if (it->second <= 1) {
-    g_gpu_display_view_token_counts.erase(it);
+    g_gpu_display_view_borrow_counts.erase(it);
     return;
   }
   --it->second;
 }
 
-std::vector<std::pair<uint64_t, uint64_t>> snapshot_gpu_display_view_token_counts() {
-  std::lock_guard<std::mutex> lock(g_gpu_display_view_token_mutex);
-  return std::vector<std::pair<uint64_t, uint64_t>>(g_gpu_display_view_token_counts.begin(),
-                                                    g_gpu_display_view_token_counts.end());
+std::vector<std::pair<uint64_t, uint64_t>> snapshot_gpu_display_view_borrow_counts() {
+  std::lock_guard<std::mutex> lock(g_gpu_display_view_borrow_mutex);
+  return std::vector<std::pair<uint64_t, uint64_t>>(g_gpu_display_view_borrow_counts.begin(),
+                                                    g_gpu_display_view_borrow_counts.end());
 }
 
 bool display_demand_trace_enabled() {
@@ -50,7 +50,7 @@ bool display_demand_trace_enabled() {
 
 DisplayDemandToken::~DisplayDemandToken() {
   if (tracker_registered_) {
-    decrement_gpu_display_view_token_count(stream_id_);
+    decrement_gpu_display_view_borrow_count(stream_id_);
     tracker_registered_ = false;
   }
   if (display_demand_trace_enabled()) {
@@ -69,7 +69,7 @@ void DisplayDemandToken::init(uint64_t stream_id, bool gpu_display_view) {
   stream_id_ = stream_id;
   gpu_display_view_ = gpu_display_view;
   if (gpu_display_view_ && stream_id_ != 0) {
-    increment_gpu_display_view_token_count(stream_id_);
+    increment_gpu_display_view_borrow_count(stream_id_);
     tracker_registered_ = true;
   }
   if (display_demand_trace_enabled()) {
@@ -85,18 +85,18 @@ void DisplayDemandToken::init(uint64_t stream_id, bool gpu_display_view) {
 }
 
 void warn_if_outstanding_gpu_display_views_before_stop() {
-  const auto outstanding = snapshot_gpu_display_view_token_counts();
+  const auto outstanding = snapshot_gpu_display_view_borrow_counts();
   if (outstanding.empty()) {
     return;
   }
 
   godot::UtilityFunctions::push_warning(
-      "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view textures are still live. Release TextureRect.texture / display_view references before stop. This warning reports live CamBANG display metadata tokens, not exact Godot Ref<> counts.");
-  for (const auto& [stream_id, token_count] : outstanding) {
+      "[CamBANG][DisplayLifetime] CamBANGServer.stop() called while GPU StreamResult display_view wrappers returned to Godot are still live. Release TextureRect.texture / display_view references before stop. Stop will continue; retained views may become stale after runtime teardown.");
+  for (const auto& [stream_id, borrow_count] : outstanding) {
     godot::UtilityFunctions::print("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
                                    (long long)stream_id,
-                                   " token_count=",
-                                   (long long)token_count);
+                                   " wrapper_borrow_count=",
+                                   (long long)borrow_count);
   }
 }
 

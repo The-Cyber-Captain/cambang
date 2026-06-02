@@ -25,7 +25,7 @@ private:
 // Internal-only helper class registration required for Ref<DisplayDemandToken>::instantiate().
 void register_stream_result_internal_classes();
 
-// Diagnostic-only warning for live GPU StreamResult display-view metadata tokens.
+// Diagnostic-only warning for live GPU StreamResult display-view wrapper borrows.
 void warn_if_outstanding_gpu_display_views_before_stop();
 
 } // namespace cambang
