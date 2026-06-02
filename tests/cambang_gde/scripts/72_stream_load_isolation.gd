@@ -421,11 +421,14 @@ func _print_summary_and_quit() -> void:
 	_print_frame_spike_trace()
 	
 	# diagnostic test nulling
-	_stream_a.texture = null
-	_stream_b.texture = null
+	#_stream_a.texture = null
+	#_stream_b.texture = null
 	#
 	
+	print("INFO: before CamBANGServer.stop")
 	CamBANGServer.stop()
+	print("INFO: after CamBANGServer.stop")
+	await get_tree().create_timer(1.0)
 	get_tree().quit(0)
 
 
