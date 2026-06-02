@@ -1791,12 +1791,18 @@ void CoreRuntime::request_publish() {
 void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
   assert(core_thread_.is_core_thread());
   provider_facts_.push_back(std::move(cmd));
+  // Facts wake the core pump so descendant realization can be observed through
+  // dispatcher state changes and the normal coalesced publish path. Scenario
+  // start must not force host-side publication ahead of provider truth.
   core_thread_.request_timer_tick();
 }
 
 void CoreRuntime::enqueue_request(CoreThread::Task task) {
   assert(core_thread_.is_core_thread());
   requests_.push_back(std::move(task));
+  // Requests also wake the core pump; any snapshot publication remains a
+  // consequence of provider facts or core-owned state mutation, not a broad
+  // publish request from the host scenario-start path.
   core_thread_.request_timer_tick();
 }
 
