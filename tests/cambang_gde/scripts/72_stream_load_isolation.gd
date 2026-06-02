@@ -424,7 +424,7 @@ func _print_summary_and_quit() -> void:
 	_stream_b.texture = null
 
 	print("INFO: before CamBANGServer.stop_and_quit")
-	CamBANGServer.stop_and_quit(0)
+	CamBANGServer.stop_and_quit()
 	print("INFO: after CamBANGServer.stop_and_quit")
 
 

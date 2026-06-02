@@ -123,7 +123,7 @@ func _finish_ok(msg: String) -> void:
 
 	if not _quit_requested:
 		_quit_requested = true
-		CamBANGServer.stop_and_quit(0)
+		CamBANGServer.stop_and_quit()
 
 
 func _finish_fail(msg: String) -> void:

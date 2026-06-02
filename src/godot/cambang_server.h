@@ -229,7 +229,7 @@ private:
   uint64_t last_tick_time_ns_ = 0;
 
   // Editor/debugger diagnostic flush workaround for stop_and_quit().
-  static constexpr uint32_t kEditorDiagnosticQuitFlushFrames = 2;
+  static constexpr uint32_t kEditorDiagnosticQuitFlushFrames = 30;
   bool pending_stop_and_quit_ = false;
   uint32_t pending_stop_and_quit_frames_remaining_ = 0;
   int pending_stop_and_quit_exit_code_ = 0;
