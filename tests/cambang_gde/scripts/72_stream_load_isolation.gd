@@ -419,6 +419,12 @@ func _print_summary_and_quit() -> void:
 		_log_calls
 	])
 	_print_frame_spike_trace()
+	
+	# diagnostic test nulling
+	_stream_a.texture = null
+	_stream_b.texture = null
+	#
+	
 	CamBANGServer.stop()
 	get_tree().quit(0)
 

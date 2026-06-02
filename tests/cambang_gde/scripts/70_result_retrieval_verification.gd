@@ -669,7 +669,7 @@ func _cleanup_and_quit(code: int) -> void:
 
 
 func _quit_next_frame(code: int) -> void:
-	for _i in range(QUIT_FLUSH_FRAMES):
-		await get_tree().process_frame
+	#for _i in range(QUIT_FLUSH_FRAMES):
+		#await get_tree().process_frame
 	print("INFO: quit requested code=%d" % code)
 	get_tree().quit(code)

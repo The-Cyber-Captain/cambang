@@ -98,6 +98,7 @@ func _ready():
 		
 	var device_00 = CamBANGServer.get_device_for_hardware_id(\"synthetic:0\")
 	var device_01 = CamBANGServer.get_device_for_hardware_id(\"synthetic:1\")
+	#await get_tree().process_frame
 
 	device_00.engage()
 	device_01.engage()
