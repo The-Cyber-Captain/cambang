@@ -1,6 +1,7 @@
 extends Node
 
 const TIMEOUT_MS := 5000
+const STARTUP_REALIZATION_SCENARIO := "stream_inspection_live"
 
 const PHASE_WAIT_FIRST_BASELINE := 0
 const PHASE_WAIT_PENDING_EFFECTS := 1
@@ -376,7 +377,7 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 		_fail("FAIL: " + context + " start_scenario() must fail before baseline when no scenario is staged")
 		return false
 	_diag_mark("load_stage_scenario_begin", context)
-	var scenario_stage_err := CamBANGServer.select_builtin_scenario("stream_lifecycle_versions")
+	var scenario_stage_err := CamBANGServer.select_builtin_scenario(STARTUP_REALIZATION_SCENARIO)
 	_diag_mark("load_stage_scenario_end", context, {"return_code": scenario_stage_err})
 	if scenario_stage_err != OK:
 		_fail("FAIL: " + context + " select_builtin_scenario() should stage provider-owned data before baseline (err=%d)" % scenario_stage_err)
