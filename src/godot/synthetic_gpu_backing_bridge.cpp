@@ -45,9 +45,6 @@ static bool gpu_trace_enabled() noexcept {
   return value && value[0] != '\0' && value[0] != '0';
 }
 
-static void display_release_trace(const char* message) {
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] ", message);
-}
 
 struct SharedDisplayTextureRidState final {
   std::mutex mutex;
@@ -223,23 +220,14 @@ static bool enqueue_pending_release(const godot::RID& rid) {
 static bool enqueue_pending_texture_wrapper_release(
     godot::Ref<godot::Texture2DRD> texture,
     std::shared_ptr<SharedDisplayTextureRidState> state) {
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] enqueue_delegate_release entry texture_valid=", texture.is_valid(),
-                                 " state_present=", static_cast<bool>(state));
   if (texture.is_null()) {
-    display_release_trace("enqueue_delegate_release exit result=false reason=null_texture");
     return false;
   }
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] enqueue_delegate_release pending_before=",
-                                 (long long)g_pending_texture_wrapper_releases.size());
   if (g_bridge_teardown_started) {
-    display_release_trace("enqueue_delegate_release exit result=false reason=bridge_teardown_started");
     return false;
   }
   g_pending_texture_wrapper_releases.push_back(PendingTextureWrapperRelease{std::move(state), std::move(texture)});
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] enqueue_delegate_release pending_after=",
-                                 (long long)g_pending_texture_wrapper_releases.size());
-  display_release_trace("enqueue_delegate_release exit result=true");
   return true;
 }
 
@@ -249,16 +237,10 @@ static bool bridge_teardown_started() {
 }
 
 static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThreadDrainHelper* helper) {
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] schedule_render_thread_drain entry rs_present=",
-                                 rs != nullptr,
-                                 " helper_present=", helper != nullptr);
   if (!rs || !helper) {
-    display_release_trace("schedule_render_thread_drain exit skipped");
     return;
   }
-  display_release_trace("schedule_render_thread_drain before_call_on_render_thread");
   rs->call_on_render_thread(godot::Callable(helper, godot::StringName("drain_pending_releases_on_render_thread")));
-  display_release_trace("schedule_render_thread_drain after_call_on_render_thread");
 }
 
 static void clear_pending_releases_for_teardown() {
@@ -338,28 +320,15 @@ void DeferredDisplayTexture2DRD::init(
 }
 
 DeferredDisplayTexture2DRD::~DeferredDisplayTexture2DRD() {
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] DeferredDisplayTexture2DRD dtor entry this=",
-                                 (uint64_t)(uintptr_t)this,
-                                 " delegate_valid_before_move=", texture_.is_valid(),
-                                 " state_present_before_move=", static_cast<bool>(state_));
   godot::Ref<godot::Texture2DRD> texture = std::move(texture_);
   std::shared_ptr<SharedDisplayTextureRidState> state = std::move(state_);
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] DeferredDisplayTexture2DRD dtor after_move delegate_valid=",
-                                 texture.is_valid(),
-                                 " state_present=", static_cast<bool>(state));
   if (texture.is_valid()) {
-    display_release_trace("DeferredDisplayTexture2DRD dtor before_enqueue_delegate_release");
     const bool enqueued = enqueue_pending_texture_wrapper_release(std::move(texture), std::move(state));
-    godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] DeferredDisplayTexture2DRD dtor after_enqueue_delegate_release enqueued=", enqueued);
     if (enqueued) {
-      display_release_trace("DeferredDisplayTexture2DRD dtor before_request_pending_release_drain");
       request_pending_release_drain();
-      display_release_trace("DeferredDisplayTexture2DRD dtor after_request_pending_release_drain");
-      display_release_trace("DeferredDisplayTexture2DRD dtor exit");
       return;
     }
   }
-  display_release_trace("DeferredDisplayTexture2DRD dtor exit");
 }
 
 int32_t DeferredDisplayTexture2DRD::_get_width() const {
@@ -420,22 +389,13 @@ void DisplayTextureRidOwner::init(uint64_t stream_id, std::shared_ptr<SharedDisp
 }
 
 DisplayTextureRidOwner::~DisplayTextureRidOwner() {
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] DisplayTextureRidOwner dtor entry stream_id=",
-                                 (long long)stream_id_,
-                                 " borrow_id=", (long long)borrow_id_,
-                                 " backing_id=<unavailable> state_present=", static_cast<bool>(state_));
-  display_release_trace("DisplayTextureRidOwner dtor before_unregister_live_borrow");
   unregister_live_display_wrapper_borrow(borrow_id_);
-  display_release_trace("DisplayTextureRidOwner dtor after_unregister_live_borrow");
   borrow_id_ = 0;
-  display_release_trace("DisplayTextureRidOwner dtor exit");
 }
 
 static void request_pending_release_drain() {
-  display_release_trace("request_pending_release_drain entry");
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   if (!rs) {
-    display_release_trace("request_pending_release_drain exit reason=no_rendering_server");
     return;
   }
 
@@ -443,54 +403,36 @@ static void request_pending_release_drain() {
   RenderThreadDrainHelper* helper = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] request_pending_release_drain locked pending_rid_count=",
-                                   (long long)g_pending_releases.size(),
-                                   " pending_delegate_count=", (long long)g_pending_texture_wrapper_releases.size(),
-                                   " teardown_started=", g_bridge_teardown_started,
-                                   " drain_scheduled=", g_pending_release_drain_scheduled);
     if (g_bridge_teardown_started ||
         (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
         g_pending_release_drain_scheduled) {
-      display_release_trace("request_pending_release_drain exit reason=no_schedule_needed");
       return;
     }
 
     if (g_render_thread_drain_helper.is_null()) {
-      display_release_trace("request_pending_release_drain before_instantiate_helper");
       g_render_thread_drain_helper.instantiate();
-      display_release_trace("request_pending_release_drain after_instantiate_helper");
     }
     helper_ref = g_render_thread_drain_helper;
     helper = helper_ref.ptr();
     if (!helper) {
-      display_release_trace("request_pending_release_drain exit reason=no_helper");
       return;
     }
 
     g_pending_release_drain_scheduled = true;
   }
 
-  display_release_trace("request_pending_release_drain before_schedule_render_thread_drain");
   schedule_render_thread_drain(rs, helper);
-  display_release_trace("request_pending_release_drain after_schedule_render_thread_drain");
 }
 
 void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
-  display_release_trace("drain entry");
   std::vector<godot::RID> pending;
   std::vector<PendingTextureWrapperRelease> pending_texture_wrappers;
   {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] drain locked pending_rid_count=",
-                                   (long long)g_pending_releases.size(),
-                                   " pending_delegate_count=", (long long)g_pending_texture_wrapper_releases.size(),
-                                   " teardown_started=", g_bridge_teardown_started);
     if (g_bridge_teardown_started) {
-      display_release_trace("drain teardown_started before_clear_pending");
       g_pending_releases.clear();
       g_pending_texture_wrapper_releases.clear();
       g_pending_release_drain_scheduled = false;
-      display_release_trace("drain exit reason=teardown_started");
       return;
     }
     pending.swap(g_pending_releases);
@@ -498,83 +440,59 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     g_pending_release_drain_scheduled = false;
   }
 
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] drain swapped pending_rid_count=",
-                                 (long long)pending.size(),
-                                 " pending_delegate_count=", (long long)pending_texture_wrappers.size());
-  display_release_trace("drain before_release_delegate_refs");
   pending_texture_wrappers.clear();
-  display_release_trace("drain after_release_delegate_refs");
 
   if (pending.empty()) {
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
     if (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) {
       g_pending_release_drain_scheduled = true;
       if (godot::RenderingServer* rs = godot::RenderingServer::get_singleton()) {
-        display_release_trace("drain before_reschedule_no_original_rids");
         schedule_render_thread_drain(rs, this);
-        display_release_trace("drain after_reschedule_no_original_rids");
       }
     }
-    display_release_trace("drain exit reason=no_original_rids");
     return;
   }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
   if (!rd) {
-    display_release_trace("drain rd_unavailable before_requeue_original_rids");
     std::lock_guard<std::mutex> lock(g_pending_release_mutex);
     if (g_bridge_teardown_started) {
       g_pending_release_drain_scheduled = false;
-      display_release_trace("drain exit reason=rd_unavailable_teardown_started");
       return;
     }
     for (godot::RID &rid : pending) {
       g_pending_releases.push_back(std::move(rid));
     }
-    godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] drain rd_unavailable after_requeue pending_rid_count=",
-                                   (long long)g_pending_releases.size(),
-                                   " pending_delegate_count=", (long long)g_pending_texture_wrapper_releases.size());
     if (rs &&
         (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
         !g_pending_release_drain_scheduled) {
       g_pending_release_drain_scheduled = true;
-      display_release_trace("drain before_reschedule_rd_unavailable");
       schedule_render_thread_drain(rs, this);
-      display_release_trace("drain after_reschedule_rd_unavailable");
     }
-    display_release_trace("drain exit reason=rd_unavailable");
     return;
   }
 
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] drain before_free_original_rids count=", (long long)pending.size());
   for (const godot::RID &rid : pending) {
     if (rid.is_valid()) {
-      godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] drain before_free_original_rid rid=", rid.get_id());
       if (gpu_trace_enabled()) {
         godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_free rid=", rid.get_id());
       }
       rd->free_rid(rid);
-      godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] drain after_free_original_rid rid=", rid.get_id());
     }
   }
-  display_release_trace("drain after_free_original_rids");
 
   std::lock_guard<std::mutex> lock(g_pending_release_mutex);
   if (g_bridge_teardown_started) {
     g_pending_releases.clear();
     g_pending_release_drain_scheduled = false;
-    display_release_trace("drain exit reason=post_free_teardown_started");
     return;
   }
   if ((!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
       !g_pending_release_drain_scheduled) {
     g_pending_release_drain_scheduled = true;
-    display_release_trace("drain before_reschedule_post_free");
     schedule_render_thread_drain(rs, this);
-    display_release_trace("drain after_reschedule_post_free");
   }
-  display_release_trace("drain exit");
 }
 
 

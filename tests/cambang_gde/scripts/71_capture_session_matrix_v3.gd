@@ -319,12 +319,9 @@ func _perform_checkpoint_action() -> void:
 				_waiting_for_user = false
 				_pause_timeline(false)
 		"release_streams":
-			_scene71_release_trace("checkpoint release_streams branch entry")
 			_release_stream_bindings()
-			_scene71_release_trace("checkpoint release_streams branch after _release_stream_bindings")
 			_waiting_for_user = false
 			_advance_checkpoint()
-			_scene71_release_trace("checkpoint release_streams branch exit")
 		_:
 			_fail("Unknown checkpoint kind %s" % kind)
 
@@ -473,77 +470,23 @@ func _bind_stream_slot(slot: String) -> bool:
 	return true
 
 
-func _scene71_texture_meta_flags(texture: Texture2D) -> String:
-	if texture == null:
-		return "rid_owner=false demand_token=false"
-	var has_rid_owner := false
-	var has_demand_token := false
-	if texture.has_method("has_meta"):
-		has_rid_owner = texture.has_meta("__cambang_synth_gpu_rid_owner")
-		has_demand_token = texture.has_meta("__cambang_display_demand_token")
-	return "rid_owner=%s demand_token=%s" % [str(has_rid_owner), str(has_demand_token)]
-
-
-func _scene71_release_trace(message: String) -> void:
-	print("[CamBANG][Scene71ReleaseTrace] %s" % message)
-
-
-func _scene71_trace_before_clear(slot_name: String, rect: TextureRect) -> void:
-	var rect_valid := is_instance_valid(rect)
-	var texture_is_null := true
-	var texture_class := "<none>"
-	var meta_flags := "rid_owner=false demand_token=false"
-	if rect_valid:
-		var texture := rect.texture
-		texture_is_null = texture == null
-		if texture != null:
-			texture_class = texture.get_class()
-			meta_flags = _scene71_texture_meta_flags(texture)
-	_scene71_release_trace("before_clear slot=%s rect_valid=%s texture_is_null=%s texture_class=%s %s" % [slot_name, str(rect_valid), str(texture_is_null), texture_class, meta_flags])
-
-
-func _scene71_trace_after_clear(slot_name: String, rect: TextureRect) -> void:
-	var rect_valid := is_instance_valid(rect)
-	var texture_is_null := true
-	if rect_valid:
-		texture_is_null = rect.texture == null
-	_scene71_release_trace("after_clear slot=%s assignment_returned=true rect_valid=%s texture_is_null=%s" % [slot_name, str(rect_valid), str(texture_is_null)])
-
-
 func _clear_display_bindings_for_teardown() -> void:
-	_scene71_release_trace("_clear_display_bindings_for_teardown entry")
-	_scene71_trace_before_clear("preview_a", _preview_a_rect)
 	_preview_a_rect.texture = null
-	_scene71_trace_after_clear("preview_a", _preview_a_rect)
-	_scene71_trace_before_clear("viewfinder_a", _viewfinder_a_rect)
 	_viewfinder_a_rect.texture = null
-	_scene71_trace_after_clear("viewfinder_a", _viewfinder_a_rect)
-	_scene71_trace_before_clear("preview_b", _preview_b_rect)
 	_preview_b_rect.texture = null
-	_scene71_trace_after_clear("preview_b", _preview_b_rect)
-	_scene71_trace_before_clear("viewfinder_b", _viewfinder_b_rect)
 	_viewfinder_b_rect.texture = null
-	_scene71_trace_after_clear("viewfinder_b", _viewfinder_b_rect)
-	_scene71_trace_before_clear("capture_a", _capture_a_rect)
 	_capture_a_rect.texture = null
-	_scene71_trace_after_clear("capture_a", _capture_a_rect)
-	_scene71_trace_before_clear("capture_b", _capture_b_rect)
 	_capture_b_rect.texture = null
-	_scene71_trace_after_clear("capture_b", _capture_b_rect)
-	_scene71_release_trace("_clear_display_bindings_for_teardown exit")
 
 
 func _release_stream_bindings() -> void:
-	_scene71_release_trace("_release_stream_bindings entry")
 	_clear_display_bindings_for_teardown()
-	_scene71_release_trace("_release_stream_bindings after _clear_display_bindings_for_teardown")
 	_preview_a_facts.text = "Preview A released"
 	_viewfinder_a_facts.text = "Viewfinder A released"
 	_preview_b_facts.text = "Preview B released"
 	_viewfinder_b_facts.text = "Viewfinder B released"
 	_append_log("Released stream display_view bindings")
 	_phase_marker("stream_bindings_released", int(_current_checkpoint.get("id", -1)), "reason=checkpoint_action" )
-	_scene71_release_trace("_release_stream_bindings exit")
 
 
 func _latch_snapshot_state() -> void:
