@@ -439,31 +439,37 @@ static void request_pending_release_drain() {
     return;
   }
 
-  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] request_pending_release_drain locked pending_rid_count=",
-                                 (long long)g_pending_releases.size(),
-                                 " pending_delegate_count=", (long long)g_pending_texture_wrapper_releases.size(),
-                                 " teardown_started=", g_bridge_teardown_started,
-                                 " drain_scheduled=", g_pending_release_drain_scheduled);
-  if (g_bridge_teardown_started ||
-      (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
-      g_pending_release_drain_scheduled) {
-    display_release_trace("request_pending_release_drain exit reason=no_schedule_needed");
-    return;
+  godot::Ref<RenderThreadDrainHelper> helper_ref;
+  RenderThreadDrainHelper* helper = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    godot::UtilityFunctions::print("[CamBANG][DisplayReleaseTrace] request_pending_release_drain locked pending_rid_count=",
+                                   (long long)g_pending_releases.size(),
+                                   " pending_delegate_count=", (long long)g_pending_texture_wrapper_releases.size(),
+                                   " teardown_started=", g_bridge_teardown_started,
+                                   " drain_scheduled=", g_pending_release_drain_scheduled);
+    if (g_bridge_teardown_started ||
+        (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
+        g_pending_release_drain_scheduled) {
+      display_release_trace("request_pending_release_drain exit reason=no_schedule_needed");
+      return;
+    }
+
+    if (g_render_thread_drain_helper.is_null()) {
+      display_release_trace("request_pending_release_drain before_instantiate_helper");
+      g_render_thread_drain_helper.instantiate();
+      display_release_trace("request_pending_release_drain after_instantiate_helper");
+    }
+    helper_ref = g_render_thread_drain_helper;
+    helper = helper_ref.ptr();
+    if (!helper) {
+      display_release_trace("request_pending_release_drain exit reason=no_helper");
+      return;
+    }
+
+    g_pending_release_drain_scheduled = true;
   }
 
-  if (g_render_thread_drain_helper.is_null()) {
-    display_release_trace("request_pending_release_drain before_instantiate_helper");
-    g_render_thread_drain_helper.instantiate();
-    display_release_trace("request_pending_release_drain after_instantiate_helper");
-  }
-  RenderThreadDrainHelper* helper = g_render_thread_drain_helper.ptr();
-  if (!helper) {
-    display_release_trace("request_pending_release_drain exit reason=no_helper");
-    return;
-  }
-
-  g_pending_release_drain_scheduled = true;
   display_release_trace("request_pending_release_drain before_schedule_render_thread_drain");
   schedule_render_thread_drain(rs, helper);
   display_release_trace("request_pending_release_drain after_schedule_render_thread_drain");
