@@ -9,12 +9,15 @@
 
 namespace cambang {
 
-// Dormant Godot-side display-boundary scaffold for descriptor-keyed GPU display
-// views. This tranche declares the future boundary only: the service must not
-// own or retain Godot Texture2D refs until a later tranche explicitly activates
-// descriptor-native display resolution. Core/provider/result-store code should
-// retain only neutral RetainedGpuBackingDescriptor metadata and any temporary
-// legacy compatibility artifacts until that ownership split is completed.
+// Internal Godot-side display adapter resolver/factory for retained GPU stream
+// views. The service is deliberately non-owning: it does not cache or retain
+// Texture2D refs, Godot RIDs, or backend-native handles. Current synthetic GPU
+// display resolution still uses the legacy retained backing artifact as the
+// compatibility behavior carrier; RetainedGpuBackingDescriptor is the
+// provider-neutral scalar metadata seam for future descriptor/platform-backed
+// activation. A descriptor with backing_id == 0 must not be treated as valid
+// descriptor-cache identity. Core/providers/public results must not own Godot
+// display adapters or expose Texture2D/RID/backend-native handles.
 bool godot_gpu_display_descriptor_has_complete_identity(
     const RetainedGpuBackingDescriptor& descriptor) noexcept;
 
