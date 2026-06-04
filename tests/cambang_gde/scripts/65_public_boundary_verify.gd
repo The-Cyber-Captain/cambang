@@ -15,7 +15,8 @@ const STARTUP_FINAL_STILL_WIDTH := 352
 const STARTUP_STILL_HEIGHT := 240
 const STARTUP_STILL_FORMAT_RGBA := 1094862674
 const STARTUP_INITIAL_WARM_HOLD_MS := 1
-const STARTUP_FINAL_WARM_HOLD_MS := 2
+const STARTUP_FINAL_WARM_HOLD_MS := 50 # TODO: rework this test. Warm is now an intent
+# returning OK very quickly, but not publising the new value until core says so.
 
 var _done := false
 var _quit_requested := false

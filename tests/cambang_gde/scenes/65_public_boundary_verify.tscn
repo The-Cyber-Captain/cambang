@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=2 format=3 uid="uid://bbqngst1ewehq"]
 
-[ext_resource type="Script" path="res://scripts/65_public_boundary_verify.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://d2cg3m3y65pnr" path="res://scripts/65_public_boundary_verify.gd" id="1_script"]
 
 [node name="65_PublicBoundaryVerify" type="Node"]
 script = ExtResource("1_script")

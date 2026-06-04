@@ -442,34 +442,53 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   pending_texture_wrappers.clear();
 
-  if (pending.empty()) {
-    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) {
-      g_pending_release_drain_scheduled = true;
-      if (godot::RenderingServer* rs = godot::RenderingServer::get_singleton()) {
-        schedule_render_thread_drain(rs, this);
-      }
+  auto schedule_again_if_needed = [](godot::RenderingServer* rs) {
+    if (!rs) {
+      return;
     }
+
+    godot::Ref<RenderThreadDrainHelper> helper_ref;
+    RenderThreadDrainHelper* helper = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+      if (g_bridge_teardown_started ||
+          (g_pending_releases.empty() && g_pending_texture_wrapper_releases.empty()) ||
+          g_pending_release_drain_scheduled) {
+        return;
+      }
+
+      helper_ref = g_render_thread_drain_helper;
+      helper = helper_ref.ptr();
+      if (!helper) {
+        return;
+      }
+
+      g_pending_release_drain_scheduled = true;
+    }
+
+    schedule_render_thread_drain(rs, helper);
+  };
+
+  if (pending.empty()) {
+    schedule_again_if_needed(godot::RenderingServer::get_singleton());
     return;
   }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
   godot::RenderingDevice* rd = rs ? rs->get_rendering_device() : nullptr;
   if (!rd) {
-    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-    if (g_bridge_teardown_started) {
-      g_pending_release_drain_scheduled = false;
-      return;
+    {
+      std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+      if (g_bridge_teardown_started) {
+        g_pending_release_drain_scheduled = false;
+        return;
+      }
+      for (godot::RID &rid : pending) {
+        g_pending_releases.push_back(std::move(rid));
+      }
     }
-    for (godot::RID &rid : pending) {
-      g_pending_releases.push_back(std::move(rid));
-    }
-    if (rs &&
-        (!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
-        !g_pending_release_drain_scheduled) {
-      g_pending_release_drain_scheduled = true;
-      schedule_render_thread_drain(rs, this);
-    }
+
+    schedule_again_if_needed(rs);
     return;
   }
 
@@ -482,19 +501,17 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     }
   }
 
-  std::lock_guard<std::mutex> lock(g_pending_release_mutex);
-  if (g_bridge_teardown_started) {
-    g_pending_releases.clear();
-    g_pending_release_drain_scheduled = false;
-    return;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_release_mutex);
+    if (g_bridge_teardown_started) {
+      g_pending_releases.clear();
+      g_pending_release_drain_scheduled = false;
+      return;
+    }
   }
-  if ((!g_pending_releases.empty() || !g_pending_texture_wrapper_releases.empty()) &&
-      !g_pending_release_drain_scheduled) {
-    g_pending_release_drain_scheduled = true;
-    schedule_render_thread_drain(rs, this);
-  }
-}
 
+  schedule_again_if_needed(rs);
+}
 
 namespace {
 
