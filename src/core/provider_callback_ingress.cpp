@@ -193,7 +193,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
 
   // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
   // and avoids coupling to any specific dispatcher type.
-  auto task = [this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
+  auto task = [this, c = std::move(cmd), sink = sink_, frame_stream_id, release_dropped_frame]() mutable {
     if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       on_frame_ingress_dispatched_(frame_stream_id);
     }
@@ -203,12 +203,11 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     }
 
     // Defensive fallback (should not be used in normal wiring):
-    // Ensure release-on-drop semantics are upheld even if no sink is bound.
+    // Ensure release-on-drop semantics and framebuffer lease telemetry are upheld
+    // even if no sink is bound. Ingress depth was already decremented above.
     if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
       auto& p = std::get<CmdProviderFrame>(c.payload);
-      p.frame.release_now();
-      p.frame.release = nullptr;
-      p.frame.release_user = nullptr;
+      release_dropped_frame(p.frame);
     }
   };
 
