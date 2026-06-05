@@ -103,10 +103,6 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   // Transport only: package command into a posted task.
   // Note: This uses std::function internally (CoreThread::Task), which may allocate.
   // That is acceptable for scaffolding; later we can replace with a fixed-capacity provider_to_core_commands queue.
-  if (!core_thread_) {
-    return;
-  }
-
   const ProviderToCoreCommandType type = cmd.type;
   uint64_t frame_stream_id = 0;
 
@@ -122,35 +118,6 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     global_resource_aggregate_telemetry().lease_created(make_framebuffer_lease_scoped_resource_telemetry_key(
         frame_payload.frame.stream_id,
         frame_payload.frame.acquisition_session_id));
-  }
-
-  // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
-  // and avoids coupling to any specific dispatcher type.
-  auto task = [this, c = std::move(cmd), sink = sink_, frame_stream_id]() mutable {
-    if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
-      on_frame_ingress_dispatched_(frame_stream_id);
-    }
-    if (sink) {
-      sink(std::move(c));
-      return;
-    }
-
-    // Defensive fallback (should not be used in normal wiring):
-    // Ensure release-on-drop semantics are upheld even if no sink is bound.
-    if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
-      auto& p = std::get<CmdProviderFrame>(c.payload);
-      p.frame.release_now();
-      p.frame.release = nullptr;
-      p.frame.release_user = nullptr;
-    }
-  };
-
-  const CoreThread::PostResult r = is_frame_command_(type)
-      ? core_thread_->try_post(std::move(task))
-      : core_thread_->try_post_essential(std::move(task));
-
-  if (r == CoreThread::PostResult::Enqueued) {
-    return;
   }
 
   auto account_command_drop = [this, type](CoreThread::PostResult rr) {
@@ -175,36 +142,30 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     }
   };
 
-  auto account_frame_drop_and_release = [this](CoreThread::PostResult rr, FrameView& frame) {
+  auto release_dropped_frame = [](FrameView& frame) {
+    frame.release_now();
+    global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+        frame.stream_id,
+        frame.acquisition_session_id));
+    frame.release = nullptr;
+    frame.release_user = nullptr;
+  };
+
+  auto account_frame_drop_and_release = [this, release_dropped_frame](CoreThread::PostResult rr, FrameView& frame) {
     switch (rr) {
       case CoreThread::PostResult::QueueFull:
         frames_dropped_full_.fetch_add(1, std::memory_order_relaxed);
-        frame.release_now();
-        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
-            frame.stream_id,
-            frame.acquisition_session_id));
-        frame.release = nullptr;
-        frame.release_user = nullptr;
+        release_dropped_frame(frame);
         frames_released_on_drop_full_.fetch_add(1, std::memory_order_relaxed);
         break;
       case CoreThread::PostResult::Closed:
         frames_dropped_closed_.fetch_add(1, std::memory_order_relaxed);
-        frame.release_now();
-        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
-            frame.stream_id,
-            frame.acquisition_session_id));
-        frame.release = nullptr;
-        frame.release_user = nullptr;
+        release_dropped_frame(frame);
         frames_released_on_drop_closed_.fetch_add(1, std::memory_order_relaxed);
         break;
       case CoreThread::PostResult::AllocFail:
         frames_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
-        frame.release_now();
-        global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
-            frame.stream_id,
-            frame.acquisition_session_id));
-        frame.release = nullptr;
-        frame.release_user = nullptr;
+        release_dropped_frame(frame);
         frames_released_on_drop_allocfail_.fetch_add(1, std::memory_order_relaxed);
         break;
       case CoreThread::PostResult::Enqueued:
@@ -212,16 +173,53 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     }
   };
 
-  // Failure path: command never entered the core thread.
-  // Frames remain pressure-droppable on the ordinary bounded queue. Non-frame
-  // provider facts use CoreThread's essential queue, so QueueFull is not an
-  // expected failure reason for lifecycle/native/error/capture-terminal truth.
-  account_command_drop(r);
+  auto account_post_failure = [&](CoreThread::PostResult r) {
+    // Failure path: command never entered the core thread.
+    // Frames remain pressure-droppable on the ordinary bounded queue. Non-frame
+    // provider facts use CoreThread's essential queue, so QueueFull is not an
+    // expected failure reason for lifecycle/native/error/capture-terminal truth.
+    account_command_drop(r);
 
-  if (has_fail_frame) {
-    on_frame_ingress_failed_(frame_stream_id);
-    account_frame_drop_and_release(r, fail_frame);
+    if (has_fail_frame) {
+      on_frame_ingress_failed_(frame_stream_id);
+      account_frame_drop_and_release(r, fail_frame);
+    }
+  };
+
+  if (!core_thread_) {
+    account_post_failure(CoreThread::PostResult::Closed);
+    return;
   }
+
+  // NOTE: sink_ is copied into the posted lambda. This keeps ingress transport-pure
+  // and avoids coupling to any specific dispatcher type.
+  auto task = [this, c = std::move(cmd), sink = sink_, frame_stream_id, release_dropped_frame]() mutable {
+    if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
+      on_frame_ingress_dispatched_(frame_stream_id);
+    }
+    if (sink) {
+      sink(std::move(c));
+      return;
+    }
+
+    // Defensive fallback (should not be used in normal wiring):
+    // Ensure release-on-drop semantics and framebuffer lease telemetry are upheld
+    // even if no sink is bound. Ingress depth was already decremented above.
+    if (c.type == ProviderToCoreCommandType::PROVIDER_FRAME) {
+      auto& p = std::get<CmdProviderFrame>(c.payload);
+      release_dropped_frame(p.frame);
+    }
+  };
+
+  const CoreThread::PostResult r = is_frame_command_(type)
+      ? core_thread_->try_post(std::move(task))
+      : core_thread_->try_post_essential(std::move(task));
+
+  if (r == CoreThread::PostResult::Enqueued) {
+    return;
+  }
+
+  account_post_failure(r);
 }
 
 void ProviderCallbackIngress::on_device_opened(uint64_t device_instance_id) {

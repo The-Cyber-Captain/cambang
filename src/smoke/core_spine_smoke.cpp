@@ -38,6 +38,8 @@ Non-Goals
   #error "Core smoke: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
 #endif
 #include "core/core_runtime.h"
+#include "core/provider_callback_ingress.h"
+#include "core/resource_aggregate_telemetry.h"
 #include "core/state_snapshot_buffer.h"
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -258,6 +260,143 @@ static StreamRequest make_req() {
   req.picture.overlay_moving_bar = false;
   req.profile_version = 1;
   return req;
+}
+
+
+static int test_provider_callback_ingress_null_core_thread_drop_accounting() {
+  ProviderCallbackIngress ingress(
+      nullptr,
+      [](ProviderToCoreCommand&&) {
+        std::cerr << "Null-core ProviderCallbackIngress unexpectedly invoked sink\n";
+      },
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; });
+
+  ingress.on_device_error(kDeviceInstanceId, ProviderError::ERR_PROVIDER_FAILED);
+  auto stats_after_non_frame = ingress.stats_copy();
+  if (stats_after_non_frame.commands_dropped_closed != 1 ||
+      stats_after_non_frame.non_frame_rejected_closed != 1) {
+    std::cerr << "Expected null-core non-frame command to be accounted as Closed. closed="
+              << stats_after_non_frame.commands_dropped_closed
+              << " non_frame_closed=" << stats_after_non_frame.non_frame_rejected_closed << "\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {0, 0, 0, 0};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.acquisition_session_id = 77;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  ingress.on_frame(frame);
+  const auto stats_after_frame = ingress.stats_copy();
+  if (stats_after_frame.commands_dropped_closed != 2 ||
+      stats_after_frame.frames_dropped_closed != 1 ||
+      stats_after_frame.frames_released_on_drop_closed != 1 ||
+      stats_after_frame.non_frame_rejected_closed != 1 ||
+      release_calls.load(std::memory_order_relaxed) != 1 ||
+      ingress.ingress_depth_for_stream(kStreamId) != 0) {
+    std::cerr << "Expected null-core frame command to drop as Closed and release exactly once. closed="
+              << stats_after_frame.commands_dropped_closed
+              << " frame_closed=" << stats_after_frame.frames_dropped_closed
+              << " frame_release_closed=" << stats_after_frame.frames_released_on_drop_closed
+              << " non_frame_closed=" << stats_after_frame.non_frame_rejected_closed
+              << " release_calls=" << release_calls.load(std::memory_order_relaxed)
+              << " ingress_depth=" << ingress.ingress_depth_for_stream(kStreamId) << "\n";
+    return 1;
+  }
+
+  return 0;
+}
+
+static int test_provider_callback_ingress_null_sink_frame_release_balances_telemetry() {
+  struct TelemetryClearGuard {
+    TelemetryClearGuard() { global_resource_aggregate_telemetry().clear(); }
+    ~TelemetryClearGuard() { global_resource_aggregate_telemetry().clear(); }
+  } telemetry_clear_guard;
+
+  struct NoopHooks final : CoreThread::IHooks {} hooks;
+  CoreThread core;
+  if (!core.start(&hooks)) {
+    std::cerr << "Failed to start CoreThread for null-sink ProviderCallbackIngress check\n";
+    return 1;
+  }
+
+  ProviderCallbackIngress ingress(
+      &core,
+      std::function<void(ProviderToCoreCommand&&)>(),
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; });
+
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {0, 0, 0, 0};
+  constexpr uint64_t kNullSinkStreamId = 424242;
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kNullSinkStreamId;
+  frame.acquisition_session_id = 78;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  ingress.on_frame(frame);
+
+  auto barrier = std::make_shared<std::promise<void>>();
+  auto barrier_done = barrier->get_future();
+  const auto barrier_post = core.try_post([barrier]() mutable { barrier->set_value(); });
+  if (barrier_post != CoreThread::PostResult::Enqueued ||
+      barrier_done.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    core.stop();
+    std::cerr << "Failed to drain null-sink ProviderCallbackIngress frame task\n";
+    return 1;
+  }
+
+  core.stop();
+
+  const auto telemetry = global_resource_aggregate_telemetry().snapshot();
+  const auto telemetry_it = std::find_if(telemetry.begin(), telemetry.end(), [](const ScopedResourceTelemetryKey& key) {
+    return key.telemetry_scope == TelemetryScope::STREAM && key.stream_id == kNullSinkStreamId;
+  });
+  if (release_calls.load(std::memory_order_relaxed) != 1 ||
+      ingress.ingress_depth_for_stream(kNullSinkStreamId) != 0 ||
+      telemetry_it == telemetry.end() ||
+      telemetry_it->framebuffer_lease_current != 0 ||
+      telemetry_it->framebuffer_lease_total_created != 1 ||
+      telemetry_it->framebuffer_lease_total_released != 1) {
+    std::cerr << "Expected null-sink frame fallback to release once, clear ingress depth, and balance telemetry."
+              << " release_calls=" << release_calls.load(std::memory_order_relaxed)
+              << " ingress_depth=" << ingress.ingress_depth_for_stream(kNullSinkStreamId);
+    if (telemetry_it == telemetry.end()) {
+      std::cerr << " telemetry=missing\n";
+    } else {
+      std::cerr << " telemetry_current=" << telemetry_it->framebuffer_lease_current
+                << " telemetry_created=" << telemetry_it->framebuffer_lease_total_created
+                << " telemetry_released=" << telemetry_it->framebuffer_lease_total_released << "\n";
+    }
+    return 1;
+  }
+
+  return 0;
 }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -1926,6 +2065,8 @@ int main(int argc, char** argv) {
 
   // Default behaviour: run once, same structure/output as original.
   if (!opt.stress) {
+    if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
+    if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
     if (int r = test_publish_gating_before_start()) return r;
 
     CoreRuntime rt;
@@ -1963,6 +2104,8 @@ int main(int argc, char** argv) {
   std::mt19937 rng(opt.seed);
 
   // Still do the pre-start gating check once.
+  if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
+  if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
   if (int r = test_publish_gating_before_start()) return r;
 
   const int progress_interval = 25;
