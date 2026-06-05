@@ -575,7 +575,13 @@ int main(int argc, char** argv) {
     stop_attached_runtime();
     return 2;
   }
-  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    std::cerr << "FAIL: retain_device_identity admission failed: "
+              << static_cast<int>(retain_identity) << "\n";
+    stop_attached_runtime();
+    return 2;
+  }
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
     std::cerr << "FAIL: open_device failed\n";
     stop_attached_runtime();

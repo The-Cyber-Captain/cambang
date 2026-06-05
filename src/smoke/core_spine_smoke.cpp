@@ -439,7 +439,12 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) return false;
 
-  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    std::cerr << "retain_device_identity admission failed in stub provider setup; result="
+              << static_cast<int>(retain_identity) << "\n";
+    return false;
+  }
 
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) return false;
 
@@ -487,7 +492,12 @@ static bool setup_one_runtime_created_stream(CoreRuntime& rt, StubProvider& prov
     return false;
   }
 
-  rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    std::cerr << "retain_device_identity admission failed in runtime lifecycle setup; result="
+              << static_cast<int>(retain_identity) << "\n";
+    return false;
+  }
 
   const TryOpenDeviceStatus open_status = rt.try_open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId);
   if (open_status != TryOpenDeviceStatus::OK) {

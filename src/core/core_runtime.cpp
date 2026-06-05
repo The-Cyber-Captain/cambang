@@ -743,12 +743,14 @@ void CoreRuntime::on_core_stop() {
 }
 
 void CoreRuntime::post(CoreThread::Task task) {
+  // Best-effort compatibility shim for disposable work only; retained runtime
+  // truth must call an admission-returning path and handle the result.
   (void)try_post(std::move(task));
 }
 
-void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id) {
+CoreThread::PostResult CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id) {
   if (device_instance_id == 0 || hardware_id.empty()) {
-    return;
+    return CoreThread::PostResult::Closed;
   }
 
   CaptureTemplate capture_tmpl{};
@@ -758,7 +760,7 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
     has_capture_template = true;
   }
 
-  (void)try_post([this, device_instance_id, hardware_id, capture_tmpl, has_capture_template]() {
+  return try_post([this, device_instance_id, hardware_id, capture_tmpl, has_capture_template]() {
     if (!devices_.note_device_identity(device_instance_id, hardware_id)) {
       return;
     }
@@ -773,12 +775,12 @@ void CoreRuntime::retain_device_identity(uint64_t device_instance_id, const std:
   });
 }
 
-void CoreRuntime::retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version) {
+CoreThread::PostResult CoreRuntime::retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version) {
   if (hardware_id.empty()) {
-    return;
+    return CoreThread::PostResult::Closed;
   }
 
-  (void)try_post([this, hardware_id, camera_spec_version]() {
+  return try_post([this, hardware_id, camera_spec_version]() {
     spec_state_.set_camera_spec_version(hardware_id, camera_spec_version);
     for (const auto& [device_instance_id, rec] : devices_.all()) {
       if (rec.hardware_id == hardware_id) {
@@ -789,39 +791,39 @@ void CoreRuntime::retain_camera_spec_version(const std::string& hardware_id, uin
   });
 }
 
-void CoreRuntime::retain_device_capture_profile(uint64_t device_instance_id,
-                                                uint32_t width,
-                                                uint32_t height,
-                                                uint32_t format,
-                                                uint64_t capture_profile_version) {
+CoreThread::PostResult CoreRuntime::retain_device_capture_profile(uint64_t device_instance_id,
+                                                                  uint32_t width,
+                                                                  uint32_t height,
+                                                                  uint32_t format,
+                                                                  uint64_t capture_profile_version) {
   if (device_instance_id == 0) {
-    return;
+    return CoreThread::PostResult::Closed;
   }
 
-  (void)try_post([this, device_instance_id, width, height, format, capture_profile_version]() {
+  return try_post([this, device_instance_id, width, height, format, capture_profile_version]() {
     (void)devices_.retain_capture_profile(
         device_instance_id, width, height, format, capture_profile_version);
     request_publish_from_core_unchecked();
   });
 }
 
-void CoreRuntime::retain_rig_capture_profile(uint64_t rig_id,
-                                             uint32_t width,
-                                             uint32_t height,
-                                             uint32_t format,
-                                             uint64_t capture_profile_version) {
+CoreThread::PostResult CoreRuntime::retain_rig_capture_profile(uint64_t rig_id,
+                                                               uint32_t width,
+                                                               uint32_t height,
+                                                               uint32_t format,
+                                                               uint64_t capture_profile_version) {
   if (rig_id == 0) {
-    return;
+    return CoreThread::PostResult::Closed;
   }
 
-  (void)try_post([this, rig_id, width, height, format, capture_profile_version]() {
+  return try_post([this, rig_id, width, height, format, capture_profile_version]() {
     (void)rigs_.retain_capture_profile(rig_id, width, height, format, capture_profile_version);
     request_publish_from_core_unchecked();
   });
 }
 
-void CoreRuntime::retain_imaging_spec_version(uint64_t imaging_spec_version) {
-  (void)try_post([this, imaging_spec_version]() {
+CoreThread::PostResult CoreRuntime::retain_imaging_spec_version(uint64_t imaging_spec_version) {
+  return try_post([this, imaging_spec_version]() {
     spec_state_.set_imaging_spec_version(imaging_spec_version);
     request_publish_from_core_unchecked();
   });

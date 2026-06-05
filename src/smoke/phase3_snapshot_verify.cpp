@@ -60,6 +60,15 @@ static std::shared_ptr<const CamBANGStateSnapshot> snapshot_copy(StateSnapshotBu
   return buf.snapshot_copy();
 }
 
+static bool require_retention_enqueued(CoreThread::PostResult result, const char* label) {
+  if (result == CoreThread::PostResult::Enqueued) {
+    return true;
+  }
+  std::cerr << "FAIL: " << label << " admission failed: "
+            << static_cast<int>(result) << "\n";
+  return false;
+}
+
 static bool contains_u64(const std::vector<uint64_t>& v, uint64_t x) {
   for (uint64_t a : v) {
     if (a == x) return true;
@@ -428,7 +437,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
     return 1;
   }
 
-  rt.retain_device_identity(kAuditDeviceId, "audit-device");
+  if (!require_retention_enqueued(
+          rt.retain_device_identity(kAuditDeviceId, "audit-device"),
+          "retain_device_identity")) {
+    rt.stop();
+    return 1;
+  }
   rt.provider_callbacks()->on_device_opened(kAuditDeviceId);
 
   if (!wait_until([&]() {
@@ -449,7 +463,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
   const uint64_t topo_after_device = device_base->topology_version;
   const uint64_t version_after_device = device_base->version;
 
-  rt.retain_device_capture_profile(kAuditDeviceId, 4032, 3024, kJpeg, 7);
+  if (!require_retention_enqueued(
+          rt.retain_device_capture_profile(kAuditDeviceId, 4032, 3024, kJpeg, 7),
+          "retain_device_capture_profile initial")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
@@ -476,7 +495,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
     return 1;
   }
 
-  rt.retain_device_capture_profile(kAuditDeviceId, 1920, 1080, kRaw, 8);
+  if (!require_retention_enqueued(
+          rt.retain_device_capture_profile(kAuditDeviceId, 1920, 1080, kRaw, 8),
+          "retain_device_capture_profile update")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* device = s ? find_device(*s, kAuditDeviceId) : nullptr;
@@ -499,7 +523,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
     return 1;
   }
 
-  rt.retain_rig_capture_profile(kAuditRigId, 6000, 4000, kJpeg, 3);
+  if (!require_retention_enqueued(
+          rt.retain_rig_capture_profile(kAuditRigId, 6000, 4000, kJpeg, 3),
+          "retain_rig_capture_profile initial")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* rig = s ? find_rig(*s, kAuditRigId) : nullptr;
@@ -521,7 +550,12 @@ static int test_still_capture_profile_visibility_audit_truth() {
   }
   const uint64_t topo_after_rig = rig_profile->topology_version;
 
-  rt.retain_rig_capture_profile(kAuditRigId, 3000, 2000, kRaw, 4);
+  if (!require_retention_enqueued(
+          rt.retain_rig_capture_profile(kAuditRigId, 3000, 2000, kRaw, 4),
+          "retain_rig_capture_profile update")) {
+    rt.stop();
+    return 1;
+  }
   if (!wait_until([&]() {
         auto s = snapshot_copy(buf);
         const auto* rig = s ? find_rig(*s, kAuditRigId) : nullptr;
