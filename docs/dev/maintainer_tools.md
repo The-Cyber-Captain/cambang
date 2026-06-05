@@ -40,6 +40,9 @@ Maintainer tools fall into three broad categories.
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
 | Godot boundary verification scenes | Validation of the Godot-facing runtime boundary | Verification |
 
+For mechanical/static-analysis guidance supporting C++ audits, see
+`docs/dev/static_analysis.md`.
+
 ---
 
 ## 3. Terminology
