@@ -38,6 +38,7 @@ Non-Goals
   #error "Core smoke: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
 #endif
 #include "core/core_runtime.h"
+#include "core/provider_callback_ingress.h"
 #include "core/state_snapshot_buffer.h"
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -258,6 +259,65 @@ static StreamRequest make_req() {
   req.picture.overlay_moving_bar = false;
   req.profile_version = 1;
   return req;
+}
+
+
+static int test_provider_callback_ingress_null_core_thread_drop_accounting() {
+  ProviderCallbackIngress ingress(
+      nullptr,
+      [](ProviderToCoreCommand&&) {
+        std::cerr << "Null-core ProviderCallbackIngress unexpectedly invoked sink\n";
+      },
+      []() -> uint64_t { return 0; },
+      [](uint64_t) { return false; });
+
+  ingress.on_device_error(kDeviceInstanceId, ProviderError::ERR_PROVIDER_FAILED);
+  auto stats_after_non_frame = ingress.stats_copy();
+  if (stats_after_non_frame.commands_dropped_closed != 1 ||
+      stats_after_non_frame.non_frame_rejected_closed != 1) {
+    std::cerr << "Expected null-core non-frame command to be accounted as Closed. closed="
+              << stats_after_non_frame.commands_dropped_closed
+              << " non_frame_closed=" << stats_after_non_frame.non_frame_rejected_closed << "\n";
+    return 1;
+  }
+
+  std::atomic<uint64_t> release_calls{0};
+  uint8_t pixel[4] = {0, 0, 0, 0};
+  FrameView frame{};
+  frame.device_instance_id = kDeviceInstanceId;
+  frame.stream_id = kStreamId;
+  frame.acquisition_session_id = 77;
+  frame.width = 1;
+  frame.height = 1;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = pixel;
+  frame.size_bytes = sizeof(pixel);
+  frame.stride_bytes = 4;
+  frame.release = [](void* user, const FrameView*) {
+    auto* count = static_cast<std::atomic<uint64_t>*>(user);
+    count->fetch_add(1, std::memory_order_relaxed);
+  };
+  frame.release_user = &release_calls;
+
+  ingress.on_frame(frame);
+  const auto stats_after_frame = ingress.stats_copy();
+  if (stats_after_frame.commands_dropped_closed != 2 ||
+      stats_after_frame.frames_dropped_closed != 1 ||
+      stats_after_frame.frames_released_on_drop_closed != 1 ||
+      stats_after_frame.non_frame_rejected_closed != 1 ||
+      release_calls.load(std::memory_order_relaxed) != 1 ||
+      ingress.ingress_depth_for_stream(kStreamId) != 0) {
+    std::cerr << "Expected null-core frame command to drop as Closed and release exactly once. closed="
+              << stats_after_frame.commands_dropped_closed
+              << " frame_closed=" << stats_after_frame.frames_dropped_closed
+              << " frame_release_closed=" << stats_after_frame.frames_released_on_drop_closed
+              << " non_frame_closed=" << stats_after_frame.non_frame_rejected_closed
+              << " release_calls=" << release_calls.load(std::memory_order_relaxed)
+              << " ingress_depth=" << ingress.ingress_depth_for_stream(kStreamId) << "\n";
+    return 1;
+  }
+
+  return 0;
 }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
@@ -1926,6 +1986,7 @@ int main(int argc, char** argv) {
 
   // Default behaviour: run once, same structure/output as original.
   if (!opt.stress) {
+    if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
     if (int r = test_publish_gating_before_start()) return r;
 
     CoreRuntime rt;
@@ -1963,6 +2024,7 @@ int main(int argc, char** argv) {
   std::mt19937 rng(opt.seed);
 
   // Still do the pre-start gating check once.
+  if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
   if (int r = test_publish_gating_before_start()) return r;
 
   const int progress_interval = 25;
