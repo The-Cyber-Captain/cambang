@@ -118,6 +118,9 @@ enum class TryCloseDeviceStatus : uint8_t {
     uint64_t publish_requests_dropped_full = 0;
     uint64_t publish_requests_dropped_closed = 0;
     uint64_t publish_requests_dropped_allocfail = 0;
+    uint64_t display_demand_release_async_dropped_full = 0;
+    uint64_t display_demand_release_async_dropped_closed = 0;
+    uint64_t display_demand_release_async_dropped_allocfail = 0;
   };
 
   CoreRuntime();
@@ -370,14 +373,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   void release_stream_display_demand(uint64_t stream_id) {
     result_store_.release_stream_display_demand(stream_id);
   }
-  void release_stream_display_demand_async(uint64_t stream_id) {
-    if (stream_id == 0) {
-      return;
-    }
-    (void)core_thread_.try_post_essential([this, stream_id]() {
-      result_store_.release_stream_display_demand(stream_id);
-    });
-  }
+  void release_stream_display_demand_async(uint64_t stream_id);
 
 
   void attach_provider(ICameraProvider* provider) noexcept {
@@ -454,6 +450,7 @@ private:
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
       uint64_t capture_id);
+  void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
 
@@ -539,6 +536,9 @@ private:
   std::atomic<uint64_t> publish_requests_dropped_full_{0};
   std::atomic<uint64_t> publish_requests_dropped_closed_{0};
   std::atomic<uint64_t> publish_requests_dropped_allocfail_{0};
+  std::atomic<uint64_t> display_demand_release_async_dropped_full_{0};
+  std::atomic<uint64_t> display_demand_release_async_dropped_closed_{0};
+  std::atomic<uint64_t> display_demand_release_async_dropped_allocfail_{0};
 
   static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
 };
