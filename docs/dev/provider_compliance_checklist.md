@@ -44,6 +44,25 @@ provider behaviour.
   services directly.
 - No bypass path exists for lifecycle, native-object, or error events.
 
+### Prompt-submission / non-reentrant provider calls
+
+Audit provider API calls that may run while `CoreRuntime` / `ProviderBroker`
+callers are synchronously blocked. Confirm that:
+
+- provider API methods are prompt and bounded submission / control operations
+- `stop_*`, `destroy_*`, `close_*`, and `shutdown()` are not long backend drains
+  on the calling thread
+- provider methods called under `ProviderBroker` serialization do not re-enter
+  the broker
+- provider callbacks are posted through the strand and do not synchronously wait
+  on core-thread, Godot-thread, or render-thread work
+- capability and template queries do not perform backend I/O
+- any bounded waits are dev-provider-only or explicitly justified
+
+Windows MF dev accelerator blocking stop / shutdown is retirement / deprioritised
+debt. Future release providers must not treat that implementation shape as a
+template.
+
 ---
 
 ## 3. Event-class guarantees

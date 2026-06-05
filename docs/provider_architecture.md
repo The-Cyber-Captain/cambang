@@ -309,6 +309,26 @@ context.
 This rule is backend-independent and applies equally to synthetic,
 stub, and platform-backed providers.
 
+### 8.1 Prompt submission and non-reentrancy
+
+Provider API methods reached through `CoreRuntime` / `ProviderBroker`
+synchronous paths must be prompt, bounded submission or control operations.
+Future platform-backed providers must not:
+
+- perform long backend drains while public / Godot callers are synchronously
+  blocked
+- wait on core-thread work, Godot-thread work, render-thread work, or provider
+  callbacks from inside provider API calls
+- synchronously invoke callbacks that can re-enter `CoreRuntime`,
+  `ProviderBroker`, Godot, or wait on public / core completion
+- re-enter `ProviderBroker` while `active_provider_mutex_` may be held
+- copy the blocking `windows_mediafoundation(dev accelerator)` stop / shutdown
+  shape into release providers
+
+Backend-specific long work belongs on provider-owned worker / looper threads.
+Completion, errors, and lifecycle truth must be reported back through provider
+facts / callbacks according to the provider strand model.
+
 ---
 
 ## 9. Lifecycle truthfulness
