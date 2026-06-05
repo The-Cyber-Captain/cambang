@@ -441,7 +441,7 @@ static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
 
   const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
   if (retain_identity != CoreThread::PostResult::Enqueued) {
-    std::cerr << "retain_device_identity admission failed in stub provider setup; result="
+    std::cerr << "FAIL: retain_device_identity admission failed in setup_one_stream; result="
               << static_cast<int>(retain_identity) << "\n";
     return false;
   }
@@ -494,7 +494,7 @@ static bool setup_one_runtime_created_stream(CoreRuntime& rt, StubProvider& prov
 
   const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
   if (retain_identity != CoreThread::PostResult::Enqueued) {
-    std::cerr << "retain_device_identity admission failed in runtime lifecycle setup; result="
+    std::cerr << "FAIL: retain_device_identity admission failed in setup_one_runtime_created_stream; result="
               << static_cast<int>(retain_identity) << "\n";
     return false;
   }
