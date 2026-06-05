@@ -152,6 +152,9 @@ enum class TryCloseDeviceStatus : uint8_t {
     return state_.load(std::memory_order_acquire);
   }
 
+  // Best-effort compatibility shim for disposable work only; drops are intentionally
+  // not surfaced. Retained runtime truth must use a [[nodiscard]] admission-returning
+  // path instead.
   void post(CoreThread::Task task);
 
   CoreThread::PostResult try_post(CoreThread::Task task);
@@ -397,19 +400,21 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   // Core-owned identity/spec truth retention hooks.
   // These are internal runtime surfaces used by orchestrators that issue provider calls.
-  void retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id);
-  void retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version);
-  void retain_device_capture_profile(uint64_t device_instance_id,
-                                     uint32_t width,
-                                     uint32_t height,
-                                     uint32_t format,
-                                     uint64_t capture_profile_version);
-  void retain_rig_capture_profile(uint64_t rig_id,
-                                  uint32_t width,
-                                  uint32_t height,
-                                  uint32_t format,
-                                  uint64_t capture_profile_version);
-  void retain_imaging_spec_version(uint64_t imaging_spec_version);
+  // Invalid input is rejected without enqueueing and reported as Closed because no
+  // retained-truth admission occurred.
+  [[nodiscard]] CoreThread::PostResult retain_device_identity(uint64_t device_instance_id, const std::string& hardware_id);
+  [[nodiscard]] CoreThread::PostResult retain_camera_spec_version(const std::string& hardware_id, uint64_t camera_spec_version);
+  [[nodiscard]] CoreThread::PostResult retain_device_capture_profile(uint64_t device_instance_id,
+                                                                     uint32_t width,
+                                                                     uint32_t height,
+                                                                     uint32_t format,
+                                                                     uint64_t capture_profile_version);
+  [[nodiscard]] CoreThread::PostResult retain_rig_capture_profile(uint64_t rig_id,
+                                                                  uint32_t width,
+                                                                  uint32_t height,
+                                                                  uint32_t format,
+                                                                  uint64_t capture_profile_version);
+  [[nodiscard]] CoreThread::PostResult retain_imaging_spec_version(uint64_t imaging_spec_version);
 
   // Internal dev visibility: allow the Godot main thread to echo a core-thread
   // banner line via UtilityFunctions::print for environments where stdout isn't
