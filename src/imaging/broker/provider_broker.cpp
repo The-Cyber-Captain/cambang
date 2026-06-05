@@ -41,6 +41,7 @@ ProviderBroker::ProviderBroker() = default;
 ProviderBroker::~ProviderBroker() {
   // Best-effort: ensure deterministic shutdown when broker is destroyed.
   // Core should call shutdown(), but dev scaffolding may drop the provider early.
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_ && active_) {
     (void)active_->shutdown();
   }
@@ -48,6 +49,7 @@ ProviderBroker::~ProviderBroker() {
 
 const char* ProviderBroker::provider_name() const {
   // The broker is the core-bound facade; report active backend for logs.
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (active_) {
     return active_->provider_name();
   }
@@ -60,6 +62,7 @@ ProviderKind ProviderBroker::provider_kind() const noexcept {
 }
 
 StreamTemplate ProviderBroker::stream_template() const {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (active_) {
     return active_->stream_template();
   }
@@ -67,6 +70,7 @@ StreamTemplate ProviderBroker::stream_template() const {
 }
 
 CaptureTemplate ProviderBroker::capture_template() const {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (active_) {
     return active_->capture_template();
   }
@@ -74,26 +78,31 @@ CaptureTemplate ProviderBroker::capture_template() const {
 }
 
 bool ProviderBroker::supports_stream_picture_updates() const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   return active_ ? active_->supports_stream_picture_updates() : false;
 }
 
 bool ProviderBroker::supports_capture_picture_updates() const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   return active_ ? active_->supports_capture_picture_updates() : false;
 }
 
 bool ProviderBroker::supports_multi_image_still_sequence() const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   return active_ ? active_->supports_multi_image_still_sequence() : false;
 }
 
 ProducerBackingCapabilities ProviderBroker::stream_backing_capabilities(
     const CaptureProfile& profile,
     const PictureConfig& picture) const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   return active_ ? active_->stream_backing_capabilities(profile, picture)
                  : ProducerBackingCapabilities{false, false};
 }
 
 ProducerBackingCapabilities ProviderBroker::capture_backing_capabilities(
     const CaptureRequest& req) const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   return active_ ? active_->capture_backing_capabilities(req)
                  : ProducerBackingCapabilities{false, false};
 }
@@ -122,6 +131,7 @@ ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) n
 }
 
 ProviderResult ProviderBroker::set_runtime_mode_requested(RuntimeMode mode) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
@@ -134,6 +144,7 @@ ProviderResult ProviderBroker::set_runtime_mode_requested(RuntimeMode mode) noex
 }
 
 ProviderResult ProviderBroker::set_synthetic_role_requested(SyntheticRole role) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
@@ -142,6 +153,7 @@ ProviderResult ProviderBroker::set_synthetic_role_requested(SyntheticRole role) 
 }
 
 ProviderResult ProviderBroker::set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
@@ -150,6 +162,7 @@ ProviderResult ProviderBroker::set_synthetic_timing_driver_requested(TimingDrive
 }
 
 ProviderResult ProviderBroker::set_synthetic_timeline_reconciliation_requested(TimelineReconciliation reconciliation) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BUSY);
   }
@@ -163,17 +176,43 @@ ProviderResult ProviderBroker::set_synthetic_timeline_reconciliation_requested(T
   return ProviderResult::success();
 }
 
-void ProviderBroker::set_synthetic_timeline_request_dispatch_hook(
-    std::function<void(const SyntheticScheduledEvent&)> hook) {
-  synthetic_timeline_request_dispatch_hook_ = std::move(hook);
+void ProviderBroker::dispatch_synthetic_timeline_request_(const SyntheticScheduledEvent& ev) {
+  std::function<void(const SyntheticScheduledEvent&)> hook;
+  {
+    std::lock_guard<std::mutex> lock(synthetic_timeline_dispatch_mutex_);
+    if (deferring_synthetic_timeline_dispatches_) {
+      deferred_synthetic_timeline_dispatches_.push_back(ev);
+      return;
+    }
+    hook = synthetic_timeline_request_dispatch_hook_;
+  }
+  if (hook) {
+    hook(ev);
+  }
+}
+
+void ProviderBroker::install_synthetic_timeline_request_dispatch_hook_locked_() {
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
-    syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
+    syn->set_timeline_request_dispatch_hook_for_host(
+        [this](const SyntheticScheduledEvent& ev) { dispatch_synthetic_timeline_request_(ev); });
   }
 #endif
 }
 
+void ProviderBroker::set_synthetic_timeline_request_dispatch_hook(
+    std::function<void(const SyntheticScheduledEvent&)> hook) {
+  {
+    std::lock_guard<std::mutex> lock(synthetic_timeline_dispatch_mutex_);
+    synthetic_timeline_request_dispatch_hook_ = std::move(hook);
+  }
+
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  install_synthetic_timeline_request_dispatch_hook_locked_();
+}
+
 ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_) {
     return ProviderResult::success();
   }
@@ -203,8 +242,8 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     cfg.timing_driver = timing_driver_latched_;
     cfg.timeline_reconciliation = timeline_reconciliation_latched_;
     auto syn = std::make_unique<SyntheticProvider>(cfg);
-    syn->set_timeline_request_dispatch_hook_for_host(synthetic_timeline_request_dispatch_hook_);
     active_ = std::move(syn);
+    install_synthetic_timeline_request_dispatch_hook_locked_();
 #endif
   }
 
@@ -252,6 +291,7 @@ ProviderResult ProviderBroker::ensure_active_or_err_() const {
 }
 
 ProviderResult ProviderBroker::enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -263,6 +303,7 @@ ProviderResult ProviderBroker::open_device(
     const std::string& hardware_id,
     uint64_t device_instance_id,
     uint64_t root_id) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -271,6 +312,7 @@ ProviderResult ProviderBroker::open_device(
 }
 
 ProviderResult ProviderBroker::close_device(uint64_t device_instance_id) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -279,6 +321,7 @@ ProviderResult ProviderBroker::close_device(uint64_t device_instance_id) {
 }
 
 ProviderResult ProviderBroker::create_stream(const StreamRequest& req) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -287,6 +330,7 @@ ProviderResult ProviderBroker::create_stream(const StreamRequest& req) {
 }
 
 ProviderResult ProviderBroker::destroy_stream(uint64_t stream_id) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -298,6 +342,7 @@ ProviderResult ProviderBroker::start_stream(
     uint64_t stream_id,
     const CaptureProfile& profile,
     const PictureConfig& picture) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -306,6 +351,7 @@ ProviderResult ProviderBroker::start_stream(
 }
 
 ProviderResult ProviderBroker::stop_stream(uint64_t stream_id) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -314,6 +360,7 @@ ProviderResult ProviderBroker::stop_stream(uint64_t stream_id) {
 }
 
 ProviderResult ProviderBroker::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -322,6 +369,7 @@ ProviderResult ProviderBroker::set_stream_picture_config(uint64_t stream_id, con
 }
 
 ProviderResult ProviderBroker::set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -330,6 +378,7 @@ ProviderResult ProviderBroker::set_capture_picture_config(uint64_t device_instan
 }
 
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -338,6 +387,7 @@ ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
 }
 
 ProviderResult ProviderBroker::abort_capture(uint64_t capture_id) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -349,6 +399,7 @@ ProviderResult ProviderBroker::apply_camera_spec_patch(
     const std::string& hardware_id,
     uint64_t new_camera_spec_version,
     SpecPatchView patch) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -359,6 +410,7 @@ ProviderResult ProviderBroker::apply_camera_spec_patch(
 ProviderResult ProviderBroker::apply_imaging_spec_patch(
     uint64_t new_imaging_spec_version,
     SpecPatchView patch) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -367,6 +419,7 @@ ProviderResult ProviderBroker::apply_imaging_spec_patch(
 }
 
 ProviderResult ProviderBroker::shutdown() {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_initialized_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -384,30 +437,55 @@ ProviderResult ProviderBroker::shutdown() {
 }
 
 bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
-  if (!initialized_ || !active_) {
-    return false;
-  }
+  std::vector<SyntheticScheduledEvent> deferred_dispatches;
+  std::function<void(const SyntheticScheduledEvent&)> hook;
 
-  // Synthetic virtual_time driver.
+  {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    if (!initialized_ || !active_) {
+      return false;
+    }
+
+    // Synthetic virtual_time driver.
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
-  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
-    syn->advance(dt_ns);
-    return true;
-  }
+    if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+      {
+        std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
+        deferring_synthetic_timeline_dispatches_ = true;
+        deferred_synthetic_timeline_dispatches_.clear();
+      }
+      syn->advance(dt_ns);
+      {
+        std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
+        deferred_dispatches.swap(deferred_synthetic_timeline_dispatches_);
+        deferring_synthetic_timeline_dispatches_ = false;
+        hook = synthetic_timeline_request_dispatch_hook_;
+      }
+    } else
 #endif
 
-  // Stub heartbeat driver.
+    // Stub heartbeat driver.
 #if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
-  if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
-    stub->advance(dt_ns);
-    return true;
-  }
+    if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
+      stub->advance(dt_ns);
+      return true;
+    } else
 #endif
+    {
+      return false;
+    }
+  }
 
-  return false;
+  if (hook) {
+    for (const auto& ev : deferred_dispatches) {
+      hook(ev);
+    }
+  }
+  return true;
 }
 
 ProviderResult ProviderBroker::set_timeline_scenario_for_host(const SyntheticTimelineScenario& scenario) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -422,6 +500,7 @@ ProviderResult ProviderBroker::set_timeline_scenario_for_host(const SyntheticTim
 }
 
 ProviderResult ProviderBroker::set_timeline_canonical_scenario_for_host(const SyntheticCanonicalScenario& scenario) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -436,10 +515,6 @@ ProviderResult ProviderBroker::set_timeline_canonical_scenario_for_host(const Sy
 }
 
 ProviderResult ProviderBroker::select_timeline_builtin_scenario_for_host(const std::string& scenario_name) {
-  ProviderResult pr = ensure_active_or_err_();
-  if (!pr.ok()) {
-    return pr;
-  }
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   SyntheticBuiltinScenarioLibraryId library_id{};
   if (scenario_name == "stream_lifecycle_versions") {
@@ -454,16 +529,31 @@ ProviderResult ProviderBroker::select_timeline_builtin_scenario_for_host(const s
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
+  CaptureProfile profile{};
+  {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    ProviderResult pr = ensure_active_or_err_();
+    if (!pr.ok()) {
+      return pr;
+    }
+    profile = active_->stream_template().profile;
+  }
+
   SyntheticCanonicalScenario canonical{};
   std::string error;
   if (!build_synthetic_builtin_scenario_library_canonical_scenario(
           library_id,
-          stream_template().profile,
+          profile,
           canonical,
           &error)) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
     return syn->set_timeline_scenario_for_host(canonical);
   }
@@ -476,6 +566,7 @@ ProviderResult ProviderBroker::select_timeline_builtin_scenario_for_host(const s
 ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_text_for_host(
     const std::string& text,
     std::string* error) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -495,6 +586,7 @@ ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_text_f
 ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_file_for_host(
     const std::string& path,
     std::string* error) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -512,6 +604,7 @@ ProviderResult ProviderBroker::load_timeline_canonical_scenario_from_json_file_f
 }
 
 ProviderResult ProviderBroker::start_timeline_scenario_for_host() {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -525,6 +618,7 @@ ProviderResult ProviderBroker::start_timeline_scenario_for_host() {
 }
 
 ProviderResult ProviderBroker::stop_timeline_scenario_for_host() {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -538,6 +632,7 @@ ProviderResult ProviderBroker::stop_timeline_scenario_for_host() {
 }
 
 ProviderResult ProviderBroker::set_timeline_scenario_paused_for_host(bool paused) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -552,20 +647,45 @@ ProviderResult ProviderBroker::set_timeline_scenario_paused_for_host(bool paused
 }
 
 ProviderResult ProviderBroker::advance_timeline_for_host(uint64_t dt_ns) {
-  ProviderResult pr = ensure_active_or_err_();
-  if (!pr.ok()) {
-    return pr;
-  }
+  std::vector<SyntheticScheduledEvent> deferred_dispatches;
+  std::function<void(const SyntheticScheduledEvent&)> hook;
+  ProviderResult result = ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+
+  {
+    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    ProviderResult pr = ensure_active_or_err_();
+    if (!pr.ok()) {
+      return pr;
+    }
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
-  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
-    return syn->advance_timeline_for_host(dt_ns);
-  }
+    if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+      {
+        std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
+        deferring_synthetic_timeline_dispatches_ = true;
+        deferred_synthetic_timeline_dispatches_.clear();
+      }
+      result = syn->advance_timeline_for_host(dt_ns);
+      {
+        std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
+        deferred_dispatches.swap(deferred_synthetic_timeline_dispatches_);
+        deferring_synthetic_timeline_dispatches_ = false;
+        hook = synthetic_timeline_request_dispatch_hook_;
+      }
+    }
 #endif
+  }
+
+  if (hook) {
+    for (const auto& ev : deferred_dispatches) {
+      hook(ev);
+    }
+  }
   (void)dt_ns;
-  return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  return result;
 }
 
 ProviderResult ProviderBroker::set_timeline_reconciliation_for_host(TimelineReconciliation reconciliation) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
     return pr;
@@ -579,8 +699,8 @@ ProviderResult ProviderBroker::set_timeline_reconciliation_for_host(TimelineReco
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
 }
 
-
 bool ProviderBroker::get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSnapshot& out) const {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
     out = syn->get_metrics_snapshot_for_host();
@@ -591,12 +711,16 @@ bool ProviderBroker::get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSna
   return false;
 }
 
+bool ProviderBroker::get_synthetic_staged_rig_topology_for_host(std::vector<SyntheticStagedRigTopology>& out) const {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+    out = syn->get_staged_rig_topology_for_host();
+    return true;
+  }
+#endif
+  (void)out;
+  return false;
+}
 
 } // namespace cambang
-
-bool cambang::ProviderBroker::get_synthetic_staged_rig_topology_for_host(std::vector<cambang::SyntheticStagedRigTopology>& out) const {
-#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
-  if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) { out = syn->get_staged_rig_topology_for_host(); return true; }
-#endif
-  (void)out; return false;
-}

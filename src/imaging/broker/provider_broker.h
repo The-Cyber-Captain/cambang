@@ -10,7 +10,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "imaging/api/icamera_provider.h"
 #include "imaging/broker/mode.h"
@@ -120,7 +122,13 @@ private:
 
   ProviderResult ensure_initialized_or_err_() const;
   ProviderResult ensure_active_or_err_() const;
+  void install_synthetic_timeline_request_dispatch_hook_locked_();
+  void dispatch_synthetic_timeline_request_(const SyntheticScheduledEvent& ev);
 
+  mutable std::mutex active_provider_mutex_;
+  mutable std::mutex synthetic_timeline_dispatch_mutex_;
+  std::vector<SyntheticScheduledEvent> deferred_synthetic_timeline_dispatches_;
+  bool deferring_synthetic_timeline_dispatches_ = false;
 
   std::unique_ptr<ICameraProvider> active_;
   IProviderCallbacks* callbacks_ = nullptr; // non-owning
