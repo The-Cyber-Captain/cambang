@@ -241,6 +241,7 @@ src/godot/
 ├── cambang_stream_result_internal.h/.cpp
 ├── cambang_result_convert.h/.cpp
 ├── state_snapshot_export.h/.cpp
+├── godot_gpu_display_service.h/.cpp
 ├── synthetic_gpu_backing_bridge*.h/.cpp
 └── module_init.cpp
 ```
@@ -254,6 +255,13 @@ Responsibilities:
 - keep logic minimal (no arbitration here)
 
 Godot layer must never mutate core state directly.
+
+`godot_gpu_display_service` is the narrow, non-owning Godot-side display adapter
+resolver for GPU-backed stream display views. Today it forwards the synthetic
+legacy retained backing to `synthetic_gpu_backing_bridge`; future descriptor-only
+or platform-backed display adapters should attach at this Godot-layer seam rather
+than moving Godot `Texture2D`/RID ownership into Core, providers, or public
+result APIs.
 
 ---
 

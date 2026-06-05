@@ -309,6 +309,21 @@ Original payload truth and derived-retention truth must remain auditable through
 
 Display wrappers/adapters (for example Godot-side `Texture2DRD`) are
 adapter-layer display realizations, not the retained-primary payload-kind seam.
+Godot display adapter ownership belongs in the Godot layer, not in Core,
+platform providers, or public result APIs.
+
+The internal `godot_gpu_display_service` is the Godot-side GPU display adapter
+resolution boundary. It is currently non-owning: it does not cache or retain
+`Texture2D` refs, Godot RIDs, or backend-native handles. In the present
+synthetic path it delegates the legacy retained GPU backing / primary backing
+artifact to the synthetic deferred-wrapper bridge. `RetainedGpuBackingDescriptor`
+remains the provider-neutral scalar display/backing metadata seam; descriptor-only
+and platform-backed display resolution are future activation points. A
+`backing_id` value of `0` is compatibility metadata only and must not be treated
+as valid descriptor-cache identity.
+
+Platform providers must not expose Godot `Texture2D` refs, Godot RIDs, or
+backend-native public handles through the provider contract.
 
 When GPU artifact ownership (for example RID ownership) is transferred into an
 adapter object, retained-backing cleanup must not also free that same resource.
