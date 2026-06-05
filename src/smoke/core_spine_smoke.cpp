@@ -722,6 +722,36 @@ static int test_publish_gating_before_start() {
   return 0;
 }
 
+static int test_display_demand_async_release_closed_accounting_before_start() {
+  CoreRuntime pre;
+
+  // stream_id==0 remains a no-op and must not be accounted as a failed release.
+  pre.release_stream_display_demand_async(0);
+  auto st = pre.stats_copy();
+  if (st.display_demand_release_async_dropped_closed != 0 ||
+      st.display_demand_release_async_dropped_allocfail != 0 ||
+      st.display_demand_release_async_dropped_full != 0) {
+    std::cerr << "Unexpected display-demand release accounting for stream_id=0. closed="
+              << st.display_demand_release_async_dropped_closed
+              << " alloc=" << st.display_demand_release_async_dropped_allocfail
+              << " full=" << st.display_demand_release_async_dropped_full << "\n";
+    return 1;
+  }
+
+  pre.release_stream_display_demand_async(20);
+  st = pre.stats_copy();
+  if (st.display_demand_release_async_dropped_closed != 1 ||
+      st.display_demand_release_async_dropped_allocfail != 0 ||
+      st.display_demand_release_async_dropped_full != 0) {
+    std::cerr << "Expected display-demand async release Closed accounting before start. closed="
+              << st.display_demand_release_async_dropped_closed
+              << " alloc=" << st.display_demand_release_async_dropped_allocfail
+              << " full=" << st.display_demand_release_async_dropped_full << "\n";
+    return 1;
+  }
+  return 0;
+}
+
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static int test_baseline_live_one_frame_and_snapshot(CoreRuntime& rt,
                                                      StateSnapshotBuffer& buf,
@@ -2078,6 +2108,7 @@ int main(int argc, char** argv) {
     if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
     if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
     if (int r = test_publish_gating_before_start()) return r;
+    if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
 
     CoreRuntime rt;
     StateSnapshotBuffer buf;
@@ -2117,6 +2148,7 @@ int main(int argc, char** argv) {
   if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
   if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
   if (int r = test_publish_gating_before_start()) return r;
+  if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
 
   const int progress_interval = 25;
 
