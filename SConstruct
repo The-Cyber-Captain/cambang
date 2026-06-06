@@ -68,6 +68,22 @@ def _looks_like_msys_or_bash():
     return False
 
 
+def _processor_architecture_for_arch(arch: str) -> str:
+    return {
+        "x86_64": "AMD64",
+        "arm64": "ARM64",
+        "x86_32": "x86",
+        "arm32": "ARM",
+    }.get(arch, "AMD64")
+
+
+def _command_process_env(host_platform: str, arch: str):
+    process_env = os.environ.copy()
+    if host_platform == "windows":
+        process_env.setdefault("PROCESSOR_ARCHITECTURE", _processor_architecture_for_arch(arch))
+    return process_env
+
+
 def _core_target_for_flags(t: str) -> str:
     # Map Godot template targets to our debug/release flag logic.
     if t == "template_debug":
@@ -213,13 +229,15 @@ selected_provider = GDE_PROVIDER_RESOLUTION[gde_platform]
 
 # Toolchain selection is intentionally host-oriented. platform=<...> selects the GDE
 # target platform and must not make host verifiers non-native.
+resolved_use_mingw = tmp_env["use_mingw"]
+if resolved_use_mingw == "auto":
+    resolved_use_mingw = "yes" if (host_platform == "windows" and _looks_like_msys_or_bash()) else "no"
+
 tools = None
-if host_platform == "windows":
-    use_mingw = tmp_env["use_mingw"]
-    if use_mingw == "auto":
-        use_mingw = "yes" if _looks_like_msys_or_bash() else "no"
-    if use_mingw == "yes":
-        tools = ["mingw"]
+if host_platform == "windows" and resolved_use_mingw == "yes":
+    tools = ["mingw"]
+
+command_process_env = _command_process_env(host_platform, tmp_env["arch"])
 
 # Build-only validation. Cleaning remains first-class even when selected platform
 # support, generated godot-cpp output, compdb output, SDKs, or validators are absent.
@@ -238,6 +256,7 @@ if not is_clean:
         Exit(1)
 
 env = Environment(variables=vars, tools=tools)
+env["ENV"] = command_process_env
 env.Append(CPPPATH=["src"])
 
 # IDE support: aggregate compile_commands.json for all active compile environments.
@@ -445,10 +464,22 @@ if build_gde:
     godot_gen_header = os.path.join(
         "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
     )
-    godot_cpp_cmd = (
-        f'"{python_exe}" -m SCons -C thirdparty/godot-cpp '
-        f"platform={gde_platform} target={godot_target} arch={env['arch']} precision={env['precision']}"
-    )
+    godot_cpp_args = [
+        f'"{python_exe}"',
+        "-m",
+        "SCons",
+        "-C",
+        "thirdparty/godot-cpp",
+        f"platform={gde_platform}",
+        f"target={godot_target}",
+        f"arch={env['arch']}",
+        f"precision={env['precision']}",
+    ]
+    if gde_platform == "windows":
+        godot_cpp_args.append(f"use_mingw={resolved_use_mingw}")
+        if env["use_llvm"] in ("yes", "no"):
+            godot_cpp_args.append(f"use_llvm={env['use_llvm']}")
+    godot_cpp_cmd = " ".join(godot_cpp_args)
     godot_cpp_build = env.Command(target=godot_gen_header, source=[], action=godot_cpp_cmd)
 
     Alias("godot_cpp", godot_cpp_build)
