@@ -476,7 +476,7 @@ if build_gde:
         f"precision={env['precision']}",
     ]
     godot_cpp_cmd = " ".join(godot_cpp_args)
-    godot_cpp_build = env.Command(target=godot_gen_header, source=[], action=godot_cpp_cmd)
+    godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
 
     Alias("godot_cpp", godot_cpp_build)
     AlwaysBuild("godot_cpp")
@@ -532,10 +532,11 @@ if build_gde:
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
 
-    gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_sources)
-    for node in gde_lib:
-        gde_env.Depends(node, godot_cpp_build)
-    gde_env.Depends(gde_lib, godot_cpp_lib)
+    gde_objects = gde_env.SharedObject(gde_sources)
+    gde_env.Depends(gde_objects, godot_cpp_build)
+
+    gde_lib = gde_env.SharedLibrary(target=gde_target, source=gde_objects)
+    gde_env.Depends(gde_lib, godot_cpp_build)
 
     gde_alias = Alias("gde", gde_lib)
     AlwaysBuild(gde_alias)
