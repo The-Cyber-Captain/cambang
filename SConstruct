@@ -475,10 +475,6 @@ if build_gde:
         f"arch={env['arch']}",
         f"precision={env['precision']}",
     ]
-    if gde_platform == "windows":
-        godot_cpp_args.append(f"use_mingw={resolved_use_mingw}")
-        if env["use_llvm"] in ("yes", "no"):
-            godot_cpp_args.append(f"use_llvm={env['use_llvm']}")
     godot_cpp_cmd = " ".join(godot_cpp_args)
     godot_cpp_build = env.Command(target=godot_gen_header, source=[], action=godot_cpp_cmd)
 
