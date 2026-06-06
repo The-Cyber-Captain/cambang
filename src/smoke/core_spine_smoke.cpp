@@ -235,6 +235,93 @@ static bool wait_for_snapshot_pred(
   });
 }
 
+
+class RefusingDeviceProvider final : public ICameraProvider {
+public:
+  ProviderResult initialize(IProviderCallbacks* callbacks) override {
+    callbacks_ = callbacks;
+    return ProviderResult::success();
+  }
+
+  const char* provider_name() const override { return "refusing_device_provider"; }
+  ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
+
+  StreamTemplate stream_template() const override {
+    StreamTemplate t{};
+    t.profile.width = 640;
+    t.profile.height = 480;
+    t.profile.format_fourcc = FOURCC_RGBA;
+    t.profile.target_fps_min = 30;
+    t.profile.target_fps_max = 30;
+    return t;
+  }
+
+  CaptureTemplate capture_template() const override {
+    CaptureTemplate t{};
+    t.profile.width = 640;
+    t.profile.height = 480;
+    t.profile.format_fourcc = FOURCC_RGBA;
+    t.profile.target_fps_min = 30;
+    t.profile.target_fps_max = 30;
+    return t;
+  }
+
+  bool supports_stream_picture_updates() const noexcept override { return false; }
+  bool supports_capture_picture_updates() const noexcept override { return false; }
+  bool supports_multi_image_still_sequence() const noexcept override { return false; }
+
+  ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override {
+    CameraEndpoint ep{};
+    ep.hardware_id = "refusing:0";
+    ep.name = "Refusing Device";
+    out_endpoints.push_back(std::move(ep));
+    return ProviderResult::success();
+  }
+
+  ProviderResult open_device(const std::string&, uint64_t, uint64_t) override {
+    open_called_.fetch_add(1, std::memory_order_relaxed);
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
+
+  ProviderResult close_device(uint64_t) override {
+    close_called_.fetch_add(1, std::memory_order_relaxed);
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
+
+  ProviderResult create_stream(const StreamRequest&) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
+  ProviderResult destroy_stream(uint64_t) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
+  ProviderResult start_stream(uint64_t, const CaptureProfile&, const PictureConfig&) override {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  ProviderResult stop_stream(uint64_t) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
+  ProviderResult set_stream_picture_config(uint64_t, const PictureConfig&) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult set_capture_picture_config(uint64_t, const PictureConfig&) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult trigger_capture(const CaptureRequest&) override { return ProviderResult::failure(ProviderError::ERR_BAD_STATE); }
+  ProviderResult abort_capture(uint64_t) override { return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED); }
+  ProviderResult apply_camera_spec_patch(const std::string&, uint64_t, SpecPatchView) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult apply_imaging_spec_patch(uint64_t, SpecPatchView) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  ProviderResult shutdown() override {
+    callbacks_ = nullptr;
+    return ProviderResult::success();
+  }
+
+  uint64_t open_called() const noexcept { return open_called_.load(std::memory_order_relaxed); }
+  uint64_t close_called() const noexcept { return close_called_.load(std::memory_order_relaxed); }
+
+private:
+  IProviderCallbacks* callbacks_ = nullptr;
+  std::atomic<uint64_t> open_called_{0};
+  std::atomic<uint64_t> close_called_{0};
+};
+
 static const char* compiled_provider_name() {
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
   return "stub";
@@ -396,6 +483,83 @@ static int test_provider_callback_ingress_null_sink_frame_release_balances_telem
     return 1;
   }
 
+  return 0;
+}
+
+
+static int test_provider_open_close_refusal_visibility() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  RefusingDeviceProvider provider;
+  rt.set_snapshot_publisher(&buf);
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: failed to start runtime for provider refusal smoke\n";
+    return 1;
+  }
+  if (!wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "FAIL: runtime did not become LIVE for provider refusal smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    std::cerr << "FAIL: refusing provider initialize failed\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&provider);
+
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "FAIL: baseline snapshot not published before provider refusal smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  const TryOpenDeviceStatus open_status = rt.try_open_device("refusing:0", kDeviceInstanceId, kRootId);
+  if (open_status != TryOpenDeviceStatus::ProviderRejected) {
+    std::cerr << "FAIL: provider-refused open returned status=" << static_cast<int>(open_status)
+              << " expected ProviderRejected\n";
+    rt.stop();
+    return 1;
+  }
+  if (provider.open_called() != 1) {
+    std::cerr << "FAIL: provider open call count=" << provider.open_called() << " expected 1\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto retain_spec = rt.retain_imaging_spec_version(7001);
+  if (retain_spec != CoreThread::PostResult::Enqueued) {
+    std::cerr << "FAIL: retain_imaging_spec_version admission failed after refused open; result="
+              << static_cast<int>(retain_spec) << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& s) {
+        return s.version >= 1 && s.devices.empty();
+      })) {
+    auto snap = buf.snapshot_copy();
+    std::cerr << "FAIL: provider-refused open left stale device truth; device_count="
+              << (snap ? snap->devices.size() : 0) << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  const TryCloseDeviceStatus close_status = rt.try_close_device(kDeviceInstanceId);
+  if (close_status != TryCloseDeviceStatus::ProviderRejected) {
+    std::cerr << "FAIL: provider-refused close returned status=" << static_cast<int>(close_status)
+              << " expected ProviderRejected\n";
+    rt.stop();
+    return 1;
+  }
+  if (provider.close_called() != 1) {
+    std::cerr << "FAIL: provider close call count=" << provider.close_called() << " expected 1\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  (void)provider.shutdown();
   return 0;
 }
 
@@ -2109,6 +2273,7 @@ int main(int argc, char** argv) {
     if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
     if (int r = test_publish_gating_before_start()) return r;
     if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
+    if (int r = test_provider_open_close_refusal_visibility()) return r;
 
     CoreRuntime rt;
     StateSnapshotBuffer buf;

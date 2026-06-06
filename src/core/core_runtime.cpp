@@ -1073,17 +1073,37 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
   }
 
   const CaptureTemplate capture_tmpl = prov->capture_template();
-  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id, capture_tmpl]() {
+  auto result_promise = std::make_shared<std::promise<TryOpenDeviceStatus>>();
+  std::future<TryOpenDeviceStatus> f = result_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, hardware_id, device_instance_id, root_id, capture_tmpl, result_promise]() mutable {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      result_promise->set_value(TryOpenDeviceStatus::Busy);
+      return;
+    }
+
+    const ProviderResult open_result = p->open_device(hardware_id, device_instance_id, root_id);
+    if (!open_result.ok()) {
+      timeline_teardown_trace_emit("fail OpenDevice device_instance_id=%llu reason=provider_rc_%u",
+                                   static_cast<unsigned long long>(device_instance_id),
+                                   static_cast<unsigned>(open_result.code));
+      result_promise->set_value(TryOpenDeviceStatus::ProviderRejected);
+      return;
+    }
+
+    // Retain core-owned device identity/profile truth only after provider open
+    // submission was accepted. A provider-refused open must not publish a
+    // speculative CREATED device record.
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
     (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
-    (void)p->open_device(hardware_id, device_instance_id, root_id);
+    result_promise->set_value(TryOpenDeviceStatus::OK);
   });
 
-  return (pr == CoreThread::PostResult::Enqueued) ? TryOpenDeviceStatus::OK
-                                                  : TryOpenDeviceStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryOpenDeviceStatus::Busy;
+  }
+  return f.get();
 }
 
 TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) noexcept {
@@ -1096,19 +1116,29 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
     return TryCloseDeviceStatus::Busy;
   }
 
-  const CoreThread::PostResult pr = try_post([this, device_instance_id]() {
+  auto result_promise = std::make_shared<std::promise<TryCloseDeviceStatus>>();
+  std::future<TryCloseDeviceStatus> f = result_promise->get_future();
+  const CoreThread::PostResult pr = try_post([this, device_instance_id, result_promise]() mutable {
     ICameraProvider* p = provider_.load(std::memory_order_acquire);
-    if (!p) return;
+    if (!p) {
+      result_promise->set_value(TryCloseDeviceStatus::Busy);
+      return;
+    }
     const ProviderResult cr = p->close_device(device_instance_id);
     if (!cr.ok()) {
       timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(device_instance_id),
                                    static_cast<unsigned>(cr.code));
+      result_promise->set_value(TryCloseDeviceStatus::ProviderRejected);
+      return;
     }
+    result_promise->set_value(TryCloseDeviceStatus::OK);
   });
 
-  return (pr == CoreThread::PostResult::Enqueued) ? TryCloseDeviceStatus::OK
-                                                  : TryCloseDeviceStatus::Busy;
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return TryCloseDeviceStatus::Busy;
+  }
+  return f.get();
 }
 
 TrySetStreamPictureStatus CoreRuntime::try_set_stream_picture_config(
