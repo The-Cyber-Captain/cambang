@@ -133,6 +133,7 @@ static godot::Error map_try_close_device_status(TryCloseDeviceStatus s) noexcept
     case TryCloseDeviceStatus::OK: return godot::OK;
     case TryCloseDeviceStatus::Busy: return godot::ERR_BUSY;
     case TryCloseDeviceStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
+    case TryCloseDeviceStatus::ProviderRejected: return godot::FAILED;
     default: return godot::FAILED;
   }
 }
@@ -671,6 +672,10 @@ godot::Error CamBANGServer::engage_endpoint_handle(const godot::String& hardware
       state.device_instance_id = 0;
       state.root_id = 0;
       return godot::ERR_BUSY;
+    case TryOpenDeviceStatus::ProviderRejected:
+      state.device_instance_id = 0;
+      state.root_id = 0;
+      return godot::FAILED;
     case TryOpenDeviceStatus::InvalidArgument:
     default:
       state.device_instance_id = 0;

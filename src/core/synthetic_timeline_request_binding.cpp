@@ -35,6 +35,7 @@ const char* close_status_cstr(TryCloseDeviceStatus s) {
     case TryCloseDeviceStatus::OK: return "OK";
     case TryCloseDeviceStatus::InvalidArgument: return "INVALID_ARGUMENT";
     case TryCloseDeviceStatus::Busy: return "BUSY";
+    case TryCloseDeviceStatus::ProviderRejected: return "PROVIDER_REJECTED";
   }
   return "UNKNOWN";
 }

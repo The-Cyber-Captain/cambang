@@ -100,12 +100,14 @@ enum class TryOpenDeviceStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
 enum class TryCloseDeviceStatus : uint8_t {
   OK = 0,
   Busy = 1,
   InvalidArgument = 2,
+  ProviderRejected = 3,
 };
 
   class CoreRuntime final : private CoreThread::IHooks {
