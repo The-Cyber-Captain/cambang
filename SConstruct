@@ -18,6 +18,7 @@ from SCons.Script import (
     Alias,
     AlwaysBuild,
     BoolVariable,
+    Clean,
     Default,
     Environment,
     EnumVariable,
@@ -339,6 +340,47 @@ def _host_core_runtime_sources(obj_dir):
     return _unique_sources(sources)
 
 
+def _program_path(name):
+    return os.path.join(out_dir, name + env.get("PROGSUFFIX", ""))
+
+
+def _gde_artifact_base(platform, target, arch):
+    if platform == "windows":
+        return os.path.join("tests", "cambang_gde", "bin", f"cambang.windows.{target}.{arch}.dll")
+    return os.path.join("tests", "cambang_gde", "bin", f"libcambang.{platform}.{target}.{arch}")
+
+
+def _planned_gde_clean_paths(platform, target, arch):
+    base = _gde_artifact_base(platform, target, arch)
+    if platform == "windows":
+        return [base]
+    return _unique_sources([base, base + ".so", base + ".dylib", base + ".dll"])
+
+
+verify_clean_outputs = [
+    _program_path("core_spine_smoke"),
+    _program_path("core_result_path_smoke"),
+    _program_path("core_capture_assembly_registry_smoke"),
+    _program_path("core_dispatcher_bracket_routing_smoke"),
+    _program_path("pattern_render_bench"),
+    _program_path("synthetic_timeline_verify"),
+    _program_path("phase3_snapshot_verify"),
+    _program_path("verify_case_runner"),
+    _program_path("provider_compliance_verify"),
+    _program_path("restart_boundary_verify"),
+]
+platform_runtime_validate_clean_outputs = [
+    _program_path("windows_mf_runtime_validate"),
+]
+gde_clean_outputs = _planned_gde_clean_paths(gde_platform, godot_target, env["arch"])
+godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_uses_mingw)
+godot_gen_header = os.path.join(
+    "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
+)
+godot_cpp_clean_outputs = [godot_gen_header, godot_cpp_lib]
+build_gde_graph = build_gde and selected_provider["implemented"] and not is_clean
+
+
 # ---------------------------------------------------------------------------
 # Host-native deterministic verification tools (alias: verify)
 # ---------------------------------------------------------------------------
@@ -457,7 +499,7 @@ else:
 # ---------------------------------------------------------------------------
 # GDExtension artifact (alias: gde)
 # ---------------------------------------------------------------------------
-if build_gde:
+if build_gde_graph:
     gde_env = env.Clone()
     gde_env.Append(CPPDEFINES=["CAMBANG_GDE_BUILD=1", "CAMBANG_ENABLE_SYNTHETIC=1"])
     gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
@@ -465,13 +507,9 @@ if build_gde:
     gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
     os.makedirs(gde_out_dir, exist_ok=True)
 
-    godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_uses_mingw)
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
     godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
 
-    godot_gen_header = os.path.join(
-        "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
-    )
     godot_cpp_args = [
         f'"{python_exe}"',
         "-m",
@@ -537,11 +575,7 @@ if build_gde:
     ]
     gde_sources = _unique_sources(gde_sources)
 
-    if gde_platform == "windows":
-        gde_filename = f"cambang.windows.{godot_target}.{env['arch']}.dll"
-    else:
-        gde_filename = f"libcambang.{gde_platform}.{godot_target}.{env['arch']}"
-    gde_target = os.path.join(gde_out_dir, gde_filename)
+    gde_target = _gde_artifact_base(gde_platform, godot_target, env["arch"])
 
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
@@ -595,19 +629,37 @@ else:
     platform_runtime_validate_alias = Alias("platform_runtime_validate", [])
 
 
-selected_default_nodes = []
+selected_cambang_nodes = []
 if build_verify:
-    selected_default_nodes.append(verify_alias)
+    selected_cambang_nodes.append(verify_alias)
 if build_gde:
-    selected_default_nodes.append(gde_alias)
+    selected_cambang_nodes.append(gde_alias)
 if build_platform_runtime_validate:
-    selected_default_nodes.append(platform_runtime_validate_alias)
+    selected_cambang_nodes.append(platform_runtime_validate_alias)
 
-if selected_default_nodes:
-    build_all_alias = Alias("build_all", selected_default_nodes)
-    AlwaysBuild(build_all_alias)
-    if not is_clean:
-        AddPostAction(build_all_alias, env["COMPDB_WRITE_ACTION"])
-    Default(build_all_alias)
-else:
-    Default(Alias("build_all", []))
+cambang_alias = Alias("cambang", selected_cambang_nodes)
+AlwaysBuild(cambang_alias)
+
+godot_cpp_alias = Alias("godot_cpp", godot_cpp_build if build_gde_graph else [])
+all_alias = Alias("all", [cambang_alias, godot_cpp_alias])
+AlwaysBuild(all_alias)
+build_all_alias = Alias("build_all", all_alias)
+AlwaysBuild(build_all_alias)
+
+cambang_clean_outputs = [verify_obj_dir, gde_obj_dir, platform_runtime_validate_obj_dir, env["COMPDB_PATH"]]
+if build_verify:
+    cambang_clean_outputs += verify_clean_outputs
+if build_gde:
+    cambang_clean_outputs += gde_clean_outputs
+if build_platform_runtime_validate:
+    cambang_clean_outputs += platform_runtime_validate_clean_outputs
+Clean(verify_alias, verify_clean_outputs)
+Clean(gde_alias, gde_clean_outputs)
+Clean(platform_runtime_validate_alias, platform_runtime_validate_clean_outputs)
+Clean(cambang_alias, _unique_sources(cambang_clean_outputs))
+Clean(godot_cpp_alias, godot_cpp_clean_outputs)
+
+if not is_clean:
+    AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])
+
+Default(all_alias)
