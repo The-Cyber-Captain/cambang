@@ -175,8 +175,8 @@ Rules:
   provider API
 - a platform provider may use provider-local helper files and subdirectories
   under `src/imaging/platform/<provider>/`
-- `stub/` is a deterministic dev/test provider used by smoke and provider
-  validation; it may be compiled into the GDE build with `provider=stub`, but it
+- `stub/` is a deterministic dev/test provider used by host-native maintainer
+  tools and provider validation; it is not a public GDE provider selection and
   is not a production platform-backed provider
 - `broker/` is the naming surface for the Core-bound façade term and does not
   imply multi-provider runtime arbitration
@@ -267,16 +267,19 @@ result APIs.
 
 ## 6. `src/smoke/`
 
-Contains internal **core smoke executable** entrypoints.
+Contains internal maintainer-tool entrypoints.
 
 This code exists to validate core invariants quickly and deterministically
-without involving Godot or platform camera stacks.
+without involving Godot or platform camera stacks. The tools are built by the
+`maintainer_tools` alias and by default development builds under
+`maintainer_tools=yes`.
 
 Properties:
 
-- opt-in build
-- providerless baseline mode is available
-- stub-backed mode is enabled when built with `provider=stub`
+- host-native deterministic build artifacts
+- providerless baseline coverage is available where applicable
+- StubProvider and SyntheticProvider are used where needed for deterministic
+  maintainer coverage
 - not part of the GDExtension artifact
 - intended to exercise:
   - CoreRuntime lifecycle determinism
@@ -290,11 +293,12 @@ Primary location:
 src/smoke/core_spine_smoke.cpp
 ```
 
-Smoke verification must remain independent of platform-backed provider implementations. The
-core spine smoke executable can run providerless baseline checks, while stub-backed
-coverage and stress mode require a `provider=stub` smoke build.
+Maintainer-tool verification must remain independent of platform-backed provider
+implementations except for explicit `platform_runtime_validate=yes` validators.
+The deterministic tools use providerless, StubProvider, and SyntheticProvider
+coverage as needed.
 
-Smoke-only code paths are gated behind:
+Maintainer-tool code paths are gated behind:
 
 - `CAMBANG_INTERNAL_SMOKE`
 
@@ -335,40 +339,91 @@ CI/local validation should run deterministic tests with synthetic support where 
 
 ## 9. SCons structure
 
-### Build targets
+The repo-root `SConstruct` is the source of truth for the build contract.
+Assignment-style variables outside the declared public set are rejected.
 
-Examples from the current SCons entrypoint:
+### Supported variables
 
-- `gde=yes` — build the GDExtension artifact
-- `smoke=yes` — build smoke/verification binaries
-- `platform_validate=yes` — build platform validation where available; on Windows this currently means nominal `windows_mediafoundation(dev accelerator)` validation
+- `gde=yes|no` — include the selected GDE/plugin artifact family; default `yes`
+- `maintainer_tools=yes|no` — include host-native deterministic maintainer tools; default `yes`
+- `platform=<windows|android|linux|macos|ios|web>` — select the GDE target platform; default host-detected
+- `target=<debug|release|template_debug|template_release>` — select debug/release shape; default `debug`
+- `arch=<x86_64|x86_32|arm64|arm32>` — select target architecture naming; default `x86_64`
+- `precision=<single|double>` — forwarded to `godot-cpp`; default `single`
+- `platform_runtime_validate=yes|no` — include selected platform runtime validation artifacts; default `no`
+- `COMPDB_PATH=<path>` — compile database path; default `compile_commands.json`
+- `use_mingw=yes|no|auto` — Windows MinGW selection; default `auto`
+- `use_llvm=yes|no|auto` — Windows MinGW-LLVM selection; default `auto`
+- `mingw_prefix=<path>` — optional MinGW installation prefix forwarded to `godot-cpp`; default empty
+- `warnings_as_errors=yes|no` — treat warnings as errors; default `no`
 
-### Platform selection
+Assignment-style variables outside this declared public set are rejected by
+`SConstruct`.
 
-Illustrative flags:
+### Build aliases
 
-```text
-scons platform=windows provider=stub
-scons platform=windows provider=windows_mediafoundation  # opt-in MF dev accelerator
-scons platform=windows provider=stub synthetic=yes
-```
+- `all` — default build target; builds the selected families controlled by
+  `gde`, `maintainer_tools`, and `platform_runtime_validate`
+- `maintainer_tools` — host-native deterministic smoke/verifier/benchmark tools;
+  not platform-scoped by `platform=<...>`
+- `gde` — selected CamBANG GDE/plugin artifact family selected by `platform`,
+  `target`, `arch`, and `precision`
+- `godot_cpp` — selected root-modelled delegated `thirdparty/godot-cpp` outputs
+- `platform_runtime_validate` — selected platform runtime validation artifacts
+- `cambang` — ownership-wide CamBANG clean alias
+- `gde_all` — clean-only utility alias for all known CamBANG GDE object/output paths
+- `build_all` — compatibility alias to `all`
 
-Provider selection must compile exactly one selected provider implementation
-into the final build. The current temporary build entrypoint explicitly rejects
-`platform=android`; Android/Camera2 remains future platform work rather than a
-current build path.
+### Clean scope
 
-A platform provider may internally delegate to multiple backend modules,
-but Core binds to exactly one `ICameraProvider` instance at runtime.
+- `scons -c` and `scons -c all` clean CamBANG-owned outputs plus selected
+  root-modelled `godot_cpp` outputs.
+- `scons -c cambang` cleans CamBANG-owned outputs, including `COMPDB_PATH`, and
+  preserves `thirdparty/godot-cpp`.
+- `scons -c maintainer_tools` cleans maintainer-tool executables and
+  `out/maintainer_tools_obj` only.
+- `scons -c gde` cleans the selected GDE object tree and selected plugin artifact
+  only, preserving `thirdparty/godot-cpp` and `COMPDB_PATH`.
+- `scons -c gde_all` cleans all known CamBANG GDE object/output paths.
+- `scons -c godot_cpp` cleans only the selected generated-header sentinel and
+  selected static library modelled by the root build.
+- `scons -c platform_runtime_validate` cleans selected platform runtime
+  validation artifacts only.
+
+Root clean does not deep-clean all internal `thirdparty/godot-cpp` object files.
+
+### Platform/provider mapping
+
+`platform=<...>` selects the GDE target platform, not the maintainer-tool host
+platform.
+
+- `windows` -> `windows_mediafoundation` -> `src/imaging/platform/windows`
+- `android` -> `android_camera2` -> `src/imaging/platform/android`
+- `linux` -> `linux_v4l2` -> `src/imaging/platform/linux`
+- `macos` -> `apple_avfoundation` -> `src/imaging/platform/apple`
+- `ios` -> `apple_avfoundation` -> `src/imaging/platform/apple`
+- `web` -> `web_getusermedia` -> `src/imaging/platform/web`
+
+Windows is currently the only implemented platform-backed GDE provider path.
+Clean mode is safe for all declared platforms.
+
+### Object/output paths
+
+- maintainer tools object tree: `out/maintainer_tools_obj`
+- GDE object tree: `out/gde_obj/<platform>/<godot_target>/<arch>/<precision>`
+- Windows debug GDE artifact example:
+  `tests/cambang_gde/bin/cambang.windows.template_debug.x86_64.dll`
+- selected `godot-cpp` generated-header sentinel:
+  `thirdparty/godot-cpp/gen/include/godot_cpp/core/ext_wrappers.gen.inc`
+- selected Windows MinGW `godot-cpp` static library example:
+  `thirdparty/godot-cpp/bin/libgodot-cpp.windows.template_debug.x86_64.a`
 
 ### Compile-time flags
 
-Common flags include:
+Common internal defines include:
 
 - `CAMBANG_ENABLE_SYNTHETIC`
 - `CAMBANG_INTERNAL_SMOKE`
-
----
 
 ## 10. Dependency rules
 

@@ -416,7 +416,7 @@ gde_clean_outputs = _planned_selected_gde_clean_outputs(gde_platform, godot_targ
 gde_all_clean_outputs = _all_planned_gde_clean_outputs()
 godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_uses_mingw)
 godot_gen_header = os.path.join(
-    "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
+    "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "core", "ext_wrappers.gen.inc"
 )
 godot_cpp_clean_outputs = [godot_gen_header, godot_cpp_lib]
 build_gde_graph = build_gde and selected_provider["implemented"] and not is_clean
@@ -686,9 +686,13 @@ godot_cpp_alias = Alias("godot_cpp", godot_cpp_build if build_gde_graph else [])
 all_build_nodes = list(selected_build_nodes)
 if build_gde_graph:
     all_build_nodes.append(godot_cpp_alias)
-all_alias = Alias("all", all_build_nodes)
+if is_clean:
+    all_alias = Alias("all", [])
+    build_all_alias = Alias("build_all", [])
+else:
+    all_alias = Alias("all", all_build_nodes)
+    build_all_alias = Alias("build_all", all_alias)
 AlwaysBuild(all_alias)
-build_all_alias = Alias("build_all", all_alias)
 AlwaysBuild(build_all_alias)
 
 cambang_clean_outputs = _unique_sources(
@@ -703,7 +707,10 @@ Clean(gde_all_alias, gde_all_clean_outputs)
 Clean(platform_runtime_validate_alias, platform_runtime_validate_clean_outputs)
 Clean(cambang_alias, cambang_clean_outputs)
 Clean(godot_cpp_alias, godot_cpp_clean_outputs)
-Clean(all_alias, cambang_clean_outputs + godot_cpp_clean_outputs)
+Clean(all_alias, cambang_clean_outputs)
+Clean(all_alias, godot_cpp_clean_outputs)
+Clean(build_all_alias, cambang_clean_outputs)
+Clean(build_all_alias, godot_cpp_clean_outputs)
 
 if not is_clean:
     AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])
