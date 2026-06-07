@@ -26,6 +26,19 @@
 
 #include <cstdlib>
 
+#ifndef CAMBANG_GDE_TARGET_PLATFORM
+#define CAMBANG_GDE_TARGET_PLATFORM "unknown"
+#endif
+
+#ifndef CAMBANG_GDE_PLATFORM_PROVIDER_FAMILY
+#define CAMBANG_GDE_PLATFORM_PROVIDER_FAMILY "unknown"
+#endif
+
+#ifndef CAMBANG_GDE_PLATFORM_PROVIDER_STATUS
+#define CAMBANG_GDE_PLATFORM_PROVIDER_STATUS "unknown"
+#endif
+
+
 namespace cambang {
 
 static bool banners_enabled() noexcept {
@@ -316,6 +329,16 @@ godot::Error CamBANGServer::start(const godot::Variant& provider_kind_arg,
       parsed_role,
       parsed_timing_driver,
       completion_gated_destructive_sequencing_enabled);
+}
+
+godot::Dictionary CamBANGServer::get_provider_support() const {
+  godot::Dictionary out;
+  out["platform_backed"] = ProviderBroker::check_mode_supported_in_build(RuntimeMode::platform_backed).ok();
+  out["synthetic"] = ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic).ok();
+  out["target_platform"] = godot::String(CAMBANG_GDE_TARGET_PLATFORM);
+  out["platform_family"] = godot::String(CAMBANG_GDE_PLATFORM_PROVIDER_FAMILY);
+  out["platform_provider_status"] = godot::String(CAMBANG_GDE_PLATFORM_PROVIDER_STATUS);
+  return out;
 }
 
 godot::Error CamBANGServer::_start_with_provider_config(
@@ -1817,6 +1840,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("stop_and_quit", "exit_code"), &CamBANGServer::stop_and_quit, DEFVAL(0));
   godot::ClassDB::bind_method(godot::D_METHOD("is_running"), &CamBANGServer::is_running);
   godot::ClassDB::bind_method(godot::D_METHOD("get_active_provider_config"), &CamBANGServer::get_active_provider_config);
+  godot::ClassDB::bind_method(godot::D_METHOD("get_provider_support"), &CamBANGServer::get_provider_support);
   godot::ClassDB::bind_method(godot::D_METHOD("select_builtin_scenario", "scenario_name"), &CamBANGServer::select_builtin_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("load_external_scenario", "json_text"), &CamBANGServer::load_external_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("start_scenario"), &CamBANGServer::start_scenario);

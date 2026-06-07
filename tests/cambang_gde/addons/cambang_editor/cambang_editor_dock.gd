@@ -15,6 +15,9 @@ const TRANSITION_STOPPING := "stopping"
 
 const TRANSITION_POLL_INTERVAL_SEC := 0.1
 
+const PROVIDER_CONFIG_PLATFORM_BACKED := "platform_backed"
+const PROVIDER_CONFIG_SYNTHETIC_TIMELINE_VIRTUAL_TIME := "synthetic_timeline_virtual_time"
+
 var _status_panel: Control
 var _provider_mode_option: OptionButton
 var _message_label: Label
@@ -68,8 +71,7 @@ func _build_ui_if_needed() -> void:
 
 	_provider_mode_option = OptionButton.new()
 	_provider_mode_option.item_selected.connect(_on_provider_mode_selected)
-	_provider_mode_option.add_item("platform_backed")
-	_provider_mode_option.add_item("synthetic_timeline_virtual_time")
+	_populate_provider_mode_options(null)
 	controls.add_child(_provider_mode_option)
 
 	_message_label = Label.new()
@@ -88,6 +90,41 @@ func _build_ui_if_needed() -> void:
 	_transition_timer.timeout.connect(_on_transition_timer_timeout)
 	add_child(_transition_timer)
 
+
+
+func _populate_provider_mode_options(server: Object) -> void:
+	if _provider_mode_option == null:
+		return
+
+	var previous_mode := ""
+	if _provider_mode_option.item_count > 0 and _provider_mode_option.selected >= 0:
+		previous_mode = str(_provider_mode_option.get_item_metadata(_provider_mode_option.selected))
+
+	_provider_mode_option.clear()
+
+	var platform_backed_supported := true
+	var synthetic_supported := true
+	if server != null and server.has_method("get_provider_support"):
+		var support: Variant = server.get_provider_support()
+		if typeof(support) == TYPE_DICTIONARY:
+			platform_backed_supported = bool(support.get("platform_backed", false))
+			synthetic_supported = bool(support.get("synthetic", false))
+
+	if platform_backed_supported:
+		_provider_mode_option.add_item(PROVIDER_CONFIG_PLATFORM_BACKED)
+		_provider_mode_option.set_item_metadata(_provider_mode_option.item_count - 1, PROVIDER_CONFIG_PLATFORM_BACKED)
+	if synthetic_supported:
+		_provider_mode_option.add_item(PROVIDER_CONFIG_SYNTHETIC_TIMELINE_VIRTUAL_TIME)
+		_provider_mode_option.set_item_metadata(_provider_mode_option.item_count - 1, PROVIDER_CONFIG_SYNTHETIC_TIMELINE_VIRTUAL_TIME)
+
+	var selected_index := 0
+	if previous_mode != "":
+		for i in range(_provider_mode_option.item_count):
+			if str(_provider_mode_option.get_item_metadata(i)) == previous_mode:
+				selected_index = i
+				break
+	if _provider_mode_option.item_count > 0:
+		_provider_mode_option.select(selected_index)
 
 func _get_server() -> Object:
 	if Engine.has_singleton(SERVER_SINGLETON_NAME):
@@ -162,6 +199,8 @@ func _refresh_from_server() -> void:
 	var snapshot: Variant = server.get_state_snapshot()
 	var has_snapshot := typeof(snapshot) == TYPE_DICTIONARY
 	var running := bool(server.is_running())
+	if not running:
+		_populate_provider_mode_options(server)
 	var state := _derive_ui_state(running, has_snapshot)
 
 	match state:
@@ -181,9 +220,9 @@ func _refresh_from_server() -> void:
 			_provider_mode_option.disabled = true
 			_set_transition_polling(true)
 		_:
-			_start_button.disabled = false
+			_start_button.disabled = _provider_mode_option.item_count == 0
 			_stop_button.disabled = true
-			_provider_mode_option.disabled = false
+			_provider_mode_option.disabled = _provider_mode_option.item_count == 0
 			_set_transition_polling(false)
 
 	_message_label.text = _state_message(state)
@@ -228,11 +267,13 @@ func _on_start_pressed() -> void:
 		return
 
 	_transition_pending = TRANSITION_STARTING
-	var selected_mode := _provider_mode_option.get_item_text(_provider_mode_option.selected)
+	var selected_mode := str(_provider_mode_option.get_item_metadata(_provider_mode_option.selected))
+	if selected_mode == "":
+		selected_mode = _provider_mode_option.get_item_text(_provider_mode_option.selected)
 	var err: int = ERR_INVALID_PARAMETER
-	if selected_mode == "platform_backed":
+	if selected_mode == PROVIDER_CONFIG_PLATFORM_BACKED:
 		err = server.start(server.PROVIDER_KIND_PLATFORM_BACKED)
-	elif selected_mode == "synthetic_timeline_virtual_time":
+	elif selected_mode == PROVIDER_CONFIG_SYNTHETIC_TIMELINE_VIRTUAL_TIME:
 		err = server.start(server.PROVIDER_KIND_SYNTHETIC, server.SYNTHETIC_ROLE_TIMELINE, server.TIMING_DRIVER_VIRTUAL_TIME)
 	else:
 		err = server.start()

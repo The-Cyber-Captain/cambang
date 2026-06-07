@@ -94,6 +94,7 @@ public:
   bool is_running() const;
 
   godot::Variant get_active_provider_config() const;
+  godot::Dictionary get_provider_support() const;
   godot::Variant get_synthetic_metrics_snapshot() const;
 
   godot::Error select_builtin_scenario(const godot::String& scenario_name);

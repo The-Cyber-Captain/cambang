@@ -405,7 +405,12 @@ platform.
 - `web` -> `web_getusermedia` -> `src/imaging/platform/web`
 
 Windows is currently the only implemented platform-backed GDE provider path.
-Clean mode is safe for all declared platforms.
+Other declared GDE platforms may build synthetic-capable artifacts without a
+compiled platform-backed provider. In those artifacts platform-backed mode is
+reported as unavailable by compiled capability metadata and must fail visibly at
+runtime; SyntheticProvider remains an alternate runtime mode of the single
+provider instance, and StubProvider remains maintainer/dev-only rather than a
+production GDE fallback. Clean mode is safe for all declared platforms.
 
 ### Object/output paths
 
