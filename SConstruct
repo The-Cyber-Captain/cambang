@@ -2,9 +2,9 @@
 # CamBANG - SCons entrypoint
 #
 # Repo-root build contract:
-# - deterministic host verification tools are enabled by default (verify=yes)
+# - deterministic host maintainer tools are enabled by default (maintainer_tools=yes)
 # - the GDExtension artifact is enabled by default (gde=yes)
-# - platform=<...> selects the GDE target platform, not the host verifier platform
+# - platform=<...> selects the GDE target platform, not the host maintainer-tool platform
 # - platform-backed runtime validation is explicit opt-in (platform_runtime_validate=yes)
 
 import os
@@ -29,9 +29,14 @@ from SCons.Script import (
     Variables,
 )
 
+GDE_PLATFORMS = ["windows", "android", "linux", "macos", "ios", "web"]
+GDE_TARGET_VALUES = ["debug", "release", "template_debug", "template_release"]
+GDE_ARCH_VALUES = ["x86_64", "x86_32", "arm64", "arm32"]
+GDE_PRECISION_VALUES = ["single", "double"]
+
 ALLOWED_VARIABLES = {
     "gde",
-    "verify",
+    "maintainer_tools",
     "platform",
     "target",
     "arch",
@@ -161,7 +166,7 @@ vars.Add(BoolVariable(
     True,
 ))
 vars.Add(BoolVariable(
-    "verify",
+    "maintainer_tools",
     "Build deterministic host-native smoke/verification/benchmark tools.",
     True,
 ))
@@ -169,25 +174,25 @@ vars.Add(EnumVariable(
     "platform",
     "GDE target platform.",
     _detect_host_platform(),
-    allowed_values=["windows", "android", "linux", "macos", "ios", "web"],
+    allowed_values=GDE_PLATFORMS,
 ))
 vars.Add(EnumVariable(
     "target",
     "Build target. Accepts debug/release and Godot template_debug/template_release.",
     "debug",
-    allowed_values=["debug", "release", "template_debug", "template_release"],
+    allowed_values=GDE_TARGET_VALUES,
 ))
 vars.Add(EnumVariable(
     "arch",
     "Target architecture (convention-compatible knob).",
     "x86_64",
-    allowed_values=["x86_64", "x86_32", "arm64", "arm32"],
+    allowed_values=GDE_ARCH_VALUES,
 ))
 vars.Add(EnumVariable(
     "precision",
     "Floating-point precision knob (forwarded to godot-cpp).",
     "single",
-    allowed_values=["single", "double"],
+    allowed_values=GDE_PRECISION_VALUES,
 ))
 vars.Add(BoolVariable(
     "platform_runtime_validate",
@@ -230,7 +235,7 @@ host_platform = _detect_host_platform()
 gde_platform = tmp_env["platform"]
 is_clean = GetOption("clean")
 build_gde = bool(tmp_env["gde"])
-build_verify = bool(tmp_env["verify"])
+build_maintainer_tools = bool(tmp_env["maintainer_tools"])
 build_platform_runtime_validate = bool(tmp_env["platform_runtime_validate"])
 selected_provider = GDE_PROVIDER_RESOLUTION[gde_platform]
 
@@ -260,8 +265,8 @@ if not is_clean:
         print(f"  Expected provider family: {selected_provider['family']}")
         print(f"  Expected provider implementation location: {selected_provider['location']}")
         Exit(1)
-    if not (build_gde or build_verify or build_platform_runtime_validate):
-        print("ERROR: Nothing to build. Set gde=yes and/or verify=yes and/or platform_runtime_validate=yes (or run with -c to clean).")
+    if not (build_gde or build_maintainer_tools or build_platform_runtime_validate):
+        print("ERROR: Nothing to build. Set gde=yes and/or maintainer_tools=yes and/or platform_runtime_validate=yes (or run with -c to clean).")
         Exit(1)
 
 env = Environment(variables=vars, tools=tools)
@@ -301,7 +306,7 @@ print(f"  host_platform={host_platform} gde_platform={gde_platform} target={env[
 print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if host_platform == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
-print(f"  gde={'yes' if build_gde else 'no'} verify={'yes' if build_verify else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
+print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
 if selected_provider.get("status"):
     print(f"  gde_provider_status={selected_provider['status']}")
@@ -310,9 +315,11 @@ print(f"  COMPDB_PATH={env['COMPDB_PATH']}")
 out_dir = "out"
 os.makedirs(out_dir, exist_ok=True)
 
-verify_obj_dir = os.path.join(out_dir, "verify_obj")
-platform_runtime_validate_obj_dir = os.path.join(out_dir, "platform_runtime_validate_obj")
-gde_obj_dir = os.path.join(out_dir, "gde_obj")
+maintainer_tools_obj_dir = os.path.join(out_dir, "maintainer_tools_obj")
+platform_runtime_validate_obj_root = os.path.join(out_dir, "platform_runtime_validate_obj")
+platform_runtime_validate_obj_dir = os.path.join(platform_runtime_validate_obj_root, gde_platform)
+gde_obj_root = os.path.join(out_dir, "gde_obj")
+gde_obj_dir = os.path.join(gde_obj_root, gde_platform, godot_target, env["arch"], env["precision"])
 
 
 def _glob_cpp(obj_dir, *parts):
@@ -344,20 +351,55 @@ def _program_path(name):
     return os.path.join(out_dir, name + env.get("PROGSUFFIX", ""))
 
 
+def _gde_obj_dir(platform, target, arch, precision):
+    return os.path.join(gde_obj_root, platform, target, arch, precision)
+
+
 def _gde_artifact_base(platform, target, arch):
     if platform == "windows":
         return os.path.join("tests", "cambang_gde", "bin", f"cambang.windows.{target}.{arch}.dll")
     return os.path.join("tests", "cambang_gde", "bin", f"libcambang.{platform}.{target}.{arch}")
 
 
-def _planned_gde_clean_paths(platform, target, arch):
+def _planned_gde_artifact_paths(platform, target, arch):
     base = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
         return [base]
     return _unique_sources([base, base + ".so", base + ".dylib", base + ".dll"])
 
 
-verify_clean_outputs = [
+def _planned_selected_gde_clean_outputs(platform, target, arch, precision):
+    return _unique_sources([_gde_obj_dir(platform, target, arch, precision)] + _planned_gde_artifact_paths(platform, target, arch))
+
+
+def _all_planned_gde_clean_outputs():
+    outputs = [gde_obj_root]
+    for platform in GDE_PLATFORMS:
+        for target_value in GDE_TARGET_VALUES:
+            planned_target = _godot_target(target_value)
+            for arch_value in GDE_ARCH_VALUES:
+                outputs += _planned_gde_artifact_paths(platform, planned_target, arch_value)
+                for precision_value in GDE_PRECISION_VALUES:
+                    outputs.append(_gde_obj_dir(platform, planned_target, arch_value, precision_value))
+    return _unique_sources(outputs)
+
+
+def _selected_platform_runtime_validate_clean_outputs(platform):
+    outputs = [os.path.join(platform_runtime_validate_obj_root, platform)]
+    if platform == "windows":
+        outputs.append(_program_path("windows_mf_runtime_validate"))
+    return outputs
+
+
+def _all_platform_runtime_validate_clean_outputs():
+    outputs = [platform_runtime_validate_obj_root]
+    for platform in GDE_PLATFORMS:
+        outputs += _selected_platform_runtime_validate_clean_outputs(platform)
+    return _unique_sources(outputs)
+
+
+maintainer_tools_clean_outputs = [
+    maintainer_tools_obj_dir,
     _program_path("core_spine_smoke"),
     _program_path("core_result_path_smoke"),
     _program_path("core_capture_assembly_registry_smoke"),
@@ -369,10 +411,9 @@ verify_clean_outputs = [
     _program_path("provider_compliance_verify"),
     _program_path("restart_boundary_verify"),
 ]
-platform_runtime_validate_clean_outputs = [
-    _program_path("windows_mf_runtime_validate"),
-]
-gde_clean_outputs = _planned_gde_clean_paths(gde_platform, godot_target, env["arch"])
+platform_runtime_validate_clean_outputs = _selected_platform_runtime_validate_clean_outputs(gde_platform)
+gde_clean_outputs = _planned_selected_gde_clean_outputs(gde_platform, godot_target, env["arch"], env["precision"])
+gde_all_clean_outputs = _all_planned_gde_clean_outputs()
 godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_uses_mingw)
 godot_gen_header = os.path.join(
     "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
@@ -382,11 +423,11 @@ build_gde_graph = build_gde and selected_provider["implemented"] and not is_clea
 
 
 # ---------------------------------------------------------------------------
-# Host-native deterministic verification tools (alias: verify)
+# Host-native deterministic maintainer tools (alias: maintainer_tools)
 # ---------------------------------------------------------------------------
-if build_verify:
-    verify_env = env.Clone()
-    verify_env.Append(CPPDEFINES=[
+if build_maintainer_tools:
+    maintainer_tools_env = env.Clone()
+    maintainer_tools_env.Append(CPPDEFINES=[
         "CAMBANG_INTERNAL_SMOKE=1",
         "CAMBANG_ENABLE_SYNTHETIC=1",
         "CAMBANG_PROVIDER_STUB=1",
@@ -394,106 +435,106 @@ if build_verify:
     ])
 
     if host_platform == "windows" and not is_msvc:
-        verify_env.Append(LINKFLAGS=["-mconsole"])
+        maintainer_tools_env.Append(LINKFLAGS=["-mconsole"])
 
-    verify_env.VariantDir(verify_obj_dir, "src", duplicate=0)
+    maintainer_tools_env.VariantDir(maintainer_tools_obj_dir, "src", duplicate=0)
 
-    verify_core_runtime_sources = _host_core_runtime_sources(verify_obj_dir)
-    verify_broker_sources = _glob_cpp(verify_obj_dir, "imaging", "broker")
-    verify_broker_sources = [s for s in verify_broker_sources if not str(s).endswith("banner_info.cpp")]
-    verify_stub_sources = _glob_cpp(verify_obj_dir, "imaging", "stub")
-    verify_synthetic_sources = _glob_cpp(verify_obj_dir, "imaging", "synthetic")
+    maintainer_tools_core_runtime_sources = _host_core_runtime_sources(maintainer_tools_obj_dir)
+    maintainer_tools_broker_sources = _glob_cpp(maintainer_tools_obj_dir, "imaging", "broker")
+    maintainer_tools_broker_sources = [s for s in maintainer_tools_broker_sources if not str(s).endswith("banner_info.cpp")]
+    maintainer_tools_stub_sources = _glob_cpp(maintainer_tools_obj_dir, "imaging", "stub")
+    maintainer_tools_synthetic_sources = _glob_cpp(maintainer_tools_obj_dir, "imaging", "synthetic")
 
-    runtime_verify_sources = _unique_sources(verify_core_runtime_sources + verify_stub_sources)
+    runtime_maintainer_tools_sources = _unique_sources(maintainer_tools_core_runtime_sources + maintainer_tools_stub_sources)
 
-    core_smoke_prog = verify_env.Program(
+    core_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_spine_smoke"),
-        source=runtime_verify_sources + ["src/smoke/core_spine_smoke.cpp"],
+        source=runtime_maintainer_tools_sources + ["src/smoke/core_spine_smoke.cpp"],
     )
-    core_result_path_smoke_prog = verify_env.Program(
+    core_result_path_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_result_path_smoke"),
-        source=verify_core_runtime_sources + ["src/smoke/core_result_path_smoke.cpp"],
+        source=maintainer_tools_core_runtime_sources + ["src/smoke/core_result_path_smoke.cpp"],
     )
-    core_capture_assembly_registry_smoke_prog = verify_env.Program(
+    core_capture_assembly_registry_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_capture_assembly_registry_smoke"),
-        source=verify_core_runtime_sources + ["src/smoke/core_capture_assembly_registry_smoke.cpp"],
+        source=maintainer_tools_core_runtime_sources + ["src/smoke/core_capture_assembly_registry_smoke.cpp"],
     )
-    core_dispatcher_bracket_routing_smoke_prog = verify_env.Program(
+    core_dispatcher_bracket_routing_smoke_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "core_dispatcher_bracket_routing_smoke"),
-        source=verify_core_runtime_sources + ["src/smoke/core_dispatcher_bracket_routing_smoke.cpp"],
+        source=maintainer_tools_core_runtime_sources + ["src/smoke/core_dispatcher_bracket_routing_smoke.cpp"],
     )
 
-    pattern_bench_sources = _unique_sources(_glob_cpp(verify_obj_dir, "pixels", "pattern") + ["src/smoke/pattern_render_bench.cpp"])
-    pattern_bench_prog = verify_env.Program(
+    pattern_bench_sources = _unique_sources(_glob_cpp(maintainer_tools_obj_dir, "pixels", "pattern") + ["src/smoke/pattern_render_bench.cpp"])
+    pattern_bench_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "pattern_render_bench"),
         source=pattern_bench_sources,
     )
 
-    synthetic_verify_sources = _unique_sources(verify_core_runtime_sources + verify_synthetic_sources + ["src/smoke/synthetic_timeline_verify.cpp"])
-    synthetic_verify_prog = verify_env.Program(
+    synthetic_maintainer_tools_sources = _unique_sources(maintainer_tools_core_runtime_sources + maintainer_tools_synthetic_sources + ["src/smoke/synthetic_timeline_verify.cpp"])
+    synthetic_maintainer_tools_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "synthetic_timeline_verify"),
-        source=synthetic_verify_sources,
+        source=synthetic_maintainer_tools_sources,
     )
 
-    phase3_verify_sources = _unique_sources(verify_core_runtime_sources + ["src/smoke/phase3_snapshot_verify.cpp"])
-    phase3_verify_prog = verify_env.Program(
+    phase3_maintainer_tools_sources = _unique_sources(maintainer_tools_core_runtime_sources + ["src/smoke/phase3_snapshot_verify.cpp"])
+    phase3_maintainer_tools_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "phase3_snapshot_verify"),
-        source=phase3_verify_sources,
+        source=phase3_maintainer_tools_sources,
     )
 
-    restart_boundary_verify_sources = _unique_sources(
-        verify_core_runtime_sources + verify_stub_sources + verify_synthetic_sources + ["src/smoke/restart_boundary_verify.cpp"]
+    restart_boundary_maintainer_tools_sources = _unique_sources(
+        maintainer_tools_core_runtime_sources + maintainer_tools_stub_sources + maintainer_tools_synthetic_sources + ["src/smoke/restart_boundary_verify.cpp"]
     )
-    restart_boundary_verify_prog = verify_env.Program(
+    restart_boundary_maintainer_tools_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "restart_boundary_verify"),
-        source=restart_boundary_verify_sources,
+        source=restart_boundary_maintainer_tools_sources,
     )
 
     verify_case_runner_sources = _unique_sources(
-        verify_core_runtime_sources
-        + verify_broker_sources
-        + verify_stub_sources
-        + verify_synthetic_sources
+        maintainer_tools_core_runtime_sources
+        + maintainer_tools_broker_sources
+        + maintainer_tools_stub_sources
+        + maintainer_tools_synthetic_sources
         + [
             "src/smoke/verify_case/verify_case_catalog.cpp",
             "src/smoke/verify_case_runner.cpp",
         ]
     )
-    verify_case_runner_prog = verify_env.Program(
+    verify_case_runner_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "verify_case_runner"),
         source=verify_case_runner_sources,
     )
 
-    provider_verify_sources = _unique_sources(
-        verify_core_runtime_sources
-        + verify_broker_sources
-        + verify_stub_sources
-        + verify_synthetic_sources
+    provider_maintainer_tools_sources = _unique_sources(
+        maintainer_tools_core_runtime_sources
+        + maintainer_tools_broker_sources
+        + maintainer_tools_stub_sources
+        + maintainer_tools_synthetic_sources
         + ["src/smoke/provider_compliance_verify.cpp"]
     )
-    provider_verify_prog = verify_env.Program(
+    provider_maintainer_tools_prog = maintainer_tools_env.Program(
         target=os.path.join(out_dir, "provider_compliance_verify"),
-        source=provider_verify_sources,
+        source=provider_maintainer_tools_sources,
     )
 
-    verify_alias = Alias(
-        "verify",
+    maintainer_tools_alias = Alias(
+        "maintainer_tools",
         [
             core_smoke_prog,
             core_result_path_smoke_prog,
             core_capture_assembly_registry_smoke_prog,
             core_dispatcher_bracket_routing_smoke_prog,
             pattern_bench_prog,
-            synthetic_verify_prog,
-            phase3_verify_prog,
+            synthetic_maintainer_tools_prog,
+            phase3_maintainer_tools_prog,
             verify_case_runner_prog,
-            provider_verify_prog,
-            restart_boundary_verify_prog,
+            provider_maintainer_tools_prog,
+            restart_boundary_maintainer_tools_prog,
         ],
     )
-    AlwaysBuild(verify_alias)
+    AlwaysBuild(maintainer_tools_alias)
 else:
-    verify_alias = Alias("verify", [])
+    maintainer_tools_alias = Alias("maintainer_tools", [])
 
 
 # ---------------------------------------------------------------------------
@@ -629,35 +670,40 @@ else:
     platform_runtime_validate_alias = Alias("platform_runtime_validate", [])
 
 
-selected_cambang_nodes = []
-if build_verify:
-    selected_cambang_nodes.append(verify_alias)
+selected_build_nodes = []
+if build_maintainer_tools:
+    selected_build_nodes.append(maintainer_tools_alias)
 if build_gde:
-    selected_cambang_nodes.append(gde_alias)
+    selected_build_nodes.append(gde_alias)
 if build_platform_runtime_validate:
-    selected_cambang_nodes.append(platform_runtime_validate_alias)
+    selected_build_nodes.append(platform_runtime_validate_alias)
 
-cambang_alias = Alias("cambang", selected_cambang_nodes)
+cambang_alias = Alias("cambang", selected_build_nodes)
 AlwaysBuild(cambang_alias)
 
+gde_all_alias = Alias("gde_all", [])
 godot_cpp_alias = Alias("godot_cpp", godot_cpp_build if build_gde_graph else [])
-all_alias = Alias("all", [cambang_alias, godot_cpp_alias])
+all_build_nodes = list(selected_build_nodes)
+if build_gde_graph:
+    all_build_nodes.append(godot_cpp_alias)
+all_alias = Alias("all", all_build_nodes)
 AlwaysBuild(all_alias)
 build_all_alias = Alias("build_all", all_alias)
 AlwaysBuild(build_all_alias)
 
-cambang_clean_outputs = [verify_obj_dir, gde_obj_dir, platform_runtime_validate_obj_dir, env["COMPDB_PATH"]]
-if build_verify:
-    cambang_clean_outputs += verify_clean_outputs
-if build_gde:
-    cambang_clean_outputs += gde_clean_outputs
-if build_platform_runtime_validate:
-    cambang_clean_outputs += platform_runtime_validate_clean_outputs
-Clean(verify_alias, verify_clean_outputs)
+cambang_clean_outputs = _unique_sources(
+    maintainer_tools_clean_outputs
+    + gde_all_clean_outputs
+    + _all_platform_runtime_validate_clean_outputs()
+    + [env["COMPDB_PATH"]]
+)
+Clean(maintainer_tools_alias, maintainer_tools_clean_outputs)
 Clean(gde_alias, gde_clean_outputs)
+Clean(gde_all_alias, gde_all_clean_outputs)
 Clean(platform_runtime_validate_alias, platform_runtime_validate_clean_outputs)
-Clean(cambang_alias, _unique_sources(cambang_clean_outputs))
+Clean(cambang_alias, cambang_clean_outputs)
 Clean(godot_cpp_alias, godot_cpp_clean_outputs)
+Clean(all_alias, cambang_clean_outputs + godot_cpp_clean_outputs)
 
 if not is_clean:
     AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])
