@@ -10,8 +10,11 @@ These tools are **not user-facing applications** and are not intended to
 ship as part of production builds. They exist to help maintainers validate
 correctness while developing the runtime.
 
-Most tools are **opt-in build artifacts** and will not appear in normal
-build outputs unless explicitly requested.
+Deterministic maintainer tools are default development-build artifacts under
+`maintainer_tools=yes`. They are still not production artifacts; they are built
+by default so local development builds continuously exercise deterministic
+runtime checks. Platform-backed runtime validation remains separate and explicit
+via `platform_runtime_validate=yes`.
 
 ---
 
@@ -298,18 +301,15 @@ Those concerns belong to platform validation tools.
 
 ### Build and usage
 
-Typical smoke-only build form:
+Typical deterministic maintainer-tool build forms:
 
 ```text
-scons smoke=1 gde=no smoke
+scons gde=no
+scons maintainer_tools
 ```
 
-If also building the GDExtension in the same invocation, pass an explicit
-provider selection because the GDE target requires `provider=...`:
-
-```text
-scons smoke=1 provider=stub smoke
-```
+Maintainer tools are host-native and are not scoped by `platform=<...>`. The GDE
+build does not require a public provider-selection variable.
 
 Usage:
 
@@ -469,7 +469,7 @@ It exercises:
 - stream start / stop
 - shutdown behaviour
 
-Passing this tool keeps `platform_validate=1` meaningful for the MF dev
+Passing this tool keeps `platform_runtime_validate=yes` meaningful for the MF dev
 accelerator, but it does **not** prove final Windows release-provider
 completeness or conformance. It does not cover callback-drain, stop/destroy race,
 timeout, negative-stride, repeated lifecycle, or frame-release stress coverage.
@@ -477,7 +477,7 @@ timeout, negative-stride, repeated lifecycle, or frame-release stress coverage.
 ### Build and usage
 
 ```text
-scons platform_validate=1 windows_mf_runtime_validate
+scons platform_runtime_validate=yes platform=windows
 ./out/windows_mf_runtime_validate.exe --real-hardware
 ```
 
@@ -495,8 +495,8 @@ Expected high-level behaviour:
 
 ### `core_spine_smoke`
 
-Minimal runtime sanity check validating the Core runtime spine using the
-stub provider.
+Minimal runtime sanity check validating the Core runtime spine using deterministic
+maintainer-tool provider coverage.
 
 
 
