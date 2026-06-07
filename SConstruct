@@ -686,9 +686,13 @@ godot_cpp_alias = Alias("godot_cpp", godot_cpp_build if build_gde_graph else [])
 all_build_nodes = list(selected_build_nodes)
 if build_gde_graph:
     all_build_nodes.append(godot_cpp_alias)
-all_alias = Alias("all", all_build_nodes)
+if is_clean:
+    all_alias = Alias("all", [])
+    build_all_alias = Alias("build_all", [])
+else:
+    all_alias = Alias("all", all_build_nodes)
+    build_all_alias = Alias("build_all", all_alias)
 AlwaysBuild(all_alias)
-build_all_alias = Alias("build_all", all_alias)
 AlwaysBuild(build_all_alias)
 
 cambang_clean_outputs = _unique_sources(
@@ -705,6 +709,8 @@ Clean(cambang_alias, cambang_clean_outputs)
 Clean(godot_cpp_alias, godot_cpp_clean_outputs)
 Clean(all_alias, cambang_clean_outputs)
 Clean(all_alias, godot_cpp_clean_outputs)
+Clean(build_all_alias, cambang_clean_outputs)
+Clean(build_all_alias, godot_cpp_clean_outputs)
 
 if not is_clean:
     AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])
