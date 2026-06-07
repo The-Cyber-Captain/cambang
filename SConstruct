@@ -703,7 +703,8 @@ Clean(gde_all_alias, gde_all_clean_outputs)
 Clean(platform_runtime_validate_alias, platform_runtime_validate_clean_outputs)
 Clean(cambang_alias, cambang_clean_outputs)
 Clean(godot_cpp_alias, godot_cpp_clean_outputs)
-Clean(all_alias, cambang_clean_outputs + godot_cpp_clean_outputs)
+Clean(all_alias, cambang_clean_outputs)
+Clean(all_alias, godot_cpp_clean_outputs)
 
 if not is_clean:
     AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])
