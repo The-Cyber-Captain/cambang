@@ -102,10 +102,184 @@ def _godot_target(t: str) -> str:
     return t
 
 
-def _godot_cpp_lib_path(platform: str, target: str, arch: str, is_msvc: bool) -> str:
+def _godot_cpp_lib_path(platform: str, target: str, arch: str, windows_gde_toolchain) -> str:
     # godot-cpp outputs: thirdparty/godot-cpp/bin/libgodot-cpp.<platform>.<target>.<arch>.(a|lib)
-    ext = "lib" if (platform == "windows" and is_msvc) else "a"
+    ext = "lib" if (platform == "windows" and windows_gde_toolchain["family"] == "msvc") else "a"
     return os.path.join("thirdparty", "godot-cpp", "bin", f"libgodot-cpp.{platform}.{target}.{arch}.{ext}")
+
+
+def _tool_basename(value):
+    return os.path.basename(str(value).replace("\\", "/")).lower()
+
+
+def _toolchain_probe_text(env) -> str:
+    return " ".join(str(env.get(name, "")) for name in ("CC", "CXX", "LINK", "SHLINK"))
+
+
+def _looks_like_mingw_toolchain(env) -> bool:
+    probe = _toolchain_probe_text(env).lower().replace("\\", "/")
+    tool_basenames = {_tool_basename(env.get(name, "")) for name in ("CC", "CXX", "LINK", "SHLINK")}
+    return (
+        "mingw" in probe
+        or "msys" in probe
+        or "ucrt64" in probe
+        or "clang64" in probe
+        or bool(tool_basenames & {"gcc", "gcc.exe", "g++", "g++.exe", "ld", "ld.exe"})
+    )
+
+
+def _looks_like_mingw_llvm_toolchain(env) -> bool:
+    probe = _toolchain_probe_text(env).lower().replace("\\", "/")
+    tool_basenames = {_tool_basename(env.get(name, "")) for name in ("CC", "CXX", "LINK", "SHLINK")}
+    return (
+        "clang64" in probe
+        or "mingw-clang" in probe
+        or bool(tool_basenames & {"clang", "clang.exe", "clang++", "clang++.exe", "lld", "lld.exe", "ld.lld", "ld.lld.exe"})
+    )
+
+
+def _looks_like_msvc_toolchain(env) -> bool:
+    probe = _toolchain_probe_text(env).lower().replace("\\", "/")
+    tool_basenames = {_tool_basename(env.get(name, "")) for name in ("CC", "CXX", "LINK", "SHLINK")}
+    return bool(env.get("MSVC_VERSION")) or "msvc" in probe or bool(tool_basenames & {"cl", "cl.exe", "link", "link.exe"})
+
+
+def _windows_gde_toolchain_error(message, *, platform, env, artifact_ext, godot_cpp_toolchain_args):
+    root_tools = _toolchain_probe_text(env) or "unknown"
+    print("ERROR: " + message)
+    print(f"  selected platform: {platform}")
+    print(f"  root GDE compiler/linker/tool family: {root_tools}")
+    print(f"  expected godot-cpp artifact extension: .{artifact_ext}")
+    print("  delegated godot-cpp toolchain arguments: " + (" ".join(godot_cpp_toolchain_args) or "<none>"))
+    print("  suggested action: use use_mingw=yes for MinGW-w64, use_mingw=yes use_llvm=yes for MinGW-LLVM, or use_mingw=no from an MSVC developer environment.")
+    Exit(1)
+
+
+def resolve_windows_gde_toolchain(env, *, platform, requested_use_mingw, requested_use_llvm, is_clean):
+    actual_mingw = _looks_like_mingw_toolchain(env)
+    actual_llvm = _looks_like_mingw_llvm_toolchain(env)
+    actual_msvc = _looks_like_msvc_toolchain(env)
+
+    if requested_use_mingw == "no":
+        if requested_use_llvm == "yes" and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_llvm=yes requires use_mingw=yes for Windows GDE builds.",
+                platform=platform,
+                env=env,
+                artifact_ext="lib",
+                godot_cpp_toolchain_args=["use_mingw=no"],
+            )
+        if not actual_msvc and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_mingw=no selected MSVC ABI, but the root GDE toolchain is not confidently MSVC-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="lib",
+                godot_cpp_toolchain_args=["use_mingw=no"],
+            )
+        return {
+            "family": "msvc",
+            "artifact_ext": "lib",
+            "label": "MSVC",
+            "godot_cpp_toolchain_args": ["use_mingw=no"],
+        }
+
+    if requested_use_mingw == "yes":
+        family = "mingw-llvm" if (requested_use_llvm == "yes" or (requested_use_llvm == "auto" and actual_llvm)) else "mingw-gcc"
+        args = ["use_mingw=yes"]
+        if family == "mingw-llvm":
+            args.append("use_llvm=yes")
+        if not actual_mingw and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_mingw=yes selected MinGW ABI, but the root GDE toolchain is not confidently MinGW-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="a",
+                godot_cpp_toolchain_args=args,
+            )
+        if requested_use_llvm == "yes" and not actual_llvm and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_llvm=yes selected MinGW-LLVM, but the root GDE toolchain is not confidently LLVM-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="a",
+                godot_cpp_toolchain_args=args,
+            )
+        if requested_use_llvm == "no" and actual_llvm and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_llvm=no selected MinGW GCC, but the root GDE toolchain appears to be LLVM-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="a",
+                godot_cpp_toolchain_args=args,
+            )
+        return {
+            "family": family,
+            "artifact_ext": "a",
+            "label": "MinGW LLVM" if family == "mingw-llvm" else "MinGW GCC",
+            "godot_cpp_toolchain_args": args,
+        }
+
+    # use_mingw=auto: resolve from the actual root GDE tools, not only the shell.
+    if actual_mingw:
+        if requested_use_llvm == "yes" and not actual_llvm and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_llvm=yes selected MinGW-LLVM, but the root GDE toolchain is not confidently LLVM-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="a",
+                godot_cpp_toolchain_args=["use_mingw=yes", "use_llvm=yes"],
+            )
+        if requested_use_llvm == "no" and actual_llvm and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_llvm=no selected MinGW GCC, but the root GDE toolchain appears to be LLVM-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="a",
+                godot_cpp_toolchain_args=["use_mingw=yes"],
+            )
+        family = "mingw-llvm" if (requested_use_llvm == "yes" or (requested_use_llvm == "auto" and actual_llvm)) else "mingw-gcc"
+        args = ["use_mingw=yes"]
+        if family == "mingw-llvm":
+            args.append("use_llvm=yes")
+        return {
+            "family": family,
+            "artifact_ext": "a",
+            "label": "MinGW LLVM" if family == "mingw-llvm" else "MinGW GCC",
+            "godot_cpp_toolchain_args": args,
+        }
+
+    if actual_msvc:
+        if requested_use_llvm == "yes" and not is_clean:
+            _windows_gde_toolchain_error(
+                "use_llvm=yes requires a MinGW-family root GDE toolchain, but the root GDE toolchain appears to be MSVC-family.",
+                platform=platform,
+                env=env,
+                artifact_ext="lib",
+                godot_cpp_toolchain_args=["use_mingw=no"],
+            )
+        return {
+            "family": "msvc",
+            "artifact_ext": "lib",
+            "label": "MSVC",
+            "godot_cpp_toolchain_args": ["use_mingw=no"],
+        }
+
+    if not is_clean:
+        _windows_gde_toolchain_error(
+            "use_mingw=auto could not confidently resolve the Windows GDE toolchain family.",
+            platform=platform,
+            env=env,
+            artifact_ext="a|lib",
+            godot_cpp_toolchain_args=[],
+        )
+
+    return {
+        "family": "msvc",
+        "artifact_ext": "lib",
+        "label": "MSVC (clean fallback)",
+        "godot_cpp_toolchain_args": ["use_mingw=no"],
+    }
 
 
 GDE_PROVIDER_RESOLUTION = {
@@ -228,10 +402,13 @@ build_platform_runtime_validate = bool(tmp_env["platform_runtime_validate"])
 selected_provider = GDE_PROVIDER_RESOLUTION[gde_platform]
 
 # Toolchain selection is intentionally host-oriented. platform=<...> selects the GDE
-# target platform and must not make host verifiers non-native.
-resolved_use_mingw = tmp_env["use_mingw"]
+# target platform and must not make host verifiers non-native. Explicit Windows
+# toolchain choices are kept authoritative for the root GDE build environment.
+requested_use_mingw = tmp_env["use_mingw"]
+requested_use_llvm = tmp_env["use_llvm"]
+resolved_use_mingw = requested_use_mingw
 if resolved_use_mingw == "auto":
-    resolved_use_mingw = "yes" if (host_platform == "windows" and _looks_like_msys_or_bash()) else "no"
+    resolved_use_mingw = "yes" if (host_platform == "windows" and (requested_use_llvm == "yes" or _looks_like_msys_or_bash())) else "no"
 
 tools = None
 if host_platform == "windows" and resolved_use_mingw == "yes":
@@ -257,6 +434,8 @@ if not is_clean:
 
 env = Environment(variables=vars, tools=tools)
 env["ENV"] = command_process_env
+if host_platform == "windows" and resolved_use_mingw == "yes" and requested_use_llvm == "yes":
+    env.Replace(CC="clang", CXX="clang++", LINK="clang++", SHCC="clang", SHCXX="clang++", SHLINK="clang++")
 env.Append(CPPPATH=["src"])
 
 # IDE support: aggregate compile_commands.json for all active compile environments.
@@ -266,6 +445,16 @@ cxx = str(env.get("CXX", "")).lower()
 is_msvc = ("cl" in cxx) or env.get("MSVC_VERSION")
 core_target = _core_target_for_flags(env["target"])
 godot_target = _godot_target(env["target"])
+windows_gde_toolchain = None
+if build_gde and gde_platform == "windows":
+    windows_gde_toolchain = resolve_windows_gde_toolchain(
+        env,
+        platform=gde_platform,
+        requested_use_mingw=requested_use_mingw,
+        requested_use_llvm=requested_use_llvm,
+        is_clean=is_clean,
+    )
+    is_msvc = windows_gde_toolchain["family"] == "msvc"
 
 if is_msvc:
     env.Append(CXXFLAGS=["/std:c++20", "/W4"])
@@ -291,7 +480,10 @@ print("CamBANG SCons configuration:")
 print(f"  host_platform={host_platform} gde_platform={gde_platform} target={env['target']} (core_flags={core_target}, godot={godot_target}) arch={env['arch']} precision={env['precision']}")
 print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if host_platform == "windows":
-    print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
+    print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']} resolved_use_mingw={resolved_use_mingw}")
+if windows_gde_toolchain:
+    print(f"  windows_gde_toolchain={windows_gde_toolchain['label']} godot_cpp_ext=.{windows_gde_toolchain['artifact_ext']}")
+    print("  godot_cpp_toolchain_args=" + (" ".join(windows_gde_toolchain["godot_cpp_toolchain_args"]) or "<none>"))
 print(f"  gde={'yes' if build_gde else 'no'} verify={'yes' if build_verify else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
 if selected_provider.get("status"):
@@ -457,7 +649,7 @@ if build_gde:
     gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
     os.makedirs(gde_out_dir, exist_ok=True)
 
-    godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], is_msvc)
+    godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_gde_toolchain)
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
     godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
 
@@ -475,6 +667,8 @@ if build_gde:
         f"arch={env['arch']}",
         f"precision={env['precision']}",
     ]
+    if windows_gde_toolchain:
+        godot_cpp_args += windows_gde_toolchain["godot_cpp_toolchain_args"]
     godot_cpp_cmd = " ".join(godot_cpp_args)
     godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
 
