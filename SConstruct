@@ -416,7 +416,7 @@ gde_clean_outputs = _planned_selected_gde_clean_outputs(gde_platform, godot_targ
 gde_all_clean_outputs = _all_planned_gde_clean_outputs()
 godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_uses_mingw)
 godot_gen_header = os.path.join(
-    "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "classes", "global_constants.hpp"
+    "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "core", "ext_wrappers.gen.inc"
 )
 godot_cpp_clean_outputs = [godot_gen_header, godot_cpp_lib]
 build_gde_graph = build_gde and selected_provider["implemented"] and not is_clean
