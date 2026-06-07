@@ -93,16 +93,8 @@ Supported assignment-style variables are exactly:
 | `mingw_prefix` | path | empty | Optional MinGW installation prefix forwarded to `godot-cpp`. |
 | `warnings_as_errors` | `yes`, `no` | `no` | Treat compiler warnings as errors. |
 
-Removed variables are **not deprecated aliases**. Do not use them:
-
-- `provider`
-- `synthetic`
-- `smoke`
-- `platform_validate`
-- `verify`
-
-If supplied as assignment-style variables, they are rejected by the explicit
-unknown-variable enforcement in `SConstruct`.
+Assignment-style variables outside this declared public set are rejected by
+`SConstruct`.
 
 ---
 

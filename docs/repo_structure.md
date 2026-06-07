@@ -357,9 +357,8 @@ Assignment-style variables outside the declared public set are rejected.
 - `mingw_prefix=<path>` — optional MinGW installation prefix forwarded to `godot-cpp`; default empty
 - `warnings_as_errors=yes|no` — treat warnings as errors; default `no`
 
-Removed variables are not deprecated aliases: `provider`, `synthetic`, `smoke`,
-`platform_validate`, and `verify` must not be used as SCons assignment-style
-variables.
+Assignment-style variables outside this declared public set are rejected by
+`SConstruct`.
 
 ### Build aliases
 
