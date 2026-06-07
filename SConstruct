@@ -534,9 +534,14 @@ if build_maintainer_tools:
     if host_platform == "windows" and not is_msvc:
         synthetic_only_provider_support_env.Append(LINKFLAGS=["-mconsole"])
     synthetic_only_provider_support_env.VariantDir(synthetic_only_provider_support_obj_dir, "src", duplicate=0)
+    synthetic_only_provider_support_broker_sources = _glob_cpp(synthetic_only_provider_support_obj_dir, "imaging", "broker")
+    synthetic_only_provider_support_broker_sources = [
+        s for s in synthetic_only_provider_support_broker_sources
+        if not str(s).endswith("banner_info.cpp")
+    ]
     synthetic_only_provider_support_sources = _unique_sources(
         _host_core_runtime_sources(synthetic_only_provider_support_obj_dir)
-        + _glob_cpp(synthetic_only_provider_support_obj_dir, "imaging", "broker")
+        + synthetic_only_provider_support_broker_sources
         + _glob_cpp(synthetic_only_provider_support_obj_dir, "imaging", "synthetic")
         + ["src/smoke/synthetic_only_provider_support_verify.cpp"]
     )
