@@ -39,6 +39,7 @@ ALLOWED_VARIABLES = {
     "COMPDB_PATH",
     "use_mingw",
     "use_llvm",
+    "mingw_prefix",
     "warnings_as_errors",
 }
 
@@ -102,9 +103,9 @@ def _godot_target(t: str) -> str:
     return t
 
 
-def _godot_cpp_lib_path(platform: str, target: str, arch: str, is_msvc: bool) -> str:
+def _godot_cpp_lib_path(platform: str, target: str, arch: str, windows_uses_mingw: bool) -> str:
     # godot-cpp outputs: thirdparty/godot-cpp/bin/libgodot-cpp.<platform>.<target>.<arch>.(a|lib)
-    ext = "lib" if (platform == "windows" and is_msvc) else "a"
+    ext = "a" if (platform != "windows" or windows_uses_mingw) else "lib"
     return os.path.join("thirdparty", "godot-cpp", "bin", f"libgodot-cpp.{platform}.{target}.{arch}.{ext}")
 
 
@@ -209,6 +210,11 @@ vars.Add(EnumVariable(
     "auto",
     allowed_values=["auto", "yes", "no"],
 ))
+vars.Add(
+    "mingw_prefix",
+    "Optional MinGW installation prefix forwarded to godot-cpp for Windows MinGW GDE builds.",
+    "",
+)
 vars.Add(BoolVariable(
     "warnings_as_errors",
     "Treat warnings as errors.",
@@ -233,8 +239,10 @@ resolved_use_mingw = tmp_env["use_mingw"]
 if resolved_use_mingw == "auto":
     resolved_use_mingw = "yes" if (host_platform == "windows" and _looks_like_msys_or_bash()) else "no"
 
+windows_uses_mingw = gde_platform == "windows" and resolved_use_mingw == "yes"
+
 tools = None
-if host_platform == "windows" and resolved_use_mingw == "yes":
+if host_platform == "windows" and windows_uses_mingw:
     tools = ["mingw"]
 
 command_process_env = _command_process_env(host_platform, tmp_env["arch"])
@@ -457,7 +465,7 @@ if build_gde:
     gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
     os.makedirs(gde_out_dir, exist_ok=True)
 
-    godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], is_msvc)
+    godot_cpp_lib = _godot_cpp_lib_path(gde_platform, godot_target, env["arch"], windows_uses_mingw)
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
     godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
 
@@ -475,6 +483,12 @@ if build_gde:
         f"arch={env['arch']}",
         f"precision={env['precision']}",
     ]
+    if gde_platform == "windows" and windows_uses_mingw:
+        godot_cpp_args.append("use_mingw=yes")
+        if env["mingw_prefix"]:
+            godot_cpp_args.append(f"mingw_prefix={env['mingw_prefix']}")
+        if env["use_llvm"] == "yes":
+            godot_cpp_args.append("use_llvm=yes")
     godot_cpp_cmd = " ".join(godot_cpp_args)
     godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
 
