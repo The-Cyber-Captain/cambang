@@ -350,6 +350,7 @@ Assignment-style variables outside the declared public set are rejected.
 - `target=<debug|release|template_debug|template_release>` — select debug/release shape; default `debug`
 - `arch=<x86_64|x86_32|arm64|arm32>` — select target architecture naming; default `x86_64`
 - `precision=<single|double>` — forwarded to `godot-cpp`; default `single`
+- `godot_cpp=<delegated|external>` — choose root handling for selected `godot-cpp` artifacts; default `delegated`
 - `platform_runtime_validate=yes|no` — include selected platform runtime validation artifacts; default `no`
 - `COMPDB_PATH=<path>` — compile database path; default `compile_commands.json`
 - `use_mingw=yes|no|auto` — Windows MinGW selection; default `auto`
@@ -368,7 +369,7 @@ Assignment-style variables outside this declared public set are rejected by
   not platform-scoped by `platform=<...>`
 - `gde` — selected CamBANG GDE/plugin artifact family selected by `platform`,
   `target`, `arch`, and `precision`
-- `godot_cpp` — selected root-modelled delegated `thirdparty/godot-cpp` outputs
+- `godot_cpp` — selected root-modelled `thirdparty/godot-cpp` outputs; delegated by default, or externally prepared with `godot_cpp=external`
 - `platform_runtime_validate` — selected platform runtime validation artifacts
 - `cambang` — ownership-wide CamBANG clean alias
 - `gde_all` — clean-only utility alias for all known CamBANG GDE object/output paths
@@ -377,7 +378,8 @@ Assignment-style variables outside this declared public set are rejected by
 ### Clean scope
 
 - `scons -c` and `scons -c all` clean CamBANG-owned outputs plus selected
-  root-modelled `godot_cpp` outputs.
+  root-modelled `godot_cpp` outputs in `godot_cpp=delegated`; in
+  `godot_cpp=external`, broad root cleans preserve selected `godot-cpp` outputs.
 - `scons -c cambang` cleans CamBANG-owned outputs, including `COMPDB_PATH`, and
   preserves `thirdparty/godot-cpp`.
 - `scons -c maintainer_tools` cleans maintainer-tool executables and
@@ -391,6 +393,7 @@ Assignment-style variables outside this declared public set are rejected by
   validation artifacts only.
 
 Root clean does not deep-clean all internal `thirdparty/godot-cpp` object files.
+The default `godot_cpp=delegated` mode invokes `python -m SCons -C thirdparty/godot-cpp ...` for one-command builds. `godot_cpp=external` never invokes that delegated build and requires the selected generated header and static library to already exist, which helps developers avoid selected-platform rebuild churn when alternating targets.
 
 ### Platform/provider mapping
 

@@ -33,6 +33,7 @@ GDE_PLATFORMS = ["windows", "android", "linux", "macos", "ios", "web"]
 GDE_TARGET_VALUES = ["debug", "release", "template_debug", "template_release"]
 GDE_ARCH_VALUES = ["x86_64", "x86_32", "arm64", "arm32"]
 GDE_PRECISION_VALUES = ["single", "double"]
+GODOT_CPP_MODES = ["delegated", "external"]
 
 ALLOWED_VARIABLES = {
     "gde",
@@ -41,6 +42,7 @@ ALLOWED_VARIABLES = {
     "target",
     "arch",
     "precision",
+    "godot_cpp",
     "platform_runtime_validate",
     "COMPDB_PATH",
     "use_mingw",
@@ -245,6 +247,51 @@ def _godot_cpp_lib_path(platform: str, target: str, arch: str, windows_uses_ming
     return os.path.join("thirdparty", "godot-cpp", "bin", f"libgodot-cpp.{platform}.{target}.{arch}.{ext}")
 
 
+def _godot_cpp_scons_args(env, platform: str, target: str, arch: str, precision: str, windows_uses_mingw: bool):
+    args = [
+        f'"{python_exe}"',
+        "-m",
+        "SCons",
+        "-C",
+        "thirdparty/godot-cpp",
+        f"platform={platform}",
+        f"target={target}",
+        f"arch={arch}",
+        f"precision={precision}",
+    ]
+    if platform == "windows" and windows_uses_mingw:
+        args.append("use_mingw=yes")
+        if env["mingw_prefix"]:
+            args.append(f"mingw_prefix={env['mingw_prefix']}")
+        if env["use_llvm"] == "yes":
+            args.append("use_llvm=yes")
+    if platform == "android":
+        args.append(f"android_api_level={env['android_api_level']}")
+        args.append(f"ndk_version={env['ndk_version']}")
+        if env["ANDROID_HOME"]:
+            args.append(f"ANDROID_HOME={env['ANDROID_HOME']}")
+    return args
+
+
+def _godot_cpp_scons_command(env, platform: str, target: str, arch: str, precision: str, windows_uses_mingw: bool) -> str:
+    return " ".join(_godot_cpp_scons_args(env, platform, target, arch, precision, windows_uses_mingw))
+
+
+def _validate_external_godot_cpp_artifacts(header: str, lib: str, suggested_command: str):
+    missing = [path for path in [header, lib] if not os.path.exists(path)]
+    if not missing:
+        return
+
+    print("ERROR: Missing selected godot-cpp artifact(s) while godot_cpp=external was selected.")
+    for path in missing:
+        print(f"  missing: {path}")
+    print("  godot_cpp=external tells the root CamBANG SCons build to consume already prepared")
+    print("  thirdparty/godot-cpp artifacts and not invoke the delegated sub-build.")
+    print("  Prepare the selected tuple first, for example:")
+    print(f"    {suggested_command}")
+    Exit(1)
+
+
 def _cpp_string_define_value(value: str) -> str:
     # SCons passes CPPDEFINES tuple values as macro text; escaped quotes ensure
     # the compiler sees a C++ string literal rather than a bare identifier.
@@ -330,6 +377,12 @@ vars.Add(EnumVariable(
     "Floating-point precision knob (forwarded to godot-cpp).",
     "single",
     allowed_values=GDE_PRECISION_VALUES,
+))
+vars.Add(EnumVariable(
+    "godot_cpp",
+    "godot-cpp artifact mode: delegated invokes thirdparty/godot-cpp SCons; external consumes already prepared selected artifacts.",
+    "delegated",
+    allowed_values=GODOT_CPP_MODES,
 ))
 vars.Add(BoolVariable(
     "platform_runtime_validate",
@@ -457,6 +510,7 @@ print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if host_platform == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
+print(f"  godot_cpp={env['godot_cpp']}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
 if build_gde and not selected_provider["implemented"]:
     print("  gde_provider_status=not_compiled")
@@ -760,33 +814,22 @@ if build_gde_graph:
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
     godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
 
-    godot_cpp_args = [
-        f'"{python_exe}"',
-        "-m",
-        "SCons",
-        "-C",
-        "thirdparty/godot-cpp",
-        f"platform={gde_platform}",
-        f"target={godot_target}",
-        f"arch={env['arch']}",
-        f"precision={env['precision']}",
-    ]
-    if gde_platform == "windows" and windows_uses_mingw:
-        godot_cpp_args.append("use_mingw=yes")
-        if env["mingw_prefix"]:
-            godot_cpp_args.append(f"mingw_prefix={env['mingw_prefix']}")
-        if env["use_llvm"] == "yes":
-            godot_cpp_args.append("use_llvm=yes")
-    if gde_platform == "android":
-        godot_cpp_args.append(f"android_api_level={env['android_api_level']}")
-        godot_cpp_args.append(f"ndk_version={env['ndk_version']}")
-        if env["ANDROID_HOME"]:
-            godot_cpp_args.append(f"ANDROID_HOME={env['ANDROID_HOME']}")
-    godot_cpp_cmd = " ".join(godot_cpp_args)
-    godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
-
-    Alias("godot_cpp", godot_cpp_build)
-    AlwaysBuild("godot_cpp")
+    godot_cpp_cmd = _godot_cpp_scons_command(
+        env,
+        gde_platform,
+        godot_target,
+        env["arch"],
+        env["precision"],
+        windows_uses_mingw,
+    )
+    if env["godot_cpp"] == "delegated":
+        godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
+        Alias("godot_cpp", godot_cpp_build)
+        AlwaysBuild("godot_cpp")
+    else:
+        _validate_external_godot_cpp_artifacts(godot_gen_header, godot_cpp_lib, godot_cpp_cmd)
+        godot_cpp_build = [env.File(godot_gen_header), env.File(godot_cpp_lib)]
+        Alias("godot_cpp", godot_cpp_build)
 
     gde_env.Append(CPPPATH=[
         os.path.join("thirdparty", "godot-cpp"),
@@ -924,9 +967,10 @@ Clean(platform_runtime_validate_alias, platform_runtime_validate_clean_outputs)
 Clean(cambang_alias, cambang_clean_outputs)
 Clean(godot_cpp_alias, godot_cpp_clean_outputs)
 Clean(all_alias, cambang_clean_outputs)
-Clean(all_alias, godot_cpp_clean_outputs)
 Clean(build_all_alias, cambang_clean_outputs)
-Clean(build_all_alias, godot_cpp_clean_outputs)
+if env["godot_cpp"] == "delegated":
+    Clean(all_alias, godot_cpp_clean_outputs)
+    Clean(build_all_alias, godot_cpp_clean_outputs)
 
 if not is_clean:
     AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])

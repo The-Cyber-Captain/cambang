@@ -68,3 +68,19 @@ CamBANG handling:
 Removal criteria:
 - Godot editor/debugger reliably surfaces diagnostics emitted immediately before quit in CamBANG's supported Godot versions.
 - CamBANG no longer needs a documented quit-flush workaround for immediate-exit verification flows.
+
+## godot-cpp selected-platform mutable generated/SCons state
+
+Upstream: https://github.com/godotengine/godot-cpp
+
+Observation:
+- CamBANG's root build keeps its own GDE object directories and plugin binaries separated by selected platform, Godot target, architecture, and precision.
+- The delegated `thirdparty/godot-cpp` sub-build still runs in one physical checkout with selected-platform mutable generated headers and SCons state.
+- Alternating delegated Windows and Android root builds can therefore trigger `godot-cpp` regeneration/rebuild work even when CamBANG's own target-separated outputs are intact.
+
+CamBANG workaround:
+- Keep `godot_cpp=delegated` as the default one-command build mode.
+- Provide `godot_cpp=external` for developers who prepare the selected `godot-cpp` generated header and static library themselves and want the root build to consume those artifacts without re-entering `thirdparty/godot-cpp`.
+
+Removal criteria:
+- Upstream `godot-cpp` delegated builds no longer share selected-platform mutable generated/SCons state in a way that causes cross-target rebuild churn, or CamBANG adopts an upstream-supported per-target artifact-state mechanism that does not require an external-consumption mode.
