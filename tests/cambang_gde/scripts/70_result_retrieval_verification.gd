@@ -49,8 +49,9 @@ var _inspection_capture_device = null
 var _capture_profile_version_before_set := -1
 var _capture_profile_version_after_set := -1
 var _still_profile_set_requested := false
+var _still_profile_version_advance_required := false
 var _still_profile_request_start_ms := 0
-var _applied_bracket_profile_snapshot_summary := ""
+var _applied_still_profile_snapshot_summary := ""
 var _capture_triggered := false
 var _capture_baseline_progress: Dictionary = {}
 var _capture_completion_progress: Dictionary = {}
@@ -255,29 +256,37 @@ func _try_verify_stream_result() -> void:
 
 	if not _still_profile_set_requested:
 		var expected_members := _make_scene70_still_image_bundle_members()
+		if not _validate_scene70_expected_still_members(expected_members):
+			return
 		var device_snapshot_before_set := _get_device_snapshot_record(_device_instance_id)
 		var profile_before_set: Dictionary = _extract_snapshot_still_profile(device_snapshot_before_set)
 		_capture_profile_version_before_set = int(profile_before_set.get("version", -1))
-		var bracket_profile := {
+		if _still_profile_matches_expected_members(profile_before_set, expected_members):
+			_still_profile_set_requested = true
+			_still_profile_version_advance_required = false
+			_still_profile_request_start_ms = Time.get_ticks_msec()
+			return
+
+		var still_profile_request := {
 			"still_image_bundle": {
 				"members": expected_members,
 			},
 		}
-		var set_profile_err := int(device.set_still_capture_profile(bracket_profile))
-		_require(
-			set_profile_err == OK,
-			"step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err]
-		)
-		_step_ok("device still capture profile set request accepted (three-member bracket)")
+		var set_profile_err := int(device.set_still_capture_profile(still_profile_request))
+		if set_profile_err != OK:
+			_fail("step %d FAIL: set_still_capture_profile failed err=%d" % [_step, set_profile_err])
+			return
+		_step_ok("device still capture profile set request accepted (members=%d)" % expected_members.size())
 		_still_profile_set_requested = true
+		_still_profile_version_advance_required = true
 		_still_profile_request_start_ms = Time.get_ticks_msec()
 		return
 
-	if not _is_expected_bracket_profile_snapshot_visible():
+	if not _is_expected_still_profile_snapshot_visible(_still_profile_version_advance_required):
 		if Time.get_ticks_msec() - _still_profile_request_start_ms > PROFILE_APPLICATION_TIMEOUT_MS:
 			var observed_snapshot := _get_device_snapshot_record(_device_instance_id)
 			var observed_profile: Dictionary = _extract_snapshot_still_profile(observed_snapshot)
-			_fail("step %d FAIL: bracket still profile did not become snapshot-visible before capture; observed %s" % [_step, _describe_still_profile(observed_profile)])
+			_fail("step %d FAIL: expected still profile did not become snapshot-visible before capture; observed %s" % [_step, _describe_still_profile(observed_profile)])
 		return
 
 	if not _capture_triggered:
@@ -292,7 +301,7 @@ func _try_verify_stream_result() -> void:
 		_capture_completion_seen = false
 		_capture_completion_progress = {}
 		_expected_capture_id = 0
-		_step_ok("capture trigger accepted after bracket profile became snapshot-visible")
+		_step_ok("capture trigger accepted after expected still profile became snapshot-visible")
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
 		return
@@ -373,22 +382,24 @@ func _try_verify_capture_result() -> void:
 	_step_ok("capture provenance grouped accessors verified (Dictionary)")
 
 	var expected_members := _make_scene70_still_image_bundle_members()
+	if not _validate_scene70_expected_still_members(expected_members):
+		return
 	var expected_member_count := expected_members.size()
 	var observed_member_count := int(capture_result.get_image_count())
 	_require(
 		observed_member_count == expected_member_count,
-		"step %d FAIL: capture get_image_count() mismatch for bracket profile (expected=%d observed=%d expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline=%s completion=%s)" % [
+		"step %d FAIL: capture get_image_count() mismatch for expected still profile (expected=%d observed=%d expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline=%s completion=%s)" % [
 			_step,
 			expected_member_count,
 			observed_member_count,
 			_expected_capture_id,
 			result_capture_id,
-			_applied_bracket_profile_snapshot_summary,
+			_applied_still_profile_snapshot_summary,
 			_describe_capture_progress(_capture_baseline_progress),
 			_describe_capture_progress(_capture_completion_progress),
 		]
 	)
-	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for bracket profile" % _step)
+	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for expected still profile" % _step)
 	var materialized_member_0: Image = null
 	for i in range(expected_member_count):
 		var expected_member: Dictionary = expected_members[i]
@@ -408,7 +419,7 @@ func _try_verify_capture_result() -> void:
 	_require(out_of_range_member.is_empty(), "step %d FAIL: capture get_image_member(expected_count) must return empty Dictionary for out-of-range" % _step)
 	var out_of_range_image: Image = capture_result.to_image_member(expected_member_count)
 	_require(out_of_range_image == null, "step %d FAIL: capture to_image_member(expected_count) must be null for out-of-range member" % _step)
-	_step_ok("capture indexed image-member metadata verified (three-member profile)")
+	_step_ok("capture indexed image-member metadata verified (members=%d)" % expected_member_count)
 
 	var capture_can_to_image := int(capture_result.can_to_image())
 	_require(capture_can_to_image != int(capture_result.CAPABILITY_UNSUPPORTED), "step %d FAIL: capture can_to_image() unexpectedly unsupported" % _step)
@@ -683,21 +694,38 @@ func _extract_still_image_bundle_members(still_profile: Dictionary) -> Array:
 	return members
 
 
-func _is_expected_bracket_profile_snapshot_visible() -> bool:
-	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
-	var still_profile: Dictionary = _extract_snapshot_still_profile(device_snapshot)
-	var version := int(still_profile.get("version", -1))
-	if version < 0:
+func _validate_scene70_expected_still_members(expected_members: Array) -> bool:
+	if expected_members.is_empty():
+		_fail("step %d FAIL: scene fixture malformed: expected still image bundle has no members" % _step)
 		return false
-	if _capture_profile_version_before_set >= 0 and version <= _capture_profile_version_before_set:
-		return false
+	for i in range(expected_members.size()):
+		if typeof(expected_members[i]) != TYPE_DICTIONARY:
+			_fail("step %d FAIL: scene fixture malformed: expected still image member %d is not a Dictionary" % [_step, i])
+			return false
+		var member: Dictionary = expected_members[i]
+		var image_member_index := int(member.get("image_member_index", -1))
+		if image_member_index != i:
+			_fail("step %d FAIL: scene fixture malformed: expected still image member %d has non-contiguous image_member_index=%d" % [_step, i, image_member_index])
+			return false
+		var role := int(member.get("role", -1))
+		if i == 0:
+			if role != CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED:
+				_fail("step %d FAIL: scene fixture malformed: expected still image member 0 must use IMAGE_ROLE_DEFAULT_METERED" % _step)
+				return false
+		elif role != CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET:
+			_fail("step %d FAIL: scene fixture malformed: expected still image member %d must use IMAGE_ROLE_ADDITIONAL_BRACKET" % [_step, i])
+			return false
+	return true
 
-	var expected_members := _make_scene70_still_image_bundle_members()
+
+func _still_profile_matches_expected_members(still_profile: Dictionary, expected_members: Array) -> bool:
 	var observed_members := _extract_still_image_bundle_members(still_profile)
 	if observed_members.size() != expected_members.size():
 		return false
 	for i in range(expected_members.size()):
 		if typeof(observed_members[i]) != TYPE_DICTIONARY:
+			return false
+		if typeof(expected_members[i]) != TYPE_DICTIONARY:
 			return false
 		var observed_member: Dictionary = observed_members[i]
 		var expected_member: Dictionary = expected_members[i]
@@ -707,10 +735,27 @@ func _is_expected_bracket_profile_snapshot_visible() -> bool:
 			return false
 		if int(observed_member.get("intended_exposure_compensation_milli_ev", 0)) != int(expected_member.get("intended_exposure_compensation_milli_ev", 0)):
 			return false
+	return true
+
+
+func _is_expected_still_profile_snapshot_visible(require_version_advance: bool) -> bool:
+	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
+	var still_profile: Dictionary = _extract_snapshot_still_profile(device_snapshot)
+	var version := int(still_profile.get("version", -1))
+	if version < 0:
+		return false
+	if require_version_advance and _capture_profile_version_before_set >= 0 and version <= _capture_profile_version_before_set:
+		return false
+
+	var expected_members := _make_scene70_still_image_bundle_members()
+	if not _validate_scene70_expected_still_members(expected_members):
+		return false
+	if not _still_profile_matches_expected_members(still_profile, expected_members):
+		return false
 
 	_capture_profile_version_after_set = version
-	_applied_bracket_profile_snapshot_summary = _describe_still_profile(still_profile)
-	_step_ok("bracket still profile snapshot-visible (%s)" % _applied_bracket_profile_snapshot_summary)
+	_applied_still_profile_snapshot_summary = _describe_still_profile(still_profile)
+	_step_ok("expected still profile snapshot-visible (%s)" % _applied_still_profile_snapshot_summary)
 	return true
 
 
@@ -855,6 +900,9 @@ func _poll_inspection_capture_result() -> void:
 		return
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
 	var expected_members := _make_scene70_still_image_bundle_members()
+	if not _validate_scene70_expected_still_members(expected_members):
+		_inspection_capture_device = null
+		return
 	var returned_count := int(capture_result.get_image_count())
 	var expected_count := expected_members.size()
 	_refresh_member_inspection_strip(capture_result, expected_members)
