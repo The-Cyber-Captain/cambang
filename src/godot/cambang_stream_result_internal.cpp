@@ -19,8 +19,8 @@ bool display_demand_trace_enabled() {
 
 DisplayDemandToken::~DisplayDemandToken() {
   if (display_demand_trace_enabled()) {
-    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_release stream_id=", (long long)stream_id_,
-                                   " token_ptr=", (uint64_t)(uintptr_t)this,
+    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_release stream_id=", static_cast<uint64_t>(stream_id_),
+                                   " token_ptr=", static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(this)),
                                    " gpu_display_view=", gpu_display_view_);
   }
   if (stream_id_ != 0) {
@@ -34,8 +34,8 @@ void DisplayDemandToken::init(uint64_t stream_id, bool gpu_display_view) {
   stream_id_ = stream_id;
   gpu_display_view_ = gpu_display_view;
   if (display_demand_trace_enabled()) {
-    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_retain stream_id=", (long long)stream_id_,
-                                   " token_ptr=", (uint64_t)(uintptr_t)this,
+    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_retain stream_id=", static_cast<uint64_t>(stream_id_),
+                                   " token_ptr=", static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(this)),
                                    " gpu_display_view=", gpu_display_view_);
   }
   if (stream_id_ != 0) {
