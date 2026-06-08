@@ -361,17 +361,33 @@ def _gde_obj_dir(platform, target, arch, precision):
     return os.path.join(gde_obj_root, platform, target, arch, precision)
 
 
-def _gde_artifact_base(platform, target, arch):
+def _gde_shared_library_suffix(platform):
+    return {
+        "windows": ".dll",
+        "android": ".so",
+        "linux": ".so",
+        "macos": ".dylib",
+        "ios": ".dylib",
+        "web": ".so",
+    }[platform]
+
+
+def _gde_artifact_stem(platform, target, arch):
     if platform == "windows":
-        return os.path.join("tests", "cambang_gde", "bin", f"cambang.windows.{target}.{arch}.dll")
+        return os.path.join("tests", "cambang_gde", "bin", f"cambang.windows.{target}.{arch}")
     return os.path.join("tests", "cambang_gde", "bin", f"libcambang.{platform}.{target}.{arch}")
 
 
+def _gde_artifact_base(platform, target, arch):
+    return _gde_artifact_stem(platform, target, arch) + _gde_shared_library_suffix(platform)
+
+
 def _planned_gde_artifact_paths(platform, target, arch):
-    base = _gde_artifact_base(platform, target, arch)
+    artifact = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
-        return [base]
-    return _unique_sources([base, base + ".so", base + ".dylib", base + ".dll"])
+        return [artifact]
+    legacy_stem = _gde_artifact_stem(platform, target, arch)
+    return _unique_sources([artifact, legacy_stem, legacy_stem + ".so", legacy_stem + ".dylib", legacy_stem + ".dll"])
 
 
 def _planned_selected_gde_clean_outputs(platform, target, arch, precision):
@@ -660,6 +676,7 @@ if build_gde_graph:
     gde_sources = _unique_sources(gde_sources)
 
     gde_target = _gde_artifact_base(gde_platform, godot_target, env["arch"])
+    gde_env["SHLIBSUFFIX"] = _gde_shared_library_suffix(gde_platform)
 
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
