@@ -51,6 +51,14 @@ var _capture_profile_version_after_set := -1
 var _still_profile_set_requested := false
 var _still_profile_request_start_ms := 0
 var _applied_bracket_profile_snapshot_summary := ""
+var _capture_baseline_completed := 0
+var _capture_baseline_failed := 0
+var _capture_baseline_last_capture_id := 0
+var _capture_baseline_active_capture_id := -1
+var _capture_baseline_snapshot_summary := ""
+var _capture_completion_observed := false
+var _expected_capture_id := 0
+var _capture_completion_snapshot_summary := ""
 var _capture_triggered := false
 var _stream_baseline_verified := false
 var _device_seam_verified := false
@@ -140,7 +148,7 @@ func _process(_delta: float) -> void:
 		return
 
 	if Time.get_ticks_msec() - _capture_poll_start_ms > CAPTURE_TIMEOUT_MS:
-		_fail("step %d FAIL: capture result did not appear within timeout" % _step)
+		_fail("step %d FAIL: capture result did not appear within timeout (%s)" % [_step, _capture_freshness_diagnostics(0, 0)])
 		return
 	_try_verify_capture_result()
 
@@ -273,6 +281,13 @@ func _try_verify_stream_result() -> void:
 		return
 
 	if not _capture_triggered:
+		var baseline_progress := _get_capture_progress_snapshot()
+		_capture_baseline_completed = int(baseline_progress.get("captures_completed", 0))
+		_capture_baseline_failed = int(baseline_progress.get("captures_failed", 0))
+		_capture_baseline_last_capture_id = int(baseline_progress.get("last_capture_id", 0))
+		_capture_baseline_active_capture_id = int(baseline_progress.get("active_capture_id", -1))
+		_capture_baseline_snapshot_summary = _describe_capture_progress_snapshot(baseline_progress)
+
 		var capture_err := int(device.trigger_capture())
 		_require(capture_err == OK, "step %d FAIL: trigger_capture() returned err=%d" % [_step, capture_err])
 		_capture_device = device
@@ -299,12 +314,37 @@ func _try_verify_stream_result() -> void:
 func _try_verify_capture_result() -> void:
 	if _capture_device == null:
 		return
+	if not _capture_completion_observed:
+		_try_observe_new_capture_completion()
+		if not _capture_completion_observed:
+			return
+
 	var capture_result = _capture_device.get_result()
 	if capture_result == null:
 		return
 
 	_require(capture_result.get_class() == "CamBANGCaptureResult", "step %d FAIL: capture result must be CamBANGCaptureResult" % _step)
 	_step_ok("capture result object branding verified")
+
+	var capture_result_capture_id := 0
+	if capture_result.has_method("get_capture_id"):
+		capture_result_capture_id = int(capture_result.get_capture_id())
+	_require(
+		capture_result_capture_id > 0,
+		"step %d FAIL: capture result id unavailable after new completion (%s)" % [_step, _capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)]
+	)
+	if _expected_capture_id > 0:
+		_require(
+			capture_result_capture_id == _expected_capture_id,
+			"step %d FAIL: capture result id mismatch after new completion (%s)" % [_step, _capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)]
+		)
+	else:
+		_require(
+			capture_result_capture_id > _capture_baseline_last_capture_id,
+			"step %d FAIL: capture result id did not advance past baseline (%s)" % [_step, _capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)]
+		)
+	_step_ok("capture result identity matched new completion (capture_id=%d)" % capture_result_capture_id)
+
 
 	_require(capture_result.get_width() > 0, "step %d FAIL: capture width invalid" % _step)
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
@@ -329,11 +369,11 @@ func _try_verify_capture_result() -> void:
 	var expected_member_count := expected_members.size()
 	_require(
 		int(capture_result.get_image_count()) == expected_member_count,
-		"step %d FAIL: capture get_image_count() mismatch for bracket profile (expected=%d observed=%d applied_snapshot=%s)" % [
+		"step %d FAIL: capture get_image_count() mismatch for bracket profile (expected=%d observed=%d %s)" % [
 			_step,
 			expected_member_count,
 			int(capture_result.get_image_count()),
-			_applied_bracket_profile_snapshot_summary
+			_capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)
 		]
 	)
 	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for bracket profile" % _step)
@@ -582,6 +622,72 @@ func _extract_still_image_bundle_members(still_profile: Dictionary) -> Array:
 		return []
 	var members: Array = members_v
 	return members
+
+
+func _get_capture_progress_snapshot() -> Dictionary:
+	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
+	if _snapshot_has_capture_progress(device_snapshot):
+		return _normalize_capture_progress_snapshot(device_snapshot, "device")
+
+	var acquisition_session_snapshot := _get_acquisition_session_snapshot_record(_device_instance_id)
+	if _snapshot_has_capture_progress(acquisition_session_snapshot):
+		return _normalize_capture_progress_snapshot(acquisition_session_snapshot, "acquisition_session")
+
+	return _normalize_capture_progress_snapshot({}, "unavailable")
+
+
+func _snapshot_has_capture_progress(snapshot_record: Dictionary) -> bool:
+	return snapshot_record.has("captures_completed") or snapshot_record.has("captures_failed") or snapshot_record.has("last_capture_id")
+
+
+func _normalize_capture_progress_snapshot(snapshot_record: Dictionary, source: String) -> Dictionary:
+	return {
+		"source": source,
+		"captures_completed": int(snapshot_record.get("captures_completed", 0)),
+		"captures_failed": int(snapshot_record.get("captures_failed", 0)),
+		"last_capture_id": int(snapshot_record.get("last_capture_id", 0)),
+		"active_capture_id": int(snapshot_record.get("active_capture_id", -1)),
+	}
+
+
+func _try_observe_new_capture_completion() -> void:
+	var progress := _get_capture_progress_snapshot()
+	_capture_completion_snapshot_summary = _describe_capture_progress_snapshot(progress)
+	var failed := int(progress.get("captures_failed", 0))
+	var completed := int(progress.get("captures_completed", 0))
+	if failed > _capture_baseline_failed:
+		_fail("step %d FAIL: capture failed after trigger (%s)" % [_step, _capture_freshness_diagnostics(0, 0)])
+		return
+	if completed <= _capture_baseline_completed:
+		return
+
+	var completed_last_capture_id := int(progress.get("last_capture_id", 0))
+	if completed_last_capture_id > _capture_baseline_last_capture_id:
+		_expected_capture_id = completed_last_capture_id
+	else:
+		_expected_capture_id = 0
+	_capture_completion_observed = true
+	_step_ok("new capture completion snapshot-visible (%s)" % _capture_completion_snapshot_summary)
+
+
+func _describe_capture_progress_snapshot(progress: Dictionary) -> String:
+	return "source=%s completed=%d failed=%d last_capture_id=%d active_capture_id=%d" % [
+		str(progress.get("source", "unknown")),
+		int(progress.get("captures_completed", 0)),
+		int(progress.get("captures_failed", 0)),
+		int(progress.get("last_capture_id", 0)),
+		int(progress.get("active_capture_id", -1))
+	]
+
+
+func _capture_freshness_diagnostics(expected_capture_id: int, result_capture_id: int) -> String:
+	return "expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline={%s} completion={%s}" % [
+		expected_capture_id,
+		result_capture_id,
+		_applied_bracket_profile_snapshot_summary,
+		_capture_baseline_snapshot_summary,
+		_capture_completion_snapshot_summary
+	]
 
 
 func _is_expected_bracket_profile_snapshot_visible() -> bool:
