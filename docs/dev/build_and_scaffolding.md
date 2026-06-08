@@ -195,15 +195,20 @@ Declared GDE platforms and provider families:
 | `web` | `web_getusermedia` | `src/imaging/platform/web` | Not yet implemented. |
 
 Windows is currently the only implemented platform-backed GDE provider path.
-Non-clean builds for Android, Linux, macOS, iOS, and Web fail clearly for missing
-platform-backed provider implementation. Clean mode remains safe for all declared
-platforms.
+For declared platforms whose provider family is not implemented yet, non-clean
+GDE builds are still allowed to produce a synthetic-capable artifact. In those
+artifacts no platform-backed provider sources are compiled, no `CAMBANG_PROVIDER_*`
+macro is defined, and `platform_backed` mode is unavailable in the build. A
+default `CamBANGServer.start()` or explicit platform-backed start must therefore
+fail visibly at runtime through the provider capability path instead of silently
+falling back. Clean mode remains safe for all declared platforms.
 
 GDE builds always include `SyntheticProvider` support and define
-`CAMBANG_ENABLE_SYNTHETIC=1`. Synthetic is a runtime mode compiled into GDE
-builds, not a second provider instance or multi-provider arbitration model.
-`StubProvider` is built where needed for host-native deterministic maintainer
-coverage; it is not selected through a public GDE provider option.
+`CAMBANG_ENABLE_SYNTHETIC=1`. Synthetic is an alternate runtime mode of the
+single provider instance compiled into GDE builds, not a second simultaneous
+provider instance or multi-provider arbitration model. `StubProvider` is built
+where needed for host-native deterministic maintainer coverage; it is not a
+public production GDE fallback provider.
 
 ---
 

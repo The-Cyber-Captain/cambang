@@ -75,6 +75,8 @@ Observable boundary contract:
 - `CamBANGServer.stop()`
 - `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
+- `CamBANGServer.get_provider_support()` for stopped-time, read-only provider
+  support/startup introspection from compiled build capability metadata
 - advanced/dev/scenario explicit-ID result lookups:
   - `CamBANGServer.get_capture_result_by_id(capture_id, device_instance_id)`
   - `CamBANGServer.get_capture_result_set_by_id(capture_id)`

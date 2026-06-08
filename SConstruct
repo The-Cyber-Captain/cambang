@@ -115,6 +115,13 @@ def _godot_cpp_lib_path(platform: str, target: str, arch: str, windows_uses_ming
     return os.path.join("thirdparty", "godot-cpp", "bin", f"libgodot-cpp.{platform}.{target}.{arch}.{ext}")
 
 
+def _cpp_string_define_value(value: str) -> str:
+    # SCons passes CPPDEFINES tuple values as macro text; escaped quotes ensure
+    # the compiler sees a C++ string literal rather than a bare identifier.
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'\\"{escaped}\\"'
+
+
 GDE_PROVIDER_RESOLUTION = {
     "windows": {
         "family": "windows_mediafoundation",
@@ -260,11 +267,6 @@ if not is_clean:
         print(f"ERROR: platform_runtime_validate=yes has no validator for platform '{gde_platform}'.")
         print("  Currently implemented validator platform(s): " + ", ".join(sorted(RUNTIME_VALIDATORS)))
         Exit(1)
-    if build_gde and not selected_provider["implemented"]:
-        print(f"ERROR: GDE platform '{gde_platform}' is not currently buildable.")
-        print(f"  Expected provider family: {selected_provider['family']}")
-        print(f"  Expected provider implementation location: {selected_provider['location']}")
-        Exit(1)
     if not (build_gde or build_maintainer_tools or build_platform_runtime_validate):
         print("ERROR: Nothing to build. Set gde=yes and/or maintainer_tools=yes and/or platform_runtime_validate=yes (or run with -c to clean).")
         Exit(1)
@@ -308,7 +310,11 @@ if host_platform == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
-if selected_provider.get("status"):
+if build_gde and not selected_provider["implemented"]:
+    print("  gde_provider_status=not_compiled")
+    print("  platform_backed runtime mode unavailable")
+    print("  synthetic=yes")
+elif selected_provider.get("status"):
     print(f"  gde_provider_status={selected_provider['status']}")
 print(f"  COMPDB_PATH={env['COMPDB_PATH']}")
 
@@ -355,17 +361,33 @@ def _gde_obj_dir(platform, target, arch, precision):
     return os.path.join(gde_obj_root, platform, target, arch, precision)
 
 
-def _gde_artifact_base(platform, target, arch):
+def _gde_shared_library_suffix(platform):
+    return {
+        "windows": ".dll",
+        "android": ".so",
+        "linux": ".so",
+        "macos": ".dylib",
+        "ios": ".dylib",
+        "web": ".so",
+    }[platform]
+
+
+def _gde_artifact_stem(platform, target, arch):
     if platform == "windows":
-        return os.path.join("tests", "cambang_gde", "bin", f"cambang.windows.{target}.{arch}.dll")
+        return os.path.join("tests", "cambang_gde", "bin", f"cambang.windows.{target}.{arch}")
     return os.path.join("tests", "cambang_gde", "bin", f"libcambang.{platform}.{target}.{arch}")
 
 
+def _gde_artifact_base(platform, target, arch):
+    return _gde_artifact_stem(platform, target, arch) + _gde_shared_library_suffix(platform)
+
+
 def _planned_gde_artifact_paths(platform, target, arch):
-    base = _gde_artifact_base(platform, target, arch)
+    artifact = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
-        return [base]
-    return _unique_sources([base, base + ".so", base + ".dylib", base + ".dll"])
+        return [artifact]
+    legacy_stem = _gde_artifact_stem(platform, target, arch)
+    return _unique_sources([artifact, legacy_stem, legacy_stem + ".so", legacy_stem + ".dylib", legacy_stem + ".dll"])
 
 
 def _planned_selected_gde_clean_outputs(platform, target, arch, precision):
@@ -410,6 +432,7 @@ maintainer_tools_clean_outputs = [
     _program_path("verify_case_runner"),
     _program_path("provider_compliance_verify"),
     _program_path("restart_boundary_verify"),
+    _program_path("synthetic_only_provider_support_verify"),
 ]
 platform_runtime_validate_clean_outputs = _selected_platform_runtime_validate_clean_outputs(gde_platform)
 gde_clean_outputs = _planned_selected_gde_clean_outputs(gde_platform, godot_target, env["arch"], env["precision"])
@@ -419,7 +442,7 @@ godot_gen_header = os.path.join(
     "thirdparty", "godot-cpp", "gen", "include", "godot_cpp", "core", "ext_wrappers.gen.inc"
 )
 godot_cpp_clean_outputs = [godot_gen_header, godot_cpp_lib]
-build_gde_graph = build_gde and selected_provider["implemented"] and not is_clean
+build_gde_graph = build_gde and not is_clean
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +540,32 @@ if build_maintainer_tools:
         source=provider_maintainer_tools_sources,
     )
 
+    synthetic_only_provider_support_obj_dir = os.path.join(out_dir, "synthetic_only_provider_support_obj")
+    maintainer_tools_clean_outputs.append(synthetic_only_provider_support_obj_dir)
+    synthetic_only_provider_support_env = env.Clone()
+    synthetic_only_provider_support_env.Append(CPPDEFINES=[
+        "CAMBANG_INTERNAL_SMOKE=1",
+        "CAMBANG_ENABLE_SYNTHETIC=1",
+    ])
+    if host_platform == "windows" and not is_msvc:
+        synthetic_only_provider_support_env.Append(LINKFLAGS=["-mconsole"])
+    synthetic_only_provider_support_env.VariantDir(synthetic_only_provider_support_obj_dir, "src", duplicate=0)
+    synthetic_only_provider_support_broker_sources = _glob_cpp(synthetic_only_provider_support_obj_dir, "imaging", "broker")
+    synthetic_only_provider_support_broker_sources = [
+        s for s in synthetic_only_provider_support_broker_sources
+        if not str(s).endswith("banner_info.cpp")
+    ]
+    synthetic_only_provider_support_sources = _unique_sources(
+        _host_core_runtime_sources(synthetic_only_provider_support_obj_dir)
+        + synthetic_only_provider_support_broker_sources
+        + _glob_cpp(synthetic_only_provider_support_obj_dir, "imaging", "synthetic")
+        + ["src/smoke/synthetic_only_provider_support_verify.cpp"]
+    )
+    synthetic_only_provider_support_prog = synthetic_only_provider_support_env.Program(
+        target=os.path.join(out_dir, "synthetic_only_provider_support_verify"),
+        source=synthetic_only_provider_support_sources,
+    )
+
     maintainer_tools_alias = Alias(
         "maintainer_tools",
         [
@@ -530,6 +579,7 @@ if build_maintainer_tools:
             verify_case_runner_prog,
             provider_maintainer_tools_prog,
             restart_boundary_maintainer_tools_prog,
+            synthetic_only_provider_support_prog,
         ],
     )
     AlwaysBuild(maintainer_tools_alias)
@@ -542,7 +592,15 @@ else:
 # ---------------------------------------------------------------------------
 if build_gde_graph:
     gde_env = env.Clone()
-    gde_env.Append(CPPDEFINES=["CAMBANG_GDE_BUILD=1", "CAMBANG_ENABLE_SYNTHETIC=1"])
+    gde_platform_provider_status = "compiled" if selected_provider["implemented"] else "not_compiled"
+    gde_env.Append(CPPDEFINES=[
+        "CAMBANG_GDE_BUILD=1",
+        "CAMBANG_ENABLE_SYNTHETIC=1",
+        ("CAMBANG_GDE_TARGET_PLATFORM", _cpp_string_define_value(gde_platform)),
+        ("CAMBANG_GDE_PLATFORM_PROVIDER_FAMILY", _cpp_string_define_value(selected_provider["family"])),
+        ("CAMBANG_GDE_PLATFORM_BACKED_COMPILED", "1" if selected_provider["implemented"] else "0"),
+        ("CAMBANG_GDE_PLATFORM_PROVIDER_STATUS", _cpp_string_define_value(gde_platform_provider_status)),
+    ])
     gde_env.VariantDir(gde_obj_dir, "src", duplicate=0)
 
     gde_out_dir = os.path.join("tests", "cambang_gde", "bin")
@@ -593,8 +651,9 @@ if build_gde_graph:
     gde_sources += _glob_cpp(gde_obj_dir, "pixels", "pattern")
     gde_sources += _glob_cpp(gde_obj_dir, "imaging", "synthetic")
 
-    if gde_platform == "windows":
-        gde_sources += _glob_cpp(gde_obj_dir, "imaging", "platform", "windows")
+    if selected_provider["implemented"]:
+        provider_source_parts = selected_provider["location"].split(os.sep)[1:]
+        gde_sources += _glob_cpp(gde_obj_dir, *provider_source_parts)
         gde_env.Append(CPPDEFINES=selected_provider["defines"])
         # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
         gde_env.Append(LIBS=selected_provider["libs"])
@@ -617,6 +676,7 @@ if build_gde_graph:
     gde_sources = _unique_sources(gde_sources)
 
     gde_target = _gde_artifact_base(gde_platform, godot_target, env["arch"])
+    gde_env["SHLIBSUFFIX"] = _gde_shared_library_suffix(gde_platform)
 
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
