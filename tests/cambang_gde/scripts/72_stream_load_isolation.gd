@@ -476,9 +476,10 @@ func _print_frame_spike_trace() -> void:
 
 
 func _repo_external_scenario_path(filename: String) -> String:
-	var repo_root := ProjectSettings.globalize_path("res://../..")
-	return repo_root.path_join("external_scenarios").path_join(filename)
-
+	#var repo_root := ProjectSettings.globalize_path("res://../..")
+	#var repo_root := ProjectSettings.globalize_path("res://scenarios/")
+	#return repo_root.path_join("external_scenarios").path_join(filename)
+	return "res://scenarios/external_scenarios/%s" % filename
 
 func _env_bool(env_key: String, default_value: bool) -> bool:
 	var raw := OS.get_environment(env_key).strip_edges().to_lower()
