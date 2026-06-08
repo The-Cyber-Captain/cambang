@@ -36,6 +36,7 @@ GDE_PRECISION_VALUES = ["single", "double"]
 
 ALLOWED_VARIABLES = {
     "gde",
+    "godot_cpp",
     "maintainer_tools",
     "platform",
     "target",
@@ -47,6 +48,9 @@ ALLOWED_VARIABLES = {
     "use_llvm",
     "mingw_prefix",
     "warnings_as_errors",
+    "android_api_level",
+    "ndk_version",
+    "ANDROID_HOME",
 }
 
 unknown_variables = sorted(set(ARGUMENTS) - ALLOWED_VARIABLES)
@@ -91,6 +95,133 @@ def _command_process_env(host_platform: str, arch: str):
     return process_env
 
 
+def _android_host_toolchain_tag(host_platform: str) -> str:
+    if host_platform == "windows":
+        return "windows-x86_64"
+    if host_platform == "macos":
+        # Matches the pinned godot-cpp Android platform tool prebuilt name.
+        return "darwin-x86_64"
+    return "linux-x86_64"
+
+
+def _android_executable(name: str, host_platform: str) -> str:
+    return name + (".exe" if host_platform == "windows" else "")
+
+
+def _android_arch_flags(arch: str, api_level: str):
+    android_arches = {
+        "arm64": {
+            "target": f"aarch64-linux-android{api_level}",
+            "flags": ["-march=armv8-a"],
+        },
+        "arm32": {
+            "target": f"armv7a-linux-androideabi{api_level}",
+            "flags": ["-march=armv7-a"],
+        },
+        "x86_64": {
+            "target": f"x86_64-linux-android{api_level}",
+            "flags": ["-march=x86-64"],
+        },
+        "x86_32": {
+            "target": f"i686-linux-android{api_level}",
+            "flags": ["-march=i686"],
+        },
+    }
+    return android_arches[arch]
+
+
+def _resolve_android_ndk(android_home: str, ndk_version: str):
+    sdk_root = android_home or os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if sdk_root:
+        ndk_root = os.path.join(sdk_root, "ndk", ndk_version)
+        return ndk_root, ndk_root
+
+    ndk_root = os.environ.get("ANDROID_NDK_ROOT", "")
+    if ndk_root:
+        return ndk_root, ndk_root
+
+    return "", os.path.join("<ANDROID_HOME>", "ndk", ndk_version)
+
+
+def _android_toolchain_error(expected_toolchain: str, ndk_version: str):
+    print("ERROR: Android GDE toolchain not found.")
+    print(f"  Set ANDROID_HOME or ANDROID_SDK_ROOT to an Android SDK containing ndk/{ndk_version},")
+    print("  or set ANDROID_NDK_ROOT directly.")
+    print(f"  Expected LLVM toolchain: {expected_toolchain}")
+    Exit(1)
+
+
+def _discover_android_toolchain(android_home: str, ndk_version: str, host_platform: str):
+    ndk_root, expected_ndk_root = _resolve_android_ndk(android_home, ndk_version)
+    host_tag = _android_host_toolchain_tag(host_platform)
+    expected_toolchain = os.path.join(expected_ndk_root, "toolchains", "llvm", "prebuilt", host_tag)
+    if not ndk_root:
+        _android_toolchain_error(expected_toolchain, ndk_version)
+
+    toolchain = os.path.join(ndk_root, "toolchains", "llvm", "prebuilt", host_tag)
+    required_tools = ["clang", "clang++", "llvm-ar", "llvm-as", "llvm-strip", "llvm-ranlib"]
+    missing = [
+        os.path.join(toolchain, "bin", _android_executable(tool, host_platform))
+        for tool in required_tools
+        if not os.path.exists(os.path.join(toolchain, "bin", _android_executable(tool, host_platform)))
+    ]
+    if not os.path.isdir(toolchain) or missing:
+        _android_toolchain_error(toolchain, ndk_version)
+
+    return toolchain
+
+
+def _create_android_gde_env(base_env, host_platform: str, arch: str, core_target: str):
+    toolchain = _discover_android_toolchain(base_env["ANDROID_HOME"], base_env["ndk_version"], host_platform)
+    bin_dir = os.path.join(toolchain, "bin")
+    arch_config = _android_arch_flags(arch, str(base_env["android_api_level"]))
+    target_flag = f"--target={arch_config['target']}"
+
+    # Start from a clone so repo-local variables, process environment, CPPPATH,
+    # and compile-database wrapping remain connected to the root build, then
+    # replace the compiler/linker construction variables with GCC/Clang-style
+    # Android NDK tools instead of inheriting host/MSVC command syntax.
+    android_env = base_env.Clone()
+    for tool in ("gcc", "g++", "gnulink", "ar"):
+        android_env.Tool(tool)
+
+    android_env.Replace(
+        CC=os.path.join(bin_dir, _android_executable("clang", host_platform)),
+        CXX=os.path.join(bin_dir, _android_executable("clang++", host_platform)),
+        LINK=os.path.join(bin_dir, _android_executable("clang++", host_platform)),
+        AR=os.path.join(bin_dir, _android_executable("llvm-ar", host_platform)),
+        AS=os.path.join(bin_dir, _android_executable("llvm-as", host_platform)),
+        STRIP=os.path.join(bin_dir, _android_executable("llvm-strip", host_platform)),
+        RANLIB=os.path.join(bin_dir, _android_executable("llvm-ranlib", host_platform)),
+        SHLIBSUFFIX=".so",
+        OBJSUFFIX=".o",
+        SHOBJSUFFIX=".o",
+        CCFLAGS=[],
+        SHCCFLAGS=[],
+        CXXFLAGS=["-std=gnu++20", "-Wall", "-Wextra", "-Wpedantic"],
+        SHCXXFLAGS=[],
+        LINKFLAGS=[],
+        SHLINKFLAGS=["$LINKFLAGS", "-shared"],
+        CCCOM="$CC -o $TARGET -c $CCFLAGS $_CCCOMCOM $SOURCES",
+        CXXCOM="$CXX -o $TARGET -c $CXXFLAGS $CCFLAGS $_CCCOMCOM $SOURCES",
+        SHCCCOM="$CC -o $TARGET -c $SHCCFLAGS $CCFLAGS $_CCCOMCOM $SOURCES",
+        SHCXXCOM="$CXX -o $TARGET -c $SHCXXFLAGS $CXXFLAGS $CCFLAGS $_CCCOMCOM $SOURCES",
+        SHLINKCOM="$SHLINK -o $TARGET $SHLINKFLAGS $SOURCES $_LIBDIRFLAGS $_LIBFLAGS",
+    )
+    if android_env["warnings_as_errors"]:
+        android_env.Append(CXXFLAGS=["-Werror"])
+    if core_target == "debug":
+        android_env.Append(CXXFLAGS=["-g", "-O0"])
+    else:
+        android_env.Append(CXXFLAGS=["-O2"])
+
+    android_env.Append(CCFLAGS=[target_flag] + arch_config["flags"] + ["-fPIC"])
+    android_env.Append(CXXFLAGS=["-fvisibility=hidden"])
+    android_env.Append(LINKFLAGS=[target_flag])
+    android_env.Append(CPPDEFINES=["ANDROID_ENABLED", "UNIX_ENABLED"])
+    return android_env
+
+
 def _core_target_for_flags(t: str) -> str:
     # Map Godot template targets to our debug/release flag logic.
     if t == "template_debug":
@@ -113,6 +244,44 @@ def _godot_cpp_lib_path(platform: str, target: str, arch: str, windows_uses_ming
     # godot-cpp outputs: thirdparty/godot-cpp/bin/libgodot-cpp.<platform>.<target>.<arch>.(a|lib)
     ext = "a" if (platform != "windows" or windows_uses_mingw) else "lib"
     return os.path.join("thirdparty", "godot-cpp", "bin", f"libgodot-cpp.{platform}.{target}.{arch}.{ext}")
+
+
+def _godot_cpp_build_args(build_env, platform: str, target: str, arch: str, precision: str, windows_uses_mingw: bool):
+    args = [
+        f'"{python_exe}"',
+        "-m",
+        "SCons",
+        "-C",
+        "thirdparty/godot-cpp",
+        f"platform={platform}",
+        f"target={target}",
+        f"arch={arch}",
+        f"precision={precision}",
+    ]
+    if platform == "windows" and windows_uses_mingw:
+        args.append("use_mingw=yes")
+        if build_env["mingw_prefix"]:
+            args.append(f"mingw_prefix={build_env['mingw_prefix']}")
+        if build_env["use_llvm"] == "yes":
+            args.append("use_llvm=yes")
+    if platform == "android":
+        args.append(f"android_api_level={build_env['android_api_level']}")
+        args.append(f"ndk_version={build_env['ndk_version']}")
+        if build_env["ANDROID_HOME"]:
+            args.append(f"ANDROID_HOME={build_env['ANDROID_HOME']}")
+    return args
+
+
+def _validate_external_godot_cpp_artifacts(paths, suggested_command: str):
+    missing = [path for path in paths if not os.path.exists(path)]
+    if not missing:
+        return
+    print("ERROR: Required godot-cpp artifact missing while godot_cpp=external was selected.")
+    for path in missing:
+        print(f"  Missing artifact: {path}")
+    print("  Prepare the selected godot-cpp artifacts first, for example:")
+    print(f"    {suggested_command}")
+    Exit(1)
 
 
 def _cpp_string_define_value(value: str) -> str:
@@ -171,6 +340,12 @@ vars.Add(BoolVariable(
     "gde",
     "Build the GDExtension artifact (godot glue + SyntheticProvider + selected platform provider).",
     True,
+))
+vars.Add(EnumVariable(
+    "godot_cpp",
+    "godot-cpp artifact mode: delegated invokes thirdparty/godot-cpp SCons; external consumes prepared artifacts.",
+    "delegated",
+    allowed_values=["delegated", "external"],
 ))
 vars.Add(BoolVariable(
     "maintainer_tools",
@@ -234,6 +409,22 @@ vars.Add(BoolVariable(
     False,
 ))
 
+vars.Add(
+    "android_api_level",
+    "Android API level for Android GDE NDK Clang targets.",
+    "24",
+)
+vars.Add(
+    "ndk_version",
+    "Android NDK version used with ANDROID_HOME/ANDROID_SDK_ROOT for Android GDE builds.",
+    "28.1.13356709",
+)
+vars.Add(
+    "ANDROID_HOME",
+    "Optional Android SDK root for Android GDE builds; defaults to ANDROID_HOME or ANDROID_SDK_ROOT from the process environment.",
+    os.environ.get("ANDROID_HOME", os.environ.get("ANDROID_SDK_ROOT", "")),
+)
+
 # Initial environment exists only to parse declared variables and render help.
 tmp_env = Environment(variables=vars)
 Help(vars.GenerateHelpText(tmp_env))
@@ -242,6 +433,7 @@ host_platform = _detect_host_platform()
 gde_platform = tmp_env["platform"]
 is_clean = GetOption("clean")
 build_gde = bool(tmp_env["gde"])
+godot_cpp_mode = tmp_env["godot_cpp"]
 build_maintainer_tools = bool(tmp_env["maintainer_tools"])
 build_platform_runtime_validate = bool(tmp_env["platform_runtime_validate"])
 selected_provider = GDE_PROVIDER_RESOLUTION[gde_platform]
@@ -259,6 +451,8 @@ if host_platform == "windows" and windows_uses_mingw:
     tools = ["mingw"]
 
 command_process_env = _command_process_env(host_platform, tmp_env["arch"])
+if tmp_env["ANDROID_HOME"]:
+    command_process_env["ANDROID_HOME"] = tmp_env["ANDROID_HOME"]
 
 # Build-only validation. Cleaning remains first-class even when selected platform
 # support, generated godot-cpp output, compdb output, SDKs, or validators are absent.
@@ -309,6 +503,7 @@ print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
 if host_platform == "windows":
     print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
+print(f"  godot_cpp={godot_cpp_mode}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
 if build_gde and not selected_provider["implemented"]:
     print("  gde_provider_status=not_compiled")
@@ -591,7 +786,10 @@ else:
 # GDExtension artifact (alias: gde)
 # ---------------------------------------------------------------------------
 if build_gde_graph:
-    gde_env = env.Clone()
+    if gde_platform == "android":
+        gde_env = _create_android_gde_env(env, host_platform, env["arch"], core_target)
+    else:
+        gde_env = env.Clone()
     gde_platform_provider_status = "compiled" if selected_provider["implemented"] else "not_compiled"
     gde_env.Append(CPPDEFINES=[
         "CAMBANG_GDE_BUILD=1",
@@ -609,28 +807,24 @@ if build_gde_graph:
     godot_cpp_libdir = os.path.join("thirdparty", "godot-cpp", "bin")
     godot_cpp_libname = f"godot-cpp.{gde_platform}.{godot_target}.{env['arch']}"
 
-    godot_cpp_args = [
-        f'"{python_exe}"',
-        "-m",
-        "SCons",
-        "-C",
-        "thirdparty/godot-cpp",
-        f"platform={gde_platform}",
-        f"target={godot_target}",
-        f"arch={env['arch']}",
-        f"precision={env['precision']}",
-    ]
-    if gde_platform == "windows" and windows_uses_mingw:
-        godot_cpp_args.append("use_mingw=yes")
-        if env["mingw_prefix"]:
-            godot_cpp_args.append(f"mingw_prefix={env['mingw_prefix']}")
-        if env["use_llvm"] == "yes":
-            godot_cpp_args.append("use_llvm=yes")
+    godot_cpp_args = _godot_cpp_build_args(
+        env,
+        gde_platform,
+        godot_target,
+        env["arch"],
+        env["precision"],
+        windows_uses_mingw,
+    )
     godot_cpp_cmd = " ".join(godot_cpp_args)
-    godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
+    if godot_cpp_mode == "external":
+        _validate_external_godot_cpp_artifacts([godot_gen_header, godot_cpp_lib], godot_cpp_cmd)
+        godot_cpp_build = [env.File(godot_gen_header), env.File(godot_cpp_lib)]
+    else:
+        godot_cpp_build = env.Command(target=[godot_gen_header, godot_cpp_lib], source=[], action=godot_cpp_cmd)
 
     Alias("godot_cpp", godot_cpp_build)
-    AlwaysBuild("godot_cpp")
+    if godot_cpp_mode == "delegated":
+        AlwaysBuild("godot_cpp")
 
     gde_env.Append(CPPPATH=[
         os.path.join("thirdparty", "godot-cpp"),
@@ -640,7 +834,7 @@ if build_gde_graph:
         os.path.join("thirdparty", "godot-cpp", "gdextension"),
     ])
 
-    if not is_msvc:
+    if gde_platform != "android" and not is_msvc:
         gde_env.Append(CXXFLAGS=["-fPIC", "-fvisibility=hidden"])
 
     gde_sources = []
@@ -744,7 +938,7 @@ AlwaysBuild(cambang_alias)
 gde_all_alias = Alias("gde_all", [])
 godot_cpp_alias = Alias("godot_cpp", godot_cpp_build if build_gde_graph else [])
 all_build_nodes = list(selected_build_nodes)
-if build_gde_graph:
+if build_gde_graph and godot_cpp_mode == "delegated":
     all_build_nodes.append(godot_cpp_alias)
 if is_clean:
     all_alias = Alias("all", [])
@@ -768,9 +962,10 @@ Clean(platform_runtime_validate_alias, platform_runtime_validate_clean_outputs)
 Clean(cambang_alias, cambang_clean_outputs)
 Clean(godot_cpp_alias, godot_cpp_clean_outputs)
 Clean(all_alias, cambang_clean_outputs)
-Clean(all_alias, godot_cpp_clean_outputs)
 Clean(build_all_alias, cambang_clean_outputs)
-Clean(build_all_alias, godot_cpp_clean_outputs)
+if godot_cpp_mode == "delegated":
+    Clean(all_alias, godot_cpp_clean_outputs)
+    Clean(build_all_alias, godot_cpp_clean_outputs)
 
 if not is_clean:
     AddPostAction(all_alias, env["COMPDB_WRITE_ACTION"])

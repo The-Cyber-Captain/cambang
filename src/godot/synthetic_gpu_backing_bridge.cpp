@@ -626,8 +626,8 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   }
   if (gpu_trace_enabled()) {
     godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=retain_primary rid=", texture.get_id(),
-                                   " w=", (long long)width,
-                                   " h=", (long long)height);
+                                   " w=", static_cast<uint64_t>(width),
+                                   " h=", static_cast<uint64_t>(height));
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
@@ -685,8 +685,8 @@ std::shared_ptr<void> create_stream_live_gpu_backing_rgba8(
   }
   if (gpu_trace_enabled()) {
     godot::UtilityFunctions::print("[CamBANG][SyntheticGpu] texture_alloc kind=stream_live rid=", texture.get_id(),
-                                   " w=", (long long)width,
-                                   " h=", (long long)height);
+                                   " w=", static_cast<uint64_t>(width),
+                                   " h=", static_cast<uint64_t>(height));
   }
 
   auto retained_backing = std::make_shared<RetainedSyntheticGpuBacking>();
@@ -867,9 +867,9 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
 
   for (const auto& [stream_id, borrow_count] : counts_by_stream_id) {
     godot::UtilityFunctions::push_warning("[CamBANG][DisplayLifetime] live_gpu_display_view stream_id=",
-                                          (long long)stream_id,
+                                          static_cast<uint64_t>(stream_id),
                                           " wrapper_borrow_count=",
-                                          (long long)borrow_count);
+                                          static_cast<uint64_t>(borrow_count));
   }
 }
 

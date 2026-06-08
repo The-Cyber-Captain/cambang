@@ -120,9 +120,9 @@ void attach_display_demand_token(const godot::Ref<godot::Texture2D>& texture, ui
   texture->set_meta(godot::StringName(kDisplayDemandTokenMetaKey), token);
   if (display_demand_trace_enabled()) {
     const uint64_t tex_id = texture->get_instance_id();
-    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_attach stream_id=", (long long)stream_id,
-                                   " token_ptr=", (uint64_t)(uintptr_t)token.ptr(),
-                                   " texture_id=", (long long)tex_id,
+    godot::UtilityFunctions::print("[CamBANG][DemandTrace] token_attach stream_id=", static_cast<uint64_t>(stream_id),
+                                   " token_ptr=", static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(token.ptr())),
+                                   " texture_id=", static_cast<uint64_t>(tex_id),
                                    " path=", path_kind);
   }
 }

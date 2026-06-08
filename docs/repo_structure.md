@@ -345,6 +345,7 @@ Assignment-style variables outside the declared public set are rejected.
 ### Supported variables
 
 - `gde=yes|no` — include the selected GDE/plugin artifact family; default `yes`
+- `godot_cpp=delegated|external` — delegate selected `thirdparty/godot-cpp` construction or consume prepared selected artifacts; default `delegated`
 - `maintainer_tools=yes|no` — include host-native deterministic maintainer tools; default `yes`
 - `platform=<windows|android|linux|macos|ios|web>` — select the GDE target platform; default host-detected
 - `target=<debug|release|template_debug|template_release>` — select debug/release shape; default `debug`
@@ -368,7 +369,7 @@ Assignment-style variables outside this declared public set are rejected by
   not platform-scoped by `platform=<...>`
 - `gde` — selected CamBANG GDE/plugin artifact family selected by `platform`,
   `target`, `arch`, and `precision`
-- `godot_cpp` — selected root-modelled delegated `thirdparty/godot-cpp` outputs
+- `godot_cpp` — selected root-modelled `thirdparty/godot-cpp` outputs; delegates by default or models prepared artifacts with `godot_cpp=external`
 - `platform_runtime_validate` — selected platform runtime validation artifacts
 - `cambang` — ownership-wide CamBANG clean alias
 - `gde_all` — clean-only utility alias for all known CamBANG GDE object/output paths
@@ -377,7 +378,9 @@ Assignment-style variables outside this declared public set are rejected by
 ### Clean scope
 
 - `scons -c` and `scons -c all` clean CamBANG-owned outputs plus selected
-  root-modelled `godot_cpp` outputs.
+  root-modelled `godot_cpp` outputs in delegated mode. With
+  `godot_cpp=external`, root `all`/`build_all` clean avoids deleting prepared
+  `thirdparty/godot-cpp` artifacts.
 - `scons -c cambang` cleans CamBANG-owned outputs, including `COMPDB_PATH`, and
   preserves `thirdparty/godot-cpp`.
 - `scons -c maintainer_tools` cleans maintainer-tool executables and
@@ -391,6 +394,10 @@ Assignment-style variables outside this declared public set are rejected by
   validation artifacts only.
 
 Root clean does not deep-clean all internal `thirdparty/godot-cpp` object files.
+CamBANG-owned GDE objects and binaries are target-separated, but the single
+`thirdparty/godot-cpp` checkout has selected-platform mutable generated/SCons
+state; `godot_cpp=external` is available for developers who prepare selected
+artifacts themselves to avoid delegated target-switch rebuild churn.
 
 ### Platform/provider mapping
 

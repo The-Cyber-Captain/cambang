@@ -81,6 +81,7 @@ Supported assignment-style variables are exactly:
 | Variable | Values | Default | Meaning |
 |---|---|---|---|
 | `gde` | `yes`, `no` | `yes` | Include the selected GDE/plugin artifact family. |
+| `godot_cpp` | `delegated`, `external` | `delegated` | Select whether root SCons invokes the selected `thirdparty/godot-cpp` build or consumes prepared artifacts. |
 | `maintainer_tools` | `yes`, `no` | `yes` | Include host-native deterministic maintainer tools. |
 | `platform` | `windows`, `android`, `linux`, `macos`, `ios`, `web` | host-detected | Select the GDE target platform. |
 | `target` | `debug`, `release`, `template_debug`, `template_release` | `debug` | Select debug/release shape; `debug` maps to Godot `template_debug`, and `release` maps to `template_release`. |
@@ -136,9 +137,12 @@ scons gde use_mingw=yes mingw_prefix=/c/Compilers/mingw64
 
 ### `godot_cpp`
 
-Models the selected root-level delegated `thirdparty/godot-cpp` outputs. The
-root build delegates selected `godot-cpp` construction to `thirdparty/godot-cpp`;
-this alias is most important for selected clean behaviour.
+Models the selected root-level `thirdparty/godot-cpp` outputs. With the default
+`godot_cpp=delegated`, the root build delegates selected `godot-cpp`
+construction to `thirdparty/godot-cpp`; this alias remains useful for selected
+builds and selected clean behaviour. With `godot_cpp=external`, the alias models
+the prepared generated header and selected static library without invoking
+`thirdparty/godot-cpp` SCons.
 
 ### `platform_runtime_validate`
 
@@ -176,6 +180,12 @@ design.
 | `scons -c platform_runtime_validate` | Selected platform runtime validation artifacts only. |
 | `scons -c platform=<android|linux|macos|ios|web>` | Clean-safe even though normal builds for those platforms currently fail for missing provider implementation. |
 
+When `godot_cpp=external` is selected, root `all`/`build_all` clean avoids
+removing `thirdparty/godot-cpp` outputs. An explicit `scons -c godot_cpp
+godot_cpp=external ...` still cleans the selected root-modelled generated-header
+sentinel and static library because that alias is an explicit request for the
+selected `godot_cpp` clean scope.
+
 ---
 
 ## 6. Platform/provider mapping
@@ -212,12 +222,37 @@ public production GDE fallback provider.
 
 ---
 
-## 7. `godot-cpp` delegation
+## 7. `godot-cpp` artifact modes
 
-The repo-root `SConstruct` delegates the selected `godot-cpp` build to
-`thirdparty/godot-cpp`.
+The repo-root `SConstruct` has two `godot-cpp` artifact modes.
 
-The root model tracks two selected delegated outputs:
+### `godot_cpp=delegated`
+
+This is the default one-command behaviour. The root build invokes the selected
+`godot-cpp` build in the single physical `thirdparty/godot-cpp` checkout with
+the current `platform`, `target`, `arch`, and `precision` selection.
+
+CamBANG's own GDE object files are target-separated under
+`out/gde_obj/<platform>/<target>/<arch>/<precision>`, and CamBANG's own GDE
+binaries include the selected platform/target/arch in their names. The delegated
+`thirdparty/godot-cpp` checkout, however, has selected-platform mutable generated
+and SCons state. Alternating delegated Windows and Android builds may therefore
+regenerate or rebuild `godot-cpp` even though CamBANG-owned GDE outputs are
+separated.
+
+### `godot_cpp=external`
+
+Use this mode when a developer prepares `godot-cpp` artifacts separately and
+wants root CamBANG builds to consume them without invoking
+`thirdparty/godot-cpp` SCons. This trades one-command convenience for faster
+target switching and user-managed `godot-cpp` freshness.
+
+External mode requires the selected generated header and static library to
+already exist. If either is missing, root SCons fails before compiling CamBANG
+GDE objects and prints the selected `python -m SCons -C thirdparty/godot-cpp ...`
+command that can prepare the artifacts.
+
+The root model tracks these selected `godot-cpp` outputs in both modes:
 
 - generated-header sentinel:
   `thirdparty/godot-cpp/gen/include/godot_cpp/core/ext_wrappers.gen.inc`
@@ -226,12 +261,14 @@ The root model tracks two selected delegated outputs:
     `thirdparty/godot-cpp/bin/libgodot-cpp.windows.template_debug.x86_64.a`
   - Windows MSVC/non-MinGW:
     `thirdparty/godot-cpp/bin/libgodot-cpp.windows.template_debug.x86_64.lib`
+  - Android arm64:
+    `thirdparty/godot-cpp/bin/libgodot-cpp.android.template_debug.arm64.a`
 
-GDE objects depend on the delegated `godot_cpp` build before compiling
+GDE objects depend on these selected `godot-cpp` artifacts before compiling
 Godot-facing sources that include generated `godot-cpp` headers. The GDE link
-also depends on the delegated static library. Root clean only removes the
-selected root-modelled `godot-cpp` outputs; it does not deep-clean every
-`godot-cpp` internal object.
+also depends on the selected static library. Root clean only removes the selected
+root-modelled `godot-cpp` outputs; it does not deep-clean every `godot-cpp`
+internal object.
 
 ---
 
