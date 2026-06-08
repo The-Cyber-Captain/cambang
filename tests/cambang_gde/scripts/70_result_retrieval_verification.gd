@@ -51,15 +51,15 @@ var _capture_profile_version_after_set := -1
 var _still_profile_set_requested := false
 var _still_profile_request_start_ms := 0
 var _applied_bracket_profile_snapshot_summary := ""
-var _capture_baseline_completed := 0
-var _capture_baseline_failed := 0
-var _capture_baseline_last_capture_id := 0
-var _capture_baseline_active_capture_id := -1
-var _capture_baseline_snapshot_summary := ""
-var _capture_completion_observed := false
-var _expected_capture_id := 0
-var _capture_completion_snapshot_summary := ""
 var _capture_triggered := false
+var _capture_baseline_progress: Dictionary = {}
+var _capture_completion_progress: Dictionary = {}
+var _capture_completion_seen := false
+var _expected_capture_id := 0
+var _inspection_capture_baseline_progress: Dictionary = {}
+var _inspection_capture_completion_progress: Dictionary = {}
+var _inspection_capture_completion_seen := false
+var _inspection_expected_capture_id := 0
 var _stream_baseline_verified := false
 var _device_seam_verified := false
 var _status_panel_acquisition_session_detail_requested := false
@@ -148,7 +148,7 @@ func _process(_delta: float) -> void:
 		return
 
 	if Time.get_ticks_msec() - _capture_poll_start_ms > CAPTURE_TIMEOUT_MS:
-		_fail("step %d FAIL: capture result did not appear within timeout (%s)" % [_step, _capture_freshness_diagnostics(0, 0)])
+		_fail("step %d FAIL: capture result did not appear within timeout" % _step)
 		return
 	_try_verify_capture_result()
 
@@ -281,16 +281,17 @@ func _try_verify_stream_result() -> void:
 		return
 
 	if not _capture_triggered:
-		var baseline_progress := _get_capture_progress_snapshot()
-		_capture_baseline_completed = int(baseline_progress.get("captures_completed", 0))
-		_capture_baseline_failed = int(baseline_progress.get("captures_failed", 0))
-		_capture_baseline_last_capture_id = int(baseline_progress.get("last_capture_id", 0))
-		_capture_baseline_active_capture_id = int(baseline_progress.get("active_capture_id", -1))
-		_capture_baseline_snapshot_summary = _describe_capture_progress_snapshot(baseline_progress)
-
+		_capture_baseline_progress = _get_capture_progress_snapshot(_device_instance_id)
+		_require(
+			bool(_capture_baseline_progress.get("available", false)),
+			"step %d FAIL: capture progress snapshot unavailable before trigger" % _step
+		)
 		var capture_err := int(device.trigger_capture())
 		_require(capture_err == OK, "step %d FAIL: trigger_capture() returned err=%d" % [_step, capture_err])
 		_capture_device = device
+		_capture_completion_seen = false
+		_capture_completion_progress = {}
+		_expected_capture_id = 0
 		_step_ok("capture trigger accepted after bracket profile became snapshot-visible")
 		_capture_triggered = true
 		_capture_poll_start_ms = Time.get_ticks_msec()
@@ -314,37 +315,43 @@ func _try_verify_stream_result() -> void:
 func _try_verify_capture_result() -> void:
 	if _capture_device == null:
 		return
-	if not _capture_completion_observed:
-		_try_observe_new_capture_completion()
-		if not _capture_completion_observed:
+	if not _capture_completion_seen:
+		var progress := _get_capture_progress_snapshot(_device_instance_id)
+		if not bool(progress.get("available", false)):
 			return
+		if int(progress.get("captures_failed", 0)) > int(_capture_baseline_progress.get("captures_failed", 0)):
+			_fail("step %d FAIL: capture failed after trigger (baseline=%s progress=%s)" % [
+				_step,
+				_describe_capture_progress(_capture_baseline_progress),
+				_describe_capture_progress(progress),
+			])
+			return
+		if int(progress.get("captures_completed", 0)) <= int(_capture_baseline_progress.get("captures_completed", 0)):
+			return
+		_capture_completion_progress = progress
+		_expected_capture_id = int(progress.get("last_capture_id", 0))
+		_capture_completion_seen = true
+		_step_ok("new capture completion observed (%s)" % _describe_capture_progress(progress))
 
 	var capture_result = _capture_device.get_result()
 	if capture_result == null:
 		return
 
-	_require(capture_result.get_class() == "CamBANGCaptureResult", "step %d FAIL: capture result must be CamBANGCaptureResult" % _step)
-	_step_ok("capture result object branding verified")
-
-	var capture_result_capture_id := 0
-	if capture_result.has_method("get_capture_id"):
-		capture_result_capture_id = int(capture_result.get_capture_id())
-	_require(
-		capture_result_capture_id > 0,
-		"step %d FAIL: capture result id unavailable after new completion (%s)" % [_step, _capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)]
-	)
+	var result_capture_id := _capture_result_id(capture_result)
 	if _expected_capture_id > 0:
 		_require(
-			capture_result_capture_id == _expected_capture_id,
-			"step %d FAIL: capture result id mismatch after new completion (%s)" % [_step, _capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)]
+			result_capture_id == _expected_capture_id,
+			"step %d FAIL: capture result id mismatch (expected=%d observed=%d baseline=%s completion=%s)" % [
+				_step,
+				_expected_capture_id,
+				result_capture_id,
+				_describe_capture_progress(_capture_baseline_progress),
+				_describe_capture_progress(_capture_completion_progress),
+			]
 		)
-	else:
-		_require(
-			capture_result_capture_id > _capture_baseline_last_capture_id,
-			"step %d FAIL: capture result id did not advance past baseline (%s)" % [_step, _capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)]
-		)
-	_step_ok("capture result identity matched new completion (capture_id=%d)" % capture_result_capture_id)
 
+	_require(capture_result.get_class() == "CamBANGCaptureResult", "step %d FAIL: capture result must be CamBANGCaptureResult" % _step)
+	_step_ok("capture result object branding verified")
 
 	_require(capture_result.get_width() > 0, "step %d FAIL: capture width invalid" % _step)
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
@@ -367,13 +374,18 @@ func _try_verify_capture_result() -> void:
 
 	var expected_members := _make_scene70_still_image_bundle_members()
 	var expected_member_count := expected_members.size()
+	var observed_member_count := int(capture_result.get_image_count())
 	_require(
-		int(capture_result.get_image_count()) == expected_member_count,
-		"step %d FAIL: capture get_image_count() mismatch for bracket profile (expected=%d observed=%d %s)" % [
+		observed_member_count == expected_member_count,
+		"step %d FAIL: capture get_image_count() mismatch for bracket profile (expected=%d observed=%d expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline=%s completion=%s)" % [
 			_step,
 			expected_member_count,
-			int(capture_result.get_image_count()),
-			_capture_freshness_diagnostics(_expected_capture_id, capture_result_capture_id)
+			observed_member_count,
+			_expected_capture_id,
+			result_capture_id,
+			_applied_bracket_profile_snapshot_summary,
+			_describe_capture_progress(_capture_baseline_progress),
+			_describe_capture_progress(_capture_completion_progress),
 		]
 	)
 	_require(bool(capture_result.has_additional_images()) == (expected_member_count > 1), "step %d FAIL: capture has_additional_images() mismatch for bracket profile" % _step)
@@ -423,10 +435,13 @@ func _try_verify_capture_result() -> void:
 
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
 	_refresh_member_inspection_strip(capture_result, expected_members)
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nmode=initial verification" % [
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nimages=%d/%d additional=%s\nmode=initial verification" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
-		capture_result.get_height()
+		capture_result.get_height(),
+		observed_member_count,
+		expected_member_count,
+		str(bool(capture_result.has_additional_images())),
 	]
 	_exercise_status_panel_acquisition_session_fixture_detail_visibility()
 	if _status_panel != null:
@@ -434,7 +449,6 @@ func _try_verify_capture_result() -> void:
 		_status_panel.force_refresh()
 	_step_ok("capture image displayed")
 	_ok("OK: result_retrieval_verification passed")
-
 
 
 func _role_name(role: int) -> String:
@@ -456,40 +470,77 @@ func _refresh_member_inspection_strip(capture_result, expected_members: Array) -
 	_clear_member_inspection_strip()
 	if _member_strip_row == null or capture_result == null:
 		return
-	for i in range(expected_members.size()):
-		var expected_member: Dictionary = expected_members[i]
-		var image_member_materialized: Image = capture_result.to_image_member(i)
-		if image_member_materialized == null:
-			continue
 
+	var returned_count := int(capture_result.get_image_count())
+	var expected_count := expected_members.size()
+
+	if returned_count <= 0:
+		var empty_label := Label.new()
+		empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		empty_label.text = "no returned capture image members (applied bundle=%d)" % expected_count
+		_member_strip_row.add_child(empty_label)
+		return
+
+	for i in range(returned_count):
+		var expected_member: Dictionary = {}
+		if i < expected_members.size() and typeof(expected_members[i]) == TYPE_DICTIONARY:
+			expected_member = expected_members[i]
+
+		var image_member: Dictionary = capture_result.get_image_member(i)
 		var item_col := VBoxContainer.new()
 		item_col.custom_minimum_size = Vector2(150, 0)
 		item_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-		var preview := TextureRect.new()
-		preview.custom_minimum_size = Vector2(140, 78)
-		preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-		preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		preview.texture = ImageTexture.create_from_image(image_member_materialized)
-		item_col.add_child(preview)
+		var image_member_materialized: Image = capture_result.to_image_member(i)
+		if image_member_materialized != null:
+			var preview := TextureRect.new()
+			preview.custom_minimum_size = Vector2(140, 78)
+			preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			preview.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+			preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			preview.texture = ImageTexture.create_from_image(image_member_materialized)
+			item_col.add_child(preview)
+		else:
+			var missing_preview := Label.new()
+			missing_preview.custom_minimum_size = Vector2(140, 78)
+			missing_preview.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			missing_preview.text = "member %d\nimage unavailable" % i
+			item_col.add_child(missing_preview)
 
-		var image_member: Dictionary = capture_result.get_image_member(i)
 		var role_value := int(image_member.get("role", expected_member.get("role", -1)))
 		var role_label := _role_name(role_value)
 		var realized_ev_label := "unknown"
 		if bool(image_member.get("has_realized_exposure_compensation_milli_ev", false)):
 			realized_ev_label = str(int(image_member.get("realized_exposure_compensation_milli_ev", 0)))
+
 		var meta := Label.new()
 		meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		meta.text = "idx=%d role=%s ev=%s" % [
-			int(image_member.get("image_member_index", -1)),
-			role_label,
-			realized_ev_label,
-		]
+		if image_member.is_empty():
+			meta.text = "idx=%d returned metadata unavailable\nreturned=%d applied=%d" % [
+				i,
+				returned_count,
+				expected_count,
+			]
+		else:
+			meta.text = "idx=%d role=%s ev=%s\nreturned=%d applied=%d" % [
+				int(image_member.get("image_member_index", i)),
+				role_label,
+				realized_ev_label,
+				returned_count,
+				expected_count,
+			]
 		item_col.add_child(meta)
 
 		_member_strip_row.add_child(item_col)
+
+	if returned_count < expected_count:
+		var note := Label.new()
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		note.text = "CaptureResult returned %d of applied bundle %d" % [
+			returned_count,
+			expected_count,
+		]
+		_member_strip_row.add_child(note)
 
 
 func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind: bool = false) -> void:
@@ -577,14 +628,22 @@ func _request_manual_capture() -> void:
 		_append_status("WARN: cannot capture again; device unavailable")
 		return
 
+	_inspection_capture_baseline_progress = _get_capture_progress_snapshot(_device_instance_id)
+	if not bool(_inspection_capture_baseline_progress.get("available", false)):
+		_append_status("WARN: cannot capture again; capture progress snapshot unavailable")
+		return
+
 	_clear_member_inspection_strip()
 	var capture_err := int(device.trigger_capture())
 	if capture_err != OK:
 		_append_status("WARN: manual capture request rejected err=%d" % capture_err)
 		return
 	_inspection_capture_device = device
+	_inspection_capture_completion_seen = false
+	_inspection_capture_completion_progress = {}
+	_inspection_expected_capture_id = 0
 	_inspection_capture_poll_start_ms = Time.get_ticks_msec()
-	_append_status("INFO: manual capture requested")
+	_append_status("INFO: manual capture requested (baseline=%s)" % _describe_capture_progress(_inspection_capture_baseline_progress))
 
 
 func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
@@ -622,72 +681,6 @@ func _extract_still_image_bundle_members(still_profile: Dictionary) -> Array:
 		return []
 	var members: Array = members_v
 	return members
-
-
-func _get_capture_progress_snapshot() -> Dictionary:
-	var device_snapshot := _get_device_snapshot_record(_device_instance_id)
-	if _snapshot_has_capture_progress(device_snapshot):
-		return _normalize_capture_progress_snapshot(device_snapshot, "device")
-
-	var acquisition_session_snapshot := _get_acquisition_session_snapshot_record(_device_instance_id)
-	if _snapshot_has_capture_progress(acquisition_session_snapshot):
-		return _normalize_capture_progress_snapshot(acquisition_session_snapshot, "acquisition_session")
-
-	return _normalize_capture_progress_snapshot({}, "unavailable")
-
-
-func _snapshot_has_capture_progress(snapshot_record: Dictionary) -> bool:
-	return snapshot_record.has("captures_completed") or snapshot_record.has("captures_failed") or snapshot_record.has("last_capture_id")
-
-
-func _normalize_capture_progress_snapshot(snapshot_record: Dictionary, source: String) -> Dictionary:
-	return {
-		"source": source,
-		"captures_completed": int(snapshot_record.get("captures_completed", 0)),
-		"captures_failed": int(snapshot_record.get("captures_failed", 0)),
-		"last_capture_id": int(snapshot_record.get("last_capture_id", 0)),
-		"active_capture_id": int(snapshot_record.get("active_capture_id", -1)),
-	}
-
-
-func _try_observe_new_capture_completion() -> void:
-	var progress := _get_capture_progress_snapshot()
-	_capture_completion_snapshot_summary = _describe_capture_progress_snapshot(progress)
-	var failed := int(progress.get("captures_failed", 0))
-	var completed := int(progress.get("captures_completed", 0))
-	if failed > _capture_baseline_failed:
-		_fail("step %d FAIL: capture failed after trigger (%s)" % [_step, _capture_freshness_diagnostics(0, 0)])
-		return
-	if completed <= _capture_baseline_completed:
-		return
-
-	var completed_last_capture_id := int(progress.get("last_capture_id", 0))
-	if completed_last_capture_id > _capture_baseline_last_capture_id:
-		_expected_capture_id = completed_last_capture_id
-	else:
-		_expected_capture_id = 0
-	_capture_completion_observed = true
-	_step_ok("new capture completion snapshot-visible (%s)" % _capture_completion_snapshot_summary)
-
-
-func _describe_capture_progress_snapshot(progress: Dictionary) -> String:
-	return "source=%s completed=%d failed=%d last_capture_id=%d active_capture_id=%d" % [
-		str(progress.get("source", "unknown")),
-		int(progress.get("captures_completed", 0)),
-		int(progress.get("captures_failed", 0)),
-		int(progress.get("last_capture_id", 0)),
-		int(progress.get("active_capture_id", -1))
-	]
-
-
-func _capture_freshness_diagnostics(expected_capture_id: int, result_capture_id: int) -> String:
-	return "expected_capture_id=%d result_capture_id=%d applied_snapshot=%s baseline={%s} completion={%s}" % [
-		expected_capture_id,
-		result_capture_id,
-		_applied_bracket_profile_snapshot_summary,
-		_capture_baseline_snapshot_summary,
-		_capture_completion_snapshot_summary
-	]
 
 
 func _is_expected_bracket_profile_snapshot_visible() -> bool:
@@ -752,6 +745,56 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 	return {}
 
 
+func _capture_progress_from_record(record: Dictionary, source: String) -> Dictionary:
+	if record.is_empty():
+		return {"available": false, "source": source}
+	var has_completed := record.has("captures_completed")
+	var has_failed := record.has("captures_failed")
+	var has_last_capture := record.has("last_capture_id")
+	if not has_completed and not has_failed and not has_last_capture:
+		return {"available": false, "source": source}
+	return {
+		"available": true,
+		"source": source,
+		"captures_triggered": int(record.get("captures_triggered", 0)),
+		"captures_completed": int(record.get("captures_completed", 0)),
+		"captures_failed": int(record.get("captures_failed", 0)),
+		"last_capture_id": int(record.get("last_capture_id", 0)),
+		"active_capture_id": int(record.get("active_capture_id", 0)),
+	}
+
+
+func _get_capture_progress_snapshot(device_instance_id: int) -> Dictionary:
+	var device_progress := _capture_progress_from_record(_get_device_snapshot_record(device_instance_id), "device")
+	if bool(device_progress.get("available", false)):
+		return device_progress
+	var acquisition_session_progress := _capture_progress_from_record(_get_acquisition_session_snapshot_record(device_instance_id), "acquisition_session")
+	if bool(acquisition_session_progress.get("available", false)):
+		return acquisition_session_progress
+	return {"available": false, "source": "none"}
+
+
+func _describe_capture_progress(progress: Dictionary) -> String:
+	if not bool(progress.get("available", false)):
+		return "capture_progress unavailable source=%s" % str(progress.get("source", "none"))
+	return "source=%s triggered=%d completed=%d failed=%d last_capture_id=%d active_capture_id=%d" % [
+		str(progress.get("source", "unknown")),
+		int(progress.get("captures_triggered", 0)),
+		int(progress.get("captures_completed", 0)),
+		int(progress.get("captures_failed", 0)),
+		int(progress.get("last_capture_id", 0)),
+		int(progress.get("active_capture_id", 0)),
+	]
+
+
+func _capture_result_id(capture_result) -> int:
+	if capture_result == null:
+		return 0
+	if capture_result.has_method("get_capture_id"):
+		return int(capture_result.get_capture_id())
+	return 0
+
+
 func _exercise_status_panel_acquisition_session_fixture_detail_visibility() -> void:
 	if _status_panel_acquisition_session_detail_requested:
 		return
@@ -775,11 +818,35 @@ func _poll_inspection_capture_result() -> void:
 	if _inspection_capture_device == null:
 		return
 	if Time.get_ticks_msec() - _inspection_capture_poll_start_ms > INSPECTION_CAPTURE_TIMEOUT_MS:
-		_append_status("WARN: manual capture timeout")
+		_append_status("WARN: manual capture timeout (baseline=%s completion=%s)" % [
+			_describe_capture_progress(_inspection_capture_baseline_progress),
+			_describe_capture_progress(_inspection_capture_completion_progress),
+		])
 		_inspection_capture_device = null
 		return
+	if not _inspection_capture_completion_seen:
+		var progress := _get_capture_progress_snapshot(_device_instance_id)
+		if not bool(progress.get("available", false)):
+			return
+		if int(progress.get("captures_failed", 0)) > int(_inspection_capture_baseline_progress.get("captures_failed", 0)):
+			_append_status("WARN: manual capture failed after trigger (baseline=%s progress=%s)" % [
+				_describe_capture_progress(_inspection_capture_baseline_progress),
+				_describe_capture_progress(progress),
+			])
+			_inspection_capture_device = null
+			return
+		if int(progress.get("captures_completed", 0)) <= int(_inspection_capture_baseline_progress.get("captures_completed", 0)):
+			return
+		_inspection_capture_completion_progress = progress
+		_inspection_expected_capture_id = int(progress.get("last_capture_id", 0))
+		_inspection_capture_completion_seen = true
+		_append_status("INFO: manual capture completion observed (%s)" % _describe_capture_progress(progress))
+
 	var capture_result = _inspection_capture_device.get_result()
 	if capture_result == null:
+		return
+	var result_capture_id := _capture_result_id(capture_result)
+	if _inspection_expected_capture_id > 0 and result_capture_id != _inspection_expected_capture_id:
 		return
 	var capture_image: Image = capture_result.to_image()
 	if capture_image == null:
@@ -787,13 +854,26 @@ func _poll_inspection_capture_result() -> void:
 		_inspection_capture_device = null
 		return
 	_capture_texture_rect.texture = ImageTexture.create_from_image(capture_image)
-	_refresh_member_inspection_strip(capture_result, _make_scene70_still_image_bundle_members())
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nmode=manual capture" % [
+	var expected_members := _make_scene70_still_image_bundle_members()
+	var returned_count := int(capture_result.get_image_count())
+	var expected_count := expected_members.size()
+	_refresh_member_inspection_strip(capture_result, expected_members)
+	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nimages=%d/%d additional=%s\ncapture_id=%d expected=%d\nmode=manual capture" % [
 		capture_result.get_payload_kind(),
 		capture_result.get_width(),
-		capture_result.get_height()
+		capture_result.get_height(),
+		returned_count,
+		expected_count,
+		str(bool(capture_result.has_additional_images())),
+		result_capture_id,
+		_inspection_expected_capture_id,
 	]
-	_append_status("INFO: manual capture displayed")
+	_append_status("INFO: manual capture displayed (image_count=%d/%d capture_id=%d expected=%d)" % [
+		returned_count,
+		expected_count,
+		result_capture_id,
+		_inspection_expected_capture_id,
+	])
 	_inspection_capture_device = null
 
 
