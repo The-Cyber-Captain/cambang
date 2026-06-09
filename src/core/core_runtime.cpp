@@ -42,7 +42,7 @@ uint64_t capture_latency_trace_now_ns() {
 }
 
 void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[1024];
+  char buffer[2048];
   va_list args;
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
@@ -51,6 +51,394 @@ void capture_latency_trace_printf(const char* format, ...) {
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
+
+class CoreRuntimeDiagnosticPhaseScope final {
+public:
+  CoreRuntimeDiagnosticPhaseScope(CoreThread& core_thread, CoreThread::DiagnosticPhase phase)
+      : core_thread_(core_thread) {
+    core_thread_.diagnostic_set_phase_from_core(phase);
+  }
+  ~CoreRuntimeDiagnosticPhaseScope() = default;
+
+  CoreRuntimeDiagnosticPhaseScope(const CoreRuntimeDiagnosticPhaseScope&) = delete;
+  CoreRuntimeDiagnosticPhaseScope& operator=(const CoreRuntimeDiagnosticPhaseScope&) = delete;
+
+private:
+  CoreThread& core_thread_;
+};
+
+void capture_latency_trace_emit_core_command_wait_context(
+    const char* kind,
+    uint64_t capture_id,
+    uint64_t target_id,
+    const char* target_label,
+    uint64_t wait_us,
+    const CoreThread::DiagnosticSnapshot& post_snapshot,
+    const CoreThread::DiagnosticSnapshot& start_snapshot,
+    size_t runtime_requests_depth_at_start,
+    size_t runtime_provider_facts_depth_at_start) {
+  capture_latency_trace_printf(
+      "core_command_wait_context kind=%s capture_id=%llu %s=%llu wait_us=%llu "
+      "phase_at_post=%s phase_age_at_post_us=%llu previous_phase_at_post=%s previous_phase_ended_before_post_us=%llu "
+      "essential_depth_at_post=%llu command_depth_at_post=%llu ordinary_depth_at_post=%llu timer_requested_at_post=%u timer_running_at_post=%u "
+      "phase_at_start=%s phase_age_at_start_us=%llu previous_phase_at_start=%s previous_phase_ended_before_start_us=%llu "
+      "essential_depth_at_start=%llu command_depth_at_start=%llu ordinary_depth_at_start=%llu timer_requested_at_start=%u timer_running_at_start=%u "
+      "runtime_request_depth_at_start=%llu runtime_provider_fact_depth_at_start=%llu",
+      kind,
+      static_cast<unsigned long long>(capture_id),
+      target_label,
+      static_cast<unsigned long long>(target_id),
+      static_cast<unsigned long long>(wait_us),
+      CoreThread::diagnostic_phase_name(post_snapshot.phase),
+      static_cast<unsigned long long>(post_snapshot.phase_age_us),
+      CoreThread::diagnostic_phase_name(post_snapshot.previous_phase),
+      static_cast<unsigned long long>(post_snapshot.previous_phase_ended_before_us),
+      static_cast<unsigned long long>(post_snapshot.essential_queue_depth),
+      static_cast<unsigned long long>(post_snapshot.command_queue_depth),
+      static_cast<unsigned long long>(post_snapshot.ordinary_queue_depth),
+      post_snapshot.timer_requested ? 1u : 0u,
+      post_snapshot.timer_running ? 1u : 0u,
+      CoreThread::diagnostic_phase_name(start_snapshot.phase),
+      static_cast<unsigned long long>(start_snapshot.phase_age_us),
+      CoreThread::diagnostic_phase_name(start_snapshot.previous_phase),
+      static_cast<unsigned long long>(start_snapshot.previous_phase_ended_before_us),
+      static_cast<unsigned long long>(start_snapshot.essential_queue_depth),
+      static_cast<unsigned long long>(start_snapshot.command_queue_depth),
+      static_cast<unsigned long long>(start_snapshot.ordinary_queue_depth),
+      start_snapshot.timer_requested ? 1u : 0u,
+      start_snapshot.timer_running ? 1u : 0u,
+      static_cast<unsigned long long>(runtime_requests_depth_at_start),
+      static_cast<unsigned long long>(runtime_provider_facts_depth_at_start));
+}
+
+// Stage B.1 provider-fact classification. Temporary diagnostics above remain
+// in place; this helper implements the existing capture-over-stream policy at
+// the provider-fact integration seam without changing public/provider APIs.
+enum class ProviderFactClass : uint8_t {
+  CriticalNonLossy = 0,
+  RigCaptureCritical,
+  DeviceCaptureCritical,
+  RepeatingStreamFrame,
+  OtherStream,
+  UnknownNonLossy,
+};
+
+struct ProviderFactSummary {
+  ProviderFactClass fact_class = ProviderFactClass::UnknownNonLossy;
+  ProviderToCoreCommandType type = ProviderToCoreCommandType::INVALID;
+  uint64_t capture_id = 0;
+  uint64_t rig_id = 0;
+  uint64_t device_instance_id = 0;
+  uint64_t stream_id = 0;
+  uint64_t acquisition_session_id = 0;
+  uint32_t image_member_index = 0;
+};
+
+const char* provider_fact_class_name(ProviderFactClass fact_class) noexcept {
+  switch (fact_class) {
+    case ProviderFactClass::CriticalNonLossy: return "critical_non_lossy";
+    case ProviderFactClass::RigCaptureCritical: return "rig_capture_critical";
+    case ProviderFactClass::DeviceCaptureCritical: return "device_capture_critical";
+    case ProviderFactClass::RepeatingStreamFrame: return "repeating_stream_frame";
+    case ProviderFactClass::OtherStream: return "other_stream";
+    case ProviderFactClass::UnknownNonLossy: return "unknown_non_lossy";
+  }
+  return "unknown_non_lossy";
+}
+
+bool provider_fact_is_capture_critical(ProviderFactClass fact_class) noexcept {
+  return fact_class == ProviderFactClass::RigCaptureCritical ||
+         fact_class == ProviderFactClass::DeviceCaptureCritical;
+}
+
+bool provider_fact_has_capture_id_for_priority(const ProviderToCoreCommand& cmd) {
+  switch (cmd.type) {
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED:
+      return std::get<CmdProviderCaptureStarted>(cmd.payload).capture_id != 0;
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED:
+      return std::get<CmdProviderCaptureCompleted>(cmd.payload).capture_id != 0;
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED:
+      return std::get<CmdProviderCaptureFailed>(cmd.payload).capture_id != 0;
+    case ProviderToCoreCommandType::PROVIDER_FRAME:
+      return std::get<CmdProviderFrame>(cmd.payload).frame.capture_id != 0;
+    default:
+      return false;
+  }
+}
+
+ProviderFactClass provider_capture_fact_class(uint64_t capture_id,
+                                              const CoreCaptureCohortRegistry& capture_cohorts) noexcept {
+  if (capture_id == 0) {
+    return ProviderFactClass::UnknownNonLossy;
+  }
+  return capture_cohorts.contains(capture_id)
+      ? ProviderFactClass::RigCaptureCritical
+      : ProviderFactClass::DeviceCaptureCritical;
+}
+
+ProviderFactSummary summarize_provider_fact(const ProviderToCoreCommand& cmd,
+                                            const CoreCaptureCohortRegistry& capture_cohorts) {
+  ProviderFactSummary out{};
+  out.type = cmd.type;
+
+  switch (cmd.type) {
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_OPENED: {
+      const auto& p = std::get<CmdProviderDeviceOpened>(cmd.payload);
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_CLOSED: {
+      const auto& p = std::get<CmdProviderDeviceClosed>(cmd.payload);
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_CREATED: {
+      const auto& p = std::get<CmdProviderStreamCreated>(cmd.payload);
+      out.stream_id = p.stream_id;
+      out.fact_class = ProviderFactClass::OtherStream;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_DESTROYED: {
+      const auto& p = std::get<CmdProviderStreamDestroyed>(cmd.payload);
+      out.stream_id = p.stream_id;
+      out.fact_class = ProviderFactClass::OtherStream;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_STARTED: {
+      const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
+      out.stream_id = p.stream_id;
+      out.fact_class = ProviderFactClass::OtherStream;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_STOPPED: {
+      const auto& p = std::get<CmdProviderStreamStopped>(cmd.payload);
+      out.stream_id = p.stream_id;
+      out.fact_class = ProviderFactClass::OtherStream;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED: {
+      const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
+      out.capture_id = p.capture_id;
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
+      if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.capture_id)) {
+        out.rig_id = cohort->rig_id;
+      }
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED: {
+      const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
+      out.capture_id = p.capture_id;
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
+      if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.capture_id)) {
+        out.rig_id = cohort->rig_id;
+      }
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED: {
+      const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
+      out.capture_id = p.capture_id;
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
+      if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.capture_id)) {
+        out.rig_id = cohort->rig_id;
+      }
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_FRAME: {
+      const auto& p = std::get<CmdProviderFrame>(cmd.payload);
+      out.capture_id = p.frame.capture_id;
+      out.device_instance_id = p.frame.device_instance_id;
+      out.stream_id = p.frame.stream_id;
+      out.acquisition_session_id = p.frame.acquisition_session_id;
+      out.image_member_index = p.frame.capture_image.image_member_index;
+      if (p.frame.capture_id != 0) {
+        out.fact_class = provider_capture_fact_class(p.frame.capture_id, capture_cohorts);
+        if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.frame.capture_id)) {
+          out.rig_id = cohort->rig_id;
+        }
+      } else if (p.frame.stream_id != 0) {
+        out.fact_class = ProviderFactClass::RepeatingStreamFrame;
+      } else {
+        out.fact_class = ProviderFactClass::UnknownNonLossy;
+      }
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_DEVICE_ERROR: {
+      const auto& p = std::get<CmdProviderDeviceError>(cmd.payload);
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_STREAM_ERROR: {
+      const auto& p = std::get<CmdProviderStreamError>(cmd.payload);
+      out.stream_id = p.stream_id;
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED: {
+      const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
+      out.device_instance_id = p.owner_device_instance_id;
+      out.stream_id = p.owner_stream_id;
+      out.rig_id = p.owner_rig_id;
+      out.acquisition_session_id = p.owner_acquisition_session_id;
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED:
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    case ProviderToCoreCommandType::TIMER_TICK:
+    case ProviderToCoreCommandType::INVALID:
+      out.fact_class = ProviderFactClass::UnknownNonLossy;
+      break;
+  }
+
+  return out;
+}
+
+bool promote_capture_fact_over_repeating_stream_prefix(
+    std::deque<ProviderToCoreCommand>& provider_facts,
+    const CoreCaptureCohortRegistry& capture_cohorts) {
+  size_t skipped_stream_frames = 0;
+  for (auto it = provider_facts.begin(); it != provider_facts.end(); ++it) {
+    const ProviderFactSummary summary = summarize_provider_fact(*it, capture_cohorts);
+    if (summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
+      ++skipped_stream_frames;
+      continue;
+    }
+
+    if (skipped_stream_frames != 0 && provider_fact_is_capture_critical(summary.fact_class)) {
+      ProviderToCoreCommand promoted = std::move(*it);
+      provider_facts.erase(it);
+      provider_facts.push_front(std::move(promoted));
+      capture_latency_trace_printf(
+          "capture_fact_promoted_over_stream class=%s capture_id=%llu rig_id=%llu device_id=%llu stream_frames_skipped=%llu provider_fact_depth=%llu type=%u member=%u",
+          provider_fact_class_name(summary.fact_class),
+          static_cast<unsigned long long>(summary.capture_id),
+          static_cast<unsigned long long>(summary.rig_id),
+          static_cast<unsigned long long>(summary.device_instance_id),
+          static_cast<unsigned long long>(skipped_stream_frames),
+          static_cast<unsigned long long>(provider_facts.size()),
+          static_cast<unsigned>(summary.type),
+          static_cast<unsigned>(summary.image_member_index));
+      return true;
+    }
+
+    return false;
+  }
+
+  return false;
+}
+
+uint64_t frame_ts_to_core_ns_for_backpressure(const CaptureTimestamp& ts) {
+  if (ts.tick_ns == 0) {
+    return 0;
+  }
+  switch (ts.domain) {
+    case CaptureTimestampDomain::CORE_MONOTONIC:
+    case CaptureTimestampDomain::PROVIDER_MONOTONIC:
+      return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
+    default:
+      return 0;
+  }
+}
+
+bool has_newer_repeating_stream_frame_before_barrier(
+    const std::deque<ProviderToCoreCommand>& provider_facts,
+    const ProviderFactSummary& front_summary,
+    const CoreCaptureCohortRegistry& capture_cohorts) {
+  if (front_summary.fact_class != ProviderFactClass::RepeatingStreamFrame ||
+      front_summary.stream_id == 0) {
+    return false;
+  }
+
+  bool skipped_front = false;
+  for (const ProviderToCoreCommand& cmd : provider_facts) {
+    if (!skipped_front) {
+      skipped_front = true;
+      continue;
+    }
+
+    const ProviderFactSummary summary = summarize_provider_fact(cmd, capture_cohorts);
+    if (summary.fact_class != ProviderFactClass::RepeatingStreamFrame) {
+      return false;
+    }
+    if (summary.stream_id == front_summary.stream_id &&
+        summary.acquisition_session_id == front_summary.acquisition_session_id) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+struct StreamFrameCoalesceResult {
+  bool coalesced = false;
+  bool stream_counters_changed = false;
+};
+
+StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
+    std::deque<ProviderToCoreCommand>& provider_facts,
+    const ProviderFactSummary& front_summary,
+    const CoreCaptureCohortRegistry& capture_cohorts,
+    CoreStreamRegistry& streams) {
+  StreamFrameCoalesceResult out{};
+  if (!has_newer_repeating_stream_frame_before_barrier(provider_facts, front_summary, capture_cohorts)) {
+    return out;
+  }
+
+  ProviderToCoreCommand cmd = std::move(provider_facts.front());
+  provider_facts.pop_front();
+  auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
+  const uint64_t integrated_ts_ns = frame_ts_to_core_ns_for_backpressure(frame.capture_timestamp);
+  const bool received_counted = streams.on_frame_received(frame.stream_id, integrated_ts_ns);
+  const bool released_counted = streams.on_frame_released(frame.stream_id);
+  const bool dropped_counted = streams.on_frame_dropped(frame.stream_id);
+  frame.release_now();
+  global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+      frame.stream_id,
+      frame.acquisition_session_id));
+  frame.release = nullptr;
+  frame.release_user = nullptr;
+
+  out.coalesced = true;
+  out.stream_counters_changed = received_counted || released_counted || dropped_counted;
+  capture_latency_trace_printf(
+      "stream_frame_coalesced stream_id=%llu acquisition_session_id=%llu provider_fact_depth_after=%llu received_counted=%u released_counted=%u dropped_counted=%u delivered=0 publication_requested=1",
+      static_cast<unsigned long long>(front_summary.stream_id),
+      static_cast<unsigned long long>(front_summary.acquisition_session_id),
+      static_cast<unsigned long long>(provider_facts.size()),
+      received_counted ? 1u : 0u,
+      released_counted ? 1u : 0u,
+      dropped_counted ? 1u : 0u);
+  return out;
+}
+
+constexpr uint64_t kProviderFactDispatchSlowThresholdUs = 5000;
+
+void emit_provider_fact_dispatch_slow_if_needed(const ProviderFactSummary& summary,
+                                                uint64_t dispatch_us,
+                                                size_t provider_fact_depth_after_dispatch) {
+  if (dispatch_us < kProviderFactDispatchSlowThresholdUs) {
+    return;
+  }
+  capture_latency_trace_printf(
+      "provider_fact_dispatch_slow class=%s type=%u capture_id=%llu rig_id=%llu device_id=%llu stream_id=%llu acquisition_session_id=%llu member=%u dispatch_us=%llu provider_fact_depth_after=%llu",
+      provider_fact_class_name(summary.fact_class),
+      static_cast<unsigned>(summary.type),
+      static_cast<unsigned long long>(summary.capture_id),
+      static_cast<unsigned long long>(summary.rig_id),
+      static_cast<unsigned long long>(summary.device_instance_id),
+      static_cast<unsigned long long>(summary.stream_id),
+      static_cast<unsigned long long>(summary.acquisition_session_id),
+      static_cast<unsigned>(summary.image_member_index),
+      static_cast<unsigned long long>(dispatch_us),
+      static_cast<unsigned long long>(provider_fact_depth_after_dispatch));
+}
 
 uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
   if (warm_hold_ms == 0) {
@@ -259,6 +647,7 @@ bool CoreRuntime::start() {
   capture_assembly_registry_.clear();
   capture_cohort_registry_.clear();
   provider_facts_.clear();
+  provider_capture_facts_queued_ = 0;
   requests_.clear();
   shutdown_requested_from_stop_.store(false, std::memory_order_release);
   shutdown_requested_ = false;
@@ -371,25 +760,75 @@ void CoreRuntime::on_core_timer_tick() {
 
 
   // 1) Drain provider facts ("what happened") first, but only for a
-  // deterministic fairness slice. Provider facts remain FIFO and non-dropping;
-  // when backlog remains, the next requested tick continues from the next fact
-  // after pending command work has had a service opportunity.
+  // deterministic fairness slice. Conservative/non-lossy provider facts remain
+  // FIFO and non-dropping; when backlog remains, the next requested tick
+  // continues from the next queued fact after higher-priority command/capture
+  // work has had a service opportunity. Stage B.1 honors capture-over-stream
+  // priority inside this integration queue: capture facts may pass only a prefix
+  // of lower-priority repeating stream frames, and repeating stream frames yield
+  // to already-pending command/request work. Stage C coalesces stale repeating
+  // stream frames only when a newer frame for the same stream/session is queued
+  // before any non-lossy barrier.
   const bool requests_pending_before_provider_drain = !requests_.empty();
-  const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
-      ? kMaxProviderFactsBeforeRequestWhenRequestsPending
-      : kMaxProviderFactsPerCoreTurn;
-  bool command_lane_pending_after_tick_slice = false;
-  size_t provider_facts_drained = 0;
-  while (!provider_facts_.empty() &&
-         provider_facts_drained < provider_fact_drain_bound) {
-    ProviderToCoreCommand cmd = std::move(provider_facts_.front());
-    provider_facts_.pop_front();
-    dispatcher_.dispatch(std::move(cmd));
-    ++provider_facts_drained;
+  bool command_or_request_waiting_for_stream_frame = false;
+  {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(
+        core_thread_, CoreThread::DiagnosticPhase::RuntimeProviderFactIntegration);
+    const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
+        ? kMaxProviderFactsBeforeRequestWhenRequestsPending
+        : kMaxProviderFactsPerCoreTurn;
+    size_t provider_facts_drained = 0;
+    while (!provider_facts_.empty() &&
+           provider_facts_drained < provider_fact_drain_bound) {
+      if (provider_capture_facts_queued_ != 0) {
+        (void)promote_capture_fact_over_repeating_stream_prefix(provider_facts_, capture_cohort_registry_);
+      }
+      const ProviderFactSummary summary =
+          summarize_provider_fact(provider_facts_.front(), capture_cohort_registry_);
+      const bool command_or_request_pending = requests_pending_before_provider_drain ||
+          core_thread_.has_pending_command_tasks();
+      if (summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
+        const StreamFrameCoalesceResult coalesce_result =
+            coalesce_front_repeating_stream_frame_if_superseded(
+                provider_facts_, summary, capture_cohort_registry_, streams_);
+        if (coalesce_result.coalesced) {
+          request_publish_from_core_unchecked();
+          ++provider_facts_drained;
+          if (command_or_request_pending) {
+            command_or_request_waiting_for_stream_frame = true;
+            break;
+          }
+          continue;
+        }
+      }
+      if (command_or_request_pending && summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
+        command_or_request_waiting_for_stream_frame = true;
+        capture_latency_trace_printf(
+            "provider_fact_deferred_for_command class=%s stream_id=%llu acquisition_session_id=%llu provider_fact_depth=%llu requests_pending=%u command_lane_pending=%u",
+            provider_fact_class_name(summary.fact_class),
+            static_cast<unsigned long long>(summary.stream_id),
+            static_cast<unsigned long long>(summary.acquisition_session_id),
+            static_cast<unsigned long long>(provider_facts_.size()),
+            requests_pending_before_provider_drain ? 1u : 0u,
+            core_thread_.has_pending_command_tasks() ? 1u : 0u);
+        break;
+      }
 
-    if (!requests_pending_before_provider_drain && core_thread_.has_pending_command_tasks()) {
-      command_lane_pending_after_tick_slice = true;
-      break;
+      ProviderToCoreCommand cmd = std::move(provider_facts_.front());
+      provider_facts_.pop_front();
+      if (provider_fact_is_capture_critical(summary.fact_class) && provider_capture_facts_queued_ != 0) {
+        --provider_capture_facts_queued_;
+      }
+      const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
+      dispatcher_.dispatch(std::move(cmd));
+      const uint64_t dispatch_us = (capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull;
+      emit_provider_fact_dispatch_slow_if_needed(summary, dispatch_us, provider_facts_.size());
+      ++provider_facts_drained;
+
+      if (!requests_pending_before_provider_drain && core_thread_.has_pending_command_tasks()) {
+        command_or_request_waiting_for_stream_frame = true;
+        break;
+      }
     }
   }
   const bool provider_facts_remain_after_fairness_slice = !provider_facts_.empty();
@@ -403,18 +842,22 @@ void CoreRuntime::on_core_timer_tick() {
   // facts, return to CoreThread promptly so the command lane can enqueue into
   // requests_. The pending publish/timer state remains retained and this tick is
   // re-requested for deterministic continuation.
-  if (command_lane_pending_after_tick_slice && requests_.empty() &&
+  if (command_or_request_waiting_for_stream_frame && requests_.empty() &&
       !shutdown_requested_ && !shutdown_requested_from_stop_.load(std::memory_order_acquire)) {
     core_thread_.request_timer_tick();
     return;
   }
 
   // 2) Drain queued requests ("what should we do").
-  while (!requests_.empty()) {
-    auto task = std::move(requests_.front());
-    requests_.pop_front();
-    if (task) {
-      task();
+  {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(
+        core_thread_, CoreThread::DiagnosticPhase::RuntimeRequestDrain);
+    while (!requests_.empty()) {
+      auto task = std::move(requests_.front());
+      requests_.pop_front();
+      if (task) {
+        task();
+      }
     }
   }
 
@@ -424,110 +867,116 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 3) Retention / timers.
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(
+        core_thread_, CoreThread::DiagnosticPhase::RuntimeRetentionTimerWork);
 
-  uint64_t next_warm_delay_ns = 0;
-  bool has_next_warm_delay = false;
-  for (const auto& [device_id, rec] : devices_.all()) {
-    (void)device_id;
-    if (!rec.open) {
-      continue;
-    }
-
-    const bool active_use = streams_.has_flowing_stream_for_device(rec.device_instance_id);
-
-    if (active_use) {
-      (void)devices_.set_warm_was_in_use(rec.device_instance_id, true);
-      if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
-        (void)devices_.clear_warm_deadline(rec.device_instance_id);
-        request_publish_from_core_unchecked();
+    uint64_t next_warm_delay_ns = 0;
+    bool has_next_warm_delay = false;
+    for (const auto& [device_id, rec] : devices_.all()) {
+      (void)device_id;
+      if (!rec.open) {
+        continue;
       }
-      continue;
-    }
 
-    const bool became_not_in_use = rec.warm_was_in_use;
-    if (became_not_in_use) {
-      (void)devices_.set_warm_was_in_use(rec.device_instance_id, false);
-    }
+      const bool active_use = streams_.has_flowing_stream_for_device(rec.device_instance_id);
 
-    if (rec.warm_hold_ms == 0) {
-      if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
-        (void)devices_.clear_warm_deadline(rec.device_instance_id);
-        request_publish_from_core_unchecked();
+      if (active_use) {
+        (void)devices_.set_warm_was_in_use(rec.device_instance_id, true);
+        if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
+          (void)devices_.clear_warm_deadline(rec.device_instance_id);
+          request_publish_from_core_unchecked();
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (!rec.warm_deadline_active) {
-      const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
-      const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
-          ? std::numeric_limits<uint64_t>::max()
-          : (now_ns + hold_ns);
-      if (devices_.arm_warm_deadline(rec.device_instance_id, deadline_ns)) {
-        request_publish_from_core_unchecked();
+      const bool became_not_in_use = rec.warm_was_in_use;
+      if (became_not_in_use) {
+        (void)devices_.set_warm_was_in_use(rec.device_instance_id, false);
       }
-      continue;
-    }
 
-    if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
-      if (!rec.warm_expired_close_requested && prov) {
-        (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
-        (void)prov->close_device(rec.device_instance_id);
-        request_publish_from_core_unchecked();
+      if (rec.warm_hold_ms == 0) {
+        if (rec.warm_deadline_active || rec.warm_expired_close_requested) {
+          (void)devices_.clear_warm_deadline(rec.device_instance_id);
+          request_publish_from_core_unchecked();
+        }
+        continue;
       }
-      continue;
+
+      if (!rec.warm_deadline_active) {
+        const uint64_t hold_ns = warm_delay_ns(rec.warm_hold_ms);
+        const uint64_t deadline_ns = (hold_ns > (std::numeric_limits<uint64_t>::max() - now_ns))
+            ? std::numeric_limits<uint64_t>::max()
+            : (now_ns + hold_ns);
+        if (devices_.arm_warm_deadline(rec.device_instance_id, deadline_ns)) {
+          request_publish_from_core_unchecked();
+        }
+        continue;
+      }
+
+      if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
+        if (!rec.warm_expired_close_requested && prov) {
+          (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
+          (void)prov->close_device(rec.device_instance_id);
+          request_publish_from_core_unchecked();
+        }
+        continue;
+      }
+
+      const uint64_t remaining_ns = rec.warm_deadline_ns - now_ns;
+      if (!has_next_warm_delay || remaining_ns < next_warm_delay_ns) {
+        has_next_warm_delay = true;
+        next_warm_delay_ns = remaining_ns;
+      }
     }
 
-    const uint64_t remaining_ns = rec.warm_deadline_ns - now_ns;
-    if (!has_next_warm_delay || remaining_ns < next_warm_delay_ns) {
-      has_next_warm_delay = true;
-      next_warm_delay_ns = remaining_ns;
+    const size_t retired_count =
+        native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+    global_resource_aggregate_telemetry().reconcile_lifecycle(
+        now_ns,
+        current_gen_,
+        &streams_,
+        &acquisition_sessions_,
+        &devices_,
+        &native_objects_);
+    const size_t retired_telemetry_count =
+        global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+    if (retired_count > 0 || retired_telemetry_count > 0) {
+      request_publish_from_core_unchecked();
     }
-  }
 
-  const size_t retired_count =
-      native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-  global_resource_aggregate_telemetry().reconcile_lifecycle(
-      now_ns,
-      current_gen_,
-      &streams_,
-      &acquisition_sessions_,
-      &devices_,
-      &native_objects_);
-  const size_t retired_telemetry_count =
-      global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-  if (retired_count > 0 || retired_telemetry_count > 0) {
-    request_publish_from_core_unchecked();
-  }
-
-  uint64_t next_deadline_delay_ns = 0;
-  bool has_next_deadline_delay = false;
-  if (const auto next_retirement_delay_ns =
-          native_objects_.next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-      next_retirement_delay_ns.has_value()) {
-    has_next_deadline_delay = true;
-    next_deadline_delay_ns = *next_retirement_delay_ns;
-  }
-  if (const auto next_telemetry_retirement_delay_ns =
-          global_resource_aggregate_telemetry().next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-      next_telemetry_retirement_delay_ns.has_value()) {
-    if (!has_next_deadline_delay || *next_telemetry_retirement_delay_ns < next_deadline_delay_ns) {
+    uint64_t next_deadline_delay_ns = 0;
+    bool has_next_deadline_delay = false;
+    if (const auto next_retirement_delay_ns =
+            native_objects_.next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+        next_retirement_delay_ns.has_value()) {
       has_next_deadline_delay = true;
-      next_deadline_delay_ns = *next_telemetry_retirement_delay_ns;
+      next_deadline_delay_ns = *next_retirement_delay_ns;
     }
-  }
-  if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
-    has_next_deadline_delay = true;
-    next_deadline_delay_ns = next_warm_delay_ns;
-  }
+    if (const auto next_telemetry_retirement_delay_ns =
+            global_resource_aggregate_telemetry().next_retirement_delay_ns(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+        next_telemetry_retirement_delay_ns.has_value()) {
+      if (!has_next_deadline_delay || *next_telemetry_retirement_delay_ns < next_deadline_delay_ns) {
+        has_next_deadline_delay = true;
+        next_deadline_delay_ns = *next_telemetry_retirement_delay_ns;
+      }
+    }
+    if (has_next_warm_delay && (!has_next_deadline_delay || next_warm_delay_ns < next_deadline_delay_ns)) {
+      has_next_deadline_delay = true;
+      next_deadline_delay_ns = next_warm_delay_ns;
+    }
 
-  if (has_next_deadline_delay) {
-    core_thread_.set_timer_deadline_ns(next_deadline_delay_ns);
-  } else {
-    core_thread_.clear_timer_deadline();
+    if (has_next_deadline_delay) {
+      core_thread_.set_timer_deadline_ns(next_deadline_delay_ns);
+    } else {
+      core_thread_.clear_timer_deadline();
+    }
+
   }
 
   // 4) Snapshot publish (coalesced).
   if (publish_pending_.load(std::memory_order_acquire)) {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeSnapshotPublication);
     // Clear pending first so a new request can enqueue even if publish work is heavy.
     publish_pending_.store(false, std::memory_order_release);
 
@@ -584,6 +1033,7 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 5) Shutdown choreography (§10).
   if (shutdown_requested_) {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeShutdownChoreography);
     auto set_phase = [this](ShutdownPhase p) {
       if (shutdown_phase_ != p) {
         shutdown_phase_ = p;
@@ -1484,20 +1934,36 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
   auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
   std::future<TryTriggerDeviceCaptureStatus> completed = completion->get_future();
   const uint64_t post_begin_ns = capture_latency_trace_now_ns();
+  const CoreThread::DiagnosticSnapshot post_snapshot = core_thread_.diagnostic_snapshot();
   const CoreThread::PostResult pr = try_post([this,
                                               device_instance_id,
                                               capture_id,
                                               completion,
-                                              post_begin_ns]() {
+                                              post_begin_ns,
+                                              post_snapshot]() {
     const uint64_t core_start_ns = capture_latency_trace_now_ns();
+    const CoreThread::DiagnosticSnapshot start_snapshot = core_thread_.diagnostic_snapshot();
+    const size_t runtime_request_depth_at_start = requests_.size();
+    const size_t runtime_provider_fact_depth_at_start = provider_facts_.size();
     const TryTriggerDeviceCaptureStatus status =
         trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
     const uint64_t core_end_ns = capture_latency_trace_now_ns();
+    const uint64_t core_queue_wait_us = (core_start_ns - post_begin_ns) / 1000ull;
+    capture_latency_trace_emit_core_command_wait_context(
+        "device_capture",
+        capture_id,
+        device_instance_id,
+        "device_id",
+        core_queue_wait_us,
+        post_snapshot,
+        start_snapshot,
+        runtime_request_depth_at_start,
+        runtime_provider_fact_depth_at_start);
     capture_latency_trace_printf(
         "core_device_admission capture_id=%llu device_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu status=%u path=queued",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned long long>(core_queue_wait_us),
         static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
         static_cast<unsigned>(status));
     completion->set_value(status);
@@ -1874,15 +2340,30 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
   auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
   std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
   const uint64_t post_begin_ns = capture_latency_trace_now_ns();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion, post_begin_ns]() {
+  const CoreThread::DiagnosticSnapshot post_snapshot = core_thread_.diagnostic_snapshot();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion, post_begin_ns, post_snapshot]() {
     const uint64_t core_start_ns = capture_latency_trace_now_ns();
+    const CoreThread::DiagnosticSnapshot start_snapshot = core_thread_.diagnostic_snapshot();
+    const size_t runtime_request_depth_at_start = requests_.size();
+    const size_t runtime_provider_fact_depth_at_start = provider_facts_.size();
     RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
     const uint64_t core_end_ns = capture_latency_trace_now_ns();
+    const uint64_t core_queue_wait_us = (core_start_ns - post_begin_ns) / 1000ull;
+    capture_latency_trace_emit_core_command_wait_context(
+        "rig_capture",
+        capture_id,
+        rig_id,
+        "rig_id",
+        core_queue_wait_us,
+        post_snapshot,
+        start_snapshot,
+        runtime_request_depth_at_start,
+        runtime_provider_fact_depth_at_start);
     capture_latency_trace_printf(
         "core_rig_admission capture_id=%llu rig_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu ok=%u submitted=%llu path=queued",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(rig_id),
-        static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned long long>(core_queue_wait_us),
         static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
         result.ok ? 1u : 0u,
         static_cast<unsigned long long>(result.submitted_count));
@@ -2030,6 +2511,9 @@ void CoreRuntime::request_publish() {
 
 void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
   assert(core_thread_.is_core_thread());
+  if (provider_fact_has_capture_id_for_priority(cmd)) {
+    ++provider_capture_facts_queued_;
+  }
   provider_facts_.push_back(std::move(cmd));
   // Facts wake the core pump so descendant realization can be observed through
   // dispatcher state changes and the normal coalesced publish path. Scenario

@@ -491,6 +491,7 @@ private:
   ProviderCallbackIngress ingress_;
 
   std::deque<ProviderToCoreCommand> provider_facts_;
+  size_t provider_capture_facts_queued_ = 0;
   std::deque<CoreThread::Task> requests_;
 
   enum class ShutdownPhase : uint8_t {

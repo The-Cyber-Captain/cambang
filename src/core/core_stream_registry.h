@@ -44,7 +44,8 @@ public:
     uint64_t frames_received = 0;
     uint64_t frames_released = 0;
 
-    // Reserved for later flow control semantics; currently always 0.
+    // Frames released without presentation or retained result acceptance,
+    // including Stage C repeating stream-frame coalescing before expensive dispatch.
     uint64_t frames_dropped = 0;
     uint64_t last_frame_ts_ns = 0;
 
