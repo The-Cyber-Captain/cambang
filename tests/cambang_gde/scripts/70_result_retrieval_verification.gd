@@ -24,8 +24,8 @@ const PAYLOAD_KIND_GPU_SURFACE := 2
 # on current measurements, so keep the interactive default focused on the main
 # capture result and metadata. Enable this only when explicitly inspecting
 # to_image_member()/thumbnail behaviour.
-const MATERIALIZE_INITIAL_STREAM_TO_IMAGE_IN_GUI := false
-const MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS := false
+const MATERIALIZE_INITIAL_STREAM_TO_IMAGE_IN_GUI := true #false
+const MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS := true #false
 const DEFER_CAPTURE_MEMBER_THUMBNAILS := true
 const CAPTURE_MEMBER_THUMBNAILS_PER_FRAME := 1
 
@@ -100,16 +100,16 @@ func _make_scene70_still_image_bundle_members() -> Array:
 			"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
 			"intended_exposure_compensation_milli_ev": 0,
 		},
-		{
-			"image_member_index": 1,
-			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			"intended_exposure_compensation_milli_ev": -1000,
-		},
-		{
-			"image_member_index": 2,
-			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			"intended_exposure_compensation_milli_ev": 1000,
-		},
+		#{
+			#"image_member_index": 1,
+			#"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			#"intended_exposure_compensation_milli_ev": -1000,
+		#},
+		#{
+			#"image_member_index": 2,
+			#"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			#"intended_exposure_compensation_milli_ev": 1000,
+		#},
 	]
 
 
