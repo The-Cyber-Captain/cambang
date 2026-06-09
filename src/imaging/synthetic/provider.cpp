@@ -15,6 +15,7 @@
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/gpu_update_policy_resolver.h"
 #include "imaging/api/timeline_teardown_trace.h"
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
 #if __has_include(<godot_cpp/variant/utility_functions.hpp>)
@@ -85,7 +86,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  synthetic_triage_printf("[CamBANG][CaptureLatencyTrace] %s", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 
 struct CaptureLatencyDueFrameStats {
@@ -96,6 +97,102 @@ struct CaptureLatencyDueFrameStats {
 };
 
 thread_local CaptureLatencyDueFrameStats g_capture_latency_due_frame_stats;
+
+constexpr uint64_t kCaptureLatencyAdvanceLogThresholdUs = 5000;
+constexpr uint64_t kCaptureLatencyAdvanceSummaryEvery = 64;
+
+struct CaptureLatencyAdvanceSuppressionStats {
+  uint64_t calls = 0;
+  uint64_t frames = 0;
+  uint64_t total_ns = 0;
+  uint64_t max_ns = 0;
+  uint64_t emit_one_total_ns = 0;
+  uint64_t emit_one_max_ns = 0;
+  uint64_t flush_total_ns = 0;
+  uint64_t state_lock_wait_total_ns = 0;
+  uint64_t state_lock_hold_total_ns = 0;
+};
+
+thread_local CaptureLatencyAdvanceSuppressionStats g_capture_latency_suppressed_advance_stats;
+
+void capture_latency_trace_note_suppressed_advance(uint64_t frames,
+                                                   uint64_t total_ns,
+                                                   uint64_t emit_one_total_ns,
+                                                   uint64_t emit_one_max_ns,
+                                                   uint64_t flush_ns,
+                                                   uint64_t state_lock_wait_ns,
+                                                   uint64_t state_lock_hold_ns) {
+  auto& stats = g_capture_latency_suppressed_advance_stats;
+  ++stats.calls;
+  stats.frames += frames;
+  stats.total_ns += total_ns;
+  stats.max_ns = std::max(stats.max_ns, total_ns);
+  stats.emit_one_total_ns += emit_one_total_ns;
+  stats.emit_one_max_ns = std::max(stats.emit_one_max_ns, emit_one_max_ns);
+  stats.flush_total_ns += flush_ns;
+  stats.state_lock_wait_total_ns += state_lock_wait_ns;
+  stats.state_lock_hold_total_ns += state_lock_hold_ns;
+}
+
+void capture_latency_trace_flush_suppressed_advance_summary(const char* reason) {
+  auto& stats = g_capture_latency_suppressed_advance_stats;
+  if (stats.calls == 0) {
+    return;
+  }
+  capture_latency_trace_printf(
+      "synthetic_advance_summary reason=%s suppressed_calls=%llu suppressed_frames=%llu total_us=%llu max_us=%llu emit_one_total_us=%llu emit_one_max_us=%llu flush_us=%llu state_lock_wait_us=%llu state_lock_hold_us=%llu capture_inflight=%u active_capture_count=%u",
+      reason,
+      static_cast<unsigned long long>(stats.calls),
+      static_cast<unsigned long long>(stats.frames),
+      static_cast<unsigned long long>(stats.total_ns / 1000ull),
+      static_cast<unsigned long long>(stats.max_ns / 1000ull),
+      static_cast<unsigned long long>(stats.emit_one_total_ns / 1000ull),
+      static_cast<unsigned long long>(stats.emit_one_max_ns / 1000ull),
+      static_cast<unsigned long long>(stats.flush_total_ns / 1000ull),
+      static_cast<unsigned long long>(stats.state_lock_wait_total_ns / 1000ull),
+      static_cast<unsigned long long>(stats.state_lock_hold_total_ns / 1000ull),
+      capture_latency_trace_diagnostics::capture_inflight(),
+      capture_latency_trace_diagnostics::active_capture_count());
+  stats = CaptureLatencyAdvanceSuppressionStats{};
+}
+
+void capture_latency_trace_emit_or_suppress_advance(uint64_t dt_ns,
+                                                    uint64_t state_lock_wait_ns,
+                                                    uint64_t state_lock_hold_ns,
+                                                    uint64_t emit_due_ns,
+                                                    uint64_t frames,
+                                                    uint64_t emit_one_total_ns,
+                                                    uint64_t emit_one_max_ns,
+                                                    uint64_t flush_ns,
+                                                    uint64_t total_ns,
+                                                    uint32_t paused) {
+  const uint32_t active_capture_count = capture_latency_trace_diagnostics::active_capture_count();
+  const bool near_capture = active_capture_count != 0;
+  const bool interesting = near_capture || total_ns / 1000ull >= kCaptureLatencyAdvanceLogThresholdUs;
+  if (!interesting) {
+    capture_latency_trace_note_suppressed_advance(
+        frames, total_ns, emit_one_total_ns, emit_one_max_ns, flush_ns, state_lock_wait_ns, state_lock_hold_ns);
+    if (g_capture_latency_suppressed_advance_stats.calls >= kCaptureLatencyAdvanceSummaryEvery) {
+      capture_latency_trace_flush_suppressed_advance_summary("periodic");
+    }
+    return;
+  }
+  capture_latency_trace_flush_suppressed_advance_summary("before_interesting");
+  capture_latency_trace_printf(
+      "synthetic_advance dt_ns=%llu state_lock_wait_us=%llu state_lock_hold_us=%llu emit_due_us=%llu frames=%llu emit_one_total_us=%llu emit_one_max_us=%llu flush_us=%llu total_us=%llu paused=%u capture_inflight=%u active_capture_count=%u",
+      static_cast<unsigned long long>(dt_ns),
+      static_cast<unsigned long long>(state_lock_wait_ns / 1000ull),
+      static_cast<unsigned long long>(state_lock_hold_ns / 1000ull),
+      static_cast<unsigned long long>(emit_due_ns / 1000ull),
+      static_cast<unsigned long long>(frames),
+      static_cast<unsigned long long>(emit_one_total_ns / 1000ull),
+      static_cast<unsigned long long>(emit_one_max_ns / 1000ull),
+      static_cast<unsigned long long>(flush_ns / 1000ull),
+      static_cast<unsigned long long>(total_ns / 1000ull),
+      paused,
+      near_capture ? 1u : 0u,
+      active_capture_count);
+}
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
 uint64_t fps_period_ns(uint32_t fps_num, uint32_t fps_den) {
@@ -277,6 +374,7 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   {
     std::lock_guard<std::mutex> capture_lock(capture_mutex_);
     capture_admission_closed_ = false;
+    capture_latency_trace_first_capture_after_start_.store(true, std::memory_order_relaxed);
     ++capture_generation_;
     in_flight_captures_.clear();
   }
@@ -1238,14 +1336,17 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     inflight_insert_total_ns += capture_latency_trace_now_ns() - inflight_begin_ns;
   }
 
+  capture_latency_trace_diagnostics::note_capture_admitted(static_cast<uint32_t>(job.device_jobs.size()));
   capture_latency_trace_printf(
-      "synthetic_validate_admit capture_id=%llu rig_id=%llu origin=%u devices=%llu retain_us=%llu inflight_insert_us=%llu",
+      "synthetic_validate_admit capture_id=%llu rig_id=%llu origin=%u devices=%llu retain_us=%llu inflight_insert_us=%llu capture_inflight=%u active_capture_count=%u",
       static_cast<unsigned long long>(submission.capture_id),
       static_cast<unsigned long long>(submission.rig_id),
       static_cast<unsigned>(submission.origin),
       static_cast<unsigned long long>(job.device_jobs.size()),
       static_cast<unsigned long long>(retain_total_ns / 1000ull),
-      static_cast<unsigned long long>(inflight_insert_total_ns / 1000ull));
+      static_cast<unsigned long long>(inflight_insert_total_ns / 1000ull),
+      capture_latency_trace_diagnostics::capture_inflight(),
+      capture_latency_trace_diagnostics::active_capture_count());
 
   out_job = std::move(job);
   return ProviderResult::success();
@@ -1395,6 +1496,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
   uint64_t member_ev_bgra_ns = 0;
   uint64_t member_post_ns = 0;
   const CaptureRequest& req = job.request;
+  const bool first_capture_after_start = capture_latency_trace_first_capture_after_start_.exchange(false, std::memory_order_relaxed);
   if (should_stop_capture_job_(generation)) {
     return false;
   }
@@ -1521,10 +1623,11 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     member_post_ns += capture_latency_trace_now_ns() - member_post_begin_ns;
   }
   capture_latency_trace_printf(
-      "synthetic_capture_production capture_id=%llu device_id=%llu rig_id=%llu members=%llu frame_bytes=%llu staging_alloc_us=%llu spec_setup_us=%llu timestamp_lock_wait_us=%llu base_render_us=%llu member_alloc_us=%llu member_copy_us=%llu member_ev_bgra_us=%llu member_post_us=%llu total_us=%llu",
+      "synthetic_capture_production capture_id=%llu device_id=%llu rig_id=%llu first_capture_after_start=%u members=%llu frame_bytes=%llu staging_alloc_kind=fresh_vector staging_alloc_us=%llu spec_setup_us=%llu timestamp_lock_wait_us=%llu base_render_us=%llu member_alloc_kind=fresh_vector member_alloc_us=%llu member_copy_us=%llu member_ev_bgra_us=%llu member_post_us=%llu total_us=%llu",
       static_cast<unsigned long long>(req.capture_id),
       static_cast<unsigned long long>(req.device_instance_id),
       static_cast<unsigned long long>(req.rig_id),
+      first_capture_after_start ? 1u : 0u,
       static_cast<unsigned long long>(members.size()),
       static_cast<unsigned long long>(job.frame_size_bytes),
       static_cast<unsigned long long>(staging_alloc_ns / 1000ull),
@@ -1587,14 +1690,17 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
     release_native_acquisition_session_for_capture_(job.request.device_instance_id);
     session_release_ns = capture_latency_trace_now_ns() - release_begin_ns;
   }
+  capture_latency_trace_diagnostics::note_capture_finished();
   capture_latency_trace_printf(
-      "synthetic_terminal_cleanup capture_id=%llu device_id=%llu terminal=%u post_us=%llu release_us=%llu total_us=%llu",
+      "synthetic_terminal_cleanup capture_id=%llu device_id=%llu terminal=%u post_us=%llu release_us=%llu total_us=%llu capture_inflight=%u active_capture_count=%u",
       static_cast<unsigned long long>(job.request.capture_id),
       static_cast<unsigned long long>(job.request.device_instance_id),
       terminal == CaptureTerminalKind::Completed ? 1u : 2u,
       static_cast<unsigned long long>(terminal_post_ns / 1000ull),
       static_cast<unsigned long long>(session_release_ns / 1000ull),
-      static_cast<unsigned long long>((capture_latency_trace_now_ns() - finish_begin_ns) / 1000ull));
+      static_cast<unsigned long long>((capture_latency_trace_now_ns() - finish_begin_ns) / 1000ull),
+      capture_latency_trace_diagnostics::capture_inflight(),
+      capture_latency_trace_diagnostics::active_capture_count());
 }
 
 void SyntheticProvider::join_finished_capture_threads_() {
@@ -2603,12 +2709,18 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   // events to accumulate and then burst on unpause, which breaks checkpointed
   // host/timeline synchronization.
   if (cfg_.synthetic_role == SyntheticRole::Timeline && timeline_running_ && timeline_paused_) {
-    capture_latency_trace_printf(
-        "synthetic_advance dt_ns=%llu state_lock_wait_us=%llu state_lock_hold_us=%llu emit_due_us=0 frames=0 emit_one_total_us=0 emit_one_max_us=0 flush_us=0 total_us=%llu paused=1",
-        static_cast<unsigned long long>(dt_ns),
-        static_cast<unsigned long long>((state_lock_acquired_ns - state_lock_wait_begin_ns) / 1000ull),
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - state_lock_acquired_ns) / 1000ull),
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - advance_begin_ns) / 1000ull));
+    const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
+    capture_latency_trace_emit_or_suppress_advance(
+        dt_ns,
+        state_lock_acquired_ns - state_lock_wait_begin_ns,
+        before_unlock_ns - state_lock_acquired_ns,
+        0,
+        0,
+        0,
+        0,
+        0,
+        before_unlock_ns - advance_begin_ns,
+        1);
     return;
   }
 
@@ -2643,17 +2755,17 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
       triage_strand_flush_total_ns_,
       triage_strand_flush_max_ns_);
   const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
-  capture_latency_trace_printf(
-      "synthetic_advance dt_ns=%llu state_lock_wait_us=%llu state_lock_hold_us=%llu emit_due_us=%llu frames=%llu emit_one_total_us=%llu emit_one_max_us=%llu flush_us=%llu total_us=%llu paused=0",
-      static_cast<unsigned long long>(dt_ns),
-      static_cast<unsigned long long>((state_lock_acquired_ns - state_lock_wait_begin_ns) / 1000ull),
-      static_cast<unsigned long long>((before_unlock_ns - state_lock_acquired_ns) / 1000ull),
-      static_cast<unsigned long long>(g_capture_latency_due_frame_stats.emit_due_total_ns / 1000ull),
-      static_cast<unsigned long long>(g_capture_latency_due_frame_stats.frames),
-      static_cast<unsigned long long>(g_capture_latency_due_frame_stats.emit_one_total_ns / 1000ull),
-      static_cast<unsigned long long>(g_capture_latency_due_frame_stats.emit_one_max_ns / 1000ull),
-      static_cast<unsigned long long>(flush_ns / 1000ull),
-      static_cast<unsigned long long>((before_unlock_ns - advance_begin_ns) / 1000ull));
+  capture_latency_trace_emit_or_suppress_advance(
+      dt_ns,
+      state_lock_acquired_ns - state_lock_wait_begin_ns,
+      before_unlock_ns - state_lock_acquired_ns,
+      g_capture_latency_due_frame_stats.emit_due_total_ns,
+      g_capture_latency_due_frame_stats.frames,
+      g_capture_latency_due_frame_stats.emit_one_total_ns,
+      g_capture_latency_due_frame_stats.emit_one_max_ns,
+      flush_ns,
+      before_unlock_ns - advance_begin_ns,
+      0);
 }
 
 } // namespace cambang

@@ -1,4 +1,5 @@
 ﻿// src/core/core_dispatcher.cpp
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 
 #include "core/core_dispatcher.h"
 #include "core/resource_aggregate_telemetry.h"
@@ -25,7 +26,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
@@ -408,9 +409,10 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     }
     if (trace_capture_id != 0) {
       capture_latency_trace_printf(
-          "core_dispatch_capture_frame capture_id=%llu device_id=%llu member=%u retained=%u retention_us=%llu total_us=%llu",
+          "core_dispatch_capture_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u retained=%u retention_us=%llu total_us=%llu",
           static_cast<unsigned long long>(trace_capture_id),
           static_cast<unsigned long long>(trace_device_id),
+          static_cast<unsigned long long>(asid),
           static_cast<unsigned>(frame_member_index),
           retained_for_result ? 1u : 0u,
           static_cast<unsigned long long>(result_retention_ns / 1000ull),

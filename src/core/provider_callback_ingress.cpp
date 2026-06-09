@@ -1,4 +1,5 @@
 #include "core/provider_callback_ingress.h"
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 
 #include <chrono>
 #include <cstdarg>
@@ -25,7 +26,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
@@ -130,6 +131,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   const ProviderToCoreCommandType type = cmd.type;
   uint64_t trace_capture_id = 0;
   uint64_t trace_device_id = 0;
+  uint64_t trace_acquisition_session_id = 0;
   uint32_t trace_member_index = 0;
   if (type == ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED) {
     const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
@@ -156,6 +158,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     frame_stream_id = frame_payload.frame.stream_id;
     trace_capture_id = frame_payload.frame.capture_id;
     trace_device_id = frame_payload.frame.device_instance_id;
+    trace_acquisition_session_id = frame_payload.frame.acquisition_session_id;
     trace_member_index = frame_payload.frame.capture_image.image_member_index;
     has_fail_frame = true;
     global_resource_aggregate_telemetry().lease_created(make_framebuffer_lease_scoped_resource_telemetry_key(
@@ -245,6 +248,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
                trace_post_ns,
                trace_capture_id,
                trace_device_id,
+               trace_acquisition_session_id,
                trace_member_index,
                trace_type = type]() mutable {
     const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
@@ -256,9 +260,10 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
       const uint64_t dispatch_end_ns = capture_latency_trace_now_ns();
       if (trace_capture_id != 0) {
         capture_latency_trace_printf(
-            "core_ingress_dispatch capture_id=%llu device_id=%llu member=%u type=%u core_queue_delay_us=%llu sink_us=%llu",
+            "core_ingress_dispatch capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u type=%u core_queue_delay_us=%llu sink_us=%llu",
             static_cast<unsigned long long>(trace_capture_id),
             static_cast<unsigned long long>(trace_device_id),
+            static_cast<unsigned long long>(trace_acquisition_session_id),
             static_cast<unsigned>(trace_member_index),
             static_cast<unsigned>(trace_type),
             static_cast<unsigned long long>((dispatch_begin_ns - trace_post_ns) / 1000ull),
@@ -283,9 +288,10 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   const uint64_t core_post_end_ns = capture_latency_trace_now_ns();
   if (trace_capture_id != 0) {
     capture_latency_trace_printf(
-        "core_ingress_post capture_id=%llu device_id=%llu member=%u type=%u post_us=%llu result=%u",
+        "core_ingress_post capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u type=%u post_us=%llu result=%u",
         static_cast<unsigned long long>(trace_capture_id),
         static_cast<unsigned long long>(trace_device_id),
+        static_cast<unsigned long long>(trace_acquisition_session_id),
         static_cast<unsigned>(trace_member_index),
         static_cast<unsigned>(type),
         static_cast<unsigned long long>((core_post_end_ns - core_post_begin_ns) / 1000ull),
