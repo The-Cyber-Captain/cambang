@@ -334,6 +334,90 @@ bool promote_capture_fact_over_repeating_stream_prefix(
   return false;
 }
 
+uint64_t frame_ts_to_core_ns_for_backpressure(const CaptureTimestamp& ts) {
+  if (ts.tick_ns == 0) {
+    return 0;
+  }
+  switch (ts.domain) {
+    case CaptureTimestampDomain::CORE_MONOTONIC:
+    case CaptureTimestampDomain::PROVIDER_MONOTONIC:
+      return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
+    default:
+      return 0;
+  }
+}
+
+bool has_newer_repeating_stream_frame_before_barrier(
+    const std::deque<ProviderToCoreCommand>& provider_facts,
+    const ProviderFactSummary& front_summary,
+    const CoreCaptureCohortRegistry& capture_cohorts) {
+  if (front_summary.fact_class != ProviderFactClass::RepeatingStreamFrame ||
+      front_summary.stream_id == 0) {
+    return false;
+  }
+
+  bool skipped_front = false;
+  for (const ProviderToCoreCommand& cmd : provider_facts) {
+    if (!skipped_front) {
+      skipped_front = true;
+      continue;
+    }
+
+    const ProviderFactSummary summary = summarize_provider_fact(cmd, capture_cohorts);
+    if (summary.fact_class != ProviderFactClass::RepeatingStreamFrame) {
+      return false;
+    }
+    if (summary.stream_id == front_summary.stream_id &&
+        summary.acquisition_session_id == front_summary.acquisition_session_id) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+struct StreamFrameCoalesceResult {
+  bool coalesced = false;
+  bool stream_counters_changed = false;
+};
+
+StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
+    std::deque<ProviderToCoreCommand>& provider_facts,
+    const ProviderFactSummary& front_summary,
+    const CoreCaptureCohortRegistry& capture_cohorts,
+    CoreStreamRegistry& streams) {
+  StreamFrameCoalesceResult out{};
+  if (!has_newer_repeating_stream_frame_before_barrier(provider_facts, front_summary, capture_cohorts)) {
+    return out;
+  }
+
+  ProviderToCoreCommand cmd = std::move(provider_facts.front());
+  provider_facts.pop_front();
+  auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
+  const uint64_t integrated_ts_ns = frame_ts_to_core_ns_for_backpressure(frame.capture_timestamp);
+  const bool received_counted = streams.on_frame_received(frame.stream_id, integrated_ts_ns);
+  const bool released_counted = streams.on_frame_released(frame.stream_id);
+  const bool dropped_counted = streams.on_frame_dropped(frame.stream_id);
+  frame.release_now();
+  global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+      frame.stream_id,
+      frame.acquisition_session_id));
+  frame.release = nullptr;
+  frame.release_user = nullptr;
+
+  out.coalesced = true;
+  out.stream_counters_changed = received_counted || released_counted || dropped_counted;
+  capture_latency_trace_printf(
+      "stream_frame_coalesced stream_id=%llu acquisition_session_id=%llu provider_fact_depth_after=%llu received_counted=%u released_counted=%u dropped_counted=%u delivered=0 publication_requested=1",
+      static_cast<unsigned long long>(front_summary.stream_id),
+      static_cast<unsigned long long>(front_summary.acquisition_session_id),
+      static_cast<unsigned long long>(provider_facts.size()),
+      received_counted ? 1u : 0u,
+      released_counted ? 1u : 0u,
+      dropped_counted ? 1u : 0u);
+  return out;
+}
+
 constexpr uint64_t kProviderFactDispatchSlowThresholdUs = 5000;
 
 void emit_provider_fact_dispatch_slow_if_needed(const ProviderFactSummary& summary,
@@ -682,7 +766,9 @@ void CoreRuntime::on_core_timer_tick() {
   // work has had a service opportunity. Stage B.1 honors capture-over-stream
   // priority inside this integration queue: capture facts may pass only a prefix
   // of lower-priority repeating stream frames, and repeating stream frames yield
-  // to already-pending command/request work.
+  // to already-pending command/request work. Stage C coalesces stale repeating
+  // stream frames only when a newer frame for the same stream/session is queued
+  // before any non-lossy barrier.
   const bool requests_pending_before_provider_drain = !requests_.empty();
   bool command_or_request_waiting_for_stream_frame = false;
   {
@@ -701,6 +787,20 @@ void CoreRuntime::on_core_timer_tick() {
           summarize_provider_fact(provider_facts_.front(), capture_cohort_registry_);
       const bool command_or_request_pending = requests_pending_before_provider_drain ||
           core_thread_.has_pending_command_tasks();
+      if (summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
+        const StreamFrameCoalesceResult coalesce_result =
+            coalesce_front_repeating_stream_frame_if_superseded(
+                provider_facts_, summary, capture_cohort_registry_, streams_);
+        if (coalesce_result.coalesced) {
+          request_publish_from_core_unchecked();
+          ++provider_facts_drained;
+          if (command_or_request_pending) {
+            command_or_request_waiting_for_stream_frame = true;
+            break;
+          }
+          continue;
+        }
+      }
       if (command_or_request_pending && summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
         command_or_request_waiting_for_stream_frame = true;
         capture_latency_trace_printf(

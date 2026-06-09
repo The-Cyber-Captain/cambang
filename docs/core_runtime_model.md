@@ -145,6 +145,10 @@ pending command/request work is admitted, and a capture-critical fact may pass
 only a prefix of repeating stream-frame facts. Unknown, lifecycle,
 native-object, error, and other non-lossy stream facts remain conservative; they
 are not dropped or reordered behind stream frames by this integration rule.
+Repeating stream frames may also be coalesced before expensive dispatch only
+when a newer queued frame for the same stream/session supersedes the older frame
+before any non-lossy barrier; stream received/released/dropped counters and
+framebuffer lease telemetry are updated before the stale frame is released.
 
 ------------------------------------------------------------------------
 

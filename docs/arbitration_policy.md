@@ -62,7 +62,10 @@ lower-priority latest-state work. Core may defer repeating stream-frame
 integration behind pending public/Core command work, and capture-critical facts
 may pass a prefix of queued repeating stream frames. Unknown, lifecycle,
 native-object, and error facts remain conservative/non-lossy and are not treated
-as droppable stream work.
+as droppable stream work. Repeating stream frames are latest-state work; before
+expensive dispatch, core may coalesce an older queued repeating stream frame
+when a newer frame for the same stream/session is queued before any non-lossy
+barrier. Capture frames and capture lifecycle facts are never coalesced.
 
 ------------------------------------------------------------------------
 

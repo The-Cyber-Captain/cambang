@@ -35,7 +35,10 @@ including rig capture facts identified from core admission metadata) are above
 repeating stream frames. Repeating stream frames can be deferred behind pending
 command/request work and can be passed by capture-critical facts. This does not
 change strand delivery, public API, or the non-lossy treatment of lifecycle,
-native-object, error, or unknown facts.
+native-object, error, or unknown facts. Repeating stream frames remain
+latest-state work and may be coalesced after strand delivery only with a newer
+same-stream/session frame before a non-lossy barrier; capture frames are never
+coalesced.
 
 Topology change is not a separate event class. It is an effect reflected by
 lifecycle and native-object truth, and later by snapshot `topology_version`.
