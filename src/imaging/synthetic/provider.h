@@ -308,6 +308,7 @@ private:
   uint64_t capture_generation_ = 0;
   std::map<InFlightCaptureKey, InFlightCaptureDevice> in_flight_captures_;
   std::vector<std::thread> capture_threads_;
+  std::atomic<bool> capture_latency_trace_first_capture_after_start_{true};
 
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, StreamState> streams_;
