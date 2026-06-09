@@ -172,6 +172,11 @@ public:
 
   Stats stats_copy() const noexcept;
 
+  // Thread-safe scheduler visibility for CoreRuntime timer-hook fairness.
+  // Returns true when command-lane work is queued but not yet drained into the
+  // current CoreThread pump.
+  bool has_pending_command_tasks() const;
+
   // Request an immediate timer tick (wakes the core thread promptly).
   // - thread-safe
   // - results in hooks_->on_core_timer_tick() being called on the core thread

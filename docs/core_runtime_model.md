@@ -132,7 +132,11 @@ command-lane work posted during ordinary provider/frame transport is re-observed
 before another ordinary task can run. Timer ticks remain coalesced as a pending
 flag; when command-lane work appears during a pump, CoreThread may defer one
 requested timer tick once so command work gets a prompt service turn, then the
-coalesced timer tick continues deterministically.
+coalesced timer tick continues deterministically. While CoreRuntime is executing
+a timer tick, provider-fact integration also checks for newly queued command-lane
+work between facts and can yield the timer hook with a continuation request so
+that command admission can be observed between bounded timer/provider-fact
+slices.
 
 ------------------------------------------------------------------------
 

@@ -243,6 +243,11 @@ CoreThread::Stats CoreThread::stats_copy() const noexcept {
   return s;
 }
 
+bool CoreThread::has_pending_command_tasks() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return !command_tasks_.empty();
+}
+
 void CoreThread::request_timer_tick() {
   // Forces an immediate wake and hook tick on the core thread.
   {

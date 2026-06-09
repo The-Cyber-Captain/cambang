@@ -378,6 +378,7 @@ void CoreRuntime::on_core_timer_tick() {
   const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
       ? kMaxProviderFactsBeforeRequestWhenRequestsPending
       : kMaxProviderFactsPerCoreTurn;
+  bool command_lane_pending_after_tick_slice = false;
   size_t provider_facts_drained = 0;
   while (!provider_facts_.empty() &&
          provider_facts_drained < provider_fact_drain_bound) {
@@ -385,12 +386,27 @@ void CoreRuntime::on_core_timer_tick() {
     provider_facts_.pop_front();
     dispatcher_.dispatch(std::move(cmd));
     ++provider_facts_drained;
+
+    if (!requests_pending_before_provider_drain && core_thread_.has_pending_command_tasks()) {
+      command_lane_pending_after_tick_slice = true;
+      break;
+    }
   }
   const bool provider_facts_remain_after_fairness_slice = !provider_facts_.empty();
 
   // If provider facts mutated relevant state, request a coalesced publish.
   if (dispatcher_.consume_relevant_state_changed()) {
     request_publish_from_core_unchecked();
+  }
+
+  // If command-lane work arrived while this timer tick was integrating provider
+  // facts, return to CoreThread promptly so the command lane can enqueue into
+  // requests_. The pending publish/timer state remains retained and this tick is
+  // re-requested for deterministic continuation.
+  if (command_lane_pending_after_tick_slice && requests_.empty() &&
+      !shutdown_requested_ && !shutdown_requested_from_stop_.load(std::memory_order_acquire)) {
+    core_thread_.request_timer_tick();
+    return;
   }
 
   // 2) Drain queued requests ("what should we do").
