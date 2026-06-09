@@ -27,10 +27,13 @@ namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
 
-// Stage A command-fairness bound: provider facts remain FIFO and non-dropping,
-// but Core yields to pending request work after a deterministic slice so
-// sustained stream/provider-event production cannot starve public commands.
+// Stage A command-fairness bounds: provider facts remain FIFO and non-dropping,
+// but Core yields to pending request work after deterministic slices so sustained
+// stream/provider-event production cannot starve public commands. When requests
+// are already queued, use the smallest provider-fact service slice before the
+// request turn to honor capture-over-stream command fairness promptly.
 constexpr size_t kMaxProviderFactsPerCoreTurn = 64;
+constexpr size_t kMaxProviderFactsBeforeRequestWhenRequestsPending = 1;
 
 // BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 uint64_t capture_latency_trace_now_ns() {
@@ -371,9 +374,13 @@ void CoreRuntime::on_core_timer_tick() {
   // deterministic fairness slice. Provider facts remain FIFO and non-dropping;
   // when backlog remains, the next requested tick continues from the next fact
   // after pending command work has had a service opportunity.
+  const bool requests_pending_before_provider_drain = !requests_.empty();
+  const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
+      ? kMaxProviderFactsBeforeRequestWhenRequestsPending
+      : kMaxProviderFactsPerCoreTurn;
   size_t provider_facts_drained = 0;
   while (!provider_facts_.empty() &&
-         provider_facts_drained < kMaxProviderFactsPerCoreTurn) {
+         provider_facts_drained < provider_fact_drain_bound) {
     ProviderToCoreCommand cmd = std::move(provider_facts_.front());
     provider_facts_.pop_front();
     dispatcher_.dispatch(std::move(cmd));
