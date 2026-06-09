@@ -86,7 +86,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  synthetic_triage_printf("[CamBANG][CaptureLatencyTrace] %s", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 
 struct CaptureLatencyDueFrameStats {

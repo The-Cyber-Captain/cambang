@@ -1,4 +1,5 @@
 #include "core/core_result_store.h"
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 
 #include <chrono>
 #include <cstdarg>
@@ -22,7 +23,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
@@ -187,9 +188,10 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
   if (frame.capture_id != 0) {
     capture_latency_trace_printf(
-        "result_store_retain_frame capture_id=%llu device_id=%llu member=%u payload_copy_us=%llu total_us=%llu retained=%u bytes=%llu",
+        "result_store_retain_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu total_us=%llu retained=%u bytes=%llu",
         static_cast<unsigned long long>(frame.capture_id),
         static_cast<unsigned long long>(frame.device_instance_id),
+        static_cast<unsigned long long>(frame.acquisition_session_id),
         static_cast<unsigned>(frame.capture_image.image_member_index),
         static_cast<unsigned long long>(payload_copy_ns / 1000ull),
         static_cast<unsigned long long>((capture_latency_trace_now_ns() - retain_begin_ns) / 1000ull),
@@ -257,9 +259,10 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(const Frame
   const bool valid = has_valid_capture_image_member_payload(out_payload);
   if (frame.capture_id != 0) {
     capture_latency_trace_printf(
-        "result_store_build_member_payload capture_id=%llu device_id=%llu member=%u payload_copy_us=%llu total_us=%llu valid=%u bytes=%llu",
+        "result_store_build_member_payload capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu total_us=%llu valid=%u bytes=%llu",
         static_cast<unsigned long long>(frame.capture_id),
         static_cast<unsigned long long>(frame.device_instance_id),
+        static_cast<unsigned long long>(frame.acquisition_session_id),
         static_cast<unsigned>(frame.capture_image.image_member_index),
         static_cast<unsigned long long>(copy_ns / 1000ull),
         static_cast<unsigned long long>((capture_latency_trace_now_ns() - build_begin_ns) / 1000ull),

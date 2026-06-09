@@ -1,4 +1,5 @@
 #include "imaging/api/provider_strand.h"
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 
 #include <cassert>
 #include <chrono>
@@ -22,7 +23,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
@@ -178,7 +179,7 @@ void CBProviderStrand::deliver_(Event& ev) {
           callbacks_->on_capture_started(e.id, e.device_instance_id);
           const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
           capture_latency_trace_printf(
-              "strand_deliver_capture_started capture_id=%llu device_id=%llu queue_delay_us=%llu callback_us=%llu",
+              "strand_deliver_capture_started capture_id=%llu device_id=%llu fact_type=started queue_delay_us=%llu callback_us=%llu",
               static_cast<unsigned long long>(e.id),
               static_cast<unsigned long long>(e.device_instance_id),
               static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
@@ -188,7 +189,7 @@ void CBProviderStrand::deliver_(Event& ev) {
           callbacks_->on_capture_completed(e.id, e.device_instance_id);
           const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
           capture_latency_trace_printf(
-              "strand_deliver_capture_completed capture_id=%llu device_id=%llu queue_delay_us=%llu callback_us=%llu",
+              "strand_deliver_capture_completed capture_id=%llu device_id=%llu fact_type=completed queue_delay_us=%llu callback_us=%llu",
               static_cast<unsigned long long>(e.id),
               static_cast<unsigned long long>(e.device_instance_id),
               static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
@@ -198,7 +199,7 @@ void CBProviderStrand::deliver_(Event& ev) {
           callbacks_->on_capture_failed(e.id, e.device_instance_id, e.err);
           const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
           capture_latency_trace_printf(
-              "strand_deliver_capture_failed capture_id=%llu device_id=%llu queue_delay_us=%llu callback_us=%llu err=%u",
+              "strand_deliver_capture_failed capture_id=%llu device_id=%llu fact_type=failed queue_delay_us=%llu callback_us=%llu err=%u",
               static_cast<unsigned long long>(e.id),
               static_cast<unsigned long long>(e.device_instance_id),
               static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
@@ -210,9 +211,10 @@ void CBProviderStrand::deliver_(Event& ev) {
           const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
           if (e.frame.capture_id != 0) {
             capture_latency_trace_printf(
-                "strand_deliver_capture_frame capture_id=%llu device_id=%llu member=%u queue_delay_us=%llu callback_us=%llu bytes=%llu",
+                "strand_deliver_capture_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u fact_type=frame queue_delay_us=%llu callback_us=%llu bytes=%llu",
                 static_cast<unsigned long long>(e.frame.capture_id),
                 static_cast<unsigned long long>(e.frame.device_instance_id),
+                static_cast<unsigned long long>(e.frame.acquisition_session_id),
                 static_cast<unsigned>(e.frame.capture_image.image_member_index),
                 static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
                 static_cast<unsigned long long>((deliver_end_ns - deliver_begin_ns) / 1000ull),

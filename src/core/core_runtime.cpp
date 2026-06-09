@@ -18,6 +18,7 @@
 #include "imaging/broker/banner_info.h"
 #include "core/resource_aggregate_telemetry.h"
 #include "imaging/api/timeline_teardown_trace.h"
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 
 namespace cambang {
 
@@ -37,7 +38,7 @@ void capture_latency_trace_printf(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+  capture_latency_trace_diagnostics::print_line(buffer);
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
@@ -303,6 +304,7 @@ void CoreRuntime::stop() {
 
 void CoreRuntime::on_core_start() {
   // Core thread has started; begin accepting new work.
+  capture_latency_trace_diagnostics::reset_trace_group_seen();
   epoch_ = std::chrono::steady_clock::now();
   // Do not carry retained result artifacts across generation boundaries.
   result_store_.clear();
@@ -756,6 +758,7 @@ if (dispatcher_.consume_relevant_state_changed()) {
 }
 
 void CoreRuntime::on_core_stop() {
+  capture_latency_trace_diagnostics::print_trace_group_seen_summary();
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
@@ -1418,7 +1421,23 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
   }
 
   if (core_thread_.is_core_thread()) {
-    return trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
+    const uint64_t direct_begin_ns = capture_latency_trace_now_ns();
+    const TryTriggerDeviceCaptureStatus status =
+        trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
+    const uint64_t direct_end_ns = capture_latency_trace_now_ns();
+    capture_latency_trace_printf(
+        "core_device_admission capture_id=%llu device_id=%llu post_to_core_us=0 core_queue_wait_us=0 core_execution_us=%llu status=%u path=direct",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
+        static_cast<unsigned>(status));
+    capture_latency_trace_printf(
+        "core_device_future capture_id=%llu device_id=%llu post_to_core_us=0 future_wait_us=0 total_us=%llu status=%u path=direct",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
+        static_cast<unsigned>(status));
+    return status;
   }
 
   auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
@@ -1434,11 +1453,12 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
         trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
     const uint64_t core_end_ns = capture_latency_trace_now_ns();
     capture_latency_trace_printf(
-        "core_device_admission capture_id=%llu device_id=%llu core_queue_wait_us=%llu core_exec_us=%llu",
+        "core_device_admission capture_id=%llu device_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu status=%u path=queued",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
         static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
-        static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull));
+        static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
+        static_cast<unsigned>(status));
     completion->set_value(status);
   });
   const uint64_t post_end_ns = capture_latency_trace_now_ns();
@@ -1455,11 +1475,13 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
   const TryTriggerDeviceCaptureStatus status = completed.get();
   const uint64_t wait_end_ns = capture_latency_trace_now_ns();
   capture_latency_trace_printf(
-      "core_device_future capture_id=%llu device_id=%llu post_us=%llu total_wait_us=%llu",
+      "core_device_future capture_id=%llu device_id=%llu post_to_core_us=%llu future_wait_us=%llu total_us=%llu status=%u path=queued",
       static_cast<unsigned long long>(capture_id),
       static_cast<unsigned long long>(device_instance_id),
       static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
-      static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull));
+      static_cast<unsigned long long>((wait_end_ns - post_end_ns) / 1000ull),
+      static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull),
+      static_cast<unsigned>(status));
   return status;
 }
 
@@ -1788,7 +1810,24 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     uint64_t rig_id,
     uint64_t capture_id) {
   if (core_thread_.is_core_thread()) {
-    return orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+    const uint64_t direct_begin_ns = capture_latency_trace_now_ns();
+    RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+    const uint64_t direct_end_ns = capture_latency_trace_now_ns();
+    capture_latency_trace_printf(
+        "core_rig_admission capture_id=%llu rig_id=%llu post_to_core_us=0 core_queue_wait_us=0 core_execution_us=%llu ok=%u submitted=%llu path=direct",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(rig_id),
+        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
+        result.ok ? 1u : 0u,
+        static_cast<unsigned long long>(result.submitted_count));
+    capture_latency_trace_printf(
+        "core_rig_future capture_id=%llu rig_id=%llu post_to_core_us=0 future_wait_us=0 total_us=%llu ok=%u submitted=%llu path=direct",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(rig_id),
+        static_cast<unsigned long long>((direct_end_ns - direct_begin_ns) / 1000ull),
+        result.ok ? 1u : 0u,
+        static_cast<unsigned long long>(result.submitted_count));
+    return result;
   }
 
   auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
@@ -1799,7 +1838,7 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
     const uint64_t core_end_ns = capture_latency_trace_now_ns();
     capture_latency_trace_printf(
-        "core_rig_admission capture_id=%llu rig_id=%llu core_queue_wait_us=%llu core_exec_us=%llu ok=%u submitted=%llu",
+        "core_rig_admission capture_id=%llu rig_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu ok=%u submitted=%llu path=queued",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(rig_id),
         static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
@@ -1827,10 +1866,11 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
   RigTriggerOrchestrationResult result = completed.get();
   const uint64_t wait_end_ns = capture_latency_trace_now_ns();
   capture_latency_trace_printf(
-      "core_rig_future capture_id=%llu rig_id=%llu post_us=%llu total_wait_us=%llu ok=%u submitted=%llu",
+      "core_rig_future capture_id=%llu rig_id=%llu post_to_core_us=%llu future_wait_us=%llu total_us=%llu ok=%u submitted=%llu path=queued",
       static_cast<unsigned long long>(capture_id),
       static_cast<unsigned long long>(rig_id),
       static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
+      static_cast<unsigned long long>((wait_end_ns - post_end_ns) / 1000ull),
       static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull),
       result.ok ? 1u : 0u,
       static_cast<unsigned long long>(result.submitted_count));
