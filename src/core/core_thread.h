@@ -24,8 +24,8 @@ namespace cambang {
 // Determinism invariants:
 // - Essential tasks are drained before command tasks, which are drained before
 //   ordinary tasks; each queue preserves FIFO order. Ordinary work is drained in
-//   deterministic slices so command work posted during provider/frame flow can be
-//   observed before the next ordinary slice.
+//   single-task deterministic slices so command work posted during provider/frame
+//   flow can be observed before the next ordinary task.
 // - There is no implicit background work; all work is explicit via post() or hook ticks.
 // - Hooks are invoked only on the core thread.
 //

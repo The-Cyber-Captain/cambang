@@ -8,10 +8,11 @@ namespace cambang {
 
 namespace {
 
-// Stage A.2 fairness bound: ordinary provider/frame ingress remains FIFO and
-// non-dropping, but CoreThread takes it in deterministic slices so command-lane
-// work posted while ordinary work is flowing gets a prompt service opportunity.
-constexpr size_t kMaxOrdinaryTasksPerCoreThreadTurn = 64;
+// Stage A.3 fairness bound: ordinary provider/frame ingress remains FIFO and
+// non-dropping, but CoreThread takes it in single-task slices so command-lane
+// work posted while ordinary work is flowing is observed before another
+// ordinary task runs.
+constexpr size_t kMaxOrdinaryTasksPerCoreThreadTurn = 1;
 
 bool bounded_core_thread_work_full(size_t command_size, size_t ordinary_size) noexcept {
   return command_size + ordinary_size >= CoreThread::kMaxPendingTasks;
@@ -311,6 +312,7 @@ void CoreThread::thread_main() {
   std::deque<Task> essential_local;
   std::deque<Task> command_local;
   std::deque<Task> ordinary_local;
+  bool timer_tick_deferred_for_command = false;
 
   for (;;) {
     bool do_timer_tick = false;
@@ -384,8 +386,24 @@ void CoreThread::thread_main() {
     ordinary_local.clear();
 
     if (do_timer_tick && hooks_) {
-      // Timer tick runs strictly on the core thread.
-      hooks_->on_core_timer_tick();
+      bool defer_timer_for_command = false;
+      if (!stopping && !timer_tick_deferred_for_command) {
+        std::lock_guard<std::mutex> lock(mu_);
+        defer_timer_for_command = !command_tasks_.empty();
+        if (defer_timer_for_command) {
+          // Preserve the coalesced tick and give command-lane work posted while
+          // this pump was executing a prompt service turn before timer work.
+          timer_tick_requested_ = true;
+        }
+      }
+
+      if (defer_timer_for_command) {
+        timer_tick_deferred_for_command = true;
+      } else {
+        // Timer tick runs strictly on the core thread.
+        hooks_->on_core_timer_tick();
+        timer_tick_deferred_for_command = false;
+      }
     }
 
     if (stopping) {

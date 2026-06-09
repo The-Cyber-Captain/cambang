@@ -127,11 +127,12 @@ CoreRuntime loop hook:
 
 Essential tasks drain before command tasks, and command tasks drain before
 ordinary tasks. FIFO order is preserved within each lane. Ordinary work is
-drained in bounded slices of `kMaxOrdinaryTasksPerCoreThreadTurn = 64`, so
-ordinary provider/frame transport already in the CoreThread queue cannot
-indefinitely precede command work posted during sustained stream production.
-Timer ticks remain coalesced as a pending flag; requested ticks continue to run
-after the drained task slice.
+drained in single-task slices of `kMaxOrdinaryTasksPerCoreThreadTurn = 1`, so
+command-lane work posted during ordinary provider/frame transport is re-observed
+before another ordinary task can run. Timer ticks remain coalesced as a pending
+flag; when command-lane work appears during a pump, CoreThread may defer one
+requested timer tick once so command work gets a prompt service turn, then the
+coalesced timer tick continues deterministically.
 
 ------------------------------------------------------------------------
 
