@@ -29,6 +29,14 @@ Provider facts fall into four broad classes:
 
 Lifecycle, native-object, and error events must always preserve ordering.
 
+After strand delivery, CoreRuntime may classify queued provider facts before
+integration. Capture-critical facts (capture started/frame/completed/failed,
+including rig capture facts identified from core admission metadata) are above
+repeating stream frames. Repeating stream frames can be deferred behind pending
+command/request work and can be passed by capture-critical facts. This does not
+change strand delivery, public API, or the non-lossy treatment of lifecycle,
+native-object, error, or unknown facts.
+
 Topology change is not a separate event class. It is an effect reflected by
 lifecycle and native-object truth, and later by snapshot `topology_version`.
 

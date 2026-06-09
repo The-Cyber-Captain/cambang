@@ -52,6 +52,18 @@ When operations conflict, core uses the following strict priority order:
 
 Repeating streams are always preemptible by triggered capture.
 
+### 2.1 Provider-fact integration priority
+
+Provider callbacks still enter core through the serialized provider strand, but
+CoreRuntime classifies already-admitted provider facts before expensive
+integration. Capture lifecycle, capture frame/member, capture completion, and
+capture failure facts are capture-critical. Repeating stream frames are
+lower-priority latest-state work. Core may defer repeating stream-frame
+integration behind pending public/Core command work, and capture-critical facts
+may pass a prefix of queued repeating stream frames. Unknown, lifecycle,
+native-object, and error facts remain conservative/non-lossy and are not treated
+as droppable stream work.
+
 ------------------------------------------------------------------------
 
 ## 3. One-stream-per-device invariant
