@@ -85,20 +85,25 @@ deadline expires (timed wake) - shutdown is requested (notify)
 
 On each wake, core processes in the following order:
 
-1.  **Drain provider events** (full drain unless explicitly documented otherwise)
+1.  **Drain provider events** (bounded to `kMaxProviderFactsPerCoreTurn = 64` per core-loop turn)
 2.  **Drain commands** (bounded or full drain; v1 default is full drain)
 3.  **Process due timers** (all deadlines ≤ now)
 4.  **Publish snapshot if dirty** (exactly once per loop iteration)
 
 This ordering is fixed to ensure: - "what happened" (provider events) is
-integrated before "what is requested" (commands) - timers are honored
-deterministically - snapshot publication reflects converged state
+integrated in deterministic FIFO slices before "what is requested" (commands) -
+timers are honored deterministically - snapshot publication reflects the
+current retained Core truth after the processed slice and command turn
 
 ### 3.3 Batching and fairness
 
-To avoid starvation under pathological loads, core may cap drains per
-iteration (implementation detail). Any cap must preserve determinism and
-should be documented as a constant.
+Core caps provider-event drains at `kMaxProviderFactsPerCoreTurn = 64` per
+iteration. If provider events remain after the bounded slice, core requests
+another loop turn and continues from the next queued event. Provider-event FIFO
+ordering is preserved, events are not dropped by this fairness slice, and pending
+Core commands receive regular service opportunities even under continuous
+provider-event production. This implementation detail supports the documented
+capture-over-stream arbitration policy without changing provider or Godot APIs.
 
 ------------------------------------------------------------------------
 

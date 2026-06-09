@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <cstdio>
 #include <cstdarg>
@@ -25,6 +26,11 @@ namespace cambang {
 namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
+
+// Stage A command-fairness bound: provider facts remain FIFO and non-dropping,
+// but Core yields to pending request work after a deterministic slice so
+// sustained stream/provider-event production cannot starve public commands.
+constexpr size_t kMaxProviderFactsPerCoreTurn = 64;
 
 // BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 uint64_t capture_latency_trace_now_ns() {
@@ -361,19 +367,24 @@ void CoreRuntime::on_core_timer_tick() {
   }
 
 
-  // 1) Drain provider facts ("what happened") first.
-  while (!provider_facts_.empty()) {
+  // 1) Drain provider facts ("what happened") first, but only for a
+  // deterministic fairness slice. Provider facts remain FIFO and non-dropping;
+  // when backlog remains, the next requested tick continues from the next fact
+  // after pending command work has had a service opportunity.
+  size_t provider_facts_drained = 0;
+  while (!provider_facts_.empty() &&
+         provider_facts_drained < kMaxProviderFactsPerCoreTurn) {
     ProviderToCoreCommand cmd = std::move(provider_facts_.front());
     provider_facts_.pop_front();
     dispatcher_.dispatch(std::move(cmd));
+    ++provider_facts_drained;
   }
+  const bool provider_facts_remain_after_fairness_slice = !provider_facts_.empty();
 
-
-
-// If provider facts mutated relevant state, request a coalesced publish.
-if (dispatcher_.consume_relevant_state_changed()) {
-  request_publish_from_core_unchecked();
-}
+  // If provider facts mutated relevant state, request a coalesced publish.
+  if (dispatcher_.consume_relevant_state_changed()) {
+    request_publish_from_core_unchecked();
+  }
 
   // 2) Drain queued requests ("what should we do").
   while (!requests_.empty()) {
@@ -382,6 +393,10 @@ if (dispatcher_.consume_relevant_state_changed()) {
     if (task) {
       task();
     }
+  }
+
+  if (provider_facts_remain_after_fairness_slice) {
+    core_thread_.request_timer_tick();
   }
 
   // 3) Retention / timers.
