@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <cstdio>
 #include <cstdarg>
@@ -25,6 +26,14 @@ namespace cambang {
 namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
+
+// Stage A command-fairness bounds: provider facts remain FIFO and non-dropping,
+// but Core yields to pending request work after deterministic slices so sustained
+// stream/provider-event production cannot starve public commands. When requests
+// are already queued, use the smallest provider-fact service slice before the
+// request turn to honor capture-over-stream command fairness promptly.
+constexpr size_t kMaxProviderFactsPerCoreTurn = 64;
+constexpr size_t kMaxProviderFactsBeforeRequestWhenRequestsPending = 1;
 
 // BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 uint64_t capture_latency_trace_now_ns() {
@@ -361,19 +370,44 @@ void CoreRuntime::on_core_timer_tick() {
   }
 
 
-  // 1) Drain provider facts ("what happened") first.
-  while (!provider_facts_.empty()) {
+  // 1) Drain provider facts ("what happened") first, but only for a
+  // deterministic fairness slice. Provider facts remain FIFO and non-dropping;
+  // when backlog remains, the next requested tick continues from the next fact
+  // after pending command work has had a service opportunity.
+  const bool requests_pending_before_provider_drain = !requests_.empty();
+  const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
+      ? kMaxProviderFactsBeforeRequestWhenRequestsPending
+      : kMaxProviderFactsPerCoreTurn;
+  bool command_lane_pending_after_tick_slice = false;
+  size_t provider_facts_drained = 0;
+  while (!provider_facts_.empty() &&
+         provider_facts_drained < provider_fact_drain_bound) {
     ProviderToCoreCommand cmd = std::move(provider_facts_.front());
     provider_facts_.pop_front();
     dispatcher_.dispatch(std::move(cmd));
+    ++provider_facts_drained;
+
+    if (!requests_pending_before_provider_drain && core_thread_.has_pending_command_tasks()) {
+      command_lane_pending_after_tick_slice = true;
+      break;
+    }
+  }
+  const bool provider_facts_remain_after_fairness_slice = !provider_facts_.empty();
+
+  // If provider facts mutated relevant state, request a coalesced publish.
+  if (dispatcher_.consume_relevant_state_changed()) {
+    request_publish_from_core_unchecked();
   }
 
-
-
-// If provider facts mutated relevant state, request a coalesced publish.
-if (dispatcher_.consume_relevant_state_changed()) {
-  request_publish_from_core_unchecked();
-}
+  // If command-lane work arrived while this timer tick was integrating provider
+  // facts, return to CoreThread promptly so the command lane can enqueue into
+  // requests_. The pending publish/timer state remains retained and this tick is
+  // re-requested for deterministic continuation.
+  if (command_lane_pending_after_tick_slice && requests_.empty() &&
+      !shutdown_requested_ && !shutdown_requested_from_stop_.load(std::memory_order_acquire)) {
+    core_thread_.request_timer_tick();
+    return;
+  }
 
   // 2) Drain queued requests ("what should we do").
   while (!requests_.empty()) {
@@ -382,6 +416,10 @@ if (dispatcher_.consume_relevant_state_changed()) {
     if (task) {
       task();
     }
+  }
+
+  if (provider_facts_remain_after_fairness_slice) {
+    core_thread_.request_timer_tick();
   }
 
   // 3) Retention / timers.
@@ -860,8 +898,11 @@ CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {
     return core_thread_.reject_closed();
   }
 
-  // Marshal requests into the core pump queue; the pump enforces ordering (facts before requests).
-  return core_thread_.try_post([this, t = std::move(task)]() mutable {
+  // Marshal Core-owned commands into the command lane. The CoreRuntime pump still
+  // enforces facts-before-requests ordering inside on_core_timer_tick(), but the
+  // command lane prevents public/request work from sitting behind ordinary
+  // provider-frame ingress tasks before it can enter requests_.
+  return core_thread_.try_post_command([this, t = std::move(task)]() mutable {
     assert(core_thread_.is_core_thread());
     enqueue_request(std::move(t));
   });

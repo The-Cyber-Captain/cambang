@@ -85,20 +85,58 @@ deadline expires (timed wake) - shutdown is requested (notify)
 
 On each wake, core processes in the following order:
 
-1.  **Drain provider events** (full drain unless explicitly documented otherwise)
+1.  **Drain provider events** (bounded to
+    `kMaxProviderFactsPerCoreTurn = 64` per core-loop turn when no
+    commands are pending, or
+    `kMaxProviderFactsBeforeRequestWhenRequestsPending = 1` when queued
+    commands are waiting)
 2.  **Drain commands** (bounded or full drain; v1 default is full drain)
 3.  **Process due timers** (all deadlines ≤ now)
 4.  **Publish snapshot if dirty** (exactly once per loop iteration)
 
 This ordering is fixed to ensure: - "what happened" (provider events) is
-integrated before "what is requested" (commands) - timers are honored
-deterministically - snapshot publication reflects converged state
+integrated in deterministic FIFO slices before "what is requested" (commands) -
+timers are honored deterministically - snapshot publication reflects the
+current retained Core truth after the processed slice and command turn
 
 ### 3.3 Batching and fairness
 
-To avoid starvation under pathological loads, core may cap drains per
-iteration (implementation detail). Any cap must preserve determinism and
-should be documented as a constant.
+Core caps provider-event drains at `kMaxProviderFactsPerCoreTurn = 64` per
+iteration when no Core commands are pending. If queued commands are already
+waiting, core uses the smaller request-aware slice
+`kMaxProviderFactsBeforeRequestWhenRequestsPending = 1` before servicing the
+command queue. If provider events remain after either bounded slice, core
+requests another loop turn and continues from the next queued event.
+Provider-event FIFO ordering is preserved, events are not dropped by this
+fairness slice, and pending Core commands receive prompt service opportunities
+even under continuous provider-event production. This implementation detail
+supports the documented capture-over-stream arbitration policy without changing
+provider or Godot APIs.
+
+
+### 3.4 CoreThread ingress lanes
+
+CoreThread separates posted work into three internal lanes before invoking the
+CoreRuntime loop hook:
+
+1. **Essential facts** for non-lossy lifecycle/native/error/capture-terminal
+   delivery.
+2. **Command work** for Core-owned public/request admission.
+3. **Ordinary work** for droppable or lower-priority posted work such as frame
+   ingress transport.
+
+Essential tasks drain before command tasks, and command tasks drain before
+ordinary tasks. FIFO order is preserved within each lane. Ordinary work is
+drained in single-task slices of `kMaxOrdinaryTasksPerCoreThreadTurn = 1`, so
+command-lane work posted during ordinary provider/frame transport is re-observed
+before another ordinary task can run. Timer ticks remain coalesced as a pending
+flag; when command-lane work appears during a pump, CoreThread may defer one
+requested timer tick once so command work gets a prompt service turn, then the
+coalesced timer tick continues deterministically. While CoreRuntime is executing
+a timer tick, provider-fact integration also checks for newly queued command-lane
+work between facts and can yield the timer hook with a continuation request so
+that command admission can be observed between bounded timer/provider-fact
+slices.
 
 ------------------------------------------------------------------------
 

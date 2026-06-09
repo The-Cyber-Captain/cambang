@@ -22,7 +22,10 @@ namespace cambang {
 // - All tasks are executed serially (no concurrent core execution).
 //
 // Determinism invariants:
-// - Essential tasks are drained before ordinary tasks; each queue preserves FIFO order.
+// - Essential tasks are drained before command tasks, which are drained before
+//   ordinary tasks; each queue preserves FIFO order. Ordinary work is drained in
+//   single-task deterministic slices so command work posted during provider/frame
+//   flow can be observed before the next ordinary task.
 // - There is no implicit background work; all work is explicit via post() or hook ticks.
 // - Hooks are invoked only on the core thread.
 //
@@ -33,8 +36,10 @@ namespace cambang {
 //
 // Mailbox hardening (Build slice C):
 // - The posted-task queue is bounded.
-// - try_post() is best-effort; it returns QueueFull if the ordinary queue is full.
+// - try_post() is best-effort; it returns QueueFull if bounded pending work is full.
 // - post() is best-effort and drops on overflow (accounted).
+// - try_post_command() uses the bounded command lane for Core-owned public/request
+//   work that must not sit behind frame/provider ordinary work.
 // - try_post_essential() uses a separate unbounded-by-kMaxPendingTasks queue for
 //   lifecycle/fact delivery that must not be lost merely because ordinary work is full.
 class CoreThread final {
@@ -53,6 +58,7 @@ public:
   struct Stats {
     uint64_t tasks_enqueued = 0;
     uint64_t essential_tasks_enqueued = 0;
+    uint64_t command_tasks_enqueued = 0;
     uint64_t tasks_dropped_full = 0;
     uint64_t tasks_dropped_closed = 0;
     uint64_t tasks_dropped_allocfail = 0;
@@ -126,14 +132,25 @@ public:
   // and have a bounded fallback path.
   void post(Task task);
 
-  // Best-effort post; returns a reason on failure.
+  // Best-effort ordinary post; returns a reason on failure.
   // - thread-safe
   // - does not block
   //
   // IMPORTANT:
-  // Use this for any pattern that would otherwise block waiting on completion.
-  // If enqueue fails (QueueFull/Closed/AllocFail), the task will never run.
+  // Use this for droppable/ordinary work. If enqueue fails
+  // (QueueFull/Closed/AllocFail), the task will never run.
   PostResult try_post(Task task);
+
+  // Best-effort command post; returns a reason on failure.
+  // - thread-safe
+  // - does not block
+  // - bounded together with ordinary work
+  // - drained after essential facts and before ordinary frame/provider work
+  //
+  // Use for Core-owned public/request command admission. This keeps posted
+  // commands from sitting behind an ordinary provider-frame backlog while
+  // preserving FIFO order within the command lane.
+  PostResult try_post_command(Task task);
 
   // Essential post; returns a reason on failure.
   // - thread-safe
@@ -155,6 +172,11 @@ public:
 
   Stats stats_copy() const noexcept;
 
+  // Thread-safe scheduler visibility for CoreRuntime timer-hook fairness.
+  // Returns true when command-lane work is queued but not yet drained into the
+  // current CoreThread pump.
+  bool has_pending_command_tasks() const;
+
   // Request an immediate timer tick (wakes the core thread promptly).
   // - thread-safe
   // - results in hooks_->on_core_timer_tick() being called on the core thread
@@ -173,7 +195,9 @@ private:
   void thread_main();
 
   // Drain tasks into local queues; mu_ must be held.
-  void drain_tasks_locked(std::deque<Task>& essential_local, std::deque<Task>& ordinary_local);
+  void drain_tasks_locked(std::deque<Task>& essential_local,
+                          std::deque<Task>& command_local,
+                          std::deque<Task>& ordinary_local);
 
   // Synchronization
   mutable std::mutex mu_;
@@ -185,11 +209,13 @@ private:
 
   // Work queues (protected by mu_).
   std::deque<Task> essential_tasks_;
+  std::deque<Task> command_tasks_;
   std::deque<Task> tasks_;
 
   // Post accounting
   std::atomic<uint64_t> tasks_enqueued_{0};
   std::atomic<uint64_t> essential_tasks_enqueued_{0};
+  std::atomic<uint64_t> command_tasks_enqueued_{0};
   std::atomic<uint64_t> tasks_dropped_full_{0};
   std::atomic<uint64_t> tasks_dropped_closed_{0};
   std::atomic<uint64_t> tasks_dropped_allocfail_{0};
