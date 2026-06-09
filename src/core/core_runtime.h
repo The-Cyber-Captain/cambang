@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -438,6 +439,12 @@ private:
   void enqueue_provider_fact(ProviderToCoreCommand&& cmd);
   void enqueue_request(CoreThread::Task task);
   void request_publish_from_core_unchecked();
+  void begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id);
+  void begin_capture_stream_preemption_for_bundle_(const RigAdmittedRequestBundle& bundle);
+  void release_result_safe_capture_stream_preemptions_();
+  bool is_stream_preempted_for_capture_(uint64_t stream_id) const;
+  bool suppress_repeating_stream_frame_for_capture_(ProviderToCoreCommand&& cmd);
+  size_t suppress_queued_repeating_stream_frames_for_capture_();
   // Core-thread-only helpers. These read/write core-owned registries directly.
   bool materialize_capture_request_(uint64_t device_instance_id, CaptureRequest& out) const;
   TryTriggerDeviceCaptureStatus trigger_device_capture_with_capture_id_(
@@ -492,6 +499,12 @@ private:
 
   std::deque<ProviderToCoreCommand> provider_facts_;
   size_t provider_capture_facts_queued_ = 0;
+
+  struct CaptureStreamPreemptionRecord {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+  };
+  std::map<uint64_t, std::map<uint64_t, CaptureStreamPreemptionRecord>> capture_stream_preemptions_by_device_;
   std::deque<CoreThread::Task> requests_;
 
   enum class ShutdownPhase : uint8_t {

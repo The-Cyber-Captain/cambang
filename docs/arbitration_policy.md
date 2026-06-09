@@ -65,7 +65,13 @@ native-object, and error facts remain conservative/non-lossy and are not treated
 as droppable stream work. Repeating stream frames are latest-state work; before
 expensive dispatch, core may coalesce an older queued repeating stream frame
 when a newer frame for the same stream/session is queued before any non-lossy
-barrier. Capture frames and capture lifecycle facts are never coalesced.
+barrier. Stage D also implements the existing capture-over-stream policy by
+preempting lower-priority repeating stream frames for affected device instances
+from accepted capture admission until the capture reaches terminal/result-safe
+state. Public stream objects remain valid; suppressed stream frames are counted
+as received/released/dropped according to stream counter semantics and are never
+counted as delivered/presented. Capture frames and capture lifecycle facts are
+never coalesced or suppressed.
 
 ------------------------------------------------------------------------
 
@@ -139,10 +145,15 @@ authoritative").
 
 When a triggered capture begins on a device instance:
 
--   Any repeating stream on that device instance may be stopped
-    (preempted) according to policy.
--   v1 default policy: stop repeating streams during the capture window
-    for determinism on affected devices.
+-   Any repeating stream on that device instance may be preempted
+    according to policy.
+-   Current Core policy preserves public stream object identity and gates
+    lower-priority repeating stream frame integration during the capture
+    window rather than faking a public stream stop.
+-   Triggered capture preempts lower-priority repeating stream work for the
+    affected device(s) during the capture window. Public stream objects remain
+    valid; capture facts remain exact; stream frame suppression is accounted
+    for truthfully.
 
 ### 6.2 VIEWFINDER rule (v1 simple)
 

@@ -561,6 +561,128 @@ SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id, uin
   return result_store_.get_capture_result(capture_id, device_instance_id);
 }
 
+
+void CoreRuntime::begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id) {
+  assert(core_thread_.is_core_thread());
+  if (capture_id == 0 || device_instance_id == 0) {
+    return;
+  }
+
+  auto& by_capture = capture_stream_preemptions_by_device_[device_instance_id];
+  const bool was_empty = by_capture.empty();
+  by_capture[capture_id] = CaptureStreamPreemptionRecord{capture_id, device_instance_id};
+  if (was_empty) {
+    capture_latency_trace_printf(
+        "stream_preempted_for_capture capture_id=%llu device_id=%llu active_captures_for_device=%llu",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>(by_capture.size()));
+  }
+}
+
+void CoreRuntime::begin_capture_stream_preemption_for_bundle_(const RigAdmittedRequestBundle& bundle) {
+  assert(core_thread_.is_core_thread());
+  if (!bundle.ok || bundle.capture_id == 0) {
+    return;
+  }
+  for (const RigAdmittedParticipantRequest& participant : bundle.participants) {
+    begin_capture_stream_preemption_(bundle.capture_id, participant.request.device_instance_id);
+  }
+}
+
+void CoreRuntime::release_result_safe_capture_stream_preemptions_() {
+  assert(core_thread_.is_core_thread());
+  for (auto device_it = capture_stream_preemptions_by_device_.begin();
+       device_it != capture_stream_preemptions_by_device_.end();) {
+    const uint64_t device_instance_id = device_it->first;
+    auto& by_capture = device_it->second;
+    for (auto capture_it = by_capture.begin(); capture_it != by_capture.end();) {
+      const uint64_t capture_id = capture_it->first;
+      if (!capture_assembly_registry_.is_result_safe(capture_id, device_instance_id)) {
+        ++capture_it;
+        continue;
+      }
+      capture_latency_trace_printf(
+          "stream_preemption_released capture_id=%llu device_id=%llu",
+          static_cast<unsigned long long>(capture_id),
+          static_cast<unsigned long long>(device_instance_id));
+      capture_it = by_capture.erase(capture_it);
+    }
+    if (by_capture.empty()) {
+      device_it = capture_stream_preemptions_by_device_.erase(device_it);
+    } else {
+      ++device_it;
+    }
+  }
+}
+
+bool CoreRuntime::is_stream_preempted_for_capture_(uint64_t stream_id) const {
+  assert(core_thread_.is_core_thread());
+  if (stream_id == 0) {
+    return false;
+  }
+  const CoreStreamRegistry::StreamRecord* stream = streams_.find(stream_id);
+  if (!stream || stream->device_instance_id == 0) {
+    return false;
+  }
+  const auto it = capture_stream_preemptions_by_device_.find(stream->device_instance_id);
+  return it != capture_stream_preemptions_by_device_.end() && !it->second.empty();
+}
+
+bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCommand&& cmd) {
+  assert(core_thread_.is_core_thread());
+  const ProviderFactSummary summary = summarize_provider_fact(cmd, capture_cohort_registry_);
+  if (summary.fact_class != ProviderFactClass::RepeatingStreamFrame ||
+      !is_stream_preempted_for_capture_(summary.stream_id)) {
+    return false;
+  }
+
+  auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
+  const uint64_t integrated_ts_ns = frame_ts_to_core_ns_for_backpressure(frame.capture_timestamp);
+  const bool received_counted = streams_.on_frame_received(frame.stream_id, integrated_ts_ns);
+  const bool released_counted = streams_.on_frame_released(frame.stream_id);
+  const bool dropped_counted = streams_.on_frame_dropped(frame.stream_id);
+  frame.release_now();
+  global_resource_aggregate_telemetry().lease_released(make_framebuffer_lease_scoped_resource_telemetry_key(
+      frame.stream_id,
+      frame.acquisition_session_id));
+  frame.release = nullptr;
+  frame.release_user = nullptr;
+
+  if (received_counted || released_counted || dropped_counted) {
+    request_publish_from_core_unchecked();
+  }
+  capture_latency_trace_printf(
+      "stream_frame_suppressed_for_capture stream_id=%llu acquisition_session_id=%llu device_id=%llu received_counted=%u released_counted=%u dropped_counted=%u delivered=0 publication_requested=%u",
+      static_cast<unsigned long long>(summary.stream_id),
+      static_cast<unsigned long long>(summary.acquisition_session_id),
+      static_cast<unsigned long long>(summary.device_instance_id),
+      received_counted ? 1u : 0u,
+      released_counted ? 1u : 0u,
+      dropped_counted ? 1u : 0u,
+      (received_counted || released_counted || dropped_counted) ? 1u : 0u);
+  return true;
+}
+
+size_t CoreRuntime::suppress_queued_repeating_stream_frames_for_capture_() {
+  assert(core_thread_.is_core_thread());
+  size_t suppressed = 0;
+  for (auto it = provider_facts_.begin(); it != provider_facts_.end();) {
+    const ProviderFactSummary summary = summarize_provider_fact(*it, capture_cohort_registry_);
+    if (summary.fact_class != ProviderFactClass::RepeatingStreamFrame ||
+        !is_stream_preempted_for_capture_(summary.stream_id)) {
+      ++it;
+      continue;
+    }
+    ProviderToCoreCommand cmd = std::move(*it);
+    it = provider_facts_.erase(it);
+    if (suppress_repeating_stream_frame_for_capture_(std::move(cmd))) {
+      ++suppressed;
+    }
+  }
+  return suppressed;
+}
+
 std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_t capture_id) const {
   if (const auto* cohort = capture_cohort_registry_.find(capture_id); cohort != nullptr) {
     if (cohort->state == CoreCaptureCohortRegistry::CohortState::FAILED) {
@@ -646,6 +768,7 @@ bool CoreRuntime::start() {
   rigs_.clear();
   capture_assembly_registry_.clear();
   capture_cohort_registry_.clear();
+  capture_stream_preemptions_by_device_.clear();
   provider_facts_.clear();
   provider_capture_facts_queued_ = 0;
   requests_.clear();
@@ -787,6 +910,14 @@ void CoreRuntime::on_core_timer_tick() {
           summarize_provider_fact(provider_facts_.front(), capture_cohort_registry_);
       const bool command_or_request_pending = requests_pending_before_provider_drain ||
           core_thread_.has_pending_command_tasks();
+      if (summary.fact_class == ProviderFactClass::RepeatingStreamFrame &&
+          is_stream_preempted_for_capture_(summary.stream_id)) {
+        ProviderToCoreCommand cmd = std::move(provider_facts_.front());
+        provider_facts_.pop_front();
+        (void)suppress_repeating_stream_frame_for_capture_(std::move(cmd));
+        ++provider_facts_drained;
+        continue;
+      }
       if (summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
         const StreamFrameCoalesceResult coalesce_result =
             coalesce_front_repeating_stream_frame_if_superseded(
@@ -823,6 +954,9 @@ void CoreRuntime::on_core_timer_tick() {
       dispatcher_.dispatch(std::move(cmd));
       const uint64_t dispatch_us = (capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull;
       emit_provider_fact_dispatch_slow_if_needed(summary, dispatch_us, provider_facts_.size());
+      if (provider_fact_is_capture_critical(summary.fact_class)) {
+        release_result_safe_capture_stream_preemptions_();
+      }
       ++provider_facts_drained;
 
       if (!requests_pending_before_provider_drain && core_thread_.has_pending_command_tasks()) {
@@ -1900,8 +2034,13 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
     return TryTriggerDeviceCaptureStatus::Busy;
   }
   const ProviderResult pr = prov->trigger_capture(req);
-  return pr.ok() ? TryTriggerDeviceCaptureStatus::OK
-                 : TryTriggerDeviceCaptureStatus::ProviderRejected;
+  if (!pr.ok()) {
+    return TryTriggerDeviceCaptureStatus::ProviderRejected;
+  }
+
+  begin_capture_stream_preemption_(capture_id, device_instance_id);
+  (void)suppress_queued_repeating_stream_frames_for_capture_();
+  return TryTriggerDeviceCaptureStatus::OK;
 }
 
 TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_capture_id_for_server(
@@ -2192,6 +2331,9 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
                                                CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
     return out;
   }
+
+  begin_capture_stream_preemption_for_bundle_(bundle);
+  (void)suppress_queued_repeating_stream_frames_for_capture_();
 
   out.submitted_count = bundle.participants.size();
   out.ok = true;
@@ -2511,6 +2653,10 @@ void CoreRuntime::request_publish() {
 
 void CoreRuntime::enqueue_provider_fact(ProviderToCoreCommand&& cmd) {
   assert(core_thread_.is_core_thread());
+  if (suppress_repeating_stream_frame_for_capture_(std::move(cmd))) {
+    core_thread_.request_timer_tick();
+    return;
+  }
   if (provider_fact_has_capture_id_for_priority(cmd)) {
     ++provider_capture_facts_queued_;
   }
