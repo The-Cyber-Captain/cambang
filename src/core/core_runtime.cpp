@@ -882,8 +882,11 @@ CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {
     return core_thread_.reject_closed();
   }
 
-  // Marshal requests into the core pump queue; the pump enforces ordering (facts before requests).
-  return core_thread_.try_post([this, t = std::move(task)]() mutable {
+  // Marshal Core-owned commands into the command lane. The CoreRuntime pump still
+  // enforces facts-before-requests ordering inside on_core_timer_tick(), but the
+  // command lane prevents public/request work from sitting behind ordinary
+  // provider-frame ingress tasks before it can enter requests_.
+  return core_thread_.try_post_command([this, t = std::move(task)]() mutable {
     assert(core_thread_.is_core_thread());
     enqueue_request(std::move(t));
   });

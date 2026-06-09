@@ -113,6 +113,26 @@ even under continuous provider-event production. This implementation detail
 supports the documented capture-over-stream arbitration policy without changing
 provider or Godot APIs.
 
+
+### 3.4 CoreThread ingress lanes
+
+CoreThread separates posted work into three internal lanes before invoking the
+CoreRuntime loop hook:
+
+1. **Essential facts** for non-lossy lifecycle/native/error/capture-terminal
+   delivery.
+2. **Command work** for Core-owned public/request admission.
+3. **Ordinary work** for droppable or lower-priority posted work such as frame
+   ingress transport.
+
+Essential tasks drain before command tasks, and command tasks drain before
+ordinary tasks. FIFO order is preserved within each lane. Ordinary work is
+drained in bounded slices of `kMaxOrdinaryTasksPerCoreThreadTurn = 64`, so
+ordinary provider/frame transport already in the CoreThread queue cannot
+indefinitely precede command work posted during sustained stream production.
+Timer ticks remain coalesced as a pending flag; requested ticks continue to run
+after the drained task slice.
+
 ------------------------------------------------------------------------
 
 ## 4. Queues and message types
