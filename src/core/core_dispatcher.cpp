@@ -3,12 +3,32 @@
 #include "core/core_dispatcher.h"
 #include "core/resource_aggregate_telemetry.h"
 
+#include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <variant>
 
 namespace cambang {
 
 namespace {
+
+// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+uint64_t capture_latency_trace_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void capture_latency_trace_printf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+}
+// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+
 uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
   if (ts.tick_ns == 0) {
     return 0;
@@ -196,6 +216,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
 }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED: {
+    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureStarted>(cmd.payload);
     bool state_changed = false;
@@ -226,10 +247,17 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
                                                                 capture_still_image_bundle);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    capture_latency_trace_printf(
+        "core_dispatch_capture_started capture_id=%llu device_id=%llu total_us=%llu state_changed=%u",
+        static_cast<unsigned long long>(p.capture_id),
+        static_cast<unsigned long long>(p.device_instance_id),
+        static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull),
+        state_changed ? 1u : 0u);
     break;
   }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED: {
+    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
     bool state_changed = false;
@@ -242,10 +270,17 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    capture_latency_trace_printf(
+        "core_dispatch_capture_completed capture_id=%llu device_id=%llu total_us=%llu state_changed=%u",
+        static_cast<unsigned long long>(p.capture_id),
+        static_cast<unsigned long long>(p.device_instance_id),
+        static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull),
+        state_changed ? 1u : 0u);
     break;
   }
 
   case ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED: {
+    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
     bool state_changed = false;
@@ -258,11 +293,22 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       capture_assembly_registry_->mark_capture_failed(p.capture_id, p.device_instance_id, p.error_code);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    capture_latency_trace_printf(
+        "core_dispatch_capture_failed capture_id=%llu device_id=%llu error=%u total_us=%llu state_changed=%u",
+        static_cast<unsigned long long>(p.capture_id),
+        static_cast<unsigned long long>(p.device_instance_id),
+        static_cast<unsigned>(p.error_code),
+        static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull),
+        state_changed ? 1u : 0u);
     break;
   }
 
   case ProviderToCoreCommandType::PROVIDER_FRAME: {
+    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
+    uint64_t result_retention_ns = 0;
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
+    const uint64_t trace_capture_id = p.frame.capture_id;
+    const uint64_t trace_device_id = p.frame.device_instance_id;
 
     stats_.commands_handled++;
     stats_.frames_received++;
@@ -308,13 +354,17 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           image_member.has_realized_exposure_compensation_milli_ev = frame_member_has_realized_ev;
           image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
           image_member.capture_timestamp_ns = integrated_ts_ns;
+          const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
           if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
             retained_for_result = result_store_->append_additional_capture_image(
                 p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
           }
+          result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
           }
         } else {
+          const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
           retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+          result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
         }
       }
     }
@@ -355,6 +405,16 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           streams_->on_frame_dropped(sid);
         }
       }
+    }
+    if (trace_capture_id != 0) {
+      capture_latency_trace_printf(
+          "core_dispatch_capture_frame capture_id=%llu device_id=%llu member=%u retained=%u retention_us=%llu total_us=%llu",
+          static_cast<unsigned long long>(trace_capture_id),
+          static_cast<unsigned long long>(trace_device_id),
+          static_cast<unsigned>(frame_member_index),
+          retained_for_result ? 1u : 0u,
+          static_cast<unsigned long long>(result_retention_ns / 1000ull),
+          static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull));
     }
     break;
   }

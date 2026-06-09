@@ -1,5 +1,8 @@
 #include "imaging/broker/provider_broker.h"
 
+#include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -25,6 +28,23 @@
 namespace cambang {
 
 namespace {
+
+
+// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+uint64_t capture_latency_trace_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void capture_latency_trace_printf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+}
+// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
 ProviderResult err_not_initialized() {
   return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -378,22 +398,54 @@ ProviderResult ProviderBroker::set_capture_picture_config(uint64_t device_instan
 }
 
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
-  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  const uint64_t wait_begin_ns = capture_latency_trace_now_ns();
+  std::unique_lock<std::mutex> lock(active_provider_mutex_);
+  const uint64_t lock_acquired_ns = capture_latency_trace_now_ns();
+  ProviderResult out = ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
-    return pr;
+    out = pr;
+  } else {
+    out = active_->trigger_capture(req);
   }
-  return active_->trigger_capture(req);
+  const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
+  lock.unlock();
+  capture_latency_trace_printf(
+      "broker_trigger_capture capture_id=%llu device_id=%llu lock_wait_us=%llu lock_hold_us=%llu ok=%u code=%u",
+      static_cast<unsigned long long>(req.capture_id),
+      static_cast<unsigned long long>(req.device_instance_id),
+      static_cast<unsigned long long>((lock_acquired_ns - wait_begin_ns) / 1000ull),
+      static_cast<unsigned long long>((before_unlock_ns - lock_acquired_ns) / 1000ull),
+      out.ok() ? 1u : 0u,
+      static_cast<unsigned>(out.code));
+  return out;
 }
 
 
 ProviderResult ProviderBroker::trigger_capture_submission(const CaptureSubmission& submission) {
-  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  const uint64_t wait_begin_ns = capture_latency_trace_now_ns();
+  std::unique_lock<std::mutex> lock(active_provider_mutex_);
+  const uint64_t lock_acquired_ns = capture_latency_trace_now_ns();
+  ProviderResult out = ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   ProviderResult pr = ensure_active_or_err_();
   if (!pr.ok()) {
-    return pr;
+    out = pr;
+  } else {
+    out = active_->trigger_capture_submission(submission);
   }
-  return active_->trigger_capture_submission(submission);
+  const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
+  lock.unlock();
+  capture_latency_trace_printf(
+      "broker_trigger_submission capture_id=%llu rig_id=%llu origin=%u devices=%llu lock_wait_us=%llu lock_hold_us=%llu ok=%u code=%u",
+      static_cast<unsigned long long>(submission.capture_id),
+      static_cast<unsigned long long>(submission.rig_id),
+      static_cast<unsigned>(submission.origin),
+      static_cast<unsigned long long>(submission.device_requests.size()),
+      static_cast<unsigned long long>((lock_acquired_ns - wait_begin_ns) / 1000ull),
+      static_cast<unsigned long long>((before_unlock_ns - lock_acquired_ns) / 1000ull),
+      out.ok() ? 1u : 0u,
+      static_cast<unsigned>(out.code));
+  return out;
 }
 
 ProviderResult ProviderBroker::abort_capture(uint64_t capture_id) {
@@ -450,9 +502,19 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
   std::vector<SyntheticScheduledEvent> deferred_dispatches;
   std::function<void(const SyntheticScheduledEvent&)> hook;
 
+  bool tick_result = false;
   {
-    std::lock_guard<std::mutex> lock(active_provider_mutex_);
+    const uint64_t wait_begin_ns = capture_latency_trace_now_ns();
+    std::unique_lock<std::mutex> lock(active_provider_mutex_);
+    const uint64_t lock_acquired_ns = capture_latency_trace_now_ns();
     if (!initialized_ || !active_) {
+      const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
+      lock.unlock();
+      capture_latency_trace_printf(
+          "broker_tick dt_ns=%llu lock_wait_us=%llu lock_hold_us=%llu result=inactive",
+          static_cast<unsigned long long>(dt_ns),
+          static_cast<unsigned long long>((lock_acquired_ns - wait_begin_ns) / 1000ull),
+          static_cast<unsigned long long>((before_unlock_ns - lock_acquired_ns) / 1000ull));
       return false;
     }
 
@@ -471,6 +533,7 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
         deferring_synthetic_timeline_dispatches_ = false;
         hook = synthetic_timeline_request_dispatch_hook_;
       }
+      tick_result = true;
     } else
 #endif
 
@@ -478,10 +541,21 @@ bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
 #if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
     if (auto* stub = dynamic_cast<StubProvider*>(active_.get())) {
       stub->advance(dt_ns);
-      return true;
+      tick_result = true;
     } else
 #endif
     {
+      tick_result = false;
+    }
+    const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
+    lock.unlock();
+    capture_latency_trace_printf(
+        "broker_tick dt_ns=%llu lock_wait_us=%llu lock_hold_us=%llu result=%u",
+        static_cast<unsigned long long>(dt_ns),
+        static_cast<unsigned long long>((lock_acquired_ns - wait_begin_ns) / 1000ull),
+        static_cast<unsigned long long>((before_unlock_ns - lock_acquired_ns) / 1000ull),
+        tick_result ? 1u : 0u);
+    if (!tick_result) {
       return false;
     }
   }

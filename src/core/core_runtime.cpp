@@ -3,8 +3,10 @@
 #include "core/core_runtime.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <cstdarg>
 #include <limits>
 #include <memory>
 #include <map>
@@ -22,6 +24,23 @@ namespace cambang {
 namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
+
+// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+uint64_t capture_latency_trace_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void capture_latency_trace_printf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+}
+// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+
 
 uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
   if (warm_hold_ms == 0) {
@@ -1404,14 +1423,44 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
 
   auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
   std::future<TryTriggerDeviceCaptureStatus> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, device_instance_id, capture_id, completion]() {
-    completion->set_value(trigger_device_capture_with_capture_id_(device_instance_id, capture_id));
+  const uint64_t post_begin_ns = capture_latency_trace_now_ns();
+  const CoreThread::PostResult pr = try_post([this,
+                                              device_instance_id,
+                                              capture_id,
+                                              completion,
+                                              post_begin_ns]() {
+    const uint64_t core_start_ns = capture_latency_trace_now_ns();
+    const TryTriggerDeviceCaptureStatus status =
+        trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
+    const uint64_t core_end_ns = capture_latency_trace_now_ns();
+    capture_latency_trace_printf(
+        "core_device_admission capture_id=%llu device_id=%llu core_queue_wait_us=%llu core_exec_us=%llu",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull));
+    completion->set_value(status);
   });
+  const uint64_t post_end_ns = capture_latency_trace_now_ns();
   if (pr != CoreThread::PostResult::Enqueued) {
+    capture_latency_trace_printf(
+        "core_device_admission_post_failed capture_id=%llu device_id=%llu post_us=%llu post_result=%u",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned>(pr));
     return TryTriggerDeviceCaptureStatus::Busy;
   }
 
-  return completed.get();
+  const TryTriggerDeviceCaptureStatus status = completed.get();
+  const uint64_t wait_end_ns = capture_latency_trace_now_ns();
+  capture_latency_trace_printf(
+      "core_device_future capture_id=%llu device_id=%llu post_us=%llu total_wait_us=%llu",
+      static_cast<unsigned long long>(capture_id),
+      static_cast<unsigned long long>(device_instance_id),
+      static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
+      static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull));
+  return status;
 }
 
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
@@ -1744,10 +1793,29 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
 
   auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
   std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion]() {
-    completion->set_value(orchestrate_rig_capture_with_capture_id_(rig_id, capture_id));
+  const uint64_t post_begin_ns = capture_latency_trace_now_ns();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion, post_begin_ns]() {
+    const uint64_t core_start_ns = capture_latency_trace_now_ns();
+    RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
+    const uint64_t core_end_ns = capture_latency_trace_now_ns();
+    capture_latency_trace_printf(
+        "core_rig_admission capture_id=%llu rig_id=%llu core_queue_wait_us=%llu core_exec_us=%llu ok=%u submitted=%llu",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(rig_id),
+        static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
+        result.ok ? 1u : 0u,
+        static_cast<unsigned long long>(result.submitted_count));
+    completion->set_value(std::move(result));
   });
+  const uint64_t post_end_ns = capture_latency_trace_now_ns();
   if (pr != CoreThread::PostResult::Enqueued) {
+    capture_latency_trace_printf(
+        "core_rig_admission_post_failed capture_id=%llu rig_id=%llu post_us=%llu post_result=%u",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(rig_id),
+        static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned>(pr));
     RigTriggerOrchestrationResult out{};
     out.rig_id = rig_id;
     out.capture_id = capture_id;
@@ -1756,7 +1824,17 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     return out;
   }
 
-  return completed.get();
+  RigTriggerOrchestrationResult result = completed.get();
+  const uint64_t wait_end_ns = capture_latency_trace_now_ns();
+  capture_latency_trace_printf(
+      "core_rig_future capture_id=%llu rig_id=%llu post_us=%llu total_wait_us=%llu ok=%u submitted=%llu",
+      static_cast<unsigned long long>(capture_id),
+      static_cast<unsigned long long>(rig_id),
+      static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
+      static_cast<unsigned long long>((wait_end_ns - post_begin_ns) / 1000ull),
+      result.ok ? 1u : 0u,
+      static_cast<unsigned long long>(result.submitted_count));
+  return result;
 }
 
 bool CoreRuntime::retain_rig_member_hardware_ids(
