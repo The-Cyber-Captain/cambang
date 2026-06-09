@@ -20,6 +20,73 @@ bool bounded_core_thread_work_full(size_t command_size, size_t ordinary_size) no
 
 } // namespace
 
+
+// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+uint64_t CoreThread::diagnostic_now_ns_() noexcept {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+const char* CoreThread::diagnostic_phase_name(DiagnosticPhase phase) noexcept {
+  switch (phase) {
+    case DiagnosticPhase::Unknown: return "unknown";
+    case DiagnosticPhase::IdleWaiting: return "idle_waiting";
+    case DiagnosticPhase::EssentialLane: return "essential_lane";
+    case DiagnosticPhase::CommandLane: return "command_lane";
+    case DiagnosticPhase::OrdinaryLane: return "ordinary_lane";
+    case DiagnosticPhase::TimerHook: return "timer_hook";
+    case DiagnosticPhase::RuntimeProviderFactIntegration: return "runtime_provider_fact_integration";
+    case DiagnosticPhase::RuntimeRequestDrain: return "runtime_request_drain";
+    case DiagnosticPhase::RuntimeRetentionTimerWork: return "runtime_retention_timer_work";
+    case DiagnosticPhase::RuntimeSnapshotPublication: return "runtime_snapshot_publication";
+    case DiagnosticPhase::RuntimeShutdownChoreography: return "runtime_shutdown_choreography";
+    case DiagnosticPhase::ShutdownStopChoreography: return "shutdown_stop_choreography";
+  }
+  return "unknown";
+}
+
+void CoreThread::diagnostic_update_depths_(size_t essential_depth,
+                                           size_t command_depth,
+                                           size_t ordinary_depth) noexcept {
+  diagnostic_essential_queue_depth_.store(essential_depth, std::memory_order_relaxed);
+  diagnostic_command_queue_depth_.store(command_depth, std::memory_order_relaxed);
+  diagnostic_ordinary_queue_depth_.store(ordinary_depth, std::memory_order_relaxed);
+}
+
+void CoreThread::diagnostic_set_phase_from_core(DiagnosticPhase phase) noexcept {
+  const uint8_t next = static_cast<uint8_t>(phase);
+  const uint8_t previous = diagnostic_phase_.load(std::memory_order_relaxed);
+  const uint64_t now_ns = diagnostic_now_ns_();
+  if (previous != next) {
+    diagnostic_previous_phase_.store(previous, std::memory_order_relaxed);
+    diagnostic_previous_phase_end_ns_.store(now_ns, std::memory_order_relaxed);
+    diagnostic_phase_start_ns_.store(now_ns, std::memory_order_release);
+    diagnostic_phase_.store(next, std::memory_order_release);
+  }
+}
+
+CoreThread::DiagnosticSnapshot CoreThread::diagnostic_snapshot() const noexcept {
+  DiagnosticSnapshot out;
+  const uint64_t now_ns = diagnostic_now_ns_();
+  out.phase = static_cast<DiagnosticPhase>(diagnostic_phase_.load(std::memory_order_acquire));
+  out.phase_start_ns = diagnostic_phase_start_ns_.load(std::memory_order_acquire);
+  out.phase_age_us = (out.phase_start_ns != 0 && now_ns >= out.phase_start_ns)
+      ? ((now_ns - out.phase_start_ns) / 1000ull)
+      : 0;
+  out.previous_phase = static_cast<DiagnosticPhase>(diagnostic_previous_phase_.load(std::memory_order_acquire));
+  out.previous_phase_end_ns = diagnostic_previous_phase_end_ns_.load(std::memory_order_acquire);
+  out.previous_phase_ended_before_us = (out.previous_phase_end_ns != 0 && now_ns >= out.previous_phase_end_ns)
+      ? ((now_ns - out.previous_phase_end_ns) / 1000ull)
+      : 0;
+  out.essential_queue_depth = diagnostic_essential_queue_depth_.load(std::memory_order_relaxed);
+  out.command_queue_depth = diagnostic_command_queue_depth_.load(std::memory_order_relaxed);
+  out.ordinary_queue_depth = diagnostic_ordinary_queue_depth_.load(std::memory_order_relaxed);
+  out.timer_requested = diagnostic_timer_requested_.load(std::memory_order_relaxed);
+  out.timer_running = diagnostic_timer_running_.load(std::memory_order_relaxed);
+  return out;
+}
+// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+
 CoreThread::~CoreThread() {
   // Destructor enforces deterministic shutdown.
   // Core thread must not outlive its owner.
@@ -49,6 +116,13 @@ bool CoreThread::start(IHooks* hooks) {
     essential_tasks_.clear();
     command_tasks_.clear();
     tasks_.clear();
+    diagnostic_update_depths_(0, 0, 0);
+    diagnostic_timer_requested_.store(false, std::memory_order_relaxed);
+    diagnostic_timer_running_.store(false, std::memory_order_relaxed);
+    diagnostic_phase_.store(static_cast<uint8_t>(DiagnosticPhase::Unknown), std::memory_order_relaxed);
+    diagnostic_phase_start_ns_.store(diagnostic_now_ns_(), std::memory_order_relaxed);
+    diagnostic_previous_phase_.store(static_cast<uint8_t>(DiagnosticPhase::Unknown), std::memory_order_relaxed);
+    diagnostic_previous_phase_end_ns_.store(0, std::memory_order_relaxed);
   }
 
   // Reset accounting
@@ -144,6 +218,7 @@ CoreThread::PostResult CoreThread::try_post(Task task) {
 
     try {
       tasks_.push_back(std::move(task));
+      diagnostic_update_depths_(essential_tasks_.size(), command_tasks_.size(), tasks_.size());
     } catch (...) {
       // Allocation failure or unexpected exception while enqueueing.
       tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
@@ -184,6 +259,7 @@ CoreThread::PostResult CoreThread::try_post_command(Task task) {
 
     try {
       command_tasks_.push_back(std::move(task));
+      diagnostic_update_depths_(essential_tasks_.size(), command_tasks_.size(), tasks_.size());
     } catch (...) {
       tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::AllocFail;
@@ -220,6 +296,7 @@ CoreThread::PostResult CoreThread::try_post_essential(Task task) {
 
     try {
       essential_tasks_.push_back(std::move(task));
+      diagnostic_update_depths_(essential_tasks_.size(), command_tasks_.size(), tasks_.size());
     } catch (...) {
       tasks_dropped_allocfail_.fetch_add(1, std::memory_order_relaxed);
       return PostResult::AllocFail;
@@ -253,6 +330,7 @@ void CoreThread::request_timer_tick() {
   {
     std::lock_guard<std::mutex> lock(mu_);
     timer_tick_requested_ = true;
+    diagnostic_timer_requested_.store(true, std::memory_order_relaxed);
   }
 
   cv_.notify_one();
@@ -303,6 +381,9 @@ void CoreThread::drain_tasks_locked(std::deque<Task>& essential_local,
     ordinary_local.push_back(std::move(tasks_.front()));
     tasks_.pop_front();
   }
+  diagnostic_update_depths_(essential_local.size() + essential_tasks_.size(),
+                            command_local.size() + command_tasks_.size(),
+                            ordinary_local.size() + tasks_.size());
 }
 
 void CoreThread::thread_main() {
@@ -311,6 +392,7 @@ void CoreThread::thread_main() {
   // No other thread may mutate core state.
 
   if (hooks_) {
+    diagnostic_set_phase_from_core(DiagnosticPhase::EssentialLane);
     hooks_->on_core_start();
   }
 
@@ -333,6 +415,8 @@ void CoreThread::thread_main() {
         return stop_requested_ || stop_when_idle_ || !essential_tasks_.empty() ||
                !command_tasks_.empty() || !tasks_.empty() || timer_tick_requested_;
       };
+
+      diagnostic_set_phase_from_core(DiagnosticPhase::IdleWaiting);
 
       if (!has_deadline) {
         // Pure blocking mode: wait until work, timer request, or stop.
@@ -364,6 +448,7 @@ void CoreThread::thread_main() {
       if (timer_tick_requested_) {
         do_timer_tick = true;
         timer_tick_requested_ = false;
+        diagnostic_timer_requested_.store(false, std::memory_order_relaxed);
       }
 
       // Drain tasks while holding mutex, execute outside.
@@ -375,20 +460,29 @@ void CoreThread::thread_main() {
     // - No two tasks execute concurrently.
     // - Essential FIFO tasks execute before command FIFO tasks drained in the same pump.
     // - Command FIFO tasks execute before ordinary FIFO tasks drained in the same pump.
-    for (auto& task : essential_local) {
-      task();
+    for (size_t i = 0; i < essential_local.size(); ++i) {
+      diagnostic_set_phase_from_core(DiagnosticPhase::EssentialLane);
+      diagnostic_update_depths_(essential_local.size() - i, command_local.size(), ordinary_local.size());
+      essential_local[i]();
     }
     essential_local.clear();
+    diagnostic_update_depths_(0, command_local.size(), ordinary_local.size());
 
-    for (auto& task : command_local) {
-      task();
+    for (size_t i = 0; i < command_local.size(); ++i) {
+      diagnostic_set_phase_from_core(DiagnosticPhase::CommandLane);
+      diagnostic_update_depths_(0, command_local.size() - i, ordinary_local.size());
+      command_local[i]();
     }
     command_local.clear();
+    diagnostic_update_depths_(0, 0, ordinary_local.size());
 
-    for (auto& task : ordinary_local) {
-      task();
+    for (size_t i = 0; i < ordinary_local.size(); ++i) {
+      diagnostic_set_phase_from_core(DiagnosticPhase::OrdinaryLane);
+      diagnostic_update_depths_(0, 0, ordinary_local.size() - i);
+      ordinary_local[i]();
     }
     ordinary_local.clear();
+    diagnostic_update_depths_(0, 0, 0);
 
     if (do_timer_tick && hooks_) {
       bool defer_timer_for_command = false;
@@ -399,6 +493,7 @@ void CoreThread::thread_main() {
           // Preserve the coalesced tick and give command-lane work posted while
           // this pump was executing a prompt service turn before timer work.
           timer_tick_requested_ = true;
+          diagnostic_timer_requested_.store(true, std::memory_order_relaxed);
         }
       }
 
@@ -406,7 +501,10 @@ void CoreThread::thread_main() {
         timer_tick_deferred_for_command = true;
       } else {
         // Timer tick runs strictly on the core thread.
+        diagnostic_timer_running_.store(true, std::memory_order_relaxed);
+        diagnostic_set_phase_from_core(DiagnosticPhase::TimerHook);
         hooks_->on_core_timer_tick();
+        diagnostic_timer_running_.store(false, std::memory_order_relaxed);
         timer_tick_deferred_for_command = false;
       }
     }
@@ -429,6 +527,7 @@ void CoreThread::thread_main() {
   }
 
   if (hooks_) {
+    diagnostic_set_phase_from_core(DiagnosticPhase::ShutdownStopChoreography);
     hooks_->on_core_stop();
   }
 }

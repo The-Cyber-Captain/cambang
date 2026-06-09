@@ -42,7 +42,7 @@ uint64_t capture_latency_trace_now_ns() {
 }
 
 void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[1024];
+  char buffer[2048];
   va_list args;
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
@@ -50,6 +50,66 @@ void capture_latency_trace_printf(const char* format, ...) {
   capture_latency_trace_diagnostics::print_line(buffer);
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+
+
+class CoreRuntimeDiagnosticPhaseScope final {
+public:
+  CoreRuntimeDiagnosticPhaseScope(CoreThread& core_thread, CoreThread::DiagnosticPhase phase)
+      : core_thread_(core_thread) {
+    core_thread_.diagnostic_set_phase_from_core(phase);
+  }
+  ~CoreRuntimeDiagnosticPhaseScope() = default;
+
+  CoreRuntimeDiagnosticPhaseScope(const CoreRuntimeDiagnosticPhaseScope&) = delete;
+  CoreRuntimeDiagnosticPhaseScope& operator=(const CoreRuntimeDiagnosticPhaseScope&) = delete;
+
+private:
+  CoreThread& core_thread_;
+};
+
+void capture_latency_trace_emit_core_command_wait_context(
+    const char* kind,
+    uint64_t capture_id,
+    uint64_t target_id,
+    const char* target_label,
+    uint64_t wait_us,
+    const CoreThread::DiagnosticSnapshot& post_snapshot,
+    const CoreThread::DiagnosticSnapshot& start_snapshot,
+    size_t runtime_requests_depth_at_start,
+    size_t runtime_provider_facts_depth_at_start) {
+  capture_latency_trace_printf(
+      "core_command_wait_context kind=%s capture_id=%llu %s=%llu wait_us=%llu "
+      "phase_at_post=%s phase_age_at_post_us=%llu previous_phase_at_post=%s previous_phase_ended_before_post_us=%llu "
+      "essential_depth_at_post=%llu command_depth_at_post=%llu ordinary_depth_at_post=%llu timer_requested_at_post=%u timer_running_at_post=%u "
+      "phase_at_start=%s phase_age_at_start_us=%llu previous_phase_at_start=%s previous_phase_ended_before_start_us=%llu "
+      "essential_depth_at_start=%llu command_depth_at_start=%llu ordinary_depth_at_start=%llu timer_requested_at_start=%u timer_running_at_start=%u "
+      "runtime_request_depth_at_start=%llu runtime_provider_fact_depth_at_start=%llu",
+      kind,
+      static_cast<unsigned long long>(capture_id),
+      target_label,
+      static_cast<unsigned long long>(target_id),
+      static_cast<unsigned long long>(wait_us),
+      CoreThread::diagnostic_phase_name(post_snapshot.phase),
+      static_cast<unsigned long long>(post_snapshot.phase_age_us),
+      CoreThread::diagnostic_phase_name(post_snapshot.previous_phase),
+      static_cast<unsigned long long>(post_snapshot.previous_phase_ended_before_us),
+      static_cast<unsigned long long>(post_snapshot.essential_queue_depth),
+      static_cast<unsigned long long>(post_snapshot.command_queue_depth),
+      static_cast<unsigned long long>(post_snapshot.ordinary_queue_depth),
+      post_snapshot.timer_requested ? 1u : 0u,
+      post_snapshot.timer_running ? 1u : 0u,
+      CoreThread::diagnostic_phase_name(start_snapshot.phase),
+      static_cast<unsigned long long>(start_snapshot.phase_age_us),
+      CoreThread::diagnostic_phase_name(start_snapshot.previous_phase),
+      static_cast<unsigned long long>(start_snapshot.previous_phase_ended_before_us),
+      static_cast<unsigned long long>(start_snapshot.essential_queue_depth),
+      static_cast<unsigned long long>(start_snapshot.command_queue_depth),
+      static_cast<unsigned long long>(start_snapshot.ordinary_queue_depth),
+      start_snapshot.timer_requested ? 1u : 0u,
+      start_snapshot.timer_running ? 1u : 0u,
+      static_cast<unsigned long long>(runtime_requests_depth_at_start),
+      static_cast<unsigned long long>(runtime_provider_facts_depth_at_start));
+}
 
 
 uint64_t warm_delay_ns(uint32_t warm_hold_ms) {
@@ -375,10 +435,12 @@ void CoreRuntime::on_core_timer_tick() {
   // when backlog remains, the next requested tick continues from the next fact
   // after pending command work has had a service opportunity.
   const bool requests_pending_before_provider_drain = !requests_.empty();
+  bool command_lane_pending_after_tick_slice = false;
+  {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeProviderFactIntegration);
   const size_t provider_fact_drain_bound = requests_pending_before_provider_drain
       ? kMaxProviderFactsBeforeRequestWhenRequestsPending
       : kMaxProviderFactsPerCoreTurn;
-  bool command_lane_pending_after_tick_slice = false;
   size_t provider_facts_drained = 0;
   while (!provider_facts_.empty() &&
          provider_facts_drained < provider_fact_drain_bound) {
@@ -391,6 +453,7 @@ void CoreRuntime::on_core_timer_tick() {
       command_lane_pending_after_tick_slice = true;
       break;
     }
+  }
   }
   const bool provider_facts_remain_after_fairness_slice = !provider_facts_.empty();
 
@@ -410,12 +473,15 @@ void CoreRuntime::on_core_timer_tick() {
   }
 
   // 2) Drain queued requests ("what should we do").
+  {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeRequestDrain);
   while (!requests_.empty()) {
     auto task = std::move(requests_.front());
     requests_.pop_front();
     if (task) {
       task();
     }
+  }
   }
 
   if (provider_facts_remain_after_fairness_slice) {
@@ -424,6 +490,8 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 3) Retention / timers.
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeRetentionTimerWork);
 
   uint64_t next_warm_delay_ns = 0;
   bool has_next_warm_delay = false;
@@ -526,8 +594,11 @@ void CoreRuntime::on_core_timer_tick() {
     core_thread_.clear_timer_deadline();
   }
 
+  }
+
   // 4) Snapshot publish (coalesced).
   if (publish_pending_.load(std::memory_order_acquire)) {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeSnapshotPublication);
     // Clear pending first so a new request can enqueue even if publish work is heavy.
     publish_pending_.store(false, std::memory_order_release);
 
@@ -584,6 +655,7 @@ void CoreRuntime::on_core_timer_tick() {
 
   // 5) Shutdown choreography (§10).
   if (shutdown_requested_) {
+    CoreRuntimeDiagnosticPhaseScope diagnostic_phase_scope(core_thread_, CoreThread::DiagnosticPhase::RuntimeShutdownChoreography);
     auto set_phase = [this](ShutdownPhase p) {
       if (shutdown_phase_ != p) {
         shutdown_phase_ = p;
@@ -1484,20 +1556,36 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
   auto completion = std::make_shared<std::promise<TryTriggerDeviceCaptureStatus>>();
   std::future<TryTriggerDeviceCaptureStatus> completed = completion->get_future();
   const uint64_t post_begin_ns = capture_latency_trace_now_ns();
+  const CoreThread::DiagnosticSnapshot post_snapshot = core_thread_.diagnostic_snapshot();
   const CoreThread::PostResult pr = try_post([this,
                                               device_instance_id,
                                               capture_id,
                                               completion,
-                                              post_begin_ns]() {
+                                              post_begin_ns,
+                                              post_snapshot]() {
     const uint64_t core_start_ns = capture_latency_trace_now_ns();
+    const CoreThread::DiagnosticSnapshot start_snapshot = core_thread_.diagnostic_snapshot();
+    const size_t runtime_request_depth_at_start = requests_.size();
+    const size_t runtime_provider_fact_depth_at_start = provider_facts_.size();
     const TryTriggerDeviceCaptureStatus status =
         trigger_device_capture_with_capture_id_(device_instance_id, capture_id);
     const uint64_t core_end_ns = capture_latency_trace_now_ns();
+    const uint64_t core_queue_wait_us = (core_start_ns - post_begin_ns) / 1000ull;
+    capture_latency_trace_emit_core_command_wait_context(
+        "device_capture",
+        capture_id,
+        device_instance_id,
+        "device_id",
+        core_queue_wait_us,
+        post_snapshot,
+        start_snapshot,
+        runtime_request_depth_at_start,
+        runtime_provider_fact_depth_at_start);
     capture_latency_trace_printf(
         "core_device_admission capture_id=%llu device_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu status=%u path=queued",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
-        static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned long long>(core_queue_wait_us),
         static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
         static_cast<unsigned>(status));
     completion->set_value(status);
@@ -1874,15 +1962,30 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
   auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
   std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
   const uint64_t post_begin_ns = capture_latency_trace_now_ns();
-  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion, post_begin_ns]() {
+  const CoreThread::DiagnosticSnapshot post_snapshot = core_thread_.diagnostic_snapshot();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, completion, post_begin_ns, post_snapshot]() {
     const uint64_t core_start_ns = capture_latency_trace_now_ns();
+    const CoreThread::DiagnosticSnapshot start_snapshot = core_thread_.diagnostic_snapshot();
+    const size_t runtime_request_depth_at_start = requests_.size();
+    const size_t runtime_provider_fact_depth_at_start = provider_facts_.size();
     RigTriggerOrchestrationResult result = orchestrate_rig_capture_with_capture_id_(rig_id, capture_id);
     const uint64_t core_end_ns = capture_latency_trace_now_ns();
+    const uint64_t core_queue_wait_us = (core_start_ns - post_begin_ns) / 1000ull;
+    capture_latency_trace_emit_core_command_wait_context(
+        "rig_capture",
+        capture_id,
+        rig_id,
+        "rig_id",
+        core_queue_wait_us,
+        post_snapshot,
+        start_snapshot,
+        runtime_request_depth_at_start,
+        runtime_provider_fact_depth_at_start);
     capture_latency_trace_printf(
         "core_rig_admission capture_id=%llu rig_id=%llu post_to_core_us=0 core_queue_wait_us=%llu core_execution_us=%llu ok=%u submitted=%llu path=queued",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(rig_id),
-        static_cast<unsigned long long>((core_start_ns - post_begin_ns) / 1000ull),
+        static_cast<unsigned long long>(core_queue_wait_us),
         static_cast<unsigned long long>((core_end_ns - core_start_ns) / 1000ull),
         result.ok ? 1u : 0u,
         static_cast<unsigned long long>(result.submitted_count));
