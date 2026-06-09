@@ -3,10 +3,12 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <map>
 #include <memory>
 #include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "imaging/api/icamera_provider.h"
@@ -47,7 +49,7 @@ public:
   using TimelineRequestDispatchHook = std::function<void(const SyntheticScheduledEvent&)>;
 
   explicit SyntheticProvider(const SyntheticProviderConfig& cfg);
-  ~SyntheticProvider() override = default;
+  ~SyntheticProvider() override;
 
   const char* provider_name() const override { return "SyntheticProvider"; }
   ProviderKind provider_kind() const noexcept override { return ProviderKind::synthetic; }
@@ -88,6 +90,7 @@ public:
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
+  ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
 
   ProviderResult apply_camera_spec_patch(
@@ -227,6 +230,65 @@ private:
                                bool emit_stop_event);
   void close_device_storage_(std::map<uint64_t, DeviceState>::iterator it);
 
+  enum class CaptureTerminalKind : uint8_t {
+    Completed,
+    Failed,
+  };
+
+  struct DeviceCaptureJob {
+    CaptureRequest request{};
+    uint32_t format_fourcc = 0;
+    uint32_t stride_bytes = 0;
+    size_t frame_size_bytes = 0;
+    uint64_t acquisition_session_id = 0;
+  };
+
+  struct CaptureSubmissionJob {
+    uint64_t capture_id = 0;
+    CaptureSubmissionOrigin origin = CaptureSubmissionOrigin::DEVICE_CAPTURE;
+    uint64_t rig_id = 0;
+    uint64_t generation = 0;
+    std::vector<DeviceCaptureJob> device_jobs{};
+  };
+
+  struct InFlightCaptureDevice {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+    uint64_t acquisition_session_id = 0;
+    uint64_t generation = 0;
+    bool terminal_posted = false;
+    bool release_done = false;
+  };
+
+  struct InFlightCaptureKey {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+    bool operator<(const InFlightCaptureKey& other) const noexcept {
+      if (capture_id != other.capture_id) {
+        return capture_id < other.capture_id;
+      }
+      return device_instance_id < other.device_instance_id;
+    }
+  };
+
+  ProviderResult validate_and_admit_capture_submission_locked_(
+      const CaptureSubmission& submission,
+      CaptureSubmissionJob& out_job);
+  bool capture_shutdown_requested_() const noexcept;
+  bool should_stop_capture_job_(uint64_t generation) const noexcept;
+  void run_capture_submission_(CaptureSubmissionJob job);
+  void run_device_capture_job_(DeviceCaptureJob job, uint64_t generation);
+  bool generate_device_capture_payloads_(const DeviceCaptureJob& job, uint64_t generation);
+  void finish_device_capture_job_(const DeviceCaptureJob& job,
+                                  uint64_t generation,
+                                  CaptureTerminalKind terminal,
+                                  ProviderError error);
+  void start_capture_thread_(const CaptureSubmissionJob& job);
+  void join_finished_capture_threads_();
+  void stop_and_join_capture_threads_();
+  bool has_in_flight_capture_for_device_locked_(uint64_t device_instance_id) const;
+
+
 private:
   SyntheticProviderConfig cfg_{};
   IProviderCallbacks* callbacks_ = nullptr;
@@ -234,6 +296,18 @@ private:
   bool shutting_down_ = false;
 
   SyntheticVirtualClock clock_;
+
+  // Provider state accessed by provider API calls and asynchronous still-capture
+  // cleanup. Never hold this mutex while rendering or copying pixel payloads.
+  mutable std::mutex provider_state_mutex_;
+
+  // Capture executor state. Lock ordering, when both are needed: capture_mutex_
+  // before provider_state_mutex_.
+  mutable std::mutex capture_mutex_;
+  bool capture_admission_closed_ = false;
+  uint64_t capture_generation_ = 0;
+  std::map<InFlightCaptureKey, InFlightCaptureDevice> in_flight_captures_;
+  std::vector<std::thread> capture_threads_;
 
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, StreamState> streams_;

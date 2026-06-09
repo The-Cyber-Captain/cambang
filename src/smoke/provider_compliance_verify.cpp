@@ -113,6 +113,7 @@ double luma_from_rgb(uint8_t r, uint8_t g, uint8_t b) {
          (0.0722 * static_cast<double>(b));
 }
 
+
 struct RecorderCallbacks final : IProviderCallbacks {
   uint64_t next_native_id = 1;
   std::vector<EventRec> events;
@@ -221,6 +222,20 @@ struct RecorderCallbacks final : IProviderCallbacks {
     events.push_back(ev);
   }
 };
+
+
+bool wait_for_event_tag(const RecorderCallbacks& cb, const std::string& tag, uint64_t id) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    const auto events = cb.snapshot_events();
+    for (const auto& ev : events) {
+      if (ev.tag == tag && ev.id == id) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  return false;
+}
 
 int find_event_index(const std::vector<EventRec>& events, const char* tag, uint64_t id) {
   for (size_t i = 0; i < events.size(); ++i) {
@@ -1426,6 +1441,10 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     std::cerr << "FAIL synthetic still-only trigger_capture failed\n";
     return false;
   }
+  if (!wait_for_event_tag(cb, "capture_completed", cap.capture_id)) {
+    std::cerr << "FAIL synthetic still-only capture did not complete before close\n";
+    return false;
+  }
 
   if (!provider.close_device(41).ok() || !provider.shutdown().ok()) {
     std::cerr << "FAIL synthetic still-only teardown failed\n";
@@ -1502,6 +1521,10 @@ bool run_synthetic_multi_member_still_sequence_check() {
   }
   if (!provider.trigger_capture(cap).ok()) {
     std::cerr << "FAIL synthetic multi-member trigger_capture failed\n";
+    return false;
+  }
+  if (!wait_for_event_tag(cb, "capture_completed", cap.capture_id)) {
+    std::cerr << "FAIL synthetic multi-member capture did not complete before close\n";
     return false;
   }
   if (!provider.close_device(43).ok() || !provider.shutdown().ok()) {
@@ -2143,12 +2166,19 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
       !provider.open_device("synthetic:0", req.device_instance_id, 4201).ok() ||
       !provider.create_stream(req).ok() ||
       !provider.start_stream(req.stream_id, req.profile, req.picture).ok() ||
-      !provider.trigger_capture(cap).ok() ||
-      !provider.stop_stream(req.stream_id).ok() ||
+      !provider.trigger_capture(cap).ok()) {
+    std::cerr << "FAIL synthetic stream+still setup/trigger failed\n";
+    return false;
+  }
+  if (!wait_for_event_tag(cb, "capture_completed", cap.capture_id)) {
+    std::cerr << "FAIL synthetic stream+still capture did not complete before teardown\n";
+    return false;
+  }
+  if (!provider.stop_stream(req.stream_id).ok() ||
       !provider.destroy_stream(req.stream_id).ok() ||
       !provider.close_device(req.device_instance_id).ok() ||
       !provider.shutdown().ok()) {
-    std::cerr << "FAIL synthetic stream+still setup/teardown failed\n";
+    std::cerr << "FAIL synthetic stream+still teardown failed\n";
     return false;
   }
 

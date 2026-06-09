@@ -73,11 +73,11 @@ private:
   struct EvStreamStarted { uint64_t id; };
   struct EvStreamStopped { uint64_t id; ProviderError err; };
 
-  struct EvCaptureStarted { uint64_t id; uint64_t device_instance_id; };
-  struct EvCaptureCompleted { uint64_t id; uint64_t device_instance_id; };
-  struct EvCaptureFailed { uint64_t id; uint64_t device_instance_id; ProviderError err; };
+  struct EvCaptureStarted { uint64_t id; uint64_t device_instance_id; uint64_t queued_ns; };
+  struct EvCaptureCompleted { uint64_t id; uint64_t device_instance_id; uint64_t queued_ns; };
+  struct EvCaptureFailed { uint64_t id; uint64_t device_instance_id; ProviderError err; uint64_t queued_ns; };
 
-  struct EvFrame { FrameView frame; };
+  struct EvFrame { FrameView frame; uint64_t queued_ns; };
 
   struct EvDeviceError { uint64_t id; ProviderError err; };
   struct EvStreamError { uint64_t id; ProviderError err; };

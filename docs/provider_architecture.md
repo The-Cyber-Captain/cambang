@@ -570,3 +570,18 @@ synchronization discipline for camera/reader handles; correct signed/negative
 stride handling or safe normalization; shutdown timeout failure that leaves no
 callbacks against destroyed state; and validation for repeated lifecycle,
 callback drain, stop/destroy races, timeout paths, and frame release semantics.
+
+## Still capture admission boundary
+
+Provider still-capture entry points are admission/submission boundaries. A
+successful provider `trigger_capture(...)` return means the provider has accepted
+responsibility for the request or grouped submission and will later report
+terminal success or failure through the provider callback/strand path. It does
+not mean image payloads have already been acquired/generated, retained,
+assembled, or become Godot-visible.
+
+SyntheticProvider may generate pixels internally, but that production is
+provider-owned work after admission rather than synchronous public/Core
+admission work. Rig capture should be represented to capable providers as one
+grouped submission containing all admitted member-device requests for the shared
+capture id.

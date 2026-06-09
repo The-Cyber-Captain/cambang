@@ -260,6 +260,11 @@ struct StreamRequest {
   uint64_t profile_version = 0;      // core bookkeeping
 };
 
+enum class CaptureSubmissionOrigin : uint8_t {
+  DEVICE_CAPTURE = 0,
+  RIG_CAPTURE = 1,
+};
+
 // Normalized still capture request (validated by core).
 struct CaptureRequest {
   uint64_t capture_id = 0;           // core-issued
@@ -278,6 +283,16 @@ struct CaptureRequest {
   CaptureStillImageBundle still_image_bundle{};
 
   uint64_t profile_version = 0;      // core bookkeeping
+};
+
+// Normalized provider capture submission. A device capture is represented as a
+// one-device submission; a rig capture is represented as one grouped submission
+// containing all admitted member-device requests for a shared capture_id/rig_id.
+struct CaptureSubmission {
+  uint64_t capture_id = 0;
+  CaptureSubmissionOrigin origin = CaptureSubmissionOrigin::DEVICE_CAPTURE;
+  uint64_t rig_id = 0;
+  std::vector<CaptureRequest> device_requests{};
 };
 
 // Opaque spec patch payload (core-validated).

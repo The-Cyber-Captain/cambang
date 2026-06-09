@@ -156,8 +156,27 @@ public:
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) = 0;
 
-  // Trigger a still capture for a device instance (device capture or rig capture).
+  // Trigger a still capture for a device instance. A successful return is
+  // admission/ownership transfer: the provider will later report terminal
+  // capture success or failure through the provider callback/strand path.
   virtual ProviderResult trigger_capture(const CaptureRequest& req) = 0;
+
+  // Trigger a grouped still-capture submission. Providers that do not override
+  // this retain legacy per-device submission behaviour; providers with
+  // coordinated multi-device capture support should override it so all member
+  // device work is accepted as one provider submission.
+  virtual ProviderResult trigger_capture_submission(const CaptureSubmission& submission) {
+    if (submission.capture_id == 0 || submission.device_requests.empty()) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    for (const CaptureRequest& req : submission.device_requests) {
+      const ProviderResult pr = trigger_capture(req);
+      if (!pr.ok()) {
+        return pr;
+      }
+    }
+    return ProviderResult::success();
+  }
 
   // Best-effort abort for an in-flight capture (platform-dependent).
   // Providers that cannot abort should return ERR_NOT_SUPPORTED deterministically.

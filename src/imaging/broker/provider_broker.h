@@ -80,6 +80,7 @@ public:
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
+  ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
 
   ProviderResult apply_camera_spec_patch(

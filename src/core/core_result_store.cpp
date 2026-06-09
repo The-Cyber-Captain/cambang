@@ -1,5 +1,7 @@
 #include "core/core_result_store.h"
 
+#include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -8,6 +10,22 @@
 namespace cambang {
 
 namespace {
+// BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+uint64_t capture_latency_trace_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void capture_latency_trace_printf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  std::fprintf(stdout, "[CamBANG][CaptureLatencyTrace] %s\n", buffer);
+}
+// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
+
 constexpr uint64_t kDisplayDemandLeaseNs = 250'000'000ull;
 bool display_demand_trace_enabled() {
   const char* v = std::getenv("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
@@ -104,13 +122,17 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
 bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
                                    uint64_t capture_timestamp_ns) {
+  const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
+  uint64_t payload_copy_ns = 0;
   const bool has_cpu_payload = has_cpu_packed_payload(frame);
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};
   if (has_cpu_payload) {
+    const uint64_t payload_copy_begin_ns = capture_latency_trace_now_ns();
     if (!try_copy_cpu_packed_payload(frame, payload)) {
       return false;
     }
+    payload_copy_ns = capture_latency_trace_now_ns() - payload_copy_begin_ns;
   }
 
   SharedStreamResultData replaced_stream_result;
@@ -162,13 +184,28 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         build_default_image_capture_result(frame, payload, capture_timestamp_ns);
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
-  return frame.stream_id != 0 || frame.capture_id != 0;
+  const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
+  if (frame.capture_id != 0) {
+    capture_latency_trace_printf(
+        "result_store_retain_frame capture_id=%llu device_id=%llu member=%u payload_copy_us=%llu total_us=%llu retained=%u bytes=%llu",
+        static_cast<unsigned long long>(frame.capture_id),
+        static_cast<unsigned long long>(frame.device_instance_id),
+        static_cast<unsigned>(frame.capture_image.image_member_index),
+        static_cast<unsigned long long>(payload_copy_ns / 1000ull),
+        static_cast<unsigned long long>((capture_latency_trace_now_ns() - retain_begin_ns) / 1000ull),
+        retained ? 1u : 0u,
+        static_cast<unsigned long long>(frame.size_bytes));
+  }
+  return retained;
 }
 
 bool CoreResultStore::append_additional_capture_image(
     uint64_t capture_id,
     uint64_t device_instance_id,
     CoreCaptureResultData::ImageMemberData image_member) {
+  const uint64_t append_begin_ns = capture_latency_trace_now_ns();
+  const uint32_t image_member_index = image_member.image_member_index;
+  const size_t payload_bytes = image_member.payload.bytes.size();
   std::lock_guard<std::mutex> lock(mutex_);
   auto cap_it = capture_results_by_capture_id_.find(capture_id);
   if (cap_it == capture_results_by_capture_id_.end()) {
@@ -196,18 +233,40 @@ bool CoreResultStore::append_additional_capture_image(
   }
   updated->additional_images.push_back(std::move(image_member));
   dev_it->second = std::move(updated);
+  capture_latency_trace_printf(
+      "result_store_append_additional capture_id=%llu device_id=%llu member=%u payload_bytes=%llu total_us=%llu",
+      static_cast<unsigned long long>(capture_id),
+      static_cast<unsigned long long>(device_instance_id),
+      static_cast<unsigned>(image_member_index),
+      static_cast<unsigned long long>(payload_bytes),
+      static_cast<unsigned long long>((capture_latency_trace_now_ns() - append_begin_ns) / 1000ull));
   return true;
 }
 
 bool CoreResultStore::try_build_capture_image_member_data_from_frame(const FrameView& frame,
                                                                      CoreResultPayloadCpuPacked& out_payload) {
+  const uint64_t build_begin_ns = capture_latency_trace_now_ns();
   if (!has_cpu_packed_payload(frame)) {
     return false;
   }
+  const uint64_t copy_begin_ns = capture_latency_trace_now_ns();
   if (!try_copy_cpu_packed_payload(frame, out_payload)) {
     return false;
   }
-  return has_valid_capture_image_member_payload(out_payload);
+  const uint64_t copy_ns = capture_latency_trace_now_ns() - copy_begin_ns;
+  const bool valid = has_valid_capture_image_member_payload(out_payload);
+  if (frame.capture_id != 0) {
+    capture_latency_trace_printf(
+        "result_store_build_member_payload capture_id=%llu device_id=%llu member=%u payload_copy_us=%llu total_us=%llu valid=%u bytes=%llu",
+        static_cast<unsigned long long>(frame.capture_id),
+        static_cast<unsigned long long>(frame.device_instance_id),
+        static_cast<unsigned>(frame.capture_image.image_member_index),
+        static_cast<unsigned long long>(copy_ns / 1000ull),
+        static_cast<unsigned long long>((capture_latency_trace_now_ns() - build_begin_ns) / 1000ull),
+        valid ? 1u : 0u,
+        static_cast<unsigned long long>(frame.size_bytes));
+  }
+  return valid;
 }
 
 SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
