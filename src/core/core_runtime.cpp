@@ -1570,6 +1570,12 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
     return out;
   }
 
+  CaptureSubmission submission{};
+  submission.capture_id = bundle.capture_id;
+  submission.origin = CaptureSubmissionOrigin::RIG_CAPTURE;
+  submission.rig_id = bundle.rig_id;
+  submission.device_requests.reserve(bundle.participants.size());
+
   for (size_t i = 0; i < bundle.participants.size(); ++i) {
     const auto& participant = bundle.participants[i];
     if (!is_valid_capture_still_image_bundle(
@@ -1588,24 +1594,28 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
                                                  CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
       return out;
     }
-    const ProviderResult pr = prov->trigger_capture(participant.request);
-    if (!pr.ok()) {
-      out.failure = RigSubmissionFailure::TriggerFailed;
-      out.failed_index = i;
-      out.failed_device_instance_id = participant.request.device_instance_id;
-      out.provider_error_code = static_cast<uint32_t>(pr.code);
+    submission.device_requests.push_back(participant.request);
+  }
+
+  const ProviderResult pr = prov->trigger_capture_submission(submission);
+  if (!pr.ok()) {
+    out.failure = RigSubmissionFailure::TriggerFailed;
+    out.failed_index = 0;
+    out.failed_device_instance_id = submission.device_requests.empty() ? 0 : submission.device_requests.front().device_instance_id;
+    out.provider_error_code = static_cast<uint32_t>(pr.code);
+    for (const auto& participant : bundle.participants) {
       capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
                                                      participant.request.device_instance_id,
                                                      static_cast<uint32_t>(pr.code));
-      (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
-                                                 participant.request.device_instance_id,
-                                                 static_cast<uint32_t>(pr.code),
-                                                 CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
-      return out;
     }
-    out.submitted_count++;
+    (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
+                                               out.failed_device_instance_id,
+                                               static_cast<uint32_t>(pr.code),
+                                               CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
+    return out;
   }
 
+  out.submitted_count = bundle.participants.size();
   out.ok = true;
   out.failure = RigSubmissionFailure::None;
   return out;

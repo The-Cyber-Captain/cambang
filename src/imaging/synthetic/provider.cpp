@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <chrono>
+#include <exception>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -105,6 +106,14 @@ SyntheticProvider::SyntheticProvider(const SyntheticProviderConfig& cfg) : cfg_(
   triage_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_SYNTH_TRIAGE_TRACE");
   display_demand_trace_enabled_ = env_flag_enabled("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
   triage_catchup_cap_per_tick_ = env_u32_or_default("CAMBANG_DEV_SYNTH_CATCHUP_CAP", 0);
+}
+
+SyntheticProvider::~SyntheticProvider() {
+  if (initialized_) {
+    (void)shutdown();
+  } else {
+    stop_and_join_capture_threads_();
+  }
 }
 
 StreamTemplate SyntheticProvider::stream_template() const {
@@ -239,6 +248,12 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   strand_.start(callbacks_, "synthetic_provider");
   initialized_ = true;
   shutting_down_ = false;
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    capture_admission_closed_ = false;
+    ++capture_generation_;
+    in_flight_captures_.clear();
+  }
   triage_next_log_ns_ = 0;
   if (triage_trace_enabled_) {
     synthetic_triage_printf("[CamBANG][SyntheticTriage] enabled=true catchup_cap=%u",
@@ -749,6 +764,7 @@ ProviderResult SyntheticProvider::open_device(
   if (shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_SHUTTING_DOWN);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   if (!is_known_hardware_id_(hardware_id) || device_instance_id == 0 || root_id == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
@@ -774,6 +790,13 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    if (has_in_flight_capture_for_device_locked_(device_instance_id)) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+  }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = devices_.find(device_instance_id);
   if (it == devices_.end() || !it->second.open) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -807,6 +830,7 @@ ProviderResult SyntheticProvider::create_stream(const StreamRequest& req) {
   if (shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_SHUTTING_DOWN);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   if (req.stream_id == 0 || req.device_instance_id == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
@@ -863,6 +887,7 @@ ProviderResult SyntheticProvider::destroy_stream(uint64_t stream_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = streams_.find(stream_id);
   if (it == streams_.end() || !it->second.created) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -888,6 +913,7 @@ ProviderResult SyntheticProvider::start_stream(
   if (shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_SHUTTING_DOWN);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = streams_.find(stream_id);
   if (it == streams_.end() || !it->second.created) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -949,6 +975,7 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   if (!initialized_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = streams_.find(stream_id);
   if (it == streams_.end() || !it->second.created) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -971,6 +998,7 @@ ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, 
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = streams_.find(stream_id);
   if (it == streams_.end() || !it->second.created) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -986,6 +1014,7 @@ ProviderResult SyntheticProvider::set_capture_picture_config(uint64_t device_ins
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   auto it = devices_.find(device_instance_id);
   if (it == devices_.end() || !it->second.open) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
@@ -998,29 +1027,214 @@ ProviderResult SyntheticProvider::set_capture_picture_config(uint64_t device_ins
 }
 
 ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
-  if (!initialized_ || shutting_down_) {
+  CaptureSubmission submission{};
+  submission.capture_id = req.capture_id;
+  submission.origin = req.rig_id == 0 ? CaptureSubmissionOrigin::DEVICE_CAPTURE : CaptureSubmissionOrigin::RIG_CAPTURE;
+  submission.rig_id = req.rig_id;
+  submission.device_requests.push_back(req);
+  return trigger_capture_submission(submission);
+}
+
+ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmission& submission) {
+  CaptureSubmissionJob job{};
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+    const ProviderResult pr = validate_and_admit_capture_submission_locked_(submission, job);
+    if (!pr.ok()) {
+      return pr;
+    }
+  }
+
+  try {
+    start_capture_thread_(job);
+  } catch (const std::exception&) {
+    for (const DeviceCaptureJob& device_job : job.device_jobs) {
+      finish_device_capture_job_(device_job,
+                                 job.generation,
+                                 CaptureTerminalKind::Failed,
+                                 ProviderError::ERR_PROVIDER_FAILED);
+    }
+    return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  }
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
+    const CaptureSubmission& submission,
+    CaptureSubmissionJob& out_job) {
+  if (!initialized_ || shutting_down_ || capture_admission_closed_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
-  if (req.capture_id == 0 || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+  if (submission.capture_id == 0 || submission.device_requests.empty()) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE && submission.rig_id == 0) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
-  auto dev_it = devices_.find(req.device_instance_id);
-  if (dev_it == devices_.end() || !dev_it->second.open) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  CaptureSubmissionJob job{};
+  job.capture_id = submission.capture_id;
+  job.origin = submission.origin;
+  job.rig_id = submission.rig_id;
+  job.generation = capture_generation_;
+  job.device_jobs.reserve(submission.device_requests.size());
+
+  std::map<uint64_t, bool> seen_devices;
+  for (const CaptureRequest& req : submission.device_requests) {
+    if (req.capture_id != submission.capture_id || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    if (submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE) {
+      if (req.rig_id != submission.rig_id || req.rig_id == 0) {
+        return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+      }
+    } else if (req.rig_id != 0 || submission.rig_id != 0) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    if (seen_devices.find(req.device_instance_id) != seen_devices.end()) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    seen_devices.emplace(req.device_instance_id, true);
+
+    auto dev_it = devices_.find(req.device_instance_id);
+    if (dev_it == devices_.end() || !dev_it->second.open) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+
+    const uint32_t fmt = req.format_fourcc == 0 ? FOURCC_RGBA : req.format_fourcc;
+    if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA)) {
+      return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+    }
+    if (req.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    if (!is_valid_capture_still_image_bundle(req.still_image_bundle, supports_multi_image_still_sequence())) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+
+    DeviceCaptureJob device_job{};
+    device_job.request = req;
+    device_job.format_fourcc = fmt;
+    device_job.stride_bytes = req.width * 4u;
+    device_job.frame_size_bytes = static_cast<size_t>(device_job.stride_bytes) * static_cast<size_t>(req.height);
+    job.device_jobs.push_back(std::move(device_job));
   }
 
-  const uint32_t fmt = req.format_fourcc == 0 ? FOURCC_RGBA : req.format_fourcc;
-  if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA)) {
-    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
-  }
-  if (req.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
-    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  for (DeviceCaptureJob& device_job : job.device_jobs) {
+    auto dev_it = devices_.find(device_job.request.device_instance_id);
+    if (dev_it == devices_.end() || !dev_it->second.open) {
+      for (const DeviceCaptureJob& retained : job.device_jobs) {
+        if (retained.acquisition_session_id != 0) {
+          release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
+        }
+      }
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    retain_native_acquisition_session_for_capture_(dev_it->second);
+    if (dev_it->second.acquisition_session_capture_refs == 0 || dev_it->second.acquisition_session_native_id == 0) {
+      for (const DeviceCaptureJob& retained : job.device_jobs) {
+        if (retained.acquisition_session_id != 0) {
+          release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
+        }
+      }
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    device_job.acquisition_session_id = dev_it->second.acquisition_session_native_id;
   }
 
-  const uint32_t stride = req.width * 4u;
-  const size_t frame_size = static_cast<size_t>(stride) * static_cast<size_t>(req.height);
-  std::vector<std::uint8_t> gpu_staging(frame_size);
+  for (const DeviceCaptureJob& device_job : job.device_jobs) {
+    const InFlightCaptureKey key{device_job.request.capture_id, device_job.request.device_instance_id};
+    if (in_flight_captures_.find(key) != in_flight_captures_.end()) {
+      for (const DeviceCaptureJob& retained : job.device_jobs) {
+        if (retained.acquisition_session_id != 0) {
+          release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
+        }
+      }
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    InFlightCaptureDevice in_flight{};
+    in_flight.capture_id = device_job.request.capture_id;
+    in_flight.device_instance_id = device_job.request.device_instance_id;
+    in_flight.acquisition_session_id = device_job.acquisition_session_id;
+    in_flight.generation = job.generation;
+    in_flight_captures_.emplace(key, in_flight);
+  }
+
+  out_job = std::move(job);
+  return ProviderResult::success();
+}
+
+bool SyntheticProvider::capture_shutdown_requested_() const noexcept {
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  return capture_admission_closed_;
+}
+
+bool SyntheticProvider::should_stop_capture_job_(uint64_t generation) const noexcept {
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  return capture_admission_closed_ || generation != capture_generation_;
+}
+
+void SyntheticProvider::start_capture_thread_(const CaptureSubmissionJob& job) {
+  std::thread worker([this, job]() mutable {
+    run_capture_submission_(std::move(job));
+  });
+  std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+  capture_threads_.push_back(std::move(worker));
+}
+
+void SyntheticProvider::run_capture_submission_(CaptureSubmissionJob job) {
+  if (should_stop_capture_job_(job.generation)) {
+    for (const DeviceCaptureJob& device_job : job.device_jobs) {
+      finish_device_capture_job_(device_job, job.generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
+    }
+    return;
+  }
+
+  std::vector<std::thread> device_threads;
+  device_threads.reserve(job.device_jobs.size());
+  try {
+    for (const DeviceCaptureJob& device_job : job.device_jobs) {
+      device_threads.emplace_back([this, device_job, generation = job.generation]() mutable {
+        run_device_capture_job_(std::move(device_job), generation);
+      });
+    }
+  } catch (const std::exception&) {
+    for (const DeviceCaptureJob& device_job : job.device_jobs) {
+      finish_device_capture_job_(device_job, job.generation, CaptureTerminalKind::Failed, ProviderError::ERR_PROVIDER_FAILED);
+    }
+  }
+  for (std::thread& device_thread : device_threads) {
+    if (device_thread.joinable()) {
+      device_thread.join();
+    }
+  }
+}
+
+void SyntheticProvider::run_device_capture_job_(DeviceCaptureJob job, uint64_t generation) {
+  if (should_stop_capture_job_(generation)) {
+    finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
+    return;
+  }
+
+  try {
+    if (generate_device_capture_payloads_(job, generation)) {
+      finish_device_capture_job_(job, generation, CaptureTerminalKind::Completed, ProviderError::OK);
+    } else {
+      finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
+    }
+  } catch (const std::exception&) {
+    finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_PROVIDER_FAILED);
+  }
+}
+
+bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob& job, uint64_t generation) {
+  const CaptureRequest& req = job.request;
+  if (should_stop_capture_job_(generation)) {
+    return false;
+  }
+
+  std::vector<std::uint8_t> gpu_staging(job.frame_size_bytes);
 
   bool preset_valid = true;
   PatternSpec spec = to_pattern_spec(req.picture, req.width, req.height, PatternSpec::PackedFormat::RGBA8, &preset_valid);
@@ -1033,10 +1247,14 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
   dst.size_bytes = gpu_staging.size();
   dst.width = req.width;
   dst.height = req.height;
-  dst.stride_bytes = stride;
+  dst.stride_bytes = job.stride_bytes;
   dst.format = PatternSpec::PackedFormat::RGBA8;
 
-  const uint64_t capture_ts_ns = clock_.now_ns();
+  uint64_t capture_ts_ns = 0;
+  {
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+    capture_ts_ns = clock_.now_ns();
+  }
   PatternOverlayData ov{};
   ov.frame_index = generator_frame_ordinal_from_ns_(capture_ts_ns, req.picture);
   ov.timestamp_ns = capture_ts_ns;
@@ -1044,28 +1262,20 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 
   CpuPackedPatternRenderer renderer{};
   renderer.render_into(spec, dst, ov);
-  retain_native_acquisition_session_for_capture_(dev_it->second);
-  if (dev_it->second.acquisition_session_capture_refs == 0) {
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
-  }
-  const uint64_t capture_acquisition_session_id = dev_it->second.acquisition_session_native_id;
-  if (capture_acquisition_session_id == 0) {
-    release_native_acquisition_session_for_capture_(req.device_instance_id);
-    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  if (should_stop_capture_job_(generation)) {
+    return false;
   }
 
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
-  CaptureStillImageBundle fallback_default_sequence;
-  const auto* members = &req.still_image_bundle.members;
-  if (members->empty()) {
-    fallback_default_sequence = make_default_metered_still_image_bundle();
-    members = &fallback_default_sequence.members;
-  }
-  for (size_t i = 0; i < members->size(); ++i) {
-    const auto& member = (*members)[i];
+  const auto& members = req.still_image_bundle.members;
+  for (size_t i = 0; i < members.size(); ++i) {
+    if (should_stop_capture_job_(generation)) {
+      return false;
+    }
+    const auto& member = members[i];
     auto bytes = std::make_shared<std::vector<std::uint8_t>>();
-    bytes->resize(frame_size);
-    std::memcpy(bytes->data(), gpu_staging.data(), frame_size);
+    bytes->resize(job.frame_size_bytes);
+    std::memcpy(bytes->data(), gpu_staging.data(), job.frame_size_bytes);
     if (member.intended_exposure_compensation_milli_ev != 0) {
       PatternRenderOptions render_options{};
       render_options.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
@@ -1074,11 +1284,11 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
       member_dst.size_bytes = bytes->size();
       member_dst.width = req.width;
       member_dst.height = req.height;
-      member_dst.stride_bytes = stride;
+      member_dst.stride_bytes = job.stride_bytes;
       member_dst.format = PatternSpec::PackedFormat::RGBA8;
       renderer.apply_render_options_in_place(member_dst, render_options);
     }
-    if (fmt == FOURCC_BGRA) {
+    if (job.format_fourcc == FOURCC_BGRA) {
       for (size_t bi = 0; bi + 3 < bytes->size(); bi += 4) {
         std::swap((*bytes)[bi], (*bytes)[bi + 2]);
       }
@@ -1087,11 +1297,11 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     FrameView fv{};
     fv.device_instance_id = req.device_instance_id;
     fv.stream_id = 0;
-    fv.acquisition_session_id = capture_acquisition_session_id;
+    fv.acquisition_session_id = job.acquisition_session_id;
     fv.capture_id = req.capture_id;
     fv.width = req.width;
     fv.height = req.height;
-    fv.format_fourcc = fmt;
+    fv.format_fourcc = job.format_fourcc;
     fv.capture_timestamp.value = capture_ts_ns;
     fv.capture_timestamp.tick_ns = 1;
     fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
@@ -1122,16 +1332,86 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
     }
     fv.data = bytes->data();
     fv.size_bytes = bytes->size();
-    fv.stride_bytes = stride;
+    fv.stride_bytes = job.stride_bytes;
     auto* lease = new FrameReleaseLease();
     lease->bytes = bytes;
     fv.release = &SyntheticProvider::release_frame_;
     fv.release_user = lease;
     strand_.post_frame(fv);
   }
-  strand_.post_capture_completed(req.capture_id, req.device_instance_id);
-  release_native_acquisition_session_for_capture_(req.device_instance_id);
-  return ProviderResult::success();
+  return true;
+}
+
+void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
+                                                   uint64_t generation,
+                                                   CaptureTerminalKind terminal,
+                                                   ProviderError error) {
+  bool should_post_terminal = false;
+  bool should_release = false;
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    const InFlightCaptureKey key{job.request.capture_id, job.request.device_instance_id};
+    auto it = in_flight_captures_.find(key);
+    if (it == in_flight_captures_.end()) {
+      return;
+    }
+    InFlightCaptureDevice& in_flight = it->second;
+    if (in_flight.generation != generation) {
+      terminal = CaptureTerminalKind::Failed;
+      error = ProviderError::ERR_SHUTTING_DOWN;
+    }
+    if (!in_flight.terminal_posted) {
+      in_flight.terminal_posted = true;
+      should_post_terminal = true;
+    }
+    if (!in_flight.release_done) {
+      in_flight.release_done = true;
+      should_release = true;
+    }
+    in_flight_captures_.erase(it);
+  }
+
+  if (should_post_terminal) {
+    if (terminal == CaptureTerminalKind::Completed) {
+      strand_.post_capture_completed(job.request.capture_id, job.request.device_instance_id);
+    } else {
+      const ProviderError failure_error = error == ProviderError::OK ? ProviderError::ERR_PROVIDER_FAILED : error;
+      strand_.post_capture_failed(job.request.capture_id, job.request.device_instance_id, failure_error);
+    }
+  }
+  if (should_release) {
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+    release_native_acquisition_session_for_capture_(job.request.device_instance_id);
+  }
+}
+
+void SyntheticProvider::join_finished_capture_threads_() {
+  // std::thread does not expose non-blocking completion detection. Keep this
+  // hook for future executor maintenance; shutdown performs the deterministic join.
+}
+
+void SyntheticProvider::stop_and_join_capture_threads_() {
+  std::vector<std::thread> threads;
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    capture_admission_closed_ = true;
+    ++capture_generation_;
+    threads.swap(capture_threads_);
+  }
+  for (std::thread& thread : threads) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+}
+
+bool SyntheticProvider::has_in_flight_capture_for_device_locked_(uint64_t device_instance_id) const {
+  for (const auto& kv : in_flight_captures_) {
+    if (kv.second.device_instance_id == device_instance_id && !kv.second.release_done) {
+      return true;
+    }
+  }
+  return false;
 }
 
 ProviderResult SyntheticProvider::abort_capture(uint64_t capture_id) {
@@ -1474,38 +1754,50 @@ ProviderResult SyntheticProvider::shutdown() {
   }
   shutting_down_ = true;
 
-  // Deterministic teardown order:
-  // stop streams, destroy streams, close devices.
-  for (auto& kv : streams_) {
-    if (kv.second.started) {
-      (void)stop_stream(kv.first);
+  // Close capture admission and wait for accepted capture production to post a
+  // terminal fact and release its retained acquisition-session references before
+  // native/device teardown below.
+  stop_and_join_capture_threads_();
+
+  {
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+
+    // Deterministic teardown order:
+    // stop streams, destroy streams, close devices.
+    for (auto& kv : streams_) {
+      if (kv.second.started) {
+        kv.second.started = false;
+        kv.second.producing = false;
+        strand_.post_stream_stopped(kv.first, ProviderError::OK);
+        release_stream_live_gpu_backing_(kv.second);
+      }
     }
-  }
-  while (!streams_.empty()) {
-    destroy_stream_storage_(streams_.begin(), ProviderError::OK, false);
-  }
-  while (!devices_.empty()) {
-    close_device_storage_(devices_.begin());
-  }
+    while (!streams_.empty()) {
+      destroy_stream_storage_(streams_.begin(), ProviderError::OK, false);
+    }
+    while (!devices_.empty()) {
+      close_device_storage_(devices_.begin());
+    }
 
-  // Clear any pending timeline events.
-  while (!timeline_q_.empty()) {
-    timeline_q_.pop();
-  }
-  timeline_seq_ = 0;
-  timeline_pending_destructive_.clear();
-  timeline_scenario_ = {};
-  timeline_canonical_scenario_ = {};
-  timeline_canonical_staged_ = false;
-  staged_rig_topology_.clear();
-  staged_required_endpoint_count_ = 0;
-  timeline_running_ = false;
-  timeline_paused_ = false;
+    // Clear any pending timeline events.
+    while (!timeline_q_.empty()) {
+      timeline_q_.pop();
+    }
+    timeline_seq_ = 0;
+    timeline_pending_destructive_.clear();
+    timeline_scenario_ = {};
+    timeline_canonical_scenario_ = {};
+    timeline_canonical_staged_ = false;
+    staged_rig_topology_.clear();
+    staged_required_endpoint_count_ = 0;
+    timeline_running_ = false;
+    timeline_paused_ = false;
 
-  // Provider native object (BOUND -> ABSENT).
-  if (provider_native_id_ != 0) {
-    emit_native_destroy_(provider_native_id_);
-    provider_native_id_ = 0;
+    // Provider native object (BOUND -> ABSENT).
+    if (provider_native_id_ != 0) {
+      emit_native_destroy_(provider_native_id_);
+      provider_native_id_ = 0;
+    }
   }
 
   strand_.flush();
@@ -1514,6 +1806,10 @@ ProviderResult SyntheticProvider::shutdown() {
   initialized_ = false;
   callbacks_ = nullptr;
   shutting_down_ = false;
+  {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    capture_admission_closed_ = false;
+  }
   return ProviderResult::success();
 }
 
@@ -2077,6 +2373,7 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   if (!initialized_ || shutting_down_) {
     return;
   }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
 
   // For timeline-role synthetic operation, a host pause must be a true
   // scenario-time pause. Advancing the virtual clock while paused causes due

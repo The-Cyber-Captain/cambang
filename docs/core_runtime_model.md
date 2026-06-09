@@ -143,6 +143,12 @@ Scenario execution note (current): scenarios stage provider/world/topology/confi
 state. Triggered capture remains API/GDScript-driven and is not modeled as a
 scenario timeline capture action.
 
+Provider still-capture admission is distinct from payload production: Core waits
+for provider acceptance/rejection, while accepted providers report later
+started/frame/completed/failed facts through the provider event path. Rig capture
+admission materializes all participants under one capture id and submits them as
+one grouped provider submission where supported.
+
 ------------------------------------------------------------------------
 
 ## 5. Core state machines (high-level)

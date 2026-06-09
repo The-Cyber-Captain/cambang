@@ -50,6 +50,10 @@ Audit provider API calls that may run while `CoreRuntime` / `ProviderBroker`
 callers are synchronously blocked. Confirm that:
 
 - provider API methods are prompt and bounded submission / control operations
+- `trigger_capture(...)` / grouped capture submission success means the provider
+  accepted responsibility for later terminal success or failure reporting; it does
+  not mean image payloads have already been acquired, generated, retained, or
+  made Godot-visible
 - `stop_*`, `destroy_*`, `close_*`, and `shutdown()` are not long backend drains
   on the calling thread
 - provider methods called under `ProviderBroker` serialization do not re-enter

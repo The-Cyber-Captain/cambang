@@ -386,6 +386,16 @@ ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
   return active_->trigger_capture(req);
 }
 
+
+ProviderResult ProviderBroker::trigger_capture_submission(const CaptureSubmission& submission) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+  return active_->trigger_capture_submission(submission);
+}
+
 ProviderResult ProviderBroker::abort_capture(uint64_t capture_id) {
   std::lock_guard<std::mutex> lock(active_provider_mutex_);
   ProviderResult pr = ensure_active_or_err_();
