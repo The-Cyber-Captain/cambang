@@ -91,7 +91,7 @@ void CBProviderStrand::post(Event ev) {
   const EventClass cls = classify_(ev);
   if (capacity_ > 0 && q_.size() >= capacity_) {
     if (cls == EventClass::Frame) {
-      // Deterministic backpressure: frames are droppable.
+      // Deterministic backpressure: repeating stream frames are droppable.
       lk.unlock();
       drop_(ev);
       return;
@@ -120,7 +120,10 @@ CBProviderStrand::EventClass CBProviderStrand::classify_(const Event& ev) {
       [](const auto& e) -> EventClass {
         using T = std::decay_t<decltype(e)>;
         if constexpr (std::is_same_v<T, EvFrame>) {
-          return EventClass::Frame;
+          // Still-capture frames are exact capture facts and must stay ordered
+          // with terminal capture lifecycle facts; only repeating stream frames
+          // (capture_id == 0) are latest-state/droppable frame work.
+          return e.frame.capture_id != 0 ? EventClass::Lifecycle : EventClass::Frame;
         } else if constexpr (std::is_same_v<T, EvNativeCreated> || std::is_same_v<T, EvNativeDestroyed>) {
           return EventClass::NativeObject;
         } else if constexpr (std::is_same_v<T, EvDeviceError> || std::is_same_v<T, EvStreamError>) {

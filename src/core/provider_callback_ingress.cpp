@@ -147,6 +147,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     trace_device_id = p.device_instance_id;
   }
   uint64_t frame_stream_id = 0;
+  bool is_capture_critical_frame = false;
 
   // Preserve a copy of the frame for the failure-to-enqueue path. We must not rely on
   // moved-from ProviderToCoreCommand contents after constructing the posted lambda.
@@ -160,6 +161,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
     trace_device_id = frame_payload.frame.device_instance_id;
     trace_acquisition_session_id = frame_payload.frame.acquisition_session_id;
     trace_member_index = frame_payload.frame.capture_image.image_member_index;
+    is_capture_critical_frame = frame_payload.frame.capture_id != 0;
     has_fail_frame = true;
     global_resource_aggregate_telemetry().lease_created(make_framebuffer_lease_scoped_resource_telemetry_key(
         frame_payload.frame.stream_id,
@@ -221,9 +223,10 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
 
   auto account_post_failure = [&](CoreThread::PostResult r) {
     // Failure path: command never entered the core thread.
-    // Frames remain pressure-droppable on the ordinary bounded queue. Non-frame
-    // provider facts use CoreThread's essential queue, so QueueFull is not an
-    // expected failure reason for lifecycle/native/error/capture-terminal truth.
+    // Repeating stream frames remain pressure-droppable on the ordinary bounded
+    // queue. Non-frame provider facts and still-capture frames use CoreThread's
+    // essential queue, so QueueFull is not an expected failure reason for
+    // lifecycle/native/error/capture-terminal truth or exact capture image facts.
     account_command_drop(r);
 
     if (has_fail_frame) {
@@ -282,7 +285,7 @@ void ProviderCallbackIngress::post_command(ProviderToCoreCommand cmd) {
   };
 
   const uint64_t core_post_begin_ns = capture_latency_trace_now_ns();
-  const CoreThread::PostResult r = is_frame_command_(type)
+  const CoreThread::PostResult r = (is_frame_command_(type) && !is_capture_critical_frame)
       ? core_thread_->try_post(std::move(task))
       : core_thread_->try_post_essential(std::move(task));
   const uint64_t core_post_end_ns = capture_latency_trace_now_ns();

@@ -158,8 +158,9 @@ public:
   // - drained before ordinary tasks
   //
   // Use only for non-lossy core facts (for example provider lifecycle, native,
-  // terminal capture, topology, and error truth). Frame delivery must stay on
-  // try_post() so pressure can drop it and release provider payloads promptly.
+  // still-capture image facts, terminal capture, topology, and error truth).
+  // Repeating stream frame delivery must stay on try_post() so pressure can drop
+  // latest-state work and release provider payloads promptly.
   PostResult try_post_essential(Task task);
 
   // Accounting-only helper for external lifecycle gating layers.

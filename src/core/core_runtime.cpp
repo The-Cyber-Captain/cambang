@@ -2439,12 +2439,60 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_p
     uint64_t rig_id,
     uint64_t capture_id,
     const RigPreflightResult& preflight) {
-  return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+  if (core_thread_.is_core_thread()) {
+    return admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+  }
+
+  auto completion = std::make_shared<std::promise<RigAdmittedRequestBundle>>();
+  std::future<RigAdmittedRequestBundle> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, preflight, completion]() {
+    completion->set_value(admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    RigAdmittedRequestBundle out{};
+    out.rig_id = rig_id;
+    out.capture_id = capture_id;
+    out.failure = RigCohortAdmissionFailure::PreflightFailed;
+    return out;
+  }
+
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    RigAdmittedRequestBundle out{};
+    out.rig_id = rig_id;
+    out.capture_id = capture_id;
+    out.failure = RigCohortAdmissionFailure::PreflightFailed;
+    return out;
+  }
+  return completed.get();
 }
 
 CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
     const RigAdmittedRequestBundle& bundle) {
-  return submit_admitted_rig_bundle_(bundle);
+  if (core_thread_.is_core_thread()) {
+    return submit_admitted_rig_bundle_(bundle);
+  }
+
+  auto completion = std::make_shared<std::promise<RigSubmissionResult>>();
+  std::future<RigSubmissionResult> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, bundle, completion]() {
+    completion->set_value(submit_admitted_rig_bundle_(bundle));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    RigSubmissionResult out{};
+    out.capture_id = bundle.capture_id;
+    out.rig_id = bundle.rig_id;
+    out.failure = RigSubmissionFailure::ProviderUnavailable;
+    return out;
+  }
+
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    RigSubmissionResult out{};
+    out.capture_id = bundle.capture_id;
+    out.rig_id = bundle.rig_id;
+    out.failure = RigSubmissionFailure::ProviderUnavailable;
+    return out;
+  }
+  return completed.get();
 }
 
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_with_capture_id(
