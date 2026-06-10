@@ -324,7 +324,6 @@ bool assert_native_balance(const std::vector<EventRec>& events, const char* name
 }
 
 bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
-                                     SyntheticProvider& synthetic,
                                      uint64_t advance_step_ns,
                                      uint64_t min_published_seq,
                                      const std::function<bool(const CamBANGStateSnapshot&)>& predicate,
@@ -333,7 +332,7 @@ bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
                                      int max_iters = kMaxIters,
                                      int sleep_ms = kSleepMs) {
   for (int i = 0; i < max_iters; ++i) {
-    synthetic.advance(advance_step_ns);
+    (void)harness.advance_synthetic_timeline_for_host(advance_step_ns);
     harness.runtime().request_publish();
     if (harness.runtime().published_seq() < min_published_seq) {
       std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
@@ -818,7 +817,6 @@ bool run_clustered_strict_branch_check() {
 
   if (!wait_for_snapshot_with_progress(
           harness,
-          *synthetic,
           0,
           harness.runtime().published_seq(),
           [&](const CamBANGStateSnapshot& s) {
@@ -834,12 +832,11 @@ bool run_clustered_strict_branch_check() {
   }
 
   const uint64_t post_boundary_min_publish = harness.runtime().published_seq() + 1;
-  synthetic->advance(period_ns * 2);
+  (void)harness.advance_synthetic_timeline_for_host(period_ns * 2);
   harness.runtime().request_publish();
 
   if (!wait_for_snapshot_with_progress(
           harness,
-          *synthetic,
           1,
           post_boundary_min_publish,
           [&](const CamBANGStateSnapshot& s) {
@@ -897,11 +894,8 @@ bool run_clustered_completion_gated_branch_check() {
   }
 
   std::vector<SyntheticEventType> dispatched;
-  const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(harness.runtime());
-  synthetic->set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
-    dispatched.push_back(ev.type);
-    core_dispatch(ev);
-  });
+  harness.set_synthetic_timeline_event_observer(
+      [&dispatched](const SyntheticScheduledEvent& ev) { dispatched.push_back(ev.type); });
 
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
   if (!synthetic->set_timeline_reconciliation_for_host(TimelineReconciliation::CompletionGated).ok() ||
@@ -912,7 +906,7 @@ bool run_clustered_completion_gated_branch_check() {
     return false;
   }
 
-  synthetic->advance(0);
+  (void)harness.advance_synthetic_timeline_for_host(0);
   const int start_dispatch = static_cast<int>(
       std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
   if (start_dispatch >= static_cast<int>(dispatched.size())) {
@@ -925,7 +919,7 @@ bool run_clustered_completion_gated_branch_check() {
   int created = -1;
   int started = -1;
   for (int i = 0; i < kMaxIters; ++i) {
-    synthetic->advance(1);
+    (void)harness.advance_synthetic_timeline_for_host(1);
     harness.runtime().request_publish();
     opened = harness.find_recorded_callback_index("device_opened", kClusteredDeviceId);
     created = harness.find_recorded_callback_index("stream_created", kClusteredStreamId);
@@ -953,7 +947,7 @@ bool run_clustered_completion_gated_branch_check() {
   }
 
   harness.clear_recorded_callbacks();
-  synthetic->advance(period_ns * 2);
+  (void)harness.advance_synthetic_timeline_for_host(period_ns * 2);
   harness.runtime().request_publish();
 
   int stopped = -1;
@@ -966,7 +960,7 @@ bool run_clustered_completion_gated_branch_check() {
                             const char* stage_name,
                             int& out_index) -> bool {
     for (int i = 0; i < kStageMaxIters; ++i) {
-      synthetic->advance(1);
+      (void)harness.advance_synthetic_timeline_for_host(1);
       harness.runtime().request_publish();
       stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
       destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
@@ -979,7 +973,7 @@ bool run_clustered_completion_gated_branch_check() {
     }
 
     for (int i = 0; i < kStageDrainIters; ++i) {
-      synthetic->advance(1);
+      (void)harness.advance_synthetic_timeline_for_host(1);
       harness.runtime().request_publish();
       out_index = harness.find_recorded_callback_index(tag, id);
       if (out_index >= 0) {
