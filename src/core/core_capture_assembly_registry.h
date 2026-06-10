@@ -27,6 +27,7 @@ public:
   void mark_capture_completed(uint64_t capture_id, uint64_t device_instance_id);
   void mark_capture_failed(uint64_t capture_id, uint64_t device_instance_id, uint32_t error_code);
   bool is_assembly_successful(uint64_t capture_id, uint64_t device_instance_id) const;
+  bool is_result_safe(uint64_t capture_id, uint64_t device_instance_id) const;
 
   void clear();
 
