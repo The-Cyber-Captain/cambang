@@ -579,6 +579,30 @@ static bool converge_stub_provider_core(CoreRuntime& rt, StubProvider& prov) {
   return wait_for_core_barrier(rt);
 }
 
+static bool wait_for_created_stream_with_effective_profile(
+    CoreRuntime& rt,
+    StubProvider& prov,
+    uint64_t stream_id,
+    CoreStreamRegistry::StreamRecord& out) {
+  return wait_until([&]() {
+    prov.flush_callbacks_for_smoke();
+    if (!wait_for_core_barrier(rt, std::chrono::milliseconds(50))) {
+      return false;
+    }
+
+    CoreStreamRegistry::StreamRecord rec{};
+    if (!get_stream_record(rt, stream_id, rec)) {
+      return false;
+    }
+
+    out = rec;
+    return rec.created &&
+           rec.profile.width != 0 &&
+           rec.profile.height != 0 &&
+           rec.profile.format_fourcc != 0;
+  }, 200, 1);
+}
+
 static const char* try_start_stream_status_name(TryStartStreamStatus status) {
   switch (status) {
     case TryStartStreamStatus::OK: return "OK";
@@ -589,47 +613,16 @@ static const char* try_start_stream_status_name(TryStartStreamStatus status) {
   return "Unknown";
 }
 
+static bool setup_one_runtime_created_stream(CoreRuntime& rt, StubProvider& prov);
+
 static bool setup_one_stream(CoreRuntime& rt, StubProvider& prov) {
-  if (!wait_until([&]() {
-        return rt.state_copy() == CoreRuntimeState::LIVE;
-      }, 200, 1)) {
-    std::cerr << "CoreRuntime did not become LIVE before stub provider setup\n";
-    return false;
-  }
-
-  if (!prov.initialize(rt.provider_callbacks()).ok()) return false;
-  rt.attach_provider(&prov);
-
-  std::vector<CameraEndpoint> eps;
-  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) return false;
-
-  const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
-  if (retain_identity != CoreThread::PostResult::Enqueued) {
-    std::cerr << "FAIL: retain_device_identity admission failed in setup_one_stream; result="
-              << static_cast<int>(retain_identity) << "\n";
-    return false;
-  }
-
-  if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) return false;
-
-  const StreamRequest req = make_req();
-  if (!prov.create_stream(req).ok()) return false;
-
-  if (!converge_stub_provider_core(rt, prov)) {
-    std::cerr << "Timed out converging stub provider/core setup facts\n";
+  if (!setup_one_runtime_created_stream(rt, prov)) {
     return false;
   }
 
   CaptureRequest capture_req{};
   if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, capture_req); }, 200, 1)) {
     std::cerr << "Stub provider setup did not converge to a materialized capture request\n";
-    return false;
-  }
-
-  CoreStreamRegistry::StreamRecord rec{};
-  if (!get_stream_record(rt, kStreamId, rec) || !rec.created) {
-    std::cerr << "Stub provider setup did not converge to a created core stream. created=" << rec.created
-              << " device_instance_id=" << rec.device_instance_id << "\n";
     return false;
   }
 
@@ -687,14 +680,8 @@ static bool setup_one_runtime_created_stream(CoreRuntime& rt, StubProvider& prov
               << static_cast<int>(create_status) << "\n";
     return false;
   }
-  if (!converge_stub_provider_core(rt, prov)) {
-    std::cerr << "Timed out converging runtime lifecycle create-stream facts\n";
-    return false;
-  }
-
   CoreStreamRegistry::StreamRecord rec{};
-  if (!get_stream_record(rt, kStreamId, rec) || !rec.created ||
-      rec.profile.width == 0 || rec.profile.height == 0 || rec.profile.format_fourcc == 0) {
+  if (!wait_for_created_stream_with_effective_profile(rt, prov, kStreamId, rec)) {
     std::cerr << "Runtime lifecycle setup did not converge to a created stream with effective profile. created="
               << rec.created << " width=" << rec.profile.width
               << " height=" << rec.profile.height
@@ -1924,7 +1911,9 @@ static int test_rig_bundle_submission_smoke() {
     return 1;
   }
 
-  // Later participant failure after earlier success (duplicate first participant).
+  // Grouped provider submission failure: an invalid participant in the bundle
+  // causes the provider submission to fail; grouped submission does not expose
+  // per-participant partial progress.
   auto two_part = admitted_ok;
   two_part.capture_id = 9103;
   two_part.participants[0].request.capture_id = 9103;
@@ -1933,14 +1922,15 @@ static int test_rig_bundle_submission_smoke() {
   second.request.device_instance_id = 888888;
   two_part.participants.push_back(second);
   if (!rt.smoke_admit_rig_cohort_from_preflight(8101, 9103, preflight_ok).ok) {
-    std::cerr << "Failed to admit cohort for later-fail case\n";
+    std::cerr << "Failed to admit cohort for grouped-fail case\n";
     rt.stop();
     return 1;
   }
   const auto later_fail = rt.smoke_submit_admitted_rig_bundle(two_part);
   if (later_fail.ok || later_fail.failure != CoreRuntime::RigSubmissionFailure::TriggerFailed ||
-      later_fail.submitted_count != 1 || later_fail.failed_index != 1) {
-    std::cerr << "Expected second participant trigger failure after first success\n";
+      later_fail.submitted_count != 0 || later_fail.failed_index != 0 ||
+      later_fail.provider_error_code != static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)) {
+    std::cerr << "Expected grouped submission failure for invalid participant bundle\n";
     rt.stop();
     return 1;
   }

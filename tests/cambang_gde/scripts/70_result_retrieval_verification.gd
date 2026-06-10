@@ -100,16 +100,16 @@ func _make_scene70_still_image_bundle_members() -> Array:
 			"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
 			"intended_exposure_compensation_milli_ev": 0,
 		},
-		#{
-			#"image_member_index": 1,
-			#"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			#"intended_exposure_compensation_milli_ev": -1000,
-		#},
-		#{
-			#"image_member_index": 2,
-			#"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			#"intended_exposure_compensation_milli_ev": 1000,
-		#},
+		{
+			"image_member_index": 1,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			"intended_exposure_compensation_milli_ev": -1000,
+		},
+		{
+			"image_member_index": 2,
+			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			"intended_exposure_compensation_milli_ev": 1000,
+		},
 	]
 
 
