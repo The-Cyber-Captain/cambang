@@ -541,6 +541,13 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: core runtime did not start\n";
     return 2;
   }
+  if (!wait_until([&]() {
+        return rt.state_copy() == CoreRuntimeState::LIVE;
+      }, 200, 1)) {
+    std::cerr << "FAIL: core runtime did not become LIVE before verifier setup\n";
+    rt.stop();
+    return 2;
+  }
 
   // SyntheticProvider configured for Timeline role and VirtualTime driver.
   SyntheticProviderConfig cfg{};
