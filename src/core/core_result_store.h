@@ -161,7 +161,7 @@ private:
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
   static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
   static SharedCaptureResultData build_default_image_capture_result(const FrameView& frame,
-                                                                    const CoreResultPayloadCpuPacked& payload,
+                                                                    CoreResultPayloadCpuPacked payload,
                                                                     uint64_t capture_timestamp_ns);
 
   mutable std::mutex mutex_;

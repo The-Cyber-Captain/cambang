@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 namespace cambang {
 
@@ -166,8 +167,16 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         : ResultPayloadKind::CPU_PACKED;
     stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
-    stream_result->payload = payload;
     if (has_cpu_payload) {
+      if (frame.capture_id == 0) {
+        stream_result->payload = std::move(payload);
+      } else {
+        // Defensive fallback for any future dual-routed FrameView. Current
+        // stream and capture paths are distinct, but preserving capture payload
+        // truth is more important than saving this copy in an unexpected mixed
+        // route.
+        stream_result->payload = payload;
+      }
       stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
     }
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
@@ -182,7 +191,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
       return false;
     }
     SharedCaptureResultData capture_result =
-        build_default_image_capture_result(frame, payload, capture_timestamp_ns);
+        build_default_image_capture_result(frame, std::move(payload), capture_timestamp_ns);
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
@@ -274,7 +283,7 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(const Frame
 
 SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
-    const CoreResultPayloadCpuPacked& payload,
+    CoreResultPayloadCpuPacked payload,
     uint64_t capture_timestamp_ns) {
   if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
       frame.capture_image.image_member_index != 0u) {
@@ -302,9 +311,9 @@ SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
     return nullptr;
   }
   capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
-  capture_result->default_image.payload = payload;
 
   CoreImageFactBundle facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
+  capture_result->default_image.payload = std::move(payload);
   facts.has_capture_attributes = false;
   facts.capture_attributes = ResultCaptureAttributesFacts{};
   facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};

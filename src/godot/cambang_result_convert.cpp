@@ -1,6 +1,8 @@
 #include "godot/cambang_result_convert.h"
 
 #include <cstring>
+#include <cstddef>
+#include <cstdint>
 
 namespace cambang {
 
@@ -9,11 +11,25 @@ int to_prov_int(ResultFactProvenance v) {
   return static_cast<int>(v);
 }
 
-godot::PackedByteArray to_pba(const std::vector<uint8_t>& bytes) {
+godot::PackedByteArray payload_to_rgba_pba(const CoreResultPayloadCpuPacked& payload) {
   godot::PackedByteArray out;
-  out.resize(static_cast<int64_t>(bytes.size()));
-  if (!bytes.empty()) {
-    std::memcpy(out.ptrw(), bytes.data(), bytes.size());
+  out.resize(static_cast<int64_t>(payload.bytes.size()));
+  if (payload.bytes.empty()) {
+    return out;
+  }
+
+  uint8_t* dst = out.ptrw();
+  const uint8_t* src = payload.bytes.data();
+  if (payload.format_fourcc == FOURCC_RGBA) {
+    std::memcpy(dst, src, payload.bytes.size());
+    return out;
+  }
+
+  for (size_t i = 0; i + 3 < payload.bytes.size(); i += 4) {
+    dst[i] = src[i + 2];
+    dst[i + 1] = src[i + 1];
+    dst[i + 2] = src[i];
+    dst[i + 3] = 255;
   }
   return out;
 }
@@ -108,13 +124,7 @@ godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payl
     return godot::Ref<godot::Image>();
   }
 
-  std::vector<uint8_t> rgba = payload.bytes;
-  if (payload.format_fourcc == FOURCC_BGRA) {
-    for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
-      std::swap(rgba[i], rgba[i + 2]);
-      rgba[i + 3] = 255;
-    }
-  } else if (payload.format_fourcc != FOURCC_RGBA) {
+  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
     return godot::Ref<godot::Image>();
   }
 
@@ -123,7 +133,7 @@ godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payl
       static_cast<int>(payload.height),
       false,
       godot::Image::FORMAT_RGBA8,
-      to_pba(rgba));
+      payload_to_rgba_pba(payload));
 }
 
 } // namespace cambang
