@@ -677,9 +677,18 @@ public:
       runtime_.stop();
       return false;
     }
+    synthetic_timeline_core_dispatch_ = make_synthetic_timeline_request_dispatch_hook(runtime_);
+    synthetic_deferred_timeline_events_.clear();
     if (auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get())) {
       synthetic->set_timeline_request_dispatch_hook_for_host(
-          make_synthetic_timeline_request_dispatch_hook(runtime_));
+          [this](const SyntheticScheduledEvent& ev) {
+            // Queue due timeline requests during provider advance and drain them
+            // afterward, mirroring ProviderBroker's lock-inversion avoidance.
+            if (synthetic_timeline_observer_) {
+              synthetic_timeline_observer_(ev);
+            }
+            synthetic_deferred_timeline_events_.push_back(ev);
+          });
     }
     // Wire callback observation in the authoritative path:
     // Provider -> RecordingProviderCallbacks -> CoreRuntime ingress callbacks.
@@ -727,6 +736,9 @@ public:
     callback_recorder_.clear();
     callback_recorder_.bind_delegate(nullptr);
     endpoint_hardware_ids_.clear();
+    synthetic_deferred_timeline_events_.clear();
+    synthetic_timeline_core_dispatch_ = {};
+    synthetic_timeline_observer_ = {};
     synthetic_frame_period_ns_ = 0;
     boundary_.reset(runtime_.published_seq());
     if (realization_profiler_) {
@@ -960,7 +972,7 @@ public:
           error = "synthetic provider cast failed";
           return false;
         }
-        synthetic->advance(synthetic_frame_period_ns_);
+        (void)advance_synthetic_timeline_for_host(synthetic_frame_period_ns_);
         break;
       }
       case VerifyCaseProviderKind::Stub: {
@@ -1062,6 +1074,30 @@ public:
   }
   CoreRuntime& runtime() noexcept { return runtime_; }
   StateSnapshotBuffer& snapshot_buffer() noexcept { return snapshot_buffer_; }
+
+  std::vector<SyntheticScheduledEvent> advance_synthetic_timeline_for_host(uint64_t dt_ns) {
+    auto* synthetic = dynamic_cast<SyntheticProvider*>(provider_.get());
+    if (!synthetic) {
+      return {};
+    }
+
+    synthetic_deferred_timeline_events_.clear();
+    synthetic->advance(dt_ns);
+
+    std::vector<SyntheticScheduledEvent> due_events;
+    due_events.swap(synthetic_deferred_timeline_events_);
+    if (synthetic_timeline_core_dispatch_) {
+      for (const auto& ev : due_events) {
+        synthetic_timeline_core_dispatch_(ev);
+      }
+    }
+    synthetic_deferred_timeline_events_.clear();
+    return due_events;
+  }
+
+  void set_synthetic_timeline_event_observer(std::function<void(const SyntheticScheduledEvent&)> observer) {
+    synthetic_timeline_observer_ = std::move(observer);
+  }
 
   void clear_recorded_callbacks() { callback_recorder_.clear(); }
 
@@ -1352,6 +1388,9 @@ private:
   StateSnapshotBuffer snapshot_buffer_;
   std::unique_ptr<ICameraProvider> provider_;
   std::vector<std::string> endpoint_hardware_ids_;
+  std::vector<SyntheticScheduledEvent> synthetic_deferred_timeline_events_;
+  SyntheticTimelineRequestDispatchHook synthetic_timeline_core_dispatch_;
+  std::function<void(const SyntheticScheduledEvent&)> synthetic_timeline_observer_;
   uint64_t synthetic_frame_period_ns_ = 0;
   ObservationBoundary boundary_;
   ObservedSnapshot last_snapshot_before_stop_clear_{};

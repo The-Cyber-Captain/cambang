@@ -224,13 +224,74 @@ struct RecorderCallbacks final : IProviderCallbacks {
 };
 
 
-bool wait_for_event_tag(const RecorderCallbacks& cb, const std::string& tag, uint64_t id) {
+bool wait_for_core_runtime_live(CoreRuntime& rt) {
   for (int i = 0; i < kMaxIters; ++i) {
+    if (rt.state_copy() == CoreRuntimeState::LIVE) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  return false;
+}
+
+CaptureRequest make_direct_provider_default_still_capture_request(uint64_t capture_id,
+                                                                 uint64_t device_instance_id,
+                                                                 uint32_t width,
+                                                                 uint32_t height,
+                                                                 uint32_t format_fourcc) {
+  CaptureRequest req{};
+  req.capture_id = capture_id;
+  req.device_instance_id = device_instance_id;
+  req.width = width;
+  req.height = height;
+  req.format_fourcc = format_fourcc;
+  req.still_image_bundle = make_default_metered_still_image_bundle();
+  return req;
+}
+
+void append_additional_bracket_members(CaptureStillImageBundle& bundle,
+                                       const std::vector<int32_t>& exposure_compensation_milli_evs) {
+  for (const int32_t ev : exposure_compensation_milli_evs) {
+    bundle.members.push_back(CaptureStillImageMember{
+        static_cast<uint32_t>(bundle.members.size()),
+        CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
+        ev});
+  }
+}
+
+CaptureRequest make_direct_provider_multi_member_still_capture_request(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    uint32_t width,
+    uint32_t height,
+    uint32_t format_fourcc,
+    const std::vector<int32_t>& additional_exposure_compensation_milli_evs) {
+  CaptureRequest req = make_direct_provider_default_still_capture_request(
+      capture_id, device_instance_id, width, height, format_fourcc);
+  append_additional_bracket_members(req.still_image_bundle, additional_exposure_compensation_milli_evs);
+  return req;
+}
+
+bool wait_for_capture_completed_with_frames(const RecorderCallbacks& cb,
+                                            uint64_t capture_id,
+                                            size_t expected_frame_count) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    bool completed = false;
+    size_t frame_count = 0;
     const auto events = cb.snapshot_events();
     for (const auto& ev : events) {
-      if (ev.tag == tag && ev.id == id) {
-        return true;
+      if (ev.tag == "capture_failed" && ev.id == capture_id) {
+        return false;
       }
+      if (ev.tag == "capture_completed" && ev.id == capture_id) {
+        completed = true;
+      }
+      if (ev.tag == "frame" && ev.capture_id == capture_id) {
+        ++frame_count;
+      }
+    }
+    if (completed && frame_count >= expected_frame_count) {
+      return true;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
   }
@@ -324,7 +385,6 @@ bool assert_native_balance(const std::vector<EventRec>& events, const char* name
 }
 
 bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
-                                     SyntheticProvider& synthetic,
                                      uint64_t advance_step_ns,
                                      uint64_t min_published_seq,
                                      const std::function<bool(const CamBANGStateSnapshot&)>& predicate,
@@ -333,7 +393,7 @@ bool wait_for_snapshot_with_progress(VerifyCaseHarness& harness,
                                      int max_iters = kMaxIters,
                                      int sleep_ms = kSleepMs) {
   for (int i = 0; i < max_iters; ++i) {
-    synthetic.advance(advance_step_ns);
+    (void)harness.advance_synthetic_timeline_for_host(advance_step_ns);
     harness.runtime().request_publish();
     if (harness.runtime().published_seq() < min_published_seq) {
       std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
@@ -818,7 +878,6 @@ bool run_clustered_strict_branch_check() {
 
   if (!wait_for_snapshot_with_progress(
           harness,
-          *synthetic,
           0,
           harness.runtime().published_seq(),
           [&](const CamBANGStateSnapshot& s) {
@@ -834,12 +893,11 @@ bool run_clustered_strict_branch_check() {
   }
 
   const uint64_t post_boundary_min_publish = harness.runtime().published_seq() + 1;
-  synthetic->advance(period_ns * 2);
+  (void)harness.advance_synthetic_timeline_for_host(period_ns * 2);
   harness.runtime().request_publish();
 
   if (!wait_for_snapshot_with_progress(
           harness,
-          *synthetic,
           1,
           post_boundary_min_publish,
           [&](const CamBANGStateSnapshot& s) {
@@ -897,11 +955,8 @@ bool run_clustered_completion_gated_branch_check() {
   }
 
   std::vector<SyntheticEventType> dispatched;
-  const auto core_dispatch = make_synthetic_timeline_request_dispatch_hook(harness.runtime());
-  synthetic->set_timeline_request_dispatch_hook_for_host([&](const SyntheticScheduledEvent& ev) {
-    dispatched.push_back(ev.type);
-    core_dispatch(ev);
-  });
+  harness.set_synthetic_timeline_event_observer(
+      [&dispatched](const SyntheticScheduledEvent& ev) { dispatched.push_back(ev.type); });
 
   const uint64_t period_ns = 1'000'000'000ull / 30ull;
   if (!synthetic->set_timeline_reconciliation_for_host(TimelineReconciliation::CompletionGated).ok() ||
@@ -912,7 +967,7 @@ bool run_clustered_completion_gated_branch_check() {
     return false;
   }
 
-  synthetic->advance(0);
+  (void)harness.advance_synthetic_timeline_for_host(0);
   const int start_dispatch = static_cast<int>(
       std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
   if (start_dispatch >= static_cast<int>(dispatched.size())) {
@@ -925,7 +980,7 @@ bool run_clustered_completion_gated_branch_check() {
   int created = -1;
   int started = -1;
   for (int i = 0; i < kMaxIters; ++i) {
-    synthetic->advance(1);
+    (void)harness.advance_synthetic_timeline_for_host(1);
     harness.runtime().request_publish();
     opened = harness.find_recorded_callback_index("device_opened", kClusteredDeviceId);
     created = harness.find_recorded_callback_index("stream_created", kClusteredStreamId);
@@ -953,7 +1008,7 @@ bool run_clustered_completion_gated_branch_check() {
   }
 
   harness.clear_recorded_callbacks();
-  synthetic->advance(period_ns * 2);
+  (void)harness.advance_synthetic_timeline_for_host(period_ns * 2);
   harness.runtime().request_publish();
 
   int stopped = -1;
@@ -966,7 +1021,7 @@ bool run_clustered_completion_gated_branch_check() {
                             const char* stage_name,
                             int& out_index) -> bool {
     for (int i = 0; i < kStageMaxIters; ++i) {
-      synthetic->advance(1);
+      (void)harness.advance_synthetic_timeline_for_host(1);
       harness.runtime().request_publish();
       stopped = harness.find_recorded_callback_index("stream_stopped", kClusteredStreamId);
       destroyed = harness.find_recorded_callback_index("stream_destroyed", kClusteredStreamId);
@@ -979,7 +1034,7 @@ bool run_clustered_completion_gated_branch_check() {
     }
 
     for (int i = 0; i < kStageDrainIters; ++i) {
-      synthetic->advance(1);
+      (void)harness.advance_synthetic_timeline_for_host(1);
       harness.runtime().request_publish();
       out_index = harness.find_recorded_callback_index(tag, id);
       if (out_index >= 0) {
@@ -1431,18 +1486,13 @@ bool run_synthetic_still_only_acquisition_session_truth_check() {
     return false;
   }
 
-  CaptureRequest cap{};
-  cap.capture_id = 8001;
-  cap.device_instance_id = 41;
-  cap.width = 64;
-  cap.height = 64;
-  cap.format_fourcc = FOURCC_RGBA;
+  CaptureRequest cap = make_direct_provider_default_still_capture_request(8001, 41, 64, 64, FOURCC_RGBA);
   if (!provider.trigger_capture(cap).ok()) {
     std::cerr << "FAIL synthetic still-only trigger_capture failed\n";
     return false;
   }
-  if (!wait_for_event_tag(cb, "capture_completed", cap.capture_id)) {
-    std::cerr << "FAIL synthetic still-only capture did not complete before close\n";
+  if (!wait_for_capture_completed_with_frames(cb, cap.capture_id, 1)) {
+    std::cerr << "FAIL synthetic still-only capture did not complete with frame evidence before close\n";
     return false;
   }
 
@@ -1506,15 +1556,8 @@ bool run_synthetic_multi_member_still_sequence_check() {
     return false;
   }
 
-  CaptureRequest cap{};
-  cap.capture_id = 8003;
-  cap.device_instance_id = 43;
-  cap.width = 64;
-  cap.height = 64;
-  cap.format_fourcc = FOURCC_RGBA;
-  cap.still_image_bundle = make_default_metered_still_image_bundle();
-  cap.still_image_bundle.members.push_back(
-      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, 1000});
+  CaptureRequest cap = make_direct_provider_multi_member_still_capture_request(
+      8003, 43, 64, 64, FOURCC_RGBA, {1000});
   if (!is_valid_capture_still_image_bundle(cap.still_image_bundle, provider.supports_multi_image_still_sequence())) {
     std::cerr << "FAIL synthetic multi-member request validation rejected expected valid sequence\n";
     return false;
@@ -1523,8 +1566,8 @@ bool run_synthetic_multi_member_still_sequence_check() {
     std::cerr << "FAIL synthetic multi-member trigger_capture failed\n";
     return false;
   }
-  if (!wait_for_event_tag(cb, "capture_completed", cap.capture_id)) {
-    std::cerr << "FAIL synthetic multi-member capture did not complete before close\n";
+  if (!wait_for_capture_completed_with_frames(cb, cap.capture_id, 2)) {
+    std::cerr << "FAIL synthetic multi-member capture did not complete with frame evidence before close\n";
     return false;
   }
   if (!provider.close_device(43).ok() || !provider.shutdown().ok()) {
@@ -1599,19 +1642,12 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
   auto run_capture_and_collect = [&](uint64_t capture_id,
                                      const std::vector<int32_t>& member_evs,
                                      std::vector<EventRec>& out_frames) -> bool {
-    CaptureRequest req{};
-    req.capture_id = capture_id;
-    req.device_instance_id = 144;
-    req.width = 64;
-    req.height = 64;
-    req.format_fourcc = FOURCC_RGBA;
-    req.still_image_bundle = make_default_metered_still_image_bundle();
-    for (size_t i = 1; i < member_evs.size(); ++i) {
-      req.still_image_bundle.members.push_back(CaptureStillImageMember{
-          static_cast<uint32_t>(i),
-          CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
-          member_evs[i]});
+    std::vector<int32_t> additional_member_evs;
+    if (member_evs.size() > 1) {
+      additional_member_evs.assign(member_evs.begin() + 1, member_evs.end());
     }
+    CaptureRequest req = make_direct_provider_multi_member_still_capture_request(
+        capture_id, 144, 64, 64, FOURCC_RGBA, additional_member_evs);
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle, provider.supports_multi_image_still_sequence())) {
       return false;
     }
@@ -1624,6 +1660,9 @@ bool run_synthetic_dynamic_still_bundle_shape_check() {
       completed = false;
       const auto events_snapshot = cb.snapshot_events();
       for (const auto& ev : events_snapshot) {
+        if (ev.tag == "capture_failed" && ev.id == capture_id) {
+          return false;
+        }
         if (ev.tag == "capture_completed" && ev.id == capture_id) {
           completed = true;
         }
@@ -1738,6 +1777,11 @@ bool run_core_synthetic_three_member_capture_result_check() {
   CoreRuntime rt;
   if (!rt.start()) {
     std::cerr << "FAIL core synthetic three-member runtime start failed\n";
+    return false;
+  }
+  if (!wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core synthetic three-member runtime did not reach LIVE\n";
+    rt.stop();
     return false;
   }
 
@@ -1894,21 +1938,19 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
     std::cerr << "FAIL core synthetic mismatch callback provider init/open failed\n";
     return false;
   }
-  CaptureRequest cb_req{};
-  cb_req.capture_id = 9700;
-  cb_req.device_instance_id = 6500;
-  cb_req.width = 64;
-  cb_req.height = 64;
-  cb_req.format_fourcc = FOURCC_RGBA;
-  cb_req.still_image_bundle = make_default_metered_still_image_bundle();
-  cb_req.still_image_bundle.members.push_back(
-      CaptureStillImageMember{1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
-  cb_req.still_image_bundle.members.push_back(
-      CaptureStillImageMember{2u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, +1000});
-  if (!provider.trigger_capture(cb_req).ok() ||
-      !provider.close_device(6500).ok() ||
-      !provider.shutdown().ok()) {
-    std::cerr << "FAIL core synthetic mismatch callback trigger/teardown failed\n";
+  CaptureRequest cb_req = make_direct_provider_multi_member_still_capture_request(
+      9700, 6500, 64, 64, FOURCC_RGBA, {-1000, +1000});
+  if (!provider.trigger_capture(cb_req).ok()) {
+    std::cerr << "FAIL core synthetic mismatch callback trigger failed\n";
+    return false;
+  }
+  if (!wait_for_capture_completed_with_frames(cb, cb_req.capture_id, 3)) {
+    std::cerr << "FAIL core synthetic mismatch callback completion/frame evidence missing\n";
+    (void)provider.shutdown();
+    return false;
+  }
+  if (!provider.close_device(6500).ok() || !provider.shutdown().ok()) {
+    std::cerr << "FAIL core synthetic mismatch callback teardown failed\n";
     return false;
   }
   const auto callback_events = cb.snapshot_events();
@@ -1949,6 +1991,11 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
   CoreRuntime rt;
   if (!rt.start()) {
     std::cerr << "FAIL core synthetic mismatch runtime start failed\n";
+    return false;
+  }
+  if (!wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core synthetic mismatch runtime did not reach LIVE\n";
+    rt.stop();
     return false;
   }
   SyntheticProvider core_provider(cfg);
@@ -2061,6 +2108,11 @@ bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
     std::cerr << "FAIL core synthetic realized-unknown runtime start failed\n";
     return false;
   }
+  if (!wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core synthetic realized-unknown runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
   SyntheticProviderConfig cfg{};
   cfg.endpoint_count = 1;
   cfg.nominal.width = 64;
@@ -2155,12 +2207,8 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
   req.profile.target_fps_min = 30;
   req.profile.target_fps_max = 30;
 
-  CaptureRequest cap{};
-  cap.capture_id = 8002;
-  cap.device_instance_id = req.device_instance_id;
-  cap.width = 64;
-  cap.height = 64;
-  cap.format_fourcc = FOURCC_RGBA;
+  CaptureRequest cap = make_direct_provider_default_still_capture_request(
+      8002, req.device_instance_id, 64, 64, FOURCC_RGBA);
 
   if (!provider.initialize(&cb).ok() ||
       !provider.open_device("synthetic:0", req.device_instance_id, 4201).ok() ||
@@ -2170,8 +2218,8 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
     std::cerr << "FAIL synthetic stream+still setup/trigger failed\n";
     return false;
   }
-  if (!wait_for_event_tag(cb, "capture_completed", cap.capture_id)) {
-    std::cerr << "FAIL synthetic stream+still capture did not complete before teardown\n";
+  if (!wait_for_capture_completed_with_frames(cb, cap.capture_id, 1)) {
+    std::cerr << "FAIL synthetic stream+still capture did not complete with frame evidence before teardown\n";
     return false;
   }
   if (!provider.stop_stream(req.stream_id).ok() ||
