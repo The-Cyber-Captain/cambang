@@ -378,6 +378,10 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
     ++capture_generation_;
     in_flight_captures_.clear();
   }
+  {
+    std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+    capture_pause_depth_by_device_.clear();
+  }
   triage_next_log_ns_ = 0;
   if (triage_trace_enabled_) {
     synthetic_triage_printf("[CamBANG][SyntheticTriage] enabled=true catchup_cap=%u",
@@ -624,6 +628,12 @@ void SyntheticProvider::timeline_pump_() {
         }
         StreamState& s = it->second;
         if (!s.created || !s.started) {
+          break;
+        }
+        if (is_stream_capture_paused_locked_(s)) {
+          s.consecutive_behind_ticks = 0;
+          s.next_due_ns = snap_repeating_due_after_(ev.at_ns, now, period);
+          timeline_schedule_(s.next_due_ns, SyntheticEventType::EmitFrame, ev.stream_id);
           break;
         }
         if (triage_catchup_cap_per_tick_ > 0 && emitted_this_pump >= triage_catchup_cap_per_tick_) {
@@ -1315,9 +1325,7 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     device_job.acquisition_session_id = dev_it->second.acquisition_session_native_id;
   }
 
-  uint64_t inflight_insert_total_ns = 0;
   for (const DeviceCaptureJob& device_job : job.device_jobs) {
-    const uint64_t inflight_begin_ns = capture_latency_trace_now_ns();
     const InFlightCaptureKey key{device_job.request.capture_id, device_job.request.device_instance_id};
     if (in_flight_captures_.find(key) != in_flight_captures_.end()) {
       for (const DeviceCaptureJob& retained : job.device_jobs) {
@@ -1327,12 +1335,19 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
       }
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
+  }
+
+  uint64_t inflight_insert_total_ns = 0;
+  for (const DeviceCaptureJob& device_job : job.device_jobs) {
+    const uint64_t inflight_begin_ns = capture_latency_trace_now_ns();
+    const InFlightCaptureKey key{device_job.request.capture_id, device_job.request.device_instance_id};
     InFlightCaptureDevice in_flight{};
     in_flight.capture_id = device_job.request.capture_id;
     in_flight.device_instance_id = device_job.request.device_instance_id;
     in_flight.acquisition_session_id = device_job.acquisition_session_id;
     in_flight.generation = job.generation;
     in_flight_captures_.emplace(key, in_flight);
+    ++capture_pause_depth_by_device_[device_job.request.device_instance_id];
     inflight_insert_total_ns += capture_latency_trace_now_ns() - inflight_begin_ns;
   }
 
@@ -1685,6 +1700,17 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
       in_flight.release_done = true;
       should_release = true;
     }
+    {
+      std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+      auto pause_it = capture_pause_depth_by_device_.find(job.request.device_instance_id);
+      if (pause_it != capture_pause_depth_by_device_.end()) {
+        if (pause_it->second > 1) {
+          --pause_it->second;
+        } else {
+          capture_pause_depth_by_device_.erase(pause_it);
+        }
+      }
+    }
     in_flight_captures_.erase(it);
   }
 
@@ -1746,6 +1772,23 @@ bool SyntheticProvider::has_in_flight_capture_for_device_locked_(uint64_t device
   return false;
 }
 
+bool SyntheticProvider::is_stream_capture_paused_locked_(const StreamState& s) const {
+  const auto it = capture_pause_depth_by_device_.find(s.req.device_instance_id);
+  return it != capture_pause_depth_by_device_.end() && it->second > 0;
+}
+
+uint64_t SyntheticProvider::snap_repeating_due_after_(uint64_t due_ns, uint64_t now_ns, uint64_t period_ns) noexcept {
+  if (period_ns == 0 || due_ns > now_ns) {
+    return due_ns;
+  }
+  const uint64_t missed = ((now_ns - due_ns) / period_ns) + 1;
+  const uint64_t max_increment = std::numeric_limits<uint64_t>::max() - due_ns;
+  if (missed > max_increment / period_ns) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return due_ns + (missed * period_ns);
+}
+
 ProviderResult SyntheticProvider::abort_capture(uint64_t capture_id) {
   (void)capture_id;
   return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
@@ -1801,6 +1844,7 @@ void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::i
   if (it == devices_.end()) {
     return;
   }
+  capture_pause_depth_by_device_.erase(it->second.device_instance_id);
   if (it->second.acquisition_session_native_id != 0) {
     emit_native_destroy_(it->second.acquisition_session_native_id);
     it->second.acquisition_session_native_id = 0;
@@ -2487,6 +2531,11 @@ void SyntheticProvider::emit_due_frames_() {
   for (auto& kv : streams_) {
     StreamState& s = kv.second;
     if (!s.created || !s.started) {
+      continue;
+    }
+    if (is_stream_capture_paused_locked_(s)) {
+      s.consecutive_behind_ticks = 0;
+      s.next_due_ns = snap_repeating_due_after_(s.next_due_ns, now, period);
       continue;
     }
     const bool behind = (s.next_due_ns <= now);

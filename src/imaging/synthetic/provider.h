@@ -220,6 +220,8 @@ private:
 
   void emit_due_frames_();
   void emit_one_frame_(StreamState& s, uint64_t scheduled_capture_ns);
+  bool is_stream_capture_paused_locked_(const StreamState& s) const;
+  static uint64_t snap_repeating_due_after_(uint64_t due_ns, uint64_t now_ns, uint64_t period_ns) noexcept;
   bool ensure_stream_live_gpu_backing_(StreamState& s, uint32_t width, uint32_t height, uint32_t stride);
   void release_stream_live_gpu_backing_(StreamState& s);
   void emit_triage_trace_if_due_();
@@ -312,6 +314,10 @@ private:
 
   std::map<uint64_t, DeviceState> devices_;
   std::map<uint64_t, StreamState> streams_;
+  // Provider-state-owned upstream repeating-frame production pause. Depth is
+  // keyed by device_instance_id so simultaneous admitted captures keep streams
+  // paused until every capture job for the device has finished.
+  std::map<uint64_t, uint32_t> capture_pause_depth_by_device_;
 
   uint64_t provider_native_id_ = 0;
 
