@@ -104,7 +104,7 @@ int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
   if (!member) {
     return CAPABILITY_UNSUPPORTED;
   }
-  if (member->payload.width == 0 || member->payload.height == 0 || member->payload.bytes.empty()) {
+  if (member->payload.width == 0 || member->payload.height == 0 || member->payload.empty()) {
     return CAPABILITY_UNSUPPORTED;
   }
   if (member->payload.format_fourcc != FOURCC_RGBA && member->payload.format_fourcc != FOURCC_BGRA) {

@@ -13,19 +13,19 @@ int to_prov_int(ResultFactProvenance v) {
 
 godot::PackedByteArray payload_to_rgba_pba(const CoreResultPayloadCpuPacked& payload) {
   godot::PackedByteArray out;
-  out.resize(static_cast<int64_t>(payload.bytes.size()));
-  if (payload.bytes.empty()) {
+  out.resize(static_cast<int64_t>(payload.size_bytes()));
+  if (payload.empty()) {
     return out;
   }
 
   uint8_t* dst = out.ptrw();
-  const uint8_t* src = payload.bytes.data();
+  const uint8_t* src = payload.data();
   if (payload.format_fourcc == FOURCC_RGBA) {
-    std::memcpy(dst, src, payload.bytes.size());
+    std::memcpy(dst, src, payload.size_bytes());
     return out;
   }
 
-  for (size_t i = 0; i + 3 < payload.bytes.size(); i += 4) {
+  for (size_t i = 0; i + 3 < payload.size_bytes(); i += 4) {
     dst[i] = src[i + 2];
     dst[i + 1] = src[i + 1];
     dst[i + 2] = src[i];
@@ -120,7 +120,7 @@ godot::Dictionary to_dict(const ResultOpticalCalibrationProvenance& v) {
 }
 
 godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payload) {
-  if (payload.width == 0 || payload.height == 0 || payload.bytes.empty()) {
+  if (payload.width == 0 || payload.height == 0 || payload.empty()) {
     return godot::Ref<godot::Image>();
   }
 

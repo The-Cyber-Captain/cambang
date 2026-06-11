@@ -1899,18 +1899,18 @@ bool run_core_synthetic_three_member_capture_result_check() {
     return fail_with_cleanup("FAIL core synthetic three-member retained member index/ev mismatch");
   }
 
-  const auto& d = result->default_image.payload.bytes;
-  const auto& b1 = result->additional_images[0].payload.bytes;
-  const auto& b2 = result->additional_images[1].payload.bytes;
+  const auto& d = result->default_image.payload;
+  const auto& b1 = result->additional_images[0].payload;
+  const auto& b2 = result->additional_images[1].payload;
   if (d.empty() || b1.empty() || b2.empty()) {
     return fail_with_cleanup("FAIL core synthetic three-member expected non-empty payloads");
   }
-  if (!(d.size() == b1.size() && b1.size() == b2.size())) {
+  if (!(d.size_bytes() == b1.size_bytes() && b1.size_bytes() == b2.size_bytes())) {
     return fail_with_cleanup("FAIL core synthetic three-member expected equal-sized payloads");
   }
-  const uint64_t h0 = fnv1a64_hash_bytes(d.data(), d.size());
-  const uint64_t h1 = fnv1a64_hash_bytes(b1.data(), b1.size());
-  const uint64_t h2 = fnv1a64_hash_bytes(b2.data(), b2.size());
+  const uint64_t h0 = fnv1a64_hash_bytes(d.data(), d.size_bytes());
+  const uint64_t h1 = fnv1a64_hash_bytes(b1.data(), b1.size_bytes());
+  const uint64_t h2 = fnv1a64_hash_bytes(b2.data(), b2.size_bytes());
   if (h0 == h1 || h0 == h2 || h1 == h2) {
     return fail_with_cleanup("FAIL core synthetic three-member expected all payload hashes to differ");
   }
@@ -2068,9 +2068,9 @@ bool run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check()
       m2->realized_exposure_compensation_milli_ev == m2->applied_exposure_compensation_milli_ev) {
     return fail_with_cleanup("FAIL core synthetic mismatch retained member EV truth mismatch");
   }
-  if (result->default_image.payload.bytes.empty() ||
-      result->additional_images[0].payload.bytes.empty() ||
-      result->additional_images[1].payload.bytes.empty()) {
+  if (result->default_image.payload.empty() ||
+      result->additional_images[0].payload.empty() ||
+      result->additional_images[1].payload.empty()) {
     return fail_with_cleanup("FAIL core synthetic mismatch expected non-empty payloads");
   }
 

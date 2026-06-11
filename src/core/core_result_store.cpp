@@ -186,6 +186,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     slot = std::move(stream_result);
   }
 
+  const bool payload_adopted = payload.uses_retained_bytes();
   if (frame.capture_id != 0) {
     if (!has_cpu_payload) {
       return false;
@@ -197,12 +198,13 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
   if (frame.capture_id != 0) {
     capture_latency_trace_printf(
-        "result_store_retain_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu total_us=%llu retained=%u bytes=%llu",
+        "result_store_retain_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu payload_adopted=%u total_us=%llu retained=%u bytes=%llu",
         static_cast<unsigned long long>(frame.capture_id),
         static_cast<unsigned long long>(frame.device_instance_id),
         static_cast<unsigned long long>(frame.acquisition_session_id),
         static_cast<unsigned>(frame.capture_image.image_member_index),
         static_cast<unsigned long long>(payload_copy_ns / 1000ull),
+        payload_adopted ? 1u : 0u,
         static_cast<unsigned long long>((capture_latency_trace_now_ns() - retain_begin_ns) / 1000ull),
         retained ? 1u : 0u,
         static_cast<unsigned long long>(frame.size_bytes));
@@ -216,7 +218,7 @@ bool CoreResultStore::append_additional_capture_image(
     CoreCaptureResultData::ImageMemberData image_member) {
   const uint64_t append_begin_ns = capture_latency_trace_now_ns();
   const uint32_t image_member_index = image_member.image_member_index;
-  const size_t payload_bytes = image_member.payload.bytes.size();
+  const size_t payload_bytes = image_member.payload.size_bytes();
   std::lock_guard<std::mutex> lock(mutex_);
   auto cap_it = capture_results_by_capture_id_.find(capture_id);
   if (cap_it == capture_results_by_capture_id_.end()) {
@@ -275,12 +277,13 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(const Frame
   const bool valid = has_valid_capture_image_member_payload(out_payload);
   if (frame.capture_id != 0) {
     capture_latency_trace_printf(
-        "result_store_build_member_payload capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu total_us=%llu valid=%u bytes=%llu",
+        "result_store_build_member_payload capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u payload_copy_us=%llu payload_adopted=%u total_us=%llu valid=%u bytes=%llu",
         static_cast<unsigned long long>(frame.capture_id),
         static_cast<unsigned long long>(frame.device_instance_id),
         static_cast<unsigned long long>(frame.acquisition_session_id),
         static_cast<unsigned>(frame.capture_image.image_member_index),
         static_cast<unsigned long long>(copy_ns / 1000ull),
+        out_payload.uses_retained_bytes() ? 1u : 0u,
         static_cast<unsigned long long>((capture_latency_trace_now_ns() - build_begin_ns) / 1000ull),
         valid ? 1u : 0u,
         static_cast<unsigned long long>(frame.size_bytes));
@@ -335,7 +338,7 @@ bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPay
   if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
     return false;
   }
-  if (payload.bytes.empty()) {
+  if (payload.empty()) {
     return false;
   }
   return true;
@@ -536,9 +539,23 @@ bool CoreResultStore::try_copy_cpu_packed_payload(const FrameView& frame, CoreRe
   out.width = frame.width;
   out.height = frame.height;
   out.stride_bytes = static_cast<uint32_t>(row_bytes);
+
+  const bool can_adopt_tightly_packed_owner =
+      frame.cpu_payload_owner &&
+      src_stride == row_bytes &&
+      frame.data == frame.cpu_payload_owner->data() &&
+      frame.cpu_payload_owner->size() >= dst_size &&
+      frame.size_bytes >= dst_size;
+  if (can_adopt_tightly_packed_owner) {
+    out.bytes.clear();
+    out.retained_bytes = frame.cpu_payload_owner;
+    return true;
+  }
+
   if (dst_size > out.bytes.max_size()) {
     return false;
   }
+  out.retained_bytes.reset();
   out.bytes.resize(dst_size);
 
   const uint8_t* src = frame.data;

@@ -404,6 +404,12 @@ struct FrameView {
   // Buffer
   const uint8_t* data = nullptr;
   size_t size_bytes = 0;
+  // Optional immutable owner for tightly packed CPU payload bytes. Providers may
+  // set this only when the pointed-to vector exactly backs data/size_bytes and
+  // will not be mutated after posting. Core may then retain/adopt the shared
+  // payload instead of copying it. release_now() still releases provider-side
+  // frame bookkeeping; this shared owner is the retained-result byte lifetime.
+  std::shared_ptr<const std::vector<uint8_t>> cpu_payload_owner{};
   // Optional opaque primary artifact for non-CPU-backed frames.
   // For ProducerBackingKind::GPU this carries the authoritative provider->core
   // primary backing when available.

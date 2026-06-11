@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -18,7 +19,20 @@ struct CoreResultPayloadCpuPacked {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
+  // Legacy/self-owned byte storage. New retained-result paths may instead keep
+  // immutable provider-owned bytes alive through retained_bytes to avoid an
+  // extra full-frame copy. Use data()/size_bytes()/empty() for reads.
   std::vector<uint8_t> bytes;
+  std::shared_ptr<const std::vector<uint8_t>> retained_bytes{};
+
+  const uint8_t* data() const noexcept {
+    return retained_bytes ? retained_bytes->data() : bytes.data();
+  }
+  size_t size_bytes() const noexcept {
+    return retained_bytes ? retained_bytes->size() : bytes.size();
+  }
+  bool empty() const noexcept { return size_bytes() == 0; }
+  bool uses_retained_bytes() const noexcept { return static_cast<bool>(retained_bytes); }
 };
 
 struct CoreImageFactBundle {

@@ -72,7 +72,7 @@ int main() {
   const uint32_t format_before = capture_result->image_format_fourcc;
   const auto payload_kind_before = capture_result->payload_kind;
   const uint64_t default_ts_before = capture_result->default_image.capture_timestamp_ns;
-  const size_t default_bytes_before = capture_result->default_image.payload.bytes.size();
+  const size_t default_bytes_before = capture_result->default_image.payload.size_bytes();
 
   CoreCaptureResultData::ImageMemberData bracket{};
   bracket.image_member_index = 1;
@@ -84,7 +84,7 @@ int main() {
   auto capture_result_with_bracket = store.get_capture_result(77, 100);
   assert(capture_result_with_bracket);
   assert(capture_result_with_bracket->default_image.capture_timestamp_ns == default_ts_before);
-  assert(capture_result_with_bracket->default_image.payload.bytes.size() == default_bytes_before);
+  assert(capture_result_with_bracket->default_image.payload.size_bytes() == default_bytes_before);
   assert(capture_result_with_bracket->additional_images.size() == 1);
   assert(capture_result_with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
   assert(capture_result_with_bracket->additional_images[0].image_member_index == 1);

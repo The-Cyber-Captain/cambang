@@ -1613,6 +1613,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     }
     fv.data = bytes->data();
     fv.size_bytes = bytes->size();
+    fv.cpu_payload_owner = bytes;
     fv.stride_bytes = job.stride_bytes;
     auto* lease = new FrameReleaseLease();
     lease->bytes = bytes;

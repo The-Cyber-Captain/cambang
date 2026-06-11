@@ -42,7 +42,7 @@ bool has_current_retained_cpu_payload(const SharedStreamResultData& data) {
   if (!data || data->payload_capture_timestamp_ns != data->capture_timestamp_ns) {
     return false;
   }
-  if (data->payload.width == 0 || data->payload.height == 0 || data->payload.bytes.empty()) {
+  if (data->payload.width == 0 || data->payload.height == 0 || data->payload.empty()) {
     return false;
   }
   if (data->payload.width != data->image_width ||
@@ -56,7 +56,7 @@ bool has_current_retained_cpu_payload(const SharedStreamResultData& data) {
   const size_t expected_size =
       static_cast<size_t>(data->payload.width) * static_cast<size_t>(data->payload.height) * 4u;
   return data->payload.stride_bytes == data->payload.width * 4u &&
-         data->payload.bytes.size() >= expected_size;
+         data->payload.size_bytes() >= expected_size;
 }
 
 struct LiveCpuDisplayViewEntry final {
@@ -78,19 +78,19 @@ bool upload_live_cpu_rgba_bytes(
     return false;
   }
   const size_t required = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
-  if (data->payload.bytes.size() < required) {
+  if (data->payload.size_bytes() < required) {
     return false;
   }
 
   if (data->payload.format_fourcc == FOURCC_RGBA) {
     entry.converted_rgba.clear();
     entry.upload_bytes.resize(static_cast<int64_t>(required));
-    std::memcpy(entry.upload_bytes.ptrw(), data->payload.bytes.data(), required);
+    std::memcpy(entry.upload_bytes.ptrw(), data->payload.data(), required);
     return true;
   }
   if (data->payload.format_fourcc == FOURCC_BGRA) {
     entry.converted_rgba.resize(required);
-    std::memcpy(entry.converted_rgba.data(), data->payload.bytes.data(), required);
+    std::memcpy(entry.converted_rgba.data(), data->payload.data(), required);
     for (size_t i = 0; i + 3 < entry.converted_rgba.size(); i += 4) {
       std::swap(entry.converted_rgba[i], entry.converted_rgba[i + 2]);
       entry.converted_rgba[i + 3] = 255;
