@@ -280,17 +280,47 @@ func _process(delta: float) -> void:
 	_record_process_timing(process_start_usec)
 
 
+#func _input(event: InputEvent) -> void:
+	#if not _waiting_for_user:
+		#return
+	#if event is InputEventKey and event.pressed and not event.echo:
+		#var key_event: InputEventKey = event
+		#if key_event.keycode == KEY_SPACE or key_event.keycode == KEY_ENTER or key_event.keycode == KEY_KP_ENTER:
+			#_append_log("Input accepted at checkpoint %d" % int(_current_checkpoint.get("id", 0)))
+			#_phase_marker("checkpoint_action_begin", int(_current_checkpoint.get("id", -1)), "index=%d action=%s" % [_checkpoint_index, str(_current_checkpoint.get("kind", ""))])
+			#_perform_checkpoint_action()
+			#get_viewport().set_input_as_handled()
+
 func _input(event: InputEvent) -> void:
 	if not _waiting_for_user:
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
-		var key_event: InputEventKey = event
-		if key_event.keycode == KEY_SPACE or key_event.keycode == KEY_ENTER or key_event.keycode == KEY_KP_ENTER:
-			_append_log("Input accepted at checkpoint %d" % int(_current_checkpoint.get("id", 0)))
-			_phase_marker("checkpoint_action_begin", int(_current_checkpoint.get("id", -1)), "index=%d action=%s" % [_checkpoint_index, str(_current_checkpoint.get("kind", ""))])
-			_perform_checkpoint_action()
-			get_viewport().set_input_as_handled()
 
+	var accept := false
+
+	if event is InputEventKey:
+		var key_event: InputEventKey = event
+		accept = key_event.pressed \
+			and not key_event.echo \
+			and (
+				key_event.keycode == KEY_SPACE
+				or key_event.keycode == KEY_ENTER
+				or key_event.keycode == KEY_KP_ENTER
+			)
+
+	elif event is InputEventMouseButton:
+		var mouse_event: InputEventMouseButton = event
+		accept = mouse_event.pressed \
+			and mouse_event.button_index == MOUSE_BUTTON_LEFT
+
+	if accept:
+		_append_log("Input accepted at checkpoint %d" % int(_current_checkpoint.get("id", 0)))
+		_phase_marker(
+			"checkpoint_action_begin",
+			int(_current_checkpoint.get("id", -1)),
+			"index=%d action=%s" % [_checkpoint_index, str(_current_checkpoint.get("kind", ""))]
+		)
+		_perform_checkpoint_action()
+		get_viewport().set_input_as_handled()
 
 func _perform_checkpoint_action() -> void:
 	var kind: String = str(_current_checkpoint.get("kind", ""))
@@ -627,7 +657,7 @@ func _log_summary_timing_once() -> void:
 	_clear_display_bindings_for_teardown()
 	_pending_captures.clear()
 	CamBANGServer.stop()
-	await get_tree().create_timer(10.0).timeout
+	await get_tree().create_timer(2.0).timeout
 	get_tree().quit(0)
 
 

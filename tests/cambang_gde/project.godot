@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="cambang_gde"
-run/main_scene="uid://ccadsiww0hwgd"
+run/main_scene="uid://bxjewaui7mlaw"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
 
