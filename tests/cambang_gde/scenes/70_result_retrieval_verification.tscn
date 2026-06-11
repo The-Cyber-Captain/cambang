@@ -68,8 +68,9 @@ expand_mode = 1
 stretch_mode = 5
 
 [node name="StreamFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/StreamPanel"]
+custom_minimum_size = Vector2(0, 88)
 layout_mode = 2
-text = "waiting for stream result..."
+text = "waiting for stream result...\n \n \n \n \n "
 
 [node name="RequestedStreamPanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
 layout_mode = 2
@@ -90,8 +91,9 @@ expand_mode = 1
 stretch_mode = 5
 
 [node name="RequestedStreamFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/RequestedStreamPanel"]
+custom_minimum_size = Vector2(0, 88)
 layout_mode = 2
-text = "waiting for explicit stream to_image() request..."
+text = "waiting for explicit stream to_image() request...\n \n \n \n \n "
 
 [node name="CapturePanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
 layout_mode = 2
@@ -112,8 +114,9 @@ expand_mode = 1
 stretch_mode = 5
 
 [node name="CaptureFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/CapturePanel"]
+custom_minimum_size = Vector2(0, 88)
 layout_mode = 2
-text = "waiting for capture result..."
+text = "waiting for capture result...\n \n \n \n \n "
 
 [node name="MemberInspectionStrip" type="PanelContainer" parent="RootMargin/MainColumn"]
 custom_minimum_size = Vector2(800, 120)

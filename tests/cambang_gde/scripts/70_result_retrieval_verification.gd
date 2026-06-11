@@ -28,6 +28,7 @@ const MATERIALIZE_INITIAL_STREAM_TO_IMAGE_IN_GUI := true #false
 const MATERIALIZE_CAPTURE_MEMBER_THUMBNAILS := true #false
 const DEFER_CAPTURE_MEMBER_THUMBNAILS := true
 const CAPTURE_MEMBER_THUMBNAILS_PER_FRAME := 1
+const FACT_LABEL_LINE_COUNT := 6
 
 # The status panel fixture detail exercise is intentionally expensive on Android.
 # It remains available for headless/verification-style runs, but GUI inspection
@@ -305,7 +306,10 @@ func _try_verify_stream_result() -> void:
 			_step_ok("requested stream image panel populated from explicit request")
 		else:
 			_perf_log("initial stream to_image skipped in GUI for capture-latency inspection")
-			_requested_stream_facts_label.text = "stream to_image skipped on startup\nclick Request Stream Image to exercise"
+			_requested_stream_facts_label.text = _format_fixed_fact_lines([
+				"stream to_image skipped on startup",
+				"click Request Stream Image to exercise",
+			])
 			_step_ok("stream to_image materialization deferred in GUI")
 
 		var stream_display_view = stream_result.get_display_view()
@@ -562,14 +566,12 @@ func _try_verify_capture_result() -> void:
 		pre_materialized_member_images[0] = capture_image
 	var strip_perf := _refresh_member_inspection_strip(capture_result, expected_members, "initial verification", pre_materialized_member_images, DEFER_CAPTURE_MEMBER_THUMBNAILS)
 	var perf_strip_end_us := _perf_us()
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nimages=%d/%d additional=%s\nmode=initial verification" % [
-		capture_result.get_payload_kind(),
-		capture_result.get_width(),
-		capture_result.get_height(),
-		observed_member_count,
-		expected_member_count,
-		str(bool(capture_result.has_additional_images())),
-	]
+	_capture_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % capture_result.get_payload_kind(),
+		"size=%dx%d" % [capture_result.get_width(), capture_result.get_height()],
+		"images=%d/%d additional=%s" % [observed_member_count, expected_member_count, str(bool(capture_result.has_additional_images()))],
+		"mode=initial verification",
+	])
 	if _is_headless or RUN_STATUS_PANEL_DETAIL_FIXTURE_IN_GUI:
 		if DEFER_STATUS_PANEL_FIXTURE_UNTIL_INSPECTION and not _is_headless:
 			_pending_status_panel_fixture_in_inspection = true
@@ -603,6 +605,15 @@ func _role_name(role: int) -> String:
 	return str(role)
 
 
+func _format_fixed_fact_lines(lines: Array) -> String:
+	var normalized := PackedStringArray()
+	for line in lines:
+		normalized.append(str(line))
+	while normalized.size() < FACT_LABEL_LINE_COUNT:
+		normalized.append(" ")
+	return "\n".join(normalized)
+
+
 func _clear_member_inspection_strip() -> void:
 	_pending_member_thumbnail_jobs.clear()
 	if _member_strip_row == null:
@@ -612,14 +623,24 @@ func _clear_member_inspection_strip() -> void:
 
 
 func _clear_capture_display_for_pending_request(reason: String) -> void:
-	# Clear stale visual state immediately when a capture is requested. The
-	# previous image must not remain on-screen while the new capture is still
-	# pending or while explicit CPU Image materialization is waiting to run.
+	# Keep the last realized capture image visible while the replacement capture
+	# is pending. The facts label carries pending-state truth so the retained
+	# texture is not mistaken for the newly requested result. Member thumbnails
+	# are still cleared because they belong to the in-flight capture inspection.
 	_pending_member_thumbnail_jobs.clear()
-	if _capture_texture_rect != null:
-		_capture_texture_rect.texture = null
+	var has_retained_capture_texture := _capture_texture_rect != null and _capture_texture_rect.texture != null
 	if _capture_facts_label != null:
-		_capture_facts_label.text = "capture pending\n%s" % reason
+		if has_retained_capture_texture:
+			_capture_facts_label.text = _format_fixed_fact_lines([
+				"capture pending",
+				reason,
+				"previous image retained until replacement",
+			])
+		else:
+			_capture_facts_label.text = _format_fixed_fact_lines([
+				"capture pending",
+				reason,
+			])
 	_clear_member_inspection_strip()
 
 
@@ -862,12 +883,12 @@ func _ensure_stream_panel_display_view_bound(stream_result = null, force_rebind:
 	var current_texture = _stream_texture_rect.texture
 	if force_rebind or current_texture == null or current_texture != stream_display_view:
 		_stream_texture_rect.texture = stream_display_view
-	_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n(live display view bound)" % [
-		latest_stream_result.get_payload_kind(),
-		latest_stream_result.get_width(),
-		latest_stream_result.get_height(),
-		latest_stream_result.get_stream_id()
-	]
+	_stream_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % latest_stream_result.get_payload_kind(),
+		"size=%dx%d" % [latest_stream_result.get_width(), latest_stream_result.get_height()],
+		"stream_id=%d" % latest_stream_result.get_stream_id(),
+		"(live display view bound)",
+	])
 
 
 func _on_capture_again_pressed() -> void:
@@ -910,13 +931,12 @@ func _materialize_requested_stream_image(stream_result, mode_text: String, pre_m
 	var perf_stream_texture_start_us := _perf_us()
 	_requested_stream_texture_rect.texture = ImageTexture.create_from_image(requested_image)
 	var perf_stream_texture_end_us := _perf_us()
-	_requested_stream_facts_label.text = "payload_kind=%d\nsize=%dx%d\nstream_id=%d\n%s" % [
-		stream_result.get_payload_kind(),
-		stream_result.get_width(),
-		stream_result.get_height(),
-		stream_result.get_stream_id(),
-		mode_text
-	]
+	_requested_stream_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % stream_result.get_payload_kind(),
+		"size=%dx%d" % [stream_result.get_width(), stream_result.get_height()],
+		"stream_id=%d" % stream_result.get_stream_id(),
+		mode_text,
+	])
 	var perf_stream_total_end_us := _perf_us()
 	_perf_log("stream to_image buckets us: %s stream_id=%d to_image=%d texture=%d total=%d image=%s" % [
 		mode_text,
@@ -964,7 +984,10 @@ func _request_manual_capture() -> void:
 	])
 	if capture_err != OK:
 		if _capture_facts_label != null:
-			_capture_facts_label.text = "capture request rejected\nerr=%d" % capture_err
+			_capture_facts_label.text = _format_fixed_fact_lines([
+				"capture request rejected",
+				"err=%d" % capture_err,
+			])
 		_append_status("WARN: manual capture request rejected err=%d" % capture_err)
 		return
 	_inspection_capture_device = device
@@ -1269,16 +1292,13 @@ func _poll_inspection_capture_result() -> void:
 		pre_materialized_member_images[0] = capture_image
 	var strip_perf := _refresh_member_inspection_strip(capture_result, expected_members, "manual capture", pre_materialized_member_images, DEFER_CAPTURE_MEMBER_THUMBNAILS)
 	var perf_manual_strip_end_us := _perf_us()
-	_capture_facts_label.text = "payload_kind=%d\nsize=%dx%d\nimages=%d/%d additional=%s\ncapture_id=%d expected=%d\nmode=manual capture" % [
-		capture_result.get_payload_kind(),
-		capture_result.get_width(),
-		capture_result.get_height(),
-		returned_count,
-		expected_count,
-		str(bool(capture_result.has_additional_images())),
-		result_capture_id,
-		_inspection_expected_capture_id,
-	]
+	_capture_facts_label.text = _format_fixed_fact_lines([
+		"payload_kind=%d" % capture_result.get_payload_kind(),
+		"size=%dx%d" % [capture_result.get_width(), capture_result.get_height()],
+		"images=%d/%d additional=%s" % [returned_count, expected_count, str(bool(capture_result.has_additional_images()))],
+		"capture_id=%d expected=%d" % [result_capture_id, _inspection_expected_capture_id],
+		"mode=manual capture",
+	])
 	var perf_manual_total_end_us := _perf_us()
 	_perf_log("manual capture display buckets us: capture_id=%d images=%d/%d request_start_to_display_us=%d get_result=%d to_image=%d main_texture=%d strip_total=%d strip_deferred_jobs=%d total=%d image=%s" % [
 		result_capture_id,
