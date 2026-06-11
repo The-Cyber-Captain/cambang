@@ -1502,7 +1502,8 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
   }
 
   const uint64_t staging_begin_ns = capture_latency_trace_now_ns();
-  std::vector<std::uint8_t> gpu_staging(job.frame_size_bytes);
+  auto base_bytes = std::make_shared<std::vector<std::uint8_t>>();
+  base_bytes->resize(job.frame_size_bytes);
   staging_alloc_ns = capture_latency_trace_now_ns() - staging_begin_ns;
 
   const uint64_t spec_begin_ns = capture_latency_trace_now_ns();
@@ -1513,8 +1514,8 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
   }
 
   PatternRenderTarget dst{};
-  dst.data = gpu_staging.data();
-  dst.size_bytes = gpu_staging.size();
+  dst.data = base_bytes->data();
+  dst.size_bytes = base_bytes->size();
   dst.width = req.width;
   dst.height = req.height;
   dst.stride_bytes = job.stride_bytes;
@@ -1543,18 +1544,29 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
 
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
   const auto& members = req.still_image_bundle.members;
+  uint32_t default_base_reused = 0;
   for (size_t i = 0; i < members.size(); ++i) {
     if (should_stop_capture_job_(generation)) {
       return false;
     }
     const auto& member = members[i];
-    const uint64_t member_alloc_begin_ns = capture_latency_trace_now_ns();
-    auto bytes = std::make_shared<std::vector<std::uint8_t>>();
-    bytes->resize(job.frame_size_bytes);
-    member_alloc_ns += capture_latency_trace_now_ns() - member_alloc_begin_ns;
-    const uint64_t member_copy_begin_ns = capture_latency_trace_now_ns();
-    std::memcpy(bytes->data(), gpu_staging.data(), job.frame_size_bytes);
-    member_copy_ns += capture_latency_trace_now_ns() - member_copy_begin_ns;
+    const bool can_reuse_base_for_default =
+        i == 0 &&
+        member.intended_exposure_compensation_milli_ev == 0 &&
+        job.format_fourcc == FOURCC_RGBA;
+    std::shared_ptr<std::vector<std::uint8_t>> bytes;
+    if (can_reuse_base_for_default) {
+      bytes = base_bytes;
+      default_base_reused = 1;
+    } else {
+      const uint64_t member_alloc_begin_ns = capture_latency_trace_now_ns();
+      bytes = std::make_shared<std::vector<std::uint8_t>>();
+      bytes->resize(job.frame_size_bytes);
+      member_alloc_ns += capture_latency_trace_now_ns() - member_alloc_begin_ns;
+      const uint64_t member_copy_begin_ns = capture_latency_trace_now_ns();
+      std::memcpy(bytes->data(), base_bytes->data(), job.frame_size_bytes);
+      member_copy_ns += capture_latency_trace_now_ns() - member_copy_begin_ns;
+    }
     const uint64_t member_ev_bgra_begin_ns = capture_latency_trace_now_ns();
     if (member.intended_exposure_compensation_milli_ev != 0) {
       PatternRenderOptions render_options{};
@@ -1624,7 +1636,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     member_post_ns += capture_latency_trace_now_ns() - member_post_begin_ns;
   }
   capture_latency_trace_printf(
-      "synthetic_capture_production capture_id=%llu device_id=%llu rig_id=%llu first_capture_after_start=%u members=%llu frame_bytes=%llu staging_alloc_kind=fresh_vector staging_alloc_us=%llu spec_setup_us=%llu timestamp_lock_wait_us=%llu base_render_us=%llu member_alloc_kind=fresh_vector member_alloc_us=%llu member_copy_us=%llu member_ev_bgra_us=%llu member_post_us=%llu total_us=%llu",
+      "synthetic_capture_production capture_id=%llu device_id=%llu rig_id=%llu first_capture_after_start=%u members=%llu frame_bytes=%llu staging_alloc_kind=fresh_vector staging_alloc_us=%llu spec_setup_us=%llu timestamp_lock_wait_us=%llu base_render_us=%llu member_alloc_kind=fresh_vector member_alloc_us=%llu member_copy_us=%llu member_ev_bgra_us=%llu member_post_us=%llu default_base_reused=%u total_us=%llu",
       static_cast<unsigned long long>(req.capture_id),
       static_cast<unsigned long long>(req.device_instance_id),
       static_cast<unsigned long long>(req.rig_id),
@@ -1639,6 +1651,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
       static_cast<unsigned long long>(member_copy_ns / 1000ull),
       static_cast<unsigned long long>(member_ev_bgra_ns / 1000ull),
       static_cast<unsigned long long>(member_post_ns / 1000ull),
+      default_base_reused,
       static_cast<unsigned long long>((capture_latency_trace_now_ns() - production_begin_ns) / 1000ull));
   return true;
 }
