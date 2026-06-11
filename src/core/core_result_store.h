@@ -119,6 +119,7 @@ struct CoreCaptureResultData {
 
 using SharedStreamResultData = std::shared_ptr<const CoreStreamResultData>;
 using SharedCaptureResultData = std::shared_ptr<const CoreCaptureResultData>;
+using MutableCaptureResultData = std::shared_ptr<CoreCaptureResultData>;
 
 class CoreResultStore final {
 public:
@@ -160,13 +161,13 @@ private:
   static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
   static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
-  static SharedCaptureResultData build_default_image_capture_result(const FrameView& frame,
-                                                                    CoreResultPayloadCpuPacked payload,
-                                                                    uint64_t capture_timestamp_ns);
+  static MutableCaptureResultData build_default_image_capture_result(const FrameView& frame,
+                                                                     CoreResultPayloadCpuPacked payload,
+                                                                     uint64_t capture_timestamp_ns);
 
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;
-  std::map<uint64_t, std::map<uint64_t, SharedCaptureResultData>> capture_results_by_capture_id_;
+  std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> capture_results_by_capture_id_;
   std::map<uint64_t, uint64_t> stream_display_demand_last_seen_ns_;
   std::map<uint64_t, uint32_t> stream_display_demand_refcounts_;
 };

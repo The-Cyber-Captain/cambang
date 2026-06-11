@@ -190,7 +190,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!has_cpu_payload) {
       return false;
     }
-    SharedCaptureResultData capture_result =
+    MutableCaptureResultData capture_result =
         build_default_image_capture_result(frame, std::move(payload), capture_timestamp_ns);
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
@@ -236,14 +236,21 @@ bool CoreResultStore::append_additional_capture_image(
     return false;
   }
 
-  auto updated = std::make_shared<CoreCaptureResultData>(*dev_it->second);
+  auto& result = dev_it->second;
   const uint32_t expected_member_index =
-      1u + static_cast<uint32_t>(updated->additional_images.size());
+      1u + static_cast<uint32_t>(result->additional_images.size());
   if (image_member.image_member_index != expected_member_index) {
     return false;
   }
-  updated->additional_images.push_back(std::move(image_member));
-  dev_it->second = std::move(updated);
+
+  if (result.use_count() != 1) {
+    // Preserve immutability for any result object already handed out through the
+    // public terminal-gated result API. In the ordinary assembly path the store
+    // owns the only reference here, so additional members append without
+    // copy-constructing already-retained image payloads.
+    result = std::make_shared<CoreCaptureResultData>(*result);
+  }
+  result->additional_images.push_back(std::move(image_member));
   capture_latency_trace_printf(
       "result_store_append_additional capture_id=%llu device_id=%llu member=%u payload_bytes=%llu total_us=%llu",
       static_cast<unsigned long long>(capture_id),
@@ -281,7 +288,7 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(const Frame
   return valid;
 }
 
-SharedCaptureResultData CoreResultStore::build_default_image_capture_result(
+MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
     CoreResultPayloadCpuPacked payload,
     uint64_t capture_timestamp_ns) {
@@ -389,7 +396,7 @@ void CoreResultStore::remove_stream_result(uint64_t stream_id) {
 
 void CoreResultStore::clear() {
   std::map<uint64_t, SharedStreamResultData> old_stream_results;
-  std::map<uint64_t, std::map<uint64_t, SharedCaptureResultData>> old_capture_results;
+  std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> old_capture_results;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     old_stream_results.swap(latest_stream_results_);
