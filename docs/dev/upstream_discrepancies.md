@@ -84,3 +84,49 @@ CamBANG workaround:
 
 Removal criteria:
 - Upstream `godot-cpp` delegated builds no longer share selected-platform mutable generated/SCons state in a way that causes cross-target rebuild churn, or CamBANG adopts an upstream-supported per-target artifact-state mechanism that does not require an external-consumption mode.
+
+
+### Godot OS permission APIs are not a provider-readiness primitive
+
+CamBANG does not rely on Godot's current `OS.request_permission(...)` /
+`OS.request_permissions()` APIs as a synchronous or authoritative provider-readiness
+gate.
+
+Upstream context: godotengine/godot#105364 documents that current permission API
+descriptions do not fully match behaviour. In review, a Godot maintainer noted
+that this highlights the need to clean up the permission API so callers receive
+more information about what action the system is taking when permissions are
+requested, and that the current permission APIs may need to be deprecated and
+replaced with properly designed new ones.
+
+Observed upstream/API issues include:
+- `OS.request_permission(...)` return values are not equivalent to "permission
+  is granted";
+- invalid, normal, typo, or non-manifest permissions may produce misleading
+  return behaviour;
+- permission request dispatch/result behaviour is callback-shaped and not a
+  synchronous readiness primitive;
+- singular permission requests while an OS permission dialog is already open
+  may be discarded/ambiguous;
+- platform coverage and semantics differ across Android, macOS, visionOS, and
+  other targets.
+
+CamBANG policy:
+- The host Godot application owns the player-facing permission request UX.
+- The application should request camera permission in context before starting a
+  platform-backed CamBANG provider.
+- CamBANG platform-backed providers verify camera access/permission at provider
+  start/readiness and return explicit permission/access failure status if access
+  is not currently available.
+- CamBANG does not prompt the player for permissions.
+- CamBANg does not treat Godot's current permission request API as a portable synchronous
+  provider-start mechanism. In fact, CamBANG implements and makes its own native checks at
+  the Provider level.
+
+Removal/narrowing criterion:
+This discrepancy can be removed or narrowed once Godot ships and documents a
+redesigned permission API that provides reliable permission-state checks,
+request-dispatch status, in-flight request handling, final result delivery, and
+platform coverage sufficient for CamBANG's supported runtime-permission targets.
+At that point CamBANG may replace provider-specific permission workarounds with
+the stable Godot API where appropriate.
