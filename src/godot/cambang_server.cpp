@@ -435,7 +435,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
       ERR_PRINT(godot::vformat(
           "CamBANGServer: cannot start; provider access/readiness preflight failed for provider_mode='%s' code='%s' reason='%s'.",
           mode_to_cstr(mode),
-          to_string(access.code),
+          cambang::to_string(access.code),
           access.stable_reason ? access.stable_reason : ""));
       clear_start_attempt_state();
       return map_provider_access_status_to_godot_error(access);
