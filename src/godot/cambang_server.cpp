@@ -114,10 +114,7 @@ static godot::Error map_provider_access_status_to_godot_error(ProviderAccessStat
     case ProviderAccessCode::Ready: return godot::OK;
     case ProviderAccessCode::PermissionRequired:
     case ProviderAccessCode::PermissionDenied:
-      // Current checked-in Godot-facing source uses ERR_UNAVAILABLE/ERR_CANT_OPEN
-      // but provides no evidence of an authorization-specific Error constant.
-      // Use the closest existing non-generic value without inventing one.
-      return godot::ERR_UNAVAILABLE;
+      return godot::ERR_UNAUTHORIZED;
     case ProviderAccessCode::AccessUnavailable:
       return godot::ERR_UNAVAILABLE;
     case ProviderAccessCode::CheckFailed:
