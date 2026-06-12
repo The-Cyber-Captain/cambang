@@ -254,7 +254,7 @@ Provider policy chooses one backing as primary and may optionally retain another
 as sidecar backing when that improves usefulness or avoids later expensive materialization.
 
 For synthetic stream results, current retained-primary `GPU_SURFACE` truth is
-determined by the emitted/retained GPU artifact itself, not by whether an
+determined by the emitted/retained GPU artifact itself, not by whether a
 sidecar CPU backing is also retained.
 
 ### 6.x.3 Unsupported GPU-only realization
