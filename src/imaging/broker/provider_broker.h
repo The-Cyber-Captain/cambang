@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_access_status.h"
 #include "imaging/broker/mode.h"
 #include "imaging/synthetic/config.h"
 #include "imaging/synthetic/builtin_scenario_library.h"
@@ -33,6 +34,11 @@ public:
   // CamBANGServer should call this proactively when users request a mode,
   // and again defensively on start().
   static ProviderResult check_mode_supported_in_build(RuntimeMode mode) noexcept;
+
+  // Internal startup readiness preflight.  This answers whether a compiled and
+  // selected provider may become operational now; it must not request OS
+  // permission, show UI, or open camera hardware.
+  static ProviderAccessStatus check_mode_access_readiness(RuntimeMode mode) noexcept;
 
   // Set the requested runtime mode for the next initialize() call.
   // Must be called before initialize(); initialize() latches the mode.

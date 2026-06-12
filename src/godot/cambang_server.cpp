@@ -109,6 +109,21 @@ static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexce
   }
 }
 
+static godot::Error map_provider_access_status_to_godot_error(ProviderAccessStatus access) noexcept {
+  switch (access.code) {
+    case ProviderAccessCode::Ready: return godot::OK;
+    case ProviderAccessCode::PermissionRequired:
+    case ProviderAccessCode::PermissionDenied:
+      return godot::ERR_UNAUTHORIZED;
+    case ProviderAccessCode::AccessUnavailable:
+      return godot::ERR_UNAVAILABLE;
+    case ProviderAccessCode::CheckFailed:
+      return godot::FAILED;
+    default:
+      return godot::FAILED;
+  }
+}
+
 static const char* godot_error_to_cstr(godot::Error err) noexcept {
   switch (err) {
     case godot::OK: return "OK";
@@ -408,6 +423,22 @@ godot::Error CamBANGServer::_start_with_provider_config(
           mode_to_cstr(mode)));
       clear_start_attempt_state();
       return map_provider_result_to_godot_error(cap);
+    }
+  }
+
+  // Provider access/readiness is distinct from build support.  This preflight
+  // must run before CoreRuntime::start() so a permission/access failure cannot
+  // create a runtime generation, publish a baseline, or attach a provider.
+  {
+    const ProviderAccessStatus access = ProviderBroker::check_mode_access_readiness(mode);
+    if (!access.ok()) {
+      ERR_PRINT(godot::vformat(
+          "CamBANGServer: cannot start; provider access/readiness preflight failed for provider_mode='%s' code='%s' reason='%s'.",
+          mode_to_cstr(mode),
+          cambang::to_string(access.code),
+          access.stable_reason ? access.stable_reason : ""));
+      clear_start_attempt_state();
+      return map_provider_access_status_to_godot_error(access);
     }
   }
 

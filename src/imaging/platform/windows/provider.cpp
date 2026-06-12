@@ -17,6 +17,14 @@
 
 namespace cambang {
 
+ProviderAccessStatus WindowsProvider::check_access_readiness() noexcept {
+  // The quarantined Windows Media Foundation dev accelerator does not currently
+  // have a safe non-operational permission/access probe.  Do not open camera
+  // hardware or request permission here; release-quality platform providers
+  // should replace this seam with a real current-access check.
+  return ProviderAccessStatus::ready("windows_mf_dev_access_preflight_not_implemented_ready");
+}
+
 namespace {
 
 // RAII for COM initialization on a thread.

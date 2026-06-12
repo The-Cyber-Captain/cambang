@@ -457,6 +457,32 @@ SyntheticTimelineScenario build_clustered_destructive_scenario(uint64_t period_n
 
 // ===== Family A: Scenario materialization / loader compliance =====
 
+
+bool run_provider_access_preflight_check() {
+  const ProviderAccessStatus synthetic_access =
+      ProviderBroker::check_mode_access_readiness(RuntimeMode::synthetic);
+  if (!synthetic_access.ok() || synthetic_access.code != ProviderAccessCode::Ready) {
+    std::cerr << "synthetic provider access/readiness preflight was not Ready\n";
+    return false;
+  }
+
+  const ProviderAccessStatus platform_access =
+      ProviderBroker::check_mode_access_readiness(RuntimeMode::platform_backed);
+  if (!platform_access.ok() || platform_access.code != ProviderAccessCode::Ready) {
+    std::cerr << "stub platform-backed access/readiness preflight was not Ready\n";
+    return false;
+  }
+
+  const ProviderResult platform_support =
+      ProviderBroker::check_mode_supported_in_build(RuntimeMode::platform_backed);
+  if (!platform_support.ok()) {
+    std::cerr << "platform_backed build support unexpectedly changed while checking access readiness\n";
+    return false;
+  }
+
+  return true;
+}
+
 bool run_synthetic_scenario_materialization_check() {
   SyntheticCanonicalScenario canonical{};
 
@@ -2269,6 +2295,7 @@ int main(int argc, char** argv) {
 
   using CheckFn = std::function<bool()>;
   const std::vector<std::pair<const char*, CheckFn>> checks = {
+      {"run_provider_access_preflight_check", [] { return run_provider_access_preflight_check(); }},
       {"run_synthetic_scenario_materialization_check", [] { return run_synthetic_scenario_materialization_check(); }},
       {"run_synthetic_builtin_scenario_library_build_check", [] { return run_synthetic_builtin_scenario_library_build_check(); }},
       {"run_synthetic_external_scenario_loader_check", [] { return run_synthetic_external_scenario_loader_check(); }},

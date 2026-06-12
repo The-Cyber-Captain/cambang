@@ -2,6 +2,7 @@
 
 #include <iostream>
 
+using cambang::ProviderAccessCode;
 using cambang::ProviderBroker;
 using cambang::ProviderError;
 using cambang::RuntimeMode;
@@ -16,6 +17,12 @@ int main() {
   const auto synthetic = ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic);
   if (!synthetic.ok()) {
     std::cerr << "expected synthetic to be supported when CAMBANG_ENABLE_SYNTHETIC=1\n";
+    return 1;
+  }
+
+  const auto synthetic_access = ProviderBroker::check_mode_access_readiness(RuntimeMode::synthetic);
+  if (!synthetic_access.ok() || synthetic_access.code != ProviderAccessCode::Ready) {
+    std::cerr << "expected synthetic access/readiness preflight to be Ready\n";
     return 1;
   }
 

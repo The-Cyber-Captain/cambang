@@ -10,6 +10,7 @@
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_access_status.h"
 #include "imaging/api/provider_strand.h"
 
 namespace cambang {
@@ -18,6 +19,8 @@ class StubProvider final : public ICameraProvider {
 public:
   StubProvider() = default;
   ~StubProvider() override = default;
+
+  static ProviderAccessStatus check_access_readiness() noexcept;
 
   const char* provider_name() const override;
   ProviderKind provider_kind() const noexcept override { return ProviderKind::platform_backed; }
