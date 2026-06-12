@@ -39,6 +39,7 @@ Maintainer tools fall into three broad categories.
 | `phase3_snapshot_verify` | Focused verification for snapshot/native-object/publication semantics | Verification |
 | `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
 | `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
+| `synthetic_only_provider_support_verify` | Deterministic build-support and access/readiness preflight for synthetic-only maintainer builds | Verification |
 | `windows_mf_runtime_validate` | Nominal opt-in `windows_mediafoundation(dev accelerator)` runtime validation against real hardware | Verification |
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
 | Godot boundary verification scenes | Validation of the Godot-facing runtime boundary | Verification |
@@ -401,6 +402,41 @@ It verifies:
 This scene complements deterministic provider verification, but it does not
 replace `provider_compliance_verify` or change the role of
 `canonical_timeline_realization`.
+
+---
+
+## 6.2 `synthetic_only_provider_support_verify`
+
+**Category:** Verification tool
+
+### Purpose
+
+`synthetic_only_provider_support_verify` validates the deterministic provider
+selection preflight for maintainer builds compiled with synthetic support and
+without a compiled platform provider.
+
+It checks that:
+
+- platform-backed mode reports build-unsupported
+- synthetic mode reports build-supported
+- synthetic mode reports access/readiness as ready
+
+### Usage
+
+```text
+./out/synthetic_only_provider_support_verify.exe
+```
+
+Expected output shape:
+
+```text
+OK platform_backed_build_support
+OK synthetic_build_support
+OK synthetic_access_readiness
+PASS synthetic_only_provider_support_verify
+```
+
+Failures identify the failed check and exit nonzero.
 
 ---
 
