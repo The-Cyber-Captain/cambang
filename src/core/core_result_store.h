@@ -70,7 +70,7 @@ struct CoreStreamResultData {
   // display or materialization yet; it records scalar GPU-primary facts while
   // legacy retained_gpu_backing remains the behavior path. If payload below is
   // current for the same capture_timestamp_ns, classify the result as
-  // GPU-primary with CPU auxiliary data rather than GPU-only.
+  // GPU-primary with CPU sidecar data rather than GPU-only.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   CoreResultPayloadCpuPacked payload{};
   // Non-zero only when payload was copied from the same FrameView as this

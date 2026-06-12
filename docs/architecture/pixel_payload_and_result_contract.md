@@ -215,17 +215,20 @@ Depending on `payload_kind`, this may include:
 
 This document does not freeze exact C++ field layout, but the presence of adequate metadata is part of the contract.
 
-## 6.x Primary backing vs auxiliary backing
+## 6.x Primary backing vs sidecar backing
 
 A realized image-bearing artifact may have:
 
 - one **primary backing**
-- zero or more **auxiliary backings**
+- zero or more **sidecar backings**
 
 The result’s `payload_kind` reflects the **primary backing only**.
 
-Auxiliary backings may improve access/materialization capability and cost outcomes,
+Sidecar backings may improve access/materialization capability and cost outcomes,
 but they do not create multiple primary payload kinds for a single accepted artifact.
+Primary/sidecar is not a cost ranking: a sidecar backing may be the cheapest
+route for a particular operation while the primary backing remains the
+principal retained representation.
 
 ### 6.x.1 CPU and GPU backing are not treated as symmetric choices
 
@@ -247,12 +250,12 @@ for example:
 - CPU-backed and GPU-backed realization for the same stream frame
 - CPU-readable and encoded forms for the same capture artifact
 
-Provider policy chooses one backing as primary and may optionally retain another as
-auxiliary when that improves usefulness or avoids later expensive materialization.
+Provider policy chooses one backing as primary and may optionally retain another
+as sidecar backing when that improves usefulness or avoids later expensive materialization.
 
 For synthetic stream results, current retained-primary `GPU_SURFACE` truth is
-determined by the emitted/retained GPU artifact itself, not by whether an
-auxiliary CPU backing is also retained.
+determined by the emitted/retained GPU artifact itself, not by whether a
+sidecar CPU backing is also retained.
 
 ### 6.x.3 Unsupported GPU-only realization
 
@@ -647,7 +650,7 @@ In particular:
 
 `to_image()` remains explicit CPU materialization and should select the least
 expensive supported CPU route from the current retained state, whether that
-route uses auxiliary CPU backing or explicit GPU readback/materialization.
+route uses sidecar CPU backing or explicit GPU readback/materialization.
 
 Recommended first-pass capability/cost states:
 
@@ -755,7 +758,7 @@ CPU-backed storage.
 For synthetic stream GPU-primary/live-backing paths, `to_image()` must remain an
 explicit materialization outcome and must not silently return stale content:
 
-- use a current retained CPU/auxiliary payload when available (current
+- use a current retained CPU sidecar payload when available (current
   synthetic `to_image()` path preference), or
 - perform/require explicit supported materialization from a fresh source, or
 - report unsupported/expensive rather than presenting stale image content as
