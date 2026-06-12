@@ -19,6 +19,7 @@
 #include <mfobjects.h>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_access_status.h"
 #include "imaging/api/provider_strand.h"
 #include "imaging/platform/windows/mf/com_ptr.h"
 
@@ -68,6 +69,8 @@ class WindowsProvider final : public ICameraProvider {
 public:
   WindowsProvider() = default;
   ~WindowsProvider() override;
+
+  static ProviderAccessStatus check_access_readiness() noexcept;
 
   // Diagnostic label remains dev-scoped; SCons provider=windows_mediafoundation stays compatible.
   const char* provider_name() const override { return "windows_mediafoundation(dev)"; }

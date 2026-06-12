@@ -27,6 +27,10 @@
 
 namespace cambang {
 
+ProviderAccessStatus SyntheticProvider::check_access_readiness() noexcept {
+  return ProviderAccessStatus::ready("synthetic_provider_ready");
+}
+
 namespace {
 
 constexpr const char* kHardwareIdPrefix = "synthetic:";

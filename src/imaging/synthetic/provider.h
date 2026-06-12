@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "imaging/api/icamera_provider.h"
+#include "imaging/api/provider_access_status.h"
 #include "imaging/api/provider_strand.h"
 
 #include "imaging/synthetic/config.h"
@@ -50,6 +51,8 @@ public:
 
   explicit SyntheticProvider(const SyntheticProviderConfig& cfg);
   ~SyntheticProvider() override;
+
+  static ProviderAccessStatus check_access_readiness() noexcept;
 
   const char* provider_name() const override { return "SyntheticProvider"; }
   ProviderKind provider_kind() const noexcept override { return ProviderKind::synthetic; }

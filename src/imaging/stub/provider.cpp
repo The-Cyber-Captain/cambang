@@ -7,6 +7,10 @@
 
 namespace cambang {
 
+ProviderAccessStatus StubProvider::check_access_readiness() noexcept {
+  return ProviderAccessStatus::ready("stub_provider_ready");
+}
+
 // NOTE: Prefer the canonical helpers/constants in provider_contract_datatypes.h.
 
 const char* StubProvider::provider_name() const {

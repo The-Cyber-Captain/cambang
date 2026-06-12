@@ -130,6 +130,21 @@ ProviderResult err_no_active() {
   return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
 }
 
+ProviderError provider_error_from_access_status(ProviderAccessStatus status) noexcept {
+  switch (status.code) {
+    case ProviderAccessCode::Ready:
+      return ProviderError::OK;
+    case ProviderAccessCode::PermissionRequired:
+    case ProviderAccessCode::PermissionDenied:
+    case ProviderAccessCode::AccessUnavailable:
+      return ProviderError::ERR_PLATFORM_CONSTRAINT;
+    case ProviderAccessCode::CheckFailed:
+      return ProviderError::ERR_PROVIDER_FAILED;
+    default:
+      return ProviderError::ERR_PROVIDER_FAILED;
+  }
+}
+
 } // namespace
 
 ProviderBroker::ProviderBroker() = default;
@@ -223,6 +238,46 @@ ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) n
     }
     default:
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+}
+
+ProviderAccessStatus ProviderBroker::check_mode_access_readiness(RuntimeMode mode) noexcept {
+  const ProviderResult cap = check_mode_supported_in_build(mode);
+  if (!cap.ok()) {
+    return ProviderAccessStatus::failure(
+        ProviderAccessCode::AccessUnavailable,
+        "provider_mode_not_supported_in_build",
+        false);
+  }
+
+  switch (mode) {
+    case RuntimeMode::platform_backed: {
+#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
+      return WindowsProvider::check_access_readiness();
+#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+      return StubProvider::check_access_readiness();
+#else
+      return ProviderAccessStatus::failure(
+          ProviderAccessCode::AccessUnavailable,
+          "no_platform_backed_provider_compiled",
+          false);
+#endif
+    }
+    case RuntimeMode::synthetic: {
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+      return SyntheticProvider::check_access_readiness();
+#else
+      return ProviderAccessStatus::failure(
+          ProviderAccessCode::AccessUnavailable,
+          "synthetic_provider_not_compiled",
+          false);
+#endif
+    }
+    default:
+      return ProviderAccessStatus::failure(
+          ProviderAccessCode::CheckFailed,
+          "invalid_runtime_mode",
+          false);
   }
 }
 
@@ -328,6 +383,11 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   ProviderResult cap = check_mode_supported_in_build(mode_latched_);
   if (!cap.ok()) {
     return cap;
+  }
+
+  const ProviderAccessStatus access = check_mode_access_readiness(mode_latched_);
+  if (!access.ok()) {
+    return ProviderResult::failure(provider_error_from_access_status(access));
   }
 
   // Construct backend.
