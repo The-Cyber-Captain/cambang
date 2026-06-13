@@ -298,6 +298,11 @@ godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
   if (has_current_retained_cpu_payload(data_)) {
     return payload_to_image(data_->payload);
   }
+  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
+    return godot_gpu_display_materialize_to_image(
+        data_->retained_gpu_backing_descriptor,
+        data_->retained_gpu_backing);
+  }
   return godot::Ref<godot::Image>();
 }
 

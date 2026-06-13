@@ -120,6 +120,17 @@ void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>
   trace_line("release_stream_live_gpu_backing done");
 }
 
+bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) noexcept {
+  const SyntheticGpuBackingRuntimeOps* ops = g_ops.load(std::memory_order_acquire);
+  if (!ops || !ops->can_materialize_to_image) {
+    trace_line("can_materialize_to_image result=false reason=ops_unset_or_missing_materialize_fn");
+    return false;
+  }
+  const bool ok = ops->can_materialize_to_image(backing);
+  trace_line(ok ? "can_materialize_to_image result=true" : "can_materialize_to_image result=false");
+  return ok;
+}
+
 bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_calls,
     uint64_t& upload_copy_total_ns,
@@ -188,6 +199,10 @@ bool synthetic_gpu_backing_update_stream_live_gpu_backing_rgba8(
 }
 void synthetic_gpu_backing_release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept {
   backing.reset();
+}
+bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) noexcept {
+  (void)backing;
+  return false;
 }
 bool synthetic_gpu_backing_take_update_timing_stats(
     uint64_t& upload_copy_calls,
