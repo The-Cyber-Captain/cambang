@@ -237,61 +237,14 @@ int CamBANGStreamResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-
-  // Display-view capability is classified by the currently implemented display
-  // path, not by payload-kind family alone.
-  //
-  // READY:
-  //   The retained artifact is already directly suitable for display-view
-  //   access. In the current slice, this is GPU_SURFACE with retained GPU
-  //   backing.
-  //
-  // CHEAP:
-  //   Only explicitly whitelisted payload/path combinations known to require
-  //   modest additional work in the current implementation. In the current
-  //   slice, CPU_PACKED is cheap because get_display_view() uses a stream-owned
-  //   live ImageTexture that is refreshed from current retained stream state
-  //   without a broad conversion/decode/repack pipeline.
-  //
-  // EXPENSIVE:
-  //   A supported display-view path exists, but requires substantial extra work
-  //   such as materialization, conversion, decode, repack, or comparable
-  //   processing. New payload kinds should default here only once such a path
-  //   is actually implemented and proven.
-  //
-  // UNSUPPORTED:
-  //   No current supported display-view path exists.
-  //
-  // New payload kinds must not inherit CHEAP by default; they must earn their
-  // classification from the actual implemented display path.
-  switch (data_->payload_kind) {
-    case ResultPayloadKind::GPU_SURFACE:
-      return data_->retained_gpu_backing ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
-    case ResultPayloadKind::CPU_PACKED:
-      return CAPABILITY_CHEAP;
-    case ResultPayloadKind::CPU_PLANAR:
-    case ResultPayloadKind::ENCODED_IMAGE:
-    case ResultPayloadKind::RAW_IMAGE:
-    default:
-      return CAPABILITY_UNSUPPORTED;
-  }
+  return static_cast<int>(data_->retained_access_truth.display_view);
 }
 
 int CamBANGStreamResult::can_to_image() const {
-  // StreamResult.can_to_image() is a capability/cost classification API, not a
-  // readiness/progress API. CHEAP requires a current retained CPU
-  // representation for this stream result. EXPENSIVE is reserved for a later
-  // safe explicit materialization route when no current CPU representation is
-  // retained. UNSUPPORTED means no safe materialization route exists. A
-  // GPU-primary result with a current CPU sidecar payload remains CHEAP via
-  // that CPU payload; a true GPU-only result must not report CHEAP.
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  if (has_current_retained_cpu_payload(data_)) {
-    return CAPABILITY_CHEAP;
-  }
-  return CAPABILITY_UNSUPPORTED;
+  return static_cast<int>(data_->retained_access_truth.to_image);
 }
 
 int CamBANGStreamResult::get_display_view_path_kind() const {

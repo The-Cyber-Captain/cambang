@@ -81,6 +81,63 @@ bool has_valid_result_image_description(const FrameView& frame) {
   return frame.format_fourcc == FOURCC_RGBA || frame.format_fourcc == FOURCC_BGRA;
 }
 
+bool has_valid_retained_cpu_packed_access_payload(
+    const CoreResultPayloadCpuPacked& payload,
+    uint32_t expected_width,
+    uint32_t expected_height,
+    uint32_t expected_format_fourcc) {
+  if (payload.width == 0 || payload.height == 0 || payload.empty()) {
+    return false;
+  }
+  if (payload.width != expected_width ||
+      payload.height != expected_height ||
+      payload.format_fourcc != expected_format_fourcc) {
+    return false;
+  }
+  if (payload.format_fourcc != FOURCC_RGBA && payload.format_fourcc != FOURCC_BGRA) {
+    return false;
+  }
+  const size_t expected_size =
+      static_cast<size_t>(payload.width) * static_cast<size_t>(payload.height) * 4u;
+  return payload.stride_bytes == payload.width * 4u &&
+         payload.size_bytes() >= expected_size;
+}
+
+CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result) {
+  CoreRetainedAccessTruth truth{};
+  const bool has_current_cpu_payload =
+      result.payload_capture_timestamp_ns == result.capture_timestamp_ns &&
+      has_valid_retained_cpu_packed_access_payload(
+          result.payload, result.image_width, result.image_height, result.image_format_fourcc);
+
+  if (result.payload_kind == ResultPayloadKind::GPU_SURFACE) {
+    if (result.retained_gpu_backing) {
+      truth.display_view = ResultCapability::READY;
+    }
+    if (has_current_cpu_payload) {
+      truth.to_image = ResultCapability::CHEAP;
+    }
+    return truth;
+  }
+
+  if (result.payload_kind == ResultPayloadKind::CPU_PACKED && has_current_cpu_payload) {
+    truth.display_view = ResultCapability::CHEAP;
+    truth.to_image = ResultCapability::CHEAP;
+  }
+  return truth;
+}
+
+CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
+    const CoreResultPayloadCpuPacked& payload) {
+  CoreRetainedAccessTruth truth{};
+  if (has_valid_retained_cpu_packed_access_payload(
+          payload, payload.width, payload.height, payload.format_fourcc)) {
+    truth.display_view = ResultCapability::CHEAP;
+    truth.to_image = ResultCapability::CHEAP;
+  }
+  return truth;
+}
+
 RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
     const FrameView& frame,
     uint64_t capture_timestamp_ns,
@@ -179,6 +236,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
       }
       stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
     }
+    stream_result->retained_access_truth = build_stream_retained_access_truth(*stream_result);
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
     stream_result->facts = facts;
     auto& slot = latest_stream_results_[frame.stream_id];
@@ -244,6 +302,9 @@ bool CoreResultStore::append_additional_capture_image(
   if (image_member.image_member_index != expected_member_index) {
     return false;
   }
+
+  image_member.retained_access_truth =
+      build_capture_image_member_retained_access_truth(image_member.payload);
 
   if (result.use_count() != 1) {
     // Preserve immutability for any result object already handed out through the
@@ -324,6 +385,8 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
 
   CoreImageFactBundle facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
   capture_result->default_image.payload = std::move(payload);
+  capture_result->default_image.retained_access_truth =
+      build_capture_image_member_retained_access_truth(capture_result->default_image.payload);
   facts.has_capture_attributes = false;
   facts.capture_attributes = ResultCaptureAttributesFacts{};
   facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};
