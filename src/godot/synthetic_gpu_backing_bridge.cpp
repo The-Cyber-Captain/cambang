@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <godot_cpp/core/callable_method_pointer.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -240,7 +241,9 @@ static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThrea
   if (!rs || !helper) {
     return;
   }
-  rs->call_on_render_thread(godot::Callable(helper, godot::StringName("drain_pending_releases_on_render_thread")));
+  rs->call_on_render_thread(godot::callable_mp(
+      helper,
+      &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
 }
 
 static void clear_pending_releases_for_teardown() {

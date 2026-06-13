@@ -11,11 +11,7 @@ class RenderThreadDrainHelper : public godot::RefCounted {
 public:
   void drain_pending_releases_on_render_thread();
 
-  static void _bind_methods() {
-    godot::ClassDB::bind_method(
-        godot::D_METHOD("drain_pending_releases_on_render_thread"),
-        &RenderThreadDrainHelper::drain_pending_releases_on_render_thread);
-  }
+  static void _bind_methods() {}
 };
 
 // Internal-only: registers bridge helper classes required for Godot ClassDB/
