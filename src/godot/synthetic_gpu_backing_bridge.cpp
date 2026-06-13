@@ -1013,10 +1013,6 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   return display_view;
 }
 
-bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) noexcept {
-  return can_materialize_to_image(backing);
-}
-
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
   return materialize_to_image(backing);
 }

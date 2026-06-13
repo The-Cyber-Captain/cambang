@@ -1,6 +1,7 @@
 #include "godot/godot_gpu_display_service.h"
 
 #include "godot/synthetic_gpu_backing_bridge.h"
+#include "imaging/synthetic/gpu_backing_runtime.h"
 
 namespace cambang {
 
