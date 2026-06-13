@@ -2,7 +2,38 @@
 
 #include "core/core_stream_registry.h"
 
+#include <limits>
+
 namespace cambang {
+
+namespace {
+void apply_stream_started(CoreStreamRegistry::StreamRecord& rec) noexcept {
+  rec.started = true;
+  rec.last_stop_origin = CoreStreamRegistry::StopOrigin::None;
+  rec.stop_requested_by_core = false;
+}
+
+void apply_stream_stopped(CoreStreamRegistry::StreamRecord& rec,
+                          uint32_t error_code,
+                          CoreStreamRegistry::StopOrigin origin) noexcept {
+  const bool latch_user_stop = origin == CoreStreamRegistry::StopOrigin::User ||
+      rec.stop_requested_by_core ||
+      (!rec.started && rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User);
+
+  rec.started = false;
+  rec.last_error_code = error_code;
+  rec.last_stop_origin = latch_user_stop
+      ? CoreStreamRegistry::StopOrigin::User
+      : CoreStreamRegistry::StopOrigin::Provider;
+  rec.stop_requested_by_core = false;
+}
+
+void increment_saturating(uint32_t& value) noexcept {
+  if (value != std::numeric_limits<uint32_t>::max()) {
+    ++value;
+  }
+}
+} // namespace
 
 bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective) {
   if (effective.stream_id == 0) return false;
@@ -13,7 +44,8 @@ bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective
   rec.profile_version = effective.profile_version;
   rec.profile = effective.profile;
   rec.picture = effective.picture;
-  // created/started are driven by provider callbacks.
+  // created/started are driven by provider callbacks and core-directed
+  // synchronous lifecycle reconciliation.
   return true;
 }
 
@@ -23,7 +55,10 @@ bool CoreStreamRegistry::on_stream_created(uint64_t stream_id) {
   rec.created = true;
   rec.last_stop_origin = StopOrigin::None;
   rec.stop_requested_by_core = false;
-  // started remains false until started event arrives
+  rec.pending_core_start_facts = 0;
+  rec.pending_core_stop_facts = 0;
+  // started remains false until started event arrives or a synchronous core
+  // start command succeeds.
   return true;
 }
 
@@ -31,26 +66,49 @@ bool CoreStreamRegistry::on_stream_destroyed(uint64_t stream_id) {
   return streams_.erase(stream_id) > 0;
 }
 
-bool CoreStreamRegistry::on_stream_started(uint64_t stream_id) {
+bool CoreStreamRegistry::on_core_stream_started(uint64_t stream_id) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
-  it->second.started = true;
-  it->second.last_stop_origin = StopOrigin::None;
-  it->second.stop_requested_by_core = false;
+  apply_stream_started(it->second);
+  increment_saturating(it->second.pending_core_start_facts);
   return true;
 }
 
-bool CoreStreamRegistry::on_stream_stopped(uint64_t stream_id, uint32_t error_code) {
+bool CoreStreamRegistry::on_provider_stream_started(uint64_t stream_id) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
+  auto& rec = it->second;
+  if (rec.pending_core_start_facts > 0) {
+    --rec.pending_core_start_facts;
+    return true;
+  }
+  if (!rec.started && rec.last_stop_origin == StopOrigin::User) {
+    // A provider start fact can be delayed behind a newer core-directed stop.
+    // Without an operation token in the provider callback, the retained user-stop
+    // truth is the newer state and must not be overwritten by this stale fact.
+    return true;
+  }
+  apply_stream_started(rec);
+  return true;
+}
 
-  const bool latch_user_stop = it->second.stop_requested_by_core ||
-      (!it->second.started && it->second.last_stop_origin == StopOrigin::User);
+bool CoreStreamRegistry::on_core_stream_stopped(uint64_t stream_id, uint32_t error_code) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  apply_stream_stopped(it->second, error_code, StopOrigin::User);
+  increment_saturating(it->second.pending_core_stop_facts);
+  return true;
+}
 
-  it->second.started = false;
-  it->second.last_error_code = error_code;
-  it->second.last_stop_origin = latch_user_stop ? StopOrigin::User : StopOrigin::Provider;
-  it->second.stop_requested_by_core = false;
+bool CoreStreamRegistry::on_provider_stream_stopped(uint64_t stream_id, uint32_t error_code) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  auto& rec = it->second;
+  if (error_code == 0 && rec.pending_core_stop_facts > 0) {
+    --rec.pending_core_stop_facts;
+    return true;
+  }
+  apply_stream_stopped(rec, error_code, StopOrigin::Provider);
   return true;
 }
 

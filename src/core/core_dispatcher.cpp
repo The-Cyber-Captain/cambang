@@ -105,7 +105,7 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStarted>(cmd.payload);
     if (streams_) {
-      streams_->on_stream_started(p.stream_id);
+      streams_->on_provider_stream_started(p.stream_id);
     }
     relevant_state_changed_ = true;
     break;
@@ -115,7 +115,7 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     stats_.commands_handled++;
     const auto& p = std::get<CmdProviderStreamStopped>(cmd.payload);
     if (streams_) {
-      streams_->on_stream_stopped(p.stream_id, p.error_code);
+      streams_->on_provider_stream_stopped(p.stream_id, p.error_code);
     }
     relevant_state_changed_ = true;
     break;

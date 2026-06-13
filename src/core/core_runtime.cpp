@@ -1224,7 +1224,7 @@ void CoreRuntime::on_core_timer_tick() {
             (void)streams_.mark_stop_requested_by_core(stream_id);
             const ProviderResult sr = prov->stop_stream(stream_id);
             if (sr.ok()) {
-              (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
+              (void)streams_.on_core_stream_stopped(stream_id, /*error_code=*/0);
             }
           }
         }
@@ -1604,7 +1604,7 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
       result_promise->set_value(TryStartStreamStatus::ProviderRejected);
       return;
     }
-    (void)streams_.on_stream_started(stream_id);
+    (void)streams_.on_core_stream_started(stream_id);
     result_promise->set_value(TryStartStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
@@ -1649,7 +1649,7 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
       result_promise->set_value(TryStopStreamStatus::ProviderRejected);
       return;
     }
-    (void)streams_.on_stream_stopped(stream_id, /*error_code=*/0);
+    (void)streams_.on_core_stream_stopped(stream_id, /*error_code=*/0);
     result_promise->set_value(TryStopStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {

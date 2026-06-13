@@ -40,6 +40,8 @@ public:
     bool started = false;
     bool stop_requested_by_core = false;
     StopOrigin last_stop_origin = StopOrigin::None;
+    uint32_t pending_core_start_facts = 0;
+    uint32_t pending_core_stop_facts = 0;
 
     uint64_t frames_received = 0;
     uint64_t frames_released = 0;
@@ -69,8 +71,10 @@ public:
   bool declare_stream_effective(const StreamRequest& effective);
   bool on_stream_created(uint64_t stream_id);
   bool on_stream_destroyed(uint64_t stream_id);
-  bool on_stream_started(uint64_t stream_id);
-  bool on_stream_stopped(uint64_t stream_id, uint32_t error_code);
+  bool on_core_stream_started(uint64_t stream_id);
+  bool on_provider_stream_started(uint64_t stream_id);
+  bool on_core_stream_stopped(uint64_t stream_id, uint32_t error_code);
+  bool on_provider_stream_stopped(uint64_t stream_id, uint32_t error_code);
   bool mark_stop_requested_by_core(uint64_t stream_id);
 
   // Frame accounting (stream must exist).

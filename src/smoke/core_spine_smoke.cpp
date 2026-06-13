@@ -756,6 +756,69 @@ static int test_strict_destroy_rejects_started_stream_smoke() {
   return 0;
 }
 
+
+static int test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start for stream idempotency smoke\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_runtime_created_stream(rt, prov)) {
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "First stream start should return OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Second immediate stream start should be idempotent OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK) {
+    std::cerr << "First stream stop should return OK\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging delayed provider stream lifecycle facts\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created || rec.started) {
+    std::cerr << "Delayed provider lifecycle facts must not resurrect a core-stopped stream\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK) {
+    std::cerr << "Second stream stop after delayed provider facts should remain idempotent OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Destroy after idempotent stops should return OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging idempotency smoke destroy fact\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_destroy_never_started_stream_smoke() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -2278,6 +2341,7 @@ int main(int argc, char** argv) {
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_destroy_never_started_stream_smoke()) { rt.stop(); return r; }
     if (int r = test_strict_destroy_rejects_started_stream_smoke()) { rt.stop(); return r; }
+    if (int r = test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke()) { rt.stop(); return r; }
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;
