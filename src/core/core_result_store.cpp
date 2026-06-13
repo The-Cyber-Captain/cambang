@@ -138,6 +138,28 @@ CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
   return truth;
 }
 
+CoreRetainedBackingPlan build_stream_retained_backing_plan(const FrameView& frame, bool has_cpu_payload) {
+  CoreRetainedBackingPlan plan{};
+  const bool gpu_primary =
+      frame.primary_backing_kind == ProducerBackingKind::GPU &&
+      static_cast<bool>(frame.primary_backing_artifact);
+  if (gpu_primary) {
+    plan.primary_kind = ResultPayloadKind::GPU_SURFACE;
+    plan.retain_gpu_display = true;
+    plan.retain_cpu_sidecar = has_cpu_payload;
+  }
+  return plan;
+}
+
+CoreRetainedBackingPlan build_capture_retained_backing_plan(const FrameView& frame) {
+  (void)frame;
+  CoreRetainedBackingPlan plan{};
+  plan.primary_kind = ResultPayloadKind::CPU_PACKED;
+  plan.retain_cpu_sidecar = false;
+  plan.retain_gpu_display = false;
+  return plan;
+}
+
 RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
     const FrameView& frame,
     uint64_t capture_timestamp_ns,
@@ -183,12 +205,16 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
                                    uint64_t capture_timestamp_ns) {
   const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
   uint64_t payload_copy_ns = 0;
-  const bool has_cpu_payload = has_cpu_packed_payload(frame);
+  const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
+  const std::optional<CoreRetainedBackingPlan> stream_backing_plan =
+      frame.stream_id != 0 ? std::make_optional(build_stream_retained_backing_plan(frame, has_cpu_payload)) : std::nullopt;
+  const std::optional<CoreRetainedBackingPlan> capture_backing_plan =
+      frame.capture_id != 0 ? std::make_optional(build_capture_retained_backing_plan(frame)) : std::nullopt;
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};
   if (has_cpu_payload) {
     const uint64_t payload_copy_begin_ns = capture_latency_trace_now_ns();
-    if (!try_copy_cpu_packed_payload(frame, payload)) {
+    if (!CoreResultStore::try_copy_cpu_packed_payload(frame, payload)) {
       return false;
     }
     payload_copy_ns = capture_latency_trace_now_ns() - payload_copy_begin_ns;
@@ -201,13 +227,13 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     if (!has_valid_result_image_description(frame)) {
       return false;
     }
-    const bool gpu_primary =
-        frame.primary_backing_kind == ProducerBackingKind::GPU &&
-        static_cast<bool>(frame.primary_backing_artifact);
-    if (!gpu_primary && !has_cpu_payload) {
+    const CoreRetainedBackingPlan& plan = *stream_backing_plan;
+    const bool gpu_primary = plan.primary_kind == ResultPayloadKind::GPU_SURFACE;
+    if (plan.primary_kind == ResultPayloadKind::CPU_PACKED && !has_cpu_payload) {
       return false;
     }
-    std::shared_ptr<void> retained_gpu_backing = frame.primary_backing_artifact;
+    std::shared_ptr<void> retained_gpu_backing =
+        plan.retain_gpu_display ? frame.primary_backing_artifact : nullptr;
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
         build_retained_gpu_backing_descriptor(frame, capture_timestamp_ns, gpu_primary);
 
@@ -219,12 +245,10 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     stream_result->image_width = frame.width;
     stream_result->image_height = frame.height;
     stream_result->image_format_fourcc = frame.format_fourcc;
-    stream_result->payload_kind = retained_gpu_backing
-        ? ResultPayloadKind::GPU_SURFACE
-        : ResultPayloadKind::CPU_PACKED;
+    stream_result->payload_kind = plan.primary_kind;
     stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
     stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
-    if (has_cpu_payload) {
+    if (plan.primary_kind == ResultPayloadKind::CPU_PACKED || plan.retain_cpu_sidecar) {
       if (frame.capture_id == 0) {
         stream_result->payload = std::move(payload);
       } else {
@@ -246,7 +270,8 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
 
   const bool payload_adopted = payload.uses_retained_bytes();
   if (frame.capture_id != 0) {
-    if (!has_cpu_payload) {
+    const CoreRetainedBackingPlan& plan = *capture_backing_plan;
+    if (plan.primary_kind != ResultPayloadKind::CPU_PACKED || !has_cpu_payload) {
       return false;
     }
     MutableCaptureResultData capture_result =

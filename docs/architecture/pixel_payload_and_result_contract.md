@@ -200,7 +200,7 @@ Properties:
 
 ## 6. Payload metadata requirements
 
-Every accepted payload must carry enough provider-agnostic metadata for truthful routing, retention, and later materialization decisions.
+Every accepted payload must carry enough provider-agnostic metadata for truthful retention and later materialization decisions.
 
 Depending on `payload_kind`, this may include:
 
@@ -224,11 +224,11 @@ A realized image-bearing artifact may have:
 
 The result’s `payload_kind` reflects the **primary backing only**.
 
-Sidecar backings may improve access/materialization capability and cost outcomes,
-but they do not create multiple primary payload kinds for a single accepted artifact.
-Primary/sidecar is not a cost ranking: a sidecar backing may be the cheapest
-route for a particular operation while the primary backing remains the
-principal retained representation.
+Sidecar backings may improve access/materialization capability, but they do
+not create multiple primary payload kinds for a single accepted artifact.
+Primary/sidecar is an identity and retention model, not a performance ranking:
+a sidecar backing may support a particular operation while the primary backing
+remains the principal retained representation.
 
 ### 6.x.1 CPU and GPU backing are not treated as symmetric choices
 
@@ -257,7 +257,27 @@ For synthetic stream results, current retained-primary `GPU_SURFACE` truth is
 determined by the emitted/retained GPU artifact itself, not by whether a
 sidecar CPU backing is also retained.
 
-### 6.x.3 Unsupported GPU-only realization
+### 6.x.3 Retained backing plan vs retained result truth
+
+CamBANG separates pre-retention intent from retained result truth.
+
+A retained backing plan is an internal production/retention intent record. It
+captures the backing forms CamBANG intends to retain for a stream or capture
+artifact before retained result truth is populated. It is not public API,
+provider API, snapshot schema, a route table, or a per-call route-economics
+mechanism.
+
+Retained backing truth is the concrete backing state actually associated with a
+retained result or capture member.
+
+Retained access truth is operation-level access capability for the retained
+artifact/member, expressed using `ResultCapability` for operations such as
+`display_view`, `to_image`, and `encoded_bytes`. It is populated from retained
+backing truth and implemented access paths. Godot result capability methods
+consume retained access truth, while materialization methods remain defensive and
+verify the concrete backing/path they use.
+
+### 6.x.4 Unsupported GPU-only realization
 
 If a source offers only GPU-backed realization and the current runtime does not provide
 a usable GPU realization path for that result flow, that source/path is unsupported for
@@ -648,9 +668,9 @@ In particular:
 - the existence of more than one backing for the same artifact does not change the
   single-primary-payload rule
 
-`to_image()` remains explicit CPU materialization and should select the least
-expensive supported CPU route from the current retained state, whether that
-route uses sidecar CPU backing or explicit GPU readback/materialization.
+`to_image()` remains explicit CPU materialization. Its reported capability is
+retained access truth populated from the current retained backing truth and the
+implemented access paths, not a per-call route-economics recalculation.
 
 Recommended first-pass capability/cost states:
 
@@ -971,7 +991,7 @@ CamBANG’s release-facing image path is a **multi-representation, provider-adap
 
 - Providers surface the most efficient truthful payload available on that backend/platform.
 - Core routes, retains, accounts for, and releases image-bearing artifacts deterministically.
-- Stream paths are latest-result and latency/display oriented.
+- Stream paths are current-retained-result and latency/display oriented.
 - Capture paths are discrete-result and fidelity/persistence oriented.
 - Result Objects expose capability/cost-aware access and explicit materialization.
 - Rich image-associated facts remain attached to results rather than bloating the hot snapshot path.

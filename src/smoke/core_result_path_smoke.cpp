@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include "core/core_result_store.h"
@@ -30,6 +31,20 @@ int main() {
   assert(stream_result->retained_access_truth.display_view == ResultCapability::CHEAP);
   assert(stream_result->retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+
+  FrameView gpu_stream_frame = stream_frame;
+  gpu_stream_frame.stream_id = 21;
+  gpu_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
+  gpu_stream_frame.primary_backing_artifact = std::make_shared<int>(42);
+  store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, 1236);
+
+  auto gpu_stream_result = store.get_latest_stream_result(21);
+  assert(gpu_stream_result);
+  assert(gpu_stream_result->payload_kind == ResultPayloadKind::GPU_SURFACE);
+  assert(gpu_stream_result->retained_gpu_backing);
+  assert(gpu_stream_result->retained_access_truth.display_view == ResultCapability::READY);
+  assert(gpu_stream_result->retained_access_truth.to_image == ResultCapability::CHEAP);
+  assert(gpu_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
 
   store.mark_stream_display_demand(20, 1'000'000'000ull);
   assert(store.is_stream_display_demand_active(20, 1'150'000'000ull));
@@ -94,6 +109,7 @@ int main() {
   assert(capture_result_with_bracket->additional_images.size() == 1);
   assert(capture_result_with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
   assert(capture_result_with_bracket->additional_images[0].image_member_index == 1);
+  assert(capture_result_with_bracket->additional_images[0].retained_access_truth.display_view == ResultCapability::CHEAP);
   assert(capture_result_with_bracket->additional_images[0].retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(capture_result_with_bracket->additional_images[0].retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
   assert(capture_result_with_bracket->capture_id == capture_id_before);

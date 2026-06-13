@@ -42,6 +42,16 @@ struct CoreRetainedAccessTruth {
   ResultCapability encoded_bytes = ResultCapability::UNSUPPORTED;
 };
 
+// Internal pre-production intent for the backing forms Core intends to retain
+// for a result artifact. This is deliberately narrower than provider/source
+// capability and remains separate from retained_access_truth, which records the
+// public operations supported by the artifact that was actually retained.
+struct CoreRetainedBackingPlan {
+  ResultPayloadKind primary_kind = ResultPayloadKind::CPU_PACKED;
+  bool retain_cpu_sidecar = false;
+  bool retain_gpu_display = false;
+};
+
 struct CoreImageFactBundle {
   bool has_image_properties = false;
   ResultImagePropertiesFacts image_properties{};

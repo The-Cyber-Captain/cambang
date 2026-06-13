@@ -335,6 +335,13 @@ facts / callbacks according to the provider strand model.
 
 Providers must report native-object and lifecycle state truthfully.
 
+Stream lifecycle reconciliation distinguishes Core-directed lifecycle
+transitions from provider-fact lifecycle acknowledgements. Delayed provider facts
+that acknowledge already-applied Core-directed transitions must not overwrite
+newer Core truth. Non-OK acknowledgement facts still preserve/report error
+information, but they do not resurrect or stop a stream through stale lifecycle
+truth.
+
 ### 9.1 No normal-operation auto-cascade
 
 During normal API operation, providers must not hide bad lifecycle
