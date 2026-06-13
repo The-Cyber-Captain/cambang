@@ -37,6 +37,26 @@ maintainer-authored validation procedures.
 
 ------------------------------------------------------------------------
 
+## 0.1 Terminology guardrail: retained backing and access truth
+
+Use **retained backing plan** for the internal pre-retention intent record that
+states which backing forms CamBANG intends to retain. Do not describe this as a
+route planner, route table, route outcome descriptor, provider capability
+surface, format negotiation surface, or per-call route-economics mechanism.
+
+Use **retained backing truth** for the concrete backing state actually associated
+with a retained result or capture member.
+
+Use **retained access truth** for operation-level access capability on that
+retained artifact/member, expressed with `ResultCapability` for operations such
+as `display_view`, `to_image`, and `encoded_bytes`.
+
+Use **primary backing** for the principal retained representation that determines
+`payload_kind`. Use **sidecar backing** for an associated retained representation
+that may support an operation without changing the primary payload kind.
+
+------------------------------------------------------------------------
+
 ## 1. Godot-facing API objects
 
 ### CamBANG prefix rule (normative)
