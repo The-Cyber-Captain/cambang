@@ -563,6 +563,70 @@ static int test_provider_open_close_refusal_visibility() {
   return 0;
 }
 
+
+static int test_stream_registry_non_ok_stop_ack_does_not_clobber_restart() {
+  CoreStreamRegistry streams;
+  StreamRequest req = make_req();
+  if (!streams.declare_stream_effective(req) || !streams.on_stream_created(req.stream_id)) {
+    std::cerr << "Stream registry non-OK stop ack setup failed\n";
+    return 1;
+  }
+
+  if (!streams.on_core_stream_started(req.stream_id)) {
+    std::cerr << "Core start setup failed for non-OK stop ack smoke\n";
+    return 1;
+  }
+  if (!streams.on_core_stream_stopped(req.stream_id, 0)) {
+    std::cerr << "Core stop setup failed for non-OK stop ack smoke\n";
+    return 1;
+  }
+  if (!streams.on_core_stream_started(req.stream_id)) {
+    std::cerr << "Core restart setup failed for non-OK stop ack smoke\n";
+    return 1;
+  }
+
+  const uint32_t delayed_error = static_cast<uint32_t>(ProviderError::ERR_BAD_STATE);
+  if (!streams.on_provider_stream_stopped(req.stream_id, delayed_error)) {
+    std::cerr << "Provider non-OK delayed stop ack was not accepted\n";
+    return 1;
+  }
+
+  const CoreStreamRegistry::StreamRecord* rec = streams.find(req.stream_id);
+  if (!rec || !rec->started) {
+    std::cerr << "Delayed non-OK stop ack must not clobber newer core restart\n";
+    return 1;
+  }
+  if (rec->pending_core_stop_facts != 0) {
+    std::cerr << "Delayed non-OK stop ack must consume pending core stop fact\n";
+    return 1;
+  }
+  if (rec->last_error_code != delayed_error) {
+    std::cerr << "Delayed non-OK stop ack must preserve provider error visibility\n";
+    return 1;
+  }
+
+  if (!streams.on_core_stream_stopped(req.stream_id, 0)) {
+    std::cerr << "Subsequent core stop failed after delayed non-OK ack\n";
+    return 1;
+  }
+  rec = streams.find(req.stream_id);
+  if (!rec || rec->started || rec->pending_core_stop_facts != 1) {
+    std::cerr << "Subsequent core stop did not produce expected stopped pending state\n";
+    return 1;
+  }
+  if (!streams.on_provider_stream_stopped(req.stream_id, 0)) {
+    std::cerr << "Subsequent OK provider stop ack failed\n";
+    return 1;
+  }
+  rec = streams.find(req.stream_id);
+  if (!rec || rec->started || rec->pending_core_stop_facts != 0 || rec->last_error_code != 0) {
+    std::cerr << "Subsequent OK provider stop ack did not clear pending stopped state\n";
+    return 1;
+  }
+
+  return 0;
+}
+
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static bool wait_for_core_barrier(CoreRuntime& rt, std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
   auto barrier = std::make_shared<std::promise<void>>();
@@ -748,6 +812,69 @@ static int test_strict_destroy_rejects_started_stream_smoke() {
   }
   if (get_stream_record(rt, kStreamId, rec)) {
     std::cerr << "Stream should be absent after successful destroy\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+
+static int test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke() {
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start for stream idempotency smoke\n";
+    return 1;
+  }
+
+  StubProvider prov;
+  if (!setup_one_runtime_created_stream(rt, prov)) {
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "First stream start should return OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Second immediate stream start should be idempotent OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK) {
+    std::cerr << "First stream stop should return OK\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging delayed provider stream lifecycle facts\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreStreamRegistry::StreamRecord rec{};
+  if (!get_stream_record(rt, kStreamId, rec) || !rec.created || rec.started) {
+    std::cerr << "Delayed provider lifecycle facts must not resurrect a core-stopped stream\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK) {
+    std::cerr << "Second stream stop after delayed provider facts should remain idempotent OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    std::cerr << "Destroy after idempotent stops should return OK\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Timed out converging idempotency smoke destroy fact\n";
     rt.stop();
     return 1;
   }
@@ -2264,6 +2391,7 @@ int main(int argc, char** argv) {
     if (int r = test_publish_gating_before_start()) return r;
     if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
     if (int r = test_provider_open_close_refusal_visibility()) return r;
+    if (int r = test_stream_registry_non_ok_stop_ack_does_not_clobber_restart()) return r;
 
     CoreRuntime rt;
     StateSnapshotBuffer buf;
@@ -2278,6 +2406,7 @@ int main(int argc, char** argv) {
     if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
     if (int r = test_destroy_never_started_stream_smoke()) { rt.stop(); return r; }
     if (int r = test_strict_destroy_rejects_started_stream_smoke()) { rt.stop(); return r; }
+    if (int r = test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke()) { rt.stop(); return r; }
     if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
     if (int r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov)) return r;
     if (int r = test_shutdown_choreography(rt, prov)) return r;

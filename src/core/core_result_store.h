@@ -10,6 +10,7 @@
 
 #include "core/result_fact_types.h"
 #include "core/result_payload_kind.h"
+#include "core/result_capability.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
@@ -33,6 +34,12 @@ struct CoreResultPayloadCpuPacked {
   }
   bool empty() const noexcept { return size_bytes() == 0; }
   bool uses_retained_bytes() const noexcept { return static_cast<bool>(retained_bytes); }
+};
+
+struct CoreRetainedAccessTruth {
+  ResultCapability display_view = ResultCapability::UNSUPPORTED;
+  ResultCapability to_image = ResultCapability::UNSUPPORTED;
+  ResultCapability encoded_bytes = ResultCapability::UNSUPPORTED;
 };
 
 struct CoreImageFactBundle {
@@ -73,6 +80,7 @@ struct CoreStreamResultData {
   // GPU-primary with CPU sidecar data rather than GPU-only.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   CoreResultPayloadCpuPacked payload{};
+  CoreRetainedAccessTruth retained_access_truth{};
   // Non-zero only when payload was copied from the same FrameView as this
   // retained stream result. Used to distinguish current CPU materialization
   // from unsupported GPU-only readback.
@@ -97,6 +105,7 @@ struct CoreCaptureResultData {
     int32_t realized_exposure_compensation_milli_ev = 0;
     uint64_t capture_timestamp_ns = 0;
     CoreResultPayloadCpuPacked payload{};
+    CoreRetainedAccessTruth retained_access_truth{};
 
     bool has_capture_attributes = false;
     ResultCaptureAttributesFacts capture_attributes{};

@@ -226,7 +226,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
   req.profile_version = 1;
   if (!streams.declare_stream_effective(req) ||
       !streams.on_stream_created(req.stream_id) ||
-      !streams.on_stream_started(req.stream_id)) {
+      !streams.on_provider_stream_started(req.stream_id)) {
     std::cerr << "FAIL: visibility diagnostics setup failed\n";
     return 1;
   }

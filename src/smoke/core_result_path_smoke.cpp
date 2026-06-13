@@ -27,6 +27,9 @@ int main() {
   assert(stream_result->stream_id == 20);
   assert(stream_result->payload.width == 2);
   assert(stream_result->payload_kind == ResultPayloadKind::CPU_PACKED);
+  assert(stream_result->retained_access_truth.display_view == ResultCapability::CHEAP);
+  assert(stream_result->retained_access_truth.to_image == ResultCapability::CHEAP);
+  assert(stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
 
   store.mark_stream_display_demand(20, 1'000'000'000ull);
   assert(store.is_stream_display_demand_active(20, 1'150'000'000ull));
@@ -64,6 +67,9 @@ int main() {
   assert(capture_result->default_image.image_member_index == 0);
   assert(capture_result->default_image.role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED);
   assert(capture_result->default_image.payload.width == 2);
+  assert(capture_result->default_image.retained_access_truth.display_view == ResultCapability::CHEAP);
+  assert(capture_result->default_image.retained_access_truth.to_image == ResultCapability::CHEAP);
+  assert(capture_result->default_image.retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
   assert(capture_result->additional_images.empty());
   const uint64_t capture_id_before = capture_result->capture_id;
   const uint64_t device_id_before = capture_result->device_instance_id;
@@ -88,6 +94,8 @@ int main() {
   assert(capture_result_with_bracket->additional_images.size() == 1);
   assert(capture_result_with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
   assert(capture_result_with_bracket->additional_images[0].image_member_index == 1);
+  assert(capture_result_with_bracket->additional_images[0].retained_access_truth.to_image == ResultCapability::CHEAP);
+  assert(capture_result_with_bracket->additional_images[0].retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
   assert(capture_result_with_bracket->capture_id == capture_id_before);
   assert(capture_result_with_bracket->device_instance_id == device_id_before);
   assert(capture_result_with_bracket->image_width == width_before);

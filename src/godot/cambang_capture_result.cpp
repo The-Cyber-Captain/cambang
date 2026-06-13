@@ -46,7 +46,10 @@ godot::Dictionary CamBANGCaptureResult::get_optical_calibration_provenance() con
 }
 
 int CamBANGCaptureResult::can_get_display_view() const {
-  return data_ ? CAPABILITY_READY : CAPABILITY_UNSUPPORTED;
+  if (!data_) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  return static_cast<int>(data_->default_image.retained_access_truth.display_view);
 }
 
 int CamBANGCaptureResult::can_to_image() const {
@@ -93,10 +96,6 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
 }
 
 int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
-  // CaptureResult.can_to_image_member(index) returns CHEAP only when the
-  // requested member already has a retained CPU representation. EXPENSIVE is
-  // reserved for a later safe explicit materialization route; unsupported
-  // members or members with no safe route remain UNSUPPORTED.
   if (!data_ || image_member_index < 0) {
     return CAPABILITY_UNSUPPORTED;
   }
@@ -104,13 +103,7 @@ int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
   if (!member) {
     return CAPABILITY_UNSUPPORTED;
   }
-  if (member->payload.width == 0 || member->payload.height == 0 || member->payload.empty()) {
-    return CAPABILITY_UNSUPPORTED;
-  }
-  if (member->payload.format_fourcc != FOURCC_RGBA && member->payload.format_fourcc != FOURCC_BGRA) {
-    return CAPABILITY_UNSUPPORTED;
-  }
-  return CAPABILITY_CHEAP;
+  return static_cast<int>(member->retained_access_truth.to_image);
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
@@ -125,7 +118,10 @@ godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_
 }
 
 int CamBANGCaptureResult::can_get_encoded_bytes() const {
-  return CAPABILITY_UNSUPPORTED;
+  if (!data_) {
+    return CAPABILITY_UNSUPPORTED;
+  }
+  return static_cast<int>(data_->default_image.retained_access_truth.encoded_bytes);
 }
 
 godot::Variant CamBANGCaptureResult::get_display_view() const {
