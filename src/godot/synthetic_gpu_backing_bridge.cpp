@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include <godot_cpp/core/callable_method_pointer.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -241,9 +240,9 @@ static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThrea
   if (!rs || !helper) {
     return;
   }
-  rs->call_on_render_thread(godot::callable_mp(
+  rs->call_on_render_thread(godot::Callable(
       helper,
-      &RenderThreadDrainHelper::drain_pending_releases_on_render_thread));
+      godot::StringName("drain_pending_releases_on_render_thread")));
 }
 
 static void clear_pending_releases_for_teardown() {
@@ -427,7 +426,7 @@ static void request_pending_release_drain() {
   schedule_render_thread_drain(rs, helper);
 }
 
-void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
+bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
   std::vector<PendingTextureWrapperRelease> pending_texture_wrappers;
   {
@@ -436,7 +435,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
       g_pending_releases.clear();
       g_pending_texture_wrapper_releases.clear();
       g_pending_release_drain_scheduled = false;
-      return;
+      return false;
     }
     pending.swap(g_pending_releases);
     pending_texture_wrappers.swap(g_pending_texture_wrapper_releases);
@@ -474,7 +473,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   if (pending.empty()) {
     schedule_again_if_needed(godot::RenderingServer::get_singleton());
-    return;
+    return true;
   }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
@@ -484,7 +483,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
       std::lock_guard<std::mutex> lock(g_pending_release_mutex);
       if (g_bridge_teardown_started) {
         g_pending_release_drain_scheduled = false;
-        return;
+        return false;
       }
       for (godot::RID &rid : pending) {
         g_pending_releases.push_back(std::move(rid));
@@ -492,7 +491,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     }
 
     schedule_again_if_needed(rs);
-    return;
+    return true;
   }
 
   for (const godot::RID &rid : pending) {
@@ -509,11 +508,12 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     if (g_bridge_teardown_started) {
       g_pending_releases.clear();
       g_pending_release_drain_scheduled = false;
-      return;
+      return false;
     }
   }
 
   schedule_again_if_needed(rs);
+  return true;
 }
 
 namespace {
