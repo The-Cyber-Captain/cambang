@@ -12,26 +12,28 @@ The current work is centred on result/backing truth, provider seams, and perform
 
 Important active concerns:
 
-* preserve truthful retained CPU/GPU access reporting;
-* keep provider-local staging separate from Core-retained result truth;
+* use the committed Synthetic backing modes as a truthful reference for stream-result backing/access behaviour;
+* preserve provider-local staging vs Core-retained result truth;
 * avoid silently falling back between CPU and GPU modes when a selected mode should be authoritative;
+* evaluate stream backing-mode performance empirically before introducing broader route/cost machinery;
 * avoid treating SyntheticProvider-only optimisations as representative of Windows MF, Android Camera2, or future platform-backed providers;
 * protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
-* look for genuine performance opportunities without misdiagnosing intentional synchronous sequencing as accidental overhead.
+* begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts.
 
-## Recent completed work
+## Recent committed checkpoint
 
-The most recent completed tranche added and validated:
+The most recent committed tranche completed and validated truthful Synthetic stream backing modes:
 
 * internal Synthetic stream backing mode selection with `Auto`, `CpuOnly`, `GpuOnly`, and `CpuAndGpu`;
 * provider-to-Core CPU sidecar retention intent on `FrameView`;
 * Core retained backing planning that retains CPU sidecar data only when explicitly marked for retention;
-* GPU-mode Synthetic stream production that does not silently fall back to CPU;
-* refusal of unsupported GPU-only modes when runtime GPU backing is unavailable;
+* truthful GPU-only stream production with no retained CPU sidecar;
+* refusal of unsupported GPU-required modes when runtime GPU backing is unavailable;
 * smoke coverage for CPU, GPU-only without retained CPU sidecar, and GPU-primary with retained CPU sidecar;
-* provider compliance coverage for frame backing facts and GPU-mode production truth.
+* provider compliance coverage for frame backing facts and GPU-mode production truth;
+* focused read-only review with no blocking or major findings.
 
-Last reported validation status for that work: green.
+Last reported validation status for that committed work: green.
 
 ## Current design posture
 

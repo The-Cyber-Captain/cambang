@@ -127,6 +127,14 @@ Keep documentation:
 * free of obsolete implementation detail;
 * separated from temporary planning notes.
 
+Agent-guidance maintenance:
+
+* keep `docs/dev/current_tranche.md` current after accepted or committed tranches;
+* use `current_tranche.md` for volatile active-workstream state, recent committed checkpoints, validation status, and near-term constraints;
+* use `docs/dev/agent_context.md` only for durable cross-tranche expectations that should persist beyond the current workstream;
+* do not duplicate canonical architecture in either guidance file.
+
+
 ## C++ expectations
 
 Prefer clear, boring C++ over cleverness.
