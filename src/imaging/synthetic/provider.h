@@ -159,6 +159,8 @@ private:
   ProducerBackingCapabilities apply_verification_backing_override_(
       ProducerBackingCapabilities runtime_truth) const noexcept;
   bool choose_stream_gpu_preference_(ProducerBackingCapabilities capabilities) const noexcept;
+  SyntheticStreamBackingMode resolve_stream_backing_mode_(
+      ProducerBackingCapabilities capabilities) const noexcept;
 
   struct DeviceState {
     std::string hardware_id;
@@ -184,6 +186,7 @@ private:
     PictureConfig picture{};
     CpuPackedPatternRenderer renderer{};
     bool prefer_gpu_backing = false;
+    SyntheticStreamBackingMode resolved_backing_mode = SyntheticStreamBackingMode::Auto;
     std::vector<std::uint8_t> gpu_staging;
     std::shared_ptr<void> live_gpu_backing{};
     uint64_t live_gpu_backing_native_id = 0;

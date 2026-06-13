@@ -35,6 +35,17 @@ enum class SyntheticVerificationBackingAdvertisementOverride : std::uint8_t {
   ForceGpuOnly = 3,
 };
 
+// Internal stream production/retention backing mode for SyntheticProvider.
+// This controls what Synthetic actually produces for stream frames; it is not a
+// public API surface and is intentionally separate from verification-only
+// capability advertisement overrides.
+enum class SyntheticStreamBackingMode : std::uint8_t {
+  Auto = 0,
+  CpuOnly = 1,
+  GpuOnly = 2,
+  CpuAndGpu = 3,
+};
+
 struct SyntheticNominalDefaults {
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -65,6 +76,8 @@ struct SyntheticProviderConfig {
   SyntheticNominalDefaults nominal{};
   SyntheticPatternDefaults pattern{};
   SyntheticTimelineScenario timeline_scenario{};
+
+  SyntheticStreamBackingMode stream_backing_mode = SyntheticStreamBackingMode::Auto;
 
   // Verification-only advertisement override. Non-release behavior.
   SyntheticVerificationBackingAdvertisementOverride verification_backing_advertisement_override =

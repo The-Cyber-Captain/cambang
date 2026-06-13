@@ -32,13 +32,29 @@ int main() {
   assert(stream_result->retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
 
-  FrameView gpu_stream_frame = stream_frame;
-  gpu_stream_frame.stream_id = 21;
-  gpu_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
-  gpu_stream_frame.primary_backing_artifact = std::make_shared<int>(42);
-  store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, 1236);
+  FrameView gpu_only_stream_frame = stream_frame;
+  gpu_only_stream_frame.stream_id = 21;
+  gpu_only_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
+  gpu_only_stream_frame.primary_backing_artifact = std::make_shared<int>(42);
+  gpu_only_stream_frame.retain_cpu_sidecar = false;
+  store.retain_frame(gpu_only_stream_frame, StreamIntent::VIEWFINDER, 1236);
 
-  auto gpu_stream_result = store.get_latest_stream_result(21);
+  auto gpu_only_stream_result = store.get_latest_stream_result(21);
+  assert(gpu_only_stream_result);
+  assert(gpu_only_stream_result->payload_kind == ResultPayloadKind::GPU_SURFACE);
+  assert(gpu_only_stream_result->retained_gpu_backing);
+  assert(gpu_only_stream_result->retained_access_truth.display_view == ResultCapability::READY);
+  assert(gpu_only_stream_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
+  assert(gpu_only_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+
+  FrameView gpu_stream_frame = stream_frame;
+  gpu_stream_frame.stream_id = 22;
+  gpu_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
+  gpu_stream_frame.primary_backing_artifact = std::make_shared<int>(43);
+  gpu_stream_frame.retain_cpu_sidecar = true;
+  store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, 1237);
+
+  auto gpu_stream_result = store.get_latest_stream_result(22);
   assert(gpu_stream_result);
   assert(gpu_stream_result->payload_kind == ResultPayloadKind::GPU_SURFACE);
   assert(gpu_stream_result->retained_gpu_backing);

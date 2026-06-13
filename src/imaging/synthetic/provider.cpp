@@ -338,6 +338,22 @@ bool SyntheticProvider::choose_stream_gpu_preference_(
   return capabilities.gpu_backed_available;
 }
 
+SyntheticStreamBackingMode SyntheticProvider::resolve_stream_backing_mode_(
+    ProducerBackingCapabilities capabilities) const noexcept {
+  switch (cfg_.stream_backing_mode) {
+    case SyntheticStreamBackingMode::CpuOnly:
+      return SyntheticStreamBackingMode::CpuOnly;
+    case SyntheticStreamBackingMode::GpuOnly:
+      return SyntheticStreamBackingMode::GpuOnly;
+    case SyntheticStreamBackingMode::CpuAndGpu:
+      return SyntheticStreamBackingMode::CpuAndGpu;
+    case SyntheticStreamBackingMode::Auto:
+    default:
+      return choose_stream_gpu_preference_(capabilities) ? SyntheticStreamBackingMode::CpuAndGpu
+                                                         : SyntheticStreamBackingMode::CpuOnly;
+  }
+}
+
 
 uint64_t SyntheticProvider::generator_frame_ordinal_from_ns_(
     uint64_t timestamp_ns,
@@ -1093,7 +1109,15 @@ ProviderResult SyntheticProvider::start_stream(
     s.pool_cursor = 0;
   }
   const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
-  s.prefer_gpu_backing = choose_stream_gpu_preference_(runtime_truth);
+  const bool selected_mode_requires_gpu =
+      cfg_.stream_backing_mode == SyntheticStreamBackingMode::GpuOnly ||
+      cfg_.stream_backing_mode == SyntheticStreamBackingMode::CpuAndGpu;
+  if (selected_mode_requires_gpu && !runtime_truth.gpu_backed_available) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  s.resolved_backing_mode = resolve_stream_backing_mode_(runtime_truth);
+  s.prefer_gpu_backing = s.resolved_backing_mode == SyntheticStreamBackingMode::GpuOnly ||
+                         s.resolved_backing_mode == SyntheticStreamBackingMode::CpuAndGpu;
   s.gpu_staging.resize(size_bytes);
 
   s.started = true;
@@ -2454,15 +2478,28 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       }
     }
   }
-  // Preserve a current CPU materialization source for the exact FrameView that
-  // is about to be retained, while keeping the GPU backing as the primary
-  // display path when the GPU update succeeds.
-  const auto copy_t0 = std::chrono::steady_clock::now();
-  std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
-  const auto copy_t1 = std::chrono::steady_clock::now();
-  const uint64_t copy_ns = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
-  record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
+  const bool requires_gpu_primary =
+      s.resolved_backing_mode == SyntheticStreamBackingMode::GpuOnly ||
+      s.resolved_backing_mode == SyntheticStreamBackingMode::CpuAndGpu;
+  if (requires_gpu_primary && !gpu_backing) {
+    // A mode that selected a truthful GPU-backed stream must not silently emit
+    // a CPU fallback frame when live GPU backing creation/update is unavailable.
+    slot->in_use.store(false, std::memory_order_release);
+    return;
+  }
+
+  const bool publish_cpu_payload =
+      s.resolved_backing_mode != SyntheticStreamBackingMode::GpuOnly;
+  if (publish_cpu_payload) {
+    // Preserve a current CPU materialization source for the exact FrameView that
+    // is about to be retained. GPU-only mode keeps CPU staging provider-local.
+    const auto copy_t0 = std::chrono::steady_clock::now();
+    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+    const auto copy_t1 = std::chrono::steady_clock::now();
+    const uint64_t copy_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+    record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
+  }
 
   FrameView fv{};
   fv.device_instance_id = s.req.device_instance_id;
@@ -2491,8 +2528,11 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.capture_timestamp.value = scheduled_capture_ns;
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
-  fv.data = slot->bytes.data();
-  fv.size_bytes = slot->bytes.size();
+  fv.retain_cpu_sidecar = publish_cpu_payload;
+  if (publish_cpu_payload) {
+    fv.data = slot->bytes.data();
+    fv.size_bytes = slot->bytes.size();
+  }
   fv.stride_bytes = stride;
   const bool profile_compatible =
       fv.width == s.req.profile.width &&
