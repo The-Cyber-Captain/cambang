@@ -563,6 +563,70 @@ static int test_provider_open_close_refusal_visibility() {
   return 0;
 }
 
+
+static int test_stream_registry_non_ok_stop_ack_does_not_clobber_restart() {
+  CoreStreamRegistry streams;
+  StreamRequest req = make_req();
+  if (!streams.declare_stream_effective(req) || !streams.on_stream_created(req.stream_id)) {
+    std::cerr << "Stream registry non-OK stop ack setup failed\n";
+    return 1;
+  }
+
+  if (!streams.on_core_stream_started(req.stream_id)) {
+    std::cerr << "Core start setup failed for non-OK stop ack smoke\n";
+    return 1;
+  }
+  if (!streams.on_core_stream_stopped(req.stream_id, 0)) {
+    std::cerr << "Core stop setup failed for non-OK stop ack smoke\n";
+    return 1;
+  }
+  if (!streams.on_core_stream_started(req.stream_id)) {
+    std::cerr << "Core restart setup failed for non-OK stop ack smoke\n";
+    return 1;
+  }
+
+  const uint32_t delayed_error = static_cast<uint32_t>(ProviderError::ERR_BAD_STATE);
+  if (!streams.on_provider_stream_stopped(req.stream_id, delayed_error)) {
+    std::cerr << "Provider non-OK delayed stop ack was not accepted\n";
+    return 1;
+  }
+
+  const CoreStreamRegistry::StreamRecord* rec = streams.find(req.stream_id);
+  if (!rec || !rec->started) {
+    std::cerr << "Delayed non-OK stop ack must not clobber newer core restart\n";
+    return 1;
+  }
+  if (rec->pending_core_stop_facts != 0) {
+    std::cerr << "Delayed non-OK stop ack must consume pending core stop fact\n";
+    return 1;
+  }
+  if (rec->last_error_code != delayed_error) {
+    std::cerr << "Delayed non-OK stop ack must preserve provider error visibility\n";
+    return 1;
+  }
+
+  if (!streams.on_core_stream_stopped(req.stream_id, 0)) {
+    std::cerr << "Subsequent core stop failed after delayed non-OK ack\n";
+    return 1;
+  }
+  rec = streams.find(req.stream_id);
+  if (!rec || rec->started || rec->pending_core_stop_facts != 1) {
+    std::cerr << "Subsequent core stop did not produce expected stopped pending state\n";
+    return 1;
+  }
+  if (!streams.on_provider_stream_stopped(req.stream_id, 0)) {
+    std::cerr << "Subsequent OK provider stop ack failed\n";
+    return 1;
+  }
+  rec = streams.find(req.stream_id);
+  if (!rec || rec->started || rec->pending_core_stop_facts != 0 || rec->last_error_code != 0) {
+    std::cerr << "Subsequent OK provider stop ack did not clear pending stopped state\n";
+    return 1;
+  }
+
+  return 0;
+}
+
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
 static bool wait_for_core_barrier(CoreRuntime& rt, std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
   auto barrier = std::make_shared<std::promise<void>>();
@@ -2327,6 +2391,7 @@ int main(int argc, char** argv) {
     if (int r = test_publish_gating_before_start()) return r;
     if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
     if (int r = test_provider_open_close_refusal_visibility()) return r;
+    if (int r = test_stream_registry_non_ok_stop_ack_does_not_clobber_restart()) return r;
 
     CoreRuntime rt;
     StateSnapshotBuffer buf;

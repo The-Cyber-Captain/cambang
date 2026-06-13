@@ -104,8 +104,9 @@ bool CoreStreamRegistry::on_provider_stream_stopped(uint64_t stream_id, uint32_t
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   auto& rec = it->second;
-  if (error_code == 0 && rec.pending_core_stop_facts > 0) {
+  if (rec.pending_core_stop_facts > 0) {
     --rec.pending_core_stop_facts;
+    rec.last_error_code = error_code;
     return true;
   }
   apply_stream_stopped(rec, error_code, StopOrigin::Provider);
