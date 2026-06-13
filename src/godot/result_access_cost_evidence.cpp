@@ -8,6 +8,7 @@
 #include <string>
 
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 namespace cambang::result_access_cost_evidence {
 namespace {
@@ -88,24 +89,32 @@ bool mark_fresh_locked(const char* route, const SharedStreamResultData& data) {
   return true;
 }
 
+void set_dictionary_value(godot::Dictionary& dictionary, const char* key, const godot::Variant& value) {
+  dictionary.set(godot::Variant(godot::String(key)), value);
+}
+
+void set_dictionary_value(godot::Dictionary& dictionary, const std::string& key, const godot::Variant& value) {
+  dictionary.set(godot::Variant(godot::String(key.c_str())), value);
+}
+
 godot::Dictionary route_to_dictionary(const RouteEvidence& evidence) {
   godot::Dictionary d;
-  d["calls"] = static_cast<uint64_t>(evidence.calls);
-  d["successes"] = static_cast<uint64_t>(evidence.successes);
-  d["failures"] = static_cast<uint64_t>(evidence.failures);
-  d["total_ns"] = static_cast<uint64_t>(evidence.total_ns);
-  d["max_ns"] = static_cast<uint64_t>(evidence.max_ns);
-  d["first_success_ns"] = static_cast<uint64_t>(evidence.first_success_ns);
-  d["fresh_result_successes"] = static_cast<uint64_t>(evidence.fresh_result_successes);
-  d["fresh_result_total_ns"] = static_cast<uint64_t>(evidence.fresh_result_total_ns);
-  d["fresh_result_max_ns"] = static_cast<uint64_t>(evidence.fresh_result_max_ns);
-  d["repeat_successes"] = static_cast<uint64_t>(evidence.repeat_successes);
-  d["repeat_total_ns"] = static_cast<uint64_t>(evidence.repeat_total_ns);
-  d["repeat_max_ns"] = static_cast<uint64_t>(evidence.repeat_max_ns);
-  d["last_width"] = static_cast<uint64_t>(evidence.last_width);
-  d["last_height"] = static_cast<uint64_t>(evidence.last_height);
-  d["last_bytes"] = static_cast<uint64_t>(evidence.last_bytes);
-  d["last_reported_capability"] = evidence.last_reported_capability;
+  set_dictionary_value(d, "calls", godot::Variant(static_cast<uint64_t>(evidence.calls)));
+  set_dictionary_value(d, "successes", godot::Variant(static_cast<uint64_t>(evidence.successes)));
+  set_dictionary_value(d, "failures", godot::Variant(static_cast<uint64_t>(evidence.failures)));
+  set_dictionary_value(d, "total_ns", godot::Variant(static_cast<uint64_t>(evidence.total_ns)));
+  set_dictionary_value(d, "max_ns", godot::Variant(static_cast<uint64_t>(evidence.max_ns)));
+  set_dictionary_value(d, "first_success_ns", godot::Variant(static_cast<uint64_t>(evidence.first_success_ns)));
+  set_dictionary_value(d, "fresh_result_successes", godot::Variant(static_cast<uint64_t>(evidence.fresh_result_successes)));
+  set_dictionary_value(d, "fresh_result_total_ns", godot::Variant(static_cast<uint64_t>(evidence.fresh_result_total_ns)));
+  set_dictionary_value(d, "fresh_result_max_ns", godot::Variant(static_cast<uint64_t>(evidence.fresh_result_max_ns)));
+  set_dictionary_value(d, "repeat_successes", godot::Variant(static_cast<uint64_t>(evidence.repeat_successes)));
+  set_dictionary_value(d, "repeat_total_ns", godot::Variant(static_cast<uint64_t>(evidence.repeat_total_ns)));
+  set_dictionary_value(d, "repeat_max_ns", godot::Variant(static_cast<uint64_t>(evidence.repeat_max_ns)));
+  set_dictionary_value(d, "last_width", godot::Variant(static_cast<uint64_t>(evidence.last_width)));
+  set_dictionary_value(d, "last_height", godot::Variant(static_cast<uint64_t>(evidence.last_height)));
+  set_dictionary_value(d, "last_bytes", godot::Variant(static_cast<uint64_t>(evidence.last_bytes)));
+  set_dictionary_value(d, "last_reported_capability", godot::Variant(evidence.last_reported_capability));
   return d;
 }
 
@@ -159,7 +168,7 @@ godot::Dictionary snapshot() {
   godot::Dictionary d;
   std::lock_guard<std::mutex> lock(g_mutex);
   for (const auto& kv : g_routes) {
-    d[godot::String(kv.first.c_str())] = route_to_dictionary(kv.second);
+    set_dictionary_value(d, kv.first, godot::Variant(route_to_dictionary(kv.second)));
   }
   return d;
 }
