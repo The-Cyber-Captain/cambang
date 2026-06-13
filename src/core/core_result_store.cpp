@@ -146,7 +146,7 @@ CoreRetainedBackingPlan build_stream_retained_backing_plan(const FrameView& fram
   if (gpu_primary) {
     plan.primary_kind = ResultPayloadKind::GPU_SURFACE;
     plan.retain_gpu_display = true;
-    plan.retain_cpu_sidecar = has_cpu_payload;
+    plan.retain_cpu_sidecar = has_cpu_payload && frame.retain_cpu_sidecar;
   }
   return plan;
 }

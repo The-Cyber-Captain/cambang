@@ -94,6 +94,9 @@ struct EventRec {
   bool capture_image_has_realized_exposure_compensation_milli_ev = false;
   int32_t capture_image_realized_exposure_compensation_milli_ev = 0;
   CaptureTimestamp ts{};
+  ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
+  bool has_primary_backing_artifact = false;
+  bool retain_cpu_sidecar = true;
 };
 
 uint64_t fnv1a64_hash_bytes(const uint8_t* data, size_t size_bytes) {
@@ -141,7 +144,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
   void on_capture_failed(uint64_t id, uint64_t, ProviderError) override { std::lock_guard<std::mutex> lk(mu); events.push_back({"capture_failed", id}); }
 
   void on_frame(const FrameView& frame) override {
-    EventRec ev{"frame", 0};
+    EventRec ev{"frame", frame.stream_id};
     ev.capture_id = frame.capture_id;
     ev.format_fourcc = frame.format_fourcc;
     ev.ts = frame.capture_timestamp;
@@ -181,6 +184,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
         }
       }
     }
+    ev.primary_backing_kind = frame.primary_backing_kind;
+    ev.has_primary_backing_artifact = static_cast<bool>(frame.primary_backing_artifact);
+    ev.retain_cpu_sidecar = frame.retain_cpu_sidecar;
     ev.capture_image_routing = frame.capture_image.routing;
     ev.capture_image_member_index = frame.capture_image.image_member_index;
     ev.capture_image_applied_exposure_compensation_milli_ev =
@@ -270,6 +276,20 @@ CaptureRequest make_direct_provider_multi_member_still_capture_request(
       capture_id, device_instance_id, width, height, format_fourcc);
   append_additional_bracket_members(req.still_image_bundle, additional_exposure_compensation_milli_evs);
   return req;
+}
+
+bool wait_for_stream_frame(const RecorderCallbacks& cb, uint64_t stream_id, EventRec& out) {
+  for (int i = 0; i < kMaxIters; ++i) {
+    const auto events = cb.snapshot_events();
+    for (const auto& ev : events) {
+      if (ev.tag == "frame" && ev.id == stream_id && ev.capture_id == 0) {
+        out = ev;
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  return false;
 }
 
 bool wait_for_capture_completed_with_frames(const RecorderCallbacks& cb,
@@ -1280,6 +1300,159 @@ bool run_synthetic_backing_capability_advertisement_check() {
   if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceCpuAndGpu, true, true)) return false;
   if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceGpuOnly, false, true)) return false;
 
+  return true;
+}
+
+bool run_synthetic_stream_backing_mode_production_check() {
+  auto make_req = [](uint64_t stream_id) {
+    StreamRequest req{};
+    req.stream_id = stream_id;
+    req.device_instance_id = 81;
+    req.intent = StreamIntent::PREVIEW;
+    req.profile.width = 32;
+    req.profile.height = 32;
+    req.profile.format_fourcc = FOURCC_RGBA;
+    req.profile.target_fps_min = 30;
+    req.profile.target_fps_max = 30;
+    return req;
+  };
+
+  auto verify_cpu_frame_mode = [&](SyntheticStreamBackingMode mode, const char* label, uint64_t stream_id) -> bool {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 32;
+    cfg.nominal.height = 32;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cfg.nominal.start_stream_warmup_ns = 0;
+    cfg.stream_backing_mode = mode;
+    SyntheticProvider provider(cfg);
+    const StreamRequest req = make_req(stream_id);
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", req.device_instance_id, 8101).ok() ||
+        !provider.create_stream(req).ok() ||
+        !provider.start_stream(req.stream_id, req.profile, req.picture).ok()) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " setup failed\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    provider.advance(0);
+    EventRec frame{};
+    const bool got_frame = wait_for_stream_frame(cb, req.stream_id, frame);
+    if (!provider.stop_stream(req.stream_id).ok() ||
+        !provider.destroy_stream(req.stream_id).ok() ||
+        !provider.close_device(req.device_instance_id).ok() ||
+        !provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " teardown failed\n";
+      return false;
+    }
+    if (!got_frame) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " emitted no frame\n";
+      return false;
+    }
+    if (frame.primary_backing_kind != ProducerBackingKind::CPU ||
+        frame.has_primary_backing_artifact ||
+        !frame.retain_cpu_sidecar ||
+        frame.payload_size_bytes == 0) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " CPU frame truth mismatch\n";
+      return false;
+    }
+    return true;
+  };
+
+  if (!verify_cpu_frame_mode(SyntheticStreamBackingMode::CpuOnly, "cpu_only", 8102)) return false;
+
+  const bool runtime_gpu_gate = synthetic_gpu_backing_runtime_available();
+  if (!runtime_gpu_gate) {
+    auto verify_unavailable_gpu_refusal = [&](SyntheticStreamBackingMode mode, uint64_t stream_id) -> bool {
+      RecorderCallbacks cb;
+      SyntheticProviderConfig cfg{};
+      cfg.endpoint_count = 1;
+      cfg.nominal.width = 32;
+      cfg.nominal.height = 32;
+      cfg.nominal.format_fourcc = FOURCC_RGBA;
+      cfg.stream_backing_mode = mode;
+      SyntheticProvider provider(cfg);
+      const StreamRequest req = make_req(stream_id);
+      if (!provider.initialize(&cb).ok() ||
+          !provider.open_device("synthetic:0", req.device_instance_id, 8101).ok() ||
+          !provider.create_stream(req).ok()) {
+        std::cerr << "FAIL synthetic stream backing unavailable-gpu setup failed\n";
+        (void)provider.shutdown();
+        return false;
+      }
+      const ProviderResult start_result = provider.start_stream(req.stream_id, req.profile, req.picture);
+      if (start_result.code != ProviderError::ERR_NOT_SUPPORTED) {
+        std::cerr << "FAIL synthetic stream backing unavailable-gpu mode did not refuse clearly\n";
+        (void)provider.shutdown();
+        return false;
+      }
+      if (!provider.destroy_stream(req.stream_id).ok() ||
+          !provider.close_device(req.device_instance_id).ok() ||
+          !provider.shutdown().ok()) {
+        std::cerr << "FAIL synthetic stream backing unavailable-gpu teardown failed\n";
+        return false;
+      }
+      return true;
+    };
+    if (!verify_unavailable_gpu_refusal(SyntheticStreamBackingMode::GpuOnly, 8103)) return false;
+    if (!verify_unavailable_gpu_refusal(SyntheticStreamBackingMode::CpuAndGpu, 8104)) return false;
+    if (!verify_cpu_frame_mode(SyntheticStreamBackingMode::Auto, "auto_cpu_default", 8105)) return false;
+    return true;
+  }
+
+  // In builds with a real Synthetic GPU runtime installed, assert production
+  // truth directly. Host maintainer tools normally exercise the unavailable-GPU
+  // refusal branch above.
+  auto verify_gpu_frame_mode = [&](SyntheticStreamBackingMode mode,
+                                   const char* label,
+                                   uint64_t stream_id,
+                                   bool expected_cpu_sidecar) -> bool {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 32;
+    cfg.nominal.height = 32;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cfg.nominal.start_stream_warmup_ns = 0;
+    cfg.stream_backing_mode = mode;
+    SyntheticProvider provider(cfg);
+    const StreamRequest req = make_req(stream_id);
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", req.device_instance_id, 8101).ok() ||
+        !provider.create_stream(req).ok() ||
+        !provider.start_stream(req.stream_id, req.profile, req.picture).ok()) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " setup failed\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    provider.advance(0);
+    EventRec frame{};
+    const bool got_frame = wait_for_stream_frame(cb, req.stream_id, frame);
+    if (!provider.stop_stream(req.stream_id).ok() ||
+        !provider.destroy_stream(req.stream_id).ok() ||
+        !provider.close_device(req.device_instance_id).ok() ||
+        !provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " teardown failed\n";
+      return false;
+    }
+    if (!got_frame) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " emitted no frame\n";
+      return false;
+    }
+    if (frame.primary_backing_kind != ProducerBackingKind::GPU ||
+        !frame.has_primary_backing_artifact ||
+        frame.retain_cpu_sidecar != expected_cpu_sidecar ||
+        ((frame.payload_size_bytes != 0) != expected_cpu_sidecar)) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " GPU frame truth mismatch\n";
+      return false;
+    }
+    return true;
+  };
+
+  if (!verify_gpu_frame_mode(SyntheticStreamBackingMode::GpuOnly, "gpu_only", 8106, false)) return false;
+  if (!verify_gpu_frame_mode(SyntheticStreamBackingMode::CpuAndGpu, "cpu_and_gpu", 8107, true)) return false;
+  if (!verify_gpu_frame_mode(SyntheticStreamBackingMode::Auto, "auto_gpu_default", 8108, true)) return false;
   return true;
 }
 
@@ -2305,6 +2478,7 @@ int main(int argc, char** argv) {
       {"run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); }},
       {"run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); }},
       {"run_synthetic_backing_capability_advertisement_check", [] { return run_synthetic_backing_capability_advertisement_check(); }},
+      {"run_synthetic_stream_backing_mode_production_check", [] { return run_synthetic_stream_backing_mode_production_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},

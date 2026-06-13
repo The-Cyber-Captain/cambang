@@ -404,6 +404,12 @@ struct FrameView {
   // Buffer
   const uint8_t* data = nullptr;
   size_t size_bytes = 0;
+  // Internal provider->Core retention intent for CPU bytes. This distinguishes
+  // CPU bytes deliberately published for primary/sidecar retention from
+  // provider-local staging/upload details. CPU-primary frames with CPU payload
+  // are still retained as primary by Core; GPU-primary frames retain CPU sidecar
+  // data only when this remains true.
+  bool retain_cpu_sidecar = true;
   // Optional immutable owner for tightly packed CPU payload bytes. Providers may
   // set this only when the pointed-to vector exactly backs data/size_bytes and
   // will not be mutated after posting. Core may then retain/adopt the shared
