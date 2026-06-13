@@ -4,7 +4,8 @@
 
 Treat the repository source as authoritative.
 
-For repo-specific architecture and review guidance, read `docs/dev/agent_context.md`.
+For broad design or architecture tasks, the user may explicitly ask you to read `docs/dev/agent_context.md`.
+For active tranche handoff tasks, the user may explicitly ask you to read `docs/dev/current_tranche.md`.
 
 Before changing code:
 

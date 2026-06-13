@@ -1,8 +1,7 @@
 # Agent Context
 
 This document gives repo-specific context for AI coding agents working on CamBANG. It supports the root `AGENTS.md` by recording durable project expectations that are too specific for the root file but too stable to repeat in every prompt.
-For active development work, also read `docs/dev/current_tranche.md`. That file is intentionally more volatile and should be treated as current workstream context, not permanent architecture.
-
+For active tranche handoff tasks, `docs/dev/current_tranche.md` may provide additional current workstream context when the user explicitly requests it.
 ## Source authority
 
 The checked-out repository is authoritative.
