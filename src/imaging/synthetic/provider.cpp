@@ -2521,7 +2521,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.stride_bytes = stride;
     fv.retained_gpu_backing_descriptor.format_fourcc = FOURCC_RGBA;
     fv.retained_gpu_backing_descriptor.display_available = true;
-    fv.retained_gpu_backing_descriptor.materialization_available = false;
+    fv.retained_gpu_backing_descriptor.materialization_available =
+        gpu_ok && synthetic_gpu_backing_can_materialize_to_image(gpu_backing);
     fv.retained_gpu_backing_descriptor.materialization_requires_gpu_readback = false;
   }
   fv.primary_backing_artifact = std::move(gpu_backing);

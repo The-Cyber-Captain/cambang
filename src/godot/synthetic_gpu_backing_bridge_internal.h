@@ -9,7 +9,7 @@ class RenderThreadDrainHelper : public godot::RefCounted {
   GDCLASS(RenderThreadDrainHelper, godot::RefCounted);
 
 public:
-  void drain_pending_releases_on_render_thread();
+  bool drain_pending_releases_on_render_thread();
 
   static void _bind_methods() {
     godot::ClassDB::bind_method(

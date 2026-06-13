@@ -240,7 +240,9 @@ static void schedule_render_thread_drain(godot::RenderingServer* rs, RenderThrea
   if (!rs || !helper) {
     return;
   }
-  rs->call_on_render_thread(godot::Callable(helper, godot::StringName("drain_pending_releases_on_render_thread")));
+  rs->call_on_render_thread(godot::Callable(
+      helper,
+      godot::StringName("drain_pending_releases_on_render_thread")));
 }
 
 static void clear_pending_releases_for_teardown() {
@@ -424,7 +426,7 @@ static void request_pending_release_drain() {
   schedule_render_thread_drain(rs, helper);
 }
 
-void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
+bool RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
   std::vector<godot::RID> pending;
   std::vector<PendingTextureWrapperRelease> pending_texture_wrappers;
   {
@@ -433,7 +435,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
       g_pending_releases.clear();
       g_pending_texture_wrapper_releases.clear();
       g_pending_release_drain_scheduled = false;
-      return;
+      return false;
     }
     pending.swap(g_pending_releases);
     pending_texture_wrappers.swap(g_pending_texture_wrapper_releases);
@@ -471,7 +473,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
 
   if (pending.empty()) {
     schedule_again_if_needed(godot::RenderingServer::get_singleton());
-    return;
+    return true;
   }
 
   godot::RenderingServer* rs = godot::RenderingServer::get_singleton();
@@ -481,7 +483,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
       std::lock_guard<std::mutex> lock(g_pending_release_mutex);
       if (g_bridge_teardown_started) {
         g_pending_release_drain_scheduled = false;
-        return;
+        return false;
       }
       for (godot::RID &rid : pending) {
         g_pending_releases.push_back(std::move(rid));
@@ -489,7 +491,7 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     }
 
     schedule_again_if_needed(rs);
-    return;
+    return true;
   }
 
   for (const godot::RID &rid : pending) {
@@ -506,11 +508,12 @@ void RenderThreadDrainHelper::drain_pending_releases_on_render_thread() {
     if (g_bridge_teardown_started) {
       g_pending_releases.clear();
       g_pending_release_drain_scheduled = false;
-      return;
+      return false;
     }
   }
 
   schedule_again_if_needed(rs);
+  return true;
 }
 
 namespace {
@@ -819,6 +822,69 @@ void release_stream_live_gpu_backing(std::shared_ptr<void>& backing) noexcept {
   backing.reset();
 }
 
+bool can_materialize_to_image(const std::shared_ptr<void>& backing) noexcept {
+  if (bridge_teardown_started() || !backing) {
+    return false;
+  }
+  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
+      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
+  if (!retained) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(retained->mutex);
+  if (retained->released ||
+      retained->width == 0 ||
+      retained->height == 0 ||
+      retained->stride_bytes != retained->width * 4u) {
+    return false;
+  }
+  const int64_t required =
+      static_cast<int64_t>(retained->stride_bytes) * static_cast<int64_t>(retained->height);
+  return required > 0 && retained->upload_bytes.size() >= required;
+}
+
+godot::Ref<godot::Image> materialize_to_image(const std::shared_ptr<void>& backing) {
+  if (bridge_teardown_started() || !backing) {
+    return {};
+  }
+  const std::shared_ptr<RetainedSyntheticGpuBacking> retained =
+      std::static_pointer_cast<RetainedSyntheticGpuBacking>(backing);
+  if (!retained) {
+    return {};
+  }
+
+  godot::PackedByteArray bytes;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  {
+    std::lock_guard<std::mutex> lock(retained->mutex);
+    if (retained->released ||
+        retained->width == 0 ||
+        retained->height == 0 ||
+        retained->stride_bytes != retained->width * 4u) {
+      return {};
+    }
+    const int64_t required =
+        static_cast<int64_t>(retained->stride_bytes) * static_cast<int64_t>(retained->height);
+    if (required <= 0 || retained->upload_bytes.size() < required) {
+      return {};
+    }
+    width = retained->width;
+    height = retained->height;
+    bytes = retained->upload_bytes;
+    if (bytes.size() != required) {
+      bytes.resize(required);
+    }
+  }
+
+  return godot::Image::create_from_data(
+      static_cast<int>(width),
+      static_cast<int>(height),
+      false,
+      godot::Image::FORMAT_RGBA8,
+      bytes);
+}
+
 const SyntheticGpuBackingRuntimeOps kOps{
     &global_rd_available,
     &global_rd_roundtrip_rgba8,
@@ -826,6 +892,7 @@ const SyntheticGpuBackingRuntimeOps kOps{
     &create_stream_live_gpu_backing_rgba8,
     &update_stream_live_gpu_backing_rgba8,
     &release_stream_live_gpu_backing,
+    &can_materialize_to_image,
     &take_update_timing_stats,
     &peek_update_timing_stats,
 };
@@ -946,14 +1013,8 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   return display_view;
 }
 
-bool synthetic_gpu_backing_can_materialize_to_image(const std::shared_ptr<void>& backing) {
-  (void)backing;
-  return false;
-}
-
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing) {
-  (void)backing;
-  return {};
+  return materialize_to_image(backing);
 }
 
 } // namespace cambang

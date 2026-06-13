@@ -19,21 +19,39 @@ Important active concerns:
 * avoid treating SyntheticProvider-only optimisations as representative of Windows MF, Android Camera2, or future platform-backed providers;
 * protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
 * begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts.
+* keep Synthetic retained GPU backing materialization scoped and named accurately: it is bridge-backed Synthetic materialization, not generic platform GPU/RD readback;
 
 ## Recent committed checkpoint
 
-The most recent committed tranche completed and validated truthful Synthetic stream backing modes:
+The most recent committed checkpoint added and validated the first narrow Synthetic retained GPU backing materialization path for stream results.
 
-* internal Synthetic stream backing mode selection with `Auto`, `CpuOnly`, `GpuOnly`, and `CpuAndGpu`;
-* provider-to-Core CPU sidecar retention intent on `FrameView`;
-* Core retained backing planning that retains CPU sidecar data only when explicitly marked for retention;
-* truthful GPU-only stream production with no retained CPU sidecar;
-* refusal of unsupported GPU-required modes when runtime GPU backing is unavailable;
-* smoke coverage for CPU, GPU-only without retained CPU sidecar, and GPU-primary with retained CPU sidecar;
-* provider compliance coverage for frame backing facts and GPU-mode production truth;
-* focused read-only review with no blocking or major findings.
+Checkpoint summary:
 
-Last reported validation status for that committed work: green.
+* `GPU_SURFACE` stream results with retained Synthetic GPU backing can now advertise `to_image()` support when the retained backing explicitly reports materialization availability.
+* GPU-only stream `to_image()` remains `UNSUPPORTED` when no materializer is available.
+* GPU-only stream `to_image()` is classified as `EXPENSIVE` only when the Synthetic retained backing materializer is genuinely available.
+* GPU-primary stream results with a retained current CPU sidecar still prefer the CPU sidecar for `to_image()` and remain `CHEAP`.
+* CPU-packed stream results remain `CHEAP`.
+* The materializer is scoped to Synthetic retained GPU backing materialization through the Godot/Synthetic bridge. It is not generic platform GPU/RD readback.
+* Core consumes neutral retained-backing truth and does not own Godot/RD/Image details.
+* The Godot display/materialization adapter owns Godot-facing materialization.
+* The Synthetic runtime wrapper owns the provider/runtime-neutral materialization-availability query.
+* The ODR/linkage repair established single ownership for `synthetic_gpu_backing_can_materialize_to_image(...)` in `src/imaging/synthetic/gpu_backing_runtime.*`.
+
+Validation reported green after the final ODR/linkage repair:
+
+* Windows GDE/SCons build and link completed.
+* Core smoke/verifier tools passed, including `core_result_path_smoke`, `provider_compliance_verify`, `synthetic_timeline_verify`, `restart_boundary_verify`, and `verify_case_runner --run-all --repeat=50`.
+* `windows_mf_runtime_validate --real-hardware` passed.
+* Godot suite passed with `51 passed, 0 failed, 1 review`.
+* Scene 70 result retrieval verification passed across the tested Compatibility/Mobile and Android/Windows combinations.
+
+Validation notes:
+
+* The `Review: 1` suite result is acceptable only while it remains the known Scene 65 public-boundary review case.
+* The new focused result-access coverage is inside `core_result_path_smoke`; no new standalone executable or Godot scene was reported.
+* Local GPU/runtime validation exercised retained GPU display backing on Mobile renderer, but this checkpoint still does not claim platform-provider GPU readback support.
+
 
 ## Current design posture
 
@@ -72,6 +90,7 @@ For future platform-backed providers:
 * Android Camera2 is the first release target;
 * Windows Media Foundation remains a development accelerator;
 * future providers may support genuine platform bursts, provider-managed exposure sequences, or different backing behaviour.
+* do not extrapolate the Synthetic bridge-retained upload-byte materializer to Android Camera2, Windows MF, or future native GPU-surface providers without a provider-specific retained-backing/materialization design;
 
 When assessing performance:
 

@@ -47,6 +47,20 @@ int main() {
   assert(gpu_only_stream_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
   assert(gpu_only_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
 
+  FrameView gpu_materializable_stream_frame = gpu_only_stream_frame;
+  gpu_materializable_stream_frame.stream_id = 23;
+  gpu_materializable_stream_frame.retained_gpu_backing_descriptor.valid = true;
+  gpu_materializable_stream_frame.retained_gpu_backing_descriptor.materialization_available = true;
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1238);
+
+  auto gpu_materializable_stream_result = store.get_latest_stream_result(23);
+  assert(gpu_materializable_stream_result);
+  assert(gpu_materializable_stream_result->payload_kind == ResultPayloadKind::GPU_SURFACE);
+  assert(gpu_materializable_stream_result->retained_gpu_backing);
+  assert(gpu_materializable_stream_result->retained_access_truth.display_view == ResultCapability::READY);
+  assert(gpu_materializable_stream_result->retained_access_truth.to_image == ResultCapability::EXPENSIVE);
+  assert(gpu_materializable_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+
   FrameView gpu_stream_frame = stream_frame;
   gpu_stream_frame.stream_id = 22;
   gpu_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;

@@ -1,6 +1,7 @@
 #include "godot/godot_gpu_display_service.h"
 
 #include "godot/synthetic_gpu_backing_bridge.h"
+#include "imaging/synthetic/gpu_backing_runtime.h"
 
 namespace cambang {
 
@@ -39,6 +40,30 @@ godot::Ref<godot::Texture2D> godot_gpu_display_get_texture_by_descriptor(
     return synthetic_gpu_backing_display_texture(legacy_retained_gpu_backing);
   }
   return godot_gpu_display_lookup_texture_by_descriptor(descriptor);
+}
+
+bool godot_gpu_display_can_materialize_to_image(
+    const RetainedGpuBackingDescriptor& descriptor,
+    const std::shared_ptr<void>& legacy_retained_gpu_backing) {
+  if (!descriptor.valid || !descriptor.materialization_available) {
+    return false;
+  }
+  if (legacy_retained_gpu_backing) {
+    return synthetic_gpu_backing_can_materialize_to_image(legacy_retained_gpu_backing);
+  }
+  return false;
+}
+
+godot::Ref<godot::Image> godot_gpu_display_materialize_to_image(
+    const RetainedGpuBackingDescriptor& descriptor,
+    const std::shared_ptr<void>& legacy_retained_gpu_backing) {
+  if (!godot_gpu_display_can_materialize_to_image(descriptor, legacy_retained_gpu_backing)) {
+    return {};
+  }
+  if (legacy_retained_gpu_backing) {
+    return synthetic_gpu_backing_materialize_to_image(legacy_retained_gpu_backing);
+  }
+  return {};
 }
 
 void godot_gpu_display_invalidate_descriptor(const RetainedGpuBackingDescriptor& descriptor) {

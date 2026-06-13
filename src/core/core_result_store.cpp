@@ -116,6 +116,10 @@ CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResul
     }
     if (has_current_cpu_payload) {
       truth.to_image = ResultCapability::CHEAP;
+    } else if (result.retained_gpu_backing &&
+               result.retained_gpu_backing_descriptor.valid &&
+               result.retained_gpu_backing_descriptor.materialization_available) {
+      truth.to_image = ResultCapability::EXPENSIVE;
     }
     return truth;
   }

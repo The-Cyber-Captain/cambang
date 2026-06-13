@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 
+#include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 
 #include "imaging/api/provider_contract_datatypes.h"
@@ -25,6 +26,14 @@ godot::Ref<godot::Texture2D> godot_gpu_display_lookup_texture_by_descriptor(
     const RetainedGpuBackingDescriptor& descriptor);
 
 godot::Ref<godot::Texture2D> godot_gpu_display_get_texture_by_descriptor(
+    const RetainedGpuBackingDescriptor& descriptor,
+    const std::shared_ptr<void>& legacy_retained_gpu_backing);
+
+bool godot_gpu_display_can_materialize_to_image(
+    const RetainedGpuBackingDescriptor& descriptor,
+    const std::shared_ptr<void>& legacy_retained_gpu_backing);
+
+godot::Ref<godot::Image> godot_gpu_display_materialize_to_image(
     const RetainedGpuBackingDescriptor& descriptor,
     const std::shared_ptr<void>& legacy_retained_gpu_backing);
 
