@@ -1319,7 +1319,7 @@ bool run_synthetic_backing_capability_truth_check() {
   };
 
   if (!verify_mode_truth(SyntheticProducerOutputFormMode::CpuOnly, true, false, "cpu_only")) return false;
-  if (!verify_mode_truth(SyntheticProducerOutputFormMode::CpuAndGpu, runtime_gpu_gate, runtime_gpu_gate, "cpu_gpu")) return false;
+  if (!verify_mode_truth(SyntheticProducerOutputFormMode::CpuAndGpu, true, runtime_gpu_gate, "cpu_gpu")) return false;
   if (!verify_mode_truth(SyntheticProducerOutputFormMode::GpuOnly, false, runtime_gpu_gate, "gpu_only")) return false;
 
   return true;
@@ -1468,7 +1468,8 @@ bool run_synthetic_producer_output_form_mode_production_check() {
       return true;
     };
     if (!verify_unavailable_gpu_refusal(SyntheticProducerOutputFormMode::GpuOnly, 8103, 8113)) return false;
-    if (!verify_unavailable_gpu_refusal(SyntheticProducerOutputFormMode::CpuAndGpu, 8104, 8114)) return false;
+    if (!verify_cpu_frame_mode(SyntheticProducerOutputFormMode::CpuAndGpu, "cpu_and_gpu_cpu_collapsed", 8104)) return false;
+    if (!verify_cpu_capture_mode(SyntheticProducerOutputFormMode::CpuAndGpu, "cpu_and_gpu_cpu_collapsed", 8114)) return false;
     if (!verify_cpu_frame_mode(SyntheticProducerOutputFormMode::Auto, "auto_cpu_default", 8105)) return false;
     if (!verify_cpu_capture_mode(SyntheticProducerOutputFormMode::Auto, "auto_cpu_default", 8115)) return false;
     return true;

@@ -154,12 +154,15 @@ providers or public Godot API.
     retained/produced behaviour for repeating-stream frames and still-capture
     frames where Synthetic has the corresponding backing seam
   - `cpu_only` reports and retains CPU-backed output only
-  - `cpu_gpu` reports CPU and GPU output only when the Synthetic GPU runtime is
-    actually available, retaining GPU primary output with a CPU sidecar
+  - `cpu_gpu` allows CPU and GPU output; provider/runtime realizability narrows
+    that truthful set, so unavailable GPU backing collapses to CPU-backed
+    behaviour while available GPU backing retains GPU primary output with a CPU
+    sidecar
   - `gpu_only` reports GPU output only when the Synthetic GPU runtime is
     actually available, retaining GPU primary output without a CPU sidecar
-  - GPU-dependent selections that cannot be realized fail deterministically with
-    `ERR_NOT_SUPPORTED` instead of advertising GPU truth or falling back to CPU
+  - `gpu_only` selections that cannot realize GPU backing fail deterministically
+    with `ERR_NOT_SUPPORTED` instead of advertising GPU truth or falling back to
+    CPU
 
 Use this control for local validation of real result/backing/materialization
 routes and retained-plan behaviour. It must not be used to fabricate capability
