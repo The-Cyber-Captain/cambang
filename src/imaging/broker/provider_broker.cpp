@@ -967,7 +967,7 @@ bool ProviderBroker::get_synthetic_metrics_snapshot_for_host(SyntheticMetricsSna
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
     out = syn->get_metrics_snapshot_for_host();
-    return ProviderResult::success();
+    return true;
   }
 #endif
   (void)out;
@@ -979,7 +979,7 @@ bool ProviderBroker::get_synthetic_staged_rig_topology_for_host(std::vector<Synt
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
   if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
     out = syn->get_staged_rig_topology_for_host();
-    return ProviderResult::success();
+    return true;
   }
 #endif
   (void)out;
