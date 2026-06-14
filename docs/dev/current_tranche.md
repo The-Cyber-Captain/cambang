@@ -10,8 +10,9 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The current work is centred on result/backing truth, provider seams, and performance-sensitive routing decisions, especially where SyntheticProvider behaviour informs but must not constrain future platform-backed providers.
 
-Active narrow slice: prepare Synthetic for truthful maintainer control by keeping
-provider output-form truth real and keeping retained-plan policy responsible for
+Active narrow slice: use truthful Synthetic maintainer control for actual
+stream output-form and retained-plan behaviour while keeping provider
+output-form truth real and keeping retained-plan policy responsible for
 primary/auxiliary retention choices within that truthful set.
 
 Important active concerns:
@@ -31,7 +32,10 @@ Synthetic maintainer tooling direction:
 * Synthetic provider backing advertisement reports current runtime output-form truth;
 * retained-plan policy chooses primary and auxiliary retention within that truthful set;
 * Synthetic maintainer controls for output-form and retained-plan behavior belong on truthful production paths;
-* do not add controls that misstate provider output-form truth, env vars, harness selectors, or public API while preparing this base.
+* `CAMBANG_SYNTH_STREAM_BACKING_MODE=auto|cpu_only|cpu_and_gpu|gpu_only` is the approved Synthetic-only maintainer access surface for selecting truthful stream backing/output-form modes during local validation;
+* the control reuses `SyntheticStreamBackingMode` and must drive both reported Synthetic stream backing capabilities and actual retained/produced stream result backing;
+* GPU-dependent selected modes are authoritative: when retained Synthetic GPU backing is unavailable, startup/stream start must fail clearly rather than fabricating truth or silently switching to a CPU shape;
+* do not add controls that misstate provider output-form truth, harness selectors, platform-provider behaviour, or public API while using this base.
 
 ## Recent committed checkpoint
 

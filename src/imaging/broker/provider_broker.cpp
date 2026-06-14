@@ -4,8 +4,10 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <utility>
 
 #include "imaging/api/provider_error_string.h"
@@ -31,6 +33,36 @@
 namespace cambang {
 
 namespace {
+
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+constexpr const char* kSyntheticStreamBackingModeEnv = "CAMBANG_SYNTH_STREAM_BACKING_MODE";
+
+bool parse_synthetic_stream_backing_mode_env(SyntheticStreamBackingMode& out) noexcept {
+  const char* raw = std::getenv(kSyntheticStreamBackingModeEnv);
+  if (!raw || raw[0] == '\0') {
+    out = SyntheticStreamBackingMode::Auto;
+    return true;
+  }
+  const std::string value(raw);
+  if (value == "auto" || value == "default" || value == "runtime_default") {
+    out = SyntheticStreamBackingMode::Auto;
+    return true;
+  }
+  if (value == "cpu_only" || value == "cpu-only" || value == "cpu") {
+    out = SyntheticStreamBackingMode::CpuOnly;
+    return true;
+  }
+  if (value == "cpu_and_gpu" || value == "cpu+gpu" || value == "cpu-gpu" || value == "cpu_gpu") {
+    out = SyntheticStreamBackingMode::CpuAndGpu;
+    return true;
+  }
+  if (value == "gpu_only" || value == "gpu-only" || value == "gpu") {
+    out = SyntheticStreamBackingMode::GpuOnly;
+    return true;
+  }
+  return false;
+}
+#endif
 
 
 // BEGIN TEMPORARY CAPTURE LATENCY DIAGNOSTICS
@@ -397,6 +429,9 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     cfg.synthetic_role = synthetic_role_latched_;
     cfg.timing_driver = timing_driver_latched_;
     cfg.timeline_reconciliation = timeline_reconciliation_latched_;
+    if (!parse_synthetic_stream_backing_mode_env(cfg.stream_backing_mode)) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     active_ = std::move(syn);
     install_synthetic_timeline_request_dispatch_hook_locked_();

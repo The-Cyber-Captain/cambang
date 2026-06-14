@@ -298,9 +298,21 @@ ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilitie
     const PictureConfig& picture) const noexcept {
   (void)profile;
   (void)picture;
+  const bool gpu_available = has_runtime_gpu_backing_path_();
+  switch (cfg_.stream_backing_mode) {
+    case SyntheticStreamBackingMode::CpuOnly:
+      return ProducerBackingCapabilities{true, false};
+    case SyntheticStreamBackingMode::GpuOnly:
+      return ProducerBackingCapabilities{false, gpu_available};
+    case SyntheticStreamBackingMode::CpuAndGpu:
+      return ProducerBackingCapabilities{gpu_available, gpu_available};
+    case SyntheticStreamBackingMode::Auto:
+    default:
+      break;
+  }
   return ProducerBackingCapabilities{
       true,
-      has_runtime_gpu_backing_path_(),
+      gpu_available,
   };
 }
 

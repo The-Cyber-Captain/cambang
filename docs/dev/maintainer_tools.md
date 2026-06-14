@@ -142,7 +142,48 @@ For backing-contract truth and result/payload semantics, use:
 
 - `docs/architecture/pixel_payload_and_result_contract.md`
 
-### 4.x.1 Synthetic stream GPU/update maintainer controls
+### 4.x.1 Synthetic stream backing maintainer control
+
+This control is a Synthetic-only maintainer/verification aid. It is not product
+or user runtime configuration, is not public API, and is not a template for
+platform-backed provider configuration.
+
+- `CAMBANG_SYNTH_STREAM_BACKING_MODE=auto|cpu_only|cpu_and_gpu|gpu_only`
+  - aliases accepted by the maintainer parser:
+    - runtime/default truth: `auto`, `default`, `runtime_default`
+    - CPU-only: `cpu_only`, `cpu-only`, `cpu`
+    - CPU+GPU: `cpu_and_gpu`, `cpu+gpu`, `cpu-gpu`, `cpu_gpu`
+    - GPU-only: `gpu_only`, `gpu-only`, `gpu`
+  - default: `auto`
+  - applies only when the selected runtime provider is Synthetic
+  - invalid values fail Synthetic provider startup with
+    `ERR_INVALID_ARGUMENT`
+
+The selected mode drives real Synthetic stream behaviour:
+
+- `auto` reports and produces the runtime/default truthful shape: CPU-only when
+  retained Synthetic GPU backing is unavailable, or CPU+GPU when it is available.
+- `cpu_only` reports CPU-only output-form truth and emits stream results with a
+  retained/current CPU payload and no retained GPU backing.
+- `cpu_and_gpu` reports CPU+GPU output-form truth only when retained Synthetic
+  GPU backing is available, emits GPU-primary stream results, and retains the
+  current CPU sidecar as auxiliary materialization backing.
+- `gpu_only` reports GPU-only output-form truth only when retained Synthetic GPU
+  backing is available, emits GPU-primary stream results, and does not retain a
+  current CPU sidecar for convenience. `to_image()` therefore exercises the real
+  retained Synthetic GPU materializer path when that materializer is available.
+
+GPU-dependent selected modes are authoritative. If retained Synthetic GPU
+backing is unavailable in the current renderer/runtime, Synthetic reports no
+realizable stream backing shape for that selected mode and `start_stream()`
+fails deterministically with `ERR_NOT_SUPPORTED`; it does not fabricate CPU/GPU
+truth or quietly switch to another backing mode.
+
+Use this control for local validation of real stream result truth, retained
+backing plans, display-view routing, and materialization routes. It does not
+change still-capture output-form truth or platform-backed provider behaviour.
+
+### 4.x.2 Synthetic stream GPU/update maintainer controls
 
 These controls are maintainer/verification aids only. They are not product or
 user runtime configuration and do not redefine provider-contract truth.

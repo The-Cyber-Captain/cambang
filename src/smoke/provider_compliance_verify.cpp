@@ -1314,6 +1314,11 @@ bool run_synthetic_stream_backing_mode_production_check() {
     cfg.stream_backing_mode = mode;
     SyntheticProvider provider(cfg);
     const StreamRequest req = make_req(stream_id);
+    const ProducerBackingCapabilities caps = provider.stream_backing_capabilities(req.profile, req.picture);
+    if (!caps.cpu_backed_available || caps.gpu_backed_available) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " capability truth mismatch\n";
+      return false;
+    }
     if (!provider.initialize(&cb).ok() ||
         !provider.open_device("synthetic:0", req.device_instance_id, 8101).ok() ||
         !provider.create_stream(req).ok() ||
@@ -1360,6 +1365,11 @@ bool run_synthetic_stream_backing_mode_production_check() {
       cfg.stream_backing_mode = mode;
       SyntheticProvider provider(cfg);
       const StreamRequest req = make_req(stream_id);
+      const ProducerBackingCapabilities caps = provider.stream_backing_capabilities(req.profile, req.picture);
+      if (caps.cpu_backed_available || caps.gpu_backed_available) {
+        std::cerr << "FAIL synthetic stream backing unavailable-gpu capability truth mismatch\n";
+        return false;
+      }
       if (!provider.initialize(&cb).ok() ||
           !provider.open_device("synthetic:0", req.device_instance_id, 8101).ok() ||
           !provider.create_stream(req).ok()) {
@@ -1404,6 +1414,11 @@ bool run_synthetic_stream_backing_mode_production_check() {
     cfg.stream_backing_mode = mode;
     SyntheticProvider provider(cfg);
     const StreamRequest req = make_req(stream_id);
+    const ProducerBackingCapabilities caps = provider.stream_backing_capabilities(req.profile, req.picture);
+    if (caps.cpu_backed_available != expected_cpu_sidecar || !caps.gpu_backed_available) {
+      std::cerr << "FAIL synthetic stream backing mode " << label << " capability truth mismatch\n";
+      return false;
+    }
     if (!provider.initialize(&cb).ok() ||
         !provider.open_device("synthetic:0", req.device_instance_id, 8101).ok() ||
         !provider.create_stream(req).ok() ||
