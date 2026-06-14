@@ -16,10 +16,9 @@ primary/auxiliary retention choices within that truthful set.
 
 Important active concerns:
 
-* use Synthetic backing modes as truthful production controls for stream-result backing/access behaviour;
+* use truthful Synthetic producer output-form / retained-plan control as the reference seam for Synthetic-produced result backing/access behaviour, across repeating-stream and still-capture paths where that control is intended to apply;
 * preserve provider-local staging vs Core-retained result truth;
 * avoid silently falling back between CPU and GPU modes when a selected mode should be authoritative;
-* evaluate stream backing-mode performance empirically before introducing broader route/cost machinery;
 * avoid treating SyntheticProvider-only optimisations as representative of Windows MF, Android Camera2, or future platform-backed providers;
 * protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
 * begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts.
