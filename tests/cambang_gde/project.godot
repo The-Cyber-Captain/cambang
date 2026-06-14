@@ -15,6 +15,10 @@ run/main_scene="uid://ccadsiww0hwgd"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
 
+[cambang]
+
+maintainer/synthetic_producer_output_form="runtime_default"
+
 [debug]
 
 settings/stdout/print_fps=true
@@ -26,9 +30,6 @@ window/size/viewport_height=1920
 window/size/mode=2
 window/vsync/vsync_mode=0
 
-[editor]
-
-run/main_run_args="cambang-synth-producer-output-form=runtime_default"
 
 [editor_plugins]
 
