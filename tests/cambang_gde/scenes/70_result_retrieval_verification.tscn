@@ -70,7 +70,12 @@ stretch_mode = 5
 [node name="StreamFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/StreamPanel"]
 custom_minimum_size = Vector2(0, 88)
 layout_mode = 2
-text = "waiting for stream result...\n \n \n \n \n "
+text = "waiting for stream result...
+ 
+ 
+ 
+ 
+ "
 
 [node name="RequestedStreamPanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
 layout_mode = 2
@@ -93,7 +98,12 @@ stretch_mode = 5
 [node name="RequestedStreamFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/RequestedStreamPanel"]
 custom_minimum_size = Vector2(0, 88)
 layout_mode = 2
-text = "waiting for explicit stream to_image() request...\n \n \n \n \n "
+text = "waiting for explicit stream to_image() request...
+ 
+ 
+ 
+ 
+ "
 
 [node name="CapturePanel" type="VBoxContainer" parent="RootMargin/MainColumn/ResultsRow"]
 layout_mode = 2
@@ -116,7 +126,12 @@ stretch_mode = 5
 [node name="CaptureFacts" type="Label" parent="RootMargin/MainColumn/ResultsRow/CapturePanel"]
 custom_minimum_size = Vector2(0, 88)
 layout_mode = 2
-text = "waiting for capture result...\n \n \n \n \n "
+text = "waiting for capture result...
+ 
+ 
+ 
+ 
+ "
 
 [node name="MemberInspectionStrip" type="PanelContainer" parent="RootMargin/MainColumn"]
 custom_minimum_size = Vector2(800, 120)
@@ -157,6 +172,10 @@ layout_mode = 2
 disabled = true
 text = "Capture Again"
 
+[node name="QuitButton" type="Button" parent="RootMargin/MainColumn/GuiControls"]
+layout_mode = 2
+text = "--QUIT--"
+
 [node name="CamBANGStatusPanel" type="PanelContainer" parent="RootMargin/MainColumn"]
 custom_minimum_size = Vector2(320, 0)
 layout_mode = 2
@@ -172,3 +191,5 @@ custom_minimum_size = Vector2(0, 100)
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.15
+
+[connection signal="pressed" from="RootMargin/MainColumn/GuiControls/QuitButton" to="." method="_cleanup_and_quit" binds= [0]]

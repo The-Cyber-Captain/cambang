@@ -159,7 +159,7 @@ func _ready() -> void:
 		_capture_again_button.pressed.connect(_on_capture_again_pressed)
 		_request_stream_image_button.disabled = true
 		_capture_again_button.disabled = true
-
+		
 	CamBANGServer.stop()
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
@@ -1375,4 +1375,6 @@ func _cleanup_and_quit(code: int) -> void:
 	if not _quit_requested:
 		_quit_requested = true
 		print("INFO: quit requested code=%d" % code)
+		print(CamBANGServer.get_synthetic_metrics_snapshot())
+
 		CamBANGServer.stop_and_quit(code)
