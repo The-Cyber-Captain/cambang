@@ -639,6 +639,8 @@ std::shared_ptr<void> retain_primary_gpu_backing_rgba8(
   retained_backing->rid_state = std::make_shared<SharedDisplayTextureRidState>(texture);
   retained_backing->width = width;
   retained_backing->height = height;
+  retained_backing->stride_bytes = stride_bytes;
+  retained_backing->upload_bytes = bytes;
   return std::static_pointer_cast<void>(retained_backing);
 }
 

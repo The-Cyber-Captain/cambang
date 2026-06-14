@@ -241,6 +241,14 @@ func _synthetic_gpu_only_output_form_requested() -> bool:
 	return OS.get_environment("CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM") == "gpu_only"
 
 
+
+func _format_gpu_only_capture_refusal(prefix: String, baseline: Dictionary, progress: Dictionary) -> String:
+	return "%s gpu_only capture explicitly failed/refused by provider (baseline=%s progress=%s)" % [
+		prefix,
+		_describe_capture_progress(baseline),
+		_describe_capture_progress(progress),
+	]
+
 func _fail_if_gpu_only_stream_refused_by_provider(stream_d: Dictionary) -> bool:
 	if not _synthetic_gpu_only_output_form_requested():
 		return false
@@ -455,11 +463,17 @@ func _try_verify_capture_result() -> void:
 		if not bool(progress.get("available", false)):
 			return
 		if int(progress.get("captures_failed", 0)) > int(_capture_baseline_progress.get("captures_failed", 0)):
-			_fail("step %d FAIL: capture failed after trigger (baseline=%s progress=%s)" % [
-				_step,
-				_describe_capture_progress(_capture_baseline_progress),
-				_describe_capture_progress(progress),
-			])
+			if _synthetic_gpu_only_output_form_requested():
+				_fail("step %d FAIL: %s" % [
+					_step,
+					_format_gpu_only_capture_refusal("initial", _capture_baseline_progress, progress),
+				])
+			else:
+				_fail("step %d FAIL: capture failed after trigger (baseline=%s progress=%s)" % [
+					_step,
+					_describe_capture_progress(_capture_baseline_progress),
+					_describe_capture_progress(progress),
+				])
 			return
 		if int(progress.get("captures_completed", 0)) <= int(_capture_baseline_progress.get("captures_completed", 0)):
 			_initial_capture_completion_poll_count += 1
@@ -502,7 +516,11 @@ func _try_verify_capture_result() -> void:
 	_require(capture_result.get_width() > 0, "step %d FAIL: capture width invalid" % _step)
 	_require(capture_result.get_height() > 0, "step %d FAIL: capture height invalid" % _step)
 	_require(capture_result.get_format() != 0, "step %d FAIL: capture format invalid" % _step)
-	_require(capture_result.get_payload_kind() == PAYLOAD_KIND_CPU_PACKED, "step %d FAIL: capture payload_kind must be CPU_PACKED" % _step)
+	var capture_payload_kind := int(capture_result.get_payload_kind())
+	_require(
+		capture_payload_kind == PAYLOAD_KIND_CPU_PACKED or capture_payload_kind == PAYLOAD_KIND_GPU_SURFACE,
+		"step %d FAIL: capture payload_kind must be CPU_PACKED or GPU_SURFACE" % _step
+	)
 	_require(capture_result.get_device_instance_id() == _device_instance_id, "step %d FAIL: capture device_instance_id mismatch" % _step)
 	_step_ok("capture direct properties verified")
 
@@ -1261,10 +1279,13 @@ func _poll_inspection_capture_result() -> void:
 		if not bool(progress.get("available", false)):
 			return
 		if int(progress.get("captures_failed", 0)) > int(_inspection_capture_baseline_progress.get("captures_failed", 0)):
-			_append_status("WARN: manual capture failed after trigger (baseline=%s progress=%s)" % [
-				_describe_capture_progress(_inspection_capture_baseline_progress),
-				_describe_capture_progress(progress),
-			])
+			if _synthetic_gpu_only_output_form_requested():
+				_append_status("WARN: %s" % _format_gpu_only_capture_refusal("manual", _inspection_capture_baseline_progress, progress))
+			else:
+				_append_status("WARN: manual capture failed after trigger (baseline=%s progress=%s)" % [
+					_describe_capture_progress(_inspection_capture_baseline_progress),
+					_describe_capture_progress(progress),
+				])
 			_inspection_capture_device = null
 			return
 		if int(progress.get("captures_completed", 0)) <= int(_inspection_capture_baseline_progress.get("captures_completed", 0)):

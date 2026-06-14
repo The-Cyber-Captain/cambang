@@ -356,7 +356,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
           image_member.capture_timestamp_ns = integrated_ts_ns;
           const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
-          if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member.payload)) {
+          if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member)) {
             retained_for_result = result_store_->append_additional_capture_image(
                 p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
           }

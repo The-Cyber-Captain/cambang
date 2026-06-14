@@ -116,6 +116,26 @@ int main() {
   assert(capture_result->default_image.retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(capture_result->default_image.retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
   assert(capture_result->additional_images.empty());
+
+  FrameView gpu_capture = capture_a;
+  gpu_capture.capture_id = 78;
+  gpu_capture.data = nullptr;
+  gpu_capture.size_bytes = 0;
+  gpu_capture.primary_backing_kind = ProducerBackingKind::GPU;
+  gpu_capture.primary_backing_artifact = std::make_shared<int>(44);
+  gpu_capture.retain_cpu_sidecar = false;
+  gpu_capture.retained_gpu_backing_descriptor.valid = true;
+  gpu_capture.retained_gpu_backing_descriptor.materialization_available = true;
+  assert(store.retain_frame(gpu_capture, std::nullopt, 2007));
+  auto gpu_capture_result = store.get_capture_result(78, 100);
+  assert(gpu_capture_result);
+  assert(gpu_capture_result->payload_kind == ResultPayloadKind::GPU_SURFACE);
+  assert(gpu_capture_result->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE);
+  assert(gpu_capture_result->default_image.payload.empty());
+  assert(gpu_capture_result->default_image.retained_gpu_backing);
+  assert(gpu_capture_result->default_image.retained_access_truth.to_image == ResultCapability::EXPENSIVE);
+  assert(gpu_capture_result->default_image.retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+
   const uint64_t capture_id_before = capture_result->capture_id;
   const uint64_t device_id_before = capture_result->device_instance_id;
   const uint32_t width_before = capture_result->image_width;
