@@ -148,18 +148,23 @@ This control is a maintainer/verification aid only. It is Synthetic-only, is not
 product or user runtime configuration, and does not affect platform-backed
 providers or public Godot API.
 
-- `CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM=runtime_default|cpu_only|cpu_gpu|gpu_only`
+- `--cambang-synth-producer-output-form=runtime_default|cpu_only|cpu_gpu|gpu_only`
   - default/unset: `runtime_default`
+  - this process argument is the only maintainer control surface for this
+    selection; there is no environment-variable fallback
   - controls truthful Synthetic producer output-form reporting and the matching
     retained/produced behaviour for repeating-stream frames and still-capture
     frames where Synthetic has the corresponding backing seam
   - `cpu_only` reports and retains CPU-backed output only
-  - `cpu_gpu` reports CPU and GPU output only when the Synthetic GPU runtime is
-    actually available, retaining GPU primary output with a CPU sidecar
+  - `cpu_gpu` allows CPU and GPU output; provider/runtime realizability narrows
+    that truthful set, so unavailable GPU backing collapses to CPU-backed
+    behaviour while available GPU backing retains GPU primary output with a CPU
+    sidecar
   - `gpu_only` reports GPU output only when the Synthetic GPU runtime is
     actually available, retaining GPU primary output without a CPU sidecar
-  - GPU-dependent selections that cannot be realized fail deterministically with
-    `ERR_NOT_SUPPORTED` instead of advertising GPU truth or falling back to CPU
+  - `gpu_only` selections that cannot realize GPU backing fail deterministically
+    with `ERR_NOT_SUPPORTED` instead of advertising GPU truth or falling back to
+    CPU
 
 Use this control for local validation of real result/backing/materialization
 routes and retained-plan behaviour. It must not be used to fabricate capability

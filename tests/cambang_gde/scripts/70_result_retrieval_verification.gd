@@ -144,6 +144,7 @@ func _scene_elapsed_us() -> int:
 
 
 func _ready() -> void:
+	_log_env_probe()
 	_status_label.clear()
 	_is_headless = DisplayServer.get_name() == "headless"
 	_start_ms = Time.get_ticks_msec()
@@ -238,7 +239,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _synthetic_gpu_only_output_form_requested() -> bool:
-	return OS.get_environment("CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM") == "gpu_only"
+	var arg_prefix := "--cambang-synth-producer-output-form="
+	for arg in OS.get_cmdline_user_args():
+		var arg_s := str(arg)
+		if arg_s.begins_with(arg_prefix):
+			return arg_s.substr(arg_prefix.length()) == "gpu_only"
+	return false
 
 
 
@@ -1420,3 +1426,9 @@ func _cleanup_and_quit(code: int) -> void:
 		print(CamBANGServer.get_synthetic_metrics_snapshot())
 
 		CamBANGServer.stop_and_quit(code)
+
+func _log_env_probe() -> void:
+	var key := "CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM"
+	var value := OS.get_environment(key)
+	print("ENV probe %s=<%s>" % [key, value])
+	print("CMD args: %s" % str(OS.get_cmdline_args()))

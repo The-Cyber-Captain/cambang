@@ -29,9 +29,9 @@ Synthetic maintainer tooling direction:
 
 * Synthetic provider backing advertisement reports current runtime output-form truth;
 * retained-plan policy chooses primary and auxiliary retention within that truthful set;
-* Synthetic maintainer output-form selection is exposed only through `CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM=runtime_default|cpu_only|cpu_gpu|gpu_only`;
+* Synthetic maintainer output-form selection is exposed only through the process argument `--cambang-synth-producer-output-form=runtime_default|cpu_only|cpu_gpu|gpu_only`; there is no environment-variable fallback for this selection;
 * the selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist;
-* GPU-dependent selections fail deterministically when the Synthetic GPU runtime cannot realize them;
+* `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable;
 * do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing this base.
 
 ## Recent committed checkpoint

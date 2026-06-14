@@ -4,13 +4,18 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <utility>
 
 #include "imaging/api/provider_error_string.h"
 #include "imaging/api/capture_latency_trace_diagnostics.h"
+
+#if defined(CAMBANG_GDE_BUILD) && CAMBANG_GDE_BUILD
+  #include <godot_cpp/classes/os.hpp>
+  #include <godot_cpp/variant/packed_string_array.hpp>
+#endif
 
 // (No broker-level pattern switching; picture is stream-scoped.)
 
@@ -133,12 +138,11 @@ ProviderResult err_no_active() {
 
 
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
-ProviderResult parse_synthetic_producer_output_form_mode_env(SyntheticProducerOutputFormMode& out) noexcept {
-  const char* value = std::getenv("CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM");
-  if (!value || value[0] == '\0') {
-    return ProviderResult::success();
-  }
-  const std::string mode(value);
+constexpr const char* kSyntheticProducerOutputFormArg = "--cambang-synth-producer-output-form=";
+
+ProviderResult parse_synthetic_producer_output_form_mode_value(
+    const std::string& mode,
+    SyntheticProducerOutputFormMode& out) noexcept {
   if (mode == "runtime_default") {
     out = SyntheticProducerOutputFormMode::Auto;
     return ProviderResult::success();
@@ -156,6 +160,37 @@ ProviderResult parse_synthetic_producer_output_form_mode_env(SyntheticProducerOu
     return ProviderResult::success();
   }
   return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+}
+
+ProviderResult parse_synthetic_producer_output_form_mode_process_args(
+    SyntheticProducerOutputFormMode& out) noexcept {
+#if defined(CAMBANG_GDE_BUILD) && CAMBANG_GDE_BUILD
+  godot::OS* os = godot::OS::get_singleton();
+  if (!os) {
+    return ProviderResult::success();
+  }
+
+  const std::string prefix(kSyntheticProducerOutputFormArg);
+  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  bool found = false;
+  for (int64_t i = 0; i < args.size(); ++i) {
+    const std::string arg(args[i].utf8().get_data());
+    if (arg.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    if (found) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    found = true;
+    const ProviderResult parsed = parse_synthetic_producer_output_form_mode_value(
+        arg.substr(prefix.size()),
+        out);
+    if (!parsed.ok()) {
+      return parsed;
+    }
+  }
+#endif
+  return ProviderResult::success();
 }
 #endif
 
@@ -426,10 +461,10 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     cfg.synthetic_role = synthetic_role_latched_;
     cfg.timing_driver = timing_driver_latched_;
     cfg.timeline_reconciliation = timeline_reconciliation_latched_;
-    const ProviderResult output_form_env_result =
-        parse_synthetic_producer_output_form_mode_env(cfg.producer_output_form_mode);
-    if (!output_form_env_result.ok()) {
-      return output_form_env_result;
+    const ProviderResult output_form_args_result =
+        parse_synthetic_producer_output_form_mode_process_args(cfg.producer_output_form_mode);
+    if (!output_form_args_result.ok()) {
+      return output_form_args_result;
     }
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     active_ = std::move(syn);
