@@ -10,17 +10,13 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The current work is centred on result/backing truth, provider seams, and performance-sensitive routing decisions, especially where SyntheticProvider behaviour informs but must not constrain future platform-backed providers.
 
-Active narrow slice: collect report-only result-access timing evidence at the
-real Godot retained-result access seam. Evidence is recorded around
-`CamBANGStreamResult::to_image()` and `CamBANGStreamResult::get_display_view()`
-and is exposed only through the Synthetic dev metrics readout under
-`result_access_timing_evidence`. This is not a benchmark tranche, not
-`CamBANGStateSnapshot`, not schema v1, not state-publication truth, and not a
-`ResultCapability` classification change.
+Active narrow slice: prepare Synthetic for truthful maintainer control by keeping
+provider output-form truth real and keeping retained-plan policy responsible for
+primary/auxiliary retention choices within that truthful set.
 
 Important active concerns:
 
-* use the committed Synthetic backing modes as a truthful reference for stream-result backing/access behaviour;
+* use Synthetic backing modes as truthful production controls for stream-result backing/access behaviour;
 * preserve provider-local staging vs Core-retained result truth;
 * avoid silently falling back between CPU and GPU modes when a selected mode should be authoritative;
 * evaluate stream backing-mode performance empirically before introducing broader route/cost machinery;
@@ -28,6 +24,14 @@ Important active concerns:
 * protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
 * begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts.
 * keep Synthetic retained GPU backing materialization scoped and named accurately: it is bridge-backed Synthetic materialization, not generic platform GPU/RD readback;
+
+
+Synthetic maintainer tooling direction:
+
+* Synthetic provider backing advertisement reports current runtime output-form truth;
+* retained-plan policy chooses primary and auxiliary retention within that truthful set;
+* Synthetic maintainer controls for output-form and retained-plan behavior belong on truthful production paths;
+* do not add controls that misstate provider output-form truth, env vars, harness selectors, or public API while preparing this base.
 
 ## Recent committed checkpoint
 
