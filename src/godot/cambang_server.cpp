@@ -5,13 +5,16 @@
 #include "godot/cambang_stream.h"
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_stream_result_internal.h"
+#include "godot/result_access_cost_evidence.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/cambang_rig.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/callable.hpp>
+#include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -1521,6 +1524,9 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d["gpu_texture_update_total_ms"] = snap.gpu_texture_update_total_ms;
   d["catchup_ticks_capped"] = static_cast<uint64_t>(snap.catchup_ticks_capped);
   d["catchup_frames_dropped"] = static_cast<uint64_t>(snap.catchup_frames_dropped);
+  d.set(
+      godot::Variant(godot::String("result_access_timing_evidence")),
+      godot::Variant(result_access_cost_evidence::snapshot()));
   return d;
 }
 

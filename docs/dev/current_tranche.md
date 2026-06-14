@@ -10,6 +10,14 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The current work is centred on result/backing truth, provider seams, and performance-sensitive routing decisions, especially where SyntheticProvider behaviour informs but must not constrain future platform-backed providers.
 
+Active narrow slice: collect report-only result-access timing evidence at the
+real Godot retained-result access seam. Evidence is recorded around
+`CamBANGStreamResult::to_image()` and `CamBANGStreamResult::get_display_view()`
+and is exposed only through the Synthetic dev metrics readout under
+`result_access_timing_evidence`. This is not a benchmark tranche, not
+`CamBANGStateSnapshot`, not schema v1, not state-publication truth, and not a
+`ResultCapability` classification change.
+
 Important active concerns:
 
 * use the committed Synthetic backing modes as a truthful reference for stream-result backing/access behaviour;

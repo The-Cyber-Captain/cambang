@@ -277,6 +277,11 @@ backing truth and implemented access paths. Godot result capability methods
 consume retained access truth, while materialization methods remain defensive and
 verify the concrete backing/path they use.
 
+Godot-layer result-access timing evidence, when exposed through Synthetic dev
+metrics, is report-only evidence collected at the real retained-result operation
+seam. It is not retained access truth, not `CamBANGStateSnapshot`, not schema v1,
+and not an input to state publication or `ResultCapability` classification.
+
 ### 6.x.4 Unsupported GPU-only realization
 
 If a source offers only GPU-backed realization and the current runtime does not provide
@@ -783,6 +788,13 @@ explicit materialization outcome and must not silently return stale content:
 - perform/require explicit supported materialization from a fresh source, or
 - report unsupported/expensive rather than presenting stale image content as
   current materialization truth.
+
+The current report-only timing evidence for stream `to_image()` is collected
+around this real Godot call path. CPU-packed stream results and GPU-primary
+results with a current retained CPU sidecar still report the existing cheap
+capability; GPU-only stream results without materialization remain unsupported;
+GPU-only stream results with the Synthetic retained backing materializer remain
+expensive. The evidence does not recalibrate those labels in this tranche.
 
 ## 11.6 Capture-result guardrail
 
