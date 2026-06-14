@@ -1254,55 +1254,41 @@ bool run_broker_timeline_host_surface_check() {
 }
 
 
-bool run_synthetic_backing_capability_advertisement_check() {
-  auto verify_mode = [](SyntheticVerificationBackingAdvertisementOverride mode,
-                        bool expected_cpu,
-                        bool expected_gpu) -> bool {
-    RecorderCallbacks cb;
-    SyntheticProviderConfig cfg{};
-    cfg.endpoint_count = 1;
-    cfg.verification_backing_advertisement_override = mode;
+bool run_synthetic_backing_capability_truth_check() {
+  RecorderCallbacks cb;
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
 
-    SyntheticProvider provider(cfg);
-    if (!provider.initialize(&cb).ok()) {
-      std::cerr << "FAIL synthetic backing capability check initialize failed\n";
-      return false;
-    }
+  SyntheticProvider provider(cfg);
+  if (!provider.initialize(&cb).ok()) {
+    std::cerr << "FAIL synthetic backing capability truth check initialize failed\n";
+    return false;
+  }
 
-    CaptureProfile profile{};
-    PictureConfig picture{};
-    CaptureRequest req{};
+  CaptureProfile profile{};
+  PictureConfig picture{};
+  CaptureRequest req{};
 
-    const ProducerBackingCapabilities stream_caps = provider.stream_backing_capabilities(profile, picture);
-    const ProducerBackingCapabilities capture_caps = provider.capture_backing_capabilities(req);
+  const ProducerBackingCapabilities stream_caps = provider.stream_backing_capabilities(profile, picture);
+  const ProducerBackingCapabilities capture_caps = provider.capture_backing_capabilities(req);
 
-    const bool stream_ok = (stream_caps.cpu_backed_available == expected_cpu) &&
-                           (stream_caps.gpu_backed_available == expected_gpu);
-    const bool capture_ok = (capture_caps.cpu_backed_available == expected_cpu) &&
-                            (capture_caps.gpu_backed_available == expected_gpu);
-
-    if (!provider.shutdown().ok()) {
-      std::cerr << "FAIL synthetic backing capability check shutdown failed\n";
-      return false;
-    }
-
-    if (!stream_ok || !capture_ok) {
-      std::cerr << "FAIL synthetic backing capability advertisement mismatch\n";
-      return false;
-    }
-    return true;
-  };
+  if (!provider.shutdown().ok()) {
+    std::cerr << "FAIL synthetic backing capability truth check shutdown failed\n";
+    return false;
+  }
 
   const bool runtime_gpu_gate = synthetic_gpu_backing_runtime_available();
-
-  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth, true, runtime_gpu_gate)) return false;
-  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceCpuOnly, true, false)) return false;
-  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceCpuAndGpu, true, true)) return false;
-  if (!verify_mode(SyntheticVerificationBackingAdvertisementOverride::ForceGpuOnly, false, true)) return false;
+  const bool stream_ok = stream_caps.cpu_backed_available &&
+                         (stream_caps.gpu_backed_available == runtime_gpu_gate);
+  const bool capture_ok = capture_caps.cpu_backed_available &&
+                          (capture_caps.gpu_backed_available == runtime_gpu_gate);
+  if (!stream_ok || !capture_ok) {
+    std::cerr << "FAIL synthetic backing capability truth mismatch\n";
+    return false;
+  }
 
   return true;
 }
-
 bool run_synthetic_stream_backing_mode_production_check() {
   auto make_req = [](uint64_t stream_id) {
     StreamRequest req{};
@@ -2477,7 +2463,7 @@ int main(int argc, char** argv) {
       {"run_clustered_strict_branch_check", [] { return run_clustered_strict_branch_check(); }},
       {"run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); }},
       {"run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); }},
-      {"run_synthetic_backing_capability_advertisement_check", [] { return run_synthetic_backing_capability_advertisement_check(); }},
+      {"run_synthetic_backing_capability_truth_check", [] { return run_synthetic_backing_capability_truth_check(); }},
       {"run_synthetic_stream_backing_mode_production_check", [] { return run_synthetic_stream_backing_mode_production_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},

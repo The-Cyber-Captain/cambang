@@ -28,17 +28,9 @@ enum class TimelineReconciliation : std::uint8_t {
   Strict = 1,
 };
 
-enum class SyntheticVerificationBackingAdvertisementOverride : std::uint8_t {
-  RuntimeTruth = 0,
-  ForceCpuOnly = 1,
-  ForceCpuAndGpu = 2,
-  ForceGpuOnly = 3,
-};
-
 // Internal stream production/retention backing mode for SyntheticProvider.
 // This controls what Synthetic actually produces for stream frames; it is not a
-// public API surface and is intentionally separate from verification-only
-// capability advertisement overrides.
+// public API surface.
 enum class SyntheticStreamBackingMode : std::uint8_t {
   Auto = 0,
   CpuOnly = 1,
@@ -78,10 +70,6 @@ struct SyntheticProviderConfig {
   SyntheticTimelineScenario timeline_scenario{};
 
   SyntheticStreamBackingMode stream_backing_mode = SyntheticStreamBackingMode::Auto;
-
-  // Verification-only advertisement override. Non-release behavior.
-  SyntheticVerificationBackingAdvertisementOverride verification_backing_advertisement_override =
-      SyntheticVerificationBackingAdvertisementOverride::RuntimeTruth;
 
   // Verification-only realized EV override by image_member_index for still
   // capture metadata emission. This is intentionally non-release behavior used

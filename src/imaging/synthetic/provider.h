@@ -156,8 +156,6 @@ private:
       const PictureConfig& picture) const noexcept;
   ProducerBackingCapabilities query_capture_producer_capabilities_(
       const CaptureRequest& req) const noexcept;
-  ProducerBackingCapabilities apply_verification_backing_override_(
-      ProducerBackingCapabilities runtime_truth) const noexcept;
   bool choose_stream_gpu_preference_(ProducerBackingCapabilities capabilities) const noexcept;
   SyntheticStreamBackingMode resolve_stream_backing_mode_(
       ProducerBackingCapabilities capabilities) const noexcept;
