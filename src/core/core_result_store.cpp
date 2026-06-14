@@ -132,12 +132,20 @@ CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResul
 }
 
 CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
-    const CoreResultPayloadCpuPacked& payload) {
+    const CoreCaptureResultData::ImageMemberData& member) {
   CoreRetainedAccessTruth truth{};
   if (has_valid_retained_cpu_packed_access_payload(
-          payload, payload.width, payload.height, payload.format_fourcc)) {
+          member.payload, member.payload.width, member.payload.height, member.payload.format_fourcc)) {
     truth.display_view = ResultCapability::CHEAP;
     truth.to_image = ResultCapability::CHEAP;
+    return truth;
+  }
+  if (member.payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      member.retained_gpu_backing &&
+      member.retained_gpu_backing_descriptor.valid &&
+      member.retained_gpu_backing_descriptor.materialization_available) {
+    truth.display_view = ResultCapability::EXPENSIVE;
+    truth.to_image = ResultCapability::EXPENSIVE;
   }
   return truth;
 }
@@ -155,12 +163,16 @@ CoreRetainedBackingPlan build_stream_retained_backing_plan(const FrameView& fram
   return plan;
 }
 
-CoreRetainedBackingPlan build_capture_retained_backing_plan(const FrameView& frame) {
-  (void)frame;
+CoreRetainedBackingPlan build_capture_retained_backing_plan(const FrameView& frame, bool has_cpu_payload) {
   CoreRetainedBackingPlan plan{};
-  plan.primary_kind = ResultPayloadKind::CPU_PACKED;
-  plan.retain_cpu_sidecar = false;
-  plan.retain_gpu_display = false;
+  const bool gpu_primary =
+      frame.primary_backing_kind == ProducerBackingKind::GPU &&
+      static_cast<bool>(frame.primary_backing_artifact);
+  if (gpu_primary) {
+    plan.primary_kind = ResultPayloadKind::GPU_SURFACE;
+    plan.retain_gpu_display = true;
+    plan.retain_cpu_sidecar = has_cpu_payload && frame.retain_cpu_sidecar;
+  }
   return plan;
 }
 
@@ -213,7 +225,7 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   const std::optional<CoreRetainedBackingPlan> stream_backing_plan =
       frame.stream_id != 0 ? std::make_optional(build_stream_retained_backing_plan(frame, has_cpu_payload)) : std::nullopt;
   const std::optional<CoreRetainedBackingPlan> capture_backing_plan =
-      frame.capture_id != 0 ? std::make_optional(build_capture_retained_backing_plan(frame)) : std::nullopt;
+      frame.capture_id != 0 ? std::make_optional(build_capture_retained_backing_plan(frame, has_cpu_payload)) : std::nullopt;
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};
   if (has_cpu_payload) {
@@ -275,11 +287,24 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   const bool payload_adopted = payload.uses_retained_bytes();
   if (frame.capture_id != 0) {
     const CoreRetainedBackingPlan& plan = *capture_backing_plan;
-    if (plan.primary_kind != ResultPayloadKind::CPU_PACKED || !has_cpu_payload) {
+    if (plan.primary_kind == ResultPayloadKind::CPU_PACKED && !has_cpu_payload) {
       return false;
     }
+    if (plan.primary_kind == ResultPayloadKind::GPU_SURFACE && !frame.primary_backing_artifact) {
+      return false;
+    }
+    std::shared_ptr<void> retained_gpu_backing =
+        plan.retain_gpu_display ? frame.primary_backing_artifact : nullptr;
+    RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
+        build_retained_gpu_backing_descriptor(frame, capture_timestamp_ns, plan.primary_kind == ResultPayloadKind::GPU_SURFACE);
     MutableCaptureResultData capture_result =
-        build_default_image_capture_result(frame, std::move(payload), capture_timestamp_ns);
+        build_default_image_capture_result(
+            frame,
+            plan,
+            std::move(payload),
+            std::move(retained_gpu_backing),
+            retained_gpu_backing_descriptor,
+            capture_timestamp_ns);
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
@@ -315,7 +340,12 @@ bool CoreResultStore::append_additional_capture_image(
   if (dev_it == cap_it->second.end() || !dev_it->second) {
     return false;
   }
-  if (!has_valid_capture_image_member_payload(image_member.payload)) {
+  const bool valid_cpu_payload = has_valid_capture_image_member_payload(image_member.payload);
+  const bool valid_gpu_payload =
+      image_member.payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      image_member.retained_gpu_backing &&
+      image_member.retained_gpu_backing_descriptor.valid;
+  if (!valid_cpu_payload && !valid_gpu_payload) {
     return false;
   }
   if (image_member.role != CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET) {
@@ -333,7 +363,7 @@ bool CoreResultStore::append_additional_capture_image(
   }
 
   image_member.retained_access_truth =
-      build_capture_image_member_retained_access_truth(image_member.payload);
+      build_capture_image_member_retained_access_truth(image_member);
 
   if (result.use_count() != 1) {
     // Preserve immutability for any result object already handed out through the
@@ -352,6 +382,34 @@ bool CoreResultStore::append_additional_capture_image(
       static_cast<unsigned long long>((capture_latency_trace_now_ns() - append_begin_ns) / 1000ull));
   return true;
 }
+
+bool CoreResultStore::try_build_capture_image_member_data_from_frame(
+    const FrameView& frame,
+    CoreCaptureResultData::ImageMemberData& out_member) {
+  const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
+  const CoreRetainedBackingPlan plan = build_capture_retained_backing_plan(frame, has_cpu_payload);
+  if (plan.primary_kind == ResultPayloadKind::CPU_PACKED) {
+    if (!try_build_capture_image_member_data_from_frame(frame, out_member.payload)) {
+      return false;
+    }
+  } else if (plan.primary_kind == ResultPayloadKind::GPU_SURFACE) {
+    if (!frame.primary_backing_artifact) {
+      return false;
+    }
+    if (plan.retain_cpu_sidecar && has_cpu_payload) {
+      (void)try_build_capture_image_member_data_from_frame(frame, out_member.payload);
+    }
+    out_member.retained_gpu_backing = frame.primary_backing_artifact;
+    out_member.retained_gpu_backing_descriptor =
+        build_retained_gpu_backing_descriptor(frame, out_member.capture_timestamp_ns, true);
+  } else {
+    return false;
+  }
+  out_member.payload_kind = plan.primary_kind;
+  out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
+  return true;
+}
+
 
 bool CoreResultStore::try_build_capture_image_member_data_from_frame(const FrameView& frame,
                                                                      CoreResultPayloadCpuPacked& out_payload) {
@@ -383,7 +441,10 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(const Frame
 
 MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
     const FrameView& frame,
+    CoreRetainedBackingPlan plan,
     CoreResultPayloadCpuPacked payload,
+    std::shared_ptr<void> retained_gpu_backing,
+    RetainedGpuBackingDescriptor retained_gpu_backing_descriptor,
     uint64_t capture_timestamp_ns) {
   if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
       frame.capture_image.image_member_index != 0u) {
@@ -392,10 +453,10 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   auto capture_result = std::make_shared<CoreCaptureResultData>();
   capture_result->capture_id = frame.capture_id;
   capture_result->device_instance_id = frame.device_instance_id;
-  capture_result->image_width = payload.width;
-  capture_result->image_height = payload.height;
-  capture_result->image_format_fourcc = payload.format_fourcc;
-  capture_result->payload_kind = ResultPayloadKind::CPU_PACKED;
+  capture_result->image_width = frame.width;
+  capture_result->image_height = frame.height;
+  capture_result->image_format_fourcc = frame.format_fourcc;
+  capture_result->payload_kind = plan.primary_kind;
 
   // Current default-only still-capture behavior: retained still payload is
   // accepted as the CaptureResult default image.
@@ -412,10 +473,15 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   }
   capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
 
-  CoreImageFactBundle facts = build_default_facts(payload.width, payload.height, payload.format_fourcc);
-  capture_result->default_image.payload = std::move(payload);
+  CoreImageFactBundle facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
+  capture_result->default_image.payload_kind = plan.primary_kind;
+  if (plan.primary_kind == ResultPayloadKind::CPU_PACKED || plan.retain_cpu_sidecar) {
+    capture_result->default_image.payload = std::move(payload);
+  }
+  capture_result->default_image.retained_gpu_backing = std::move(retained_gpu_backing);
+  capture_result->default_image.retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
   capture_result->default_image.retained_access_truth =
-      build_capture_image_member_retained_access_truth(capture_result->default_image.payload);
+      build_capture_image_member_retained_access_truth(capture_result->default_image);
   facts.has_capture_attributes = false;
   facts.capture_attributes = ResultCaptureAttributesFacts{};
   facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};

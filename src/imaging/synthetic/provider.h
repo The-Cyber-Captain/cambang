@@ -157,7 +157,7 @@ private:
   ProducerBackingCapabilities query_capture_producer_capabilities_(
       const CaptureRequest& req) const noexcept;
   bool choose_stream_gpu_preference_(ProducerBackingCapabilities capabilities) const noexcept;
-  SyntheticStreamBackingMode resolve_stream_backing_mode_(
+  SyntheticProducerOutputFormMode resolve_producer_output_form_mode_(
       ProducerBackingCapabilities capabilities) const noexcept;
 
   struct DeviceState {
@@ -184,7 +184,7 @@ private:
     PictureConfig picture{};
     CpuPackedPatternRenderer renderer{};
     bool prefer_gpu_backing = false;
-    SyntheticStreamBackingMode resolved_backing_mode = SyntheticStreamBackingMode::Auto;
+    SyntheticProducerOutputFormMode resolved_output_form_mode = SyntheticProducerOutputFormMode::Auto;
     std::vector<std::uint8_t> gpu_staging;
     std::shared_ptr<void> live_gpu_backing{};
     uint64_t live_gpu_backing_native_id = 0;

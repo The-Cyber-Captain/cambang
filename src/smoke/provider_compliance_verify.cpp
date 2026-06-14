@@ -1287,9 +1287,44 @@ bool run_synthetic_backing_capability_truth_check() {
     return false;
   }
 
+  auto verify_mode_truth = [&](SyntheticProducerOutputFormMode mode,
+                               bool expect_cpu,
+                               bool expect_gpu,
+                               const char* label) -> bool {
+    SyntheticProviderConfig mode_cfg{};
+    mode_cfg.endpoint_count = 1;
+    mode_cfg.producer_output_form_mode = mode;
+    RecorderCallbacks mode_cb;
+    SyntheticProvider mode_provider(mode_cfg);
+    if (!mode_provider.initialize(&mode_cb).ok()) {
+      std::cerr << "FAIL synthetic backing capability truth " << label << " initialize failed\n";
+      return false;
+    }
+    const ProducerBackingCapabilities mode_stream_caps =
+        mode_provider.stream_backing_capabilities(profile, picture);
+    const ProducerBackingCapabilities mode_capture_caps =
+        mode_provider.capture_backing_capabilities(req);
+    if (!mode_provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic backing capability truth " << label << " shutdown failed\n";
+      return false;
+    }
+    if (mode_stream_caps.cpu_backed_available != expect_cpu ||
+        mode_stream_caps.gpu_backed_available != expect_gpu ||
+        mode_capture_caps.cpu_backed_available != expect_cpu ||
+        mode_capture_caps.gpu_backed_available != expect_gpu) {
+      std::cerr << "FAIL synthetic backing capability truth " << label << " mode mismatch\n";
+      return false;
+    }
+    return true;
+  };
+
+  if (!verify_mode_truth(SyntheticProducerOutputFormMode::CpuOnly, true, false, "cpu_only")) return false;
+  if (!verify_mode_truth(SyntheticProducerOutputFormMode::CpuAndGpu, runtime_gpu_gate, runtime_gpu_gate, "cpu_gpu")) return false;
+  if (!verify_mode_truth(SyntheticProducerOutputFormMode::GpuOnly, false, runtime_gpu_gate, "gpu_only")) return false;
+
   return true;
 }
-bool run_synthetic_stream_backing_mode_production_check() {
+bool run_synthetic_producer_output_form_mode_production_check() {
   auto make_req = [](uint64_t stream_id) {
     StreamRequest req{};
     req.stream_id = stream_id;
@@ -1303,7 +1338,7 @@ bool run_synthetic_stream_backing_mode_production_check() {
     return req;
   };
 
-  auto verify_cpu_frame_mode = [&](SyntheticStreamBackingMode mode, const char* label, uint64_t stream_id) -> bool {
+  auto verify_cpu_frame_mode = [&](SyntheticProducerOutputFormMode mode, const char* label, uint64_t stream_id) -> bool {
     RecorderCallbacks cb;
     SyntheticProviderConfig cfg{};
     cfg.endpoint_count = 1;
@@ -1311,7 +1346,7 @@ bool run_synthetic_stream_backing_mode_production_check() {
     cfg.nominal.height = 32;
     cfg.nominal.format_fourcc = FOURCC_RGBA;
     cfg.nominal.start_stream_warmup_ns = 0;
-    cfg.stream_backing_mode = mode;
+    cfg.producer_output_form_mode = mode;
     SyntheticProvider provider(cfg);
     const StreamRequest req = make_req(stream_id);
     if (!provider.initialize(&cb).ok() ||
@@ -1346,18 +1381,62 @@ bool run_synthetic_stream_backing_mode_production_check() {
     return true;
   };
 
-  if (!verify_cpu_frame_mode(SyntheticStreamBackingMode::CpuOnly, "cpu_only", 8102)) return false;
+  auto verify_cpu_capture_mode = [&](SyntheticProducerOutputFormMode mode, const char* label, uint64_t capture_id) -> bool {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 32;
+    cfg.nominal.height = 32;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cfg.producer_output_form_mode = mode;
+    SyntheticProvider provider(cfg);
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", 81, 8101).ok()) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " setup failed\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    CaptureRequest cap = make_direct_provider_default_still_capture_request(capture_id, 81, 32, 32, FOURCC_RGBA);
+    if (!provider.trigger_capture(cap).ok() || !wait_for_capture_completed_with_frames(cb, capture_id, 1)) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " did not complete\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    EventRec frame{};
+    for (const auto& ev : cb.snapshot_events()) {
+      if (ev.tag == "frame" && ev.capture_id == capture_id) {
+        frame = ev;
+        break;
+      }
+    }
+    if (!provider.close_device(81).ok() || !provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " teardown failed\n";
+      return false;
+    }
+    if (frame.capture_id != capture_id ||
+        frame.primary_backing_kind != ProducerBackingKind::CPU ||
+        frame.has_primary_backing_artifact ||
+        !frame.retain_cpu_sidecar ||
+        frame.payload_size_bytes == 0) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " CPU frame truth mismatch\n";
+      return false;
+    }
+    return true;
+  };
+
+  if (!verify_cpu_frame_mode(SyntheticProducerOutputFormMode::CpuOnly, "cpu_only", 8102)) return false;
+  if (!verify_cpu_capture_mode(SyntheticProducerOutputFormMode::CpuOnly, "cpu_only", 8112)) return false;
 
   const bool runtime_gpu_gate = synthetic_gpu_backing_runtime_available();
   if (!runtime_gpu_gate) {
-    auto verify_unavailable_gpu_refusal = [&](SyntheticStreamBackingMode mode, uint64_t stream_id) -> bool {
+    auto verify_unavailable_gpu_refusal = [&](SyntheticProducerOutputFormMode mode, uint64_t stream_id, uint64_t capture_id) -> bool {
       RecorderCallbacks cb;
       SyntheticProviderConfig cfg{};
       cfg.endpoint_count = 1;
       cfg.nominal.width = 32;
       cfg.nominal.height = 32;
       cfg.nominal.format_fourcc = FOURCC_RGBA;
-      cfg.stream_backing_mode = mode;
+      cfg.producer_output_form_mode = mode;
       SyntheticProvider provider(cfg);
       const StreamRequest req = make_req(stream_id);
       if (!provider.initialize(&cb).ok() ||
@@ -1373,6 +1452,13 @@ bool run_synthetic_stream_backing_mode_production_check() {
         (void)provider.shutdown();
         return false;
       }
+      CaptureRequest cap = make_direct_provider_default_still_capture_request(capture_id, req.device_instance_id, 32, 32, FOURCC_RGBA);
+      const ProviderResult capture_result = provider.trigger_capture(cap);
+      if (capture_result.code != ProviderError::ERR_NOT_SUPPORTED) {
+        std::cerr << "FAIL synthetic capture backing unavailable-gpu mode did not refuse clearly\n";
+        (void)provider.shutdown();
+        return false;
+      }
       if (!provider.destroy_stream(req.stream_id).ok() ||
           !provider.close_device(req.device_instance_id).ok() ||
           !provider.shutdown().ok()) {
@@ -1381,16 +1467,17 @@ bool run_synthetic_stream_backing_mode_production_check() {
       }
       return true;
     };
-    if (!verify_unavailable_gpu_refusal(SyntheticStreamBackingMode::GpuOnly, 8103)) return false;
-    if (!verify_unavailable_gpu_refusal(SyntheticStreamBackingMode::CpuAndGpu, 8104)) return false;
-    if (!verify_cpu_frame_mode(SyntheticStreamBackingMode::Auto, "auto_cpu_default", 8105)) return false;
+    if (!verify_unavailable_gpu_refusal(SyntheticProducerOutputFormMode::GpuOnly, 8103, 8113)) return false;
+    if (!verify_unavailable_gpu_refusal(SyntheticProducerOutputFormMode::CpuAndGpu, 8104, 8114)) return false;
+    if (!verify_cpu_frame_mode(SyntheticProducerOutputFormMode::Auto, "auto_cpu_default", 8105)) return false;
+    if (!verify_cpu_capture_mode(SyntheticProducerOutputFormMode::Auto, "auto_cpu_default", 8115)) return false;
     return true;
   }
 
   // In builds with a real Synthetic GPU runtime installed, assert production
   // truth directly. Host maintainer tools normally exercise the unavailable-GPU
   // refusal branch above.
-  auto verify_gpu_frame_mode = [&](SyntheticStreamBackingMode mode,
+  auto verify_gpu_frame_mode = [&](SyntheticProducerOutputFormMode mode,
                                    const char* label,
                                    uint64_t stream_id,
                                    bool expected_cpu_sidecar) -> bool {
@@ -1401,7 +1488,7 @@ bool run_synthetic_stream_backing_mode_production_check() {
     cfg.nominal.height = 32;
     cfg.nominal.format_fourcc = FOURCC_RGBA;
     cfg.nominal.start_stream_warmup_ns = 0;
-    cfg.stream_backing_mode = mode;
+    cfg.producer_output_form_mode = mode;
     SyntheticProvider provider(cfg);
     const StreamRequest req = make_req(stream_id);
     if (!provider.initialize(&cb).ok() ||
@@ -1436,9 +1523,58 @@ bool run_synthetic_stream_backing_mode_production_check() {
     return true;
   };
 
-  if (!verify_gpu_frame_mode(SyntheticStreamBackingMode::GpuOnly, "gpu_only", 8106, false)) return false;
-  if (!verify_gpu_frame_mode(SyntheticStreamBackingMode::CpuAndGpu, "cpu_and_gpu", 8107, true)) return false;
-  if (!verify_gpu_frame_mode(SyntheticStreamBackingMode::Auto, "auto_gpu_default", 8108, true)) return false;
+  auto verify_gpu_capture_mode = [&](SyntheticProducerOutputFormMode mode,
+                                     const char* label,
+                                     uint64_t capture_id,
+                                     bool expected_cpu_sidecar) -> bool {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 32;
+    cfg.nominal.height = 32;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cfg.producer_output_form_mode = mode;
+    SyntheticProvider provider(cfg);
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", 81, 8101).ok()) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " setup failed\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    CaptureRequest cap = make_direct_provider_default_still_capture_request(capture_id, 81, 32, 32, FOURCC_RGBA);
+    if (!provider.trigger_capture(cap).ok() || !wait_for_capture_completed_with_frames(cb, capture_id, 1)) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " did not complete\n";
+      (void)provider.shutdown();
+      return false;
+    }
+    EventRec frame{};
+    for (const auto& ev : cb.snapshot_events()) {
+      if (ev.tag == "frame" && ev.capture_id == capture_id) {
+        frame = ev;
+        break;
+      }
+    }
+    if (!provider.close_device(81).ok() || !provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " teardown failed\n";
+      return false;
+    }
+    if (frame.capture_id != capture_id ||
+        frame.primary_backing_kind != ProducerBackingKind::GPU ||
+        !frame.has_primary_backing_artifact ||
+        frame.retain_cpu_sidecar != expected_cpu_sidecar ||
+        ((frame.payload_size_bytes != 0) != expected_cpu_sidecar)) {
+      std::cerr << "FAIL synthetic capture output-form mode " << label << " GPU frame truth mismatch\n";
+      return false;
+    }
+    return true;
+  };
+
+  if (!verify_gpu_frame_mode(SyntheticProducerOutputFormMode::GpuOnly, "gpu_only", 8106, false)) return false;
+  if (!verify_gpu_capture_mode(SyntheticProducerOutputFormMode::GpuOnly, "gpu_only", 8116, false)) return false;
+  if (!verify_gpu_frame_mode(SyntheticProducerOutputFormMode::CpuAndGpu, "cpu_and_gpu", 8107, true)) return false;
+  if (!verify_gpu_capture_mode(SyntheticProducerOutputFormMode::CpuAndGpu, "cpu_and_gpu", 8117, true)) return false;
+  if (!verify_gpu_frame_mode(SyntheticProducerOutputFormMode::Auto, "auto_gpu_default", 8108, true)) return false;
+  if (!verify_gpu_capture_mode(SyntheticProducerOutputFormMode::Auto, "auto_gpu_default", 8118, true)) return false;
   return true;
 }
 
@@ -2464,7 +2600,7 @@ int main(int argc, char** argv) {
       {"run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); }},
       {"run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); }},
       {"run_synthetic_backing_capability_truth_check", [] { return run_synthetic_backing_capability_truth_check(); }},
-      {"run_synthetic_stream_backing_mode_production_check", [] { return run_synthetic_stream_backing_mode_production_check(); }},
+      {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
       {"run_synthetic_provider_direct_sanity_check", [] { return run_synthetic_provider_direct_sanity_check(); }},

@@ -1601,6 +1601,7 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
       timeline_teardown_trace_emit("fail StartStream stream_id=%llu reason=provider_rc_%u",
                                    static_cast<unsigned long long>(stream_id),
                                    static_cast<unsigned>(sr.code));
+      (void)streams_.on_stream_error(stream_id, static_cast<uint32_t>(sr.code));
       result_promise->set_value(TryStartStreamStatus::ProviderRejected);
       return;
     }

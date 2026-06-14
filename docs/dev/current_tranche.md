@@ -29,8 +29,10 @@ Synthetic maintainer tooling direction:
 
 * Synthetic provider backing advertisement reports current runtime output-form truth;
 * retained-plan policy chooses primary and auxiliary retention within that truthful set;
-* Synthetic maintainer controls for output-form and retained-plan behavior belong on truthful production paths;
-* do not add controls that misstate provider output-form truth, env vars, harness selectors, or public API while preparing this base.
+* Synthetic maintainer output-form selection is exposed only through `CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM=runtime_default|cpu_only|cpu_gpu|gpu_only`;
+* the selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist;
+* GPU-dependent selections fail deterministically when the Synthetic GPU runtime cannot realize them;
+* do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing this base.
 
 ## Recent committed checkpoint
 

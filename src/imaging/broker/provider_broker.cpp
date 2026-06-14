@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <utility>
@@ -129,6 +130,34 @@ ProviderResult err_not_initialized() {
 ProviderResult err_no_active() {
   return ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
 }
+
+
+#if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
+ProviderResult parse_synthetic_producer_output_form_mode_env(SyntheticProducerOutputFormMode& out) noexcept {
+  const char* value = std::getenv("CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM");
+  if (!value || value[0] == '\0') {
+    return ProviderResult::success();
+  }
+  const std::string mode(value);
+  if (mode == "runtime_default") {
+    out = SyntheticProducerOutputFormMode::Auto;
+    return ProviderResult::success();
+  }
+  if (mode == "cpu_only") {
+    out = SyntheticProducerOutputFormMode::CpuOnly;
+    return ProviderResult::success();
+  }
+  if (mode == "cpu_gpu") {
+    out = SyntheticProducerOutputFormMode::CpuAndGpu;
+    return ProviderResult::success();
+  }
+  if (mode == "gpu_only") {
+    out = SyntheticProducerOutputFormMode::GpuOnly;
+    return ProviderResult::success();
+  }
+  return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+}
+#endif
 
 ProviderError provider_error_from_access_status(ProviderAccessStatus status) noexcept {
   switch (status.code) {
@@ -397,6 +426,11 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     cfg.synthetic_role = synthetic_role_latched_;
     cfg.timing_driver = timing_driver_latched_;
     cfg.timeline_reconciliation = timeline_reconciliation_latched_;
+    const ProviderResult output_form_env_result =
+        parse_synthetic_producer_output_form_mode_env(cfg.producer_output_form_mode);
+    if (!output_form_env_result.ok()) {
+      return output_form_env_result;
+    }
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     active_ = std::move(syn);
     install_synthetic_timeline_request_dispatch_hook_locked_();

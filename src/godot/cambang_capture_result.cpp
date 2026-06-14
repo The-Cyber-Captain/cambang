@@ -1,6 +1,7 @@
 #include "godot/cambang_capture_result.h"
 
 #include "godot/cambang_result_convert.h"
+#include "godot/godot_gpu_display_service.h"
 
 namespace cambang {
 
@@ -113,6 +114,11 @@ godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_
   const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
   if (!member) {
     return godot::Ref<godot::Image>();
+  }
+  if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing) {
+    return godot_gpu_display_materialize_to_image(
+        member->retained_gpu_backing_descriptor,
+        member->retained_gpu_backing);
   }
   return payload_to_image(member->payload);
 }

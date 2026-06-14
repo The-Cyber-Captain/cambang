@@ -114,7 +114,10 @@ struct CoreCaptureResultData {
     bool has_realized_exposure_compensation_milli_ev = false;
     int32_t realized_exposure_compensation_milli_ev = 0;
     uint64_t capture_timestamp_ns = 0;
+    ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
     CoreResultPayloadCpuPacked payload{};
+    std::shared_ptr<void> retained_gpu_backing{};
+    RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
     CoreRetainedAccessTruth retained_access_truth{};
 
     bool has_capture_attributes = false;
@@ -176,6 +179,9 @@ public:
   bool append_additional_capture_image(uint64_t capture_id,
                                        uint64_t device_instance_id,
                                        CoreCaptureResultData::ImageMemberData image_member);
+  static bool try_build_capture_image_member_data_from_frame(
+      const FrameView& frame,
+      CoreCaptureResultData::ImageMemberData& out_member);
   static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
                                                               CoreResultPayloadCpuPacked& out_payload);
 
@@ -195,7 +201,10 @@ private:
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
   static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
   static MutableCaptureResultData build_default_image_capture_result(const FrameView& frame,
+                                                                     CoreRetainedBackingPlan plan,
                                                                      CoreResultPayloadCpuPacked payload,
+                                                                     std::shared_ptr<void> retained_gpu_backing,
+                                                                     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor,
                                                                      uint64_t capture_timestamp_ns);
 
   mutable std::mutex mutex_;
