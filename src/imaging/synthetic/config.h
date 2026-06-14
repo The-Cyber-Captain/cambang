@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <string_view>
 
 #include "imaging/synthetic/scenario.h"
 #include "pixels/pattern/pattern_registry.h"
@@ -37,6 +38,49 @@ enum class SyntheticProducerOutputFormMode : std::uint8_t {
   GpuOnly = 2,
   CpuAndGpu = 3,
 };
+
+inline constexpr const char* kSyntheticProducerOutputFormProjectSetting =
+    "cambang/maintainer/synthetic_producer_output_form";
+inline constexpr const char* kSyntheticProducerOutputFormArg =
+    "--cambang-synth-producer-output-form=";
+
+inline bool parse_synthetic_producer_output_form_mode(
+    std::string_view mode,
+    SyntheticProducerOutputFormMode& out) noexcept {
+  if (mode == "runtime_default") {
+    out = SyntheticProducerOutputFormMode::Auto;
+    return true;
+  }
+  if (mode == "cpu_only") {
+    out = SyntheticProducerOutputFormMode::CpuOnly;
+    return true;
+  }
+  if (mode == "cpu_gpu") {
+    out = SyntheticProducerOutputFormMode::CpuAndGpu;
+    return true;
+  }
+  if (mode == "gpu_only") {
+    out = SyntheticProducerOutputFormMode::GpuOnly;
+    return true;
+  }
+  return false;
+}
+
+inline const char* synthetic_producer_output_form_mode_setting_value(
+    SyntheticProducerOutputFormMode mode) noexcept {
+  switch (mode) {
+    case SyntheticProducerOutputFormMode::Auto:
+      return "runtime_default";
+    case SyntheticProducerOutputFormMode::CpuOnly:
+      return "cpu_only";
+    case SyntheticProducerOutputFormMode::GpuOnly:
+      return "gpu_only";
+    case SyntheticProducerOutputFormMode::CpuAndGpu:
+      return "cpu_gpu";
+    default:
+      return "runtime_default";
+  }
+}
 
 struct SyntheticNominalDefaults {
   uint32_t width = 1280;

@@ -11,10 +11,13 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/variant.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -99,6 +102,50 @@ static bool parse_timeline_reconciliation_int(int value, TimelineReconciliation&
     default:
       return false;
   }
+}
+
+static bool read_synthetic_producer_output_form_project_setting(
+    SyntheticProducerOutputFormMode& out_mode) {
+  out_mode = SyntheticProducerOutputFormMode::Auto;
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!settings) {
+    return true;
+  }
+  godot::Variant value = settings->get_setting(
+      kSyntheticProducerOutputFormProjectSetting,
+      synthetic_producer_output_form_mode_setting_value(out_mode));
+  const godot::String mode_string = value;
+  const std::string mode(mode_string.utf8().get_data());
+  return parse_synthetic_producer_output_form_mode(mode, out_mode);
+}
+
+static bool apply_synthetic_producer_output_form_cmdline_to_project_setting() {
+  godot::OS* os = godot::OS::get_singleton();
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!os || !settings) {
+    return true;
+  }
+
+  const std::string prefix(kSyntheticProducerOutputFormArg);
+  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  bool found = false;
+  for (int64_t i = 0; i < args.size(); ++i) {
+    const std::string arg(args[i].utf8().get_data());
+    if (arg.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    if (found) {
+      return false;
+    }
+    SyntheticProducerOutputFormMode parsed = SyntheticProducerOutputFormMode::Auto;
+    const std::string mode = arg.substr(prefix.size());
+    if (!parse_synthetic_producer_output_form_mode(mode, parsed)) {
+      return false;
+    }
+    settings->set_setting(kSyntheticProducerOutputFormProjectSetting, godot::String(mode.c_str()));
+    found = true;
+  }
+  return true;
 }
 
 static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexcept {
@@ -1831,6 +1878,23 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized(
     if (!timing_req.ok()) {
       ERR_PRINT("CamBANGServer: requested synthetic timing_driver configuration rejected by provider broker.");
       return false;
+    }
+    if (mode == RuntimeMode::synthetic) {
+      if (!apply_synthetic_producer_output_form_cmdline_to_project_setting()) {
+        ERR_PRINT("CamBANGServer: invalid duplicate or unsupported Synthetic producer output-form maintainer setting.");
+        return false;
+      }
+      SyntheticProducerOutputFormMode producer_output_form_mode = SyntheticProducerOutputFormMode::Auto;
+      if (!read_synthetic_producer_output_form_project_setting(producer_output_form_mode)) {
+        ERR_PRINT("CamBANGServer: invalid Synthetic producer output-form maintainer project setting.");
+        return false;
+      }
+      ProviderResult output_form_req =
+          broker->set_synthetic_producer_output_form_mode_requested(producer_output_form_mode);
+      if (!output_form_req.ok()) {
+        ERR_PRINT("CamBANGServer: requested Synthetic producer output-form configuration rejected by provider broker.");
+        return false;
+      }
     }
     const bool reconciliation_applicable =
         mode == RuntimeMode::synthetic &&

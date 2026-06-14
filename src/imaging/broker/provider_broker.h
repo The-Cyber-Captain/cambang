@@ -46,6 +46,7 @@ public:
   ProviderResult set_synthetic_role_requested(SyntheticRole role) noexcept;
   ProviderResult set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept;
   ProviderResult set_synthetic_timeline_reconciliation_requested(TimelineReconciliation reconciliation) noexcept;
+  ProviderResult set_synthetic_producer_output_form_mode_requested(SyntheticProducerOutputFormMode mode) noexcept;
 
   const char* provider_name() const override;
   ProviderKind provider_kind() const noexcept override;
@@ -146,9 +147,11 @@ private:
   SyntheticRole synthetic_role_requested_ = SyntheticRole::Nominal;
   TimingDriver timing_driver_requested_ = TimingDriver::VirtualTime;
   TimelineReconciliation timeline_reconciliation_requested_ = TimelineReconciliation::CompletionGated;
+  SyntheticProducerOutputFormMode producer_output_form_mode_requested_ = SyntheticProducerOutputFormMode::Auto;
   SyntheticRole synthetic_role_latched_ = SyntheticRole::Nominal;
   TimingDriver timing_driver_latched_ = TimingDriver::VirtualTime;
   TimelineReconciliation timeline_reconciliation_latched_ = TimelineReconciliation::CompletionGated;
+  SyntheticProducerOutputFormMode producer_output_form_mode_latched_ = SyntheticProducerOutputFormMode::Auto;
   std::function<void(const SyntheticScheduledEvent&)> synthetic_timeline_request_dispatch_hook_{};
 };
 

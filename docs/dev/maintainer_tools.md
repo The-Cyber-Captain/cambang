@@ -148,10 +148,17 @@ This control is a maintainer/verification aid only. It is Synthetic-only, is not
 product or user runtime configuration, and does not affect platform-backed
 providers or public Godot API.
 
-- `--cambang-synth-producer-output-form=runtime_default|cpu_only|cpu_gpu|gpu_only`
+- Project setting: `cambang/maintainer/synthetic_producer_output_form`
+  - values: `runtime_default|cpu_only|cpu_gpu|gpu_only`
   - default/unset: `runtime_default`
-  - this process argument is the only maintainer control surface for this
-    selection; there is no environment-variable fallback
+  - this project-backed setting is the single authoritative maintainer surface
+    for the selection and works for deploy-based verification from the same
+    Godot project
+  - host command-line runs may pass
+    `--cambang-synth-producer-output-form=runtime_default|cpu_only|cpu_gpu|gpu_only`;
+    startup writes that value into the same project setting before the provider
+    reads it, so command-line selection is not a separate authority path
+  - there is no environment-variable fallback
   - controls truthful Synthetic producer output-form reporting and the matching
     retained/produced behaviour for repeating-stream frames and still-capture
     frames where Synthetic has the corresponding backing seam

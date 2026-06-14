@@ -144,7 +144,7 @@ func _scene_elapsed_us() -> int:
 
 
 func _ready() -> void:
-	_log_env_probe()
+	_log_maintainer_config_probe()
 	_status_label.clear()
 	_is_headless = DisplayServer.get_name() == "headless"
 	_start_ms = Time.get_ticks_msec()
@@ -238,13 +238,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_request_manual_capture()
 
 
+func _synthetic_producer_output_form_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default"))
+
+
 func _synthetic_gpu_only_output_form_requested() -> bool:
-	var arg_prefix := "--cambang-synth-producer-output-form="
-	for arg in OS.get_cmdline_user_args():
-		var arg_s := str(arg)
-		if arg_s.begins_with(arg_prefix):
-			return arg_s.substr(arg_prefix.length()) == "gpu_only"
-	return false
+	return _synthetic_producer_output_form_setting() == "gpu_only"
 
 
 
@@ -1427,8 +1426,6 @@ func _cleanup_and_quit(code: int) -> void:
 
 		CamBANGServer.stop_and_quit(code)
 
-func _log_env_probe() -> void:
-	var key := "CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM"
-	var value := OS.get_environment(key)
-	print("ENV probe %s=<%s>" % [key, value])
+func _log_maintainer_config_probe() -> void:
+	print("Synthetic producer output-form project setting: %s" % _synthetic_producer_output_form_setting())
 	print("CMD args: %s" % str(OS.get_cmdline_args()))
