@@ -14,11 +14,14 @@ This document records deviations from:
 - Godot editor/plugin APIs and documentation
 - Godot SCons conventions
 
-Each entry must include:
+Each entry should include:
 - Upstream reference (repo + issue, proposal, or documentation link)
 - Description of discrepancy
 - CamBANG workaround
 - Removal criteria
+
+Exception:
+- When the relevant upstream behaviour is intentional or otherwise does not match CamBANG’s needs in a way that has no meaningful “wait for upstream fix” endpoint, the entry may replace Removal criteria with a clearly labelled long-term note explaining why no concrete removal criterion currently applies.
 
 
 ## godot-cpp-template #107 (Android cross-build naming mismatch)
@@ -130,3 +133,24 @@ request-dispatch status, in-flight request handling, final result delivery, and
 platform coverage sufficient for CamBANG's supported runtime-permission targets.
 At that point CamBANG may replace provider-specific permission workarounds with
 the stable Godot API where appropriate.
+
+
+## Godot #102061 / editor and deploy user-argument surfaces are not a reliable maintainer-control channel
+
+Upstream: https://github.com/godotengine/godot/issues/102061
+
+Observation:
+- Godot issue #102061 records that user command-line arguments are erased when a project is launched through the editor, while direct command-line launch preserves them.
+- CamBANG confirmed this behaviour locally on Windows: a direct command-line run exposed the expected maintainer argument, while editor-driven/deploy-driven flows did not provide a reliable equivalent surface.
+- CamBANG also observed that Android one-touch-deploy did not provide a usable project-user-argument surface for this maintainer control, even though other launch/debug parameters were present.
+- This makes user command-line arguments unsuitable as the sole cross-platform maintainer-control surface for CamBANG verification and deploy-based testing.
+
+CamBANG workaround:
+- Do not rely on editor/deploy user command-line arguments for maintainer-only Synthetic control surfaces.
+- Use a project-backed maintainer config surface for cross-platform maintainer testing, including host-launched verification and Android one-touch-deploy.
+- Direct command-line user arguments may still be used for explicit host-side runs where the maintainer fully controls process launch, but they are not treated as the authoritative cross-platform testing surface.
+
+Long-term note:
+- No concrete removal criterion is recorded for this entry.
+- The current upstream/editor/deploy argument-handling behaviour does not match CamBANG’s maintainer-testing needs.
+- Revisit this entry only if Godot later provides a documented, deploy-compatible, cross-platform user-argument surface that satisfies those needs well enough to replace the project-backed maintainer config approach.# CamBANG – Upstream Discrepancies Log

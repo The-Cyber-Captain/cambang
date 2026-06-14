@@ -26,6 +26,10 @@ window/size/viewport_height=1920
 window/size/mode=2
 window/vsync/vsync_mode=0
 
+[editor]
+
+run/main_run_args="cambang-synth-producer-output-form=runtime_default"
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/cambang_editor/plugin.cfg")

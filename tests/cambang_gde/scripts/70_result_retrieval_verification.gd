@@ -144,6 +144,7 @@ func _scene_elapsed_us() -> int:
 
 
 func _ready() -> void:
+	_log_env_probe()
 	_status_label.clear()
 	_is_headless = DisplayServer.get_name() == "headless"
 	_start_ms = Time.get_ticks_msec()
@@ -1425,3 +1426,9 @@ func _cleanup_and_quit(code: int) -> void:
 		print(CamBANGServer.get_synthetic_metrics_snapshot())
 
 		CamBANGServer.stop_and_quit(code)
+
+func _log_env_probe() -> void:
+	var key := "CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM"
+	var value := OS.get_environment(key)
+	print("ENV probe %s=<%s>" % [key, value])
+	print("CMD args: %s" % str(OS.get_cmdline_args()))
