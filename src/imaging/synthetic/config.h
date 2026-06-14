@@ -28,10 +28,10 @@ enum class TimelineReconciliation : std::uint8_t {
   Strict = 1,
 };
 
-// Internal stream production/retention backing mode for SyntheticProvider.
-// This controls what Synthetic actually produces for stream frames; it is not a
-// public API surface.
-enum class SyntheticStreamBackingMode : std::uint8_t {
+// Internal production/retention output-form mode for SyntheticProvider.
+// This controls truthful Synthetic-produced stream and still-capture backing
+// behavior; it is not a public API surface.
+enum class SyntheticProducerOutputFormMode : std::uint8_t {
   Auto = 0,
   CpuOnly = 1,
   GpuOnly = 2,
@@ -69,7 +69,7 @@ struct SyntheticProviderConfig {
   SyntheticPatternDefaults pattern{};
   SyntheticTimelineScenario timeline_scenario{};
 
-  SyntheticStreamBackingMode stream_backing_mode = SyntheticStreamBackingMode::Auto;
+  SyntheticProducerOutputFormMode producer_output_form_mode = SyntheticProducerOutputFormMode::Auto;
 
   // Verification-only realized EV override by image_member_index for still
   // capture metadata emission. This is intentionally non-release behavior used

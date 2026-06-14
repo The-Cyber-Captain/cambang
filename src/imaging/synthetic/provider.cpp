@@ -298,19 +298,39 @@ ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilitie
     const PictureConfig& picture) const noexcept {
   (void)profile;
   (void)picture;
-  return ProducerBackingCapabilities{
-      true,
-      has_runtime_gpu_backing_path_(),
-  };
+  const bool gpu_available = has_runtime_gpu_backing_path_();
+  switch (cfg_.producer_output_form_mode) {
+    case SyntheticProducerOutputFormMode::CpuOnly:
+      return ProducerBackingCapabilities{true, false};
+    case SyntheticProducerOutputFormMode::GpuOnly:
+      return gpu_available ? ProducerBackingCapabilities{false, true}
+                           : ProducerBackingCapabilities{false, false};
+    case SyntheticProducerOutputFormMode::CpuAndGpu:
+      return gpu_available ? ProducerBackingCapabilities{true, true}
+                           : ProducerBackingCapabilities{false, false};
+    case SyntheticProducerOutputFormMode::Auto:
+    default:
+      return ProducerBackingCapabilities{true, gpu_available};
+  }
 }
 
 ProducerBackingCapabilities SyntheticProvider::query_capture_producer_capabilities_(
     const CaptureRequest& req) const noexcept {
   (void)req;
-  return ProducerBackingCapabilities{
-      true,
-      has_runtime_gpu_backing_path_(),
-  };
+  const bool gpu_available = has_runtime_gpu_backing_path_();
+  switch (cfg_.producer_output_form_mode) {
+    case SyntheticProducerOutputFormMode::CpuOnly:
+      return ProducerBackingCapabilities{true, false};
+    case SyntheticProducerOutputFormMode::GpuOnly:
+      return gpu_available ? ProducerBackingCapabilities{false, true}
+                           : ProducerBackingCapabilities{false, false};
+    case SyntheticProducerOutputFormMode::CpuAndGpu:
+      return gpu_available ? ProducerBackingCapabilities{true, true}
+                           : ProducerBackingCapabilities{false, false};
+    case SyntheticProducerOutputFormMode::Auto:
+    default:
+      return ProducerBackingCapabilities{true, gpu_available};
+  }
 }
 
 bool SyntheticProvider::choose_stream_gpu_preference_(
@@ -318,19 +338,19 @@ bool SyntheticProvider::choose_stream_gpu_preference_(
   return capabilities.gpu_backed_available;
 }
 
-SyntheticStreamBackingMode SyntheticProvider::resolve_stream_backing_mode_(
+SyntheticProducerOutputFormMode SyntheticProvider::resolve_producer_output_form_mode_(
     ProducerBackingCapabilities capabilities) const noexcept {
-  switch (cfg_.stream_backing_mode) {
-    case SyntheticStreamBackingMode::CpuOnly:
-      return SyntheticStreamBackingMode::CpuOnly;
-    case SyntheticStreamBackingMode::GpuOnly:
-      return SyntheticStreamBackingMode::GpuOnly;
-    case SyntheticStreamBackingMode::CpuAndGpu:
-      return SyntheticStreamBackingMode::CpuAndGpu;
-    case SyntheticStreamBackingMode::Auto:
+  switch (cfg_.producer_output_form_mode) {
+    case SyntheticProducerOutputFormMode::CpuOnly:
+      return SyntheticProducerOutputFormMode::CpuOnly;
+    case SyntheticProducerOutputFormMode::GpuOnly:
+      return SyntheticProducerOutputFormMode::GpuOnly;
+    case SyntheticProducerOutputFormMode::CpuAndGpu:
+      return SyntheticProducerOutputFormMode::CpuAndGpu;
+    case SyntheticProducerOutputFormMode::Auto:
     default:
-      return choose_stream_gpu_preference_(capabilities) ? SyntheticStreamBackingMode::CpuAndGpu
-                                                         : SyntheticStreamBackingMode::CpuOnly;
+      return choose_stream_gpu_preference_(capabilities) ? SyntheticProducerOutputFormMode::CpuAndGpu
+                                                         : SyntheticProducerOutputFormMode::CpuOnly;
   }
 }
 
@@ -1090,14 +1110,14 @@ ProviderResult SyntheticProvider::start_stream(
   }
   const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
   const bool selected_mode_requires_gpu =
-      cfg_.stream_backing_mode == SyntheticStreamBackingMode::GpuOnly ||
-      cfg_.stream_backing_mode == SyntheticStreamBackingMode::CpuAndGpu;
+      cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
+      cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
   if (selected_mode_requires_gpu && !runtime_truth.gpu_backed_available) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
-  s.resolved_backing_mode = resolve_stream_backing_mode_(runtime_truth);
-  s.prefer_gpu_backing = s.resolved_backing_mode == SyntheticStreamBackingMode::GpuOnly ||
-                         s.resolved_backing_mode == SyntheticStreamBackingMode::CpuAndGpu;
+  s.resolved_output_form_mode = resolve_producer_output_form_mode_(runtime_truth);
+  s.prefer_gpu_backing = s.resolved_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
+                         s.resolved_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
   s.gpu_staging.resize(size_bytes);
 
   s.started = true;
@@ -1298,6 +1318,13 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     }
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle, supports_multi_image_still_sequence())) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    const ProducerBackingCapabilities capture_truth = query_capture_producer_capabilities_(req);
+    const bool selected_mode_requires_gpu =
+        cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
+        cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
+    if (selected_mode_requires_gpu && !capture_truth.gpu_backed_available) {
+      return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
     }
 
     DeviceCaptureJob device_job{};
@@ -1646,9 +1673,40 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
         fv.capture_image.realized_exposure_compensation_milli_ev = fv.capture_image.applied_exposure_compensation_milli_ev;
       }
     }
-    fv.data = bytes->data();
-    fv.size_bytes = bytes->size();
-    fv.cpu_payload_owner = bytes;
+    const ProducerBackingCapabilities capture_truth = query_capture_producer_capabilities_(req);
+    const SyntheticProducerOutputFormMode output_form_mode = resolve_producer_output_form_mode_(capture_truth);
+    const bool retain_cpu_payload = output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
+    std::shared_ptr<void> gpu_backing{};
+    if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
+        output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu) {
+      gpu_backing = synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
+          bytes->data(), req.width, req.height, job.stride_bytes);
+      if (!gpu_backing) {
+        return false;
+      }
+      fv.primary_backing_kind = ProducerBackingKind::GPU;
+      fv.primary_backing_artifact = gpu_backing;
+      fv.retained_gpu_backing_descriptor.valid = true;
+      fv.retained_gpu_backing_descriptor.stream_id = 0;
+      fv.retained_gpu_backing_descriptor.backing_id = 0;
+      fv.retained_gpu_backing_descriptor.capture_timestamp_ns = capture_ts_ns;
+      fv.retained_gpu_backing_descriptor.width = req.width;
+      fv.retained_gpu_backing_descriptor.height = req.height;
+      fv.retained_gpu_backing_descriptor.stride_bytes = job.stride_bytes;
+      fv.retained_gpu_backing_descriptor.format_fourcc = job.format_fourcc;
+      fv.retained_gpu_backing_descriptor.display_available = true;
+      fv.retained_gpu_backing_descriptor.materialization_available =
+          synthetic_gpu_backing_can_materialize_to_image(gpu_backing);
+      fv.retained_gpu_backing_descriptor.materialization_requires_gpu_readback = false;
+    } else {
+      fv.primary_backing_kind = ProducerBackingKind::CPU;
+    }
+    fv.retain_cpu_sidecar = retain_cpu_payload;
+    if (retain_cpu_payload) {
+      fv.data = bytes->data();
+      fv.size_bytes = bytes->size();
+      fv.cpu_payload_owner = bytes;
+    }
     fv.stride_bytes = job.stride_bytes;
     auto* lease = new FrameReleaseLease();
     lease->bytes = bytes;
@@ -2459,8 +2517,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     }
   }
   const bool requires_gpu_primary =
-      s.resolved_backing_mode == SyntheticStreamBackingMode::GpuOnly ||
-      s.resolved_backing_mode == SyntheticStreamBackingMode::CpuAndGpu;
+      s.resolved_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
+      s.resolved_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
   if (requires_gpu_primary && !gpu_backing) {
     // A mode that selected a truthful GPU-backed stream must not silently emit
     // a CPU fallback frame when live GPU backing creation/update is unavailable.
@@ -2469,7 +2527,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   }
 
   const bool publish_cpu_payload =
-      s.resolved_backing_mode != SyntheticStreamBackingMode::GpuOnly;
+      s.resolved_output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
   if (publish_cpu_payload) {
     // Preserve a current CPU materialization source for the exact FrameView that
     // is about to be retained. GPU-only mode keeps CPU staging provider-local.
