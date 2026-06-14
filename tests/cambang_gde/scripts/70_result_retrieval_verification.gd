@@ -238,7 +238,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _synthetic_gpu_only_output_form_requested() -> bool:
-	return OS.get_environment("CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM") == "gpu_only"
+	var arg_prefix := "--cambang-synth-producer-output-form="
+	for arg in OS.get_cmdline_user_args():
+		var arg_s := str(arg)
+		if arg_s.begins_with(arg_prefix):
+			return arg_s.substr(arg_prefix.length()) == "gpu_only"
+	return false
 
 
 
