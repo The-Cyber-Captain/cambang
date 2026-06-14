@@ -250,12 +250,14 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
                 s.mode = rec.started ? CBStreamMode::FLOWING : CBStreamMode::STOPPED;
             }
 
-            if (rec.started || rec.last_stop_origin == CoreStreamRegistry::StopOrigin::None) {
+            if (rec.started) {
                 s.stop_reason = CBStreamStopReason::NONE;
             } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::User) {
                 s.stop_reason = CBStreamStopReason::USER;
             } else if (rec.last_error_code != 0) {
                 s.stop_reason = CBStreamStopReason::PROVIDER;
+            } else if (rec.last_stop_origin == CoreStreamRegistry::StopOrigin::None) {
+                s.stop_reason = CBStreamStopReason::NONE;
             } else {
                 s.stop_reason = CBStreamStopReason::PROVIDER;
             }

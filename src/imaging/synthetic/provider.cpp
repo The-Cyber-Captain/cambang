@@ -2426,7 +2426,10 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
       const bool provider_has_display_demand_signal = true;
       const bool display_demand_active =
           callbacks_ ? callbacks_->is_stream_display_demand_active(s.req.stream_id) : false;
+      const bool gpu_only_stream_output =
+          s.resolved_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly;
       const bool skip_gpu_update_for_demand =
+          !gpu_only_stream_output &&
           gpu_update_policy == StreamGpuUpdatePolicy::DisplayDemanded &&
           (!provider_has_display_demand_signal || !display_demand_active);
       if (display_demand_trace_enabled_) {

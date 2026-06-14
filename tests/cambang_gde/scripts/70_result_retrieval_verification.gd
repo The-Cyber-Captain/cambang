@@ -205,6 +205,11 @@ func _process(_delta: float) -> void:
 		return
 
 	if not _capture_triggered:
+		var snapshot = CamBANGServer.get_state_snapshot()
+		if snapshot != null:
+			var streams: Array = snapshot.get("streams", [])
+			if not streams.is_empty() and _fail_if_gpu_only_stream_refused_by_provider(streams[0]):
+				return
 		# Stream timeout only applies to initial stream-baseline acquisition.
 		# After stream baseline passes, we may still be waiting for snapshot bundle
 		# catch-up gates before triggering capture; that must not reuse stream timeout.
@@ -232,6 +237,20 @@ func _unhandled_input(event: InputEvent) -> void:
 			_request_manual_capture()
 
 
+func _synthetic_gpu_only_output_form_requested() -> bool:
+	return OS.get_environment("CAMBANG_SYNTH_PRODUCER_OUTPUT_FORM") == "gpu_only"
+
+
+func _fail_if_gpu_only_stream_refused_by_provider(stream_d: Dictionary) -> bool:
+	if not _synthetic_gpu_only_output_form_requested():
+		return false
+	var stop_reason := String(stream_d.get("stop_reason", ""))
+	if stop_reason != "PROVIDER":
+		return false
+	_fail("step %d FAIL: gpu_only stream explicitly refused by provider before stream result publication" % _step)
+	return true
+
+
 func _try_latch_ids_from_snapshot() -> void:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
@@ -243,6 +262,8 @@ func _try_latch_ids_from_snapshot() -> void:
 
 	var device_d: Dictionary = devices[0]
 	var stream_d: Dictionary = streams[0]
+	if _fail_if_gpu_only_stream_refused_by_provider(stream_d):
+		return
 	var latched_device_id := int(device_d.get("instance_id", 0))
 	var latched_stream_id := int(stream_d.get("stream_id", 0))
 	_require(latched_device_id > 0, "step %d FAIL: latched device instance id is invalid" % _step)
