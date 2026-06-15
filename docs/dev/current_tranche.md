@@ -10,9 +10,7 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The current work is centred on result/backing truth, provider seams, and performance-sensitive routing decisions, especially where SyntheticProvider behaviour informs but must not constrain future platform-backed providers.
 
-Active narrow slice: prepare Synthetic for truthful maintainer control by keeping
-provider output-form truth real and keeping retained-plan policy responsible for
-primary/auxiliary retention choices within that truthful set.
+Active narrow slice: implement the internal retained-result access calibration seam for the currently active concrete production posture, while future-proofing that seam for a near-following higher-level candidate-posture evaluator.
 
 Important active concerns:
 
@@ -21,9 +19,14 @@ Important active concerns:
 * avoid silently falling back between CPU and GPU modes when a selected mode should be authoritative;
 * avoid treating SyntheticProvider-only optimisations as representative of Windows MF, Android Camera2, or future platform-backed providers;
 * protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
-* begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts.
+* begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts;
 * keep Synthetic retained GPU backing materialization scoped and named accurately: it is bridge-backed Synthetic materialization, not generic platform GPU/RD readback;
-* treat retained-result access timing evidence as classification input gathered at the real result-access seam; renew/invalidate it from live applied production-posture changes rather than from first user-visible `to_image()` demand;
+* treat retained-result access timing evidence as classification input gathered at the real result-access seam;
+* renew/invalidate that evidence from live applied production-posture acceptance/application boundaries rather than from first user-visible `to_image()` demand;
+* do not treat per-frame retained-form fluctuation inside one live posture as a posture change or as a reason to renew calibration;
+* keep calibration non-stream-only: the intended internal seam covers release-facing retained-result access across both Stream Result and Capture Result surfaces, including capture image-member access where relevant;
+* keep current Scene 70 / Godot-side reporting and Synthetic dev metrics understood as verification/reporting surfaces, not the final architecture seam;
+* future-proof the calibration work so the same measurement primitive can later be reused by a higher-level evaluator that compares multiple viable concrete postures against intent, without implementing that outer evaluator in this tranche.
 
 Synthetic maintainer tooling direction:
 
@@ -33,6 +36,35 @@ Synthetic maintainer tooling direction:
 * the selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist;
 * `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable;
 * do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing this base.
+
+## Immediate implementation direction
+
+The immediate implementation work is the inner calibration mechanism, not the outer posture chooser.
+
+Implement the smallest justified internal seam that:
+
+* calibrates the real retained-result access/materialization paths of the currently active concrete production posture;
+* measures at the true result-operation seam rather than at provider-local generation/staging, snapshot publication, later render-thread draw/UI scheduling, or unrelated GPU upload/update work;
+* covers both stream and capture result surfaces, including capture image-member materialization where relevant;
+* keys evidence by concrete posture identity and operation/access path so that later cross-posture comparison can reuse the same measurement primitive;
+* renews/invalidates evidence from live posture acceptance/application boundaries and lifecycle end, not from first user demand and not from per-frame retained-form fluctuation inside one posture;
+* refines cost classification only where calibration belongs, preserving support/availability truth and retained direct-availability truth as separate concerns.
+
+This tranche should not yet:
+
+* implement the higher-level candidate-posture evaluator;
+* iterate all viable candidate postures to choose among them;
+* introduce a broad registry/taxonomy/cache architecture unless the implementation proves that the smaller seam is insufficient;
+* create a new public API burden;
+* let current Synthetic stream display-demand/update behaviour become the generalized model for platform-backed providers.
+
+The expected near-following direction is:
+
+1. keep this tranche focused on per-posture calibration of real retained-result access paths;
+2. leave behind a reusable posture-keyed measurement primitive;
+3. later add a higher-level evaluator that can enumerate viable concrete candidate postures, invoke the same calibration primitive for each candidate as needed, compare the resulting access-cost picture against intent, and choose a preferred posture.
+
+Persistent concern area after this tranche remains Android CPU-backed / compatibility-style repeating-stream pressure. The immediate calibration work should be shaped so that later intent-aware output-form selection can use its evidence as one optimisation avenue, but that outer policy/evaluator work is not part of this tranche.
 
 ## Recent committed checkpoint
 
