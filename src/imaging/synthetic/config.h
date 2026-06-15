@@ -31,7 +31,9 @@ enum class TimelineReconciliation : std::uint8_t {
 
 // Internal production/retention output-form mode for SyntheticProvider.
 // This controls truthful Synthetic-produced stream and still-capture backing
-// behavior; it is not a public API surface.
+// behavior; it is not a public API surface. Auto is the explicit
+// runtime_default/no-forcing selection: keep Synthetic on its normal runtime
+// policy instead of disguising another forced mode as the default.
 enum class SyntheticProducerOutputFormMode : std::uint8_t {
   Auto = 0,
   CpuOnly = 1,

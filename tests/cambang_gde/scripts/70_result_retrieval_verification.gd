@@ -168,15 +168,21 @@ func _ready() -> void:
 		CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME,
 		CamBANGServer.TIMELINE_RECONCILIATION_COMPLETION_GATED
 	)
-	_require(start_err == OK, "step %d FAIL: synthetic timeline start rejected (%d)" % [_step, start_err])
+	if start_err != OK:
+		_fail("step %d FAIL: synthetic timeline start rejected (%d); bootstrap stopped" % [_step, start_err])
+		return
 	_step_ok("bootstrap synthetic runtime started")
 
 	var stage_err := CamBANGServer.select_builtin_scenario("stream_inspection_live")
-	_require(stage_err == OK, "step %d FAIL: unable to stage stream_inspection_live" % _step)
+	if stage_err != OK:
+		_fail("step %d FAIL: unable to stage stream_inspection_live; bootstrap stopped" % _step)
+		return
 	_step_ok("bootstrap scenario staged")
 
 	var scenario_start_err := CamBANGServer.start_scenario()
-	_require(scenario_start_err == OK, "step %d FAIL: unable to start staged scenario" % _step)
+	if scenario_start_err != OK:
+		_fail("step %d FAIL: unable to start staged scenario; bootstrap stopped" % _step)
+		return
 	_step_ok("bootstrap scenario started")
 
 	_append_status("RUN: result_retrieval_verification")
@@ -242,8 +248,29 @@ func _synthetic_producer_output_form_setting() -> String:
 	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default"))
 
 
+func _synthetic_producer_output_form_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-producer-output-form="
+	var found := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := str(arg)
+		if not text.begins_with(PREFIX):
+			continue
+		var value := text.substr(PREFIX.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_producer_output_form_effective_selection() -> String:
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_producer_output_form_setting()
+
+
 func _synthetic_gpu_only_output_form_requested() -> bool:
-	return _synthetic_producer_output_form_setting() == "gpu_only"
+	return _synthetic_producer_output_form_effective_selection() == "gpu_only"
 
 
 
@@ -1427,5 +1454,11 @@ func _cleanup_and_quit(code: int) -> void:
 		CamBANGServer.stop_and_quit(code)
 
 func _log_maintainer_config_probe() -> void:
-	print("Synthetic producer output-form project setting: %s" % _synthetic_producer_output_form_setting())
+	var stored_setting := _synthetic_producer_output_form_setting()
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	print("Synthetic producer output-form stored project setting: %s" % stored_setting)
+	if cmdline_selection != "":
+		print("Synthetic producer output-form effective runtime selection: %s (transient command-line override)" % cmdline_selection)
+	else:
+		print("Synthetic producer output-form effective runtime selection: %s (stored project setting)" % stored_setting)
 	print("CMD args: %s" % str(OS.get_cmdline_args()))

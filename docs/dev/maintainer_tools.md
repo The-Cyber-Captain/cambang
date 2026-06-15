@@ -151,13 +151,18 @@ providers or public Godot API.
 - Project setting: `cambang/maintainer/synthetic_producer_output_form`
   - values: `runtime_default|cpu_only|cpu_gpu|gpu_only`
   - default/unset: `runtime_default`
+  - `runtime_default` is the explicit no-forcing value: it preserves the normal
+    Synthetic runtime default policy rather than acting as a disguised spelling
+    for one of the forced modes
   - this project-backed setting is the single authoritative maintainer surface
     for the selection and works for deploy-based verification from the same
     Godot project
   - host command-line runs may pass
     `--cambang-synth-producer-output-form=runtime_default|cpu_only|cpu_gpu|gpu_only`;
-    startup writes that value into the same project setting before the provider
-    reads it, so command-line selection is not a separate authority path
+    startup feeds that value through the same project-setting authority path
+    before the provider reads it, so command-line selection is not a separate
+    authority path; Scene 70 reports both the stored project setting and the
+    effective runtime selection when this transient command-line input is active
   - there is no environment-variable fallback
   - controls truthful Synthetic producer output-form reporting and the matching
     retained/produced behaviour for repeating-stream frames and still-capture
