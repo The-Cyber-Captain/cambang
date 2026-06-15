@@ -82,6 +82,13 @@ When working near provider code, preserve the distinction between:
 * advertised capability;
 * actual retained result access.
 
+When discussing retained-result access calibration:
+
+* treat timing evidence as classification input, not decorative reporting;
+* do not assume `to_image()` timing is repeating-stream-specific;
+* tie evidence to the realized retained backing/access path under the current live applied production posture;
+* keep result-access evidence distinct from provider-local generation/staging, snapshot publication, later render-thread draw/UI scheduling, and unrelated GPU upload/update work.
+
 ## Testing philosophy
 
 Do not weaken tests, smoke tools, or Godot verification scenes merely to get PASS.

@@ -23,7 +23,7 @@ Important active concerns:
 * protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
 * begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts.
 * keep Synthetic retained GPU backing materialization scoped and named accurately: it is bridge-backed Synthetic materialization, not generic platform GPU/RD readback;
-
+* treat retained-result access timing evidence as classification input gathered at the real result-access seam; renew/invalidate it from live applied production-posture changes rather than from first user-visible `to_image()` demand;
 
 Synthetic maintainer tooling direction:
 

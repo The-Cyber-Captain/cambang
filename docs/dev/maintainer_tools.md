@@ -221,15 +221,17 @@ Aggregate telemetry note:
   `scoped_resource_telemetry` counters, while long-lived identity-bearing native
   resources remain in `native_objects`.
 
-Synthetic dev metrics also expose report-only result-access timing evidence at
+Synthetic dev metrics also expose retained-result access timing evidence at
 `CamBANGServer.get_synthetic_metrics_snapshot()["result_access_timing_evidence"]`.
-This evidence is gathered only from the real Godot result-operation seam
-(`CamBANGStreamResult.to_image()` and `CamBANGStreamResult.get_display_view()`).
-It is not `CamBANGStateSnapshot`, is not schema v1 truth, does not participate
-in state publication, and does not alter `ResultCapability` classification.
-Use it only as first-slice evidence for retained-result access cost; retained
-GPU display-view timings measure wrapper/display-view acquisition, not later
-render-thread draw, UI scheduling, or Synthetic GPU upload/update cost.
+This evidence is gathered only from the real Godot result-operation seam for
+retained-result access operations. It is not `CamBANGStateSnapshot`, is not
+schema v1 truth, and does not participate in state publication. Its purpose is
+to inform actual retained-result capability/cost classification for the current
+realized access path under the current live applied production posture.
+Evidence collection/renewal belongs to live applied production-posture
+acceptance/application boundaries, not first user-visible `to_image()` demand.
+Retained GPU display-view timings measure wrapper/display-view acquisition, not
+later render-thread draw, UI scheduling, or Synthetic GPU upload/update cost.
 
 Removed temporary knobs:
 

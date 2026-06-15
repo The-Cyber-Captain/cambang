@@ -278,9 +278,11 @@ consume retained access truth, while materialization methods remain defensive an
 verify the concrete backing/path they use.
 
 Godot-layer result-access timing evidence, when exposed through Synthetic dev
-metrics, is report-only evidence collected at the real retained-result operation
-seam. It is not retained access truth, not `CamBANGStateSnapshot`, not schema v1,
-and not an input to state publication or `ResultCapability` classification.
+metrics, is evidence collected at the real retained-result operation seam. It is
+not retained access truth, not `CamBANGStateSnapshot`, not schema v1, and not an
+input to state publication. It exists to inform capability/cost classification
+for the current realized retained backing/access domain under the current live
+applied production posture.
 
 ### 6.x.4 Unsupported GPU-only realization
 
@@ -789,12 +791,13 @@ explicit materialization outcome and must not silently return stale content:
 - report unsupported/expensive rather than presenting stale image content as
   current materialization truth.
 
-The current report-only timing evidence for stream `to_image()` is collected
-around this real Godot call path. CPU-packed stream results and GPU-primary
-results with a current retained CPU sidecar still report the existing cheap
-capability; GPU-only stream results without materialization remain unsupported;
-GPU-only stream results with the Synthetic retained backing materializer remain
-expensive. The evidence does not recalibrate those labels in this tranche.
+TTiming evidence for stream `to_image()` is collected around this real Godot call
+path because it is the real retained-result access seam. CPU-packed stream
+results and GPU-primary results with a current retained CPU sidecar are expected
+to calibrate within the cheap access class; GPU-only stream results without
+materialization remain unsupported; GPU-only stream results with the Synthetic
+retained backing materializer remain expensive. Invalidation/renewal belongs to
+live applied production-posture changes as described in 11.7.
 
 ## 11.6 Capture-result guardrail
 
@@ -803,6 +806,26 @@ display-view semantics.
 
 A Capture Result is the device-level still-capture result at the public result seam. Its still-capture backing and materialization behaviour must remain explicit and capture-result-specific; the stream-side live GPU-backed display model must not be generalized into a public model of retained or exposed per-capture GPU artifacts.
 
+## 11.7 Access-cost evidence guardrail
+
+Real access-cost evidence exists to inform actual retained-result
+capability/cost classification for a supported access path. It does not change
+snapshot truth or original retained-artifact truth.
+
+Evidence must be tied to the current live applied production posture and the
+realized retained backing/access path. It must not be treated as a generic
+property of a method name, and it must not be treated as repeating-stream-only
+evidence.
+
+When a new live applied stream or still-capture production posture changes the
+realized retained backing/access domain, prior evidence for that domain is
+stale. Renewal should be launched from that live-acceptance boundary rather than
+from first user-visible `to_image()` demand.
+
+Evidence gathering must remain at the real result-access seam. It must not be
+interpreted as provider-local generation/staging cost, snapshot publication
+cost, later render-thread draw/UI scheduling cost, or unrelated GPU
+upload/update cost.
 ---
 
 ## 12. “Useful display” tiers
