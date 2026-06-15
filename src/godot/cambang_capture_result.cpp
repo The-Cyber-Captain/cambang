@@ -2,8 +2,34 @@
 
 #include "godot/cambang_result_convert.h"
 #include "godot/godot_gpu_display_service.h"
+#include "godot/result_access_cost_evidence.h"
+
+#include <chrono>
 
 namespace cambang {
+
+namespace {
+uint64_t result_access_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+bool capture_member_has_cpu_payload(const CoreCaptureResultData::ImageMemberData& member) {
+  return !member.payload.empty() && member.payload.width != 0 && member.payload.height != 0 &&
+         (member.payload.format_fourcc == FOURCC_RGBA || member.payload.format_fourcc == FOURCC_BGRA);
+}
+
+const char* capture_to_image_evidence_route(const CoreCaptureResultData::ImageMemberData* member) {
+  if (!member) return result_access_cost_evidence::kRouteCaptureAccessUnsupported;
+  if (capture_member_has_cpu_payload(*member)) return result_access_cost_evidence::kRouteCaptureToImageCpuPacked;
+  if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing &&
+      member->retained_gpu_backing_descriptor.valid &&
+      member->retained_gpu_backing_descriptor.materialization_available) {
+    return result_access_cost_evidence::kRouteCaptureToImageGpuSyntheticBackingMaterializer;
+  }
+  return result_access_cost_evidence::kRouteCaptureAccessUnsupported;
+}
+} // namespace
 
 uint32_t CamBANGCaptureResult::get_width() const { return data_ ? data_->image_width : 0; }
 uint32_t CamBANGCaptureResult::get_height() const { return data_ ? data_->image_height : 0; }
@@ -109,18 +135,49 @@ int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
   if (!data_ || image_member_index < 0) {
-    return godot::Ref<godot::Image>();
+    const uint64_t begin_ns = result_access_now_ns();
+    godot::Ref<godot::Image> image;
+    result_access_cost_evidence::record_capture_member_access(
+        result_access_cost_evidence::kRouteCaptureAccessUnsupported,
+        data_,
+        nullptr,
+        result_access_now_ns() - begin_ns,
+        false,
+        ResultCapability::UNSUPPORTED);
+    return image;
   }
   const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
   if (!member) {
-    return godot::Ref<godot::Image>();
+    const uint64_t begin_ns = result_access_now_ns();
+    godot::Ref<godot::Image> image;
+    result_access_cost_evidence::record_capture_member_access(
+        result_access_cost_evidence::kRouteCaptureAccessUnsupported,
+        data_,
+        nullptr,
+        result_access_now_ns() - begin_ns,
+        false,
+        ResultCapability::UNSUPPORTED);
+    return image;
   }
+  const char* evidence_route = capture_to_image_evidence_route(member);
+  const ResultCapability reported_capability = member->retained_access_truth.to_image;
+  const uint64_t begin_ns = result_access_now_ns();
+  godot::Ref<godot::Image> image;
   if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing) {
-    return godot_gpu_display_materialize_to_image(
+    image = godot_gpu_display_materialize_to_image(
         member->retained_gpu_backing_descriptor,
         member->retained_gpu_backing);
+  } else {
+    image = payload_to_image(member->payload);
   }
-  return payload_to_image(member->payload);
+  result_access_cost_evidence::record_capture_member_access(
+      evidence_route,
+      data_,
+      member,
+      result_access_now_ns() - begin_ns,
+      image.is_valid(),
+      reported_capability);
+  return image;
 }
 
 int CamBANGCaptureResult::can_get_encoded_bytes() const {

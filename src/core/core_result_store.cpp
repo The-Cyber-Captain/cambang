@@ -176,6 +176,58 @@ CoreRetainedBackingPlan build_capture_retained_backing_plan(const FrameView& fra
   return plan;
 }
 
+
+uint64_t next_posture_id(uint64_t& next_id) noexcept {
+  const uint64_t id = next_id;
+  if (next_id != std::numeric_limits<uint64_t>::max()) {
+    ++next_id;
+  }
+  return id == 0 ? 1 : id;
+}
+
+CoreResultAccessPostureKey build_stream_access_posture_key(
+    const CoreStreamResultData& result,
+    bool has_current_cpu_payload,
+    uint64_t posture_id) noexcept {
+  CoreResultAccessPostureKey key{};
+  key.posture_id = posture_id;
+  key.stream_id = result.stream_id;
+  key.device_instance_id = result.device_instance_id;
+  key.width = result.image_width;
+  key.height = result.image_height;
+  key.format_fourcc = result.image_format_fourcc;
+  key.payload_kind = result.payload_kind;
+  key.has_retained_cpu_payload = has_current_cpu_payload;
+  key.has_retained_gpu_backing = static_cast<bool>(result.retained_gpu_backing);
+  key.gpu_materialization_available = result.retained_gpu_backing_descriptor.valid &&
+                                      result.retained_gpu_backing_descriptor.materialization_available;
+  key.gpu_materialization_requires_readback = result.retained_gpu_backing_descriptor.valid &&
+                                             result.retained_gpu_backing_descriptor.materialization_requires_gpu_readback;
+  return key;
+}
+
+CoreResultAccessPostureKey build_capture_member_access_posture_key(
+    uint64_t capture_device_instance_id,
+    const CoreCaptureResultData::ImageMemberData& member,
+    bool has_cpu_payload,
+    uint64_t posture_id) noexcept {
+  CoreResultAccessPostureKey key{};
+  key.posture_id = posture_id;
+  key.stream_id = member.retained_gpu_backing_descriptor.valid ? member.retained_gpu_backing_descriptor.stream_id : 0;
+  key.device_instance_id = capture_device_instance_id;
+  key.width = member.payload.width != 0 ? member.payload.width : member.retained_gpu_backing_descriptor.width;
+  key.height = member.payload.height != 0 ? member.payload.height : member.retained_gpu_backing_descriptor.height;
+  key.format_fourcc = member.payload.format_fourcc != 0 ? member.payload.format_fourcc : member.retained_gpu_backing_descriptor.format_fourcc;
+  key.payload_kind = member.payload_kind;
+  key.has_retained_cpu_payload = has_cpu_payload;
+  key.has_retained_gpu_backing = static_cast<bool>(member.retained_gpu_backing);
+  key.gpu_materialization_available = member.retained_gpu_backing_descriptor.valid &&
+                                      member.retained_gpu_backing_descriptor.materialization_available;
+  key.gpu_materialization_requires_readback = member.retained_gpu_backing_descriptor.valid &&
+                                             member.retained_gpu_backing_descriptor.materialization_requires_gpu_readback;
+  return key;
+}
+
 RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
     const FrameView& frame,
     uint64_t capture_timestamp_ns,
@@ -277,6 +329,15 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
       stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
     }
     stream_result->retained_access_truth = build_stream_retained_access_truth(*stream_result);
+    stream_result->access_posture = build_stream_access_posture_key(
+        *stream_result,
+        stream_result->payload_capture_timestamp_ns == stream_result->capture_timestamp_ns &&
+            has_valid_retained_cpu_packed_access_payload(
+                stream_result->payload,
+                stream_result->image_width,
+                stream_result->image_height,
+                stream_result->image_format_fourcc),
+        next_posture_id(next_result_access_posture_id_));
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
     stream_result->facts = facts;
     auto& slot = latest_stream_results_[frame.stream_id];
@@ -305,6 +366,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
             std::move(retained_gpu_backing),
             retained_gpu_backing_descriptor,
             capture_timestamp_ns);
+    if (capture_result) {
+      capture_result->default_image.access_posture.posture_id = next_posture_id(next_result_access_posture_id_);
+    }
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
@@ -364,6 +428,11 @@ bool CoreResultStore::append_additional_capture_image(
 
   image_member.retained_access_truth =
       build_capture_image_member_retained_access_truth(image_member);
+  image_member.access_posture = build_capture_member_access_posture_key(
+      device_instance_id,
+      image_member,
+      valid_cpu_payload,
+      next_posture_id(next_result_access_posture_id_));
 
   if (result.use_count() != 1) {
     // Preserve immutability for any result object already handed out through the
@@ -407,6 +476,8 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
   }
   out_member.payload_kind = plan.primary_kind;
   out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
+  // The store assigns the live posture id when the member is accepted into a
+  // concrete capture result; this helper only builds provider-retained member truth.
   return true;
 }
 
@@ -482,6 +553,12 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   capture_result->default_image.retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
   capture_result->default_image.retained_access_truth =
       build_capture_image_member_retained_access_truth(capture_result->default_image);
+  const bool has_default_cpu_payload = has_valid_capture_image_member_payload(capture_result->default_image.payload);
+  capture_result->default_image.access_posture = build_capture_member_access_posture_key(
+      frame.device_instance_id,
+      capture_result->default_image,
+      has_default_cpu_payload,
+      0);
   facts.has_capture_attributes = false;
   facts.capture_attributes = ResultCaptureAttributesFacts{};
   facts.capture_attributes_provenance = ResultCaptureAttributesProvenance{};

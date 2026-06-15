@@ -36,6 +36,20 @@ struct CoreResultPayloadCpuPacked {
   bool uses_retained_bytes() const noexcept { return static_cast<bool>(retained_bytes); }
 };
 
+struct CoreResultAccessPostureKey {
+  uint64_t posture_id = 0;
+  uint64_t stream_id = 0;
+  uint64_t device_instance_id = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format_fourcc = 0;
+  ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
+  bool has_retained_cpu_payload = false;
+  bool has_retained_gpu_backing = false;
+  bool gpu_materialization_available = false;
+  bool gpu_materialization_requires_readback = false;
+};
+
 struct CoreRetainedAccessTruth {
   ResultCapability display_view = ResultCapability::UNSUPPORTED;
   ResultCapability to_image = ResultCapability::UNSUPPORTED;
@@ -91,6 +105,7 @@ struct CoreStreamResultData {
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   CoreResultPayloadCpuPacked payload{};
   CoreRetainedAccessTruth retained_access_truth{};
+  CoreResultAccessPostureKey access_posture{};
   // Non-zero only when payload was copied from the same FrameView as this
   // retained stream result. Used to distinguish current CPU materialization
   // from unsupported GPU-only readback.
@@ -119,6 +134,7 @@ struct CoreCaptureResultData {
     std::shared_ptr<void> retained_gpu_backing{};
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
     CoreRetainedAccessTruth retained_access_truth{};
+    CoreResultAccessPostureKey access_posture{};
 
     bool has_capture_attributes = false;
     ResultCaptureAttributesFacts capture_attributes{};
@@ -212,6 +228,7 @@ private:
   std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> capture_results_by_capture_id_;
   std::map<uint64_t, uint64_t> stream_display_demand_last_seen_ns_;
   std::map<uint64_t, uint32_t> stream_display_demand_refcounts_;
+  uint64_t next_result_access_posture_id_ = 1;
 };
 
 } // namespace cambang
