@@ -855,7 +855,12 @@ upload/update cost.
 The implemented calibration policy is intentionally simple and relative, not a
 benchmarking subsystem. For supported non-ready candidates, it compares
 normalized measured cost using a single explicit CamBANG-wide multiplier
-constant. Single-candidate supported non-ready paths retain their provisional
+constant, currently `kResultAccessCheapWithinBestMultiplier = 2`.
+
+That multiplier is a documented policy constant, not a hidden threshold or a
+benchmark-tuning subsystem.
+
+Single-candidate supported non-ready paths retain their provisional
 non-ready classification after calibration rather than being automatically
 promoted or demoted merely because they are alone.
 ---

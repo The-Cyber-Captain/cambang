@@ -86,9 +86,13 @@ Previous retained GPU backing checkpoint facts still apply:
 Validation notes:
 
 * Manual local validation remains authoritative for Windows, Godot, hardware, GPU, and platform-provider behaviour.
-* Current docs-only tranche update did not rerun build, scene, hardware, GPU, or platform-provider validation.
 * Scene 68/Synthetic metrics are verification/reporting surfaces; retained-result classification architecture is documented in `docs/architecture/pixel_payload_and_result_contract.md`.
-
+* Post-documentation local validation for the retained-result access calibration/classification checkpoint reported:
+    * `core_result_path_smoke` PASS;
+    * Godot suite `51 passed, 0 failed, 1 review`, with the review acceptable only while it remains the known Scene 65 public-boundary review case;
+    * representative Scene 68 retained-result evidence/reset runs exercised on CPU-backed and GPU-backed/runtime-default paths;
+    * Scene 70 result retrieval verification remained passing.
+    * 
 ## Current design posture
 
 Prefer the “avoid this unless” default:
