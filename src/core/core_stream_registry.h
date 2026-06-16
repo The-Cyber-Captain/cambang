@@ -32,6 +32,7 @@ public:
     uint64_t device_instance_id = 0;
     StreamIntent intent = StreamIntent::PREVIEW;
     uint64_t profile_version = 0;
+    uint64_t access_posture_epoch = 0;
 
     CaptureProfile profile{};
     PictureConfig picture{};
@@ -100,7 +101,10 @@ public:
   bool has_flowing_stream_for_device(uint64_t device_instance_id) const noexcept;
 
 private:
+  uint64_t allocate_access_posture_epoch() noexcept;
+
   std::map<uint64_t, StreamRecord> streams_; // key: stream_id
+  uint64_t next_access_posture_epoch_ = 1;
 };
 
 } // namespace cambang

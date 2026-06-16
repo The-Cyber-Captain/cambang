@@ -320,6 +320,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     bool retained_for_result = false;
     uint64_t integrated_ts_ns = 0;
     bool has_stream_record = (sid == 0);
+    uint64_t stream_access_posture_epoch = 0;
+    uint64_t capture_access_posture_epoch = 0;
     if (streams_) {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
@@ -327,10 +329,17 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       }
       if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
         stream_intent = stream_rec->intent;
+        stream_access_posture_epoch = stream_rec->access_posture_epoch;
         has_stream_record = true;
       }
     } else {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
+    }
+    if (devices_ && p.frame.device_instance_id != 0) {
+      if (const CoreDeviceRegistry::DeviceRecord* device_rec = devices_->find(p.frame.device_instance_id);
+          device_rec != nullptr) {
+        capture_access_posture_epoch = device_rec->capture_access_posture_epoch;
+      }
     }
     const bool is_additional_bracket =
         p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
@@ -358,13 +367,21 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
           if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member)) {
             retained_for_result = result_store_->append_additional_capture_image(
-                p.frame.capture_id, p.frame.device_instance_id, std::move(image_member));
+                p.frame.capture_id,
+                p.frame.device_instance_id,
+                std::move(image_member),
+                capture_access_posture_epoch);
           }
           result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
           }
         } else {
           const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
-          retained_for_result = result_store_->retain_frame(p.frame, stream_intent, integrated_ts_ns);
+          retained_for_result = result_store_->retain_frame(
+              p.frame,
+              stream_intent,
+              integrated_ts_ns,
+              stream_access_posture_epoch,
+              capture_access_posture_epoch);
           result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
         }
       }

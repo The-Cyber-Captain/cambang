@@ -217,7 +217,9 @@ CoreResultAccessPostureKey build_capture_member_access_posture_key(
   key.device_instance_id = capture_device_instance_id;
   key.width = member.payload.width != 0 ? member.payload.width : member.retained_gpu_backing_descriptor.width;
   key.height = member.payload.height != 0 ? member.payload.height : member.retained_gpu_backing_descriptor.height;
-  key.format_fourcc = member.payload.format_fourcc != 0 ? member.payload.format_fourcc : member.retained_gpu_backing_descriptor.format_fourcc;
+  key.format_fourcc = member.payload.format_fourcc != 0
+      ? member.payload.format_fourcc
+      : member.retained_gpu_backing_descriptor.format_fourcc;
   key.payload_kind = member.payload_kind;
   key.has_retained_cpu_payload = has_cpu_payload;
   key.has_retained_gpu_backing = static_cast<bool>(member.retained_gpu_backing);
@@ -270,7 +272,9 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
 
 bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
-                                   uint64_t capture_timestamp_ns) {
+                                   uint64_t capture_timestamp_ns,
+                                   uint64_t stream_applied_access_posture_epoch,
+                                   uint64_t capture_applied_access_posture_epoch) {
   const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
   uint64_t payload_copy_ns = 0;
   const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
@@ -329,15 +333,18 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
       stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
     }
     stream_result->retained_access_truth = build_stream_retained_access_truth(*stream_result);
+    const bool stream_has_current_cpu_payload =
+        stream_result->payload_capture_timestamp_ns == stream_result->capture_timestamp_ns &&
+        has_valid_retained_cpu_packed_access_payload(
+            stream_result->payload,
+            stream_result->image_width,
+            stream_result->image_height,
+            stream_result->image_format_fourcc);
     stream_result->access_posture = build_stream_access_posture_key(
         *stream_result,
-        stream_result->payload_capture_timestamp_ns == stream_result->capture_timestamp_ns &&
-            has_valid_retained_cpu_packed_access_payload(
-                stream_result->payload,
-                stream_result->image_width,
-                stream_result->image_height,
-                stream_result->image_format_fourcc),
-        next_posture_id(next_result_access_posture_id_));
+        stream_has_current_cpu_payload,
+        resolve_stream_access_posture_id(
+            *stream_result, stream_has_current_cpu_payload, stream_applied_access_posture_epoch));
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
     stream_result->facts = facts;
     auto& slot = latest_stream_results_[frame.stream_id];
@@ -367,7 +374,17 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
             retained_gpu_backing_descriptor,
             capture_timestamp_ns);
     if (capture_result) {
-      capture_result->default_image.access_posture.posture_id = next_posture_id(next_result_access_posture_id_);
+      const bool has_default_cpu_payload =
+          has_valid_capture_image_member_payload(capture_result->default_image.payload);
+      capture_result->default_image.access_posture = build_capture_member_access_posture_key(
+          frame.device_instance_id,
+          capture_result->default_image,
+          has_default_cpu_payload,
+          resolve_capture_member_access_posture_id(
+              frame.device_instance_id,
+              capture_result->default_image,
+              has_default_cpu_payload,
+              capture_applied_access_posture_epoch));
     }
     capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
   }
@@ -391,7 +408,8 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
 bool CoreResultStore::append_additional_capture_image(
     uint64_t capture_id,
     uint64_t device_instance_id,
-    CoreCaptureResultData::ImageMemberData image_member) {
+    CoreCaptureResultData::ImageMemberData image_member,
+    uint64_t capture_applied_access_posture_epoch) {
   const uint64_t append_begin_ns = capture_latency_trace_now_ns();
   const uint32_t image_member_index = image_member.image_member_index;
   const size_t payload_bytes = image_member.payload.size_bytes();
@@ -432,7 +450,8 @@ bool CoreResultStore::append_additional_capture_image(
       device_instance_id,
       image_member,
       valid_cpu_payload,
-      next_posture_id(next_result_access_posture_id_));
+      resolve_capture_member_access_posture_id(
+          device_instance_id, image_member, valid_cpu_payload, capture_applied_access_posture_epoch));
 
   if (result.use_count() != 1) {
     // Preserve immutability for any result object already handed out through the
@@ -579,6 +598,104 @@ bool CoreResultStore::has_valid_capture_image_member_payload(const CoreResultPay
   return true;
 }
 
+
+bool CoreResultStore::StreamAccessPostureDomainKey::operator<(
+    const StreamAccessPostureDomainKey& other) const noexcept {
+  if (stream_id != other.stream_id) return stream_id < other.stream_id;
+  if (applied_epoch != other.applied_epoch) return applied_epoch < other.applied_epoch;
+  if (width != other.width) return width < other.width;
+  if (height != other.height) return height < other.height;
+  if (format_fourcc != other.format_fourcc) return format_fourcc < other.format_fourcc;
+  if (payload_kind != other.payload_kind) return payload_kind < other.payload_kind;
+  if (has_retained_cpu_payload != other.has_retained_cpu_payload) {
+    return has_retained_cpu_payload < other.has_retained_cpu_payload;
+  }
+  if (has_retained_gpu_backing != other.has_retained_gpu_backing) {
+    return has_retained_gpu_backing < other.has_retained_gpu_backing;
+  }
+  if (gpu_materialization_available != other.gpu_materialization_available) {
+    return gpu_materialization_available < other.gpu_materialization_available;
+  }
+  return gpu_materialization_requires_readback < other.gpu_materialization_requires_readback;
+}
+
+bool CoreResultStore::CaptureAccessPostureDomainKey::operator<(
+    const CaptureAccessPostureDomainKey& other) const noexcept {
+  if (device_instance_id != other.device_instance_id) return device_instance_id < other.device_instance_id;
+  if (applied_epoch != other.applied_epoch) return applied_epoch < other.applied_epoch;
+  if (width != other.width) return width < other.width;
+  if (height != other.height) return height < other.height;
+  if (format_fourcc != other.format_fourcc) return format_fourcc < other.format_fourcc;
+  if (payload_kind != other.payload_kind) return payload_kind < other.payload_kind;
+  if (has_retained_cpu_payload != other.has_retained_cpu_payload) {
+    return has_retained_cpu_payload < other.has_retained_cpu_payload;
+  }
+  if (has_retained_gpu_backing != other.has_retained_gpu_backing) {
+    return has_retained_gpu_backing < other.has_retained_gpu_backing;
+  }
+  if (gpu_materialization_available != other.gpu_materialization_available) {
+    return gpu_materialization_available < other.gpu_materialization_available;
+  }
+  return gpu_materialization_requires_readback < other.gpu_materialization_requires_readback;
+}
+
+uint64_t CoreResultStore::resolve_stream_access_posture_id(
+    const CoreStreamResultData& result,
+    bool has_current_cpu_payload,
+    uint64_t applied_epoch) {
+  if (applied_epoch == 0) {
+    applied_epoch = 1;
+  }
+  StreamAccessPostureDomainKey key{};
+  key.stream_id = result.stream_id;
+  key.applied_epoch = applied_epoch;
+  key.width = result.image_width;
+  key.height = result.image_height;
+  key.format_fourcc = result.image_format_fourcc;
+  key.payload_kind = result.payload_kind;
+  key.has_retained_cpu_payload = has_current_cpu_payload;
+  key.has_retained_gpu_backing = static_cast<bool>(result.retained_gpu_backing);
+  key.gpu_materialization_available = result.retained_gpu_backing_descriptor.valid &&
+                                      result.retained_gpu_backing_descriptor.materialization_available;
+  key.gpu_materialization_requires_readback = result.retained_gpu_backing_descriptor.valid &&
+                                             result.retained_gpu_backing_descriptor.materialization_requires_gpu_readback;
+  auto [it, inserted] = stream_access_posture_ids_.emplace(key, 0);
+  if (inserted) {
+    it->second = next_posture_id(next_result_access_posture_id_);
+  }
+  return it->second;
+}
+
+uint64_t CoreResultStore::resolve_capture_member_access_posture_id(
+    uint64_t device_instance_id,
+    const CoreCaptureResultData::ImageMemberData& member,
+    bool has_cpu_payload,
+    uint64_t applied_epoch) {
+  if (applied_epoch == 0) {
+    applied_epoch = 1;
+  }
+  CaptureAccessPostureDomainKey key{};
+  key.device_instance_id = device_instance_id;
+  key.applied_epoch = applied_epoch;
+  key.width = member.payload.width != 0 ? member.payload.width : member.retained_gpu_backing_descriptor.width;
+  key.height = member.payload.height != 0 ? member.payload.height : member.retained_gpu_backing_descriptor.height;
+  key.format_fourcc = member.payload.format_fourcc != 0
+      ? member.payload.format_fourcc
+      : member.retained_gpu_backing_descriptor.format_fourcc;
+  key.payload_kind = member.payload_kind;
+  key.has_retained_cpu_payload = has_cpu_payload;
+  key.has_retained_gpu_backing = static_cast<bool>(member.retained_gpu_backing);
+  key.gpu_materialization_available = member.retained_gpu_backing_descriptor.valid &&
+                                      member.retained_gpu_backing_descriptor.materialization_available;
+  key.gpu_materialization_requires_readback = member.retained_gpu_backing_descriptor.valid &&
+                                             member.retained_gpu_backing_descriptor.materialization_requires_gpu_readback;
+  auto [it, inserted] = capture_access_posture_ids_.emplace(key, 0);
+  if (inserted) {
+    it->second = next_posture_id(next_result_access_posture_id_);
+  }
+  return it->second;
+}
+
 SharedStreamResultData CoreResultStore::get_latest_stream_result(uint64_t stream_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = latest_stream_results_.find(stream_id);
@@ -641,6 +758,8 @@ void CoreResultStore::clear() {
     old_capture_results.swap(capture_results_by_capture_id_);
     stream_display_demand_last_seen_ns_.clear();
     stream_display_demand_refcounts_.clear();
+    stream_access_posture_ids_.clear();
+    capture_access_posture_ids_.clear();
   }
 }
 

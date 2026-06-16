@@ -37,6 +37,9 @@ struct CoreResultPayloadCpuPacked {
 };
 
 struct CoreResultAccessPostureKey {
+  // Stable internal calibration epoch for a concrete applied production
+  // posture/access domain. This is not retained artifact identity, frame
+  // sequence, capture_id, timestamp, or public wrapper identity.
   uint64_t posture_id = 0;
   uint64_t stream_id = 0;
   uint64_t device_instance_id = 0;
@@ -191,10 +194,13 @@ public:
 
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
-                    uint64_t capture_timestamp_ns);
+                    uint64_t capture_timestamp_ns,
+                    uint64_t stream_applied_access_posture_epoch = 0,
+                    uint64_t capture_applied_access_posture_epoch = 0);
   bool append_additional_capture_image(uint64_t capture_id,
                                        uint64_t device_instance_id,
-                                       CoreCaptureResultData::ImageMemberData image_member);
+                                       CoreCaptureResultData::ImageMemberData image_member,
+                                       uint64_t capture_applied_access_posture_epoch = 0);
   static bool try_build_capture_image_member_data_from_frame(
       const FrameView& frame,
       CoreCaptureResultData::ImageMemberData& out_member);
@@ -226,8 +232,48 @@ private:
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;
   std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> capture_results_by_capture_id_;
+  struct StreamAccessPostureDomainKey {
+    uint64_t stream_id = 0;
+    uint64_t applied_epoch = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format_fourcc = 0;
+    ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
+    bool has_retained_cpu_payload = false;
+    bool has_retained_gpu_backing = false;
+    bool gpu_materialization_available = false;
+    bool gpu_materialization_requires_readback = false;
+
+    bool operator<(const StreamAccessPostureDomainKey& other) const noexcept;
+  };
+
+  struct CaptureAccessPostureDomainKey {
+    uint64_t device_instance_id = 0;
+    uint64_t applied_epoch = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format_fourcc = 0;
+    ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
+    bool has_retained_cpu_payload = false;
+    bool has_retained_gpu_backing = false;
+    bool gpu_materialization_available = false;
+    bool gpu_materialization_requires_readback = false;
+
+    bool operator<(const CaptureAccessPostureDomainKey& other) const noexcept;
+  };
+
+  uint64_t resolve_stream_access_posture_id(const CoreStreamResultData& result,
+                                            bool has_current_cpu_payload,
+                                            uint64_t applied_epoch);
+  uint64_t resolve_capture_member_access_posture_id(uint64_t device_instance_id,
+                                                    const CoreCaptureResultData::ImageMemberData& member,
+                                                    bool has_cpu_payload,
+                                                    uint64_t applied_epoch);
+
   std::map<uint64_t, uint64_t> stream_display_demand_last_seen_ns_;
   std::map<uint64_t, uint32_t> stream_display_demand_refcounts_;
+  std::map<StreamAccessPostureDomainKey, uint64_t> stream_access_posture_ids_;
+  std::map<CaptureAccessPostureDomainKey, uint64_t> capture_access_posture_ids_;
   uint64_t next_result_access_posture_id_ = 1;
 };
 
