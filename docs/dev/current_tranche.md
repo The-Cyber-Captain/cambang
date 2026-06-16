@@ -8,71 +8,72 @@ Agents should use this file for current workstream direction, recent decisions, 
 
 Continue source-grounded CamBANG development without broadening scope or weakening verification.
 
-The current work is centred on result/backing truth, provider seams, and performance-sensitive routing decisions, especially where SyntheticProvider behaviour informs but must not constrain future platform-backed providers.
+The retained-result access calibration/classification tranche is now implemented. The active focus moves to the higher-level intent-aware candidate-posture evaluator/chooser that can use the retained-result measurement primitive when selecting among viable concrete production postures.
 
-Active narrow slice: implement the internal retained-result access calibration seam for the currently active concrete production posture, while future-proofing that seam for a near-following higher-level candidate-posture evaluator.
+Important settled state:
 
-Important active concerns:
+* Scene 68 calibration/evidence harness repair and validation are complete.
+* The boundedness/posture-identity fix is complete: calibration is keyed to live applied production posture/access identity rather than per-frame retained-form fluctuation or first user demand.
+* The evidence-to-classification seam is implemented for retained-result access.
+* Public `get_display_view()`, `to_image()`, and `to_image_member()` access remains instrumented, but those calls are not the normal recalibration heartbeat.
+* The endpoint-handle vs runtime-instance distinction is documented in the Godot boundary contract.
+* Scene 70 / Godot-side reporting and Synthetic dev metrics remain verification/reporting surfaces, not the authoritative architecture seam.
 
-* use truthful Synthetic producer output-form / retained-plan control as the reference seam for Synthetic-produced result backing/access behaviour, across repeating-stream and still-capture paths where that control is intended to apply;
-* preserve provider-local staging vs Core-retained result truth;
-* avoid silently falling back between CPU and GPU modes when a selected mode should be authoritative;
-* avoid treating SyntheticProvider-only optimisations as representative of Windows MF, Android Camera2, or future platform-backed providers;
-* protect synchronous Core/provider boundaries that exist for thread safety, snapshot truth, or deterministic sequencing;
-* begin platform-backed provider preparation from the provider contract and retained-result model, not from Synthetic implementation shortcuts;
-* keep Synthetic retained GPU backing materialization scoped and named accurately: it is bridge-backed Synthetic materialization, not generic platform GPU/RD readback;
-* treat retained-result access timing evidence as classification input gathered at the real result-access seam;
-* renew/invalidate that evidence from live applied production-posture acceptance/application boundaries rather than from first user-visible `to_image()` demand;
-* do not treat per-frame retained-form fluctuation inside one live posture as a posture change or as a reason to renew calibration;
-* keep calibration non-stream-only: the intended internal seam covers release-facing retained-result access across both Stream Result and Capture Result surfaces, including capture image-member access where relevant;
-* keep current Scene 70 / Godot-side reporting and Synthetic dev metrics understood as verification/reporting surfaces, not the final architecture seam;
-* future-proof the calibration work so the same measurement primitive can later be reused by a higher-level evaluator that compares multiple viable concrete postures against intent, without implementing that outer evaluator in this tranche.
+Settled retained-result classification model:
 
-Synthetic maintainer tooling direction:
+* `UNSUPPORTED` is structural support/availability truth.
+* `READY` is structural, operation-specific direct retained target-representation availability truth.
+* Supported non-ready paths start from provisional retained access truth and may be evidence-refined between `CHEAP` and `EXPENSIVE`.
+* Single-candidate supported non-ready paths retain their provisional non-ready classification after calibration rather than being auto-promoted/demoted merely for being alone.
 
-* Synthetic provider backing advertisement reports current runtime output-form truth;
-* retained-plan policy chooses primary and auxiliary retention within that truthful set;
-* Synthetic maintainer output-form selection is exposed through the project setting `cambang/maintainer/synthetic_producer_output_form=runtime_default|cpu_only|cpu_gpu|gpu_only`; `runtime_default` is the explicit no-forcing/default value that preserves the normal Synthetic runtime policy; host command-line runs may pass `--cambang-synth-producer-output-form=...`, which feeds that same project-setting authority path before provider construction; there is no environment-variable fallback for this selection;
-* the selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist;
-* `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable;
-* do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing this base.
+Synthetic maintainer tooling direction remains:
+
+* Synthetic provider backing advertisement reports the output forms available from the current runtime.
+* Retained-plan policy chooses primary and auxiliary retention within that truthful set.
+* Synthetic maintainer output-form selection is exposed through the project setting `cambang/maintainer/synthetic_producer_output_form=runtime_default|cpu_only|cpu_gpu|gpu_only`; `runtime_default` is the explicit no-forcing/default value that preserves the normal Synthetic runtime policy; host command-line runs may pass `--cambang-synth-producer-output-form=...`, which feeds that same project-setting authority path before provider construction; there is no environment-variable fallback for this selection.
+* The selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist.
+* `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable.
+* Do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing the next stage.
 
 ## Immediate implementation direction
 
-The immediate implementation work is the inner calibration mechanism, not the outer posture chooser.
+The next major design/work focus is the higher-level intent-aware candidate-posture evaluator/chooser, not more inner calibration plumbing.
 
-Implement the smallest justified internal seam that:
+That next stage should:
 
-* calibrates the real retained-result access/materialization paths of the currently active concrete production posture;
-* measures at the true result-operation seam rather than at provider-local generation/staging, snapshot publication, later render-thread draw/UI scheduling, or unrelated GPU upload/update work;
-* covers both stream and capture result surfaces, including capture image-member materialization where relevant;
-* keys evidence by concrete posture identity and operation/access path so that later cross-posture comparison can reuse the same measurement primitive;
-* renews/invalidates evidence from live posture acceptance/application boundaries and lifecycle end, not from first user demand and not from per-frame retained-form fluctuation inside one posture;
-* refines cost classification only where calibration belongs, preserving support/availability truth and retained direct-availability truth as separate concerns.
+* enumerate viable concrete candidate production postures for an intent;
+* use provider contract truth and retained-result semantics rather than Synthetic-only shortcuts;
+* reuse the existing posture-keyed retained-result access measurement primitive where evidence is needed;
+* compare supported result-access costs against intent without turning calibration into a broad benchmark subsystem;
+* preserve the separation between structural support truth, operation-specific direct retained availability truth, and measured cost refinement;
+* keep normal user-facing API simple and avoid public route/outcome burden.
 
-This tranche should not yet:
+This next stage should not:
 
-* implement the higher-level candidate-posture evaluator;
-* iterate all viable candidate postures to choose among them;
-* introduce a broad registry/taxonomy/cache architecture unless the implementation proves that the smaller seam is insufficient;
-* create a new public API burden;
-* let current Synthetic stream display-demand/update behaviour become the generalized model for platform-backed providers.
+* claim platform-backed GPU/readback support before a provider-specific retained-backing/materialization design exists;
+* turn Scene 68, Scene 70, or Synthetic metrics into the architecture seam;
+* introduce broad registries, taxonomies, or public knobs before a concrete evaluator consumer requires them;
+* let Synthetic stream display-demand/update behaviour become the generalized model for platform-backed providers.
 
-The expected near-following direction is:
-
-1. keep this tranche focused on per-posture calibration of real retained-result access paths;
-2. leave behind a reusable posture-keyed measurement primitive;
-3. later add a higher-level evaluator that can enumerate viable concrete candidate postures, invoke the same calibration primitive for each candidate as needed, compare the resulting access-cost picture against intent, and choose a preferred posture.
-
-Persistent concern area after this tranche remains Android CPU-backed / compatibility-style repeating-stream pressure. The immediate calibration work should be shaped so that later intent-aware output-form selection can use its evidence as one optimisation avenue, but that outer policy/evaluator work is not part of this tranche.
+Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for the intent-aware chooser. It is not a separate prerequisite that must be fully solved before the chooser work can begin; it should inform the evaluator design as one representative pressure case.
 
 ## Recent committed checkpoint
 
-The most recent committed checkpoint added and validated the first narrow Synthetic retained GPU backing materialization path for stream results.
+The most recent implemented checkpoint completed the retained-result access calibration/classification seam after the earlier Synthetic retained GPU backing materialization work.
 
 Checkpoint summary:
 
-* `GPU_SURFACE` stream results with retained Synthetic GPU backing can now advertise `to_image()` support when the retained backing explicitly reports materialization availability.
+* Scene 68 calibration/evidence harness repair and validation completed.
+* Calibration boundedness and posture identity were corrected so evidence renewal follows live applied production-posture boundaries.
+* The real retained-result operation seam now supplies measured evidence for live retained artifacts/postures.
+* Refined result-facing classification now exists beside provisional retained access truth.
+* `UNSUPPORTED` and `READY` remain structural truth; measured evidence only refines supported non-ready paths.
+* Public result access remains instrumented for evidence, but first user-visible access is not the recalibration heartbeat.
+* The endpoint-handle vs runtime-instance distinction was documented for Godot-facing object access.
+
+Previous retained GPU backing checkpoint facts still apply:
+
+* `GPU_SURFACE` stream results with retained Synthetic GPU backing can advertise `to_image()` support when the retained backing explicitly reports materialization availability.
 * GPU-only stream `to_image()` remains `UNSUPPORTED` when no materializer is available.
 * GPU-only stream `to_image()` is classified as `EXPENSIVE` only when the Synthetic retained backing materializer is genuinely available.
 * GPU-primary stream results with a retained current CPU sidecar still prefer the CPU sidecar for `to_image()` and remain `CHEAP`.
@@ -81,23 +82,17 @@ Checkpoint summary:
 * Core consumes neutral retained-backing truth and does not own Godot/RD/Image details.
 * The Godot display/materialization adapter owns Godot-facing materialization.
 * The Synthetic runtime wrapper owns the provider/runtime-neutral materialization-availability query.
-* The ODR/linkage repair established single ownership for `synthetic_gpu_backing_can_materialize_to_image(...)` in `src/imaging/synthetic/gpu_backing_runtime.*`.
-
-Validation reported green after the final ODR/linkage repair:
-
-* Windows GDE/SCons build and link completed.
-* Core smoke/verifier tools passed, including `core_result_path_smoke`, `provider_compliance_verify`, `synthetic_timeline_verify`, `restart_boundary_verify`, and `verify_case_runner --run-all --repeat=50`.
-* `windows_mf_runtime_validate --real-hardware` passed.
-* Godot suite passed with `51 passed, 0 failed, 1 review`.
-* Scene 70 result retrieval verification passed across the tested Compatibility/Mobile and Android/Windows combinations.
 
 Validation notes:
 
-* The `Review: 1` suite result is acceptable only while it remains the known Scene 65 public-boundary review case.
-* The new focused result-access coverage is inside `core_result_path_smoke`; no new standalone executable or Godot scene was reported.
-* Local GPU/runtime validation exercised retained GPU display backing on Mobile renderer, but this checkpoint still does not claim platform-provider GPU readback support.
-
-
+* Manual local validation remains authoritative for Windows, Godot, hardware, GPU, and platform-provider behaviour.
+* Scene 68/Synthetic metrics are verification/reporting surfaces; retained-result classification architecture is documented in `docs/architecture/pixel_payload_and_result_contract.md`.
+* Post-documentation local validation for the retained-result access calibration/classification checkpoint reported:
+    * `core_result_path_smoke` PASS;
+    * Godot suite `51 passed, 0 failed, 1 review`, with the review acceptable only while it remains the known Scene 65 public-boundary review case;
+    * representative Scene 68 retained-result evidence/reset runs exercised on CPU-backed and GPU-backed/runtime-default paths;
+    * Scene 70 result retrieval verification remained passing.
+    * 
 ## Current design posture
 
 Prefer the “avoid this unless” default:
@@ -112,7 +107,7 @@ The desired codebase direction is logical, efficient, streamlined, and maintaina
 
 ## API and UX constraints
 
-The Godot public API is locked for this tranche unless explicitly reopened.
+The Godot public API is locked unless explicitly reopened.
 
 Normal users should interact with friendly object-level API shapes. Avoid making normal users handle capture IDs, route internals, retained-backing implementation details, or diagnostic-only concepts.
 
@@ -134,8 +129,8 @@ For future platform-backed providers:
 
 * Android Camera2 is the first release target;
 * Windows Media Foundation remains a development accelerator;
-* future providers may support genuine platform bursts, provider-managed exposure sequences, or different backing behaviour.
-* do not extrapolate the Synthetic bridge-retained upload-byte materializer to Android Camera2, Windows MF, or future native GPU-surface providers without a provider-specific retained-backing/materialization design;
+* future providers may support genuine platform bursts, provider-managed exposure sequences, or different backing behaviour;
+* do not extrapolate the Synthetic bridge-retained upload-byte materializer to Android Camera2, Windows MF, or future native GPU-surface providers without a provider-specific retained-backing/materialization design.
 
 When assessing performance:
 
