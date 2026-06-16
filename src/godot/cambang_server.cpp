@@ -289,6 +289,7 @@ CamBANGServer::~CamBANGServer() {
 
   // Ensure graceful stop if the extension is torn down.
   runtime_.stop();
+  result_access_cost_evidence::clear();
   if (singleton_ == this) {
     singleton_ = nullptr;
   }
@@ -424,6 +425,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   has_latest_export_ = false;
   has_godot_counters_ = false;
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  result_access_cost_evidence::clear();
 
   // Begin a new boundary session and reject any prior-generation late publishes
   // until the first snapshot from the next expected generation is observed.
@@ -457,6 +459,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
     endpoint_lifecycle_by_hardware_id_.clear();
     direct_stream_hardware_id_by_stream_id_.clear();
     CamBANGStreamResult::clear_live_stream_cpu_display_views();
+    result_access_cost_evidence::clear();
 
     strict_scenario_unmet_logged_ = false;
     _reset_scenario_session_state_();
@@ -522,6 +525,7 @@ void CamBANGServer::stop() {
   runtime_.attach_provider(nullptr);
   provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
+  result_access_cost_evidence::clear();
 
   strict_scenario_unmet_logged_ = false;
   _reset_scenario_session_state_();

@@ -31,6 +31,10 @@ int main() {
   assert(stream_result->retained_access_truth.display_view == ResultCapability::CHEAP);
   assert(stream_result->retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  assert(stream_result->access_posture.posture_id != 0);
+  assert(stream_result->access_posture.payload_kind == ResultPayloadKind::CPU_PACKED);
+  assert(stream_result->access_posture.has_retained_cpu_payload);
+  assert(!stream_result->access_posture.has_retained_gpu_backing);
 
   FrameView gpu_only_stream_frame = stream_frame;
   gpu_only_stream_frame.stream_id = 21;
@@ -60,6 +64,10 @@ int main() {
   assert(gpu_materializable_stream_result->retained_access_truth.display_view == ResultCapability::READY);
   assert(gpu_materializable_stream_result->retained_access_truth.to_image == ResultCapability::EXPENSIVE);
   assert(gpu_materializable_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  assert(gpu_materializable_stream_result->access_posture.payload_kind == ResultPayloadKind::GPU_SURFACE);
+  assert(!gpu_materializable_stream_result->access_posture.has_retained_cpu_payload);
+  assert(gpu_materializable_stream_result->access_posture.has_retained_gpu_backing);
+  assert(gpu_materializable_stream_result->access_posture.gpu_materialization_available);
 
   FrameView gpu_stream_frame = stream_frame;
   gpu_stream_frame.stream_id = 22;
@@ -115,6 +123,9 @@ int main() {
   assert(capture_result->default_image.retained_access_truth.display_view == ResultCapability::CHEAP);
   assert(capture_result->default_image.retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(capture_result->default_image.retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  assert(capture_result->default_image.access_posture.posture_id != 0);
+  assert(capture_result->default_image.access_posture.device_instance_id == 100);
+  assert(capture_result->default_image.access_posture.has_retained_cpu_payload);
   assert(capture_result->additional_images.empty());
 
   FrameView gpu_capture = capture_a;
@@ -135,6 +146,9 @@ int main() {
   assert(gpu_capture_result->default_image.retained_gpu_backing);
   assert(gpu_capture_result->default_image.retained_access_truth.to_image == ResultCapability::EXPENSIVE);
   assert(gpu_capture_result->default_image.retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  assert(gpu_capture_result->default_image.access_posture.posture_id != 0);
+  assert(gpu_capture_result->default_image.access_posture.has_retained_gpu_backing);
+  assert(gpu_capture_result->default_image.access_posture.gpu_materialization_available);
 
   const uint64_t capture_id_before = capture_result->capture_id;
   const uint64_t device_id_before = capture_result->device_instance_id;
@@ -162,6 +176,9 @@ int main() {
   assert(capture_result_with_bracket->additional_images[0].retained_access_truth.display_view == ResultCapability::CHEAP);
   assert(capture_result_with_bracket->additional_images[0].retained_access_truth.to_image == ResultCapability::CHEAP);
   assert(capture_result_with_bracket->additional_images[0].retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  assert(capture_result_with_bracket->additional_images[0].access_posture.posture_id != 0);
+  assert(capture_result_with_bracket->additional_images[0].access_posture.device_instance_id == 100);
+  assert(capture_result_with_bracket->additional_images[0].access_posture.has_retained_cpu_payload);
   assert(capture_result_with_bracket->capture_id == capture_id_before);
   assert(capture_result_with_bracket->device_instance_id == device_id_before);
   assert(capture_result_with_bracket->image_width == width_before);

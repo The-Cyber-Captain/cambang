@@ -14,10 +14,21 @@ constexpr const char* kRouteStreamToImageGpuSyntheticBackingMaterializer = "stre
 constexpr const char* kRouteStreamDisplayViewRetainedGpuBacking = "stream_display_view.retained_gpu_backing";
 constexpr const char* kRouteStreamDisplayViewCpuLiveDisplayView = "stream_display_view.cpu_live_display_view";
 constexpr const char* kRouteStreamAccessUnsupported = "stream_access.unsupported";
+constexpr const char* kRouteCaptureToImageCpuPacked = "capture_to_image.cpu_packed";
+constexpr const char* kRouteCaptureToImageGpuSyntheticBackingMaterializer = "capture_to_image.gpu_synthetic_backing_materializer";
+constexpr const char* kRouteCaptureAccessUnsupported = "capture_access.unsupported";
 
 void record_stream_access(
     const char* route,
     const SharedStreamResultData& data,
+    uint64_t elapsed_ns,
+    bool success,
+    ResultCapability reported_capability) noexcept;
+
+void record_capture_member_access(
+    const char* route,
+    const SharedCaptureResultData& data,
+    const CoreCaptureResultData::ImageMemberData* member,
     uint64_t elapsed_ns,
     bool success,
     ResultCapability reported_capability) noexcept;
