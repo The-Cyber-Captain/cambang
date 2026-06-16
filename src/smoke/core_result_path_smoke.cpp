@@ -11,6 +11,46 @@ using namespace cambang;
 int main() {
   CoreResultStore store;
 
+  assert(kResultAccessCheapWithinBestMultiplier == 2);
+  uint64_t single_candidate_costs[] = {10};
+  assert(classify_supported_non_ready_result_access_from_normalized_costs(
+             ResultCapability::CHEAP, single_candidate_costs, 1) == ResultCapability::CHEAP);
+  assert(classify_supported_non_ready_result_access_from_normalized_costs(
+             ResultCapability::EXPENSIVE, single_candidate_costs, 1) == ResultCapability::EXPENSIVE);
+  uint64_t multi_candidate_costs[] = {100, 40};
+  assert(classify_supported_non_ready_result_access_from_normalized_costs(
+             ResultCapability::EXPENSIVE, multi_candidate_costs, 2) == ResultCapability::CHEAP);
+  assert(classify_supported_non_ready_result_access_from_normalized_costs(
+             ResultCapability::READY, multi_candidate_costs, 2) == ResultCapability::READY);
+  assert(classify_supported_non_ready_result_access_from_normalized_costs(
+             ResultCapability::UNSUPPORTED, multi_candidate_costs, 2) == ResultCapability::UNSUPPORTED);
+
+  auto refined_record = std::make_shared<CoreResultAccessClassificationRecord>();
+  assert(resolve_result_access_classification(
+             ResultCapability::EXPENSIVE,
+             refined_record,
+             CoreResultAccessOperation::TO_IMAGE) == ResultCapability::EXPENSIVE);
+  refine_result_access_classification(
+      refined_record,
+      CoreResultAccessOperation::TO_IMAGE,
+      ResultCapability::CHEAP);
+  assert(resolve_result_access_classification(
+             ResultCapability::EXPENSIVE,
+             refined_record,
+             CoreResultAccessOperation::TO_IMAGE) == ResultCapability::CHEAP);
+  refine_result_access_classification(
+      refined_record,
+      CoreResultAccessOperation::DISPLAY_VIEW,
+      ResultCapability::EXPENSIVE);
+  assert(resolve_result_access_classification(
+             ResultCapability::READY,
+             refined_record,
+             CoreResultAccessOperation::DISPLAY_VIEW) == ResultCapability::READY);
+  assert(resolve_result_access_classification(
+             ResultCapability::UNSUPPORTED,
+             refined_record,
+             CoreResultAccessOperation::TO_IMAGE) == ResultCapability::UNSUPPORTED);
+
   std::vector<uint8_t> px(2 * 2 * 4, 7);
   FrameView stream_frame{};
   stream_frame.device_instance_id = 10;
@@ -64,6 +104,14 @@ int main() {
   assert(gpu_only_stream_result->retained_access_truth.display_view == ResultCapability::READY);
   assert(gpu_only_stream_result->retained_access_truth.to_image == ResultCapability::UNSUPPORTED);
   assert(gpu_only_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  assert(resolve_result_access_classification(
+             gpu_only_stream_result->retained_access_truth.display_view,
+             gpu_only_stream_result->access_classification,
+             CoreResultAccessOperation::DISPLAY_VIEW) == ResultCapability::READY);
+  assert(resolve_result_access_classification(
+             gpu_only_stream_result->retained_access_truth.to_image,
+             gpu_only_stream_result->access_classification,
+             CoreResultAccessOperation::TO_IMAGE) == ResultCapability::UNSUPPORTED);
 
   FrameView gpu_materializable_stream_frame = gpu_only_stream_frame;
   gpu_materializable_stream_frame.stream_id = 23;
@@ -78,6 +126,17 @@ int main() {
   assert(gpu_materializable_stream_result->retained_access_truth.display_view == ResultCapability::READY);
   assert(gpu_materializable_stream_result->retained_access_truth.to_image == ResultCapability::EXPENSIVE);
   assert(gpu_materializable_stream_result->retained_access_truth.encoded_bytes == ResultCapability::UNSUPPORTED);
+  refine_result_access_classification(
+      gpu_materializable_stream_result->access_classification,
+      CoreResultAccessOperation::TO_IMAGE,
+      classify_supported_non_ready_result_access_from_normalized_costs(
+          gpu_materializable_stream_result->retained_access_truth.to_image,
+          single_candidate_costs,
+          1));
+  assert(resolve_result_access_classification(
+             gpu_materializable_stream_result->retained_access_truth.to_image,
+             gpu_materializable_stream_result->access_classification,
+             CoreResultAccessOperation::TO_IMAGE) == ResultCapability::EXPENSIVE);
   assert(gpu_materializable_stream_result->access_posture.payload_kind == ResultPayloadKind::GPU_SURFACE);
   assert(!gpu_materializable_stream_result->access_posture.has_retained_cpu_payload);
   assert(gpu_materializable_stream_result->access_posture.has_retained_gpu_backing);
@@ -95,6 +154,10 @@ int main() {
   auto transitioned_gpu_stream_result = store.get_latest_stream_result(23);
   assert(transitioned_gpu_stream_result);
   assert(transitioned_gpu_stream_result->access_posture.posture_id != gpu_materializable_posture_id);
+  assert(resolve_result_access_classification(
+             transitioned_gpu_stream_result->retained_access_truth.to_image,
+             transitioned_gpu_stream_result->access_classification,
+             CoreResultAccessOperation::TO_IMAGE) == ResultCapability::UNSUPPORTED);
 
   FrameView gpu_stream_frame = stream_frame;
   gpu_stream_frame.stream_id = 22;

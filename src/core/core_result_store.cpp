@@ -270,6 +270,94 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
 
 } // namespace
 
+ResultCapability resolve_result_access_classification(
+    ResultCapability provisional,
+    const SharedResultAccessClassificationRecord& record,
+    CoreResultAccessOperation operation) noexcept {
+  if (provisional == ResultCapability::UNSUPPORTED ||
+      provisional == ResultCapability::READY) {
+    return provisional;
+  }
+  if (!record) {
+    return provisional;
+  }
+  const std::atomic<int>* slot = nullptr;
+  switch (operation) {
+    case CoreResultAccessOperation::DISPLAY_VIEW:
+      slot = &record->display_view;
+      break;
+    case CoreResultAccessOperation::TO_IMAGE:
+      slot = &record->to_image;
+      break;
+    case CoreResultAccessOperation::ENCODED_BYTES:
+      slot = &record->encoded_bytes;
+      break;
+  }
+  if (!slot) {
+    return provisional;
+  }
+  const int refined = slot->load(std::memory_order_acquire);
+  if (refined < 0) {
+    return provisional;
+  }
+  return static_cast<ResultCapability>(refined);
+}
+
+void refine_result_access_classification(
+    const SharedResultAccessClassificationRecord& record,
+    CoreResultAccessOperation operation,
+    ResultCapability classification) noexcept {
+  if (!record) {
+    return;
+  }
+  std::atomic<int>* slot = nullptr;
+  switch (operation) {
+    case CoreResultAccessOperation::DISPLAY_VIEW:
+      slot = &record->display_view;
+      break;
+    case CoreResultAccessOperation::TO_IMAGE:
+      slot = &record->to_image;
+      break;
+    case CoreResultAccessOperation::ENCODED_BYTES:
+      slot = &record->encoded_bytes;
+      break;
+  }
+  if (!slot) {
+    return;
+  }
+  slot->store(static_cast<int>(classification), std::memory_order_release);
+}
+
+ResultCapability classify_supported_non_ready_result_access_from_normalized_costs(
+    ResultCapability provisional,
+    const uint64_t* normalized_costs,
+    size_t normalized_cost_count) noexcept {
+  if (provisional == ResultCapability::UNSUPPORTED ||
+      provisional == ResultCapability::READY) {
+    return provisional;
+  }
+  if (!normalized_costs || normalized_cost_count <= 1) {
+    return provisional;
+  }
+
+  uint64_t best = std::numeric_limits<uint64_t>::max();
+  for (size_t i = 0; i < normalized_cost_count; ++i) {
+    if (normalized_costs[i] < best) {
+      best = normalized_costs[i];
+    }
+  }
+  if (best == std::numeric_limits<uint64_t>::max()) {
+    return provisional;
+  }
+
+  for (size_t i = 0; i < normalized_cost_count; ++i) {
+    if (normalized_costs[i] <= best * kResultAccessCheapWithinBestMultiplier) {
+      return ResultCapability::CHEAP;
+    }
+  }
+  return ResultCapability::EXPENSIVE;
+}
+
 bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
                                    uint64_t capture_timestamp_ns,
@@ -333,6 +421,8 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
       stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
     }
     stream_result->retained_access_truth = build_stream_retained_access_truth(*stream_result);
+    stream_result->access_classification =
+        std::make_shared<CoreResultAccessClassificationRecord>();
     const bool stream_has_current_cpu_payload =
         stream_result->payload_capture_timestamp_ns == stream_result->capture_timestamp_ns &&
         has_valid_retained_cpu_packed_access_payload(
@@ -446,6 +536,8 @@ bool CoreResultStore::append_additional_capture_image(
 
   image_member.retained_access_truth =
       build_capture_image_member_retained_access_truth(image_member);
+  image_member.access_classification =
+      std::make_shared<CoreResultAccessClassificationRecord>();
   image_member.access_posture = build_capture_member_access_posture_key(
       device_instance_id,
       image_member,
@@ -495,6 +587,8 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
   }
   out_member.payload_kind = plan.primary_kind;
   out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
+  out_member.access_classification =
+      std::make_shared<CoreResultAccessClassificationRecord>();
   // The store assigns the live posture id when the member is accepted into a
   // concrete capture result; this helper only builds provider-retained member truth.
   return true;
@@ -572,6 +666,8 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   capture_result->default_image.retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
   capture_result->default_image.retained_access_truth =
       build_capture_image_member_retained_access_truth(capture_result->default_image);
+  capture_result->default_image.access_classification =
+      std::make_shared<CoreResultAccessClassificationRecord>();
   const bool has_default_cpu_payload = has_valid_capture_image_member_payload(capture_result->default_image.payload);
   capture_result->default_image.access_posture = build_capture_member_access_posture_key(
       frame.device_instance_id,
