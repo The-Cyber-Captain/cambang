@@ -280,9 +280,12 @@ verify the concrete backing/path they use.
 Godot-layer result-access timing evidence, when exposed through Synthetic dev
 metrics, is evidence collected at the real retained-result operation seam. It is
 not retained access truth, not `CamBANGStateSnapshot`, not schema v1, and not an
-input to state publication. It exists to inform capability/cost classification
-for the current realized retained backing/access domain under the current live
-applied production posture.
+input to state publication. Bounded internal calibration uses this evidence for
+live retained artifacts/postures, and records a refined result-facing
+classification beside provisional retained access truth. Public user-triggered
+`get_display_view()`, `to_image()`, and `to_image_member()` calls remain
+instrumented, but they are not the normal recalibration heartbeat; calibration
+renewal belongs to the live applied production-posture boundary.
 
 ### 6.x.4 Unsupported GPU-only realization
 
@@ -688,17 +691,32 @@ Recommended first-pass capability/cost states:
 
 ### Intended meaning
 
-- `READY`  
-  The representation is already retained and directly accessible.
+- `UNSUPPORTED`
+  Structural support/availability truth: the representation cannot currently be
+  obtained through a supported CamBANG path.
 
-- `CHEAP`  
-  The representation is not currently retained but can be obtained without substantial additional work.
+- `READY`
+  Operation-specific direct retained-availability truth. `READY` does **not**
+  mean merely “very cheap.” For the specific result operation being classified,
+  the target representation is already retained and directly accessible without
+  materialization work such as readback, conversion, decode, repack, or
+  full-frame copy.
 
-- `EXPENSIVE`  
-  The representation is supported but requires meaningful additional work such as readback, conversion, decode, or full-frame copy/repack.
+- `CHEAP`
+  The representation is supported but not directly retained for this operation,
+  and can be obtained without substantial additional work.
 
-- `UNSUPPORTED`  
-  The representation cannot currently be obtained through a supported CamBANG path.
+- `EXPENSIVE`
+  The representation is supported but requires meaningful additional work such
+  as readback, conversion, decode, or full-frame copy/repack.
+
+Examples:
+
+- retained stream GPU display backing may be `READY` for `get_display_view()`;
+- retained CPU payload or a CPU sidecar for `to_image()` is not automatically
+  `READY`; it may still be `CHEAP`;
+- supported GPU materializer/readback paths are not `READY`; they are at best
+  supported non-ready paths.
 
 ## 11.3 Naming discipline
 
@@ -791,7 +809,7 @@ explicit materialization outcome and must not silently return stale content:
 - report unsupported/expensive rather than presenting stale image content as
   current materialization truth.
 
-TTiming evidence for stream `to_image()` is collected around this real Godot call
+Timing evidence for stream `to_image()` is collected around this real Godot call
 path because it is the real retained-result access seam. CPU-packed stream
 results and GPU-primary results with a current retained CPU sidecar are expected
 to calibrate within the cheap access class; GPU-only stream results without
@@ -810,7 +828,14 @@ A Capture Result is the device-level still-capture result at the public result s
 
 Real access-cost evidence exists to inform actual retained-result
 capability/cost classification for a supported access path. It does not change
-snapshot truth or original retained-artifact truth.
+snapshot truth, support truth, direct retained-availability truth, or original
+retained-artifact truth.
+
+Provisional result-facing classification starts from structural retained access
+truth. `UNSUPPORTED` remains structural support/availability truth. `READY`
+remains operation-specific direct retained target-representation availability
+truth. Measured evidence is used only to refine supported non-ready paths,
+primarily the split between `CHEAP` and `EXPENSIVE`.
 
 Evidence must be tied to the current live applied production posture and the
 realized retained backing/access path. It must not be treated as a generic
@@ -826,6 +851,13 @@ Evidence gathering must remain at the real result-access seam. It must not be
 interpreted as provider-local generation/staging cost, snapshot publication
 cost, later render-thread draw/UI scheduling cost, or unrelated GPU
 upload/update cost.
+
+The implemented calibration policy is intentionally simple and relative, not a
+benchmarking subsystem. For supported non-ready candidates, it compares
+normalized measured cost using a single explicit CamBANG-wide multiplier
+constant. Single-candidate supported non-ready paths retain their provisional
+non-ready classification after calibration rather than being automatically
+promoted or demoted merely because they are alone.
 ---
 
 ## 12. “Useful display” tiers

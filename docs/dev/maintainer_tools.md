@@ -226,12 +226,15 @@ Synthetic dev metrics also expose retained-result access timing evidence at
 This evidence is gathered only from the real Godot result-operation seam for
 retained-result access operations. It is not `CamBANGStateSnapshot`, is not
 schema v1 truth, and does not participate in state publication. Its purpose is
-to inform actual retained-result capability/cost classification for the current
-realized access path under the current live applied production posture.
+to inform refined result-facing classification for supported non-ready paths
+under the current live applied production posture; `UNSUPPORTED` support truth
+and operation-specific `READY` direct-retained availability remain structural.
 Evidence collection/renewal belongs to live applied production-posture
 acceptance/application boundaries, not first user-visible `to_image()` demand.
-Retained GPU display-view timings measure wrapper/display-view acquisition, not
-later render-thread draw, UI scheduling, or Synthetic GPU upload/update cost.
+Public access calls remain instrumented, but are not the normal recalibration
+heartbeat. Retained GPU display-view timings measure wrapper/display-view
+acquisition, not later render-thread draw, UI scheduling, or Synthetic GPU
+upload/update cost.
 
 Removed temporary knobs:
 

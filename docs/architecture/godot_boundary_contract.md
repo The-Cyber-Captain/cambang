@@ -47,7 +47,18 @@ get_state_snapshot() == NIL
 
 No runtime state should be assumed during this period. Public runtime-effect surfaces are not commandable until the generation baseline is observed at the Godot boundary. During the pre-baseline window, mutating runtime commands fail visibly (for example `ERR_BUSY` or `ERR_UNAVAILABLE`, according to the method convention), runtime object lookups such as `get_device(instance_id)` return no object, result lookups return no result, and runtime-effect commands are neither queued for later nor reported as successful while dropped.
 
-Provider discovery is a narrow startup-safe exception because it observes provider endpoint identity rather than mutating runtime/core state. After `start()` has been accepted and provider storage exists, `enumerate_devices()` and `get_device_for_hardware_id(...)` may be used before the first baseline publish. A returned `CamBANGDevice` is only a hardware-id endpoint handle in this window; it is not runtime instance truth, and `get_device(instance_id)` remains baseline/current-generation gated.
+Provider discovery is a narrow startup-safe exception because it observes
+provider endpoint identity rather than mutating runtime/core state. After
+`start()` has been accepted and provider storage exists, `enumerate_devices()`
+and `get_device_for_hardware_id(...)` may be used before the first baseline
+publish. A returned `CamBANGDevice` can be a **hardware-id endpoint handle**: an
+object representing the endpoint selected by hardware ID. That handle does not
+necessarily imply that a live runtime **device-instance object** has been
+resolved, or that a current `device_instance_id` exists. These identities are
+not interchangeable for all operations. Runtime operations that require a live
+resolved device instance, including device-triggered capture, depend on the
+runtime-instance seam rather than endpoint-handle identity alone;
+`get_device(instance_id)` therefore remains baseline/current-generation gated.
 
 Endpoint startup intent is also narrow and hardware-id scoped. During the pre-baseline startup window, endpoint-handle `engage()`, `set_still_capture_profile(...)`, and `set_warm_policy(...)` may be accepted as startup intent. Those calls do not execute core/provider runtime effects before baseline: the clean `state_published(gen, 0, 0)` snapshot is emitted and latch-visible first, and accepted endpoint intents are applied only afterward, so their observable device/profile/warm-policy effects appear in later snapshots (normally `version >= 1`). Multiple pre-baseline profile or warm-policy calls for the same endpoint/session are deterministic last-write-wins. Accepted endpoint startup intent either applies after baseline or fails visibly; it is not retained indefinitely. Stream creation, capture triggering, result lookup, rig capture, timeline advancement, and commands that depend on runtime instance lineage are not part of this exception.
 
