@@ -133,26 +133,26 @@ int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
   return static_cast<int>(member->retained_access_truth.to_image);
 }
 
-godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
-  if (!data_ || image_member_index < 0) {
+godot::Ref<godot::Image> perform_capture_to_image_member_access(const SharedCaptureResultData& data, int image_member_index) {
+  if (!data || image_member_index < 0) {
     const uint64_t begin_ns = result_access_now_ns();
     godot::Ref<godot::Image> image;
     result_access_cost_evidence::record_capture_member_access(
         result_access_cost_evidence::kRouteCaptureAccessUnsupported,
-        data_,
+        data,
         nullptr,
         result_access_now_ns() - begin_ns,
         false,
         ResultCapability::UNSUPPORTED);
     return image;
   }
-  const auto* member = data_->image_member_at(static_cast<uint32_t>(image_member_index));
+  const auto* member = data->image_member_at(static_cast<uint32_t>(image_member_index));
   if (!member) {
     const uint64_t begin_ns = result_access_now_ns();
     godot::Ref<godot::Image> image;
     result_access_cost_evidence::record_capture_member_access(
         result_access_cost_evidence::kRouteCaptureAccessUnsupported,
-        data_,
+        data,
         nullptr,
         result_access_now_ns() - begin_ns,
         false,
@@ -172,12 +172,22 @@ godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_
   }
   result_access_cost_evidence::record_capture_member_access(
       evidence_route,
-      data_,
+      data,
       member,
       result_access_now_ns() - begin_ns,
       image.is_valid(),
       reported_capability);
   return image;
+}
+
+godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
+  return perform_capture_to_image_member_access(data_, image_member_index);
+}
+
+godot::Ref<godot::Image> CamBANGCaptureResult::calibrate_to_image_member_for_retained_access(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index) {
+  return perform_capture_to_image_member_access(data, static_cast<int>(image_member_index));
 }
 
 int CamBANGCaptureResult::can_get_encoded_bytes() const {

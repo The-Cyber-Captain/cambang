@@ -157,6 +157,7 @@ private:
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
+  void _calibrate_live_retained_result_access_();
   void _drain_pending_stop_and_quit_();
   void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
