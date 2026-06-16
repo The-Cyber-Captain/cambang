@@ -6,6 +6,7 @@
 #include "godot/cambang_stream_result.h"
 #include "godot/cambang_stream_result_internal.h"
 #include "godot/result_access_cost_evidence.h"
+#include "godot/retained_result_access_calibration.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
 #include "godot/cambang_rig.h"
 
@@ -290,6 +291,7 @@ CamBANGServer::~CamBANGServer() {
   // Ensure graceful stop if the extension is torn down.
   runtime_.stop();
   result_access_cost_evidence::clear();
+  retained_result_access_calibration::clear();
   if (singleton_ == this) {
     singleton_ = nullptr;
   }
@@ -426,6 +428,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   has_godot_counters_ = false;
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   result_access_cost_evidence::clear();
+  retained_result_access_calibration::clear();
 
   // Begin a new boundary session and reject any prior-generation late publishes
   // until the first snapshot from the next expected generation is observed.
@@ -460,6 +463,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
     direct_stream_hardware_id_by_stream_id_.clear();
     CamBANGStreamResult::clear_live_stream_cpu_display_views();
     result_access_cost_evidence::clear();
+    retained_result_access_calibration::clear();
 
     strict_scenario_unmet_logged_ = false;
     _reset_scenario_session_state_();
@@ -526,6 +530,7 @@ void CamBANGServer::stop() {
   provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   result_access_cost_evidence::clear();
+  retained_result_access_calibration::clear();
 
   strict_scenario_unmet_logged_ = false;
   _reset_scenario_session_state_();
@@ -1505,8 +1510,44 @@ void CamBANGServer::_on_godot_tick(double delta) {
   if (_consume_latest_core_snapshot()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
     _drain_pending_scenario_start_after_baseline_();
+    _calibrate_live_retained_result_access_();
   } else if (!pending_endpoint_startup_intents_.empty()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
+  } else {
+    _calibrate_live_retained_result_access_();
+  }
+}
+
+void CamBANGServer::_calibrate_live_retained_result_access_() {
+  if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
+    return;
+  }
+
+  for (const StreamState& stream : latest_->streams) {
+    if (stream.stream_id == 0 || stream.phase != CBLifecyclePhase::LIVE) {
+      continue;
+    }
+    SharedStreamResultData result = runtime_.get_latest_stream_result(stream.stream_id);
+    retained_result_access_calibration::calibrate_stream_result(result);
+  }
+
+  for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
+    if (session.last_capture_id == 0 || session.device_instance_id == 0) {
+      continue;
+    }
+    SharedCaptureResultData result =
+        runtime_.get_capture_result(session.last_capture_id, session.device_instance_id);
+    retained_result_access_calibration::calibrate_capture_result(result);
+  }
+
+  for (const RigState& rig : latest_->rigs) {
+    if (rig.last_capture_id == 0) {
+      continue;
+    }
+    std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(rig.last_capture_id);
+    for (const SharedCaptureResultData& result : results) {
+      retained_result_access_calibration::calibrate_capture_result(result);
+    }
   }
 }
 

@@ -296,38 +296,38 @@ int CamBANGStreamResult::get_display_view_path_kind() const {
   return DISPLAY_PATH_NONE;
 }
 
-godot::Variant CamBANGStreamResult::get_display_view() const {
-  if (!data_) {
+godot::Variant perform_stream_display_view_access(const SharedStreamResultData& data, bool mark_display_demand) {
+  if (!data) {
     const uint64_t begin_ns = result_access_now_ns();
     result_access_cost_evidence::record_stream_access(
         result_access_cost_evidence::kRouteStreamAccessUnsupported,
-        data_,
+        data,
         result_access_now_ns() - begin_ns,
         false,
         ResultCapability::UNSUPPORTED);
     return godot::Variant();
   }
-  const char* evidence_route = display_view_evidence_route(data_);
-  const ResultCapability reported_capability = data_->retained_access_truth.display_view;
+  const char* evidence_route = display_view_evidence_route(data);
+  const ResultCapability reported_capability = data->retained_access_truth.display_view;
   const uint64_t begin_ns = result_access_now_ns();
   godot::Variant result;
-  if (data_->stream_id != 0) {
+  if (mark_display_demand && data->stream_id != 0) {
     if (CamBANGServer* server = CamBANGServer::get_singleton()) {
-      server->mark_stream_display_demand(data_->stream_id);
+      server->mark_stream_display_demand(data->stream_id);
     }
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE) {
-    if (data_->retained_gpu_backing) {
+  if (data->payload_kind == ResultPayloadKind::GPU_SURFACE) {
+    if (data->retained_gpu_backing) {
       godot::Ref<godot::Texture2D> retained = godot_gpu_display_get_texture_by_descriptor(
-          data_->retained_gpu_backing_descriptor,
-          data_->retained_gpu_backing);
+          data->retained_gpu_backing_descriptor,
+          data->retained_gpu_backing);
       if (retained.is_valid()) {
-        attach_display_demand_token(retained, data_->stream_id, "retained_gpu_backing");
+        attach_display_demand_token(retained, data->stream_id, "retained_gpu_backing");
         trace_stream_display_path("retained_gpu_backing");
         result = retained;
         result_access_cost_evidence::record_stream_access(
             evidence_route,
-            data_,
+            data,
             result_access_now_ns() - begin_ns,
             true,
             reported_capability);
@@ -336,20 +336,20 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
     }
     result_access_cost_evidence::record_stream_access(
         evidence_route,
-        data_,
+        data,
         result_access_now_ns() - begin_ns,
         false,
         reported_capability);
     return result;
   }
-  godot::Ref<godot::Texture2D> live_cpu = ensure_live_cpu_display_view(data_);
+  godot::Ref<godot::Texture2D> live_cpu = ensure_live_cpu_display_view(data);
   if (live_cpu.is_valid()) {
-    attach_display_demand_token(live_cpu, data_->stream_id, "stream_live_cpu_display_view");
+    attach_display_demand_token(live_cpu, data->stream_id, "stream_live_cpu_display_view");
     trace_stream_display_path("stream_live_cpu_display_view");
     result = live_cpu;
     result_access_cost_evidence::record_stream_access(
         evidence_route,
-        data_,
+        data,
         result_access_now_ns() - begin_ns,
         true,
         reported_capability);
@@ -357,46 +357,47 @@ godot::Variant CamBANGStreamResult::get_display_view() const {
   }
   result_access_cost_evidence::record_stream_access(
       evidence_route,
-      data_,
+      data,
       result_access_now_ns() - begin_ns,
       false,
       reported_capability);
   return result;
 }
 
-godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
-  if (!data_) {
+
+godot::Ref<godot::Image> perform_stream_to_image_access(const SharedStreamResultData& data) {
+  if (!data) {
     const uint64_t begin_ns = result_access_now_ns();
     godot::Ref<godot::Image> image;
     result_access_cost_evidence::record_stream_access(
         result_access_cost_evidence::kRouteStreamAccessUnsupported,
-        data_,
+        data,
         result_access_now_ns() - begin_ns,
         false,
         ResultCapability::UNSUPPORTED);
     return image;
   }
-  const char* evidence_route = to_image_evidence_route(data_);
-  const ResultCapability reported_capability = data_->retained_access_truth.to_image;
+  const char* evidence_route = to_image_evidence_route(data);
+  const ResultCapability reported_capability = data->retained_access_truth.to_image;
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
-  if (has_current_retained_cpu_payload(data_)) {
-    image = payload_to_image(data_->payload);
+  if (has_current_retained_cpu_payload(data)) {
+    image = payload_to_image(data->payload);
     result_access_cost_evidence::record_stream_access(
         evidence_route,
-        data_,
+        data,
         result_access_now_ns() - begin_ns,
         image.is_valid(),
         reported_capability);
     return image;
   }
-  if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
+  if (data->payload_kind == ResultPayloadKind::GPU_SURFACE && data->retained_gpu_backing) {
     image = godot_gpu_display_materialize_to_image(
-        data_->retained_gpu_backing_descriptor,
-        data_->retained_gpu_backing);
+        data->retained_gpu_backing_descriptor,
+        data->retained_gpu_backing);
     result_access_cost_evidence::record_stream_access(
         evidence_route,
-        data_,
+        data,
         result_access_now_ns() - begin_ns,
         image.is_valid(),
         reported_capability);
@@ -404,11 +405,27 @@ godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
   }
   result_access_cost_evidence::record_stream_access(
       evidence_route,
-      data_,
+      data,
       result_access_now_ns() - begin_ns,
       false,
       reported_capability);
   return image;
+}
+
+godot::Variant CamBANGStreamResult::get_display_view() const {
+  return perform_stream_display_view_access(data_, true);
+}
+
+godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
+  return perform_stream_to_image_access(data_);
+}
+
+godot::Variant CamBANGStreamResult::calibrate_display_view_for_retained_access(const SharedStreamResultData& data) {
+  return perform_stream_display_view_access(data, false);
+}
+
+godot::Ref<godot::Image> CamBANGStreamResult::calibrate_to_image_for_retained_access(const SharedStreamResultData& data) {
+  return perform_stream_to_image_access(data);
 }
 
 void CamBANGStreamResult::_bind_methods() {

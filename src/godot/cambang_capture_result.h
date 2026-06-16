@@ -62,6 +62,10 @@ public:
   godot::Ref<godot::Image> to_image() const;
   godot::PackedByteArray get_encoded_bytes() const;
 
+  static godot::Ref<godot::Image> calibrate_to_image_member_for_retained_access(
+      const SharedCaptureResultData& data,
+      uint32_t image_member_index);
+
   static void _bind_methods();
 
 private:

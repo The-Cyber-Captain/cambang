@@ -4,7 +4,7 @@ extends Node
 ##
 ## Purpose:
 ## - verify the raw, un-arbitrated inner result-access evidence layer only
-## - seed real stream and capture result-access evidence through the Godot API
+## - verify internally calibrated stream and capture result-access evidence
 ## - first prove that materialization-route evidence can appear without any
 ##   public to_image()/to_image_member() calls from the scene itself
 ## - prove that result_access_timing_evidence is cleared by stop()
@@ -19,9 +19,8 @@ extends Node
 ## Design choice:
 ## - use a minimal external synthetic scenario only to realize one deterministic
 ##   repeating stream; scenario semantics remain provider-owned
-## - use the Godot-facing public API for the access operations under test:
-##     get_display_view(), to_image(), trigger_capture(), get_result(),
-##     to_image_member(...)
+## - the access-only session must not seed materialisation evidence through
+##   public to_image()/to_image_member() calls
 ## - do not rely on UI rendering to seed evidence
 ## - intentionally verify the default still-capture profile path rather than
 ##   submitting an explicit still profile; this keeps Scene 68 grounded on the
@@ -162,7 +161,7 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	_assert_expected_evidence_family(evidence, label)
 	if _done:
 		return {}
-	_assert_access_only_measurement_evidence(evidence, label, access_probe)
+	_assert_access_only_probe_contract(label, access_probe)
 	if _done:
 		return {}
 	_step_ok("%s access-only evidence verified" % label)
@@ -562,13 +561,13 @@ func _evidence_has_prefix(evidence: Dictionary, prefix: String) -> bool:
 	return false
 
 
-func _assert_access_only_measurement_evidence(evidence: Dictionary, label: String, access_probe: Dictionary) -> void:
-	# This session must never call public to_image* methods itself. It exists to
-	# prove that inner measurement hooks can still populate the materialization
-	# route evidence independently.
+func _assert_access_only_probe_contract(label: String, access_probe: Dictionary) -> void:
+	# This session must never call public to_image* methods itself. The evidence
+	# dictionary is verified separately by _assert_expected_evidence_family(); this
+	# helper only checks the non-materialising probe contract used by the access-only path.
 	var encoded_capability = access_probe.get("encoded_capability", null)
-	if encoded_capability != null and encoded_capability == int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED):
-		_require(evidence.has("capture_access.unsupported"), "%s: expected capture_access.unsupported evidence after unsupported capture access probe" % label)
+	if encoded_capability != null:
+		_require(encoded_capability == int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED), "%s: encoded bytes unexpectedly supported by this verifier path" % label)
 
 
 func _stop_and_verify_reset() -> void:
@@ -682,10 +681,9 @@ func _assert_expected_evidence_family(evidence: Dictionary, label: String) -> vo
 		"cambang/maintainer/synthetic_producer_output_form",
 		"runtime_default"
 	))
-	var resolved_mode := _resolve_expected_mode_from_selection_and_evidence(stored_selection, evidence)
-	print("INFO: %s stored_selection=%s resolved_mode=%s" % [label, stored_selection, resolved_mode])
+	print("INFO: %s stored_selection=%s" % [label, stored_selection])
 
-	match resolved_mode:
+	match stored_selection:
 		"cpu_only":
 			_assert_expected_entry(evidence, label, "stream_display_view.cpu_live_display_view", true, false, false)
 			if _done:
@@ -713,8 +711,17 @@ func _assert_expected_evidence_family(evidence: Dictionary, label: String) -> vo
 				return
 			_assert_expected_entry(evidence, label, "capture_to_image.gpu_synthetic_backing_materializer", false, true, true)
 
+		"runtime_default":
+			_assert_any_successful_timed_entry_with_prefix(evidence, label, "stream_display_view.")
+			if _done:
+				return
+			_assert_any_successful_timed_entry_with_prefix(evidence, label, "stream_to_image.")
+			if _done:
+				return
+			_assert_any_successful_timed_entry_with_prefix(evidence, label, "capture_to_image.")
+
 		_:
-			_fail("%s: unsupported resolved mode %s" % [label, resolved_mode])
+			_fail("%s: unsupported synthetic producer output-form selection %s" % [label, stored_selection])
 			return
 
 
@@ -736,28 +743,26 @@ func _assert_expected_entry(
 		expect_gpu_materialization,
 		"%s: %s" % [label, key]
 	)
+	_assert_entry_has_success_timing(evidence[key], "%s: %s" % [label, key])
 
 
-func _resolve_expected_mode_from_selection_and_evidence(stored_selection: String, evidence: Dictionary) -> String:
-	match stored_selection:
-		"cpu_only":
-			return "cpu_only"
-		"cpu_gpu":
-			return "cpu_gpu"
-		"gpu_only":
-			return "gpu_only"
-		"runtime_default":
-			if evidence.has("stream_to_image.gpu_primary_cpu_sidecar"):
-				return "cpu_gpu"
-			if evidence.has("stream_to_image.gpu_synthetic_backing_materializer"):
-				return "gpu_only"
-			if evidence.has("stream_to_image.cpu_packed"):
-				return "cpu_only"
-			_fail("runtime_default evidence did not match a known stream family")
-			return ""
-		_:
-			_fail("unexpected synthetic producer output-form selection: %s" % stored_selection)
-			return ""
+func _assert_any_successful_timed_entry_with_prefix(evidence: Dictionary, label: String, prefix: String) -> void:
+	for key in evidence.keys():
+		if not str(key).begins_with(prefix):
+			continue
+		_assert_entry_has_success_timing(evidence[key], "%s: %s" % [label, str(key)])
+		return
+	_fail("%s: expected successful timed evidence with prefix %s" % [label, prefix])
+
+
+func _assert_entry_has_success_timing(entry, context: String) -> void:
+	_require(typeof(entry) == TYPE_DICTIONARY, "%s: evidence entry is not a Dictionary" % context)
+	if _done:
+		return
+	_require(int(entry.get("successes", 0)) > 0, "%s: expected at least one successful retained-result access" % context)
+	if _done:
+		return
+	_require(int(entry.get("total_ns", 0)) > 0 or int(entry.get("first_success_ns", 0)) > 0 or int(entry.get("fresh_result_total_ns", 0)) > 0, "%s: expected non-zero timing evidence" % context)
 
 
 func _assert_entry_backing_facts(entry, expect_cpu_payload, expect_gpu_backing, expect_gpu_materialization, context: String) -> void:

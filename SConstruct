@@ -871,6 +871,7 @@ if build_gde_graph:
         os.path.join(gde_obj_dir, "godot", "state_snapshot_export.cpp"),
         os.path.join(gde_obj_dir, "godot", "godot_gpu_display_service.cpp"),
         os.path.join(gde_obj_dir, "godot", "result_access_cost_evidence.cpp"),
+        os.path.join(gde_obj_dir, "godot", "retained_result_access_calibration.cpp"),
         os.path.join(gde_obj_dir, "godot", "synthetic_gpu_backing_bridge.cpp"),
     ]
     gde_sources = _unique_sources(gde_sources)
