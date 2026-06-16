@@ -63,6 +63,7 @@ std::map<std::string, RouteEvidence> g_routes;
 std::set<OperationIdentity> g_seen_fresh_identities;
 std::deque<OperationIdentity> g_seen_fresh_order;
 std::map<std::string, std::set<uint64_t>> g_postures_by_route;
+std::map<OperationIdentity, RecordedAccessMeasurement> g_latest_measurements;
 
 uint64_t infer_last_bytes(const SharedStreamResultData& data) noexcept {
   if (!data) {
@@ -225,6 +226,14 @@ void record_stream_access(
     evidence.last_height = data->image_height;
     evidence.last_bytes = infer_last_bytes(data);
     note_posture_locked(evidence, route_key, data->access_posture);
+    OperationIdentity identity{route, data->access_posture.posture_id, data->stream_id, 0, 0, 0};
+    g_latest_measurements[identity] = RecordedAccessMeasurement{
+        route_key,
+        data->access_posture.posture_id,
+        elapsed_ns,
+        evidence.last_bytes,
+        success,
+        reported_capability};
   } else {
     evidence.last_width = 0;
     evidence.last_height = 0;
@@ -271,6 +280,20 @@ void record_capture_member_access(
     evidence.last_height = member->access_posture.height;
     evidence.last_bytes = infer_capture_last_bytes(member);
     note_posture_locked(evidence, route_key, member->access_posture);
+    OperationIdentity identity{
+        route,
+        member->access_posture.posture_id,
+        member->access_posture.stream_id,
+        data ? data->capture_id : 0,
+        member->image_member_index,
+        0};
+    g_latest_measurements[identity] = RecordedAccessMeasurement{
+        route_key,
+        member->access_posture.posture_id,
+        elapsed_ns,
+        evidence.last_bytes,
+        success,
+        reported_capability};
   } else {
     evidence.last_width = 0;
     evidence.last_height = 0;
@@ -288,12 +311,54 @@ godot::Dictionary snapshot() {
   return d;
 }
 
+std::optional<RecordedAccessMeasurement> latest_stream_measurement(
+    const char* route,
+    uint64_t posture_id) {
+  if (!route || route[0] == '\0' || posture_id == 0) {
+    return std::nullopt;
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  OperationIdentity identity{route, posture_id, 0, 0, 0, 0};
+  auto it = g_latest_measurements.lower_bound(identity);
+  while (it != g_latest_measurements.end() &&
+         it->first.route == route &&
+         it->first.posture_id == posture_id) {
+    if (it->first.capture_id == 0 && it->first.image_member_index == 0) {
+      return it->second;
+    }
+    ++it;
+  }
+  return std::nullopt;
+}
+
+std::optional<RecordedAccessMeasurement> latest_capture_measurement(
+    const char* route,
+    uint64_t posture_id,
+    uint32_t image_member_index) {
+  if (!route || route[0] == '\0' || posture_id == 0) {
+    return std::nullopt;
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  OperationIdentity identity{route, posture_id, 0, 0, image_member_index, 0};
+  auto it = g_latest_measurements.lower_bound(identity);
+  while (it != g_latest_measurements.end() &&
+         it->first.route == route &&
+         it->first.posture_id == posture_id) {
+    if (it->first.image_member_index == image_member_index) {
+      return it->second;
+    }
+    ++it;
+  }
+  return std::nullopt;
+}
+
 void clear() noexcept {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_routes.clear();
   g_seen_fresh_identities.clear();
   g_seen_fresh_order.clear();
   g_postures_by_route.clear();
+  g_latest_measurements.clear();
 }
 
 } // namespace cambang::result_access_cost_evidence

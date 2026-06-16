@@ -65,6 +65,12 @@ public:
   static godot::Ref<godot::Image> calibrate_to_image_member_for_retained_access(
       const SharedCaptureResultData& data,
       uint32_t image_member_index);
+  static godot::Ref<godot::Image> calibrate_to_image_member_cpu_payload_for_retained_access(
+      const SharedCaptureResultData& data,
+      uint32_t image_member_index);
+  static godot::Ref<godot::Image> calibrate_to_image_member_gpu_materializer_for_retained_access(
+      const SharedCaptureResultData& data,
+      uint32_t image_member_index);
 
   static void _bind_methods();
 

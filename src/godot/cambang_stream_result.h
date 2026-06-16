@@ -66,6 +66,8 @@ public:
   static void clear_live_stream_cpu_display_views();
   static godot::Variant calibrate_display_view_for_retained_access(const SharedStreamResultData& data);
   static godot::Ref<godot::Image> calibrate_to_image_for_retained_access(const SharedStreamResultData& data);
+  static godot::Ref<godot::Image> calibrate_to_image_cpu_payload_for_retained_access(const SharedStreamResultData& data);
+  static godot::Ref<godot::Image> calibrate_to_image_gpu_materializer_for_retained_access(const SharedStreamResultData& data);
 
   static void _bind_methods();
 

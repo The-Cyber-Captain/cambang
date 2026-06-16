@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -14,6 +15,12 @@
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
+
+// Explicit CamBANG-wide multiplier used by bounded retained-access
+// calibration to split supported non-ready candidates into CHEAP vs EXPENSIVE.
+// Keep this visible and testable; do not hide threshold policy in arbitrary
+// helper code.
+constexpr uint64_t kResultAccessCheapWithinBestMultiplier = 2;
 
 struct CoreResultPayloadCpuPacked {
   uint32_t format_fourcc = 0;
@@ -58,6 +65,40 @@ struct CoreRetainedAccessTruth {
   ResultCapability to_image = ResultCapability::UNSUPPORTED;
   ResultCapability encoded_bytes = ResultCapability::UNSUPPORTED;
 };
+
+enum class CoreResultAccessOperation : uint8_t {
+  DISPLAY_VIEW = 0,
+  TO_IMAGE = 1,
+  ENCODED_BYTES = 2,
+};
+
+// Result-facing access classification refinement. Provisional retained access
+// truth remains structural; this narrow record lets bounded calibration replace
+// only the result-facing answer for supported non-ready operations once
+// evidence is available. A negative value means "no refined class".
+struct CoreResultAccessClassificationRecord {
+  std::atomic<int> display_view{-1};
+  std::atomic<int> to_image{-1};
+  std::atomic<int> encoded_bytes{-1};
+};
+
+using SharedResultAccessClassificationRecord =
+    std::shared_ptr<CoreResultAccessClassificationRecord>;
+
+ResultCapability resolve_result_access_classification(
+    ResultCapability provisional,
+    const SharedResultAccessClassificationRecord& record,
+    CoreResultAccessOperation operation) noexcept;
+
+void refine_result_access_classification(
+    const SharedResultAccessClassificationRecord& record,
+    CoreResultAccessOperation operation,
+    ResultCapability classification) noexcept;
+
+ResultCapability classify_supported_non_ready_result_access_from_normalized_costs(
+    ResultCapability provisional,
+    const uint64_t* normalized_costs,
+    size_t normalized_cost_count) noexcept;
 
 // Internal pre-production intent for the backing forms Core intends to retain
 // for a result artifact. This is deliberately narrower than provider/source
@@ -108,6 +149,7 @@ struct CoreStreamResultData {
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   CoreResultPayloadCpuPacked payload{};
   CoreRetainedAccessTruth retained_access_truth{};
+  SharedResultAccessClassificationRecord access_classification{};
   CoreResultAccessPostureKey access_posture{};
   // Non-zero only when payload was copied from the same FrameView as this
   // retained stream result. Used to distinguish current CPU materialization
@@ -137,6 +179,7 @@ struct CoreCaptureResultData {
     std::shared_ptr<void> retained_gpu_backing{};
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
     CoreRetainedAccessTruth retained_access_truth{};
+    SharedResultAccessClassificationRecord access_classification{};
     CoreResultAccessPostureKey access_posture{};
 
     bool has_capture_attributes = false;

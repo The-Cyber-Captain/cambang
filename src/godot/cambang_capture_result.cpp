@@ -76,7 +76,10 @@ int CamBANGCaptureResult::can_get_display_view() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  return static_cast<int>(data_->default_image.retained_access_truth.display_view);
+  return static_cast<int>(resolve_result_access_classification(
+      data_->default_image.retained_access_truth.display_view,
+      data_->default_image.access_classification,
+      CoreResultAccessOperation::DISPLAY_VIEW));
 }
 
 int CamBANGCaptureResult::can_to_image() const {
@@ -130,7 +133,10 @@ int CamBANGCaptureResult::can_to_image_member(int image_member_index) const {
   if (!member) {
     return CAPABILITY_UNSUPPORTED;
   }
-  return static_cast<int>(member->retained_access_truth.to_image);
+  return static_cast<int>(resolve_result_access_classification(
+      member->retained_access_truth.to_image,
+      member->access_classification,
+      CoreResultAccessOperation::TO_IMAGE));
 }
 
 godot::Ref<godot::Image> perform_capture_to_image_member_access(const SharedCaptureResultData& data, int image_member_index) {
@@ -160,7 +166,10 @@ godot::Ref<godot::Image> perform_capture_to_image_member_access(const SharedCapt
     return image;
   }
   const char* evidence_route = capture_to_image_evidence_route(member);
-  const ResultCapability reported_capability = member->retained_access_truth.to_image;
+  const ResultCapability reported_capability = resolve_result_access_classification(
+      member->retained_access_truth.to_image,
+      member->access_classification,
+      CoreResultAccessOperation::TO_IMAGE);
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
   if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing) {
@@ -180,6 +189,86 @@ godot::Ref<godot::Image> perform_capture_to_image_member_access(const SharedCapt
   return image;
 }
 
+godot::Ref<godot::Image> perform_capture_to_image_member_cpu_payload_access(
+    const SharedCaptureResultData& data,
+    int image_member_index) {
+  const uint64_t begin_ns = result_access_now_ns();
+  godot::Ref<godot::Image> image;
+  if (!data || image_member_index < 0) {
+    result_access_cost_evidence::record_capture_member_access(
+        result_access_cost_evidence::kRouteCaptureAccessUnsupported,
+        data,
+        nullptr,
+        result_access_now_ns() - begin_ns,
+        false,
+        ResultCapability::UNSUPPORTED);
+    return image;
+  }
+  const auto* member = data->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member || !capture_member_has_cpu_payload(*member)) {
+    result_access_cost_evidence::record_capture_member_access(
+        result_access_cost_evidence::kRouteCaptureAccessUnsupported,
+        data,
+        member,
+        result_access_now_ns() - begin_ns,
+        false,
+        member ? member->retained_access_truth.to_image : ResultCapability::UNSUPPORTED);
+    return image;
+  }
+  image = payload_to_image(member->payload);
+  result_access_cost_evidence::record_capture_member_access(
+      result_access_cost_evidence::kRouteCaptureToImageCpuPacked,
+      data,
+      member,
+      result_access_now_ns() - begin_ns,
+      image.is_valid(),
+      member->retained_access_truth.to_image);
+  return image;
+}
+
+godot::Ref<godot::Image> perform_capture_to_image_member_gpu_materializer_access(
+    const SharedCaptureResultData& data,
+    int image_member_index) {
+  const uint64_t begin_ns = result_access_now_ns();
+  godot::Ref<godot::Image> image;
+  if (!data || image_member_index < 0) {
+    result_access_cost_evidence::record_capture_member_access(
+        result_access_cost_evidence::kRouteCaptureAccessUnsupported,
+        data,
+        nullptr,
+        result_access_now_ns() - begin_ns,
+        false,
+        ResultCapability::UNSUPPORTED);
+    return image;
+  }
+  const auto* member = data->image_member_at(static_cast<uint32_t>(image_member_index));
+  if (!member ||
+      member->payload_kind != ResultPayloadKind::GPU_SURFACE ||
+      !member->retained_gpu_backing ||
+      !member->retained_gpu_backing_descriptor.valid ||
+      !member->retained_gpu_backing_descriptor.materialization_available) {
+    result_access_cost_evidence::record_capture_member_access(
+        result_access_cost_evidence::kRouteCaptureAccessUnsupported,
+        data,
+        member,
+        result_access_now_ns() - begin_ns,
+        false,
+        member ? member->retained_access_truth.to_image : ResultCapability::UNSUPPORTED);
+    return image;
+  }
+  image = godot_gpu_display_materialize_to_image(
+      member->retained_gpu_backing_descriptor,
+      member->retained_gpu_backing);
+  result_access_cost_evidence::record_capture_member_access(
+      result_access_cost_evidence::kRouteCaptureToImageGpuSyntheticBackingMaterializer,
+      data,
+      member,
+      result_access_now_ns() - begin_ns,
+      image.is_valid(),
+      member->retained_access_truth.to_image);
+  return image;
+}
+
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
   return perform_capture_to_image_member_access(data_, image_member_index);
 }
@@ -190,11 +279,26 @@ godot::Ref<godot::Image> CamBANGCaptureResult::calibrate_to_image_member_for_ret
   return perform_capture_to_image_member_access(data, static_cast<int>(image_member_index));
 }
 
+godot::Ref<godot::Image> CamBANGCaptureResult::calibrate_to_image_member_cpu_payload_for_retained_access(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index) {
+  return perform_capture_to_image_member_cpu_payload_access(data, static_cast<int>(image_member_index));
+}
+
+godot::Ref<godot::Image> CamBANGCaptureResult::calibrate_to_image_member_gpu_materializer_for_retained_access(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index) {
+  return perform_capture_to_image_member_gpu_materializer_access(data, static_cast<int>(image_member_index));
+}
+
 int CamBANGCaptureResult::can_get_encoded_bytes() const {
   if (!data_) {
     return CAPABILITY_UNSUPPORTED;
   }
-  return static_cast<int>(data_->default_image.retained_access_truth.encoded_bytes);
+  return static_cast<int>(resolve_result_access_classification(
+      data_->default_image.retained_access_truth.encoded_bytes,
+      data_->default_image.access_classification,
+      CoreResultAccessOperation::ENCODED_BYTES));
 }
 
 godot::Variant CamBANGCaptureResult::get_display_view() const {
