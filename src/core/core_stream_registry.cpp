@@ -7,10 +7,11 @@
 namespace cambang {
 
 namespace {
-void apply_stream_started(CoreStreamRegistry::StreamRecord& rec) noexcept {
+void apply_stream_started(CoreStreamRegistry::StreamRecord& rec, uint64_t access_posture_epoch) noexcept {
   rec.started = true;
   rec.last_stop_origin = CoreStreamRegistry::StopOrigin::None;
   rec.stop_requested_by_core = false;
+  rec.access_posture_epoch = access_posture_epoch;
 }
 
 void apply_stream_stopped(CoreStreamRegistry::StreamRecord& rec,
@@ -26,6 +27,7 @@ void apply_stream_stopped(CoreStreamRegistry::StreamRecord& rec,
       ? CoreStreamRegistry::StopOrigin::User
       : CoreStreamRegistry::StopOrigin::Provider;
   rec.stop_requested_by_core = false;
+  rec.access_posture_epoch = 0;
 }
 
 void increment_saturating(uint32_t& value) noexcept {
@@ -35,6 +37,14 @@ void increment_saturating(uint32_t& value) noexcept {
 }
 } // namespace
 
+uint64_t CoreStreamRegistry::allocate_access_posture_epoch() noexcept {
+  const uint64_t epoch = next_access_posture_epoch_;
+  if (next_access_posture_epoch_ != std::numeric_limits<uint64_t>::max()) {
+    ++next_access_posture_epoch_;
+  }
+  return epoch == 0 ? 1 : epoch;
+}
+
 bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective) {
   if (effective.stream_id == 0) return false;
   auto& rec = streams_[effective.stream_id];
@@ -42,6 +52,7 @@ bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective
   rec.device_instance_id = effective.device_instance_id;
   rec.intent = effective.intent;
   rec.profile_version = effective.profile_version;
+  rec.access_posture_epoch = allocate_access_posture_epoch();
   rec.profile = effective.profile;
   rec.picture = effective.picture;
   // created/started are driven by provider callbacks and core-directed
@@ -57,6 +68,9 @@ bool CoreStreamRegistry::on_stream_created(uint64_t stream_id) {
   rec.stop_requested_by_core = false;
   rec.pending_core_start_facts = 0;
   rec.pending_core_stop_facts = 0;
+  if (rec.access_posture_epoch == 0) {
+    rec.access_posture_epoch = allocate_access_posture_epoch();
+  }
   // started remains false until started event arrives or a synchronous core
   // start command succeeds.
   return true;
@@ -69,7 +83,7 @@ bool CoreStreamRegistry::on_stream_destroyed(uint64_t stream_id) {
 bool CoreStreamRegistry::on_core_stream_started(uint64_t stream_id) {
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
-  apply_stream_started(it->second);
+  apply_stream_started(it->second, allocate_access_posture_epoch());
   increment_saturating(it->second.pending_core_start_facts);
   return true;
 }
@@ -88,7 +102,7 @@ bool CoreStreamRegistry::on_provider_stream_started(uint64_t stream_id) {
     // truth is the newer state and must not be overwritten by this stale fact.
     return true;
   }
-  apply_stream_started(rec);
+  apply_stream_started(rec, allocate_access_posture_epoch());
   return true;
 }
 
@@ -169,6 +183,7 @@ bool CoreStreamRegistry::set_picture(uint64_t stream_id, const PictureConfig& pi
   auto it = streams_.find(stream_id);
   if (it == streams_.end()) return false;
   it->second.picture = picture;
+  it->second.access_posture_epoch = allocate_access_posture_epoch();
   return true;
 }
 

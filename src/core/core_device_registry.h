@@ -23,6 +23,7 @@ public:
     std::string hardware_id;
     uint64_t camera_spec_version = 0;
     uint64_t capture_profile_version = 0;
+    uint64_t capture_access_posture_epoch = 0;
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
@@ -63,7 +64,10 @@ public:
   const std::map<uint64_t, DeviceRecord>& all() const noexcept { return devices_; }
 
 private:
+  uint64_t allocate_capture_access_posture_epoch() noexcept;
+
   std::map<uint64_t, DeviceRecord> devices_; // key: device_instance_id
+  uint64_t next_capture_access_posture_epoch_ = 1;
 };
 
 } // namespace cambang

@@ -2,7 +2,17 @@
 
 #include "core/core_device_registry.h"
 
+#include <limits>
+
 namespace cambang {
+
+uint64_t CoreDeviceRegistry::allocate_capture_access_posture_epoch() noexcept {
+  const uint64_t epoch = next_capture_access_posture_epoch_;
+  if (next_capture_access_posture_epoch_ != std::numeric_limits<uint64_t>::max()) {
+    ++next_capture_access_posture_epoch_;
+  }
+  return epoch == 0 ? 1 : epoch;
+}
 
 bool CoreDeviceRegistry::note_device_identity(uint64_t device_instance_id, const std::string& hardware_id) {
   if (device_instance_id == 0 || hardware_id.empty()) {
@@ -41,6 +51,7 @@ bool CoreDeviceRegistry::retain_capture_profile(uint64_t device_instance_id,
   rec.capture_height = height;
   rec.capture_format = format;
   rec.capture_profile_version = capture_profile_version;
+  rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
   return true;
 }
 
@@ -51,6 +62,7 @@ bool CoreDeviceRegistry::set_capture_picture(uint64_t device_instance_id, const 
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
   rec.capture_picture = picture;
+  rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
   return true;
 }
 
@@ -64,6 +76,7 @@ bool CoreDeviceRegistry::set_capture_still_image_bundle(uint64_t device_instance
   rec.device_instance_id = device_instance_id;
   rec.capture_still_image_bundle = sequence;
   rec.capture_profile_version = capture_profile_version;
+  rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
   return true;
 }
 
@@ -151,6 +164,9 @@ bool CoreDeviceRegistry::on_device_opened(uint64_t device_instance_id) {
   auto& rec = devices_[device_instance_id];
   rec.device_instance_id = device_instance_id;
   rec.open = true;
+  if (rec.capture_access_posture_epoch == 0) {
+    rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  }
   rec.warm_deadline_active = false;
   rec.warm_deadline_ns = 0;
   rec.warm_expired_close_requested = false;
