@@ -161,7 +161,7 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	_assert_expected_evidence_family(evidence, label)
 	if _done:
 		return {}
-	_assert_access_only_measurement_evidence(evidence, label, access_probe)
+	_assert_access_only_probe_contract(label, access_probe)
 	if _done:
 		return {}
 	_step_ok("%s access-only evidence verified" % label)
@@ -561,10 +561,10 @@ func _evidence_has_prefix(evidence: Dictionary, prefix: String) -> bool:
 	return false
 
 
-func _assert_access_only_measurement_evidence(evidence: Dictionary, label: String, access_probe: Dictionary) -> void:
-	# This session must never call public to_image* methods itself. It exists to
-	# prove that inner measurement hooks can still populate the materialization
-	# route evidence independently.
+func _assert_access_only_probe_contract(label: String, access_probe: Dictionary) -> void:
+	# This session must never call public to_image* methods itself. The evidence
+	# dictionary is verified separately by _assert_expected_evidence_family(); this
+	# helper only checks the non-materialising probe contract used by the access-only path.
 	var encoded_capability = access_probe.get("encoded_capability", null)
 	if encoded_capability != null:
 		_require(encoded_capability == int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED), "%s: encoded bytes unexpectedly supported by this verifier path" % label)
