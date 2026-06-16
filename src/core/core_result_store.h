@@ -239,14 +239,18 @@ public:
                     std::optional<StreamIntent> stream_intent,
                     uint64_t capture_timestamp_ns,
                     uint64_t stream_applied_access_posture_epoch = 0,
-                    uint64_t capture_applied_access_posture_epoch = 0);
+                    uint64_t capture_applied_access_posture_epoch = 0,
+                    CoreRetainedProductionPlan stream_requested_retained_plan = {},
+                    CoreRetainedProductionPlan capture_requested_retained_plan = {});
   bool append_additional_capture_image(uint64_t capture_id,
                                        uint64_t device_instance_id,
                                        CoreCaptureResultData::ImageMemberData image_member,
-                                       uint64_t capture_applied_access_posture_epoch = 0);
+                                       uint64_t capture_applied_access_posture_epoch = 0,
+                                       CoreRetainedProductionPlan capture_requested_retained_plan = {});
   static bool try_build_capture_image_member_data_from_frame(
       const FrameView& frame,
-      CoreCaptureResultData::ImageMemberData& out_member);
+      CoreCaptureResultData::ImageMemberData& out_member,
+      CoreRetainedProductionPlan requested_retained_plan = {});
   static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
                                                               CoreResultPayloadCpuPacked& out_payload);
 

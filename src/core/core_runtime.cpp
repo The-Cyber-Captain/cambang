@@ -27,6 +27,36 @@ namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
 
+CoreRetainedProductionPlan choose_retained_production_plan(
+    CoreProductionIntent intent,
+    const ProducerBackingCapabilities& caps) noexcept {
+  CoreRetainedProductionPlan plan{};
+  auto set = [&](CoreProductionPostureShape posture) {
+    plan.valid = true;
+    plan.posture = posture;
+    return plan;
+  };
+
+  const bool cpu = caps.viable(CoreProductionPostureShape::CpuPrimary);
+  const bool gpu_no_sidecar = caps.viable(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+  const bool gpu_with_sidecar = caps.viable(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+
+  if (intent == CoreProductionIntent::StreamActive) {
+    if (gpu_no_sidecar) return set(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+    if (gpu_with_sidecar) return set(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+    if (cpu) return set(CoreProductionPostureShape::CpuPrimary);
+    return plan;
+  }
+
+  // Default optimizes result-image access first; do not retain a CPU sidecar
+  // merely because a GPU posture exists.
+  if (cpu) return set(CoreProductionPostureShape::CpuPrimary);
+  if (gpu_with_sidecar) return set(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+  if (gpu_no_sidecar) return set(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+  return plan;
+}
+
+
 // Stage A command-fairness bounds: provider facts remain FIFO and non-dropping,
 // but Core yields to pending request work after deterministic slices so sustained
 // stream/provider-event production cannot starve public commands. When requests
@@ -1540,6 +1570,9 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     effective.profile_version = effective_profile_version;
     effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
     effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
+    effective.requested_retained_plan = choose_retained_production_plan(
+        CoreProductionIntent::StreamActive,
+        p->stream_backing_capabilities(effective.profile, effective.picture));
 
     // Declare before calling into the provider so any synchronous callbacks
     // can resolve the record deterministically.
@@ -2012,6 +2045,9 @@ bool CoreRuntime::materialize_capture_request_(uint64_t device_instance_id, Capt
   if (!(out.width > 0 && out.height > 0)) {
     return false;
   }
+  out.requested_retained_plan = choose_retained_production_plan(
+      CoreProductionIntent::Default,
+      prov->capture_backing_capabilities(out));
   return is_valid_capture_still_image_bundle(out.still_image_bundle, supports_multi_image);
 }
 

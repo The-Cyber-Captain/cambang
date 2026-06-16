@@ -301,16 +301,16 @@ ProducerBackingCapabilities SyntheticProvider::query_stream_producer_capabilitie
   const bool gpu_available = has_runtime_gpu_backing_path_();
   switch (cfg_.producer_output_form_mode) {
     case SyntheticProducerOutputFormMode::CpuOnly:
-      return ProducerBackingCapabilities{true, false};
+      return ProducerBackingCapabilities{true, false, false};
     case SyntheticProducerOutputFormMode::GpuOnly:
-      return gpu_available ? ProducerBackingCapabilities{false, true}
-                           : ProducerBackingCapabilities{false, false};
+      return gpu_available ? ProducerBackingCapabilities{false, true, false}
+                           : ProducerBackingCapabilities{false, false, false};
     case SyntheticProducerOutputFormMode::CpuAndGpu:
-      return gpu_available ? ProducerBackingCapabilities{true, true}
-                           : ProducerBackingCapabilities{true, false};
+      return gpu_available ? ProducerBackingCapabilities{true, true, true}
+                           : ProducerBackingCapabilities{true, false, false};
     case SyntheticProducerOutputFormMode::Auto:
     default:
-      return ProducerBackingCapabilities{true, gpu_available};
+      return ProducerBackingCapabilities{true, gpu_available, gpu_available};
   }
 }
 
@@ -320,16 +320,16 @@ ProducerBackingCapabilities SyntheticProvider::query_capture_producer_capabiliti
   const bool gpu_available = has_runtime_gpu_backing_path_();
   switch (cfg_.producer_output_form_mode) {
     case SyntheticProducerOutputFormMode::CpuOnly:
-      return ProducerBackingCapabilities{true, false};
+      return ProducerBackingCapabilities{true, false, false};
     case SyntheticProducerOutputFormMode::GpuOnly:
-      return gpu_available ? ProducerBackingCapabilities{false, true}
-                           : ProducerBackingCapabilities{false, false};
+      return gpu_available ? ProducerBackingCapabilities{false, true, false}
+                           : ProducerBackingCapabilities{false, false, false};
     case SyntheticProducerOutputFormMode::CpuAndGpu:
-      return gpu_available ? ProducerBackingCapabilities{true, true}
-                           : ProducerBackingCapabilities{true, false};
+      return gpu_available ? ProducerBackingCapabilities{true, true, true}
+                           : ProducerBackingCapabilities{true, false, false};
     case SyntheticProducerOutputFormMode::Auto:
     default:
-      return ProducerBackingCapabilities{true, gpu_available};
+      return ProducerBackingCapabilities{true, gpu_available, gpu_available};
   }
 }
 
@@ -1116,6 +1116,13 @@ ProviderResult SyntheticProvider::start_stream(
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
   s.resolved_output_form_mode = resolve_producer_output_form_mode_(runtime_truth);
+  if (s.req.requested_retained_plan.valid) {
+    s.resolved_output_form_mode = s.req.requested_retained_plan.primary_cpu()
+        ? SyntheticProducerOutputFormMode::CpuOnly
+        : (s.req.requested_retained_plan.retain_cpu_sidecar()
+            ? SyntheticProducerOutputFormMode::CpuAndGpu
+            : SyntheticProducerOutputFormMode::GpuOnly);
+  }
   s.prefer_gpu_backing = s.resolved_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
                          s.resolved_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
   s.gpu_staging.resize(size_bytes);
@@ -1673,7 +1680,14 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
       }
     }
     const ProducerBackingCapabilities capture_truth = query_capture_producer_capabilities_(req);
-    const SyntheticProducerOutputFormMode output_form_mode = resolve_producer_output_form_mode_(capture_truth);
+    SyntheticProducerOutputFormMode output_form_mode = resolve_producer_output_form_mode_(capture_truth);
+    if (req.requested_retained_plan.valid) {
+      output_form_mode = req.requested_retained_plan.primary_cpu()
+          ? SyntheticProducerOutputFormMode::CpuOnly
+          : (req.requested_retained_plan.retain_cpu_sidecar()
+              ? SyntheticProducerOutputFormMode::CpuAndGpu
+              : SyntheticProducerOutputFormMode::GpuOnly);
+    }
     const bool retain_cpu_payload = output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
     std::shared_ptr<void> gpu_backing{};
     if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
@@ -1701,6 +1715,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
       fv.primary_backing_kind = ProducerBackingKind::CPU;
     }
     fv.retain_cpu_sidecar = retain_cpu_payload;
+    fv.requested_retained_plan = req.requested_retained_plan;
     if (retain_cpu_payload) {
       fv.data = bytes->data();
       fv.size_bytes = bytes->size();
@@ -2570,6 +2585,7 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   fv.capture_timestamp.tick_ns = 1;
   fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
   fv.retain_cpu_sidecar = publish_cpu_payload;
+  fv.requested_retained_plan = s.req.requested_retained_plan;
   if (publish_cpu_payload) {
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();

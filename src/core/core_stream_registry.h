@@ -33,6 +33,8 @@ public:
     StreamIntent intent = StreamIntent::PREVIEW;
     uint64_t profile_version = 0;
     uint64_t access_posture_epoch = 0;
+    CoreRetainedProductionPlan requested_retained_plan{};
+    CoreRetainedProductionPlan steady_retained_plan{};
 
     CaptureProfile profile{};
     PictureConfig picture{};

@@ -35,6 +35,17 @@ Synthetic maintainer tooling direction remains:
 * `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable.
 * Do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing the next stage.
 
+
+Settled chooser direction for this tranche:
+
+* Intent states are exactly `Default` and `Stream-active`.
+* Posture shapes are exactly `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`.
+* Sidecar retention is optional and must earn its keep.
+* `Default` optimizes for measured `to_image()` / `to_image_member()` behavior.
+* `Stream-active` preserves the preferred `get_display_view()` path first, then uses measured `to_image()` behavior to decide whether a CPU sidecar earns its keep.
+* The chooser reuses the existing real retained-result measurement seam.
+* When evidence is needed, Core requests bounded evaluation postures one at a time; Provider executes the currently requested posture; `CoreResultStore` validates against the currently requested posture; once enough evidence exists, Core records a steady posture until expiry/rerun.
+
 ## Immediate implementation direction
 
 The next major design/work focus is the higher-level intent-aware candidate-posture evaluator/chooser, not more inner calibration plumbing.
