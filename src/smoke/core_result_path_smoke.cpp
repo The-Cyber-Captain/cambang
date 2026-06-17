@@ -64,7 +64,22 @@ int main() {
   constexpr uint64_t kStreamEpochA = 100;
   constexpr uint64_t kStreamEpochB = 101;
   constexpr uint64_t kCaptureEpochA = 200;
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0);
+  CoreRetainedProductionPlan requested_cpu{};
+  requested_cpu.valid = true;
+  requested_cpu.posture = CoreProductionPostureShape::CpuPrimary;
+  CoreRetainedProductionPlan requested_gpu_no_sidecar{};
+  requested_gpu_no_sidecar.valid = true;
+  requested_gpu_no_sidecar.posture = CoreProductionPostureShape::GpuPrimaryNoCpuSidecar;
+  CoreRetainedProductionPlan requested_gpu_with_sidecar{};
+  requested_gpu_with_sidecar.valid = true;
+  requested_gpu_with_sidecar.posture = CoreProductionPostureShape::GpuPrimaryWithCpuSidecar;
+  assert(store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0, requested_cpu));
+  FrameView mismatched_cpu_request = stream_frame;
+  mismatched_cpu_request.stream_id = 120;
+  mismatched_cpu_request.primary_backing_kind = ProducerBackingKind::GPU;
+  mismatched_cpu_request.primary_backing_artifact = std::make_shared<int>(120);
+  assert(!store.retain_frame(mismatched_cpu_request, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0, requested_cpu));
+  assert(!store.get_latest_stream_result(120));
 
   auto stream_result = store.get_latest_stream_result(20);
   assert(stream_result);
@@ -95,7 +110,7 @@ int main() {
   gpu_only_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
   gpu_only_stream_frame.primary_backing_artifact = std::make_shared<int>(42);
   gpu_only_stream_frame.retain_cpu_sidecar = false;
-  store.retain_frame(gpu_only_stream_frame, StreamIntent::VIEWFINDER, 1236, kStreamEpochA, 0);
+  assert(store.retain_frame(gpu_only_stream_frame, StreamIntent::VIEWFINDER, 1236, kStreamEpochA, 0, requested_gpu_no_sidecar));
 
   auto gpu_only_stream_result = store.get_latest_stream_result(21);
   assert(gpu_only_stream_result);
@@ -164,7 +179,7 @@ int main() {
   gpu_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
   gpu_stream_frame.primary_backing_artifact = std::make_shared<int>(43);
   gpu_stream_frame.retain_cpu_sidecar = true;
-  store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, 1237, kStreamEpochA, 0);
+  assert(store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, 1237, kStreamEpochA, 0, requested_gpu_with_sidecar));
 
   auto gpu_stream_result = store.get_latest_stream_result(22);
   assert(gpu_stream_result);
@@ -195,7 +210,7 @@ int main() {
   capture_a.stream_id = 0;
   capture_a.capture_id = 77;
   capture_a.device_instance_id = 100;
-  store.retain_frame(capture_a, std::nullopt, 2000, 0, kCaptureEpochA);
+  assert(store.retain_frame(capture_a, std::nullopt, 2000, 0, kCaptureEpochA, {}, requested_cpu));
 
   FrameView capture_b = stream_frame;
   capture_b.stream_id = 0;
@@ -242,7 +257,10 @@ int main() {
   gpu_capture.retain_cpu_sidecar = false;
   gpu_capture.retained_gpu_backing_descriptor.valid = true;
   gpu_capture.retained_gpu_backing_descriptor.materialization_available = true;
-  assert(store.retain_frame(gpu_capture, std::nullopt, 2007, 0, kCaptureEpochA));
+  assert(store.retain_frame(gpu_capture, std::nullopt, 2007, 0, kCaptureEpochA, {}, requested_gpu_no_sidecar));
+  FrameView mismatched_capture_request = gpu_capture;
+  mismatched_capture_request.capture_id = 178;
+  assert(!store.retain_frame(mismatched_capture_request, std::nullopt, 2007, 0, kCaptureEpochA, {}, requested_cpu));
   auto gpu_capture_result = store.get_capture_result(78, 100);
   assert(gpu_capture_result);
   assert(gpu_capture_result->payload_kind == ResultPayloadKind::GPU_SURFACE);

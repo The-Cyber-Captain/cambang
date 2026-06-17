@@ -1279,9 +1279,17 @@ bool run_synthetic_backing_capability_truth_check() {
 
   const bool runtime_gpu_gate = synthetic_gpu_backing_runtime_available();
   const bool stream_ok = stream_caps.cpu_backed_available &&
-                         (stream_caps.gpu_backed_available == runtime_gpu_gate);
+                         (stream_caps.gpu_backed_available == runtime_gpu_gate) &&
+                         (stream_caps.gpu_with_cpu_sidecar_available == runtime_gpu_gate) &&
+                         stream_caps.viable(CoreProductionPostureShape::CpuPrimary) &&
+                         (stream_caps.viable(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) == runtime_gpu_gate) &&
+                         (stream_caps.viable(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) == runtime_gpu_gate);
   const bool capture_ok = capture_caps.cpu_backed_available &&
-                          (capture_caps.gpu_backed_available == runtime_gpu_gate);
+                          (capture_caps.gpu_backed_available == runtime_gpu_gate) &&
+                          (capture_caps.gpu_with_cpu_sidecar_available == runtime_gpu_gate) &&
+                          capture_caps.viable(CoreProductionPostureShape::CpuPrimary) &&
+                          (capture_caps.viable(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) == runtime_gpu_gate) &&
+                          (capture_caps.viable(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) == runtime_gpu_gate);
   if (!stream_ok || !capture_ok) {
     std::cerr << "FAIL synthetic backing capability truth mismatch\n";
     return false;
@@ -1308,10 +1316,19 @@ bool run_synthetic_backing_capability_truth_check() {
       std::cerr << "FAIL synthetic backing capability truth " << label << " shutdown failed\n";
       return false;
     }
+    const bool expect_sidecar = expect_cpu && expect_gpu;
     if (mode_stream_caps.cpu_backed_available != expect_cpu ||
         mode_stream_caps.gpu_backed_available != expect_gpu ||
+        mode_stream_caps.gpu_with_cpu_sidecar_available != expect_sidecar ||
+        mode_stream_caps.viable(CoreProductionPostureShape::CpuPrimary) != expect_cpu ||
+        mode_stream_caps.viable(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) != expect_gpu ||
+        mode_stream_caps.viable(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) != expect_sidecar ||
         mode_capture_caps.cpu_backed_available != expect_cpu ||
-        mode_capture_caps.gpu_backed_available != expect_gpu) {
+        mode_capture_caps.gpu_backed_available != expect_gpu ||
+        mode_capture_caps.gpu_with_cpu_sidecar_available != expect_sidecar ||
+        mode_capture_caps.viable(CoreProductionPostureShape::CpuPrimary) != expect_cpu ||
+        mode_capture_caps.viable(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) != expect_gpu ||
+        mode_capture_caps.viable(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) != expect_sidecar) {
       std::cerr << "FAIL synthetic backing capability truth " << label << " mode mismatch\n";
       return false;
     }

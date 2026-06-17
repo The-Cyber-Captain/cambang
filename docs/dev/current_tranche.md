@@ -8,7 +8,9 @@ Agents should use this file for current workstream direction, recent decisions, 
 
 Continue source-grounded CamBANG development without broadening scope or weakening verification.
 
-The retained-result access calibration/classification tranche is now implemented. The active focus moves to the higher-level intent-aware candidate-posture evaluator/chooser that can use the retained-result measurement primitive when selecting among viable concrete production postures.
+The retained-result access calibration/classification tranche is implemented and remains accepted.
+
+The higher-level intent-aware candidate-posture evaluator/chooser tranche is now also implemented in source, but is not yet accepted as successful. The active focus shifts from chooser implementation to truthful validation of chooser outcomes and, if needed, creation of a narrow evaluation-choice verification harness.
 
 Important settled state:
 
@@ -35,28 +37,53 @@ Synthetic maintainer tooling direction remains:
 * `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable.
 * Do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing the next stage.
 
+
+Settled chooser direction for this tranche:
+
+* Intent states are exactly `Default` and `Stream-active`.
+* Posture shapes are exactly `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`.
+* Sidecar retention is optional and must earn its keep.
+* `Default` optimizes for measured `to_image()` / `to_image_member()` behavior.
+* `Stream-active` preserves the preferred `get_display_view()` path first, then uses measured `to_image()` behavior to decide whether a CPU sidecar earns its keep.
+* The chooser reuses the existing real retained-result measurement seam.
+* When evidence is needed, Core requests bounded evaluation postures one at a time; Provider executes the currently requested posture; `CoreResultStore` validates against the currently requested posture; once enough evidence exists, Core records a steady posture until expiry/rerun.
+
 ## Immediate implementation direction
 
-The next major design/work focus is the higher-level intent-aware candidate-posture evaluator/chooser, not more inner calibration plumbing.
+The higher-level intent-aware candidate-posture evaluator/chooser is now implemented in source.
 
-That next stage should:
+Implemented chooser direction:
 
-* enumerate viable concrete candidate production postures for an intent;
-* use provider contract truth and retained-result semantics rather than Synthetic-only shortcuts;
-* reuse the existing posture-keyed retained-result access measurement primitive where evidence is needed;
-* compare supported result-access costs against intent without turning calibration into a broad benchmark subsystem;
-* preserve the separation between structural support truth, operation-specific direct retained availability truth, and measured cost refinement;
-* keep normal user-facing API simple and avoid public route/outcome burden.
+* intent states are `Default` and `Stream-active`;
+* posture shapes are `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`;
+* sidecar retention is optional and must earn its keep;
+* `Default` optimizes for measured `to_image()` / `to_image_member()` behaviour;
+* `Stream-active` preserves the preferred `get_display_view()` path first, then uses measured `to_image()` behaviour to decide whether a CPU sidecar earns its keep;
+* the chooser reuses the existing retained-result measurement seam rather than adding a broad benchmark subsystem;
+* when evidence is needed, Core requests bounded evaluation postures one at a time; Provider executes the currently requested posture; `CoreResultStore` validates against the currently requested posture; once enough evidence exists, Core records a steady posture until expiry/rerun.
 
-This next stage should not:
+Current checkpoint status:
 
-* claim platform-backed GPU/readback support before a provider-specific retained-backing/materialization design exists;
-* turn Scene 68, Scene 70, or Synthetic metrics into the architecture seam;
-* introduce broad registries, taxonomies, or public knobs before a concrete evaluator consumer requires them;
-* let Synthetic stream display-demand/update behaviour become the generalized model for platform-backed providers.
+* deterministic native verification passed:
+  * `core_result_path_smoke` PASS;
+  * `provider_compliance_verify` PASS;
+  * `synthetic_only_provider_support_verify` PASS.
+* Scene 70 `runtime_default` verification currently passes on the tested Windows/Android and Compatibility/Mobile combinations.
+* Current Scene 70 evidence suggests:
+  * Compatibility `runtime_default` resolves to CPU-primary;
+  * Mobile `runtime_default` resolves to GPU-primary, no CPU sidecar.
+* Current forced `cpu_only` / `gpu_only` comparisons support that inference.
+* Stream-side results look promising; capture-side effect remains mixed and is not yet treated as final acceptance evidence.
 
-Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for the intent-aware chooser. It is not a separate prerequisite that must be fully solved before the chooser work can begin; it should inform the evaluator design as one representative pressure case.
+Immediate next focus:
 
+* do not assume the chooser tranche is accepted yet;
+* do not assume Scene 86 is automatically the correct harness host;
+* first perform a read-only definition of what an evaluation-choice verification harness must prove;
+* then decide whether Scene 86 should be augmented or whether a different narrow harness is cleaner;
+* desired harness output is explicit chooser/reporting truth such as viable posture set, requested evaluation posture, steady chosen posture, and decision-relevant evidence buckets.
+
+Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of the chooser, but does not by itself prove the tranche successful.
 ## Recent committed checkpoint
 
 The most recent implemented checkpoint completed the retained-result access calibration/classification seam after the earlier Synthetic retained GPU backing materialization work.

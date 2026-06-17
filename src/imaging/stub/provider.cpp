@@ -32,6 +32,20 @@ StreamTemplate StubProvider::stream_template() const {
   return t;
 }
 
+ProducerBackingCapabilities StubProvider::stream_backing_capabilities(
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  (void)profile;
+  (void)picture;
+  return ProducerBackingCapabilities{true, false, false};
+}
+
+ProducerBackingCapabilities StubProvider::capture_backing_capabilities(
+    const CaptureRequest& req) const noexcept {
+  (void)req;
+  return ProducerBackingCapabilities{true, false, false};
+}
+
 CaptureTemplate StubProvider::capture_template() const {
   CaptureTemplate t{};
   t.profile = stream_template().profile;
@@ -503,6 +517,7 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
     fv.stride_bytes = static_cast<uint32_t>(row_bytes);
+    fv.requested_retained_plan = st.req.requested_retained_plan;
 
     fv.release = &StubProvider::release_test_frame;
     fv.release_user = slot;

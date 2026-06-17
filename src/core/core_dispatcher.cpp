@@ -322,6 +322,8 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     bool has_stream_record = (sid == 0);
     uint64_t stream_access_posture_epoch = 0;
     uint64_t capture_access_posture_epoch = 0;
+    CoreRetainedProductionPlan stream_requested_retained_plan{};
+    CoreRetainedProductionPlan capture_requested_retained_plan{};
     if (streams_) {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
       if (!streams_->on_frame_received(sid, integrated_ts_ns)) {
@@ -330,6 +332,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       if (const CoreStreamRegistry::StreamRecord* stream_rec = streams_->find(sid); stream_rec != nullptr) {
         stream_intent = stream_rec->intent;
         stream_access_posture_epoch = stream_rec->access_posture_epoch;
+        stream_requested_retained_plan = stream_rec->requested_retained_plan;
         has_stream_record = true;
       }
     } else {
@@ -339,6 +342,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       if (const CoreDeviceRegistry::DeviceRecord* device_rec = devices_->find(p.frame.device_instance_id);
           device_rec != nullptr) {
         capture_access_posture_epoch = device_rec->capture_access_posture_epoch;
+        capture_requested_retained_plan = device_rec->requested_retained_plan;
       }
     }
     const bool is_additional_bracket =
@@ -365,12 +369,14 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
           image_member.realized_exposure_compensation_milli_ev = frame_member_realized_ev;
           image_member.capture_timestamp_ns = integrated_ts_ns;
           const uint64_t retention_begin_ns = capture_latency_trace_now_ns();
-          if (CoreResultStore::try_build_capture_image_member_data_from_frame(p.frame, image_member)) {
+          if (CoreResultStore::try_build_capture_image_member_data_from_frame(
+                  p.frame, image_member, capture_requested_retained_plan)) {
             retained_for_result = result_store_->append_additional_capture_image(
                 p.frame.capture_id,
                 p.frame.device_instance_id,
                 std::move(image_member),
-                capture_access_posture_epoch);
+                capture_access_posture_epoch,
+                capture_requested_retained_plan);
           }
           result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
           }
@@ -381,7 +387,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
               stream_intent,
               integrated_ts_ns,
               stream_access_posture_epoch,
-              capture_access_posture_epoch);
+              capture_access_posture_epoch,
+              stream_requested_retained_plan,
+              capture_requested_retained_plan);
           result_retention_ns += capture_latency_trace_now_ns() - retention_begin_ns;
         }
       }

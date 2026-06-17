@@ -60,9 +60,46 @@ enum class ProducerBackingKind : uint8_t {
   GPU = 1,
 };
 
+enum class CoreProductionIntent : uint8_t {
+  Default = 0,
+  StreamActive = 1,
+};
+
+enum class CoreProductionPostureShape : uint8_t {
+  CpuPrimary = 0,
+  GpuPrimaryNoCpuSidecar = 1,
+  GpuPrimaryWithCpuSidecar = 2,
+};
+
+struct CoreRetainedProductionPlan {
+  CoreProductionPostureShape posture = CoreProductionPostureShape::CpuPrimary;
+  bool valid = false;
+
+  constexpr bool primary_cpu() const noexcept { return posture == CoreProductionPostureShape::CpuPrimary; }
+  constexpr bool primary_gpu() const noexcept { return posture != CoreProductionPostureShape::CpuPrimary; }
+  constexpr bool retain_cpu_sidecar() const noexcept {
+    return posture == CoreProductionPostureShape::CpuPrimary ||
+           posture == CoreProductionPostureShape::GpuPrimaryWithCpuSidecar;
+  }
+  constexpr bool retain_gpu_display() const noexcept { return primary_gpu(); }
+};
+
 struct ProducerBackingCapabilities {
   bool cpu_backed_available = false;
   bool gpu_backed_available = false;
+  bool gpu_with_cpu_sidecar_available = false;
+
+  constexpr bool viable(CoreProductionPostureShape posture) const noexcept {
+    switch (posture) {
+      case CoreProductionPostureShape::CpuPrimary:
+        return cpu_backed_available;
+      case CoreProductionPostureShape::GpuPrimaryNoCpuSidecar:
+        return gpu_backed_available;
+      case CoreProductionPostureShape::GpuPrimaryWithCpuSidecar:
+        return gpu_backed_available && gpu_with_cpu_sidecar_available;
+    }
+    return false;
+  }
 };
 
 // Deterministic result for provider method calls.
@@ -258,6 +295,7 @@ struct StreamRequest {
   PictureConfig picture{};
 
   uint64_t profile_version = 0;      // core bookkeeping
+  CoreRetainedProductionPlan requested_retained_plan{}; // core-selected internal production posture
 };
 
 enum class CaptureSubmissionOrigin : uint8_t {
@@ -283,6 +321,7 @@ struct CaptureRequest {
   CaptureStillImageBundle still_image_bundle{};
 
   uint64_t profile_version = 0;      // core bookkeeping
+  CoreRetainedProductionPlan requested_retained_plan{}; // core-selected internal production posture
 };
 
 // Normalized provider capture submission. A device capture is represented as a
@@ -424,6 +463,8 @@ struct FrameView {
   // legacy primary_backing_artifact path authoritative for behavior; the
   // descriptor is passive scaffolding for later resource-ownership isolation.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
+  // Echo of the Core-requested internal retention posture that produced this frame.
+  CoreRetainedProductionPlan requested_retained_plan{};
 
   // Optional per-row stride (0 if tightly packed/unknown)
   uint32_t stride_bytes = 0;

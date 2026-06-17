@@ -24,6 +24,8 @@ public:
     uint64_t camera_spec_version = 0;
     uint64_t capture_profile_version = 0;
     uint64_t capture_access_posture_epoch = 0;
+    CoreRetainedProductionPlan requested_retained_plan{};
+    CoreRetainedProductionPlan steady_retained_plan{};
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;

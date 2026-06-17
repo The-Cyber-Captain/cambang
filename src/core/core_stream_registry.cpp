@@ -55,6 +55,8 @@ bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective
   rec.access_posture_epoch = allocate_access_posture_epoch();
   rec.profile = effective.profile;
   rec.picture = effective.picture;
+  rec.requested_retained_plan = effective.requested_retained_plan;
+  rec.steady_retained_plan = effective.requested_retained_plan;
   // created/started are driven by provider callbacks and core-directed
   // synchronous lifecycle reconciliation.
   return true;

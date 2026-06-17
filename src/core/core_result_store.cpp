@@ -150,30 +150,52 @@ CoreRetainedAccessTruth build_capture_image_member_retained_access_truth(
   return truth;
 }
 
-CoreRetainedBackingPlan build_stream_retained_backing_plan(const FrameView& frame, bool has_cpu_payload) {
+CoreRetainedBackingPlan build_retained_backing_plan_from_requested(
+    CoreRetainedProductionPlan requested,
+    const FrameView& frame,
+    bool has_cpu_payload) {
   CoreRetainedBackingPlan plan{};
-  const bool gpu_primary =
-      frame.primary_backing_kind == ProducerBackingKind::GPU &&
-      static_cast<bool>(frame.primary_backing_artifact);
-  if (gpu_primary) {
+  if (!requested.valid) {
+    const bool gpu_primary =
+        frame.primary_backing_kind == ProducerBackingKind::GPU &&
+        static_cast<bool>(frame.primary_backing_artifact);
+    if (gpu_primary) {
+      plan.primary_kind = ResultPayloadKind::GPU_SURFACE;
+      plan.retain_gpu_display = true;
+      plan.retain_cpu_sidecar = has_cpu_payload && frame.retain_cpu_sidecar;
+    }
+    return plan;
+  }
+
+  if (requested.primary_gpu()) {
     plan.primary_kind = ResultPayloadKind::GPU_SURFACE;
     plan.retain_gpu_display = true;
-    plan.retain_cpu_sidecar = has_cpu_payload && frame.retain_cpu_sidecar;
+    plan.retain_cpu_sidecar = requested.retain_cpu_sidecar() && has_cpu_payload;
   }
   return plan;
 }
 
-CoreRetainedBackingPlan build_capture_retained_backing_plan(const FrameView& frame, bool has_cpu_payload) {
-  CoreRetainedBackingPlan plan{};
-  const bool gpu_primary =
-      frame.primary_backing_kind == ProducerBackingKind::GPU &&
-      static_cast<bool>(frame.primary_backing_artifact);
-  if (gpu_primary) {
-    plan.primary_kind = ResultPayloadKind::GPU_SURFACE;
-    plan.retain_gpu_display = true;
-    plan.retain_cpu_sidecar = has_cpu_payload && frame.retain_cpu_sidecar;
+bool frame_matches_requested_retained_plan(
+    const FrameView& frame,
+    const CoreRetainedBackingPlan& plan,
+    CoreRetainedProductionPlan requested,
+    bool has_cpu_payload) noexcept {
+  if (!requested.valid) {
+    return true;
   }
-  return plan;
+  if (requested.primary_cpu()) {
+    return frame.primary_backing_kind == ProducerBackingKind::CPU && has_cpu_payload;
+  }
+  if (frame.primary_backing_kind != ProducerBackingKind::GPU || !frame.primary_backing_artifact) {
+    return false;
+  }
+  if (requested.retain_cpu_sidecar() && !has_cpu_payload) {
+    return false;
+  }
+  if (!requested.retain_cpu_sidecar() && plan.retain_cpu_sidecar) {
+    return false;
+  }
+  return true;
 }
 
 
@@ -362,14 +384,22 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
                                    uint64_t capture_timestamp_ns,
                                    uint64_t stream_applied_access_posture_epoch,
-                                   uint64_t capture_applied_access_posture_epoch) {
+                                   uint64_t capture_applied_access_posture_epoch,
+                                   CoreRetainedProductionPlan stream_requested_retained_plan,
+                                   CoreRetainedProductionPlan capture_requested_retained_plan) {
+  if (!stream_requested_retained_plan.valid && frame.requested_retained_plan.valid) {
+    stream_requested_retained_plan = frame.requested_retained_plan;
+  }
+  if (!capture_requested_retained_plan.valid && frame.requested_retained_plan.valid) {
+    capture_requested_retained_plan = frame.requested_retained_plan;
+  }
   const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
   uint64_t payload_copy_ns = 0;
   const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
   const std::optional<CoreRetainedBackingPlan> stream_backing_plan =
-      frame.stream_id != 0 ? std::make_optional(build_stream_retained_backing_plan(frame, has_cpu_payload)) : std::nullopt;
+      frame.stream_id != 0 ? std::make_optional(build_retained_backing_plan_from_requested(stream_requested_retained_plan, frame, has_cpu_payload)) : std::nullopt;
   const std::optional<CoreRetainedBackingPlan> capture_backing_plan =
-      frame.capture_id != 0 ? std::make_optional(build_capture_retained_backing_plan(frame, has_cpu_payload)) : std::nullopt;
+      frame.capture_id != 0 ? std::make_optional(build_retained_backing_plan_from_requested(capture_requested_retained_plan, frame, has_cpu_payload)) : std::nullopt;
   CoreResultPayloadCpuPacked payload{};
   CoreImageFactBundle facts{};
   if (has_cpu_payload) {
@@ -389,6 +419,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     }
     const CoreRetainedBackingPlan& plan = *stream_backing_plan;
     const bool gpu_primary = plan.primary_kind == ResultPayloadKind::GPU_SURFACE;
+    if (!frame_matches_requested_retained_plan(frame, plan, stream_requested_retained_plan, has_cpu_payload)) {
+      return false;
+    }
     if (plan.primary_kind == ResultPayloadKind::CPU_PACKED && !has_cpu_payload) {
       return false;
     }
@@ -445,6 +478,9 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
   const bool payload_adopted = payload.uses_retained_bytes();
   if (frame.capture_id != 0) {
     const CoreRetainedBackingPlan& plan = *capture_backing_plan;
+    if (!frame_matches_requested_retained_plan(frame, plan, capture_requested_retained_plan, has_cpu_payload)) {
+      return false;
+    }
     if (plan.primary_kind == ResultPayloadKind::CPU_PACKED && !has_cpu_payload) {
       return false;
     }
@@ -499,7 +535,8 @@ bool CoreResultStore::append_additional_capture_image(
     uint64_t capture_id,
     uint64_t device_instance_id,
     CoreCaptureResultData::ImageMemberData image_member,
-    uint64_t capture_applied_access_posture_epoch) {
+    uint64_t capture_applied_access_posture_epoch,
+    CoreRetainedProductionPlan capture_requested_retained_plan) {
   const uint64_t append_begin_ns = capture_latency_trace_now_ns();
   const uint32_t image_member_index = image_member.image_member_index;
   const size_t payload_bytes = image_member.payload.size_bytes();
@@ -513,6 +550,15 @@ bool CoreResultStore::append_additional_capture_image(
     return false;
   }
   const bool valid_cpu_payload = has_valid_capture_image_member_payload(image_member.payload);
+  if (capture_requested_retained_plan.valid) {
+    const bool member_gpu = image_member.payload_kind == ResultPayloadKind::GPU_SURFACE;
+    if (capture_requested_retained_plan.primary_cpu() == member_gpu) {
+      return false;
+    }
+    if (capture_requested_retained_plan.retain_cpu_sidecar() && !valid_cpu_payload) {
+      return false;
+    }
+  }
   const bool valid_gpu_payload =
       image_member.payload_kind == ResultPayloadKind::GPU_SURFACE &&
       image_member.retained_gpu_backing &&
@@ -565,9 +611,16 @@ bool CoreResultStore::append_additional_capture_image(
 
 bool CoreResultStore::try_build_capture_image_member_data_from_frame(
     const FrameView& frame,
-    CoreCaptureResultData::ImageMemberData& out_member) {
+    CoreCaptureResultData::ImageMemberData& out_member,
+    CoreRetainedProductionPlan requested_retained_plan) {
+  if (!requested_retained_plan.valid && frame.requested_retained_plan.valid) {
+    requested_retained_plan = frame.requested_retained_plan;
+  }
   const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
-  const CoreRetainedBackingPlan plan = build_capture_retained_backing_plan(frame, has_cpu_payload);
+  const CoreRetainedBackingPlan plan = build_retained_backing_plan_from_requested(requested_retained_plan, frame, has_cpu_payload);
+  if (!frame_matches_requested_retained_plan(frame, plan, requested_retained_plan, has_cpu_payload)) {
+    return false;
+  }
   if (plan.primary_kind == ResultPayloadKind::CPU_PACKED) {
     if (!try_build_capture_image_member_data_from_frame(frame, out_member.payload)) {
       return false;
