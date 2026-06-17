@@ -78,9 +78,9 @@ Current checkpoint status:
 Immediate next focus:
 
 * do not assume the chooser tranche is accepted yet;
-* do not assume Scene 86 is automatically the correct harness host;
+* do not assume Scene 68 is automatically the correct harness host;
 * first perform a read-only definition of what an evaluation-choice verification harness must prove;
-* then decide whether Scene 86 should be augmented or whether a different narrow harness is cleaner;
+* then decide whether Scene 68 should be augmented or whether a different narrow harness is cleaner;
 * desired harness output is explicit chooser/reporting truth such as viable posture set, requested evaluation posture, steady chosen posture, and decision-relevant evidence buckets.
 
 Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of the chooser, but does not by itself prove the tranche successful.
