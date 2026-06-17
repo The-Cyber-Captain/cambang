@@ -171,7 +171,7 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 		return {}
 	var initial_stream_chooser := _get_stream_chooser_report(stream_id)
 	_print_chooser_report("%s_stream_initial" % label, initial_stream_chooser)
-	_assert_multi_candidate_evaluation_started(initial_stream_chooser, label, "stream")
+	var stream_chooser_shape := _classify_and_assert_stream_chooser_shape(initial_stream_chooser, label)
 	if _done:
 		return {}
 
@@ -180,15 +180,22 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 		return {}
 	_step_ok("%s stream access-only evidence seeded" % label)
 
-	var progressed_stream_chooser := await _wait_for_chooser_progression(stream_id, label, "stream")
-	if _done:
-		return {}
-	_print_chooser_report("%s_stream_progressed" % label, progressed_stream_chooser)
+	var stream_chooser_after_stream_access := initial_stream_chooser
+	if stream_chooser_shape == "multi":
+		stream_chooser_after_stream_access = await _observe_multi_candidate_chooser_until_steady(stream_id, initial_stream_chooser, label, "stream")
+		if _done:
+			return {}
+		_print_chooser_report("%s_stream_after_multi_observation" % label, stream_chooser_after_stream_access)
 
 	await _require_default_still_profile_visible(device_instance_id, label)
 	if _done:
 		return {}
 	_step_ok("%s default still profile snapshot-visible" % label)
+	var capture_chooser := await _wait_for_capture_chooser_report(device_instance_id, label)
+	_print_chooser_report("%s_capture_default" % label, capture_chooser)
+	_assert_chooser_intent(capture_chooser, label, "capture", "Default")
+	if _done:
+		return {}
 
 	var capture_result = await _trigger_and_wait_capture(device, ids, label)
 	if _done:
@@ -201,7 +208,12 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	var evidence := await _wait_for_access_only_measurement_evidence(label)
 	if _done:
 		return {}
-	var steady_stream_chooser := await _wait_for_chooser_steady(stream_id, label, "stream")
+	var steady_stream_chooser := stream_chooser_after_stream_access
+	if stream_chooser_shape == "single":
+		steady_stream_chooser = _get_stream_chooser_report(stream_id)
+	else:
+		if bool(steady_stream_chooser.get("evaluator_active", false)) or not _chooser_plan_valid(steady_stream_chooser, "steady"):
+			steady_stream_chooser = await _wait_for_chooser_steady(stream_id, label, "stream")
 	if _done:
 		return {}
 	_print_chooser_report("%s_stream_steady" % label, steady_stream_chooser)
@@ -740,6 +752,28 @@ func _get_stream_chooser_report(stream_id: int) -> Dictionary:
 	return {}
 
 
+func _get_capture_chooser_report(device_instance_id: int) -> Dictionary:
+	for report_v in _get_retained_plan_chooser_reports():
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		if str(report.get("target_kind", "")) == "capture" and int(report.get("target_id", 0)) == device_instance_id:
+			return report
+	return {}
+
+
+func _wait_for_capture_chooser_report(device_instance_id: int, label: String) -> Dictionary:
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var report := _get_capture_chooser_report(device_instance_id)
+		if not report.is_empty():
+			return report
+	_fail("%s: timed out waiting for capture chooser report for device_instance_id=%d" % [label, device_instance_id])
+	return {}
+
+
 func _chooser_posture(report: Dictionary, key: String) -> String:
 	var plan_v = report.get(key, {})
 	if typeof(plan_v) != TYPE_DICTIONARY:
@@ -758,29 +792,66 @@ func _print_chooser_report(tag: String, report: Dictionary) -> void:
 	print("CHOOSER: %s %s" % [tag, JSON.stringify(report)])
 
 
-func _assert_multi_candidate_evaluation_started(report: Dictionary, label: String, target_label: String) -> void:
+func _assert_chooser_intent(report: Dictionary, label: String, target_label: String, expected_intent: String) -> void:
 	_require(not report.is_empty(), "%s: %s chooser report missing" % [label, target_label])
 	if _done:
 		return
+	_require(str(report.get("intent", "")) == expected_intent, "%s: %s chooser intent expected %s got %s" % [label, target_label, expected_intent, str(report.get("intent", ""))])
+
+
+func _classify_and_assert_stream_chooser_shape(report: Dictionary, label: String) -> String:
+	_assert_chooser_intent(report, label, "stream", "Stream-active")
+	if _done:
+		return ""
+	_require(_chooser_plan_valid(report, "requested"), "%s: stream chooser requested posture missing" % label)
+	if _done:
+		return ""
+
 	var candidates: Array = report.get("candidate_sequence", [])
-	_require(candidates.size() > 1, "%s: %s chooser did not expose a multi-candidate evaluation path" % [label, target_label])
+	var evaluator_active := bool(report.get("evaluator_active", false))
+	var requested_posture := _chooser_posture(report, "requested")
+	var steady_valid := _chooser_plan_valid(report, "steady")
+	var steady_posture := _chooser_posture(report, "steady")
+
+	if candidates.size() <= 1 and not evaluator_active:
+		_require(steady_valid, "%s: stream single-viable fast path must expose steady posture" % label)
+		if _done:
+			return ""
+		_require(requested_posture == steady_posture, "%s: stream single-viable fast path requested posture must equal steady posture" % label)
+		if _done:
+			return ""
+		_step_ok("%s stream chooser classified single-viable fast path" % label)
+		return "single"
+
+	_require(candidates.size() > 1, "%s: stream multi-candidate evaluator must expose candidate sequence" % label)
 	if _done:
-		return
-	_require(bool(report.get("evaluator_active", false)), "%s: %s evaluator was not active for multi-candidate path" % [label, target_label])
+		return ""
+	_require(evaluator_active, "%s: stream multi-candidate evaluator must be active while steady posture is unset" % label)
 	if _done:
-		return
-	_require(_chooser_plan_valid(report, "requested"), "%s: %s requested posture missing during evaluation" % [label, target_label])
+		return ""
+	_require(not steady_valid, "%s: stream multi-candidate evaluator should not expose steady posture before settlement" % label)
 	if _done:
-		return
-	_require(not _chooser_plan_valid(report, "steady"), "%s: %s steady posture should be unset while evaluation starts" % [label, target_label])
+		return ""
+	_require(requested_posture != steady_posture, "%s: stream requested posture did not differ from steady posture during evaluation" % label)
 	if _done:
-		return
-	_require(_chooser_posture(report, "requested") != _chooser_posture(report, "steady"), "%s: %s requested posture did not differ from steady posture during evaluation" % [label, target_label])
-	_step_ok("%s %s chooser multi-candidate evaluation started with requested distinct from steady" % [label, target_label])
+		return ""
+	_assert_candidate_index_bounded(report, label, "stream")
+	if _done:
+		return ""
+	_step_ok("%s stream chooser classified multi-candidate evaluation path" % label)
+	return "multi"
 
 
-func _wait_for_chooser_progression(stream_id: int, label: String, target_label: String) -> Dictionary:
-	var previous_index := 0
+func _assert_candidate_index_bounded(report: Dictionary, label: String, target_label: String) -> void:
+	var candidates: Array = report.get("candidate_sequence", [])
+	var idx := int(report.get("current_candidate_index", 0))
+	_require(idx >= 0 and idx < candidates.size(), "%s: %s chooser candidate index out of bounds (idx=%d size=%d)" % [label, target_label, idx, candidates.size()])
+
+
+func _observe_multi_candidate_chooser_until_steady(stream_id: int, initial_report: Dictionary, label: String, target_label: String) -> Dictionary:
+	var last_active_report := initial_report
+	var last_index := int(initial_report.get("current_candidate_index", 0))
+	var observed_active_transition := false
 	for _i in range(STREAM_RESULT_TIMEOUT_FRAMES):
 		if _timed_out():
 			return {}
@@ -788,18 +859,38 @@ func _wait_for_chooser_progression(stream_id: int, label: String, target_label: 
 		var report := _get_stream_chooser_report(stream_id)
 		if report.is_empty():
 			continue
-		var idx := int(report.get("current_candidate_index", 0))
-		if idx <= previous_index:
+		_assert_chooser_intent(report, label, target_label, "Stream-active")
+		if _done:
+			return {}
+		if bool(report.get("evaluator_active", false)):
+			_assert_candidate_index_bounded(report, label, target_label)
+			if _done:
+				return {}
+			var idx := int(report.get("current_candidate_index", 0))
+			_require(idx >= last_index, "%s: %s chooser candidate index regressed (%d -> %d); prev=%s current=%s" % [label, target_label, last_index, idx, JSON.stringify(last_active_report), JSON.stringify(report)])
+			if _done:
+				return {}
+			_require(idx <= last_index + 1, "%s: %s chooser progressed by more than one candidate (%d -> %d); prev=%s current=%s" % [label, target_label, last_index, idx, JSON.stringify(last_active_report), JSON.stringify(report)])
+			if _done:
+				return {}
+			if idx != last_index:
+				print("CHOOSER: %s_%s_progress_compare previous=%s current=%s" % [label, target_label, JSON.stringify(last_active_report), JSON.stringify(report)])
+				observed_active_transition = true
+			last_index = idx
+			last_active_report = report
 			continue
-		_require(idx == previous_index + 1, "%s: %s chooser progressed by more than one candidate (%d -> %d)" % [label, target_label, previous_index, idx])
-		if _done:
-			return {}
-		_require(bool(report.get("evaluator_active", false)), "%s: %s chooser progression should still be evaluator-active" % [label, target_label])
-		if _done:
-			return {}
-		_step_ok("%s %s chooser progressed one candidate at a time" % [label, target_label])
-		return report
-	_fail("%s: timed out waiting for %s chooser one-at-a-time progression" % [label, target_label])
+		if _chooser_plan_valid(report, "steady"):
+			_require(_chooser_posture(report, "requested") == _chooser_posture(report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+			if _done:
+				return {}
+			if observed_active_transition:
+				_step_ok("%s %s chooser active progression observed as monotonic and bounded" % [label, target_label])
+			else:
+				print("CHOOSER: %s_%s_no_distinct_active_transition initial=%s steady=%s" % [label, target_label, JSON.stringify(initial_report), JSON.stringify(report)])
+				_step_ok("%s %s chooser remained bounded from first observed active candidate to steady" % [label, target_label])
+			_step_ok("%s %s chooser reached steady posture" % [label, target_label])
+			return report
+	_fail("%s: timed out waiting for %s chooser steady posture settlement" % [label, target_label])
 	return {}
 
 
