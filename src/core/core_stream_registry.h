@@ -71,7 +71,8 @@ public:
   // Lifecycle
   // declare_stream_effective: called by core surfaces that create streams.
   // Providers must not apply implicit defaults; core stores effective config.
-  bool declare_stream_effective(const StreamRequest& effective);
+  bool declare_stream_effective(const StreamRequest& effective,
+                                CoreRetainedProductionPlan steady_retained_plan = {});
   bool on_stream_created(uint64_t stream_id);
   bool on_stream_destroyed(uint64_t stream_id);
   bool on_core_stream_started(uint64_t stream_id);
@@ -88,6 +89,12 @@ public:
 
   // Mutable config updates (stream should exist).
   bool set_picture(uint64_t stream_id, const PictureConfig& picture);
+  bool set_requested_retained_plan(uint64_t stream_id,
+                                   CoreRetainedProductionPlan requested_retained_plan,
+                                   bool bump_access_posture_epoch = true);
+  bool set_steady_retained_plan(uint64_t stream_id,
+                                CoreRetainedProductionPlan steady_retained_plan);
+  bool clear_steady_retained_plan(uint64_t stream_id);
 
   // Best-effort cleanup for failed creations (core-thread-only).
   bool forget_stream(uint64_t stream_id);

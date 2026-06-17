@@ -52,6 +52,12 @@ public:
                                   const CaptureStillImageBundle& sequence,
                                   uint64_t capture_profile_version);
   bool set_capture_picture(uint64_t device_instance_id, const PictureConfig& picture);
+  bool set_requested_retained_plan(uint64_t device_instance_id,
+                                   CoreRetainedProductionPlan requested_retained_plan,
+                                   bool bump_capture_access_posture_epoch = true);
+  bool set_steady_retained_plan(uint64_t device_instance_id,
+                                CoreRetainedProductionPlan steady_retained_plan);
+  bool clear_steady_retained_plan(uint64_t device_instance_id);
   bool set_warm_hold_ms(uint64_t device_instance_id, uint32_t warm_hold_ms);
   bool arm_warm_deadline(uint64_t device_instance_id, uint64_t deadline_ns);
   bool clear_warm_deadline(uint64_t device_instance_id);

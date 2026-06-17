@@ -229,6 +229,359 @@ struct RecorderCallbacks final : IProviderCallbacks {
   }
 };
 
+class ChooserTestProvider final : public ICameraProvider {
+public:
+  const char* provider_name() const override { return "ChooserTestProvider"; }
+  ProviderKind provider_kind() const noexcept override {
+    return ProviderKind::synthetic;
+  }
+
+  StreamTemplate stream_template() const override {
+    StreamTemplate t{};
+    t.profile.width = 16;
+    t.profile.height = 16;
+    t.profile.format_fourcc = FOURCC_RGBA;
+    t.profile.target_fps_min = 30;
+    t.profile.target_fps_max = 30;
+    t.picture.preset = PatternPreset::Checker;
+    t.picture.seed = 1;
+    return t;
+  }
+
+  CaptureTemplate capture_template() const override {
+    CaptureTemplate t{};
+    t.profile = stream_template().profile;
+    t.picture = stream_template().picture;
+    return t;
+  }
+
+  bool supports_stream_picture_updates() const noexcept override { return true; }
+  bool supports_capture_picture_updates() const noexcept override { return true; }
+  bool supports_multi_image_still_sequence() const noexcept override {
+    return false;
+  }
+
+  ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile&,
+      const PictureConfig&) const noexcept override {
+    return ProducerBackingCapabilities{true, true, true};
+  }
+
+  ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest&) const noexcept override {
+    std::lock_guard<std::mutex> lk(mu_);
+    return ProducerBackingCapabilities{capture_cpu_available_, true, true};
+  }
+
+  ProviderResult initialize(IProviderCallbacks* callbacks) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    callbacks_ = callbacks;
+    initialized_ = callbacks != nullptr;
+    return initialized_ ? ProviderResult::success()
+                        : ProviderResult::failure(
+                              ProviderError::ERR_INVALID_ARGUMENT);
+  }
+
+  ProviderResult enumerate_endpoints(
+      std::vector<CameraEndpoint>& out_endpoints) override {
+    out_endpoints.clear();
+    out_endpoints.push_back(CameraEndpoint{"chooser:0", "Chooser"});
+    return ProviderResult::success();
+  }
+
+  ProviderResult open_device(
+      const std::string& hardware_id,
+      uint64_t device_instance_id,
+      uint64_t) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!initialized_ || hardware_id != "chooser:0" || device_instance_id == 0) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    devices_[device_instance_id].open = true;
+    if (callbacks_) {
+      callbacks_->on_device_opened(device_instance_id);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult close_device(uint64_t device_instance_id) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    devices_.erase(device_instance_id);
+    if (callbacks_) {
+      callbacks_->on_device_closed(device_instance_id);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult create_stream(const StreamRequest& req) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!initialized_ || req.stream_id == 0 || req.device_instance_id == 0) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    StreamState& state = streams_[req.stream_id];
+    state.req = req;
+    state.picture = req.picture;
+    state.created = true;
+    if (callbacks_) {
+      callbacks_->on_stream_created(req.stream_id);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult destroy_stream(uint64_t stream_id) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    streams_.erase(stream_id);
+    if (callbacks_) {
+      callbacks_->on_stream_destroyed(stream_id);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult start_stream(
+      uint64_t stream_id,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = streams_.find(stream_id);
+    if (it == streams_.end() || !it->second.created) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    it->second.req.profile = profile;
+    it->second.picture = picture;
+    it->second.started = true;
+    if (callbacks_) {
+      callbacks_->on_stream_started(stream_id);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult stop_stream(uint64_t stream_id) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = streams_.find(stream_id);
+    if (it == streams_.end() || !it->second.created) {
+      return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+    }
+    it->second.started = false;
+    if (callbacks_) {
+      callbacks_->on_stream_stopped(stream_id, ProviderError::OK);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult update_stream_retained_production_plan(
+      uint64_t stream_id,
+      CoreRetainedProductionPlan requested_retained_plan) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = streams_.find(stream_id);
+    if (it == streams_.end() || !it->second.created ||
+        !requested_retained_plan.valid ||
+        !stream_backing_capabilities(it->second.req.profile, it->second.picture)
+             .viable(requested_retained_plan.posture)) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    it->second.req.requested_retained_plan = requested_retained_plan;
+    ++it->second.plan_updates;
+    return ProviderResult::success();
+  }
+
+  ProviderResult set_stream_picture_config(
+      uint64_t stream_id,
+      const PictureConfig& picture) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = streams_.find(stream_id);
+    if (it == streams_.end() || !it->second.created) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    it->second.picture = picture;
+    return ProviderResult::success();
+  }
+
+  ProviderResult set_capture_picture_config(
+      uint64_t device_instance_id,
+      const PictureConfig& picture) override {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = devices_.find(device_instance_id);
+    if (it == devices_.end() || !it->second.open) {
+      return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+    }
+    it->second.picture = picture;
+    return ProviderResult::success();
+  }
+
+  ProviderResult trigger_capture(const CaptureRequest& req) override {
+    const FrameView frame = build_capture_frame_(req, true);
+    if (callbacks_) {
+      callbacks_->on_capture_started(req.capture_id, req.device_instance_id);
+      callbacks_->on_frame(frame);
+      callbacks_->on_capture_completed(req.capture_id, req.device_instance_id);
+    }
+    return ProviderResult::success();
+  }
+
+  ProviderResult abort_capture(uint64_t) override {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  ProviderResult apply_camera_spec_patch(
+      const std::string&,
+      uint64_t,
+      SpecPatchView) override {
+    return ProviderResult::success();
+  }
+
+  ProviderResult apply_imaging_spec_patch(
+      uint64_t,
+      SpecPatchView) override {
+    return ProviderResult::success();
+  }
+
+  ProviderResult shutdown() override {
+    std::lock_guard<std::mutex> lk(mu_);
+    streams_.clear();
+    devices_.clear();
+    return ProviderResult::success();
+  }
+
+  void set_capture_cpu_available(bool available) {
+    std::lock_guard<std::mutex> lk(mu_);
+    capture_cpu_available_ = available;
+  }
+
+  bool emit_stream_frame(uint64_t stream_id, bool gpu_materialization_available) {
+    StreamRequest request_copy{};
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      auto it = streams_.find(stream_id);
+      if (it == streams_.end() || !it->second.started) {
+        return false;
+      }
+      request_copy = it->second.req;
+    }
+    if (!callbacks_) {
+      return false;
+    }
+    callbacks_->on_frame(
+        build_stream_frame_(request_copy, gpu_materialization_available));
+    return true;
+  }
+
+  CoreRetainedProductionPlan stream_requested_plan(uint64_t stream_id) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = streams_.find(stream_id);
+    return it == streams_.end() ? CoreRetainedProductionPlan{}
+                                : it->second.req.requested_retained_plan;
+  }
+
+  uint64_t stream_plan_update_count(uint64_t stream_id) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = streams_.find(stream_id);
+    return it == streams_.end() ? 0ull : it->second.plan_updates;
+  }
+
+private:
+  struct DeviceState {
+    bool open = false;
+    PictureConfig picture{};
+  };
+
+  struct StreamState {
+    StreamRequest req{};
+    bool created = false;
+    bool started = false;
+    PictureConfig picture{};
+    uint64_t plan_updates = 0;
+  };
+
+  static std::shared_ptr<std::vector<uint8_t>> make_bytes_() {
+    return std::make_shared<std::vector<uint8_t>>(16u * 16u * 4u, 7u);
+  }
+
+  static FrameView build_frame_from_plan_(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      uint64_t capture_id,
+      CoreRetainedProductionPlan requested_retained_plan,
+      bool gpu_materialization_available) {
+    FrameView frame{};
+    frame.device_instance_id = device_instance_id;
+    frame.stream_id = stream_id;
+    frame.capture_id = capture_id;
+    frame.width = 16;
+    frame.height = 16;
+    frame.format_fourcc = FOURCC_RGBA;
+    frame.capture_timestamp.value =
+        capture_id != 0 ? capture_id : (stream_id != 0 ? stream_id : 1);
+    frame.capture_timestamp.tick_ns = 1;
+    frame.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    frame.requested_retained_plan = requested_retained_plan;
+    frame.retain_cpu_sidecar = requested_retained_plan.retain_cpu_sidecar();
+    if (requested_retained_plan.primary_cpu()) {
+      const auto bytes = make_bytes_();
+      frame.primary_backing_kind = ProducerBackingKind::CPU;
+      frame.data = bytes->data();
+      frame.size_bytes = bytes->size();
+      frame.stride_bytes = 16u * 4u;
+      frame.cpu_payload_owner = bytes;
+      return frame;
+    }
+
+    frame.primary_backing_kind = ProducerBackingKind::GPU;
+    frame.primary_backing_artifact = std::make_shared<int>(1);
+    frame.retained_gpu_backing_descriptor.valid = true;
+    frame.retained_gpu_backing_descriptor.stream_id = stream_id;
+    frame.retained_gpu_backing_descriptor.backing_id =
+        capture_id != 0 ? capture_id : stream_id;
+    frame.retained_gpu_backing_descriptor.capture_timestamp_ns =
+        frame.capture_timestamp.value;
+    frame.retained_gpu_backing_descriptor.width = 16;
+    frame.retained_gpu_backing_descriptor.height = 16;
+    frame.retained_gpu_backing_descriptor.stride_bytes = 16u * 4u;
+    frame.retained_gpu_backing_descriptor.format_fourcc = FOURCC_RGBA;
+    frame.retained_gpu_backing_descriptor.display_available = true;
+    frame.retained_gpu_backing_descriptor.materialization_available =
+        gpu_materialization_available;
+    frame.retained_gpu_backing_descriptor.materialization_requires_gpu_readback =
+        false;
+    if (requested_retained_plan.retain_cpu_sidecar()) {
+      const auto bytes = make_bytes_();
+      frame.data = bytes->data();
+      frame.size_bytes = bytes->size();
+      frame.stride_bytes = 16u * 4u;
+      frame.cpu_payload_owner = bytes;
+    }
+    return frame;
+  }
+
+  static FrameView build_stream_frame_(
+      const StreamRequest& req,
+      bool gpu_materialization_available) {
+    return build_frame_from_plan_(
+        req.device_instance_id,
+        req.stream_id,
+        0,
+        req.requested_retained_plan,
+        gpu_materialization_available);
+  }
+
+  static FrameView build_capture_frame_(
+      const CaptureRequest& req,
+      bool gpu_materialization_available) {
+    return build_frame_from_plan_(
+        req.device_instance_id,
+        0,
+        req.capture_id,
+        req.requested_retained_plan,
+        gpu_materialization_available);
+  }
+
+  mutable std::mutex mu_;
+  IProviderCallbacks* callbacks_ = nullptr;
+  bool initialized_ = false;
+  bool capture_cpu_available_ = true;
+  std::map<uint64_t, DeviceState> devices_;
+  std::map<uint64_t, StreamState> streams_;
+};
+
 
 bool wait_for_core_runtime_live(CoreRuntime& rt) {
   for (int i = 0; i < kMaxIters; ++i) {
@@ -2598,6 +2951,314 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
   return assert_native_balance(cb_events, "synthetic_stream_plus_still");
 }
 
+bool run_core_measured_retained_plan_evaluator_check() {
+  auto plan_equals = [](CoreRetainedProductionPlan plan,
+                        CoreProductionPostureShape posture) {
+    return plan.valid && plan.posture == posture;
+  };
+  auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "FAIL core measured retained-plan evaluator runtime start failed\n";
+    return false;
+  }
+  if (!wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core measured retained-plan evaluator runtime did not reach LIVE\n";
+    rt.stop();
+    return false;
+  }
+
+  ChooserTestProvider provider;
+  const auto fail_with_cleanup = [&](const char* msg) -> bool {
+    std::cerr << msg << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  constexpr uint64_t kDeviceId = 71;
+  constexpr uint64_t kRootId = 7101;
+  constexpr uint64_t kStreamId = 7201;
+  if (rt.try_open_device("chooser:0", kDeviceId, kRootId) !=
+      TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator open_device failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kDeviceId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::CpuPrimary) &&
+               plan_equals(rec->steady_retained_plan,
+                           CoreProductionPostureShape::CpuPrimary);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator default capture fast path mismatch");
+  }
+
+  if (rt.try_create_stream(
+          kStreamId, kDeviceId, StreamIntent::PREVIEW, nullptr, nullptr, 0) !=
+      TryCreateStreamStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator create_stream failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
+               !rec->steady_retained_plan.valid &&
+               plan_equals(
+                   provider.stream_requested_plan(kStreamId),
+                   CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator stream initial requested/steady mismatch");
+  }
+
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator start_stream failed");
+  }
+  if (!provider.emit_stream_frame(kStreamId, true)) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator first stream frame emit failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_latest_stream_result(kStreamId);
+        return result &&
+               result->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+               !result->access_posture.has_retained_cpu_payload;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator first posture result missing");
+  }
+
+  const SharedStreamResultData first_stream_result =
+      rt.get_latest_stream_result(kStreamId);
+  rt.report_stream_retained_to_image_observation(
+      kStreamId,
+      first_stream_result->access_posture.posture_id,
+      first_stream_result->retained_access_truth.to_image,
+      true,
+      80);
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               !rec->steady_retained_plan.valid &&
+               provider.stream_plan_update_count(kStreamId) >= 1 &&
+               plan_equals(
+                   provider.stream_requested_plan(kStreamId),
+                   CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not advance stream candidate");
+  }
+
+  if (!provider.emit_stream_frame(kStreamId, true)) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator second stream frame emit failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_latest_stream_result(kStreamId);
+        return result &&
+               result->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+               result->access_posture.has_retained_cpu_payload;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator sidecar result missing");
+  }
+
+  const SharedStreamResultData second_stream_result =
+      rt.get_latest_stream_result(kStreamId);
+  rt.report_stream_retained_to_image_observation(
+      kStreamId,
+      second_stream_result->access_posture.posture_id,
+      second_stream_result->retained_access_truth.to_image,
+      true,
+      40);
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               plan_equals(rec->steady_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not settle stream steady posture");
+  }
+
+  PictureConfig stream_picture = provider.stream_template().picture;
+  stream_picture.seed = 77;
+  if (rt.try_set_stream_picture_config(kStreamId, stream_picture) !=
+      TrySetStreamPictureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator stream reset failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
+               !rec->steady_retained_plan.valid &&
+               provider.stream_plan_update_count(kStreamId) >= 2;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator stream rerun/reset mismatch");
+  }
+
+  provider.set_capture_cpu_available(false);
+  PictureConfig capture_picture = provider.capture_template().picture;
+  capture_picture.seed = 88;
+  if (rt.try_set_capture_picture_config(kDeviceId, capture_picture) !=
+      TrySetCapturePictureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator capture reset failed");
+  }
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kDeviceId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
+               !rec->steady_retained_plan.valid;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator capture initial requested/steady mismatch");
+  }
+
+  CaptureRequest capture_req{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kDeviceId, capture_req) &&
+               plan_equals(capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator materialized capture request mismatch");
+  }
+
+  constexpr uint64_t kCaptureIdA = 8801;
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceId, kCaptureIdA) != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator first trigger_capture failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_capture_result(kCaptureIdA, kDeviceId);
+        return result &&
+               result->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE &&
+               !result->default_image.access_posture.has_retained_cpu_payload;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator first capture result missing");
+  }
+
+  const SharedCaptureResultData first_capture_result =
+      rt.get_capture_result(kCaptureIdA, kDeviceId);
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      first_capture_result->default_image.access_posture.posture_id,
+      first_capture_result->default_image.retained_access_truth.to_image,
+      true,
+      80);
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kDeviceId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               !rec->steady_retained_plan.valid;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not advance capture candidate");
+  }
+
+  CaptureRequest capture_req_sidecar{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kDeviceId, capture_req_sidecar) &&
+               plan_equals(capture_req_sidecar.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator sidecar capture request mismatch");
+  }
+
+  constexpr uint64_t kCaptureIdB = 8802;
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceId, kCaptureIdB) != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator second trigger_capture failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_capture_result(kCaptureIdB, kDeviceId);
+        return result &&
+               result->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE &&
+               result->default_image.access_posture.has_retained_cpu_payload;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator second capture result missing");
+  }
+
+  const SharedCaptureResultData second_capture_result =
+      rt.get_capture_result(kCaptureIdB, kDeviceId);
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      second_capture_result->default_image.access_posture.posture_id,
+      second_capture_result->default_image.retained_access_truth.to_image,
+      true,
+      40);
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kDeviceId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               plan_equals(rec->steady_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not settle capture steady posture");
+  }
+
+  CaptureRequest settled_capture_req{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kDeviceId, settled_capture_req) &&
+               plan_equals(settled_capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not reuse settled capture posture");
+  }
+
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK ||
+      rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK ||
+      rt.try_close_device(kDeviceId) != TryCloseDeviceStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator teardown failed");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2630,6 +3291,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
+      {"run_core_measured_retained_plan_evaluator_check", [] { return run_core_measured_retained_plan_evaluator_check(); }},
   };
 
   if (!opt.only_check.empty()) {

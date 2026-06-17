@@ -6,6 +6,13 @@
 
 namespace cambang {
 
+namespace {
+bool same_retained_plan(CoreRetainedProductionPlan a,
+                        CoreRetainedProductionPlan b) noexcept {
+  return a.valid == b.valid && (!a.valid || a.posture == b.posture);
+}
+} // namespace
+
 uint64_t CoreDeviceRegistry::allocate_capture_access_posture_epoch() noexcept {
   const uint64_t epoch = next_capture_access_posture_epoch_;
   if (next_capture_access_posture_epoch_ != std::numeric_limits<uint64_t>::max()) {
@@ -63,6 +70,54 @@ bool CoreDeviceRegistry::set_capture_picture(uint64_t device_instance_id, const 
   rec.device_instance_id = device_instance_id;
   rec.capture_picture = picture;
   rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  return true;
+}
+
+bool CoreDeviceRegistry::set_requested_retained_plan(
+    uint64_t device_instance_id,
+    CoreRetainedProductionPlan requested_retained_plan,
+    bool bump_capture_access_posture_epoch) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  auto& rec = it->second;
+  const bool changed = !same_retained_plan(rec.requested_retained_plan,
+                                           requested_retained_plan);
+  rec.requested_retained_plan = requested_retained_plan;
+  if ((changed && bump_capture_access_posture_epoch) ||
+      rec.capture_access_posture_epoch == 0) {
+    rec.capture_access_posture_epoch = allocate_capture_access_posture_epoch();
+  }
+  return true;
+}
+
+bool CoreDeviceRegistry::set_steady_retained_plan(
+    uint64_t device_instance_id,
+    CoreRetainedProductionPlan steady_retained_plan) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  it->second.steady_retained_plan = steady_retained_plan;
+  return true;
+}
+
+bool CoreDeviceRegistry::clear_steady_retained_plan(uint64_t device_instance_id) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  it->second.steady_retained_plan = CoreRetainedProductionPlan{};
   return true;
 }
 

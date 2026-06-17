@@ -149,6 +149,18 @@ public:
       const PictureConfig& picture) = 0;
   virtual ProviderResult stop_stream(uint64_t stream_id) = 0;
 
+  // Narrow internal seam for Core-owned retained-plan evaluation.
+  // A successful return commits the requested retained-production plan for
+  // subsequent frames from this created stream; providers must not emit a frame
+  // synchronously from this call.
+  virtual ProviderResult update_stream_retained_production_plan(
+      uint64_t stream_id,
+      CoreRetainedProductionPlan requested_retained_plan) {
+    (void)stream_id;
+    (void)requested_retained_plan;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
   // Stream-scoped picture update path.
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) = 0;

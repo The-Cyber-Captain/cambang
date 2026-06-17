@@ -79,7 +79,12 @@ int main() {
   mismatched_cpu_request.primary_backing_kind = ProducerBackingKind::GPU;
   mismatched_cpu_request.primary_backing_artifact = std::make_shared<int>(120);
   assert(!store.retain_frame(mismatched_cpu_request, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0, requested_cpu));
+  FrameView provider_echo_only_request = stream_frame;
+  provider_echo_only_request.stream_id = 121;
+  provider_echo_only_request.requested_retained_plan = requested_cpu;
+  assert(!store.retain_frame(provider_echo_only_request, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0));
   assert(!store.get_latest_stream_result(120));
+  assert(!store.get_latest_stream_result(121));
 
   auto stream_result = store.get_latest_stream_result(20);
   assert(stream_result);
@@ -95,12 +100,12 @@ int main() {
   assert(!stream_result->access_posture.has_retained_gpu_backing);
   const uint64_t cpu_stream_posture_id = stream_result->access_posture.posture_id;
 
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1235, kStreamEpochA, 0);
+  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1235, kStreamEpochA, 0, requested_cpu);
   auto repeated_cpu_stream_result = store.get_latest_stream_result(20);
   assert(repeated_cpu_stream_result);
   assert(repeated_cpu_stream_result->access_posture.posture_id == cpu_stream_posture_id);
 
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1236, kStreamEpochB, 0);
+  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1236, kStreamEpochB, 0, requested_cpu);
   auto restarted_cpu_stream_result = store.get_latest_stream_result(20);
   assert(restarted_cpu_stream_result);
   assert(restarted_cpu_stream_result->access_posture.posture_id != cpu_stream_posture_id);
@@ -132,7 +137,7 @@ int main() {
   gpu_materializable_stream_frame.stream_id = 23;
   gpu_materializable_stream_frame.retained_gpu_backing_descriptor.valid = true;
   gpu_materializable_stream_frame.retained_gpu_backing_descriptor.materialization_available = true;
-  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1238, kStreamEpochA, 0);
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1238, kStreamEpochA, 0, requested_gpu_no_sidecar);
 
   auto gpu_materializable_stream_result = store.get_latest_stream_result(23);
   assert(gpu_materializable_stream_result);
@@ -159,13 +164,13 @@ int main() {
   const uint64_t gpu_materializable_posture_id = gpu_materializable_stream_result->access_posture.posture_id;
 
   gpu_materializable_stream_frame.primary_backing_artifact = std::make_shared<int>(45);
-  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1239, kStreamEpochA, 0);
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1239, kStreamEpochA, 0, requested_gpu_no_sidecar);
   auto repeated_gpu_materializable_stream_result = store.get_latest_stream_result(23);
   assert(repeated_gpu_materializable_stream_result);
   assert(repeated_gpu_materializable_stream_result->access_posture.posture_id == gpu_materializable_posture_id);
 
   gpu_materializable_stream_frame.retained_gpu_backing_descriptor.materialization_available = false;
-  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1240, kStreamEpochA, 0);
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1240, kStreamEpochA, 0, requested_gpu_no_sidecar);
   auto transitioned_gpu_stream_result = store.get_latest_stream_result(23);
   assert(transitioned_gpu_stream_result);
   assert(transitioned_gpu_stream_result->access_posture.posture_id != gpu_materializable_posture_id);
@@ -201,7 +206,7 @@ int main() {
   assert(!store.get_latest_stream_result(20));
   assert(!store.is_stream_display_demand_active(20, 1'150'000'000ull));
 
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1235, kStreamEpochA, 0);
+  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1235, kStreamEpochA, 0, requested_cpu);
   assert(store.get_latest_stream_result(20));
   store.mark_stream_display_demand(20, 3'000'000'000ull);
   assert(store.is_stream_display_demand_active(20, 3'010'000'000ull));
@@ -216,7 +221,7 @@ int main() {
   capture_b.stream_id = 0;
   capture_b.capture_id = 77;
   capture_b.device_instance_id = 101;
-  store.retain_frame(capture_b, std::nullopt, 2001, 0, kCaptureEpochA);
+  store.retain_frame(capture_b, std::nullopt, 2001, 0, kCaptureEpochA, {}, requested_cpu);
 
   auto capture_result = store.get_capture_result(77, 100);
   assert(capture_result);
@@ -236,14 +241,14 @@ int main() {
 
   FrameView capture_a_second = capture_a;
   capture_a_second.capture_id = 79;
-  store.retain_frame(capture_a_second, std::nullopt, 2008, 0, kCaptureEpochA);
+  store.retain_frame(capture_a_second, std::nullopt, 2008, 0, kCaptureEpochA, {}, requested_cpu);
   auto capture_result_second = store.get_capture_result(79, 100);
   assert(capture_result_second);
   assert(capture_result_second->default_image.access_posture.posture_id == capture_default_posture_id);
 
   FrameView capture_a_reconfigured = capture_a;
   capture_a_reconfigured.capture_id = 80;
-  store.retain_frame(capture_a_reconfigured, std::nullopt, 2009, 0, kCaptureEpochA + 1);
+  store.retain_frame(capture_a_reconfigured, std::nullopt, 2009, 0, kCaptureEpochA + 1, {}, requested_cpu);
   auto capture_result_reconfigured = store.get_capture_result(80, 100);
   assert(capture_result_reconfigured);
   assert(capture_result_reconfigured->default_image.access_posture.posture_id != capture_default_posture_id);
@@ -287,7 +292,7 @@ int main() {
   bracket.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
   bracket.capture_timestamp_ns = 2002;
   bracket.payload = capture_result->default_image.payload;
-  assert(store.append_additional_capture_image(77, 100, bracket, kCaptureEpochA));
+  assert(store.append_additional_capture_image(77, 100, bracket, kCaptureEpochA, requested_cpu));
 
   auto capture_result_with_bracket = store.get_capture_result(77, 100);
   assert(capture_result_with_bracket);
@@ -314,27 +319,27 @@ int main() {
   bad_role.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
   bad_role.capture_timestamp_ns = 2003;
   bad_role.payload = capture_result_with_bracket->default_image.payload;
-  assert(!store.append_additional_capture_image(77, 100, bad_role));
+  assert(!store.append_additional_capture_image(77, 100, bad_role, kCaptureEpochA, requested_cpu));
 
   CoreCaptureResultData::ImageMemberData bad_payload{};
   bad_payload.image_member_index = 2;
   bad_payload.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
   bad_payload.capture_timestamp_ns = 2004;
   bad_payload.payload = CoreResultPayloadCpuPacked{};
-  assert(!store.append_additional_capture_image(77, 100, bad_payload));
+  assert(!store.append_additional_capture_image(77, 100, bad_payload, kCaptureEpochA, requested_cpu));
   CoreCaptureResultData::ImageMemberData out_of_order{};
   out_of_order.image_member_index = 3;
   out_of_order.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
   out_of_order.capture_timestamp_ns = 2005;
   out_of_order.payload = capture_result_with_bracket->default_image.payload;
-  assert(!store.append_additional_capture_image(77, 100, out_of_order));
+  assert(!store.append_additional_capture_image(77, 100, out_of_order, kCaptureEpochA, requested_cpu));
   CoreCaptureResultData::ImageMemberData duplicate_index{};
   duplicate_index.image_member_index = 1;
   duplicate_index.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
   duplicate_index.capture_timestamp_ns = 2006;
   duplicate_index.payload = capture_result_with_bracket->default_image.payload;
-  assert(!store.append_additional_capture_image(77, 100, duplicate_index));
-  assert(!store.append_additional_capture_image(999, 100, bracket));
+  assert(!store.append_additional_capture_image(77, 100, duplicate_index, kCaptureEpochA, requested_cpu));
+  assert(!store.append_additional_capture_image(999, 100, bracket, kCaptureEpochA, requested_cpu));
 
   auto capture_set = store.get_capture_result_set(77);
   assert(capture_set.size() == 2);
@@ -345,7 +350,7 @@ int main() {
 
   // mailbox/result independence smoke proxy: result path exists without a sink.
   CoreResultStore no_mailbox_store;
-  no_mailbox_store.retain_frame(stream_frame, StreamIntent::PREVIEW, 111);
+  no_mailbox_store.retain_frame(stream_frame, StreamIntent::PREVIEW, 111, 1, 0, requested_cpu);
   assert(no_mailbox_store.get_latest_stream_result(20));
 
   std::cout << "PASS core_result_path_smoke\n";

@@ -387,11 +387,11 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
                                    uint64_t capture_applied_access_posture_epoch,
                                    CoreRetainedProductionPlan stream_requested_retained_plan,
                                    CoreRetainedProductionPlan capture_requested_retained_plan) {
-  if (!stream_requested_retained_plan.valid && frame.requested_retained_plan.valid) {
-    stream_requested_retained_plan = frame.requested_retained_plan;
+  if (frame.stream_id != 0 && !stream_requested_retained_plan.valid) {
+    return false;
   }
-  if (!capture_requested_retained_plan.valid && frame.requested_retained_plan.valid) {
-    capture_requested_retained_plan = frame.requested_retained_plan;
+  if (frame.capture_id != 0 && !capture_requested_retained_plan.valid) {
+    return false;
   }
   const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
   uint64_t payload_copy_ns = 0;
@@ -537,6 +537,9 @@ bool CoreResultStore::append_additional_capture_image(
     CoreCaptureResultData::ImageMemberData image_member,
     uint64_t capture_applied_access_posture_epoch,
     CoreRetainedProductionPlan capture_requested_retained_plan) {
+  if (!capture_requested_retained_plan.valid) {
+    return false;
+  }
   const uint64_t append_begin_ns = capture_latency_trace_now_ns();
   const uint32_t image_member_index = image_member.image_member_index;
   const size_t payload_bytes = image_member.payload.size_bytes();
@@ -613,8 +616,8 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
     const FrameView& frame,
     CoreCaptureResultData::ImageMemberData& out_member,
     CoreRetainedProductionPlan requested_retained_plan) {
-  if (!requested_retained_plan.valid && frame.requested_retained_plan.valid) {
-    requested_retained_plan = frame.requested_retained_plan;
+  if (!requested_retained_plan.valid) {
+    return false;
   }
   const bool has_cpu_payload = CoreResultStore::has_cpu_packed_payload(frame);
   const CoreRetainedBackingPlan plan = build_retained_backing_plan_from_requested(requested_retained_plan, frame, has_cpu_payload);

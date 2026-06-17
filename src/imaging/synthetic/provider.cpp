@@ -1163,6 +1163,41 @@ ProviderResult SyntheticProvider::stop_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
+ProviderResult SyntheticProvider::update_stream_retained_production_plan(
+    uint64_t stream_id,
+    CoreRetainedProductionPlan requested_retained_plan) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (!requested_retained_plan.valid) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end() || !it->second.created) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  StreamState& s = it->second;
+  const ProducerBackingCapabilities runtime_truth =
+      query_stream_producer_capabilities_(s.req.profile, s.picture);
+  if (!runtime_truth.viable(requested_retained_plan.posture)) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  s.req.requested_retained_plan = requested_retained_plan;
+  s.resolved_output_form_mode = requested_retained_plan.primary_cpu()
+      ? SyntheticProducerOutputFormMode::CpuOnly
+      : (requested_retained_plan.retain_cpu_sidecar()
+          ? SyntheticProducerOutputFormMode::CpuAndGpu
+          : SyntheticProducerOutputFormMode::GpuOnly);
+  s.prefer_gpu_backing =
+      s.resolved_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
+      s.resolved_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
+  if (!s.prefer_gpu_backing) {
+    release_stream_live_gpu_backing_(s);
+  }
+  return ProviderResult::success();
+}
+
 ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);

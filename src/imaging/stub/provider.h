@@ -74,6 +74,9 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
       const CaptureProfile& profile,
       const PictureConfig& picture) override;
   ProviderResult stop_stream(uint64_t stream_id) override;
+  ProviderResult update_stream_retained_production_plan(
+      uint64_t stream_id,
+      CoreRetainedProductionPlan requested_retained_plan) override;
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;

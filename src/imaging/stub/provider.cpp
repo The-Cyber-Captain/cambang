@@ -551,6 +551,28 @@ ProviderResult StubProvider::stop_stream(uint64_t stream_id) {
   return ProviderResult::success();
 }
 
+ProviderResult StubProvider::update_stream_retained_production_plan(
+    uint64_t stream_id,
+    CoreRetainedProductionPlan requested_retained_plan) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (!requested_retained_plan.valid) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto st_it = streams_.find(stream_id);
+  if (st_it == streams_.end() || !st_it->second.created) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  const ProducerBackingCapabilities caps =
+      stream_backing_capabilities(st_it->second.req.profile, st_it->second.picture);
+  if (!caps.viable(requested_retained_plan.posture)) {
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+  st_it->second.req.requested_retained_plan = requested_retained_plan;
+  return ProviderResult::success();
+}
+
 ProviderResult StubProvider::set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);

@@ -1528,7 +1528,7 @@ void CamBANGServer::_calibrate_live_retained_result_access_() {
       continue;
     }
     SharedStreamResultData result = runtime_.get_latest_stream_result(stream.stream_id);
-    retained_result_access_calibration::calibrate_stream_result(result);
+    retained_result_access_calibration::calibrate_stream_result(result, &runtime_);
   }
 
   for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
@@ -1537,7 +1537,7 @@ void CamBANGServer::_calibrate_live_retained_result_access_() {
     }
     SharedCaptureResultData result =
         runtime_.get_capture_result(session.last_capture_id, session.device_instance_id);
-    retained_result_access_calibration::calibrate_capture_result(result);
+    retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
   }
 
   for (const RigState& rig : latest_->rigs) {
@@ -1546,7 +1546,7 @@ void CamBANGServer::_calibrate_live_retained_result_access_() {
     }
     std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(rig.last_capture_id);
     for (const SharedCaptureResultData& result : results) {
-      retained_result_access_calibration::calibrate_capture_result(result);
+      retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
     }
   }
 }

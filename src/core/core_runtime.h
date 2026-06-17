@@ -355,6 +355,27 @@ enum class TryCloseDeviceStatus : uint8_t {
   const CoreStreamRegistry::StreamRecord* stream_record(uint64_t stream_id) const noexcept {
     return streams_.find(stream_id);
   }
+  const CoreDeviceRegistry::DeviceRecord* device_record(uint64_t device_instance_id) const noexcept {
+    return devices_.find(device_instance_id);
+  }
+
+  // Narrow internal chooser-evidence handoff. Godot-side retained-result
+  // calibration reports structural/support truth and any measured to_image cost
+  // back to Core so the measured evaluator can settle requested vs steady
+  // retained-production posture without inventing a separate benchmarking
+  // subsystem.
+  void report_stream_retained_to_image_observation(
+      uint64_t stream_id,
+      uint64_t posture_id,
+      ResultCapability provisional_to_image,
+      bool has_normalized_cost,
+      uint64_t normalized_cost_ns_per_byte);
+  void report_capture_retained_to_image_observation(
+      uint64_t device_instance_id,
+      uint64_t posture_id,
+      ResultCapability provisional_to_image,
+      bool has_normalized_cost,
+      uint64_t normalized_cost_ns_per_byte);
 
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 
@@ -459,6 +480,28 @@ private:
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
       uint64_t capture_id);
+  bool build_effective_capture_request_without_retained_plan_(
+      uint64_t device_instance_id,
+      CaptureRequest& out) const;
+  bool refresh_stream_retained_plan_state_(
+      uint64_t stream_id,
+      bool apply_to_provider,
+      bool requested_bump_access_posture_epoch);
+  bool refresh_capture_retained_plan_state_(
+      uint64_t device_instance_id,
+      bool requested_bump_access_posture_epoch);
+  void handle_stream_retained_to_image_observation_(
+      uint64_t stream_id,
+      uint64_t posture_id,
+      ResultCapability provisional_to_image,
+      bool has_normalized_cost,
+      uint64_t normalized_cost_ns_per_byte);
+  void handle_capture_retained_to_image_observation_(
+      uint64_t device_instance_id,
+      uint64_t posture_id,
+      ResultCapability provisional_to_image,
+      bool has_normalized_cost,
+      uint64_t normalized_cost_ns_per_byte);
   void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
@@ -499,6 +542,25 @@ private:
 
   std::deque<ProviderToCoreCommand> provider_facts_;
   size_t provider_capture_facts_queued_ = 0;
+
+  struct MeasuredPlanEvidence {
+    bool observed = false;
+    bool has_normalized_cost = false;
+    uint64_t normalized_cost_ns_per_byte = 0;
+    ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
+  };
+
+  struct RetainedPlanEvaluatorState {
+    CoreProductionIntent intent = CoreProductionIntent::Default;
+    bool active = false;
+    uint8_t candidate_count = 0;
+    uint8_t current_candidate_index = 0;
+    CoreRetainedProductionPlan candidate_sequence[2]{};
+    MeasuredPlanEvidence evidence[3]{};
+  };
+
+  std::map<uint64_t, RetainedPlanEvaluatorState> stream_retained_plan_evaluators_;
+  std::map<uint64_t, RetainedPlanEvaluatorState> capture_retained_plan_evaluators_;
 
   struct CaptureStreamPreemptionRecord {
     uint64_t capture_id = 0;

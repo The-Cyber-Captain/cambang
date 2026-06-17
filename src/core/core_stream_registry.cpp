@@ -7,6 +7,11 @@
 namespace cambang {
 
 namespace {
+bool same_retained_plan(CoreRetainedProductionPlan a,
+                        CoreRetainedProductionPlan b) noexcept {
+  return a.valid == b.valid && (!a.valid || a.posture == b.posture);
+}
+
 void apply_stream_started(CoreStreamRegistry::StreamRecord& rec, uint64_t access_posture_epoch) noexcept {
   rec.started = true;
   rec.last_stop_origin = CoreStreamRegistry::StopOrigin::None;
@@ -45,7 +50,9 @@ uint64_t CoreStreamRegistry::allocate_access_posture_epoch() noexcept {
   return epoch == 0 ? 1 : epoch;
 }
 
-bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective) {
+bool CoreStreamRegistry::declare_stream_effective(
+    const StreamRequest& effective,
+    CoreRetainedProductionPlan steady_retained_plan) {
   if (effective.stream_id == 0) return false;
   auto& rec = streams_[effective.stream_id];
   rec.stream_id = effective.stream_id;
@@ -56,7 +63,7 @@ bool CoreStreamRegistry::declare_stream_effective(const StreamRequest& effective
   rec.profile = effective.profile;
   rec.picture = effective.picture;
   rec.requested_retained_plan = effective.requested_retained_plan;
-  rec.steady_retained_plan = effective.requested_retained_plan;
+  rec.steady_retained_plan = steady_retained_plan;
   // created/started are driven by provider callbacks and core-directed
   // synchronous lifecycle reconciliation.
   return true;
@@ -186,6 +193,38 @@ bool CoreStreamRegistry::set_picture(uint64_t stream_id, const PictureConfig& pi
   if (it == streams_.end()) return false;
   it->second.picture = picture;
   it->second.access_posture_epoch = allocate_access_posture_epoch();
+  return true;
+}
+
+bool CoreStreamRegistry::set_requested_retained_plan(
+    uint64_t stream_id,
+    CoreRetainedProductionPlan requested_retained_plan,
+    bool bump_access_posture_epoch) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  auto& rec = it->second;
+  const bool changed = !same_retained_plan(rec.requested_retained_plan,
+                                           requested_retained_plan);
+  rec.requested_retained_plan = requested_retained_plan;
+  if ((changed && bump_access_posture_epoch) || rec.access_posture_epoch == 0) {
+    rec.access_posture_epoch = allocate_access_posture_epoch();
+  }
+  return true;
+}
+
+bool CoreStreamRegistry::set_steady_retained_plan(
+    uint64_t stream_id,
+    CoreRetainedProductionPlan steady_retained_plan) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  it->second.steady_retained_plan = steady_retained_plan;
+  return true;
+}
+
+bool CoreStreamRegistry::clear_steady_retained_plan(uint64_t stream_id) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) return false;
+  it->second.steady_retained_plan = CoreRetainedProductionPlan{};
   return true;
 }
 

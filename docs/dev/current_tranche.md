@@ -10,7 +10,9 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The retained-result access calibration/classification tranche is implemented and remains accepted.
 
-The higher-level intent-aware candidate-posture evaluator/chooser tranche is now also implemented in source, but is not yet accepted as successful. The active focus shifts from chooser implementation to truthful validation of chooser outcomes and, if needed, creation of a narrow evaluation-choice verification harness.
+The currently landed chooser implementation is partial rather than accepted. Useful groundwork already exists in source: the agreed internal posture vocabulary, requested-plan plumbing through stream/capture/provider-delivered results, provider-capability distinctions for the three settled posture shapes, and the requested-vs-steady storage seam.
+
+The immediate focus is to complete the missing measured evaluator lifecycle so Core can truthfully drive bounded posture evaluation and steady-posture settlement. Do not redesign the architecture, expand public diagnostics, or introduce a broad benchmarking/policy subsystem in this tranche.
 
 Important settled state:
 
@@ -50,17 +52,23 @@ Settled chooser direction for this tranche:
 
 ## Immediate implementation direction
 
-The higher-level intent-aware candidate-posture evaluator/chooser is now implemented in source.
+Treat the landed chooser work as a partial implementation, not as finished evaluator behaviour.
 
-Implemented chooser direction:
+What already exists and should be preserved unless source inspection disproves it:
 
 * intent states are `Default` and `Stream-active`;
 * posture shapes are `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`;
 * sidecar retention is optional and must earn its keep;
-* `Default` optimizes for measured `to_image()` / `to_image_member()` behaviour;
-* `Stream-active` preserves the preferred `get_display_view()` path first, then uses measured `to_image()` behaviour to decide whether a CPU sidecar earns its keep;
-* the chooser reuses the existing retained-result measurement seam rather than adding a broad benchmark subsystem;
-* when evidence is needed, Core requests bounded evaluation postures one at a time; Provider executes the currently requested posture; `CoreResultStore` validates against the currently requested posture; once enough evidence exists, Core records a steady posture until expiry/rerun.
+* requested retained-plan carriage already exists through Core requests and provider-delivered results;
+* provider capability truth already distinguishes the viable settled posture shapes;
+* the chooser should continue reusing the existing retained-result measurement seam rather than adding a broad benchmark subsystem.
+
+Immediate tranche goal:
+
+* complete the missing Core-owned measured evaluator lifecycle;
+* keep requested posture distinct from steady posture until evaluation actually settles when multiple viable postures need evidence;
+* make `CoreResultStore` validate against Core-held requested posture/plan rather than provider echo fallback;
+* use the smallest truthful internal provider-control seam needed for bounded one-at-a-time evaluation posture execution.
 
 Current checkpoint status:
 

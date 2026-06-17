@@ -221,6 +221,17 @@ ProducerBackingCapabilities ProviderBroker::capture_backing_capabilities(
                  : ProducerBackingCapabilities{false, false};
 }
 
+ProviderResult ProviderBroker::update_stream_retained_production_plan(
+    uint64_t stream_id,
+    CoreRetainedProductionPlan requested_retained_plan) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  if (!active_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  return active_->update_stream_retained_production_plan(
+      stream_id, requested_retained_plan);
+}
+
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
   switch (mode) {
     case RuntimeMode::platform_backed: {
