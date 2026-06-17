@@ -66,6 +66,58 @@ static const char* mode_to_cstr(RuntimeMode m) noexcept {
   }
 }
 
+
+static godot::String core_production_intent_name(CoreProductionIntent intent) {
+  switch (intent) {
+    case CoreProductionIntent::Default:
+      return "Default";
+    case CoreProductionIntent::StreamActive:
+      return "Stream-active";
+  }
+  return "unknown";
+}
+
+static godot::String core_production_posture_name(CoreRetainedProductionPlan plan) {
+  if (!plan.valid) {
+    return "";
+  }
+  switch (plan.posture) {
+    case CoreProductionPostureShape::CpuPrimary:
+      return "CPU-primary";
+    case CoreProductionPostureShape::GpuPrimaryNoCpuSidecar:
+      return "GPU-primary, no CPU sidecar";
+    case CoreProductionPostureShape::GpuPrimaryWithCpuSidecar:
+      return "GPU-primary, with CPU sidecar";
+  }
+  return "unknown";
+}
+
+static godot::Dictionary core_retained_plan_to_dictionary(CoreRetainedProductionPlan plan) {
+  godot::Dictionary d;
+  d["valid"] = plan.valid;
+  d["posture"] = core_production_posture_name(plan);
+  return d;
+}
+
+static godot::Dictionary chooser_report_to_dictionary(const CoreRetainedPlanChooserReport& report) {
+  godot::Dictionary d;
+  d["target_kind"] = report.target_kind == CoreRetainedPlanChooserReport::TargetKind::Stream
+      ? godot::String("stream")
+      : godot::String("capture");
+  d["target_id"] = static_cast<uint64_t>(report.target_id);
+  d["intent"] = core_production_intent_name(report.intent);
+  d["requested"] = core_retained_plan_to_dictionary(report.requested);
+  d["steady"] = core_retained_plan_to_dictionary(report.steady);
+  d["evaluator_active"] = report.evaluator_active;
+  d["current_candidate_index"] = static_cast<int>(report.current_candidate_index);
+  godot::Array candidates;
+  for (const CoreRetainedProductionPlan& candidate : report.candidate_sequence) {
+    candidates.append(core_retained_plan_to_dictionary(candidate));
+  }
+  d["candidate_sequence"] = candidates;
+  return d;
+}
+
 static bool parse_synthetic_role_int(int value, SyntheticRole& out_role) noexcept {
   switch (value) {
     case static_cast<int>(SyntheticRole::Nominal):
@@ -1619,6 +1671,13 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d.set(
       godot::Variant(godot::String("result_access_timing_evidence")),
       godot::Variant(result_access_cost_evidence::snapshot()));
+  godot::Array chooser_reports;
+  for (const CoreRetainedPlanChooserReport& report : runtime_.retained_plan_chooser_reports()) {
+    chooser_reports.append(chooser_report_to_dictionary(report));
+  }
+  d.set(
+      godot::Variant(godot::String("retained_plan_chooser_reports")),
+      godot::Variant(chooser_reports));
   return d;
 }
 

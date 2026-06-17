@@ -46,7 +46,39 @@ var _baseline_gens: Array[int] = []
 var _display_refs: Array = []
 
 
+
+func _synthetic_producer_output_form_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default"))
+
+
+func _synthetic_producer_output_form_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-producer-output-form="
+	var found := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := str(arg)
+		if not text.begins_with(PREFIX):
+			continue
+		var value := text.substr(PREFIX.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_producer_output_form_effective_selection() -> String:
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_producer_output_form_setting()
+
+
+func _log_maintainer_config_probe() -> void:
+	print("Synthetic producer output-form stored project setting: %s" % _synthetic_producer_output_form_setting())
+	print("Synthetic producer output-form effective runtime selection: %s" % _synthetic_producer_output_form_effective_selection())
+
+
 func _ready() -> void:
+	_log_maintainer_config_probe()
 	_start_ms = Time.get_ticks_msec()
 	if not CamBANGServer.state_published.is_connected(_on_state_published):
 		CamBANGServer.state_published.connect(_on_state_published)
@@ -137,10 +169,21 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	var stream_result = await _wait_for_stream_result(stream_id, label)
 	if _done:
 		return {}
+	var initial_stream_chooser := _get_stream_chooser_report(stream_id)
+	_print_chooser_report("%s_stream_initial" % label, initial_stream_chooser)
+	_assert_multi_candidate_evaluation_started(initial_stream_chooser, label, "stream")
+	if _done:
+		return {}
+
 	await _exercise_stream_access_without_public_to_image(stream_id, stream_result, label)
 	if _done:
 		return {}
 	_step_ok("%s stream access-only evidence seeded" % label)
+
+	var progressed_stream_chooser := await _wait_for_chooser_progression(stream_id, label, "stream")
+	if _done:
+		return {}
+	_print_chooser_report("%s_stream_progressed" % label, progressed_stream_chooser)
 
 	await _require_default_still_profile_visible(device_instance_id, label)
 	if _done:
@@ -156,6 +199,13 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	_step_ok("%s capture access-only evidence seeded" % label)
 
 	var evidence := await _wait_for_access_only_measurement_evidence(label)
+	if _done:
+		return {}
+	var steady_stream_chooser := await _wait_for_chooser_steady(stream_id, label, "stream")
+	if _done:
+		return {}
+	_print_chooser_report("%s_stream_steady" % label, steady_stream_chooser)
+	await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, label, "stream")
 	if _done:
 		return {}
 	_assert_expected_evidence_family(evidence, label)
@@ -583,6 +633,11 @@ func _stop_and_verify_reset() -> void:
 			_require(evidence.is_empty(), "post-stop result_access_timing_evidence was not cleared by stop()")
 			if _done:
 				return
+			var chooser_reports := _get_retained_plan_chooser_reports()
+			print("CHOOSER: post_stop %s" % JSON.stringify(chooser_reports))
+			_require(chooser_reports.is_empty(), "post-stop retained_plan_chooser_reports was not cleared by stop()")
+			if _done:
+				return
 			_step_ok("stop/reset verified")
 			return
 	_fail("stop/reset: get_state_snapshot() never returned NIL after stop()")
@@ -662,6 +717,128 @@ func _get_capture_progress_snapshot(device_instance_id: int) -> Dictionary:
 	if bool(session_progress.get("available", false)):
 		return session_progress
 	return {"available": false, "source": "none"}
+
+
+
+func _get_retained_plan_chooser_reports() -> Array:
+	var metrics = CamBANGServer.get_synthetic_metrics_snapshot()
+	if typeof(metrics) != TYPE_DICTIONARY:
+		return []
+	var reports = metrics.get("retained_plan_chooser_reports", [])
+	if typeof(reports) != TYPE_ARRAY:
+		return []
+	return reports
+
+
+func _get_stream_chooser_report(stream_id: int) -> Dictionary:
+	for report_v in _get_retained_plan_chooser_reports():
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		if str(report.get("target_kind", "")) == "stream" and int(report.get("target_id", 0)) == stream_id:
+			return report
+	return {}
+
+
+func _chooser_posture(report: Dictionary, key: String) -> String:
+	var plan_v = report.get(key, {})
+	if typeof(plan_v) != TYPE_DICTIONARY:
+		return ""
+	return str((plan_v as Dictionary).get("posture", ""))
+
+
+func _chooser_plan_valid(report: Dictionary, key: String) -> bool:
+	var plan_v = report.get(key, {})
+	if typeof(plan_v) != TYPE_DICTIONARY:
+		return false
+	return bool((plan_v as Dictionary).get("valid", false))
+
+
+func _print_chooser_report(tag: String, report: Dictionary) -> void:
+	print("CHOOSER: %s %s" % [tag, JSON.stringify(report)])
+
+
+func _assert_multi_candidate_evaluation_started(report: Dictionary, label: String, target_label: String) -> void:
+	_require(not report.is_empty(), "%s: %s chooser report missing" % [label, target_label])
+	if _done:
+		return
+	var candidates: Array = report.get("candidate_sequence", [])
+	_require(candidates.size() > 1, "%s: %s chooser did not expose a multi-candidate evaluation path" % [label, target_label])
+	if _done:
+		return
+	_require(bool(report.get("evaluator_active", false)), "%s: %s evaluator was not active for multi-candidate path" % [label, target_label])
+	if _done:
+		return
+	_require(_chooser_plan_valid(report, "requested"), "%s: %s requested posture missing during evaluation" % [label, target_label])
+	if _done:
+		return
+	_require(not _chooser_plan_valid(report, "steady"), "%s: %s steady posture should be unset while evaluation starts" % [label, target_label])
+	if _done:
+		return
+	_require(_chooser_posture(report, "requested") != _chooser_posture(report, "steady"), "%s: %s requested posture did not differ from steady posture during evaluation" % [label, target_label])
+	_step_ok("%s %s chooser multi-candidate evaluation started with requested distinct from steady" % [label, target_label])
+
+
+func _wait_for_chooser_progression(stream_id: int, label: String, target_label: String) -> Dictionary:
+	var previous_index := 0
+	for _i in range(STREAM_RESULT_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var report := _get_stream_chooser_report(stream_id)
+		if report.is_empty():
+			continue
+		var idx := int(report.get("current_candidate_index", 0))
+		if idx <= previous_index:
+			continue
+		_require(idx == previous_index + 1, "%s: %s chooser progressed by more than one candidate (%d -> %d)" % [label, target_label, previous_index, idx])
+		if _done:
+			return {}
+		_require(bool(report.get("evaluator_active", false)), "%s: %s chooser progression should still be evaluator-active" % [label, target_label])
+		if _done:
+			return {}
+		_step_ok("%s %s chooser progressed one candidate at a time" % [label, target_label])
+		return report
+	_fail("%s: timed out waiting for %s chooser one-at-a-time progression" % [label, target_label])
+	return {}
+
+
+func _wait_for_chooser_steady(stream_id: int, label: String, target_label: String) -> Dictionary:
+	for _i in range(STREAM_RESULT_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var report := _get_stream_chooser_report(stream_id)
+		if report.is_empty():
+			continue
+		if bool(report.get("evaluator_active", false)):
+			continue
+		if not _chooser_plan_valid(report, "steady"):
+			continue
+		_require(_chooser_posture(report, "requested") == _chooser_posture(report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+		if _done:
+			return {}
+		_step_ok("%s %s chooser reached steady posture" % [label, target_label])
+		return report
+	_fail("%s: timed out waiting for %s chooser steady posture settlement" % [label, target_label])
+	return {}
+
+
+func _assert_chooser_steady_reused(stream_id: int, steady_report: Dictionary, label: String, target_label: String) -> void:
+	var steady_posture := _chooser_posture(steady_report, "steady")
+	for _i in range(3):
+		await get_tree().process_frame
+		var report := _get_stream_chooser_report(stream_id)
+		_require(not report.is_empty(), "%s: %s chooser report missing while checking steady reuse" % [label, target_label])
+		if _done:
+			return
+		_require(not bool(report.get("evaluator_active", false)), "%s: %s evaluator reactivated while checking steady reuse" % [label, target_label])
+		if _done:
+			return
+		_require(_chooser_posture(report, "requested") == steady_posture and _chooser_posture(report, "steady") == steady_posture, "%s: %s steady posture was not reused" % [label, target_label])
+		if _done:
+			return
+	_step_ok("%s %s chooser steady posture reused" % [label, target_label])
 
 
 func _get_result_access_timing_evidence() -> Dictionary:

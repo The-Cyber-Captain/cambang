@@ -35,6 +35,23 @@
 
 namespace cambang {
 
+
+struct CoreRetainedPlanChooserReport {
+  enum class TargetKind : uint8_t {
+    Stream = 0,
+    Capture = 1,
+  };
+
+  TargetKind target_kind = TargetKind::Stream;
+  uint64_t target_id = 0;
+  CoreProductionIntent intent = CoreProductionIntent::Default;
+  CoreRetainedProductionPlan requested{};
+  CoreRetainedProductionPlan steady{};
+  bool evaluator_active = false;
+  uint8_t current_candidate_index = 0;
+  std::vector<CoreRetainedProductionPlan> candidate_sequence{};
+};
+
 enum class TrySetStreamPictureStatus : uint8_t {
   OK = 0,
   NotSupported = 1,
@@ -358,6 +375,8 @@ enum class TryCloseDeviceStatus : uint8_t {
   const CoreDeviceRegistry::DeviceRecord* device_record(uint64_t device_instance_id) const noexcept {
     return devices_.find(device_instance_id);
   }
+
+  std::vector<CoreRetainedPlanChooserReport> retained_plan_chooser_reports() const;
 
   // Narrow internal chooser-evidence handoff. Godot-side retained-result
   // calibration reports structural/support truth and any measured to_image cost
