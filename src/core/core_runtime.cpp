@@ -1058,6 +1058,56 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
 }
 
 
+
+std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_reports() const {
+  std::vector<CoreRetainedPlanChooserReport> out;
+  out.reserve(streams_.all().size() + devices_.all().size());
+
+  for (const auto& [stream_id, rec] : streams_.all()) {
+    CoreRetainedPlanChooserReport report{};
+    report.target_kind = CoreRetainedPlanChooserReport::TargetKind::Stream;
+    report.target_id = stream_id;
+    report.intent = CoreProductionIntent::StreamActive;
+    report.requested = rec.requested_retained_plan;
+    report.steady = rec.steady_retained_plan;
+    if (const auto it = stream_retained_plan_evaluators_.find(stream_id);
+        it != stream_retained_plan_evaluators_.end()) {
+      const RetainedPlanEvaluatorState& state = it->second;
+      report.intent = state.intent;
+      report.evaluator_active = state.active;
+      report.current_candidate_index = state.current_candidate_index;
+      report.candidate_sequence.reserve(state.candidate_count);
+      for (uint8_t i = 0; i < state.candidate_count; ++i) {
+        report.candidate_sequence.push_back(state.candidate_sequence[i]);
+      }
+    }
+    out.push_back(std::move(report));
+  }
+
+  for (const auto& [device_instance_id, rec] : devices_.all()) {
+    CoreRetainedPlanChooserReport report{};
+    report.target_kind = CoreRetainedPlanChooserReport::TargetKind::Capture;
+    report.target_id = device_instance_id;
+    report.intent = CoreProductionIntent::Default;
+    report.requested = rec.requested_retained_plan;
+    report.steady = rec.steady_retained_plan;
+    if (const auto it = capture_retained_plan_evaluators_.find(device_instance_id);
+        it != capture_retained_plan_evaluators_.end()) {
+      const RetainedPlanEvaluatorState& state = it->second;
+      report.intent = state.intent;
+      report.evaluator_active = state.active;
+      report.current_candidate_index = state.current_candidate_index;
+      report.candidate_sequence.reserve(state.candidate_count);
+      for (uint8_t i = 0; i < state.candidate_count; ++i) {
+        report.candidate_sequence.push_back(state.candidate_sequence[i]);
+      }
+    }
+    out.push_back(std::move(report));
+  }
+
+  return out;
+}
+
 void CoreRuntime::begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id) {
   assert(core_thread_.is_core_thread());
   if (capture_id == 0 || device_instance_id == 0) {

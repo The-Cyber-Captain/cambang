@@ -191,6 +191,16 @@ user runtime configuration and do not redefine provider-contract truth.
   - default: `display_demanded`
   - `always` is a maintainer eager-update comparison override
 
+
+Scene 68 (`68_inner_evidence_reset_verify`) now also uses the existing
+`CamBANGServer.get_synthetic_metrics_snapshot()` maintainer surface to report a
+minimal retained-plan chooser view under `retained_plan_chooser_reports`. This
+is a verification-only seam, not public API and not snapshot schema. The payload
+contains only the target kind/id, intent, requested posture, steady posture,
+evaluator-active flag, current candidate index, and candidate sequence needed by
+the scene to prove first-slice chooser lifecycle behaviour while continuing to
+use `result_access_timing_evidence` for retained-result measurement detail.
+
 Retained maintainer diagnostics:
 
 - `CAMBANG_DEV_SYNTH_TRIAGE_TRACE`
