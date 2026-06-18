@@ -226,6 +226,8 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	_assert_access_only_probe_contract(label, access_probe)
 	if _done:
 		return {}
+	_print_retained_plan_decision_summary(steady_stream_chooser, evidence, "stream")
+	_print_retained_plan_decision_summary(capture_chooser, evidence, "capture")
 	_step_ok("%s access-only evidence verified" % label)
 
 	return {
@@ -790,6 +792,92 @@ func _chooser_plan_valid(report: Dictionary, key: String) -> bool:
 
 func _print_chooser_report(tag: String, report: Dictionary) -> void:
 	print("CHOOSER: %s %s" % [tag, JSON.stringify(report)])
+
+
+func _chooser_candidate_postures(report: Dictionary) -> Array:
+	var postures: Array = []
+	var candidates_v = report.get("candidate_sequence", [])
+	if typeof(candidates_v) != TYPE_ARRAY:
+		return postures
+	for candidate_v in candidates_v:
+		if typeof(candidate_v) == TYPE_DICTIONARY:
+			var posture := str((candidate_v as Dictionary).get("posture", ""))
+			if posture != "":
+				postures.append(posture)
+		else:
+			var candidate_posture := str(candidate_v)
+			if candidate_posture != "":
+				postures.append(candidate_posture)
+	return postures
+
+
+func _chooser_selection_posture(report: Dictionary) -> String:
+	var steady_posture := _chooser_posture(report, "steady")
+	if _chooser_plan_valid(report, "steady") and steady_posture != "":
+		return steady_posture
+	if _chooser_plan_valid(report, "requested"):
+		return _chooser_posture(report, "requested")
+	return ""
+
+
+func _to_image_route_for_posture(posture: String) -> String:
+	match posture:
+		"CPU-primary":
+			return "cpu_packed"
+		"GPU-primary, no CPU sidecar":
+			return "gpu_synthetic_backing_materializer"
+		"GPU-primary, with CPU sidecar":
+			return "gpu_primary_cpu_sidecar"
+		_:
+			return ""
+
+
+func _compared_to_image_evidence(report: Dictionary, evidence: Dictionary, evidence_prefix: String) -> Array:
+	var compared: Array = []
+	for posture in _chooser_candidate_postures(report):
+		var route := _to_image_route_for_posture(str(posture))
+		if route == "":
+			continue
+		var key := "%s.%s" % [evidence_prefix, route]
+		if not evidence.has(key):
+			continue
+		var entry_v = evidence.get(key, {})
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = entry_v
+		compared.append({
+			"posture": str(posture),
+			"route": route,
+			"timing_field": "first_success_ns",
+			"ns": int(entry.get("first_success_ns", 0)),
+		})
+	return compared
+
+
+func _print_retained_plan_decision_summary(report: Dictionary, evidence: Dictionary, evidence_scope: String) -> void:
+	if report.is_empty():
+		return
+	var selection := _chooser_selection_posture(report)
+	if selection == "":
+		return
+	var candidates := _chooser_candidate_postures(report)
+	var mode := "single_viable_posture"
+	if candidates.size() > 1:
+		mode = "multiple_viable_postures"
+
+	var fields: Array = [
+		"intent=%s" % str(report.get("intent", "")),
+		"mode=%s" % mode,
+		"selection=%s" % JSON.stringify(selection),
+		"candidates=%s" % JSON.stringify(candidates),
+	]
+	if mode == "multiple_viable_postures":
+		var evidence_prefix := "%s_to_image" % evidence_scope
+		fields.append("to_image_metric=first_success_ns")
+		fields.append("compared_to_image=%s" % JSON.stringify(_compared_to_image_evidence(report, evidence, evidence_prefix)))
+	fields.append("stored_selection=%s" % _synthetic_producer_output_form_setting())
+	fields.append("effective_selection=%s" % _synthetic_producer_output_form_effective_selection())
+	print("RETAINED_PLAN_DECISION: %s" % " ".join(fields))
 
 
 func _assert_chooser_intent(report: Dictionary, label: String, target_label: String, expected_intent: String) -> void:
