@@ -182,7 +182,53 @@ Use this control for local validation of real result/backing/materialization
 routes and retained-plan behaviour. It must not be used to fabricate capability
 advertisement.
 
-### 4.x.2 Synthetic stream GPU/update maintainer controls
+### 4.x.2 Synthetic parent-context capability downgrade controls
+
+These controls are maintainer/verification aids only. They are Synthetic-only,
+internal, downgrade-only, and must not be treated as public API, platform
+provider configuration, or a second authority for the outer output-form
+envelope.
+
+- Project setting:
+  `cambang/maintainer/synthetic_stream_capability_downgrades`
+  - default/unset: empty
+  - host command-line runs may pass
+    `--cambang-synth-stream-capability-downgrades=...`
+  - startup feeds the command-line value through that same project-setting
+    authority path before provider construction
+  - condition grammar is `;`-separated entries of comma-separated `key=value`
+    pairs
+  - required key: `device=<hardware_id>`
+  - optional keys: `intent=preview|viewfinder`, `width=<u32>`,
+    `height=<u32>`, `format=<FOURCC-or-u32>`, `fps=<u32>`
+- Project setting:
+  `cambang/maintainer/synthetic_capture_capability_downgrades`
+  - default/unset: empty
+  - host command-line runs may pass
+    `--cambang-synth-capture-capability-downgrades=...`
+  - startup feeds the command-line value through that same project-setting
+    authority path before provider construction
+  - condition grammar is `;`-separated entries of comma-separated `key=value`
+    pairs
+  - required key: `device=<hardware_id>`
+  - optional keys: `width=<u32>`, `height=<u32>`,
+    `format=<FOURCC-or-u32>`, `bundle=default|multi`
+
+Behavior:
+
+- these conditions narrow only the **parent-context capability**
+- they do not change the truthful outer provider/runtime envelope reported by
+  `SyntheticProvider`
+- they may only narrow an effectively mixed context to `cpu_only`
+- they are inert when the outer envelope is already `cpu_only`
+- they are rejected as contradictory when `gpu_only` is the configured outer
+  envelope
+- stream conditions apply to stream-owned contexts
+- capture conditions apply to capture/`AcquisitionSession`-owned contexts
+- they are intended for deterministic verification of chooser consumption and
+  must not be used to fabricate capability truth
+
+### 4.x.3 Synthetic stream GPU/update maintainer controls
 
 These controls are maintainer/verification aids only. They are not product or
 user runtime configuration and do not redefine provider-contract truth.

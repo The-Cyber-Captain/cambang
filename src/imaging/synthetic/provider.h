@@ -69,6 +69,15 @@ public:
       const PictureConfig& picture) const noexcept override;
   ProducerBackingCapabilities capture_backing_capabilities(
       const CaptureRequest& req) const noexcept override;
+  ProducerBackingCapabilities stream_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+  ProducerBackingCapabilities capture_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) noexcept override;
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
@@ -159,6 +168,24 @@ private:
       const PictureConfig& picture) const noexcept;
   ProducerBackingCapabilities query_capture_producer_capabilities_(
       const CaptureRequest& req) const noexcept;
+  ProducerBackingCapabilities stream_parent_context_backing_capabilities_locked_(
+      uint64_t device_instance_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) const noexcept;
+  ProducerBackingCapabilities capture_parent_context_backing_capabilities_locked_(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) const noexcept;
+  ProducerBackingCapabilities apply_stream_capability_downgrade_conditions_locked_(
+      const char* hardware_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      ProducerBackingCapabilities outer_caps) const noexcept;
+  ProducerBackingCapabilities apply_capture_capability_downgrade_conditions_locked_(
+      const char* hardware_id,
+      const CaptureRequest& req,
+      ProducerBackingCapabilities outer_caps) const noexcept;
+  const char* resolve_hardware_id_for_device_locked_(uint64_t device_instance_id) const noexcept;
   bool choose_stream_gpu_preference_(ProducerBackingCapabilities capabilities) const noexcept;
   SyntheticProducerOutputFormMode resolve_producer_output_form_mode_(
       ProducerBackingCapabilities capabilities) const noexcept;

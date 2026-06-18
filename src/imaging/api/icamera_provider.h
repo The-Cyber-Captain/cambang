@@ -121,6 +121,29 @@ public:
     return ProducerBackingCapabilities{false, false};
   }
 
+  // Internal parent-context capability truth used by chooser/evaluator logic.
+  // These default to the provider/runtime envelope above; providers that can
+  // narrow a specific owning context without changing the truthful outer
+  // envelope should override them.
+  virtual ProducerBackingCapabilities stream_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept {
+    (void)device_instance_id;
+    (void)stream_id;
+    (void)intent;
+    return stream_backing_capabilities(profile, picture);
+  }
+
+  virtual ProducerBackingCapabilities capture_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) noexcept {
+    (void)device_instance_id;
+    return capture_backing_capabilities(req);
+  }
+
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
   virtual ProviderResult initialize(IProviderCallbacks* callbacks) = 0;

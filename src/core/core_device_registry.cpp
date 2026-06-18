@@ -73,6 +73,23 @@ bool CoreDeviceRegistry::set_capture_picture(uint64_t device_instance_id, const 
   return true;
 }
 
+bool CoreDeviceRegistry::set_backing_capabilities(
+    uint64_t device_instance_id,
+    ProducerBackingCapabilities runtime_backing_capabilities,
+    ProducerBackingCapabilities parent_context_backing_capabilities) {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end()) {
+    return false;
+  }
+  it->second.runtime_backing_capabilities = runtime_backing_capabilities;
+  it->second.parent_context_backing_capabilities =
+      parent_context_backing_capabilities;
+  return true;
+}
+
 bool CoreDeviceRegistry::set_requested_retained_plan(
     uint64_t device_instance_id,
     CoreRetainedProductionPlan requested_retained_plan,

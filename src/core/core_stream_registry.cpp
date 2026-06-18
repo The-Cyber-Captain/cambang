@@ -196,6 +196,20 @@ bool CoreStreamRegistry::set_picture(uint64_t stream_id, const PictureConfig& pi
   return true;
 }
 
+bool CoreStreamRegistry::set_backing_capabilities(
+    uint64_t stream_id,
+    ProducerBackingCapabilities runtime_backing_capabilities,
+    ProducerBackingCapabilities parent_context_backing_capabilities) {
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) {
+    return false;
+  }
+  it->second.runtime_backing_capabilities = runtime_backing_capabilities;
+  it->second.parent_context_backing_capabilities =
+      parent_context_backing_capabilities;
+  return true;
+}
+
 bool CoreStreamRegistry::set_requested_retained_plan(
     uint64_t stream_id,
     CoreRetainedProductionPlan requested_retained_plan,

@@ -17,7 +17,9 @@ config/icon="res://icon.svg"
 
 [cambang]
 
-maintainer/synthetic_producer_output_form="cpu_gpu"
+maintainer/synthetic_producer_output_form="runtime_default"
+maintainer/synthetic_stream_capability_downgrades=""
+maintainer/synthetic_capture_capability_downgrades=""
 
 [debug]
 

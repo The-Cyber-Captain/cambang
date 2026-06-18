@@ -764,6 +764,46 @@ bool CoreRuntime::build_effective_capture_request_without_retained_plan_(
       out.still_image_bundle, supports_multi_image);
 }
 
+bool CoreRuntime::resolve_stream_backing_capabilities_(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture,
+    ProducerBackingCapabilities& runtime_backing_capabilities,
+    ProducerBackingCapabilities& parent_context_backing_capabilities) {
+  assert(core_thread_.is_core_thread());
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return false;
+  }
+  runtime_backing_capabilities =
+      prov->stream_backing_capabilities(profile, picture);
+  parent_context_backing_capabilities =
+      prov->stream_parent_context_backing_capabilities(
+          device_instance_id, stream_id, intent, profile, picture);
+  return true;
+}
+
+bool CoreRuntime::resolve_capture_backing_capabilities_(
+    uint64_t device_instance_id,
+    const CaptureRequest& request,
+    ProducerBackingCapabilities& runtime_backing_capabilities,
+    ProducerBackingCapabilities& parent_context_backing_capabilities) {
+  assert(core_thread_.is_core_thread());
+
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  if (!prov) {
+    return false;
+  }
+  runtime_backing_capabilities = prov->capture_backing_capabilities(request);
+  parent_context_backing_capabilities =
+      prov->capture_parent_context_backing_capabilities(
+          device_instance_id, request);
+  return true;
+}
+
 bool CoreRuntime::refresh_stream_retained_plan_state_(
     uint64_t stream_id,
     bool apply_to_provider,
@@ -775,11 +815,23 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
   if (!prov || !rec) {
     return false;
   }
-  const ProducerBackingCapabilities caps =
-      prov->stream_backing_capabilities(rec->profile, rec->picture);
+  ProducerBackingCapabilities runtime_caps{};
+  ProducerBackingCapabilities parent_context_caps{};
+  if (!resolve_stream_backing_capabilities_(
+          rec->device_instance_id,
+          stream_id,
+          rec->intent,
+          rec->profile,
+          rec->picture,
+          runtime_caps,
+          parent_context_caps)) {
+    return false;
+  }
+  (void)streams_.set_backing_capabilities(
+      stream_id, runtime_caps, parent_context_caps);
   const RetainedPlanResetDecision decision =
       build_retained_plan_reset_decision(
-          CoreProductionIntent::StreamActive, caps);
+          CoreProductionIntent::StreamActive, parent_context_caps);
   if (!decision.requested.valid) {
     (void)streams_.set_requested_retained_plan(
         stream_id, CoreRetainedProductionPlan{}, requested_bump_access_posture_epoch);
@@ -815,10 +867,17 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
 
   if (apply_to_provider &&
       !same_retained_plan(previous_requested, decision.requested)) {
-    return prov->update_stream_retained_production_plan(
+    const bool ok = prov->update_stream_retained_production_plan(
                stream_id, decision.requested)
         .ok();
+    (void)refresh_capture_retained_plan_state_(
+        rec->device_instance_id,
+        /*requested_bump_access_posture_epoch=*/false);
+    return ok;
   }
+  (void)refresh_capture_retained_plan_state_(
+      rec->device_instance_id,
+      /*requested_bump_access_posture_epoch=*/false);
   return true;
 }
 
@@ -832,14 +891,41 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
           device_instance_id, effective)) {
     return false;
   }
-  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
-  if (!prov) {
+  ProducerBackingCapabilities runtime_caps{};
+  ProducerBackingCapabilities parent_context_caps{};
+  if (!resolve_capture_backing_capabilities_(
+          device_instance_id,
+          effective,
+          runtime_caps,
+          parent_context_caps)) {
     return false;
   }
-  const ProducerBackingCapabilities caps =
-      prov->capture_backing_capabilities(effective);
+  (void)devices_.set_backing_capabilities(
+      device_instance_id, runtime_caps, parent_context_caps);
+  for (const auto& [stream_id, stream_rec] : streams_.all()) {
+    (void)stream_id;
+    if (stream_rec.device_instance_id != device_instance_id ||
+        !stream_rec.created ||
+        !stream_rec.started ||
+        !stream_rec.requested_retained_plan.valid) {
+      continue;
+    }
+    (void)devices_.set_requested_retained_plan(
+        device_instance_id,
+        stream_rec.requested_retained_plan,
+        requested_bump_access_posture_epoch);
+    if (stream_rec.steady_retained_plan.valid) {
+      (void)devices_.set_steady_retained_plan(
+          device_instance_id, stream_rec.steady_retained_plan);
+    } else {
+      (void)devices_.clear_steady_retained_plan(device_instance_id);
+    }
+    capture_retained_plan_evaluators_.erase(device_instance_id);
+    return true;
+  }
   const RetainedPlanResetDecision decision =
-      build_retained_plan_reset_decision(CoreProductionIntent::Default, caps);
+      build_retained_plan_reset_decision(
+          CoreProductionIntent::Default, parent_context_caps);
   if (!decision.requested.valid) {
     (void)devices_.set_requested_retained_plan(
         device_instance_id,
@@ -929,6 +1015,9 @@ void CoreRuntime::handle_stream_retained_to_image_observation_(
           (void)prov->update_stream_retained_production_plan(
               stream_id, next_plan);
         }
+        (void)refresh_capture_retained_plan_state_(
+            rec->device_instance_id,
+            /*requested_bump_access_posture_epoch=*/false);
       }
     }
     return;
@@ -970,6 +1059,9 @@ void CoreRuntime::handle_stream_retained_to_image_observation_(
   }
   (void)streams_.set_steady_retained_plan(stream_id, chosen);
   stream_retained_plan_evaluators_.erase(state_it);
+  (void)refresh_capture_retained_plan_state_(
+      rec->device_instance_id,
+      /*requested_bump_access_posture_epoch=*/false);
 }
 
 void CoreRuntime::handle_capture_retained_to_image_observation_(
@@ -2090,17 +2182,29 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     effective.profile_version = effective_profile_version;
     effective.profile = has_request_profile ? request_profile_copy : tmpl.profile;
     effective.picture = has_request_picture ? request_picture_copy : tmpl.picture;
-    const ProducerBackingCapabilities caps =
-        p->stream_backing_capabilities(effective.profile, effective.picture);
+    ProducerBackingCapabilities runtime_caps{};
+    ProducerBackingCapabilities parent_context_caps{};
+    if (!resolve_stream_backing_capabilities_(
+            effective.device_instance_id,
+            effective.stream_id,
+            effective.intent,
+            effective.profile,
+            effective.picture,
+            runtime_caps,
+            parent_context_caps)) {
+      return;
+    }
     const RetainedPlanResetDecision retained_plan_decision =
         build_retained_plan_reset_decision(
-            CoreProductionIntent::StreamActive, caps);
+            CoreProductionIntent::StreamActive, parent_context_caps);
     effective.requested_retained_plan = retained_plan_decision.requested;
 
     // Declare before calling into the provider so any synchronous callbacks
     // can resolve the record deterministically.
     (void)streams_.declare_stream_effective(
         effective, retained_plan_decision.steady);
+    (void)streams_.set_backing_capabilities(
+        effective.stream_id, runtime_caps, parent_context_caps);
     if (retained_plan_decision.evaluation_active) {
       RetainedPlanEvaluatorState state{};
       state.intent = CoreProductionIntent::StreamActive;
@@ -2177,6 +2281,9 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
       return;
     }
     (void)streams_.on_core_stream_started(stream_id);
+    (void)refresh_capture_retained_plan_state_(
+        owner_device_instance_id,
+        /*requested_bump_access_posture_epoch=*/false);
     result_promise->set_value(TryStartStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
@@ -2222,6 +2329,9 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
       return;
     }
     (void)streams_.on_core_stream_stopped(stream_id, /*error_code=*/0);
+    (void)refresh_capture_retained_plan_state_(
+        rec->device_instance_id,
+        /*requested_bump_access_posture_epoch=*/false);
     result_promise->set_value(TryStopStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
@@ -2270,6 +2380,9 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
       return;
     }
     stream_retained_plan_evaluators_.erase(stream_id);
+    (void)refresh_capture_retained_plan_state_(
+        rec->device_instance_id,
+        /*requested_bump_access_posture_epoch=*/false);
     result_promise->set_value(TryDestroyStreamStatus::OK);
   });
 

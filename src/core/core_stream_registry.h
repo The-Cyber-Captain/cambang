@@ -35,6 +35,8 @@ public:
     uint64_t access_posture_epoch = 0;
     CoreRetainedProductionPlan requested_retained_plan{};
     CoreRetainedProductionPlan steady_retained_plan{};
+    ProducerBackingCapabilities runtime_backing_capabilities{};
+    ProducerBackingCapabilities parent_context_backing_capabilities{};
 
     CaptureProfile profile{};
     PictureConfig picture{};
@@ -89,6 +91,9 @@ public:
 
   // Mutable config updates (stream should exist).
   bool set_picture(uint64_t stream_id, const PictureConfig& picture);
+  bool set_backing_capabilities(uint64_t stream_id,
+                                ProducerBackingCapabilities runtime_backing_capabilities,
+                                ProducerBackingCapabilities parent_context_backing_capabilities);
   bool set_requested_retained_plan(uint64_t stream_id,
                                    CoreRetainedProductionPlan requested_retained_plan,
                                    bool bump_access_posture_epoch = true);

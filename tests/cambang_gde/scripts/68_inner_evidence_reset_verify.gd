@@ -51,8 +51,44 @@ func _synthetic_producer_output_form_setting() -> String:
 	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default"))
 
 
+func _synthetic_stream_capability_downgrade_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_stream_capability_downgrades", ""))
+
+
+func _synthetic_capture_capability_downgrade_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_capture_capability_downgrades", ""))
+
+
 func _synthetic_producer_output_form_cmdline_selection() -> String:
 	const PREFIX := "--cambang-synth-producer-output-form="
+	var found := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := str(arg)
+		if not text.begins_with(PREFIX):
+			continue
+		var value := text.substr(PREFIX.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_stream_capability_downgrade_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-stream-capability-downgrades="
+	var found := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := str(arg)
+		if not text.begins_with(PREFIX):
+			continue
+		var value := text.substr(PREFIX.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_capture_capability_downgrade_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-capture-capability-downgrades="
 	var found := ""
 	for arg in OS.get_cmdline_user_args():
 		var text := str(arg)
@@ -72,9 +108,27 @@ func _synthetic_producer_output_form_effective_selection() -> String:
 	return _synthetic_producer_output_form_setting()
 
 
+func _synthetic_stream_capability_downgrade_effective_selection() -> String:
+	var cmdline_selection := _synthetic_stream_capability_downgrade_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_stream_capability_downgrade_setting()
+
+
+func _synthetic_capture_capability_downgrade_effective_selection() -> String:
+	var cmdline_selection := _synthetic_capture_capability_downgrade_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_capture_capability_downgrade_setting()
+
+
 func _log_maintainer_config_probe() -> void:
 	print("Synthetic producer output-form stored project setting: %s" % _synthetic_producer_output_form_setting())
 	print("Synthetic producer output-form effective runtime selection: %s" % _synthetic_producer_output_form_effective_selection())
+	print("Synthetic stream capability downgrades stored project setting: %s" % _synthetic_stream_capability_downgrade_setting())
+	print("Synthetic stream capability downgrades effective runtime selection: %s" % _synthetic_stream_capability_downgrade_effective_selection())
+	print("Synthetic capture capability downgrades stored project setting: %s" % _synthetic_capture_capability_downgrade_setting())
+	print("Synthetic capture capability downgrades effective runtime selection: %s" % _synthetic_capture_capability_downgrade_effective_selection())
 
 
 func _ready() -> void:
@@ -220,7 +274,7 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, label, "stream")
 	if _done:
 		return {}
-	_assert_expected_evidence_family(evidence, label)
+	_assert_expected_evidence_family(evidence, label, steady_stream_chooser, capture_chooser)
 	if _done:
 		return {}
 	_assert_access_only_probe_contract(label, access_probe)
@@ -283,6 +337,13 @@ func _run_session(previous_gen: int, label: String) -> Dictionary:
 	if _done:
 		return {}
 	_step_ok("%s default still profile snapshot-visible" % label)
+	var capture_chooser := await _wait_for_capture_chooser_report(device_instance_id, label)
+	if _done:
+		return {}
+	_print_chooser_report("%s_capture_default" % label, capture_chooser)
+	_assert_chooser_intent(capture_chooser, label, "capture", "Default")
+	if _done:
+		return {}
 
 	var capture_result = await _trigger_and_wait_capture(device, ids, label)
 	if _done:
@@ -297,7 +358,13 @@ func _run_session(previous_gen: int, label: String) -> Dictionary:
 	_require(not evidence.is_empty(), "%s: result_access_timing_evidence is empty after result access" % label)
 	if _done:
 		return {}
-	_assert_expected_evidence_family(evidence, label)
+	var stream_chooser := _get_stream_chooser_report(stream_id)
+	if bool(stream_chooser.get("evaluator_active", false)) or not _chooser_plan_valid(stream_chooser, "steady"):
+		stream_chooser = await _wait_for_chooser_steady(stream_id, label, "stream")
+	if _done:
+		return {}
+	_print_chooser_report("%s_stream_steady" % label, stream_chooser)
+	_assert_expected_evidence_family(evidence, label, stream_chooser, capture_chooser)
 	if _done:
 		return {}
 	_step_ok("%s evidence verified" % label)
@@ -877,6 +944,8 @@ func _print_retained_plan_decision_summary(report: Dictionary, evidence: Diction
 		fields.append("compared_to_image=%s" % JSON.stringify(_compared_to_image_evidence(report, evidence, evidence_prefix)))
 	fields.append("stored_selection=%s" % _synthetic_producer_output_form_setting())
 	fields.append("effective_selection=%s" % _synthetic_producer_output_form_effective_selection())
+	fields.append("stream_downgrades=%s" % _synthetic_stream_capability_downgrade_effective_selection())
+	fields.append("capture_downgrades=%s" % _synthetic_capture_capability_downgrade_effective_selection())
 	print("RETAINED_PLAN_DECISION: %s" % " ".join(fields))
 
 
@@ -1032,53 +1101,140 @@ func _print_evidence(tag: String, evidence: Dictionary) -> void:
 	print(JSON.stringify(evidence))
 
 
-func _assert_expected_evidence_family(evidence: Dictionary, label: String) -> void:
-	var stored_selection := str(ProjectSettings.get_setting(
-		"cambang/maintainer/synthetic_producer_output_form",
-		"runtime_default"
-	))
-	print("INFO: %s stored_selection=%s" % [label, stored_selection])
+func _assert_expected_evidence_family(
+	evidence: Dictionary,
+	label: String,
+	stream_chooser: Dictionary,
+	capture_chooser: Dictionary
+) -> void:
+	var stored_selection := _synthetic_producer_output_form_setting()
+	var effective_selection := _synthetic_producer_output_form_effective_selection()
+	print("INFO: %s stored_selection=%s effective_selection=%s stream_downgrades=%s capture_downgrades=%s" % [
+		label,
+		stored_selection,
+		effective_selection,
+		_synthetic_stream_capability_downgrade_effective_selection(),
+		_synthetic_capture_capability_downgrade_effective_selection(),
+	])
 
-	match stored_selection:
-		"cpu_only":
-			_assert_expected_entry(evidence, label, "stream_display_view.cpu_live_display_view", true, false, false)
-			if _done:
-				return
-			_assert_expected_entry(evidence, label, "stream_to_image.cpu_packed", true, false, false)
-			if _done:
-				return
-			_assert_expected_entry(evidence, label, "capture_to_image.cpu_packed", true, false, false)
+	_require(not stream_chooser.is_empty(), "%s: stream chooser report missing for evidence verification" % label)
+	if _done:
+		return
+	_require(not capture_chooser.is_empty(), "%s: capture chooser report missing for evidence verification" % label)
+	if _done:
+		return
 
-		"cpu_gpu":
-			_assert_expected_entry(evidence, label, "stream_display_view.retained_gpu_backing", null, true, null)
-			if _done:
-				return
-			_assert_expected_entry(evidence, label, "stream_to_image.gpu_primary_cpu_sidecar", true, true, null)
-			if _done:
-				return
-			_assert_expected_entry(evidence, label, "capture_to_image.cpu_packed", true, null, null)
+	var stream_posture := _chooser_selection_posture(stream_chooser)
+	var capture_posture := _chooser_selection_posture(capture_chooser)
+	_require(stream_posture != "", "%s: stream chooser selection posture missing" % label)
+	if _done:
+		return
+	_require(capture_posture != "", "%s: capture chooser selection posture missing" % label)
+	if _done:
+		return
 
-		"gpu_only":
-			_assert_expected_entry(evidence, label, "stream_display_view.retained_gpu_backing", false, true, null)
-			if _done:
-				return
-			_assert_expected_entry(evidence, label, "stream_to_image.gpu_synthetic_backing_materializer", false, true, true)
-			if _done:
-				return
-			_assert_expected_entry(evidence, label, "capture_to_image.gpu_synthetic_backing_materializer", false, true, true)
+	_assert_expected_display_view_entry_for_posture(evidence, label, "stream", stream_posture)
+	if _done:
+		return
+	_assert_expected_to_image_entry_for_posture(evidence, label, "stream", stream_posture)
+	if _done:
+		return
+	_assert_expected_to_image_entry_for_posture(evidence, label, "capture", capture_posture)
 
-		"runtime_default":
-			_assert_any_successful_timed_entry_with_prefix(evidence, label, "stream_display_view.")
-			if _done:
-				return
-			_assert_any_successful_timed_entry_with_prefix(evidence, label, "stream_to_image.")
-			if _done:
-				return
-			_assert_any_successful_timed_entry_with_prefix(evidence, label, "capture_to_image.")
 
+func _display_view_evidence_key_for_posture(posture: String) -> String:
+	match posture:
+		"CPU-primary":
+			return "stream_display_view.cpu_live_display_view"
+		"GPU-primary, no CPU sidecar":
+			return "stream_display_view.retained_gpu_backing"
+		"GPU-primary, with CPU sidecar":
+			return "stream_display_view.retained_gpu_backing"
 		_:
-			_fail("%s: unsupported synthetic producer output-form selection %s" % [label, stored_selection])
-			return
+			return ""
+
+
+func _expected_entry_contract_for_route(route: String) -> Dictionary:
+	match route:
+		"cpu_packed":
+			return {
+				"expect_cpu_payload": true,
+				"expect_gpu_backing": false,
+				"expect_gpu_materialization": false,
+			}
+		"gpu_synthetic_backing_materializer":
+			return {
+				"expect_cpu_payload": false,
+				"expect_gpu_backing": true,
+				"expect_gpu_materialization": true,
+			}
+		"gpu_primary_cpu_sidecar":
+			return {
+				"expect_cpu_payload": true,
+				"expect_gpu_backing": true,
+				"expect_gpu_materialization": null,
+			}
+		"retained_gpu_backing":
+			return {
+				"expect_cpu_payload": null,
+				"expect_gpu_backing": true,
+				"expect_gpu_materialization": null,
+			}
+		"cpu_live_display_view":
+			return {
+				"expect_cpu_payload": true,
+				"expect_gpu_backing": false,
+				"expect_gpu_materialization": false,
+			}
+		_:
+			return {}
+
+
+func _assert_expected_display_view_entry_for_posture(
+	evidence: Dictionary,
+	label: String,
+	scope: String,
+	posture: String
+) -> void:
+	_require(scope == "stream", "%s: unsupported display_view scope %s" % [label, scope])
+	if _done:
+		return
+	var key := _display_view_evidence_key_for_posture(posture)
+	_require(key != "", "%s: unsupported %s display_view posture %s" % [label, scope, posture])
+	if _done:
+		return
+	var route := key.trim_prefix("stream_display_view.")
+	var contract := _expected_entry_contract_for_route(route)
+	_assert_expected_entry(
+		evidence,
+		label,
+		key,
+		contract.get("expect_cpu_payload", null),
+		contract.get("expect_gpu_backing", null),
+		contract.get("expect_gpu_materialization", null)
+	)
+
+
+func _assert_expected_to_image_entry_for_posture(
+	evidence: Dictionary,
+	label: String,
+	scope: String,
+	posture: String
+) -> void:
+	var route := _to_image_route_for_posture(posture)
+	_require(route != "", "%s: unsupported %s to_image posture %s" % [label, scope, posture])
+	if _done:
+		return
+	var key := "%s_to_image.%s" % [scope, route]
+	var contract := _expected_entry_contract_for_route(route)
+	_assert_expected_entry(
+		evidence,
+		label,
+		key,
+		contract.get("expect_cpu_payload", null),
+		contract.get("expect_gpu_backing", null),
+		contract.get("expect_gpu_materialization", null)
+	)
 
 
 func _assert_expected_entry(

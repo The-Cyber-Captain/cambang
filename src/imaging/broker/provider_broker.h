@@ -5,7 +5,7 @@
 // - Core binds to exactly one provider instance (the broker).
 // - Runtime selection between platform-backed and synthetic occurs via provider_mode.
 // - Switching provider_mode requires teardown/restart (selection is latched at initialize()).
-// - No ABI changes: ICameraProvider remains unchanged; broker implements it.
+// - No public Godot API changes: broker implements the internal provider interface.
 
 #include <cstdint>
 #include <functional>
@@ -47,6 +47,10 @@ public:
   ProviderResult set_synthetic_timing_driver_requested(TimingDriver timing_driver) noexcept;
   ProviderResult set_synthetic_timeline_reconciliation_requested(TimelineReconciliation reconciliation) noexcept;
   ProviderResult set_synthetic_producer_output_form_mode_requested(SyntheticProducerOutputFormMode mode) noexcept;
+  ProviderResult set_synthetic_stream_capability_downgrade_conditions_requested(
+      std::vector<SyntheticStreamCapabilityDowngradeCondition> conditions) noexcept;
+  ProviderResult set_synthetic_capture_capability_downgrade_conditions_requested(
+      std::vector<SyntheticCaptureCapabilityDowngradeCondition> conditions) noexcept;
 
   const char* provider_name() const override;
   ProviderKind provider_kind() const noexcept override;
@@ -63,6 +67,15 @@ public:
       const PictureConfig& picture) const noexcept override;
   ProducerBackingCapabilities capture_backing_capabilities(
       const CaptureRequest& req) const noexcept override;
+  ProducerBackingCapabilities stream_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture) noexcept override;
+  ProducerBackingCapabilities capture_parent_context_backing_capabilities(
+      uint64_t device_instance_id,
+      const CaptureRequest& req) noexcept override;
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
@@ -151,10 +164,18 @@ private:
   TimingDriver timing_driver_requested_ = TimingDriver::VirtualTime;
   TimelineReconciliation timeline_reconciliation_requested_ = TimelineReconciliation::CompletionGated;
   SyntheticProducerOutputFormMode producer_output_form_mode_requested_ = SyntheticProducerOutputFormMode::Auto;
+  std::vector<SyntheticStreamCapabilityDowngradeCondition>
+      stream_capability_downgrade_conditions_requested_{};
+  std::vector<SyntheticCaptureCapabilityDowngradeCondition>
+      capture_capability_downgrade_conditions_requested_{};
   SyntheticRole synthetic_role_latched_ = SyntheticRole::Nominal;
   TimingDriver timing_driver_latched_ = TimingDriver::VirtualTime;
   TimelineReconciliation timeline_reconciliation_latched_ = TimelineReconciliation::CompletionGated;
   SyntheticProducerOutputFormMode producer_output_form_mode_latched_ = SyntheticProducerOutputFormMode::Auto;
+  std::vector<SyntheticStreamCapabilityDowngradeCondition>
+      stream_capability_downgrade_conditions_latched_{};
+  std::vector<SyntheticCaptureCapabilityDowngradeCondition>
+      capture_capability_downgrade_conditions_latched_{};
   std::function<void(const SyntheticScheduledEvent&)> synthetic_timeline_request_dispatch_hook_{};
 };
 

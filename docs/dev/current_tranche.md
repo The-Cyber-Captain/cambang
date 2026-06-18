@@ -37,6 +37,8 @@ Synthetic maintainer tooling direction remains:
 * Synthetic maintainer output-form selection is exposed through the project setting `cambang/maintainer/synthetic_producer_output_form=runtime_default|cpu_only|cpu_gpu|gpu_only`; `runtime_default` is the explicit no-forcing/default value that preserves the normal Synthetic runtime policy; host command-line runs may pass `--cambang-synth-producer-output-form=...`, which feeds that same project-setting authority path before provider construction; there is no environment-variable fallback for this selection.
 * The selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist.
 * `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable.
+* Verification-only parent-context downgrades are exposed through `cambang/maintainer/synthetic_stream_capability_downgrades` and `cambang/maintainer/synthetic_capture_capability_downgrades`; host command-line runs may pass `--cambang-synth-stream-capability-downgrades=...` and `--cambang-synth-capture-capability-downgrades=...`, which feed those same project-setting authority paths before provider construction.
+* These downgrade controls are Synthetic-only, maintainer-only, internal, and downgrade-only: they may narrow an effectively mixed parent context to `cpu_only`, remain inert when the truthful outer envelope is already `cpu_only`, and are rejected when contradictory to a `gpu_only` outer envelope.
 * Do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing the next stage.
 
 
@@ -49,6 +51,8 @@ Settled chooser direction for this tranche:
 * `Stream-active` preserves the preferred `get_display_view()` path first, then uses measured `to_image()` behavior to decide whether a CPU sidecar earns its keep.
 * The chooser reuses the existing real retained-result measurement seam.
 * When evidence is needed, Core requests bounded evaluation postures one at a time; Provider executes the currently requested posture; `CoreResultStore` validates against the currently requested posture; once enough evidence exists, Core records a steady posture until expiry/rerun.
+* Backing/output-form chooser input is split between the truthful provider/runtime envelope and the parent-context capability of the owning `Stream` or `AcquisitionSession`.
+* Ordinary capture under a live active-stream structure consumes the active elevated stream policy instead of reopening a coarse independent capture lane for the same live structure.
 
 ## Immediate implementation direction
 
@@ -81,6 +85,7 @@ Current checkpoint status:
   * Compatibility `runtime_default` resolves to CPU-primary;
   * Mobile `runtime_default` resolves to GPU-primary, no CPU sidecar.
 * Current forced `cpu_only` / `gpu_only` comparisons support that inference.
+* Deterministic maintainer coverage now also includes a Synthetic parent-context downgrade matrix plus active-stream capture-policy mirroring in `provider_compliance_verify`.
 * Stream-side results look promising; capture-side effect remains mixed and is not yet treated as final acceptance evidence.
 
 Immediate next focus:

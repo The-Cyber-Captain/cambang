@@ -287,6 +287,19 @@ classification beside provisional retained access truth. Public user-triggered
 instrumented, but they are not the normal recalibration heartbeat; calibration
 renewal belongs to the live applied production-posture boundary.
 
+Chooser-facing capability input is kept separate from all of the above.
+CamBANG first resolves the truthful outer provider/runtime envelope, then
+resolves the parent-context capability for the owning `Stream` or
+`AcquisitionSession` context. That parent-context capability is the chooser
+input; it is not itself a retained backing plan, retained backing truth,
+retained access truth, or measured evidence record.
+
+When ordinary still capture runs under a live active-stream structure, capture
+consumes the active elevated stream policy instead of reopening a coarse
+independent lane for the same live structure. Capture-side independent chooser
+evaluation remains valid for capture-parent contexts that are not currently
+covered by an active stream-owned elevated policy.
+
 ### 6.x.4 Unsupported GPU-only realization
 
 If a source offers only GPU-backed realization and the current runtime does not provide

@@ -201,6 +201,102 @@ static bool apply_synthetic_producer_output_form_cmdline_to_project_setting() {
   return true;
 }
 
+static bool read_synthetic_stream_capability_downgrade_project_setting(
+    std::vector<SyntheticStreamCapabilityDowngradeCondition>& out_conditions) {
+  out_conditions.clear();
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!settings) {
+    return true;
+  }
+  const godot::Variant value = settings->get_setting(
+      kSyntheticStreamCapabilityDowngradeProjectSetting,
+      godot::String(""));
+  const godot::String condition_string = value;
+  const std::string conditions(condition_string.utf8().get_data());
+  return parse_synthetic_stream_capability_downgrade_conditions(
+      conditions, out_conditions);
+}
+
+static bool apply_synthetic_stream_capability_downgrade_cmdline_to_project_setting() {
+  godot::OS* os = godot::OS::get_singleton();
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!os || !settings) {
+    return true;
+  }
+
+  const std::string prefix(kSyntheticStreamCapabilityDowngradeArg);
+  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  bool found = false;
+  for (int64_t i = 0; i < args.size(); ++i) {
+    const std::string arg(args[i].utf8().get_data());
+    if (arg.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    if (found) {
+      return false;
+    }
+    std::vector<SyntheticStreamCapabilityDowngradeCondition> parsed{};
+    const std::string value = arg.substr(prefix.size());
+    if (!parse_synthetic_stream_capability_downgrade_conditions(
+            value, parsed)) {
+      return false;
+    }
+    settings->set_setting(
+        kSyntheticStreamCapabilityDowngradeProjectSetting,
+        godot::String(value.c_str()));
+    found = true;
+  }
+  return true;
+}
+
+static bool read_synthetic_capture_capability_downgrade_project_setting(
+    std::vector<SyntheticCaptureCapabilityDowngradeCondition>& out_conditions) {
+  out_conditions.clear();
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!settings) {
+    return true;
+  }
+  const godot::Variant value = settings->get_setting(
+      kSyntheticCaptureCapabilityDowngradeProjectSetting,
+      godot::String(""));
+  const godot::String condition_string = value;
+  const std::string conditions(condition_string.utf8().get_data());
+  return parse_synthetic_capture_capability_downgrade_conditions(
+      conditions, out_conditions);
+}
+
+static bool apply_synthetic_capture_capability_downgrade_cmdline_to_project_setting() {
+  godot::OS* os = godot::OS::get_singleton();
+  godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
+  if (!os || !settings) {
+    return true;
+  }
+
+  const std::string prefix(kSyntheticCaptureCapabilityDowngradeArg);
+  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  bool found = false;
+  for (int64_t i = 0; i < args.size(); ++i) {
+    const std::string arg(args[i].utf8().get_data());
+    if (arg.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    if (found) {
+      return false;
+    }
+    std::vector<SyntheticCaptureCapabilityDowngradeCondition> parsed{};
+    const std::string value = arg.substr(prefix.size());
+    if (!parse_synthetic_capture_capability_downgrade_conditions(
+            value, parsed)) {
+      return false;
+    }
+    settings->set_setting(
+        kSyntheticCaptureCapabilityDowngradeProjectSetting,
+        godot::String(value.c_str()));
+    found = true;
+  }
+  return true;
+}
+
 static godot::Error map_provider_result_to_godot_error(ProviderResult pr) noexcept {
   switch (pr.code) {
     case ProviderError::OK: return godot::OK;
@@ -1988,15 +2084,51 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized(
         ERR_PRINT("CamBANGServer: invalid duplicate or unsupported Synthetic producer output-form maintainer setting.");
         return false;
       }
+      if (!apply_synthetic_stream_capability_downgrade_cmdline_to_project_setting()) {
+        ERR_PRINT("CamBANGServer: invalid duplicate or unsupported Synthetic stream capability downgrade maintainer setting.");
+        return false;
+      }
+      if (!apply_synthetic_capture_capability_downgrade_cmdline_to_project_setting()) {
+        ERR_PRINT("CamBANGServer: invalid duplicate or unsupported Synthetic capture capability downgrade maintainer setting.");
+        return false;
+      }
       SyntheticProducerOutputFormMode producer_output_form_mode = SyntheticProducerOutputFormMode::Auto;
       if (!read_synthetic_producer_output_form_project_setting(producer_output_form_mode)) {
         ERR_PRINT("CamBANGServer: invalid Synthetic producer output-form maintainer project setting.");
+        return false;
+      }
+      std::vector<SyntheticStreamCapabilityDowngradeCondition>
+          stream_capability_downgrade_conditions{};
+      if (!read_synthetic_stream_capability_downgrade_project_setting(
+              stream_capability_downgrade_conditions)) {
+        ERR_PRINT("CamBANGServer: invalid Synthetic stream capability downgrade maintainer project setting.");
+        return false;
+      }
+      std::vector<SyntheticCaptureCapabilityDowngradeCondition>
+          capture_capability_downgrade_conditions{};
+      if (!read_synthetic_capture_capability_downgrade_project_setting(
+              capture_capability_downgrade_conditions)) {
+        ERR_PRINT("CamBANGServer: invalid Synthetic capture capability downgrade maintainer project setting.");
         return false;
       }
       ProviderResult output_form_req =
           broker->set_synthetic_producer_output_form_mode_requested(producer_output_form_mode);
       if (!output_form_req.ok()) {
         ERR_PRINT("CamBANGServer: requested Synthetic producer output-form configuration rejected by provider broker.");
+        return false;
+      }
+      ProviderResult stream_downgrade_req =
+          broker->set_synthetic_stream_capability_downgrade_conditions_requested(
+              std::move(stream_capability_downgrade_conditions));
+      if (!stream_downgrade_req.ok()) {
+        ERR_PRINT("CamBANGServer: requested Synthetic stream capability downgrade configuration rejected by provider broker.");
+        return false;
+      }
+      ProviderResult capture_downgrade_req =
+          broker->set_synthetic_capture_capability_downgrade_conditions_requested(
+              std::move(capture_capability_downgrade_conditions));
+      if (!capture_downgrade_req.ok()) {
+        ERR_PRINT("CamBANGServer: requested Synthetic capture capability downgrade configuration rejected by provider broker.");
         return false;
       }
     }

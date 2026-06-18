@@ -502,6 +502,19 @@ private:
   bool build_effective_capture_request_without_retained_plan_(
       uint64_t device_instance_id,
       CaptureRequest& out) const;
+  bool resolve_stream_backing_capabilities_(
+      uint64_t device_instance_id,
+      uint64_t stream_id,
+      StreamIntent intent,
+      const CaptureProfile& profile,
+      const PictureConfig& picture,
+      ProducerBackingCapabilities& runtime_backing_capabilities,
+      ProducerBackingCapabilities& parent_context_backing_capabilities);
+  bool resolve_capture_backing_capabilities_(
+      uint64_t device_instance_id,
+      const CaptureRequest& request,
+      ProducerBackingCapabilities& runtime_backing_capabilities,
+      ProducerBackingCapabilities& parent_context_backing_capabilities);
   bool refresh_stream_retained_plan_state_(
       uint64_t stream_id,
       bool apply_to_provider,

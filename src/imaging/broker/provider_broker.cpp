@@ -221,6 +221,27 @@ ProducerBackingCapabilities ProviderBroker::capture_backing_capabilities(
                  : ProducerBackingCapabilities{false, false};
 }
 
+ProducerBackingCapabilities ProviderBroker::stream_parent_context_backing_capabilities(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  return active_ ? active_->stream_parent_context_backing_capabilities(
+                       device_instance_id, stream_id, intent, profile, picture)
+                 : ProducerBackingCapabilities{false, false};
+}
+
+ProducerBackingCapabilities ProviderBroker::capture_parent_context_backing_capabilities(
+    uint64_t device_instance_id,
+    const CaptureRequest& req) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  return active_ ? active_->capture_parent_context_backing_capabilities(
+                       device_instance_id, req)
+                 : ProducerBackingCapabilities{false, false};
+}
+
 ProviderResult ProviderBroker::update_stream_retained_production_plan(
     uint64_t stream_id,
     CoreRetainedProductionPlan requested_retained_plan) {
@@ -351,6 +372,26 @@ ProviderResult ProviderBroker::set_synthetic_producer_output_form_mode_requested
   return ProviderResult::success();
 }
 
+ProviderResult ProviderBroker::set_synthetic_stream_capability_downgrade_conditions_requested(
+    std::vector<SyntheticStreamCapabilityDowngradeCondition> conditions) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  stream_capability_downgrade_conditions_requested_ = std::move(conditions);
+  return ProviderResult::success();
+}
+
+ProviderResult ProviderBroker::set_synthetic_capture_capability_downgrade_conditions_requested(
+    std::vector<SyntheticCaptureCapabilityDowngradeCondition> conditions) noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  if (initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BUSY);
+  }
+  capture_capability_downgrade_conditions_requested_ = std::move(conditions);
+  return ProviderResult::success();
+}
+
 void ProviderBroker::dispatch_synthetic_timeline_request_(const SyntheticScheduledEvent& ev) {
   std::function<void(const SyntheticScheduledEvent&)> hook;
   {
@@ -403,6 +444,10 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
   timing_driver_latched_ = timing_driver_requested_;
   timeline_reconciliation_latched_ = timeline_reconciliation_requested_;
   producer_output_form_mode_latched_ = producer_output_form_mode_requested_;
+  stream_capability_downgrade_conditions_latched_ =
+      stream_capability_downgrade_conditions_requested_;
+  capture_capability_downgrade_conditions_latched_ =
+      capture_capability_downgrade_conditions_requested_;
 
   // Defensive: re-check build support (mirrors server-side validation).
   ProviderResult cap = check_mode_supported_in_build(mode_latched_);
@@ -423,6 +468,10 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
     cfg.timing_driver = timing_driver_latched_;
     cfg.timeline_reconciliation = timeline_reconciliation_latched_;
     cfg.producer_output_form_mode = producer_output_form_mode_latched_;
+    cfg.verification_stream_capability_downgrade_conditions =
+        stream_capability_downgrade_conditions_latched_;
+    cfg.verification_capture_capability_downgrade_conditions =
+        capture_capability_downgrade_conditions_latched_;
     auto syn = std::make_unique<SyntheticProvider>(cfg);
     active_ = std::move(syn);
     install_synthetic_timeline_request_dispatch_hook_locked_();

@@ -26,6 +26,8 @@ public:
     uint64_t capture_access_posture_epoch = 0;
     CoreRetainedProductionPlan requested_retained_plan{};
     CoreRetainedProductionPlan steady_retained_plan{};
+    ProducerBackingCapabilities runtime_backing_capabilities{};
+    ProducerBackingCapabilities parent_context_backing_capabilities{};
     uint32_t capture_width = 0;
     uint32_t capture_height = 0;
     uint32_t capture_format = 0;
@@ -52,6 +54,9 @@ public:
                                   const CaptureStillImageBundle& sequence,
                                   uint64_t capture_profile_version);
   bool set_capture_picture(uint64_t device_instance_id, const PictureConfig& picture);
+  bool set_backing_capabilities(uint64_t device_instance_id,
+                                ProducerBackingCapabilities runtime_backing_capabilities,
+                                ProducerBackingCapabilities parent_context_backing_capabilities);
   bool set_requested_retained_plan(uint64_t device_instance_id,
                                    CoreRetainedProductionPlan requested_retained_plan,
                                    bool bump_capture_access_posture_epoch = true);

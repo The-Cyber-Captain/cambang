@@ -122,7 +122,7 @@ CamBANG policy:
   start/readiness and return explicit permission/access failure status if access
   is not currently available.
 - CamBANG does not prompt the player for permissions.
-- CamBANg does not treat Godot's current permission request API as a portable synchronous
+- CamBANG does not treat Godot's current permission request API as a portable synchronous
   provider-start mechanism. In fact, CamBANG implements and makes its own native checks at
   the Provider level.
 
@@ -153,4 +153,4 @@ CamBANG workaround:
 Long-term note:
 - No concrete removal criterion is recorded for this entry.
 - The current upstream/editor/deploy argument-handling behaviour does not match CamBANG’s maintainer-testing needs.
-- Revisit this entry only if Godot later provides a documented, deploy-compatible, cross-platform user-argument surface that satisfies those needs well enough to replace the project-backed maintainer config approach.# CamBANG – Upstream Discrepancies Log
+- Revisit this entry only if Godot later provides a documented, deploy-compatible, cross-platform user-argument surface that satisfies those needs well enough to replace the project-backed maintainer config approach.

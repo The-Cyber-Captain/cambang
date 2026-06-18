@@ -289,6 +289,26 @@ ProducerBackingCapabilities SyntheticProvider::capture_backing_capabilities(
   return query_capture_producer_capabilities_(req);
 }
 
+ProducerBackingCapabilities SyntheticProvider::stream_parent_context_backing_capabilities(
+    uint64_t device_instance_id,
+    uint64_t stream_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) noexcept {
+  (void)stream_id;
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  return stream_parent_context_backing_capabilities_locked_(
+      device_instance_id, intent, profile, picture);
+}
+
+ProducerBackingCapabilities SyntheticProvider::capture_parent_context_backing_capabilities(
+    uint64_t device_instance_id,
+    const CaptureRequest& req) noexcept {
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  return capture_parent_context_backing_capabilities_locked_(
+      device_instance_id, req);
+}
+
 bool SyntheticProvider::has_runtime_gpu_backing_path_() noexcept {
   return synthetic_gpu_backing_runtime_available();
 }
@@ -331,6 +351,126 @@ ProducerBackingCapabilities SyntheticProvider::query_capture_producer_capabiliti
     default:
       return ProducerBackingCapabilities{true, gpu_available, gpu_available};
   }
+}
+
+const char* SyntheticProvider::resolve_hardware_id_for_device_locked_(
+    uint64_t device_instance_id) const noexcept {
+  const auto it = devices_.find(device_instance_id);
+  if (it == devices_.end() || !it->second.open ||
+      it->second.hardware_id.empty()) {
+    return nullptr;
+  }
+  return it->second.hardware_id.c_str();
+}
+
+ProducerBackingCapabilities SyntheticProvider::stream_parent_context_backing_capabilities_locked_(
+    uint64_t device_instance_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    const PictureConfig& picture) const noexcept {
+  const ProducerBackingCapabilities outer_caps =
+      query_stream_producer_capabilities_(profile, picture);
+  const char* hardware_id =
+      resolve_hardware_id_for_device_locked_(device_instance_id);
+  return apply_stream_capability_downgrade_conditions_locked_(
+      hardware_id, intent, profile, outer_caps);
+}
+
+ProducerBackingCapabilities SyntheticProvider::capture_parent_context_backing_capabilities_locked_(
+    uint64_t device_instance_id,
+    const CaptureRequest& req) const noexcept {
+  const ProducerBackingCapabilities outer_caps =
+      query_capture_producer_capabilities_(req);
+  const char* hardware_id =
+      resolve_hardware_id_for_device_locked_(device_instance_id);
+  return apply_capture_capability_downgrade_conditions_locked_(
+      hardware_id, req, outer_caps);
+}
+
+ProducerBackingCapabilities SyntheticProvider::apply_stream_capability_downgrade_conditions_locked_(
+    const char* hardware_id,
+    StreamIntent intent,
+    const CaptureProfile& profile,
+    ProducerBackingCapabilities outer_caps) const noexcept {
+  if (!outer_caps.cpu_backed_available ||
+      !outer_caps.gpu_backed_available) {
+    return outer_caps;
+  }
+  if (!hardware_id) {
+    return outer_caps;
+  }
+  for (const SyntheticStreamCapabilityDowngradeCondition& condition :
+       cfg_.verification_stream_capability_downgrade_conditions) {
+    if (condition.device_hardware_id != hardware_id) {
+      continue;
+    }
+    if (condition.has_stream_intent &&
+        condition.stream_intent != intent) {
+      continue;
+    }
+    if (condition.width != 0 && condition.width != profile.width) {
+      continue;
+    }
+    if (condition.height != 0 && condition.height != profile.height) {
+      continue;
+    }
+    if (condition.format_fourcc != 0 &&
+        condition.format_fourcc != profile.format_fourcc) {
+      continue;
+    }
+    if (condition.target_fps != 0 &&
+        (condition.target_fps != profile.target_fps_min ||
+         condition.target_fps != profile.target_fps_max)) {
+      continue;
+    }
+    return ProducerBackingCapabilities{true, false, false};
+  }
+  return outer_caps;
+}
+
+ProducerBackingCapabilities SyntheticProvider::apply_capture_capability_downgrade_conditions_locked_(
+    const char* hardware_id,
+    const CaptureRequest& req,
+    ProducerBackingCapabilities outer_caps) const noexcept {
+  if (!outer_caps.cpu_backed_available ||
+      !outer_caps.gpu_backed_available) {
+    return outer_caps;
+  }
+  if (!hardware_id) {
+    return outer_caps;
+  }
+  for (const SyntheticCaptureCapabilityDowngradeCondition& condition :
+       cfg_.verification_capture_capability_downgrade_conditions) {
+    if (condition.device_hardware_id != hardware_id) {
+      continue;
+    }
+    if (condition.width != 0 && condition.width != req.width) {
+      continue;
+    }
+    if (condition.height != 0 && condition.height != req.height) {
+      continue;
+    }
+    if (condition.format_fourcc != 0 &&
+        condition.format_fourcc != req.format_fourcc) {
+      continue;
+    }
+    if (condition.still_image_bundle !=
+            SyntheticStillImageBundleDiscriminator::Any) {
+      const bool multi_image = req.still_image_bundle.members.size() > 1u;
+      if (condition.still_image_bundle ==
+              SyntheticStillImageBundleDiscriminator::DefaultMeteredOnly &&
+          multi_image) {
+        continue;
+      }
+      if (condition.still_image_bundle ==
+              SyntheticStillImageBundleDiscriminator::MultiImage &&
+          !multi_image) {
+        continue;
+      }
+    }
+    return ProducerBackingCapabilities{true, false, false};
+  }
+  return outer_caps;
 }
 
 bool SyntheticProvider::choose_stream_gpu_preference_(
@@ -386,6 +526,11 @@ ProviderResult SyntheticProvider::initialize(IProviderCallbacks* callbacks) {
   const StreamGpuUpdatePolicyResolution gpu_policy_resolution = resolve_synthetic_stream_gpu_update_policy();
   if (gpu_policy_resolution.has_conflict) {
     synthetic_triage_printf("[CamBANG][SyntheticProvider][ERROR] %s", gpu_policy_resolution.error_message.c_str());
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  if (cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly &&
+      (!cfg_.verification_stream_capability_downgrade_conditions.empty() ||
+       !cfg_.verification_capture_capability_downgrade_conditions.empty())) {
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   callbacks_ = callbacks;
@@ -1109,7 +1254,9 @@ ProviderResult SyntheticProvider::start_stream(
     }
     s.pool_cursor = 0;
   }
-  const ProducerBackingCapabilities runtime_truth = query_stream_producer_capabilities_(profile, picture);
+  const ProducerBackingCapabilities runtime_truth =
+      stream_parent_context_backing_capabilities_locked_(
+          s.req.device_instance_id, s.req.intent, profile, picture);
   const bool selected_mode_requires_gpu =
       cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly;
   if (selected_mode_requires_gpu && !runtime_truth.gpu_backed_available) {
@@ -1179,7 +1326,11 @@ ProviderResult SyntheticProvider::update_stream_retained_production_plan(
   }
   StreamState& s = it->second;
   const ProducerBackingCapabilities runtime_truth =
-      query_stream_producer_capabilities_(s.req.profile, s.picture);
+      stream_parent_context_backing_capabilities_locked_(
+          s.req.device_instance_id,
+          s.req.intent,
+          s.req.profile,
+          s.picture);
   if (!runtime_truth.viable(requested_retained_plan.posture)) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
@@ -1361,7 +1512,9 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle, supports_multi_image_still_sequence())) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
-    const ProducerBackingCapabilities capture_truth = query_capture_producer_capabilities_(req);
+    const ProducerBackingCapabilities capture_truth =
+        capture_parent_context_backing_capabilities_locked_(
+            req.device_instance_id, req);
     const bool selected_mode_requires_gpu =
         cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly;
     if (selected_mode_requires_gpu && !capture_truth.gpu_backed_available) {
@@ -1714,7 +1867,9 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
         fv.capture_image.realized_exposure_compensation_milli_ev = fv.capture_image.applied_exposure_compensation_milli_ev;
       }
     }
-    const ProducerBackingCapabilities capture_truth = query_capture_producer_capabilities_(req);
+    const ProducerBackingCapabilities capture_truth =
+        capture_parent_context_backing_capabilities_locked_(
+            req.device_instance_id, req);
     SyntheticProducerOutputFormMode output_form_mode = resolve_producer_output_form_mode_(capture_truth);
     if (req.requested_retained_plan.valid) {
       output_form_mode = req.requested_retained_plan.primary_cpu()

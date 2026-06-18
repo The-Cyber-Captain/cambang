@@ -1694,6 +1694,182 @@ bool run_synthetic_backing_capability_truth_check() {
 
   return true;
 }
+
+bool run_synthetic_parent_context_capability_downgrade_matrix_check() {
+  const bool runtime_gpu_gate = synthetic_gpu_backing_runtime_available();
+
+  SyntheticStreamCapabilityDowngradeCondition stream_condition{};
+  stream_condition.device_hardware_id = "synthetic:0";
+  stream_condition.has_stream_intent = true;
+  stream_condition.stream_intent = StreamIntent::PREVIEW;
+  stream_condition.width = 64;
+  stream_condition.height = 48;
+  stream_condition.format_fourcc = FOURCC_RGBA;
+  stream_condition.target_fps = 30;
+
+  SyntheticCaptureCapabilityDowngradeCondition capture_condition{};
+  capture_condition.device_hardware_id = "synthetic:0";
+  capture_condition.width = 80;
+  capture_condition.height = 60;
+  capture_condition.format_fourcc = FOURCC_RGBA;
+  capture_condition.still_image_bundle =
+      SyntheticStillImageBundleDiscriminator::MultiImage;
+
+  auto verify_cpu_only_caps = [](ProducerBackingCapabilities caps) {
+    return caps.cpu_backed_available &&
+           !caps.gpu_backed_available &&
+           !caps.gpu_with_cpu_sidecar_available &&
+           caps.viable(CoreProductionPostureShape::CpuPrimary) &&
+           !caps.viable(CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
+           !caps.viable(CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+  };
+  auto verify_mixed_caps = [runtime_gpu_gate](ProducerBackingCapabilities caps) {
+    return caps.cpu_backed_available &&
+           (caps.gpu_backed_available == runtime_gpu_gate) &&
+           (caps.gpu_with_cpu_sidecar_available == runtime_gpu_gate);
+  };
+
+  auto make_stream_profile = [](uint32_t width,
+                                uint32_t height,
+                                uint32_t fps) {
+    CaptureProfile profile{};
+    profile.width = width;
+    profile.height = height;
+    profile.format_fourcc = FOURCC_RGBA;
+    profile.target_fps_min = fps;
+    profile.target_fps_max = fps;
+    return profile;
+  };
+
+  auto verify_config = [&](SyntheticProducerOutputFormMode mode,
+                           const char* label,
+                           bool expect_match_downgrade) -> bool {
+    RecorderCallbacks cb;
+    SyntheticProviderConfig cfg{};
+    cfg.endpoint_count = 1;
+    cfg.nominal.width = 64;
+    cfg.nominal.height = 48;
+    cfg.nominal.format_fourcc = FOURCC_RGBA;
+    cfg.producer_output_form_mode = mode;
+    cfg.verification_stream_capability_downgrade_conditions.push_back(
+        stream_condition);
+    cfg.verification_capture_capability_downgrade_conditions.push_back(
+        capture_condition);
+    SyntheticProvider provider(cfg);
+    if (!provider.initialize(&cb).ok() ||
+        !provider.open_device("synthetic:0", 91, 9101).ok()) {
+      std::cerr << "FAIL synthetic parent-context downgrade " << label
+                << " setup failed\n";
+      (void)provider.shutdown();
+      return false;
+    }
+
+    const CaptureProfile matching_stream_profile = make_stream_profile(64, 48, 30);
+    const CaptureProfile nonmatching_stream_profile = make_stream_profile(64, 48, 24);
+    const PictureConfig picture{};
+    CaptureRequest matching_capture_req =
+        make_direct_provider_multi_member_still_capture_request(
+            9201, 91, 80, 60, FOURCC_RGBA, {100});
+    CaptureRequest nonmatching_capture_req =
+        make_direct_provider_default_still_capture_request(
+            9202, 91, 80, 60, FOURCC_RGBA);
+
+    const ProducerBackingCapabilities stream_outer_caps =
+        provider.stream_backing_capabilities(matching_stream_profile, picture);
+    const ProducerBackingCapabilities stream_parent_match_caps =
+        provider.stream_parent_context_backing_capabilities(
+            91, 93, StreamIntent::PREVIEW, matching_stream_profile, picture);
+    const ProducerBackingCapabilities stream_parent_nonmatch_caps =
+        provider.stream_parent_context_backing_capabilities(
+            91, 94, StreamIntent::VIEWFINDER, nonmatching_stream_profile, picture);
+    const ProducerBackingCapabilities capture_outer_caps =
+        provider.capture_backing_capabilities(matching_capture_req);
+    const ProducerBackingCapabilities capture_parent_match_caps =
+        provider.capture_parent_context_backing_capabilities(
+            91, matching_capture_req);
+    const ProducerBackingCapabilities capture_parent_nonmatch_caps =
+        provider.capture_parent_context_backing_capabilities(
+            91, nonmatching_capture_req);
+
+    if (!provider.close_device(91).ok() || !provider.shutdown().ok()) {
+      std::cerr << "FAIL synthetic parent-context downgrade " << label
+                << " teardown failed\n";
+      return false;
+    }
+
+    const bool expect_outer_mixed =
+        mode == SyntheticProducerOutputFormMode::CpuAndGpu && runtime_gpu_gate;
+    if ((expect_outer_mixed &&
+         (!verify_mixed_caps(stream_outer_caps) ||
+          !verify_mixed_caps(capture_outer_caps))) ||
+        (!expect_outer_mixed &&
+         (!verify_cpu_only_caps(stream_outer_caps) ||
+          !verify_cpu_only_caps(capture_outer_caps)))) {
+      std::cerr << "FAIL synthetic parent-context downgrade " << label
+                << " outer-envelope truth mismatch\n";
+      return false;
+    }
+
+    if (expect_match_downgrade) {
+      if (!verify_cpu_only_caps(stream_parent_match_caps) ||
+          !verify_cpu_only_caps(capture_parent_match_caps)) {
+        std::cerr << "FAIL synthetic parent-context downgrade " << label
+                  << " matching condition did not narrow to cpu_only\n";
+        return false;
+      }
+    } else {
+      if (!verify_cpu_only_caps(stream_parent_match_caps) ||
+          !verify_cpu_only_caps(capture_parent_match_caps)) {
+        std::cerr << "FAIL synthetic parent-context downgrade " << label
+                  << " expected cpu_only inert truth mismatch\n";
+        return false;
+      }
+    }
+
+    if ((expect_outer_mixed &&
+         (!verify_mixed_caps(stream_parent_nonmatch_caps) ||
+          !verify_mixed_caps(capture_parent_nonmatch_caps))) ||
+        (!expect_outer_mixed &&
+         (!verify_cpu_only_caps(stream_parent_nonmatch_caps) ||
+          !verify_cpu_only_caps(capture_parent_nonmatch_caps)))) {
+      std::cerr << "FAIL synthetic parent-context downgrade " << label
+                << " non-matching condition changed outer truth\n";
+      return false;
+    }
+    return true;
+  };
+
+  if (!verify_config(
+          SyntheticProducerOutputFormMode::CpuAndGpu,
+          "cpu_gpu",
+          runtime_gpu_gate)) {
+    return false;
+  }
+  if (!verify_config(
+          SyntheticProducerOutputFormMode::CpuOnly,
+          "cpu_only",
+          false)) {
+    return false;
+  }
+
+  RecorderCallbacks gpu_only_cb;
+  SyntheticProviderConfig gpu_only_cfg{};
+  gpu_only_cfg.endpoint_count = 1;
+  gpu_only_cfg.producer_output_form_mode = SyntheticProducerOutputFormMode::GpuOnly;
+  gpu_only_cfg.verification_stream_capability_downgrade_conditions.push_back(
+      stream_condition);
+  SyntheticProvider gpu_only_provider(gpu_only_cfg);
+  const ProviderResult gpu_only_init = gpu_only_provider.initialize(&gpu_only_cb);
+  if (gpu_only_init.ok() ||
+      gpu_only_init.code != ProviderError::ERR_INVALID_ARGUMENT) {
+    std::cerr << "FAIL synthetic parent-context downgrade gpu_only contradictory configuration was not rejected\n";
+    (void)gpu_only_provider.shutdown();
+    return false;
+  }
+
+  return true;
+}
+
 bool run_synthetic_producer_output_form_mode_production_check() {
   auto make_req = [](uint64_t stream_id) {
     StreamRequest req{};
@@ -3107,6 +3283,16 @@ bool run_core_measured_retained_plan_evaluator_check() {
         "FAIL core measured retained-plan evaluator did not settle stream steady posture");
   }
 
+  CaptureRequest mirrored_capture_req{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kDeviceId, mirrored_capture_req) &&
+               plan_equals(mirrored_capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not mirror active stream steady posture into capture");
+  }
+
   PictureConfig stream_picture = provider.stream_template().picture;
   stream_picture.seed = 77;
   if (rt.try_set_stream_picture_config(kStreamId, stream_picture) !=
@@ -3124,6 +3310,36 @@ bool run_core_measured_retained_plan_evaluator_check() {
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator stream rerun/reset mismatch");
+  }
+
+  CaptureRequest reset_mirrored_capture_req{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kDeviceId, reset_mirrored_capture_req) &&
+               plan_equals(reset_mirrored_capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not mirror active stream requested posture into capture after rerun");
+  }
+
+  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK ||
+      rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator stream teardown before capture lane failed");
+  }
+
+  CaptureRequest reopened_capture_req{};
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kDeviceId);
+        return rec &&
+               rt.materialize_capture_request(kDeviceId, reopened_capture_req) &&
+               plan_equals(reopened_capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::CpuPrimary) &&
+               plan_equals(rec->steady_retained_plan,
+                           CoreProductionPostureShape::CpuPrimary);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not reopen independent capture lane after stream teardown");
   }
 
   provider.set_capture_cpu_available(false);
@@ -3246,9 +3462,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
         "FAIL core measured retained-plan evaluator did not reuse settled capture posture");
   }
 
-  if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK ||
-      rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK ||
-      rt.try_close_device(kDeviceId) != TryCloseDeviceStatus::OK) {
+  if (rt.try_close_device(kDeviceId) != TryCloseDeviceStatus::OK) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator teardown failed");
   }
@@ -3279,6 +3493,7 @@ int main(int argc, char** argv) {
       {"run_clustered_completion_gated_branch_check", [] { return run_clustered_completion_gated_branch_check(); }},
       {"run_broker_timeline_host_surface_check", [] { return run_broker_timeline_host_surface_check(); }},
       {"run_synthetic_backing_capability_truth_check", [] { return run_synthetic_backing_capability_truth_check(); }},
+      {"run_synthetic_parent_context_capability_downgrade_matrix_check", [] { return run_synthetic_parent_context_capability_downgrade_matrix_check(); }},
       {"run_synthetic_producer_output_form_mode_production_check", [] { return run_synthetic_producer_output_form_mode_production_check(); }},
       {"run_synthetic_timeline_picture_appearance_check", [] { return run_synthetic_timeline_picture_appearance_check(); }},
       {"run_stub_provider_sanity_check", [] { return run_stub_provider_sanity_check(); }},
