@@ -674,21 +674,21 @@ void CoreRuntime::report_stream_retained_to_image_observation(
     uint64_t stream_id,
     uint64_t posture_id,
     ResultCapability provisional_to_image,
-    bool has_normalized_cost,
-    uint64_t normalized_cost_ns_per_byte) {
+    bool has_normalized_cost_units,
+    uint64_t normalized_cost_units) {
   const CoreThread::PostResult pr = try_post(
       [this,
        stream_id,
        posture_id,
        provisional_to_image,
-       has_normalized_cost,
-       normalized_cost_ns_per_byte]() {
+       has_normalized_cost_units,
+       normalized_cost_units]() {
         handle_stream_retained_to_image_observation_(
             stream_id,
             posture_id,
             provisional_to_image,
-            has_normalized_cost,
-            normalized_cost_ns_per_byte);
+            has_normalized_cost_units,
+            normalized_cost_units);
       });
   (void)pr;
 }
@@ -697,21 +697,21 @@ void CoreRuntime::report_capture_retained_to_image_observation(
     uint64_t device_instance_id,
     uint64_t posture_id,
     ResultCapability provisional_to_image,
-    bool has_normalized_cost,
-    uint64_t normalized_cost_ns_per_byte) {
+    bool has_normalized_cost_units,
+    uint64_t normalized_cost_units) {
   const CoreThread::PostResult pr = try_post(
       [this,
        device_instance_id,
        posture_id,
        provisional_to_image,
-       has_normalized_cost,
-       normalized_cost_ns_per_byte]() {
+       has_normalized_cost_units,
+       normalized_cost_units]() {
         handle_capture_retained_to_image_observation_(
             device_instance_id,
             posture_id,
             provisional_to_image,
-            has_normalized_cost,
-            normalized_cost_ns_per_byte);
+            has_normalized_cost_units,
+            normalized_cost_units);
       });
   (void)pr;
 }
@@ -989,8 +989,8 @@ void CoreRuntime::handle_stream_retained_to_image_observation_(
     uint64_t stream_id,
     uint64_t posture_id,
     ResultCapability provisional_to_image,
-    bool has_normalized_cost,
-    uint64_t normalized_cost_ns_per_byte) {
+    bool has_normalized_cost_units,
+    uint64_t normalized_cost_units) {
   assert(core_thread_.is_core_thread());
   if (stream_id == 0 || posture_id == 0) {
     return;
@@ -1018,14 +1018,14 @@ void CoreRuntime::handle_stream_retained_to_image_observation_(
           rec->requested_retained_plan.posture)];
   evidence.observed = true;
   evidence.provisional_to_image = provisional_to_image;
-  if (has_normalized_cost) {
-    evidence.has_normalized_cost = true;
-    evidence.normalized_cost_ns_per_byte = normalized_cost_ns_per_byte;
+  if (has_normalized_cost_units) {
+    evidence.has_normalized_cost_units = true;
+    evidence.normalized_cost_units = normalized_cost_units;
   }
 
   if (state.current_candidate_index + 1u < state.candidate_count) {
     if (provisional_to_image == ResultCapability::UNSUPPORTED ||
-        has_normalized_cost) {
+        has_normalized_cost_units) {
       ++state.current_candidate_index;
       const CoreRetainedProductionPlan next_plan =
           state.candidate_sequence[state.current_candidate_index];
@@ -1062,11 +1062,11 @@ void CoreRuntime::handle_stream_retained_to_image_observation_(
              no_sidecar_evidence.provisional_to_image ==
                  ResultCapability::UNSUPPORTED) {
     chosen = sidecar_plan;
-  } else if (no_sidecar_evidence.has_normalized_cost &&
-             sidecar_evidence.has_normalized_cost) {
+  } else if (no_sidecar_evidence.has_normalized_cost_units &&
+             sidecar_evidence.has_normalized_cost_units) {
     chosen =
-        sidecar_evidence.normalized_cost_ns_per_byte <
-            no_sidecar_evidence.normalized_cost_ns_per_byte
+        sidecar_evidence.normalized_cost_units <
+            no_sidecar_evidence.normalized_cost_units
         ? sidecar_plan
         : no_sidecar_plan;
   } else if (!same_retained_plan(rec->requested_retained_plan, sidecar_plan)) {
@@ -1099,8 +1099,8 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     uint64_t device_instance_id,
     uint64_t posture_id,
     ResultCapability provisional_to_image,
-    bool has_normalized_cost,
-    uint64_t normalized_cost_ns_per_byte) {
+    bool has_normalized_cost_units,
+    uint64_t normalized_cost_units) {
   assert(core_thread_.is_core_thread());
   if (device_instance_id == 0 || posture_id == 0) {
     return;
@@ -1128,14 +1128,14 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
           rec->requested_retained_plan.posture)];
   evidence.observed = true;
   evidence.provisional_to_image = provisional_to_image;
-  if (has_normalized_cost) {
-    evidence.has_normalized_cost = true;
-    evidence.normalized_cost_ns_per_byte = normalized_cost_ns_per_byte;
+  if (has_normalized_cost_units) {
+    evidence.has_normalized_cost_units = true;
+    evidence.normalized_cost_units = normalized_cost_units;
   }
 
   if (state.current_candidate_index + 1u < state.candidate_count) {
     if (provisional_to_image == ResultCapability::UNSUPPORTED ||
-        has_normalized_cost) {
+        has_normalized_cost_units) {
       ++state.current_candidate_index;
       const CoreRetainedProductionPlan next_plan =
           state.candidate_sequence[state.current_candidate_index];
@@ -1162,11 +1162,11 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
              no_sidecar_evidence.provisional_to_image ==
                  ResultCapability::UNSUPPORTED) {
     chosen = sidecar_plan;
-  } else if (no_sidecar_evidence.has_normalized_cost &&
-             sidecar_evidence.has_normalized_cost) {
+  } else if (no_sidecar_evidence.has_normalized_cost_units &&
+             sidecar_evidence.has_normalized_cost_units) {
     chosen =
-        sidecar_evidence.normalized_cost_ns_per_byte <
-            no_sidecar_evidence.normalized_cost_ns_per_byte
+        sidecar_evidence.normalized_cost_units <
+            no_sidecar_evidence.normalized_cost_units
         ? sidecar_plan
         : no_sidecar_plan;
   } else if (!same_retained_plan(rec->requested_retained_plan, sidecar_plan)) {
@@ -1194,6 +1194,21 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
 std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_reports() const {
   std::vector<CoreRetainedPlanChooserReport> out;
   out.reserve(streams_.all().size() + devices_.all().size());
+
+  const auto capture_uses_active_stream_policy =
+      [this](uint64_t device_instance_id) -> bool {
+    for (const auto& [stream_id, stream_rec] : streams_.all()) {
+      (void)stream_id;
+      if (stream_rec.device_instance_id != device_instance_id ||
+          !stream_rec.created ||
+          !stream_rec.started ||
+          !stream_rec.requested_retained_plan.valid) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  };
 
   for (const auto& [stream_id, rec] : streams_.all()) {
     CoreRetainedPlanChooserReport report{};
@@ -1231,7 +1246,9 @@ std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_re
     CoreRetainedPlanChooserReport report{};
     report.target_kind = CoreRetainedPlanChooserReport::TargetKind::Capture;
     report.target_id = device_instance_id;
-    report.intent = CoreProductionIntent::Default;
+    report.intent = capture_uses_active_stream_policy(device_instance_id)
+        ? CoreProductionIntent::StreamActive
+        : CoreProductionIntent::Default;
     report.requested = rec.requested_retained_plan;
     report.steady = rec.steady_retained_plan;
     if (const auto it = capture_retained_plan_evaluators_.find(device_instance_id);

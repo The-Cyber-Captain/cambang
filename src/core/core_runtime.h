@@ -390,14 +390,14 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t stream_id,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
-      bool has_normalized_cost,
-      uint64_t normalized_cost_ns_per_byte);
+      bool has_normalized_cost_units,
+      uint64_t normalized_cost_units);
   void report_capture_retained_to_image_observation(
       uint64_t device_instance_id,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
-      bool has_normalized_cost,
-      uint64_t normalized_cost_ns_per_byte);
+      bool has_normalized_cost_units,
+      uint64_t normalized_cost_units);
 
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 
@@ -529,14 +529,14 @@ private:
       uint64_t stream_id,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
-      bool has_normalized_cost,
-      uint64_t normalized_cost_ns_per_byte);
+      bool has_normalized_cost_units,
+      uint64_t normalized_cost_units);
   void handle_capture_retained_to_image_observation_(
       uint64_t device_instance_id,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
-      bool has_normalized_cost,
-      uint64_t normalized_cost_ns_per_byte);
+      bool has_normalized_cost_units,
+      uint64_t normalized_cost_units);
   void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
@@ -580,8 +580,8 @@ private:
 
   struct MeasuredPlanEvidence {
     bool observed = false;
-    bool has_normalized_cost = false;
-    uint64_t normalized_cost_ns_per_byte = 0;
+    bool has_normalized_cost_units = false;
+    uint64_t normalized_cost_units = 0;
     ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
   };
 

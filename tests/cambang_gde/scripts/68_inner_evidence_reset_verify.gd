@@ -34,12 +34,23 @@ const SCENE_LABEL := "inner_evidence_reset_verify"
 const SINGLE_SCENARIO_PATH := "res://scenarios/68_inner_evidence_reset_live.json"
 const DUAL_SCENARIO_PATH := "res://scenarios/68_inner_evidence_reset_dual_live.json"
 const SINGLE_TARGET_SPECS := [
-	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW"},
+	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW", "mode": "FLOWING"},
 ]
 const DUAL_TARGET_SPECS := [
-	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW"},
-	{"tag": "cam1", "hardware_id": "synthetic:1", "intent": "VIEWFINDER"},
+	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW", "mode": "FLOWING"},
+	{"tag": "cam1", "hardware_id": "synthetic:1", "intent": "VIEWFINDER", "mode": "FLOWING"},
 ]
+const SINGLE_INITIAL_OPEN_NO_STREAM_AT_NS := 150000000
+const SINGLE_FIRST_STREAM_FLOWING_AT_NS := 1350000000
+const SINGLE_POST_TEARDOWN_ABSENT_AT_NS := 1650000000
+const SINGLE_FINAL_PRE_STREAM_AT_NS := 1950000000
+const SINGLE_FINAL_STREAM_FLOWING_AT_NS := 2550000000
+const DUAL_INITIAL_CAM0_OPEN_NO_STREAM_AT_NS := 150000000
+const DUAL_FIRST_CAM0_STREAM_FLOWING_AT_NS := 1350000000
+const DUAL_POST_TEARDOWN_CAM0_ABSENT_AT_NS := 1650000000
+const DUAL_NO_STREAM_BOTH_OPEN_AT_NS := 2250000000
+const DUAL_MIXED_CAM0_FLOWING_CAM1_DEFAULT_AT_NS := 2850000000
+const DUAL_BOTH_STREAMS_FLOWING_AT_NS := 3450000000
 
 const TOTAL_TIMEOUT_MS := 12000
 const BASELINE_TIMEOUT_FRAMES := 900
@@ -202,7 +213,118 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	var gen := await _wait_for_new_baseline(previous_gen, label)
 	if _done:
 		return {}
+	var timeline_at_ns := 0
 
+	var target_hardware_id := str(SINGLE_TARGET_SPECS[0].get("hardware_id", ""))
+	var target_intent := str(SINGLE_TARGET_SPECS[0].get("intent", ""))
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		SINGLE_INITIAL_OPEN_NO_STREAM_AT_NS,
+		"%s advance initial open/no-stream plateau" % label
+	)
+	if _done:
+		return {}
+	var initial_open_snapshot := await _wait_for_authored_structure_state(
+		gen,
+		"%s initial open/no-authored-stream plateau" % label,
+		[target_hardware_id],
+		[],
+		[],
+		[{"hardware_id": target_hardware_id, "intent": target_intent}]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed initial open/no-authored-stream plateau" % label)
+	await _seed_capture_access_only_evidence_from_snapshot(
+		initial_open_snapshot,
+		target_hardware_id,
+		"%s_initial_open_capture_access_only" % label
+	)
+	if _done:
+		return {}
+	await _emit_capture_decision_from_snapshot(
+		initial_open_snapshot,
+		target_hardware_id,
+		"Default",
+		"%s_initial_open_capture_default" % label,
+		label
+	)
+	if _done:
+		return {}
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		SINGLE_FIRST_STREAM_FLOWING_AT_NS,
+		"%s advance first stream-context plateau" % label
+	)
+	if _done:
+		return {}
+	await _wait_for_authored_structure_state(
+		gen,
+		"%s first authored stream-context plateau" % label,
+		[target_hardware_id],
+		[],
+		[{"hardware_id": target_hardware_id, "intent": target_intent, "mode": "FLOWING"}],
+		[]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed first authored stream-context plateau" % label)
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		SINGLE_POST_TEARDOWN_ABSENT_AT_NS,
+		"%s advance post-teardown absent plateau" % label
+	)
+	if _done:
+		return {}
+	await _wait_for_authored_structure_state(
+		gen,
+		"%s post-teardown absent plateau" % label,
+		[],
+		[target_hardware_id],
+		[],
+		[]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed post-teardown absent plateau" % label)
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		SINGLE_FINAL_PRE_STREAM_AT_NS,
+		"%s advance final pre-stream plateau" % label
+	)
+	if _done:
+		return {}
+	var final_pre_stream_snapshot := await _wait_for_authored_structure_state(
+		gen,
+		"%s final pre-stream plateau" % label,
+		[target_hardware_id],
+		[],
+		[],
+		[{"hardware_id": target_hardware_id, "intent": target_intent}]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed final pre-stream plateau" % label)
+	await _emit_capture_decision_from_snapshot(
+		final_pre_stream_snapshot,
+		target_hardware_id,
+		"Default",
+		"%s_final_pre_stream_capture_default" % label,
+		label
+	)
+	if _done:
+		return {}
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		SINGLE_FINAL_STREAM_FLOWING_AT_NS,
+		"%s advance final stream-flowing plateau" % label
+	)
+	if _done:
+		return {}
 	var contexts := await _wait_for_runtime_contexts(gen, SINGLE_TARGET_SPECS, label)
 	if _done:
 		return {}
@@ -215,7 +337,6 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 		str(context.get("intent", "")),
 	])
 
-	var hardware_id := str(context.get("hardware_id", ""))
 	var device_instance_id := int(context.get("device_instance_id", 0))
 	var stream_id := int(context.get("stream_id", 0))
 	var target_label := "%s_%s" % [label, str(context.get("tag", "target"))]
@@ -223,8 +344,7 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	_require(device_instance_id != 0, "%s: snapshot device_instance_id is 0" % label)
 	if _done:
 		return {}
-	var device = CamBANGServer.get_device(device_instance_id)
-	_require(device != null, "%s: get_device(%d) returned null" % [label, device_instance_id])
+	var device = await _wait_for_device_handle(device_instance_id, label)
 	if _done:
 		return {}
 	_print_device_handle_diag(label, "post_get_device", device, context)
@@ -288,10 +408,10 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 		target_label,
 		str(context.get("tag", "capture"))
 	)
-	_print_chooser_report("%s_capture_mirrored" % label, capture_chooser)
+	_print_chooser_report("%s_capture_reused_active_stream_policy" % label, capture_chooser)
 	if _done:
 		return {}
-	_step_ok("%s capture chooser mirrored the live active stream policy" % label)
+	_step_ok("%s capture chooser reused the live active stream policy" % label)
 
 	var capture_result = await _trigger_and_wait_capture(device, context, label)
 	if _done:
@@ -321,12 +441,14 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 	_print_retained_plan_decision_summary(
+		"%s_stream_final" % label,
 		stream_candidate_source_chooser,
 		steady_stream_chooser,
 		evidence,
 		"stream"
 	)
 	_print_retained_plan_decision_summary(
+		"%s_capture_reused_final" % label,
 		stream_candidate_source_chooser,
 		capture_chooser,
 		evidence,
@@ -336,7 +458,7 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 
 	return {
 		"gen": gen,
-		"hardware_id": hardware_id,
+		"hardware_id": target_hardware_id,
 		"device_instance_id": device_instance_id,
 		"stream_id": stream_id,
 		"evidence": evidence,
@@ -356,7 +478,174 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	var gen := await _wait_for_new_baseline(previous_gen, label)
 	if _done:
 		return {}
+	var timeline_at_ns := 0
 
+	var cam0_hardware_id := str(DUAL_TARGET_SPECS[0].get("hardware_id", ""))
+	var cam0_intent := str(DUAL_TARGET_SPECS[0].get("intent", ""))
+	var cam1_hardware_id := str(DUAL_TARGET_SPECS[1].get("hardware_id", ""))
+	var cam1_intent := str(DUAL_TARGET_SPECS[1].get("intent", ""))
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		DUAL_INITIAL_CAM0_OPEN_NO_STREAM_AT_NS,
+		"%s advance initial cam0 open/no-stream plateau" % label
+	)
+	if _done:
+		return {}
+	var initial_cam0_open_snapshot := await _wait_for_authored_structure_state(
+		gen,
+		"%s initial cam0 open/no-authored-stream plateau" % label,
+		[cam0_hardware_id],
+		[],
+		[],
+		[{"hardware_id": cam0_hardware_id, "intent": cam0_intent}]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed initial cam0 open/no-authored-stream plateau" % label)
+	await _seed_capture_access_only_evidence_from_snapshot(
+		initial_cam0_open_snapshot,
+		cam0_hardware_id,
+		"%s_initial_cam0_capture_access_only" % label
+	)
+	if _done:
+		return {}
+	await _emit_capture_decision_from_snapshot(
+		initial_cam0_open_snapshot,
+		cam0_hardware_id,
+		"Default",
+		"%s_initial_cam0_capture_default" % label,
+		label
+	)
+	if _done:
+		return {}
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		DUAL_FIRST_CAM0_STREAM_FLOWING_AT_NS,
+		"%s advance first cam0 stream-context plateau" % label
+	)
+	if _done:
+		return {}
+	await _wait_for_authored_structure_state(
+		gen,
+		"%s first cam0 stream-context plateau" % label,
+		[cam0_hardware_id],
+		[],
+		[{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"}],
+		[]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed first cam0 stream-context plateau" % label)
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		DUAL_POST_TEARDOWN_CAM0_ABSENT_AT_NS,
+		"%s advance post-teardown cam0 absent plateau" % label
+	)
+	if _done:
+		return {}
+	await _wait_for_authored_structure_state(
+		gen,
+		"%s post-teardown cam0 absent plateau" % label,
+		[],
+		[cam0_hardware_id],
+		[],
+		[]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed post-teardown cam0 absent plateau" % label)
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		DUAL_NO_STREAM_BOTH_OPEN_AT_NS,
+		"%s advance dual-device no-stream plateau" % label
+	)
+	if _done:
+		return {}
+	var dual_no_stream_snapshot := await _wait_for_authored_structure_state(
+		gen,
+		"%s dual-device no-authored-stream plateau" % label,
+		[cam0_hardware_id, cam1_hardware_id],
+		[],
+		[],
+		[
+			{"hardware_id": cam0_hardware_id, "intent": cam0_intent},
+			{"hardware_id": cam1_hardware_id, "intent": cam1_intent},
+		]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed dual-device no-authored-stream plateau" % label)
+	await _seed_capture_access_only_evidence_from_snapshot(
+		dual_no_stream_snapshot,
+		cam0_hardware_id,
+		"%s_dual_no_stream_cam0_capture_access_only" % label
+	)
+	if _done:
+		return {}
+	await _seed_capture_access_only_evidence_from_snapshot(
+		dual_no_stream_snapshot,
+		cam1_hardware_id,
+		"%s_dual_no_stream_cam1_capture_access_only" % label
+	)
+	if _done:
+		return {}
+	await _emit_capture_decision_from_snapshot(
+		dual_no_stream_snapshot,
+		cam0_hardware_id,
+		"Default",
+		"%s_dual_no_stream_cam0_capture_default" % label,
+		label
+	)
+	if _done:
+		return {}
+	await _emit_capture_decision_from_snapshot(
+		dual_no_stream_snapshot,
+		cam1_hardware_id,
+		"Default",
+		"%s_dual_no_stream_cam1_capture_default" % label,
+		label
+	)
+	if _done:
+		return {}
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		DUAL_MIXED_CAM0_FLOWING_CAM1_DEFAULT_AT_NS,
+		"%s advance mixed dual-device plateau" % label
+	)
+	if _done:
+		return {}
+	var mixed_dual_snapshot := await _wait_for_authored_structure_state(
+		gen,
+		"%s mixed dual-device plateau" % label,
+		[cam0_hardware_id, cam1_hardware_id],
+		[],
+		[{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"}],
+		[{"hardware_id": cam1_hardware_id, "intent": cam1_intent}]
+	)
+	if _done:
+		return {}
+	_step_ok("%s observed mixed dual-device plateau" % label)
+	await _emit_capture_decision_from_snapshot(
+		mixed_dual_snapshot,
+		cam1_hardware_id,
+		"Default",
+		"%s_mixed_dual_cam1_capture_default" % label,
+		label
+	)
+	if _done:
+		return {}
+
+	timeline_at_ns = _advance_paused_timeline_to_ns(
+		timeline_at_ns,
+		DUAL_BOTH_STREAMS_FLOWING_AT_NS,
+		"%s advance dual flowing-stream plateau" % label
+	)
+	if _done:
+		return {}
 	var contexts := await _wait_for_runtime_contexts(gen, DUAL_TARGET_SPECS, label)
 	if _done:
 		return {}
@@ -380,8 +669,7 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		_require(device_instance_id != 0 and stream_id != 0, "%s: target ids missing for %s" % [label, str(context.get("tag", ""))])
 		if _done:
 			return {}
-		var device = CamBANGServer.get_device(device_instance_id)
-		_require(device != null, "%s: get_device(%d) returned null for %s" % [label, device_instance_id, str(context.get("tag", ""))])
+		var device = await _wait_for_device_handle(device_instance_id, "%s_%s" % [label, str(context.get("tag", ""))])
 		if _done:
 			return {}
 		_print_device_handle_diag(label, "post_get_device", device, context)
@@ -445,8 +733,8 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		)
 		if _done:
 			return {}
-		_print_chooser_report("%s_capture_mirrored" % target_label, capture_chooser)
-		_step_ok("%s capture chooser mirrored the live active stream policy" % target_label)
+		_print_chooser_report("%s_capture_reused_active_stream_policy" % target_label, capture_chooser)
+		_step_ok("%s capture chooser reused the live active stream policy" % target_label)
 
 		var capture_result = await _trigger_and_wait_capture(device, context, target_label)
 		if _done:
@@ -484,12 +772,14 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		if _done:
 			return {}
 		_print_retained_plan_decision_summary(
+			"%s_stream_final" % target_label,
 			stream_candidate_source_chooser,
 			stream_chooser,
 			evidence,
 			"stream"
 		)
 		_print_retained_plan_decision_summary(
+			"%s_capture_reused_final" % target_label,
 			stream_candidate_source_chooser,
 			capture_chooser,
 			evidence,
@@ -538,6 +828,11 @@ func _bootstrap_runtime_and_stage_external_scenario(label: String, scenario_path
 	if _done:
 		return
 	_step_ok("%s scenario started" % label)
+	var pause_err := CamBANGServer.set_timeline_paused(true)
+	_require(pause_err == OK, "%s: unable to pause scenario timeline (%d)" % [label, pause_err])
+	if _done:
+		return
+	_step_ok("%s scenario timeline paused for deterministic phase control" % label)
 
 
 func _wait_for_new_baseline(previous_gen: int, label: String) -> int:
@@ -550,6 +845,101 @@ func _wait_for_new_baseline(previous_gen: int, label: String) -> int:
 				return gen
 	_fail("%s: timed out waiting for new baseline publish after gen=%d" % [label, previous_gen])
 	return -1
+
+
+func _advance_paused_timeline_to_ns(current_at_ns: int, target_at_ns: int, label: String) -> int:
+	_require(target_at_ns >= current_at_ns, "%s: target timeline ns regressed (%d -> %d)" % [label, current_at_ns, target_at_ns])
+	if _done:
+		return current_at_ns
+	var delta_ns := target_at_ns - current_at_ns
+	if delta_ns == 0:
+		return current_at_ns
+	var err := CamBANGServer.advance_timeline(delta_ns)
+	_require(err == OK, "%s: advance_timeline(%d) failed err=%d" % [label, delta_ns, err])
+	if _done:
+		return current_at_ns
+	return target_at_ns
+
+
+func _wait_for_authored_structure_state(
+	expected_gen: int,
+	label: String,
+	required_device_hardware_ids: Array,
+	absent_device_hardware_ids: Array,
+	required_stream_specs: Array,
+	absent_stream_specs: Array
+) -> Dictionary:
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var snapshot = CamBANGServer.get_state_snapshot()
+		if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+			continue
+		if int(snapshot.get("gen", -1)) != expected_gen:
+			continue
+		if _snapshot_matches_authored_structure_state(
+			snapshot,
+			required_device_hardware_ids,
+			absent_device_hardware_ids,
+			required_stream_specs,
+			absent_stream_specs
+		):
+			return snapshot
+	_fail("%s: timed out waiting for authored structure state" % label)
+	return {}
+
+
+func _snapshot_matches_authored_structure_state(
+	snapshot: Dictionary,
+	required_device_hardware_ids: Array,
+	absent_device_hardware_ids: Array,
+	required_stream_specs: Array,
+	absent_stream_specs: Array
+) -> bool:
+	for hardware_id_v in required_device_hardware_ids:
+		var hardware_id := str(hardware_id_v)
+		if _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id).is_empty():
+			return false
+
+	for hardware_id_v in absent_device_hardware_ids:
+		var hardware_id := str(hardware_id_v)
+		if not _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id).is_empty():
+			return false
+
+	for spec_v in required_stream_specs:
+		if typeof(spec_v) != TYPE_DICTIONARY:
+			return false
+		var spec: Dictionary = spec_v
+		var hardware_id := str(spec.get("hardware_id", ""))
+		var intent := str(spec.get("intent", ""))
+		var mode := str(spec.get("mode", ""))
+		var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+		if device_record.is_empty():
+			return false
+		var device_instance_id := int(device_record.get("instance_id", 0))
+		if device_instance_id == 0:
+			return false
+		if _find_stream_snapshot_record(snapshot, device_instance_id, intent, mode).is_empty():
+			return false
+
+	for spec_v in absent_stream_specs:
+		if typeof(spec_v) != TYPE_DICTIONARY:
+			return false
+		var spec: Dictionary = spec_v
+		var hardware_id := str(spec.get("hardware_id", ""))
+		var intent := str(spec.get("intent", ""))
+		var mode := str(spec.get("mode", ""))
+		var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+		if device_record.is_empty():
+			continue
+		var device_instance_id := int(device_record.get("instance_id", 0))
+		if device_instance_id == 0:
+			return false
+		if not _find_stream_snapshot_record(snapshot, device_instance_id, intent, mode).is_empty():
+			return false
+
+	return true
 
 
 func _wait_for_runtime_contexts(expected_gen: int, target_specs: Array, label: String) -> Array:
@@ -572,12 +962,13 @@ func _wait_for_runtime_contexts(expected_gen: int, target_specs: Array, label: S
 			var spec: Dictionary = spec_v
 			var hardware_id := str(spec.get("hardware_id", ""))
 			var intent := str(spec.get("intent", ""))
+			var mode := str(spec.get("mode", ""))
 			var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
 			if device_record.is_empty():
 				all_ready = false
 				break
 			var device_instance_id := int(device_record.get("instance_id", 0))
-			var stream_record := _find_stream_snapshot_record(snapshot, device_instance_id, intent)
+			var stream_record := _find_stream_snapshot_record(snapshot, device_instance_id, intent, mode)
 			if stream_record.is_empty():
 				all_ready = false
 				break
@@ -610,18 +1001,47 @@ func _wait_for_stream_result(stream_id: int, label: String):
 	return null
 
 
+func _capability_is_supported(capability: int, unsupported_capability: int) -> bool:
+	return capability != unsupported_capability
+
+
+func _wait_for_stream_result_with_to_image_support(stream_id: int, label: String):
+	for _i in range(STREAM_RESULT_TIMEOUT_FRAMES):
+		if _timed_out():
+			return null
+		await get_tree().process_frame
+		var latest_stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
+		if latest_stream_result == null:
+			continue
+		var to_image_capability := int(latest_stream_result.can_to_image())
+		if _capability_is_supported(to_image_capability, int(CamBANGStreamResult.CAPABILITY_UNSUPPORTED)):
+			return latest_stream_result
+	_fail("%s: timed out waiting for stream result with supported to_image() capability for stream_id=%d" % [label, stream_id])
+	return null
+
+
 func _exercise_stream_access(stream_id: int, stream_result, label: String) -> void:
 	_require(stream_result != null, "%s: stream_result is null" % label)
 	if _done:
 		return
-	_require(stream_result.can_to_image(), "%s: stream_result.can_to_image() returned false" % label)
+	var supported_stream_result = stream_result
+	var to_image_capability := int(supported_stream_result.can_to_image())
+	if not _capability_is_supported(to_image_capability, int(CamBANGStreamResult.CAPABILITY_UNSUPPORTED)):
+		supported_stream_result = await _wait_for_stream_result_with_to_image_support(stream_id, label)
+		if _done:
+			return
+		_require(supported_stream_result != null, "%s: stream_result with supported to_image() capability did not arrive" % label)
+		if _done:
+			return
+		to_image_capability = int(supported_stream_result.can_to_image())
+	_require(_capability_is_supported(to_image_capability, int(CamBANGStreamResult.CAPABILITY_UNSUPPORTED)), "%s: stream_result.can_to_image() remained unsupported" % label)
 	if _done:
 		return
-	var image = stream_result.to_image()
+	var image = supported_stream_result.to_image()
 	_require(image != null, "%s: stream_result.to_image() returned null" % label)
 	if _done:
 		return
-	await _establish_stream_display_view_demand(stream_id, stream_result, label)
+	await _establish_stream_display_view_demand(stream_id, supported_stream_result, label)
 
 
 func _exercise_stream_access_without_public_to_image(stream_id: int, stream_result, label: String) -> void:
@@ -631,7 +1051,7 @@ func _exercise_stream_access_without_public_to_image(stream_id: int, stream_resu
 	# Access-only session guardrail: do not call to_image(), but do exercise the
 	# public capability queries so the inner polling/calibration layer can launch
 	# from the realized posture without a user materialization call.
-	var _stream_to_image_capability = int(stream_result.can_to_image())
+	stream_result.can_to_image()
 	await _establish_stream_display_view_demand(stream_id, stream_result, label)
 
 
@@ -696,6 +1116,18 @@ func _print_device_handle_diag(phase_label: String, where: String, device, ids: 
 	)
 
 
+func _wait_for_device_handle(device_instance_id: int, label: String):
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return null
+		await get_tree().process_frame
+		var device = CamBANGServer.get_device(device_instance_id)
+		if device != null:
+			return device
+	_fail("%s: get_device(%d) did not become available" % [label, device_instance_id])
+	return null
+
+
 func _require_default_still_profile_visible(device_instance_id: int, label: String) -> void:
 	for _i in range(DEFAULT_STILL_PROFILE_TIMEOUT_FRAMES):
 		if _timed_out():
@@ -731,10 +1163,12 @@ func _require_default_still_profile_visible(device_instance_id: int, label: Stri
 func _trigger_and_wait_capture(device, ids: Dictionary, label: String):
 	_print_device_handle_diag(label, "pre_trigger_capture", device, ids)
 	var device_instance_id := int(ids.get("device_instance_id", 0))
+	# In the default open/no-stream phases, Synthetic does not realize the
+	# AcquisitionSession seam until stream creation or capture admission. That
+	# means pre-trigger capture progress is not guaranteed to exist here.
 	var baseline_progress := _get_capture_progress_snapshot(device_instance_id)
-	_require(bool(baseline_progress.get("available", false)), "%s: capture progress snapshot unavailable before trigger" % label)
-	if _done:
-		return null
+	var baseline_failed := int(baseline_progress.get("captures_failed", 0))
+	var baseline_completed := int(baseline_progress.get("captures_completed", 0))
 
 	var trigger_err := int(device.trigger_capture())
 	_require(trigger_err == OK, "%s: device.trigger_capture() failed err=%d" % [label, trigger_err])
@@ -746,16 +1180,16 @@ func _trigger_and_wait_capture(device, ids: Dictionary, label: String):
 			return null
 		await get_tree().process_frame
 		var progress := _get_capture_progress_snapshot(device_instance_id)
-		if not bool(progress.get("available", false)):
-			continue
-		if int(progress.get("captures_failed", 0)) > int(baseline_progress.get("captures_failed", 0)):
+		if bool(progress.get("available", false)) and int(progress.get("captures_failed", 0)) > baseline_failed:
 			_fail("%s: capture failed after trigger (baseline=%s progress=%s)" % [label, str(baseline_progress), str(progress)])
 			return null
-		if int(progress.get("captures_completed", 0)) <= int(baseline_progress.get("captures_completed", 0)):
-			continue
 		var capture_result = device.get_result()
 		if capture_result != null and int(capture_result.get_image_count()) > 0:
 			return capture_result
+		if not bool(progress.get("available", false)):
+			continue
+		if int(progress.get("captures_completed", 0)) <= baseline_completed:
+			continue
 	_fail("%s: timed out waiting for completed capture result" % label)
 	return null
 
@@ -764,14 +1198,16 @@ func _exercise_capture_access(capture_result, label: String) -> void:
 	_require(capture_result != null, "%s: capture_result is null" % label)
 	if _done:
 		return
-	_require(capture_result.can_to_image(), "%s: capture_result.can_to_image() returned false" % label)
+	var to_image_capability := int(capture_result.can_to_image())
+	_require(_capability_is_supported(to_image_capability, int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED)), "%s: capture_result.can_to_image() returned unsupported" % label)
 	if _done:
 		return
 	var image = capture_result.to_image()
 	_require(image != null, "%s: capture_result.to_image() returned null" % label)
 	if _done:
 		return
-	_require(capture_result.can_to_image_member(0), "%s: capture_result.can_to_image_member(0) returned false" % label)
+	var member0_capability := int(capture_result.can_to_image_member(0))
+	_require(_capability_is_supported(member0_capability, int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED)), "%s: capture_result.can_to_image_member(0) returned unsupported" % label)
 	if _done:
 		return
 	var member0 = capture_result.to_image_member(0)
@@ -779,9 +1215,11 @@ func _exercise_capture_access(capture_result, label: String) -> void:
 	if _done:
 		return
 	var image_count := int(capture_result.get_image_count())
-	if image_count > 1 and capture_result.can_to_image_member(1):
-		var member1 = capture_result.to_image_member(1)
-		_require(member1 != null, "%s: capture_result.to_image_member(1) returned null" % label)
+	if image_count > 1:
+		var member1_capability := int(capture_result.can_to_image_member(1))
+		if _capability_is_supported(member1_capability, int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED)):
+			var member1 = capture_result.to_image_member(1)
+			_require(member1 != null, "%s: capture_result.to_image_member(1) returned null" % label)
 
 
 func _exercise_capture_access_without_public_to_image(capture_result, label: String) -> Dictionary:
@@ -824,6 +1262,22 @@ func _wait_for_access_only_measurement_evidence(label: String) -> Dictionary:
 			continue
 		return evidence
 	_fail("%s: timed out waiting for access-only measurement evidence to appear without public to_image calls" % label)
+	return {}
+
+
+func _wait_for_evidence_route(route: String, label: String) -> Dictionary:
+	for _i in range(CAPTURE_RESULT_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var evidence := _get_result_access_timing_evidence()
+		if evidence.is_empty():
+			continue
+		var entry_v = evidence.get(route, null)
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			continue
+		return evidence
+	_fail("%s: timed out waiting for evidence route %s" % [label, route])
 	return {}
 
 
@@ -891,7 +1345,12 @@ func _find_device_snapshot_record_by_hardware_id(snapshot: Dictionary, hardware_
 	return {}
 
 
-func _find_stream_snapshot_record(snapshot: Dictionary, device_instance_id: int, intent: String) -> Dictionary:
+func _find_stream_snapshot_record(
+	snapshot: Dictionary,
+	device_instance_id: int,
+	intent: String,
+	required_mode: String = ""
+) -> Dictionary:
 	var streams: Array = snapshot.get("streams", [])
 	for sv in streams:
 		if typeof(sv) != TYPE_DICTIONARY:
@@ -900,6 +1359,8 @@ func _find_stream_snapshot_record(snapshot: Dictionary, device_instance_id: int,
 		if int(stream_record.get("device_instance_id", 0)) != device_instance_id:
 			continue
 		if str(stream_record.get("intent", "")) != intent:
+			continue
+		if required_mode != "" and str(stream_record.get("mode", "")) != required_mode:
 			continue
 		return stream_record
 	return {}
@@ -988,6 +1449,28 @@ func _get_stream_chooser_report(stream_id: int) -> Dictionary:
 	return {}
 
 
+func _wait_for_stream_chooser_with_intent(
+	stream_id: int,
+	label: String,
+	target_label: String,
+	expected_intent: String
+) -> Dictionary:
+	var last_intent := ""
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var report := _get_stream_chooser_report(stream_id)
+		if report.is_empty():
+			continue
+		last_intent = str(report.get("intent", ""))
+		if last_intent != expected_intent:
+			continue
+		return report
+	_fail("%s: timed out waiting for %s stream chooser report with intent %s (last_intent=%s)" % [label, target_label, expected_intent, last_intent])
+	return {}
+
+
 func _get_capture_chooser_report(device_instance_id: int) -> Dictionary:
 	for report_v in _get_retained_plan_chooser_reports():
 		if typeof(report_v) != TYPE_DICTIONARY:
@@ -1010,6 +1493,28 @@ func _wait_for_capture_chooser_report(device_instance_id: int, label: String) ->
 	return {}
 
 
+func _wait_for_capture_chooser_with_intent(
+	device_instance_id: int,
+	label: String,
+	target_label: String,
+	expected_intent: String
+) -> Dictionary:
+	var last_intent := ""
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var report := _get_capture_chooser_report(device_instance_id)
+		if report.is_empty():
+			continue
+		last_intent = str(report.get("intent", ""))
+		if last_intent != expected_intent:
+			continue
+		return report
+	_fail("%s: timed out waiting for %s capture chooser report with intent %s (last_intent=%s)" % [label, target_label, expected_intent, last_intent])
+	return {}
+
+
 func _wait_for_capture_chooser_matching_stream(
 	device_instance_id: int,
 	stream_chooser: Dictionary,
@@ -1027,7 +1532,7 @@ func _wait_for_capture_chooser_matching_stream(
 		var report := _get_capture_chooser_report(device_instance_id)
 		if report.is_empty():
 			continue
-		_assert_chooser_intent(report, label, "%s capture" % target_label, "Default")
+		_assert_chooser_intent(report, label, "%s capture" % target_label, "Stream-active")
 		if _done:
 			return {}
 		if bool(report.get("evaluator_active", false)):
@@ -1099,6 +1604,18 @@ func _chooser_decision_from_evaluation(report: Dictionary) -> bool:
 	return bool(report.get("decision_from_evaluation", false))
 
 
+func _chooser_has_made_decision(report: Dictionary) -> bool:
+	if report.is_empty():
+		return false
+	if _chooser_plan_valid(report, "decision_selected"):
+		return true
+	if bool(report.get("evaluator_active", false)):
+		return false
+	if not _chooser_plan_valid(report, "requested") or not _chooser_plan_valid(report, "steady"):
+		return false
+	return _chooser_posture(report, "requested") == _chooser_posture(report, "steady")
+
+
 func _chooser_selection_posture(report: Dictionary) -> String:
 	var steady_posture := _chooser_posture(report, "steady")
 	if _chooser_plan_valid(report, "steady") and steady_posture != "":
@@ -1116,6 +1633,14 @@ func _to_image_route_for_posture(posture: String) -> String:
 			return "gpu_primary_no_cpu_sidecar_materializer"
 		"GPU-primary, with CPU sidecar":
 			return "gpu_primary_cpu_sidecar"
+		_:
+			return ""
+
+
+func _auxiliary_gpu_materializer_route_for_posture(posture: String) -> String:
+	match posture:
+		"GPU-primary, with CPU sidecar":
+			return "gpu_primary_cpu_sidecar_materializer"
 		_:
 			return ""
 
@@ -1156,6 +1681,40 @@ func _summarize_to_image_evidence_entry(posture: String, route: String, entry: D
 	}
 
 
+func _selected_to_image_evidence(
+	posture: String,
+	evidence: Dictionary,
+	evidence_prefix: String
+) -> Dictionary:
+	var route := _to_image_route_for_posture(posture)
+	if route == "":
+		return {}
+	var key := "%s.%s" % [evidence_prefix, route]
+	if not evidence.has(key):
+		return {}
+	var entry_v = evidence.get(key, {})
+	if typeof(entry_v) != TYPE_DICTIONARY:
+		return {}
+	return _summarize_to_image_evidence_entry(posture, route, entry_v as Dictionary)
+
+
+func _selected_auxiliary_gpu_materializer_evidence(
+	posture: String,
+	evidence: Dictionary,
+	evidence_prefix: String
+) -> Dictionary:
+	var route := _auxiliary_gpu_materializer_route_for_posture(posture)
+	if route == "":
+		return {}
+	var key := "%s.%s" % [evidence_prefix, route]
+	if not evidence.has(key):
+		return {}
+	var entry_v = evidence.get(key, {})
+	if typeof(entry_v) != TYPE_DICTIONARY:
+		return {}
+	return _summarize_to_image_evidence_entry(posture, route, entry_v as Dictionary)
+
+
 func _compared_to_image_evidence(candidate_postures: Array, evidence: Dictionary, evidence_prefix: String) -> Array:
 	var compared: Array = []
 	for posture_v in candidate_postures:
@@ -1174,13 +1733,38 @@ func _compared_to_image_evidence(candidate_postures: Array, evidence: Dictionary
 	return compared
 
 
+func _compared_auxiliary_gpu_materializer_evidence(
+	candidate_postures: Array,
+	evidence: Dictionary,
+	evidence_prefix: String
+) -> Array:
+	var compared: Array = []
+	for posture_v in candidate_postures:
+		var posture := str(posture_v)
+		var route := _auxiliary_gpu_materializer_route_for_posture(posture)
+		if route == "":
+			continue
+		var key := "%s.%s" % [evidence_prefix, route]
+		if not evidence.has(key):
+			continue
+		var entry_v = evidence.get(key, {})
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = entry_v
+		compared.append(_summarize_to_image_evidence_entry(posture, route, entry))
+	return compared
+
+
 func _print_retained_plan_decision_summary(
+	context_tag: String,
 	candidate_source_report: Dictionary,
 	selected_report: Dictionary,
 	evidence: Dictionary,
 	evidence_scope: String
 ) -> void:
 	if selected_report.is_empty():
+		return
+	if not _chooser_has_made_decision(selected_report):
 		return
 	var selection := _chooser_selection_posture(selected_report)
 	if selection == "":
@@ -1190,35 +1774,181 @@ func _print_retained_plan_decision_summary(
 		candidates = _chooser_decision_candidate_postures(selected_report)
 	if candidates.is_empty():
 		candidates = _chooser_candidate_postures(selected_report)
+	if candidates.is_empty():
+		candidates = [selection]
 	var mode := "single_viable_selection"
 	if _chooser_decision_from_evaluation(selected_report) or candidates.size() > 1:
 		mode = "multiple_viable_selection"
 
 	var fields: Array = [
+		"context=%s" % context_tag,
+		"target_kind=%s" % str(selected_report.get("target_kind", "")),
+		"target_id=%d" % int(selected_report.get("target_id", 0)),
 		"intent=%s" % str(selected_report.get("intent", "")),
 		"mode=%s" % mode,
 		"selection=%s" % JSON.stringify(selection),
 		"candidates=%s" % JSON.stringify(candidates),
 	]
+	var evidence_prefix := "%s_to_image" % evidence_scope
+	var measurement_fields := [
+		"first_success_ns",
+		"first_success_ns_per_byte_est",
+		"fresh_result_avg_ns",
+		"fresh_result_avg_ns_per_byte_est",
+		"repeat_result_avg_ns",
+		"repeat_result_avg_ns_per_byte_est",
+		"last_bytes",
+		"last_reported_capability",
+		"posture_count",
+	]
+	var selected_to_image := _selected_to_image_evidence(selection, evidence, evidence_prefix)
+	if not selected_to_image.is_empty():
+		fields.append("selected_to_image_measurement_fields=%s" % JSON.stringify(measurement_fields))
+		fields.append("selected_to_image=%s" % JSON.stringify(selected_to_image))
+	var selected_auxiliary_gpu_materializer := _selected_auxiliary_gpu_materializer_evidence(
+		selection,
+		evidence,
+		evidence_prefix
+	)
+	if not selected_auxiliary_gpu_materializer.is_empty():
+		fields.append("selected_auxiliary_gpu_materializer_measurement_fields=%s" % JSON.stringify(measurement_fields))
+		fields.append("selected_auxiliary_gpu_materializer=%s" % JSON.stringify(selected_auxiliary_gpu_materializer))
 	if mode == "multiple_viable_selection":
-		var evidence_prefix := "%s_to_image" % evidence_scope
-		fields.append("to_image_measurement_fields=%s" % JSON.stringify([
-			"first_success_ns",
-			"first_success_ns_per_byte_est",
-			"fresh_result_avg_ns",
-			"fresh_result_avg_ns_per_byte_est",
-			"repeat_result_avg_ns",
-			"repeat_result_avg_ns_per_byte_est",
-			"last_bytes",
-			"last_reported_capability",
-			"posture_count",
-		]))
+		fields.append("to_image_measurement_fields=%s" % JSON.stringify(measurement_fields))
 		fields.append("compared_to_image=%s" % JSON.stringify(_compared_to_image_evidence(candidates, evidence, evidence_prefix)))
+		var auxiliary_gpu_materializer := _compared_auxiliary_gpu_materializer_evidence(
+			candidates,
+			evidence,
+			evidence_prefix
+		)
+		if not auxiliary_gpu_materializer.is_empty():
+			fields.append("auxiliary_gpu_materializer_measurement_fields=%s" % JSON.stringify(measurement_fields))
+			fields.append("auxiliary_gpu_materializer=%s" % JSON.stringify(auxiliary_gpu_materializer))
 	fields.append("stored_selection=%s" % _synthetic_producer_output_form_setting())
 	fields.append("effective_selection=%s" % _synthetic_producer_output_form_effective_selection())
 	fields.append("stream_downgrades=%s" % _synthetic_stream_capability_downgrade_effective_selection())
 	fields.append("capture_downgrades=%s" % _synthetic_capture_capability_downgrade_effective_selection())
 	print("RETAINED_PLAN_DECISION: %s" % " ".join(fields))
+
+
+func _emit_capture_decision_from_snapshot(
+	snapshot: Dictionary,
+	hardware_id: String,
+	expected_intent: String,
+	context_tag: String,
+	label: String
+) -> void:
+	if snapshot.is_empty():
+		return
+	var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+	_require(not device_record.is_empty(), "%s: device snapshot missing for hardware_id=%s" % [label, hardware_id])
+	if _done:
+		return
+	var device_instance_id := int(device_record.get("instance_id", 0))
+	_require(device_instance_id != 0, "%s: device instance id missing for hardware_id=%s" % [label, hardware_id])
+	if _done:
+		return
+	var report := await _wait_for_capture_chooser_with_intent(
+		device_instance_id,
+		label,
+		context_tag,
+		expected_intent
+	)
+	if _done:
+		return
+	if _chooser_has_made_decision(report):
+		var evidence := _get_result_access_timing_evidence()
+		_print_retained_plan_decision_summary(
+			context_tag,
+			report,
+			report,
+			evidence,
+			"capture"
+		)
+
+
+func _emit_stream_decision_from_snapshot(
+	snapshot: Dictionary,
+	hardware_id: String,
+	stream_intent: String,
+	context_tag: String,
+	label: String
+) -> void:
+	if snapshot.is_empty():
+		return
+	var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+	_require(not device_record.is_empty(), "%s: device snapshot missing for hardware_id=%s" % [label, hardware_id])
+	if _done:
+		return
+	var device_instance_id := int(device_record.get("instance_id", 0))
+	_require(device_instance_id != 0, "%s: device instance id missing for hardware_id=%s" % [label, hardware_id])
+	if _done:
+		return
+	var stream_record := _find_stream_snapshot_record(snapshot, device_instance_id, stream_intent)
+	_require(not stream_record.is_empty(), "%s: stream snapshot missing for hardware_id=%s intent=%s" % [label, hardware_id, stream_intent])
+	if _done:
+		return
+	var stream_id := int(stream_record.get("stream_id", 0))
+	_require(stream_id != 0, "%s: stream id missing for hardware_id=%s intent=%s" % [label, hardware_id, stream_intent])
+	if _done:
+		return
+	var report := await _wait_for_stream_chooser_with_intent(
+		stream_id,
+		label,
+		context_tag,
+		"Stream-active"
+	)
+	if _done:
+		return
+	if _chooser_has_made_decision(report):
+		var evidence := _get_result_access_timing_evidence()
+		_print_retained_plan_decision_summary(
+			context_tag,
+			report,
+			report,
+			evidence,
+			"stream"
+		)
+
+
+func _seed_capture_access_only_evidence_from_snapshot(
+	snapshot: Dictionary,
+	hardware_id: String,
+	label: String
+) -> void:
+	if snapshot.is_empty():
+		return
+	var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+	_require(not device_record.is_empty(), "%s: device snapshot missing for hardware_id=%s" % [label, hardware_id])
+	if _done:
+		return
+	var device_instance_id := int(device_record.get("instance_id", 0))
+	_require(device_instance_id != 0, "%s: device instance id missing for hardware_id=%s" % [label, hardware_id])
+	if _done:
+		return
+	var device = await _wait_for_device_handle(device_instance_id, label)
+	if _done:
+		return
+	await _require_default_still_profile_visible(device_instance_id, label)
+	if _done:
+		return
+	var capture_result = await _trigger_and_wait_capture(
+		device,
+		{"device_instance_id": device_instance_id},
+		label
+	)
+	if _done:
+		return
+	var access_probe := _exercise_capture_access_without_public_to_image(capture_result, label)
+	if _done:
+		return
+	_assert_access_only_probe_contract(label, access_probe)
+	if _done:
+		return
+	var evidence := await _wait_for_evidence_route("capture_to_image.cpu_packed", label)
+	if _done:
+		return
+	_require(not evidence.is_empty(), "%s: capture_to_image.cpu_packed evidence missing after access-only capture" % label)
 
 
 func _assert_chooser_intent(report: Dictionary, label: String, target_label: String, expected_intent: String) -> void:

@@ -1159,6 +1159,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
   }
+  retained_result_access_calibration::calibrate_capture_result(data, &runtime_);
   godot::Ref<CamBANGCaptureResult> out;
   out.instantiate();
   out->set_data(std::move(data));
@@ -1170,6 +1171,9 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(
     return godot::Ref<CamBANGCaptureResultSet>();
   }
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
+  for (const SharedCaptureResultData& result : results) {
+    retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
+  }
   godot::Ref<CamBANGCaptureResultSet> out;
   out.instantiate();
   out->set_capture_id(capture_id);

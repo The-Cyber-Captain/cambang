@@ -52,7 +52,7 @@ ResultCapability classify_supported_non_ready_from_measurements(
   costs.reserve(candidates.size());
   for (const CandidateMeasurement& candidate : candidates) {
     if (candidate.measurement.success) {
-      costs.push_back(candidate.measurement.normalized_cost_ns_per_byte());
+      costs.push_back(candidate.measurement.normalized_cost_units());
     }
   }
   return classify_supported_non_ready_result_access_from_normalized_costs(
@@ -137,6 +137,10 @@ void report_stream_to_image_observation(
         result_access_cost_evidence::kRouteStreamToImageCpuPacked,
         data->access_posture.posture_id);
   } else if (data->access_posture.has_retained_cpu_payload) {
+    // Chooser/report consumption follows the public to_image() path for the
+    // realized posture. A sidecar posture may also have an auxiliary GPU
+    // materializer measurement, but that remains a separate maintainer-only
+    // route rather than replacing the chooser-facing route.
     measurement = result_access_cost_evidence::latest_stream_measurement(
         result_access_cost_evidence::kRouteStreamToImageGpuPrimaryCpuSidecar,
         data->access_posture.posture_id);
@@ -152,7 +156,7 @@ void report_stream_to_image_observation(
       data->retained_access_truth.to_image,
       measurement.has_value() && measurement->success,
       measurement.has_value() && measurement->success
-          ? measurement->normalized_cost_ns_per_byte()
+          ? measurement->normalized_cost_units()
           : 0);
 }
 
@@ -173,6 +177,9 @@ void report_capture_to_image_observation(
         member.access_posture.posture_id,
         member.image_member_index);
   } else if (member.access_posture.has_retained_cpu_payload) {
+    // Capture follows the same split as stream: chooser/report input tracks
+    // the realized public to_image() route, while any sidecar-present GPU
+    // materializer timing remains an auxiliary maintainer-only route.
     measurement = result_access_cost_evidence::latest_capture_measurement(
         result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar,
         member.access_posture.posture_id,
@@ -190,7 +197,7 @@ void report_capture_to_image_observation(
       member.retained_access_truth.to_image,
       measurement.has_value() && measurement->success,
       measurement.has_value() && measurement->success
-          ? measurement->normalized_cost_ns_per_byte()
+          ? measurement->normalized_cost_units()
           : 0);
 }
 

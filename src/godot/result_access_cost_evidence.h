@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -34,8 +35,22 @@ struct RecordedAccessMeasurement {
   bool success = false;
   ResultCapability reported_capability = ResultCapability::UNSUPPORTED;
 
-  uint64_t normalized_cost_ns_per_byte() const noexcept {
-    return elapsed_ns / (estimated_result_bytes == 0 ? 1ull : estimated_result_bytes);
+  uint64_t normalized_cost_units() const noexcept {
+    constexpr uint64_t kScale = 65536ull;
+    if (elapsed_ns == 0) {
+      return 0;
+    }
+    const uint64_t bytes = estimated_result_bytes == 0 ? 1ull : estimated_result_bytes;
+    uint64_t scaled_elapsed = elapsed_ns;
+    if (scaled_elapsed > std::numeric_limits<uint64_t>::max() / kScale) {
+      scaled_elapsed = std::numeric_limits<uint64_t>::max();
+    } else {
+      scaled_elapsed *= kScale;
+    }
+    if (scaled_elapsed > std::numeric_limits<uint64_t>::max() - (bytes - 1ull)) {
+      return std::numeric_limits<uint64_t>::max() / bytes;
+    }
+    return (scaled_elapsed + (bytes - 1ull)) / bytes;
   }
 };
 

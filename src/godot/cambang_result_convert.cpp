@@ -11,21 +11,31 @@ int to_prov_int(ResultFactProvenance v) {
   return static_cast<int>(v);
 }
 
-godot::PackedByteArray payload_to_rgba_pba(const CoreResultPayloadCpuPacked& payload) {
+godot::PackedByteArray payload_rgba_to_pba(
+    const CoreResultPayloadCpuPacked& payload,
+    size_t required_bytes) {
   godot::PackedByteArray out;
-  out.resize(static_cast<int64_t>(payload.size_bytes()));
-  if (payload.empty()) {
+  out.resize(static_cast<int64_t>(required_bytes));
+  if (required_bytes == 0) {
+    return out;
+  }
+
+  std::memcpy(out.ptrw(), payload.data(), required_bytes);
+  return out;
+}
+
+godot::PackedByteArray payload_bgra_to_rgba_pba(
+    const CoreResultPayloadCpuPacked& payload,
+    size_t required_bytes) {
+  godot::PackedByteArray out;
+  out.resize(static_cast<int64_t>(required_bytes));
+  if (required_bytes == 0) {
     return out;
   }
 
   uint8_t* dst = out.ptrw();
   const uint8_t* src = payload.data();
-  if (payload.format_fourcc == FOURCC_RGBA) {
-    std::memcpy(dst, src, payload.size_bytes());
-    return out;
-  }
-
-  for (size_t i = 0; i + 3 < payload.size_bytes(); i += 4) {
+  for (size_t i = 0; i + 3 < required_bytes; i += 4) {
     dst[i] = src[i + 2];
     dst[i + 1] = src[i + 1];
     dst[i + 2] = src[i];
@@ -128,12 +138,22 @@ godot::Ref<godot::Image> payload_to_image(const CoreResultPayloadCpuPacked& payl
     return godot::Ref<godot::Image>();
   }
 
+  const size_t required_bytes =
+      static_cast<size_t>(payload.width) * static_cast<size_t>(payload.height) * 4u;
+  if (payload.stride_bytes != payload.width * 4u || payload.size_bytes() < required_bytes) {
+    return godot::Ref<godot::Image>();
+  }
+
+  godot::PackedByteArray bytes = payload.format_fourcc == FOURCC_RGBA
+      ? payload_rgba_to_pba(payload, required_bytes)
+      : payload_bgra_to_rgba_pba(payload, required_bytes);
+
   return godot::Image::create_from_data(
       static_cast<int>(payload.width),
       static_cast<int>(payload.height),
       false,
       godot::Image::FORMAT_RGBA8,
-      payload_to_rgba_pba(payload));
+      bytes);
 }
 
 } // namespace cambang
