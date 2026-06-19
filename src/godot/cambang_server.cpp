@@ -1159,7 +1159,12 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  retained_result_access_calibration::calibrate_capture_result(data, &runtime_);
+  // Capture-only access paths can outlive the brief live AcquisitionSession
+  // snapshot presence that the per-tick background calibrator relies on. Run
+  // the retained-result calibration here as well so dev/verification evidence
+  // remains available when a capture result is fetched through the public
+  // object path, without mutating Core chooser state from this const getter.
+  retained_result_access_calibration::calibrate_capture_result(data, nullptr);
   godot::Ref<CamBANGCaptureResult> out;
   out.instantiate();
   out->set_data(std::move(data));
@@ -1172,7 +1177,7 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(
   }
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
   for (const SharedCaptureResultData& result : results) {
-    retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
+    retained_result_access_calibration::calibrate_capture_result(result, nullptr);
   }
   godot::Ref<CamBANGCaptureResultSet> out;
   out.instantiate();

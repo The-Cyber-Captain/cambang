@@ -40,17 +40,6 @@ const DUAL_TARGET_SPECS := [
 	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW", "mode": "FLOWING"},
 	{"tag": "cam1", "hardware_id": "synthetic:1", "intent": "VIEWFINDER", "mode": "FLOWING"},
 ]
-const SINGLE_INITIAL_OPEN_NO_STREAM_AT_NS := 150000000
-const SINGLE_FIRST_STREAM_FLOWING_AT_NS := 1350000000
-const SINGLE_POST_TEARDOWN_ABSENT_AT_NS := 1650000000
-const SINGLE_FINAL_PRE_STREAM_AT_NS := 1950000000
-const SINGLE_FINAL_STREAM_FLOWING_AT_NS := 2550000000
-const DUAL_INITIAL_CAM0_OPEN_NO_STREAM_AT_NS := 150000000
-const DUAL_FIRST_CAM0_STREAM_FLOWING_AT_NS := 1350000000
-const DUAL_POST_TEARDOWN_CAM0_ABSENT_AT_NS := 1650000000
-const DUAL_NO_STREAM_BOTH_OPEN_AT_NS := 2250000000
-const DUAL_MIXED_CAM0_FLOWING_CAM1_DEFAULT_AT_NS := 2850000000
-const DUAL_BOTH_STREAMS_FLOWING_AT_NS := 3450000000
 
 const TOTAL_TIMEOUT_MS := 12000
 const BASELINE_TIMEOUT_FRAMES := 900
@@ -213,17 +202,9 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	var gen := await _wait_for_new_baseline(previous_gen, label)
 	if _done:
 		return {}
-	var timeline_at_ns := 0
 
 	var target_hardware_id := str(SINGLE_TARGET_SPECS[0].get("hardware_id", ""))
 	var target_intent := str(SINGLE_TARGET_SPECS[0].get("intent", ""))
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		SINGLE_INITIAL_OPEN_NO_STREAM_AT_NS,
-		"%s advance initial open/no-stream plateau" % label
-	)
-	if _done:
-		return {}
 	var initial_open_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s initial open/no-authored-stream plateau" % label,
@@ -252,13 +233,6 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		SINGLE_FIRST_STREAM_FLOWING_AT_NS,
-		"%s advance first stream-context plateau" % label
-	)
-	if _done:
-		return {}
 	await _wait_for_authored_structure_state(
 		gen,
 		"%s first authored stream-context plateau" % label,
@@ -271,13 +245,6 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 		return {}
 	_step_ok("%s observed first authored stream-context plateau" % label)
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		SINGLE_POST_TEARDOWN_ABSENT_AT_NS,
-		"%s advance post-teardown absent plateau" % label
-	)
-	if _done:
-		return {}
 	await _wait_for_authored_structure_state(
 		gen,
 		"%s post-teardown absent plateau" % label,
@@ -290,13 +257,6 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 		return {}
 	_step_ok("%s observed post-teardown absent plateau" % label)
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		SINGLE_FINAL_PRE_STREAM_AT_NS,
-		"%s advance final pre-stream plateau" % label
-	)
-	if _done:
-		return {}
 	var final_pre_stream_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s final pre-stream plateau" % label,
@@ -318,13 +278,6 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		SINGLE_FINAL_STREAM_FLOWING_AT_NS,
-		"%s advance final stream-flowing plateau" % label
-	)
-	if _done:
-		return {}
 	var contexts := await _wait_for_runtime_contexts(gen, SINGLE_TARGET_SPECS, label)
 	if _done:
 		return {}
@@ -478,19 +431,11 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	var gen := await _wait_for_new_baseline(previous_gen, label)
 	if _done:
 		return {}
-	var timeline_at_ns := 0
 
 	var cam0_hardware_id := str(DUAL_TARGET_SPECS[0].get("hardware_id", ""))
 	var cam0_intent := str(DUAL_TARGET_SPECS[0].get("intent", ""))
 	var cam1_hardware_id := str(DUAL_TARGET_SPECS[1].get("hardware_id", ""))
 	var cam1_intent := str(DUAL_TARGET_SPECS[1].get("intent", ""))
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		DUAL_INITIAL_CAM0_OPEN_NO_STREAM_AT_NS,
-		"%s advance initial cam0 open/no-stream plateau" % label
-	)
-	if _done:
-		return {}
 	var initial_cam0_open_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s initial cam0 open/no-authored-stream plateau" % label,
@@ -519,13 +464,6 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	if _done:
 		return {}
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		DUAL_FIRST_CAM0_STREAM_FLOWING_AT_NS,
-		"%s advance first cam0 stream-context plateau" % label
-	)
-	if _done:
-		return {}
 	await _wait_for_authored_structure_state(
 		gen,
 		"%s first cam0 stream-context plateau" % label,
@@ -538,13 +476,6 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		return {}
 	_step_ok("%s observed first cam0 stream-context plateau" % label)
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		DUAL_POST_TEARDOWN_CAM0_ABSENT_AT_NS,
-		"%s advance post-teardown cam0 absent plateau" % label
-	)
-	if _done:
-		return {}
 	await _wait_for_authored_structure_state(
 		gen,
 		"%s post-teardown cam0 absent plateau" % label,
@@ -557,13 +488,6 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		return {}
 	_step_ok("%s observed post-teardown cam0 absent plateau" % label)
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		DUAL_NO_STREAM_BOTH_OPEN_AT_NS,
-		"%s advance dual-device no-stream plateau" % label
-	)
-	if _done:
-		return {}
 	var dual_no_stream_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s dual-device no-authored-stream plateau" % label,
@@ -611,13 +535,6 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	if _done:
 		return {}
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		DUAL_MIXED_CAM0_FLOWING_CAM1_DEFAULT_AT_NS,
-		"%s advance mixed dual-device plateau" % label
-	)
-	if _done:
-		return {}
 	var mixed_dual_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s mixed dual-device plateau" % label,
@@ -639,13 +556,6 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	if _done:
 		return {}
 
-	timeline_at_ns = _advance_paused_timeline_to_ns(
-		timeline_at_ns,
-		DUAL_BOTH_STREAMS_FLOWING_AT_NS,
-		"%s advance dual flowing-stream plateau" % label
-	)
-	if _done:
-		return {}
 	var contexts := await _wait_for_runtime_contexts(gen, DUAL_TARGET_SPECS, label)
 	if _done:
 		return {}
@@ -828,11 +738,6 @@ func _bootstrap_runtime_and_stage_external_scenario(label: String, scenario_path
 	if _done:
 		return
 	_step_ok("%s scenario started" % label)
-	var pause_err := CamBANGServer.set_timeline_paused(true)
-	_require(pause_err == OK, "%s: unable to pause scenario timeline (%d)" % [label, pause_err])
-	if _done:
-		return
-	_step_ok("%s scenario timeline paused for deterministic phase control" % label)
 
 
 func _wait_for_new_baseline(previous_gen: int, label: String) -> int:
@@ -845,20 +750,6 @@ func _wait_for_new_baseline(previous_gen: int, label: String) -> int:
 				return gen
 	_fail("%s: timed out waiting for new baseline publish after gen=%d" % [label, previous_gen])
 	return -1
-
-
-func _advance_paused_timeline_to_ns(current_at_ns: int, target_at_ns: int, label: String) -> int:
-	_require(target_at_ns >= current_at_ns, "%s: target timeline ns regressed (%d -> %d)" % [label, current_at_ns, target_at_ns])
-	if _done:
-		return current_at_ns
-	var delta_ns := target_at_ns - current_at_ns
-	if delta_ns == 0:
-		return current_at_ns
-	var err := CamBANGServer.advance_timeline(delta_ns)
-	_require(err == OK, "%s: advance_timeline(%d) failed err=%d" % [label, delta_ns, err])
-	if _done:
-		return current_at_ns
-	return target_at_ns
 
 
 func _wait_for_authored_structure_state(
