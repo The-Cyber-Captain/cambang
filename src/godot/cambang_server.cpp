@@ -115,6 +115,13 @@ static godot::Dictionary chooser_report_to_dictionary(const CoreRetainedPlanChoo
     candidates.append(core_retained_plan_to_dictionary(candidate));
   }
   d["candidate_sequence"] = candidates;
+  d["decision_from_evaluation"] = report.decision_from_evaluation;
+  d["decision_selected"] = core_retained_plan_to_dictionary(report.decision_selected);
+  godot::Array decision_candidates;
+  for (const CoreRetainedProductionPlan& candidate : report.decision_candidate_sequence) {
+    decision_candidates.append(core_retained_plan_to_dictionary(candidate));
+  }
+  d["decision_candidate_sequence"] = decision_candidates;
   return d;
 }
 

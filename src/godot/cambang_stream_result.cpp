@@ -80,9 +80,18 @@ const char* to_image_evidence_route(const SharedStreamResultData& data) {
       data->retained_gpu_backing &&
       data->retained_gpu_backing_descriptor.valid &&
       data->retained_gpu_backing_descriptor.materialization_available) {
-    return result_access_cost_evidence::kRouteStreamToImageGpuSyntheticBackingMaterializer;
+    return result_access_cost_evidence::kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer;
   }
   return result_access_cost_evidence::kRouteStreamAccessUnsupported;
+}
+
+const char* gpu_materializer_evidence_route_for_posture(const SharedStreamResultData& data) {
+  if (!data) {
+    return result_access_cost_evidence::kRouteStreamAccessUnsupported;
+  }
+  return data->access_posture.has_retained_cpu_payload
+      ? result_access_cost_evidence::kRouteStreamToImageGpuPrimaryCpuSidecarMaterializer
+      : result_access_cost_evidence::kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer;
 }
 
 const char* display_view_evidence_route(const SharedStreamResultData& data) {
@@ -452,6 +461,7 @@ godot::Ref<godot::Image> perform_stream_to_image_cpu_payload_access(const Shared
 godot::Ref<godot::Image> perform_stream_to_image_gpu_materializer_access(const SharedStreamResultData& data) {
   const uint64_t begin_ns = result_access_now_ns();
   godot::Ref<godot::Image> image;
+  const char* route = gpu_materializer_evidence_route_for_posture(data);
   if (!data ||
       data->payload_kind != ResultPayloadKind::GPU_SURFACE ||
       !data->retained_gpu_backing ||
@@ -469,7 +479,7 @@ godot::Ref<godot::Image> perform_stream_to_image_gpu_materializer_access(const S
       data->retained_gpu_backing_descriptor,
       data->retained_gpu_backing);
   result_access_cost_evidence::record_stream_access(
-      result_access_cost_evidence::kRouteStreamToImageGpuSyntheticBackingMaterializer,
+      route,
       data,
       result_access_now_ns() - begin_ns,
       image.is_valid(),

@@ -80,7 +80,7 @@ void refine_stream_to_image_classification(const SharedStreamResultData& data) {
     candidates.push_back(CandidateMeasurement{*measurement});
   }
   if (auto measurement = result_access_cost_evidence::latest_stream_measurement(
-          result_access_cost_evidence::kRouteStreamToImageGpuSyntheticBackingMaterializer,
+          result_access_cost_evidence::kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer,
           data->access_posture.posture_id);
       measurement && measurement->success) {
     candidates.push_back(CandidateMeasurement{*measurement});
@@ -106,7 +106,14 @@ void refine_capture_to_image_classification(
     candidates.push_back(CandidateMeasurement{*measurement});
   }
   if (auto measurement = result_access_cost_evidence::latest_capture_measurement(
-          result_access_cost_evidence::kRouteCaptureToImageGpuSyntheticBackingMaterializer,
+          result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar,
+          member.access_posture.posture_id,
+          member.image_member_index);
+      measurement && measurement->success) {
+    candidates.push_back(CandidateMeasurement{*measurement});
+  }
+  if (auto measurement = result_access_cost_evidence::latest_capture_measurement(
+          result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryNoCpuSidecarMaterializer,
           member.access_posture.posture_id,
           member.image_member_index);
       measurement && measurement->success) {
@@ -136,7 +143,7 @@ void report_stream_to_image_observation(
   } else if (data->access_posture.has_retained_gpu_backing &&
              data->access_posture.gpu_materialization_available) {
     measurement = result_access_cost_evidence::latest_stream_measurement(
-        result_access_cost_evidence::kRouteStreamToImageGpuSyntheticBackingMaterializer,
+        result_access_cost_evidence::kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer,
         data->access_posture.posture_id);
   }
   runtime->report_stream_retained_to_image_observation(
@@ -165,10 +172,15 @@ void report_capture_to_image_observation(
         result_access_cost_evidence::kRouteCaptureToImageCpuPacked,
         member.access_posture.posture_id,
         member.image_member_index);
+  } else if (member.access_posture.has_retained_cpu_payload) {
+    measurement = result_access_cost_evidence::latest_capture_measurement(
+        result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar,
+        member.access_posture.posture_id,
+        member.image_member_index);
   } else if (member.access_posture.has_retained_gpu_backing &&
              member.access_posture.gpu_materialization_available) {
     measurement = result_access_cost_evidence::latest_capture_measurement(
-        result_access_cost_evidence::kRouteCaptureToImageGpuSyntheticBackingMaterializer,
+        result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryNoCpuSidecarMaterializer,
         member.access_posture.posture_id,
         member.image_member_index);
   }

@@ -144,6 +144,7 @@ bool materialize_synthetic_canonical_scenario(
         return false;
       }
       ev.stream_id = sit->second.stream_id;
+      ev.stream_intent = sit->second.intent;
       if (ev.device_instance_id == 0) {
         ev.device_instance_id = sit->second.device_instance_id;
       }

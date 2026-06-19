@@ -1,24 +1,27 @@
 extends Node
 
-## Scene 68: inner evidence reset verify
+## Scene 68: retained-plan evaluator and timing evidence verify
 ##
 ## Purpose:
-## - verify the raw, un-arbitrated inner result-access evidence layer only
-## - verify internally calibrated stream and capture result-access evidence
+## - verify posture-evaluator lifecycle and retained-plan chooser reporting
+## - verify internally calibrated stream and capture result-access timing evidence
 ## - first prove that materialization-route evidence can appear without any
 ##   public to_image()/to_image_member() calls from the scene itself
-## - prove that result_access_timing_evidence is cleared by stop()
-## - prove that fresh evidence is recorded again after restart
+## - prove chooser state and timing evidence stay correctly scoped to the
+##   owning stream/capture parent context in both single-device and dual-device
+##   structures
+## - prove that result_access_timing_evidence and retained_plan_chooser_reports
+##   are cleared by stop() and re-established after restart
 ##
 ## Scope guardrail:
 ## - this is a verification scene / harness scene, not a scenario semantic owner
-## - this scene intentionally does not verify any future outer posture chooser
-## - it must stay at the real result-operation seam and must not turn into a
+## - it stays at the retained-result operation seam and must not turn into a
 ##   rendering/teaching scene like Scene 70
-##
+## 
 ## Design choice:
-## - use a minimal external synthetic scenario only to realize one deterministic
-##   repeating stream; scenario semantics remain provider-owned
+## - use minimal external synthetic scenarios only to realize focused
+##   single-device and dual-device live structures; scenario semantics remain
+##   provider-owned
 ## - the access-only session must not seed materialisation evidence through
 ##   public to_image()/to_image_member() calls
 ## - do not rely on UI rendering to seed evidence
@@ -28,7 +31,15 @@ extends Node
 ##   coupled to manual still-profile submission
 
 const SCENE_LABEL := "inner_evidence_reset_verify"
-const SCENARIO_PATH := "res://scenarios/68_inner_evidence_reset_live.json"
+const SINGLE_SCENARIO_PATH := "res://scenarios/68_inner_evidence_reset_live.json"
+const DUAL_SCENARIO_PATH := "res://scenarios/68_inner_evidence_reset_dual_live.json"
+const SINGLE_TARGET_SPECS := [
+	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW"},
+]
+const DUAL_TARGET_SPECS := [
+	{"tag": "cam0", "hardware_id": "synthetic:0", "intent": "PREVIEW"},
+	{"tag": "cam1", "hardware_id": "synthetic:1", "intent": "VIEWFINDER"},
+]
 
 const TOTAL_TIMEOUT_MS := 12000
 const BASELINE_TIMEOUT_FRAMES := 900
@@ -150,23 +161,23 @@ func _run() -> void:
 
 
 func _run_impl() -> void:
-	var session_0 := await _run_session_access_only(-1, "session_0_access_only")
+	var session_0 := await _run_single_device_access_only_pass(-1, "single_device_access_only")
 	if _done:
 		return
-	_print_evidence("session_0_access_only_post_access", session_0.get("evidence", {}))
+	_print_evidence("single_device_access_only_post_access", session_0.get("evidence", {}))
 
 	await _stop_and_verify_reset()
 	if _done:
 		return
-
-	var session_1 := await _run_session(int(session_0.get("gen", 0)), "session_1")
-	if _done:
-		return
-	_print_evidence("session_1_post_access", session_1.get("evidence", {}))
 
 	var gen_0 := int(session_0.get("gen", 0))
+	var session_1 := await _run_dual_device_materialized_pass(gen_0, "dual_device_materialized")
+	if _done:
+		return
+	_print_evidence("dual_device_materialized_post_access", session_1.get("evidence", {}))
+
 	var gen_1 := int(session_1.get("gen", 0))
-	_require(gen_1 > gen_0, "generation did not advance across first restart (%d -> %d)" % [gen_0, gen_1])
+	_require(gen_1 > gen_0, "generation did not advance across restart (%d -> %d)" % [gen_0, gen_1])
 	if _done:
 		return
 
@@ -174,23 +185,17 @@ func _run_impl() -> void:
 	if _done:
 		return
 
-	var session_2 := await _run_session(int(session_1.get("gen", 0)), "session_2")
-	if _done:
-		return
-	_print_evidence("session_2_post_access", session_2.get("evidence", {}))
-
-	var gen_2 := int(session_2.get("gen", 0))
-	_require(gen_2 > gen_1, "generation did not advance across second restart (%d -> %d)" % [gen_1, gen_2])
-	if _done:
-		return
-
-	_step_ok("inner evidence reset verified")
+	_step_ok("posture evaluator lifecycle and retained timing evidence verified")
 	_cleanup_and_quit(0)
 
 
-func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
+func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Dictionary:
 	_display_refs.clear()
-	_bootstrap_runtime_and_stage_external_scenario(label)
+	_bootstrap_runtime_and_stage_external_scenario(
+		label,
+		SINGLE_SCENARIO_PATH,
+		"68_inner_evidence_reset_live"
+	)
 	if _done:
 		return {}
 
@@ -198,18 +203,22 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	if _done:
 		return {}
 
-	var ids := await _wait_for_runtime_ids(gen, label)
+	var contexts := await _wait_for_runtime_contexts(gen, SINGLE_TARGET_SPECS, label)
 	if _done:
 		return {}
-	_step_ok("%s identifiers latched (device_instance_id=%d stream_id=%d)" % [
+	var context: Dictionary = contexts[0]
+	_step_ok("%s target latched (%s device_instance_id=%d stream_id=%d intent=%s)" % [
 		label,
-		int(ids.get("device_instance_id", 0)),
-		int(ids.get("stream_id", 0)),
+		str(context.get("tag", "")),
+		int(context.get("device_instance_id", 0)),
+		int(context.get("stream_id", 0)),
+		str(context.get("intent", "")),
 	])
 
-	var hardware_id := str(ids.get("hardware_id", ""))
-	var device_instance_id := int(ids.get("device_instance_id", 0))
-	var stream_id := int(ids.get("stream_id", 0))
+	var hardware_id := str(context.get("hardware_id", ""))
+	var device_instance_id := int(context.get("device_instance_id", 0))
+	var stream_id := int(context.get("stream_id", 0))
+	var target_label := "%s_%s" % [label, str(context.get("tag", "target"))]
 
 	_require(device_instance_id != 0, "%s: snapshot device_instance_id is 0" % label)
 	if _done:
@@ -218,16 +227,17 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	_require(device != null, "%s: get_device(%d) returned null" % [label, device_instance_id])
 	if _done:
 		return {}
-	_print_device_handle_diag(label, "post_get_device", device, ids)
+	_print_device_handle_diag(label, "post_get_device", device, context)
 
 	var stream_result = await _wait_for_stream_result(stream_id, label)
 	if _done:
 		return {}
 	var initial_stream_chooser := _get_stream_chooser_report(stream_id)
 	_print_chooser_report("%s_stream_initial" % label, initial_stream_chooser)
-	var stream_chooser_shape := _classify_and_assert_stream_chooser_shape(initial_stream_chooser, label)
+	var stream_chooser_shape := _classify_and_assert_stream_chooser_shape(initial_stream_chooser, target_label)
 	if _done:
 		return {}
+	var stream_candidate_source_chooser := initial_stream_chooser
 
 	await _exercise_stream_access_without_public_to_image(stream_id, stream_result, label)
 	if _done:
@@ -236,22 +246,54 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 
 	var stream_chooser_after_stream_access := initial_stream_chooser
 	if stream_chooser_shape == "multi":
-		stream_chooser_after_stream_access = await _observe_multi_candidate_chooser_until_steady(stream_id, initial_stream_chooser, label, "stream")
+		var stream_observation := await _observe_multi_candidate_chooser_until_steady(
+			stream_id,
+			initial_stream_chooser,
+			target_label,
+			"stream"
+		)
 		if _done:
 			return {}
+		stream_candidate_source_chooser = stream_observation.get(
+			"candidate_source_report",
+			initial_stream_chooser
+		)
+		stream_chooser_after_stream_access = stream_observation.get(
+			"steady_report",
+			initial_stream_chooser
+		)
 		_print_chooser_report("%s_stream_after_multi_observation" % label, stream_chooser_after_stream_access)
+
+	var steady_stream_chooser := await _resolve_stream_steady_chooser(
+		stream_id,
+		stream_chooser_after_stream_access,
+		stream_chooser_shape,
+		target_label,
+		"stream"
+	)
+	if _done:
+		return {}
+	_print_chooser_report("%s_stream_steady" % label, steady_stream_chooser)
+	await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, target_label, "stream")
+	if _done:
+		return {}
 
 	await _require_default_still_profile_visible(device_instance_id, label)
 	if _done:
 		return {}
 	_step_ok("%s default still profile snapshot-visible" % label)
-	var capture_chooser := await _wait_for_capture_chooser_report(device_instance_id, label)
-	_print_chooser_report("%s_capture_default" % label, capture_chooser)
-	_assert_chooser_intent(capture_chooser, label, "capture", "Default")
+	var capture_chooser := await _wait_for_capture_chooser_matching_stream(
+		device_instance_id,
+		steady_stream_chooser,
+		target_label,
+		str(context.get("tag", "capture"))
+	)
+	_print_chooser_report("%s_capture_mirrored" % label, capture_chooser)
 	if _done:
 		return {}
+	_step_ok("%s capture chooser mirrored the live active stream policy" % label)
 
-	var capture_result = await _trigger_and_wait_capture(device, ids, label)
+	var capture_result = await _trigger_and_wait_capture(device, context, label)
 	if _done:
 		return {}
 	var access_probe := _exercise_capture_access_without_public_to_image(capture_result, label)
@@ -259,29 +301,37 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 		return {}
 	_step_ok("%s capture access-only evidence seeded" % label)
 
-	var evidence := await _wait_for_access_only_measurement_evidence(label)
+	var route_expectations := _build_expected_route_counts([
+		{
+			"context": context,
+			"stream_chooser": steady_stream_chooser,
+			"capture_chooser": capture_chooser,
+		}
+	])
+	var evidence := await _wait_for_expected_evidence_routes(label, route_expectations)
 	if _done:
 		return {}
-	var steady_stream_chooser := stream_chooser_after_stream_access
-	if stream_chooser_shape == "single":
-		steady_stream_chooser = _get_stream_chooser_report(stream_id)
-	else:
-		if bool(steady_stream_chooser.get("evaluator_active", false)) or not _chooser_plan_valid(steady_stream_chooser, "steady"):
-			steady_stream_chooser = await _wait_for_chooser_steady(stream_id, label, "stream")
+	_assert_expected_evidence_family(evidence, target_label, steady_stream_chooser, capture_chooser)
 	if _done:
 		return {}
-	_print_chooser_report("%s_stream_steady" % label, steady_stream_chooser)
-	await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, label, "stream")
-	if _done:
-		return {}
-	_assert_expected_evidence_family(evidence, label, steady_stream_chooser, capture_chooser)
+	_assert_expected_route_posture_counts(evidence, route_expectations, target_label)
 	if _done:
 		return {}
 	_assert_access_only_probe_contract(label, access_probe)
 	if _done:
 		return {}
-	_print_retained_plan_decision_summary(steady_stream_chooser, evidence, "stream")
-	_print_retained_plan_decision_summary(capture_chooser, evidence, "capture")
+	_print_retained_plan_decision_summary(
+		stream_candidate_source_chooser,
+		steady_stream_chooser,
+		evidence,
+		"stream"
+	)
+	_print_retained_plan_decision_summary(
+		stream_candidate_source_chooser,
+		capture_chooser,
+		evidence,
+		"capture"
+	)
 	_step_ok("%s access-only evidence verified" % label)
 
 	return {
@@ -293,9 +343,13 @@ func _run_session_access_only(previous_gen: int, label: String) -> Dictionary:
 	}
 
 
-func _run_session(previous_gen: int, label: String) -> Dictionary:
+func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dictionary:
 	_display_refs.clear()
-	_bootstrap_runtime_and_stage_external_scenario(label)
+	_bootstrap_runtime_and_stage_external_scenario(
+		label,
+		DUAL_SCENARIO_PATH,
+		"68_inner_evidence_reset_dual_live"
+	)
 	if _done:
 		return {}
 
@@ -303,82 +357,157 @@ func _run_session(previous_gen: int, label: String) -> Dictionary:
 	if _done:
 		return {}
 
-	var ids := await _wait_for_runtime_ids(gen, label)
+	var contexts := await _wait_for_runtime_contexts(gen, DUAL_TARGET_SPECS, label)
 	if _done:
 		return {}
-	_step_ok("%s identifiers latched (device_instance_id=%d stream_id=%d)" % [
+	_assert_context_identity_scope(contexts, label)
+	if _done:
+		return {}
+
+	var records: Array = []
+	for context_v in contexts:
+		var context: Dictionary = context_v
+		var target_label := "%s_%s" % [label, str(context.get("tag", "target"))]
+		_step_ok("%s target latched (%s device_instance_id=%d stream_id=%d intent=%s)" % [
+			label,
+			str(context.get("tag", "")),
+			int(context.get("device_instance_id", 0)),
+			int(context.get("stream_id", 0)),
+			str(context.get("intent", "")),
+		])
+		var device_instance_id := int(context.get("device_instance_id", 0))
+		var stream_id := int(context.get("stream_id", 0))
+		_require(device_instance_id != 0 and stream_id != 0, "%s: target ids missing for %s" % [label, str(context.get("tag", ""))])
+		if _done:
+			return {}
+		var device = CamBANGServer.get_device(device_instance_id)
+		_require(device != null, "%s: get_device(%d) returned null for %s" % [label, device_instance_id, str(context.get("tag", ""))])
+		if _done:
+			return {}
+		_print_device_handle_diag(label, "post_get_device", device, context)
+
+		var stream_result = await _wait_for_stream_result(stream_id, target_label)
+		if _done:
+			return {}
+		var initial_stream_chooser := _get_stream_chooser_report(stream_id)
+		_print_chooser_report("%s_stream_initial" % target_label, initial_stream_chooser)
+		var stream_chooser_shape := _classify_and_assert_stream_chooser_shape(initial_stream_chooser, target_label)
+		if _done:
+			return {}
+		var stream_candidate_source_chooser := initial_stream_chooser
+		await _exercise_stream_access(stream_id, stream_result, target_label)
+		if _done:
+			return {}
+		_step_ok("%s stream evidence seeded" % target_label)
+
+		var observed_stream_chooser := initial_stream_chooser
+		if stream_chooser_shape == "multi":
+			var stream_observation := await _observe_multi_candidate_chooser_until_steady(
+				stream_id,
+				initial_stream_chooser,
+				target_label,
+				"stream"
+			)
+			if _done:
+				return {}
+			stream_candidate_source_chooser = stream_observation.get(
+				"candidate_source_report",
+				initial_stream_chooser
+			)
+			observed_stream_chooser = stream_observation.get(
+				"steady_report",
+				initial_stream_chooser
+			)
+			_print_chooser_report("%s_stream_after_multi_observation" % target_label, observed_stream_chooser)
+		var steady_stream_chooser := await _resolve_stream_steady_chooser(
+			stream_id,
+			observed_stream_chooser,
+			stream_chooser_shape,
+			target_label,
+			"stream"
+		)
+		if _done:
+			return {}
+		_print_chooser_report("%s_stream_steady" % target_label, steady_stream_chooser)
+		await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, target_label, "stream")
+		if _done:
+			return {}
+
+		await _require_default_still_profile_visible(device_instance_id, target_label)
+		if _done:
+			return {}
+		_step_ok("%s default still profile snapshot-visible" % target_label)
+		var capture_chooser := await _wait_for_capture_chooser_matching_stream(
+			device_instance_id,
+			steady_stream_chooser,
+			target_label,
+			str(context.get("tag", "capture"))
+		)
+		if _done:
+			return {}
+		_print_chooser_report("%s_capture_mirrored" % target_label, capture_chooser)
+		_step_ok("%s capture chooser mirrored the live active stream policy" % target_label)
+
+		var capture_result = await _trigger_and_wait_capture(device, context, target_label)
+		if _done:
+			return {}
+		_exercise_capture_access(capture_result, target_label)
+		if _done:
+			return {}
+		_step_ok("%s capture evidence seeded" % target_label)
+
+		records.append({
+			"context": context,
+			"stream_candidate_source_chooser": stream_candidate_source_chooser,
+			"stream_chooser": steady_stream_chooser,
+			"capture_chooser": capture_chooser,
+		})
+
+	var evidence := await _wait_for_expected_evidence_routes(
 		label,
-		int(ids.get("device_instance_id", 0)),
-		int(ids.get("stream_id", 0)),
-	])
-
-	var hardware_id := str(ids.get("hardware_id", ""))
-	var device_instance_id := int(ids.get("device_instance_id", 0))
-	var stream_id := int(ids.get("stream_id", 0))
-
-	_require(device_instance_id != 0, "%s: snapshot device_instance_id is 0" % label)
+		_build_expected_route_counts(records)
+	)
 	if _done:
 		return {}
-	var device = CamBANGServer.get_device(device_instance_id)
-	_require(device != null, "%s: get_device(%d) returned null" % [label, device_instance_id])
+	var route_expectations := _build_expected_route_counts(records)
+	_assert_chooser_reports_distinct(records, label)
 	if _done:
 		return {}
-	_print_device_handle_diag(label, "post_get_device", device, ids)
-
-	var stream_result = await _wait_for_stream_result(stream_id, label)
+	for record_v in records:
+		var record: Dictionary = record_v
+		var context: Dictionary = record.get("context", {})
+		var target_label := "%s_%s" % [label, str(context.get("tag", "target"))]
+		var stream_candidate_source_chooser: Dictionary = record.get("stream_candidate_source_chooser", {})
+		var stream_chooser: Dictionary = record.get("stream_chooser", {})
+		var capture_chooser: Dictionary = record.get("capture_chooser", {})
+		_assert_expected_evidence_family(evidence, target_label, stream_chooser, capture_chooser)
+		if _done:
+			return {}
+		_print_retained_plan_decision_summary(
+			stream_candidate_source_chooser,
+			stream_chooser,
+			evidence,
+			"stream"
+		)
+		_print_retained_plan_decision_summary(
+			stream_candidate_source_chooser,
+			capture_chooser,
+			evidence,
+			"capture"
+		)
+	_assert_expected_route_posture_counts(evidence, route_expectations, label)
 	if _done:
 		return {}
-	await _exercise_stream_access(stream_id, stream_result, label)
-	if _done:
-		return {}
-	_step_ok("%s stream evidence seeded" % label)
-
-	await _require_default_still_profile_visible(device_instance_id, label)
-	if _done:
-		return {}
-	_step_ok("%s default still profile snapshot-visible" % label)
-	var capture_chooser := await _wait_for_capture_chooser_report(device_instance_id, label)
-	if _done:
-		return {}
-	_print_chooser_report("%s_capture_default" % label, capture_chooser)
-	_assert_chooser_intent(capture_chooser, label, "capture", "Default")
-	if _done:
-		return {}
-
-	var capture_result = await _trigger_and_wait_capture(device, ids, label)
-	if _done:
-		return {}
-	_exercise_capture_access(capture_result, label)
-	if _done:
-		return {}
-	_step_ok("%s capture evidence seeded" % label)
-
-	await get_tree().process_frame
-	var evidence := _get_result_access_timing_evidence()
-	_require(not evidence.is_empty(), "%s: result_access_timing_evidence is empty after result access" % label)
-	if _done:
-		return {}
-	var stream_chooser := _get_stream_chooser_report(stream_id)
-	if bool(stream_chooser.get("evaluator_active", false)) or not _chooser_plan_valid(stream_chooser, "steady"):
-		stream_chooser = await _wait_for_chooser_steady(stream_id, label, "stream")
-	if _done:
-		return {}
-	_print_chooser_report("%s_stream_steady" % label, stream_chooser)
-	_assert_expected_evidence_family(evidence, label, stream_chooser, capture_chooser)
-	if _done:
-		return {}
-	_step_ok("%s evidence verified" % label)
+	_step_ok("%s dual-device chooser and evidence scoping verified" % label)
 
 	return {
 		"gen": gen,
-		"hardware_id": hardware_id,
-		"device_instance_id": device_instance_id,
-		"stream_id": stream_id,
+		"contexts": contexts,
 		"evidence": evidence,
 	}
 
 
-func _bootstrap_runtime_and_stage_external_scenario(label: String) -> void:
+func _bootstrap_runtime_and_stage_external_scenario(label: String, scenario_path: String, scenario_name: String) -> void:
 	CamBANGServer.stop()
 	var start_err := CamBANGServer.start(
 		CamBANGServer.PROVIDER_KIND_SYNTHETIC,
@@ -394,15 +523,15 @@ func _bootstrap_runtime_and_stage_external_scenario(label: String) -> void:
 		return
 	_step_ok("%s synthetic runtime started" % label)
 
-	var scenario_text := FileAccess.get_file_as_string(SCENARIO_PATH)
-	_require(scenario_text != "", "%s: scenario missing at %s" % [label, SCENARIO_PATH])
+	var scenario_text := FileAccess.get_file_as_string(scenario_path)
+	_require(scenario_text != "", "%s: scenario missing at %s" % [label, scenario_path])
 	if _done:
 		return
 	var stage_err := CamBANGServer.load_external_scenario(scenario_text)
 	_require(stage_err == OK, "%s: unable to load external scenario (%d)" % [label, stage_err])
 	if _done:
 		return
-	_step_ok("%s external scenario staged (68_inner_evidence_reset_live)" % label)
+	_step_ok("%s external scenario staged (%s)" % [label, scenario_name])
 
 	var scenario_start_err := CamBANGServer.start_scenario()
 	_require(scenario_start_err == OK, "%s: unable to start staged scenario (%d)" % [label, scenario_start_err])
@@ -423,10 +552,10 @@ func _wait_for_new_baseline(previous_gen: int, label: String) -> int:
 	return -1
 
 
-func _wait_for_runtime_ids(expected_gen: int, label: String) -> Dictionary:
+func _wait_for_runtime_contexts(expected_gen: int, target_specs: Array, label: String) -> Array:
 	for _i in range(ID_TIMEOUT_FRAMES):
 		if _timed_out():
-			return {}
+			return []
 		await get_tree().process_frame
 		var snapshot = CamBANGServer.get_state_snapshot()
 		if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
@@ -434,26 +563,39 @@ func _wait_for_runtime_ids(expected_gen: int, label: String) -> Dictionary:
 		if int(snapshot.get("gen", -1)) != expected_gen:
 			continue
 
-		var devices: Array = snapshot.get("devices", [])
-		var streams: Array = snapshot.get("streams", [])
-		if devices.is_empty() or streams.is_empty():
-			continue
-		var first_device = devices[0]
-		var first_stream = streams[0]
-		if typeof(first_device) != TYPE_DICTIONARY or typeof(first_stream) != TYPE_DICTIONARY:
-			continue
-
-		var hardware_id := str(first_device.get("hardware_id", ""))
-		var device_instance_id := int(first_device.get("instance_id", 0))
-		var stream_id := int(first_stream.get("stream_id", 0))
-		if hardware_id != "" and device_instance_id != 0 and stream_id != 0:
-			return {
+		var contexts: Array = []
+		var all_ready := true
+		for spec_v in target_specs:
+			if typeof(spec_v) != TYPE_DICTIONARY:
+				all_ready = false
+				break
+			var spec: Dictionary = spec_v
+			var hardware_id := str(spec.get("hardware_id", ""))
+			var intent := str(spec.get("intent", ""))
+			var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+			if device_record.is_empty():
+				all_ready = false
+				break
+			var device_instance_id := int(device_record.get("instance_id", 0))
+			var stream_record := _find_stream_snapshot_record(snapshot, device_instance_id, intent)
+			if stream_record.is_empty():
+				all_ready = false
+				break
+			var stream_id := int(stream_record.get("stream_id", 0))
+			if device_instance_id == 0 or stream_id == 0:
+				all_ready = false
+				break
+			contexts.append({
+				"tag": str(spec.get("tag", hardware_id)),
 				"hardware_id": hardware_id,
 				"device_instance_id": device_instance_id,
 				"stream_id": stream_id,
-			}
-	_fail("%s: timed out waiting for device/stream ids in gen=%d snapshot" % [label, expected_gen])
-	return {}
+				"intent": intent,
+			})
+		if all_ready and contexts.size() == target_specs.size():
+			return contexts
+	_fail("%s: timed out waiting for authored device/stream identities in gen=%d snapshot" % [label, expected_gen])
+	return []
 
 
 func _wait_for_stream_result(stream_id: int, label: String):
@@ -738,6 +880,31 @@ func _get_device_snapshot_record(device_instance_id: int) -> Dictionary:
 	return {}
 
 
+func _find_device_snapshot_record_by_hardware_id(snapshot: Dictionary, hardware_id: String) -> Dictionary:
+	var devices: Array = snapshot.get("devices", [])
+	for dv in devices:
+		if typeof(dv) != TYPE_DICTIONARY:
+			continue
+		var device_record: Dictionary = dv
+		if str(device_record.get("hardware_id", "")) == hardware_id:
+			return device_record
+	return {}
+
+
+func _find_stream_snapshot_record(snapshot: Dictionary, device_instance_id: int, intent: String) -> Dictionary:
+	var streams: Array = snapshot.get("streams", [])
+	for sv in streams:
+		if typeof(sv) != TYPE_DICTIONARY:
+			continue
+		var stream_record: Dictionary = sv
+		if int(stream_record.get("device_instance_id", 0)) != device_instance_id:
+			continue
+		if str(stream_record.get("intent", "")) != intent:
+			continue
+		return stream_record
+	return {}
+
+
 func _extract_snapshot_still_profile(device_snapshot: Dictionary) -> Dictionary:
 	var capture_profile_v = device_snapshot.get("capture_profile", null)
 	if typeof(capture_profile_v) != TYPE_DICTIONARY:
@@ -843,6 +1010,39 @@ func _wait_for_capture_chooser_report(device_instance_id: int, label: String) ->
 	return {}
 
 
+func _wait_for_capture_chooser_matching_stream(
+	device_instance_id: int,
+	stream_chooser: Dictionary,
+	label: String,
+	target_label: String
+) -> Dictionary:
+	var expected_posture := _chooser_selection_posture(stream_chooser)
+	_require(expected_posture != "", "%s: %s stream chooser selection posture missing before capture chooser refresh" % [label, target_label])
+	if _done:
+		return {}
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var report := _get_capture_chooser_report(device_instance_id)
+		if report.is_empty():
+			continue
+		_assert_chooser_intent(report, label, "%s capture" % target_label, "Default")
+		if _done:
+			return {}
+		if bool(report.get("evaluator_active", false)):
+			continue
+		if not _chooser_plan_valid(report, "requested") or not _chooser_plan_valid(report, "steady"):
+			continue
+		if _chooser_posture(report, "requested") != expected_posture:
+			continue
+		if _chooser_posture(report, "steady") != expected_posture:
+			continue
+		return report
+	_fail("%s: timed out waiting for %s capture chooser to mirror settled stream posture %s" % [label, target_label, expected_posture])
+	return {}
+
+
 func _chooser_posture(report: Dictionary, key: String) -> String:
 	var plan_v = report.get(key, {})
 	if typeof(plan_v) != TYPE_DICTIONARY:
@@ -878,6 +1078,27 @@ func _chooser_candidate_postures(report: Dictionary) -> Array:
 	return postures
 
 
+func _chooser_decision_candidate_postures(report: Dictionary) -> Array:
+	var postures: Array = []
+	var candidates_v = report.get("decision_candidate_sequence", [])
+	if typeof(candidates_v) != TYPE_ARRAY:
+		return postures
+	for candidate_v in candidates_v:
+		if typeof(candidate_v) == TYPE_DICTIONARY:
+			var posture := str((candidate_v as Dictionary).get("posture", ""))
+			if posture != "":
+				postures.append(posture)
+		else:
+			var candidate_posture := str(candidate_v)
+			if candidate_posture != "":
+				postures.append(candidate_posture)
+	return postures
+
+
+func _chooser_decision_from_evaluation(report: Dictionary) -> bool:
+	return bool(report.get("decision_from_evaluation", false))
+
+
 func _chooser_selection_posture(report: Dictionary) -> String:
 	var steady_posture := _chooser_posture(report, "steady")
 	if _chooser_plan_valid(report, "steady") and steady_posture != "":
@@ -892,16 +1113,53 @@ func _to_image_route_for_posture(posture: String) -> String:
 		"CPU-primary":
 			return "cpu_packed"
 		"GPU-primary, no CPU sidecar":
-			return "gpu_synthetic_backing_materializer"
+			return "gpu_primary_no_cpu_sidecar_materializer"
 		"GPU-primary, with CPU sidecar":
 			return "gpu_primary_cpu_sidecar"
 		_:
 			return ""
 
 
-func _compared_to_image_evidence(report: Dictionary, evidence: Dictionary, evidence_prefix: String) -> Array:
+func _estimated_ns_per_byte(ns_value: int, bytes_value: int) -> float:
+	if ns_value <= 0 or bytes_value <= 0:
+		return 0.0
+	return float(ns_value) / float(bytes_value)
+
+
+func _summarize_to_image_evidence_entry(posture: String, route: String, entry: Dictionary) -> Dictionary:
+	var last_bytes := int(entry.get("last_bytes", 0))
+	var fresh_successes := int(entry.get("fresh_result_successes", 0))
+	var repeat_successes := int(entry.get("repeat_successes", 0))
+	var fresh_total_ns := int(entry.get("fresh_result_total_ns", 0))
+	var repeat_total_ns := int(entry.get("repeat_total_ns", 0))
+	var first_success_ns := int(entry.get("first_success_ns", 0))
+	var fresh_avg_ns := 0
+	if fresh_successes > 0:
+		fresh_avg_ns = int(fresh_total_ns / fresh_successes)
+	var repeat_avg_ns := 0
+	if repeat_successes > 0:
+		repeat_avg_ns = int(repeat_total_ns / repeat_successes)
+	return {
+		"posture": posture,
+		"route": route,
+		"first_success_ns": first_success_ns,
+		"first_success_ns_per_byte_est": _estimated_ns_per_byte(first_success_ns, last_bytes),
+		"fresh_result_successes": fresh_successes,
+		"fresh_result_avg_ns": fresh_avg_ns,
+		"fresh_result_avg_ns_per_byte_est": _estimated_ns_per_byte(fresh_avg_ns, last_bytes),
+		"repeat_successes": repeat_successes,
+		"repeat_result_avg_ns": repeat_avg_ns,
+		"repeat_result_avg_ns_per_byte_est": _estimated_ns_per_byte(repeat_avg_ns, last_bytes),
+		"last_bytes": last_bytes,
+		"last_reported_capability": int(entry.get("last_reported_capability", 0)),
+		"posture_count": int(entry.get("posture_count", 0)),
+	}
+
+
+func _compared_to_image_evidence(candidate_postures: Array, evidence: Dictionary, evidence_prefix: String) -> Array:
 	var compared: Array = []
-	for posture in _chooser_candidate_postures(report):
+	for posture_v in candidate_postures:
+		var posture := str(posture_v)
 		var route := _to_image_route_for_posture(str(posture))
 		if route == "":
 			continue
@@ -912,36 +1170,50 @@ func _compared_to_image_evidence(report: Dictionary, evidence: Dictionary, evide
 		if typeof(entry_v) != TYPE_DICTIONARY:
 			continue
 		var entry: Dictionary = entry_v
-		compared.append({
-			"posture": str(posture),
-			"route": route,
-			"timing_field": "first_success_ns",
-			"ns": int(entry.get("first_success_ns", 0)),
-		})
+		compared.append(_summarize_to_image_evidence_entry(str(posture), route, entry))
 	return compared
 
 
-func _print_retained_plan_decision_summary(report: Dictionary, evidence: Dictionary, evidence_scope: String) -> void:
-	if report.is_empty():
+func _print_retained_plan_decision_summary(
+	candidate_source_report: Dictionary,
+	selected_report: Dictionary,
+	evidence: Dictionary,
+	evidence_scope: String
+) -> void:
+	if selected_report.is_empty():
 		return
-	var selection := _chooser_selection_posture(report)
+	var selection := _chooser_selection_posture(selected_report)
 	if selection == "":
 		return
-	var candidates := _chooser_candidate_postures(report)
-	var mode := "single_viable_posture"
-	if candidates.size() > 1:
-		mode = "multiple_viable_postures"
+	var candidates := _chooser_candidate_postures(candidate_source_report)
+	if candidates.is_empty():
+		candidates = _chooser_decision_candidate_postures(selected_report)
+	if candidates.is_empty():
+		candidates = _chooser_candidate_postures(selected_report)
+	var mode := "single_viable_selection"
+	if _chooser_decision_from_evaluation(selected_report) or candidates.size() > 1:
+		mode = "multiple_viable_selection"
 
 	var fields: Array = [
-		"intent=%s" % str(report.get("intent", "")),
+		"intent=%s" % str(selected_report.get("intent", "")),
 		"mode=%s" % mode,
 		"selection=%s" % JSON.stringify(selection),
 		"candidates=%s" % JSON.stringify(candidates),
 	]
-	if mode == "multiple_viable_postures":
+	if mode == "multiple_viable_selection":
 		var evidence_prefix := "%s_to_image" % evidence_scope
-		fields.append("to_image_metric=first_success_ns")
-		fields.append("compared_to_image=%s" % JSON.stringify(_compared_to_image_evidence(report, evidence, evidence_prefix)))
+		fields.append("to_image_measurement_fields=%s" % JSON.stringify([
+			"first_success_ns",
+			"first_success_ns_per_byte_est",
+			"fresh_result_avg_ns",
+			"fresh_result_avg_ns_per_byte_est",
+			"repeat_result_avg_ns",
+			"repeat_result_avg_ns_per_byte_est",
+			"last_bytes",
+			"last_reported_capability",
+			"posture_count",
+		]))
+		fields.append("compared_to_image=%s" % JSON.stringify(_compared_to_image_evidence(candidates, evidence, evidence_prefix)))
 	fields.append("stored_selection=%s" % _synthetic_producer_output_form_setting())
 	fields.append("effective_selection=%s" % _synthetic_producer_output_form_effective_selection())
 	fields.append("stream_downgrades=%s" % _synthetic_stream_capability_downgrade_effective_selection())
@@ -971,13 +1243,13 @@ func _classify_and_assert_stream_chooser_shape(report: Dictionary, label: String
 	var steady_posture := _chooser_posture(report, "steady")
 
 	if candidates.size() <= 1 and not evaluator_active:
-		_require(steady_valid, "%s: stream single-viable fast path must expose steady posture" % label)
+		_require(steady_valid, "%s: stream single-viable selection must expose steady posture" % label)
 		if _done:
 			return ""
-		_require(requested_posture == steady_posture, "%s: stream single-viable fast path requested posture must equal steady posture" % label)
+		_require(requested_posture == steady_posture, "%s: stream single-viable selection requested posture must equal steady posture" % label)
 		if _done:
 			return ""
-		_step_ok("%s stream chooser classified single-viable fast path" % label)
+		_step_ok("%s stream chooser classified single-viable selection" % label)
 		return "single"
 
 	_require(candidates.size() > 1, "%s: stream multi-candidate evaluator must expose candidate sequence" % label)
@@ -1046,7 +1318,10 @@ func _observe_multi_candidate_chooser_until_steady(stream_id: int, initial_repor
 				print("CHOOSER: %s_%s_no_distinct_active_transition initial=%s steady=%s" % [label, target_label, JSON.stringify(initial_report), JSON.stringify(report)])
 				_step_ok("%s %s chooser remained bounded from first observed active candidate to steady" % [label, target_label])
 			_step_ok("%s %s chooser reached steady posture" % [label, target_label])
-			return report
+			return {
+				"candidate_source_report": last_active_report,
+				"steady_report": report,
+			}
 	_fail("%s: timed out waiting for %s chooser steady posture settlement" % [label, target_label])
 	return {}
 
@@ -1087,6 +1362,177 @@ func _assert_chooser_steady_reused(stream_id: int, steady_report: Dictionary, la
 		if _done:
 			return
 	_step_ok("%s %s chooser steady posture reused" % [label, target_label])
+
+
+func _resolve_stream_steady_chooser(
+	stream_id: int,
+	observed_report: Dictionary,
+	stream_chooser_shape: String,
+	label: String,
+	target_label: String
+) -> Dictionary:
+	if stream_chooser_shape == "single":
+		var current := _get_stream_chooser_report(stream_id)
+		if not current.is_empty() and not bool(current.get("evaluator_active", false)) and _chooser_plan_valid(current, "steady"):
+			_require(_chooser_posture(current, "requested") == _chooser_posture(current, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+			if _done:
+				return {}
+			return current
+		return await _wait_for_chooser_steady(stream_id, label, target_label)
+
+	if not observed_report.is_empty() and not bool(observed_report.get("evaluator_active", false)) and _chooser_plan_valid(observed_report, "steady"):
+		_require(_chooser_posture(observed_report, "requested") == _chooser_posture(observed_report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+		if _done:
+			return {}
+		return observed_report
+	return await _wait_for_chooser_steady(stream_id, label, target_label)
+
+
+func _assert_context_identity_scope(contexts: Array, label: String) -> void:
+	_require(contexts.size() >= 2, "%s: dual-device pass requires at least two authored contexts" % label)
+	if _done:
+		return
+
+	var tags := {}
+	var hardware_ids := {}
+	var device_instance_ids := {}
+	var stream_ids := {}
+	for context_v in contexts:
+		if typeof(context_v) != TYPE_DICTIONARY:
+			_fail("%s: context record is not a Dictionary" % label)
+			return
+		var context: Dictionary = context_v
+		var tag := str(context.get("tag", ""))
+		var hardware_id := str(context.get("hardware_id", ""))
+		var device_instance_id := int(context.get("device_instance_id", 0))
+		var stream_id := int(context.get("stream_id", 0))
+		_require(tag != "" and hardware_id != "" and device_instance_id != 0 and stream_id != 0, "%s: context identity incomplete %s" % [label, JSON.stringify(context)])
+		if _done:
+			return
+		_require(not tags.has(tag), "%s: duplicate target tag %s" % [label, tag])
+		if _done:
+			return
+		_require(not hardware_ids.has(hardware_id), "%s: duplicate hardware_id %s" % [label, hardware_id])
+		if _done:
+			return
+		_require(not device_instance_ids.has(device_instance_id), "%s: duplicate device_instance_id %d" % [label, device_instance_id])
+		if _done:
+			return
+		_require(not stream_ids.has(stream_id), "%s: duplicate stream_id %d" % [label, stream_id])
+		if _done:
+			return
+		tags[tag] = true
+		hardware_ids[hardware_id] = true
+		device_instance_ids[device_instance_id] = true
+		stream_ids[stream_id] = true
+
+	_step_ok("%s dual-device target identity scope established" % label)
+
+
+func _build_expected_route_counts(records: Array) -> Dictionary:
+	var route_counts := {}
+	for record_v in records:
+		if typeof(record_v) != TYPE_DICTIONARY:
+			continue
+		var record: Dictionary = record_v
+		var stream_chooser: Dictionary = record.get("stream_chooser", {})
+		var capture_chooser: Dictionary = record.get("capture_chooser", {})
+		var stream_posture := _chooser_selection_posture(stream_chooser)
+		var capture_posture := _chooser_selection_posture(capture_chooser)
+
+		var display_view_key := _display_view_evidence_key_for_posture(stream_posture)
+		if display_view_key != "":
+			_increment_route_count(route_counts, display_view_key)
+
+		var stream_route := _to_image_route_for_posture(stream_posture)
+		if stream_route != "":
+			_increment_route_count(route_counts, "stream_to_image.%s" % stream_route)
+
+		var capture_route := _to_image_route_for_posture(capture_posture)
+		if capture_route != "":
+			_increment_route_count(route_counts, "capture_to_image.%s" % capture_route)
+
+	return route_counts
+
+
+func _increment_route_count(route_counts: Dictionary, route: String) -> void:
+	route_counts[route] = int(route_counts.get(route, 0)) + 1
+
+
+func _wait_for_expected_evidence_routes(label: String, route_expectations: Dictionary) -> Dictionary:
+	for _i in range(CAPTURE_RESULT_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var evidence := _get_result_access_timing_evidence()
+		if evidence.is_empty():
+			continue
+		var all_ready := true
+		for route in route_expectations.keys():
+			var key := str(route)
+			if not evidence.has(key):
+				all_ready = false
+				break
+			var entry_v = evidence.get(key, {})
+			if typeof(entry_v) != TYPE_DICTIONARY:
+				all_ready = false
+				break
+			if int((entry_v as Dictionary).get("successes", 0)) <= 0:
+				all_ready = false
+				break
+		if all_ready:
+			return evidence
+	_fail("%s: timed out waiting for expected retained-result evidence routes %s" % [label, JSON.stringify(route_expectations)])
+	return {}
+
+
+func _assert_expected_route_posture_counts(evidence: Dictionary, route_expectations: Dictionary, label: String) -> void:
+	for route_v in route_expectations.keys():
+		var route := str(route_v)
+		_require(evidence.has(route), "%s: expected evidence route missing %s" % [label, route])
+		if _done:
+			return
+		var entry_v = evidence.get(route, {})
+		_require(typeof(entry_v) == TYPE_DICTIONARY, "%s: evidence route %s is not a Dictionary entry" % [label, route])
+		if _done:
+			return
+		var entry: Dictionary = entry_v
+		var expected_count := int(route_expectations.get(route, 0))
+		_require(int(entry.get("posture_count", 0)) >= expected_count, "%s: evidence route %s posture_count=%d expected_at_least=%d" % [label, route, int(entry.get("posture_count", 0)), expected_count])
+		if _done:
+			return
+	_step_ok("%s expected evidence posture counts verified" % label)
+
+
+func _assert_chooser_reports_distinct(records: Array, label: String) -> void:
+	var reports := _get_retained_plan_chooser_reports()
+	var stream_reports := {}
+	var capture_reports := {}
+	for report_v in reports:
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		var target_kind := str(report.get("target_kind", ""))
+		var target_id := int(report.get("target_id", 0))
+		if target_kind == "stream":
+			stream_reports[target_id] = report
+		elif target_kind == "capture":
+			capture_reports[target_id] = report
+
+	for record_v in records:
+		if typeof(record_v) != TYPE_DICTIONARY:
+			continue
+		var record: Dictionary = record_v
+		var context: Dictionary = record.get("context", {})
+		var stream_id := int(context.get("stream_id", 0))
+		var device_instance_id := int(context.get("device_instance_id", 0))
+		_require(stream_reports.has(stream_id), "%s: missing distinct stream chooser report for stream_id=%d" % [label, stream_id])
+		if _done:
+			return
+		_require(capture_reports.has(device_instance_id), "%s: missing distinct capture chooser report for device_instance_id=%d" % [label, device_instance_id])
+		if _done:
+			return
+	_step_ok("%s chooser report target identity verified" % label)
 
 
 func _get_result_access_timing_evidence() -> Dictionary:
@@ -1140,6 +1586,32 @@ func _assert_expected_evidence_family(
 	if _done:
 		return
 	_assert_expected_to_image_entry_for_posture(evidence, label, "capture", capture_posture)
+	if _done:
+		return
+	_assert_materializer_diagnostic_routes_if_present(evidence, label)
+
+
+func _assert_materializer_diagnostic_routes_if_present(
+	evidence: Dictionary,
+	label: String
+) -> void:
+	var diagnostic_routes := [
+		"stream_to_image.gpu_primary_cpu_sidecar_materializer",
+		"capture_to_image.gpu_primary_cpu_sidecar_materializer",
+	]
+	for key in diagnostic_routes:
+		if not evidence.has(key):
+			continue
+		_assert_expected_entry(
+			evidence,
+			label,
+			key,
+			true,
+			true,
+			true
+		)
+		if _done:
+			return
 
 
 func _display_view_evidence_key_for_posture(posture: String) -> String:
@@ -1162,9 +1634,15 @@ func _expected_entry_contract_for_route(route: String) -> Dictionary:
 				"expect_gpu_backing": false,
 				"expect_gpu_materialization": false,
 			}
-		"gpu_synthetic_backing_materializer":
+		"gpu_primary_no_cpu_sidecar_materializer":
 			return {
 				"expect_cpu_payload": false,
+				"expect_gpu_backing": true,
+				"expect_gpu_materialization": true,
+			}
+		"gpu_primary_cpu_sidecar_materializer":
+			return {
+				"expect_cpu_payload": true,
 				"expect_gpu_backing": true,
 				"expect_gpu_materialization": true,
 			}

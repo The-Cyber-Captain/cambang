@@ -837,6 +837,7 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
         stream_id, CoreRetainedProductionPlan{}, requested_bump_access_posture_epoch);
     (void)streams_.clear_steady_retained_plan(stream_id);
     stream_retained_plan_evaluators_.erase(stream_id);
+    stream_retained_plan_decisions_.erase(stream_id);
     return false;
   }
 
@@ -861,8 +862,14 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
           decision.candidate_sequence[i]);
     }
     stream_retained_plan_evaluators_[stream_id] = state;
+    stream_retained_plan_decisions_.erase(stream_id);
   } else {
     stream_retained_plan_evaluators_.erase(stream_id);
+    RetainedPlanDecisionProvenance provenance{};
+    provenance.valid = decision.requested.valid;
+    provenance.selected =
+        decision.steady.valid ? decision.steady : decision.requested;
+    stream_retained_plan_decisions_[stream_id] = provenance;
   }
 
   if (apply_to_provider &&
@@ -921,6 +928,14 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
       (void)devices_.clear_steady_retained_plan(device_instance_id);
     }
     capture_retained_plan_evaluators_.erase(device_instance_id);
+    if (const auto stream_decision_it =
+            stream_retained_plan_decisions_.find(stream_id);
+        stream_decision_it != stream_retained_plan_decisions_.end()) {
+      capture_retained_plan_decisions_[device_instance_id] =
+          stream_decision_it->second;
+    } else {
+      capture_retained_plan_decisions_.erase(device_instance_id);
+    }
     return true;
   }
   const RetainedPlanResetDecision decision =
@@ -933,6 +948,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         requested_bump_access_posture_epoch);
     (void)devices_.clear_steady_retained_plan(device_instance_id);
     capture_retained_plan_evaluators_.erase(device_instance_id);
+    capture_retained_plan_decisions_.erase(device_instance_id);
     return false;
   }
 
@@ -957,8 +973,14 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
           decision.candidate_sequence[i]);
     }
     capture_retained_plan_evaluators_[device_instance_id] = state;
+    capture_retained_plan_decisions_.erase(device_instance_id);
   } else {
     capture_retained_plan_evaluators_.erase(device_instance_id);
+    RetainedPlanDecisionProvenance provenance{};
+    provenance.valid = decision.requested.valid;
+    provenance.selected =
+        decision.steady.valid ? decision.steady : decision.requested;
+    capture_retained_plan_decisions_[device_instance_id] = provenance;
   }
   return true;
 }
@@ -1058,6 +1080,15 @@ void CoreRuntime::handle_stream_retained_to_image_observation_(
     }
   }
   (void)streams_.set_steady_retained_plan(stream_id, chosen);
+  RetainedPlanDecisionProvenance provenance{};
+  provenance.valid = chosen.valid;
+  provenance.from_evaluation = true;
+  provenance.selected = chosen;
+  provenance.candidate_count = state.candidate_count;
+  for (uint8_t i = 0; i < state.candidate_count; ++i) {
+    provenance.candidate_sequence[i] = state.candidate_sequence[i];
+  }
+  stream_retained_plan_decisions_[stream_id] = provenance;
   stream_retained_plan_evaluators_.erase(state_it);
   (void)refresh_capture_retained_plan_state_(
       rec->device_instance_id,
@@ -1146,6 +1177,15 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     (void)devices_.set_requested_retained_plan(device_instance_id, chosen, true);
   }
   (void)devices_.set_steady_retained_plan(device_instance_id, chosen);
+  RetainedPlanDecisionProvenance provenance{};
+  provenance.valid = chosen.valid;
+  provenance.from_evaluation = true;
+  provenance.selected = chosen;
+  provenance.candidate_count = state.candidate_count;
+  for (uint8_t i = 0; i < state.candidate_count; ++i) {
+    provenance.candidate_sequence[i] = state.candidate_sequence[i];
+  }
+  capture_retained_plan_decisions_[device_instance_id] = provenance;
   capture_retained_plan_evaluators_.erase(state_it);
 }
 
@@ -1173,6 +1213,17 @@ std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_re
         report.candidate_sequence.push_back(state.candidate_sequence[i]);
       }
     }
+    if (const auto decision_it = stream_retained_plan_decisions_.find(stream_id);
+        decision_it != stream_retained_plan_decisions_.end()) {
+      const RetainedPlanDecisionProvenance& decision = decision_it->second;
+      report.decision_from_evaluation = decision.from_evaluation;
+      report.decision_selected = decision.selected;
+      report.decision_candidate_sequence.reserve(decision.candidate_count);
+      for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+        report.decision_candidate_sequence.push_back(
+            decision.candidate_sequence[i]);
+      }
+    }
     out.push_back(std::move(report));
   }
 
@@ -1192,6 +1243,18 @@ std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_re
       report.candidate_sequence.reserve(state.candidate_count);
       for (uint8_t i = 0; i < state.candidate_count; ++i) {
         report.candidate_sequence.push_back(state.candidate_sequence[i]);
+      }
+    }
+    if (const auto decision_it =
+            capture_retained_plan_decisions_.find(device_instance_id);
+        decision_it != capture_retained_plan_decisions_.end()) {
+      const RetainedPlanDecisionProvenance& decision = decision_it->second;
+      report.decision_from_evaluation = decision.from_evaluation;
+      report.decision_selected = decision.selected;
+      report.decision_candidate_sequence.reserve(decision.candidate_count);
+      for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+        report.decision_candidate_sequence.push_back(
+            decision.candidate_sequence[i]);
       }
     }
     out.push_back(std::move(report));
@@ -1470,6 +1533,10 @@ void CoreRuntime::on_core_start() {
   global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
   spec_state_.reset_for_generation(0);
+  stream_retained_plan_evaluators_.clear();
+  capture_retained_plan_evaluators_.clear();
+  stream_retained_plan_decisions_.clear();
+  capture_retained_plan_decisions_.clear();
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
   // Start "dirty": publish an initial baseline snapshot (version=0, topology_version=0)
@@ -1904,6 +1971,7 @@ void CoreRuntime::on_core_timer_tick() {
               (void)streams_.on_stream_destroyed(stream_id);
               result_store_.remove_stream_result(stream_id);
               stream_retained_plan_evaluators_.erase(stream_id);
+              stream_retained_plan_decisions_.erase(stream_id);
             }
           }
         }
@@ -2024,6 +2092,10 @@ void CoreRuntime::on_core_stop() {
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
   global_resource_aggregate_telemetry().clear();
+  stream_retained_plan_evaluators_.clear();
+  capture_retained_plan_evaluators_.clear();
+  stream_retained_plan_decisions_.clear();
+  capture_retained_plan_decisions_.clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }
@@ -2215,8 +2287,15 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
             retained_plan_decision.candidate_sequence[i]);
       }
       stream_retained_plan_evaluators_[stream_id] = state;
+      stream_retained_plan_decisions_.erase(stream_id);
     } else {
       stream_retained_plan_evaluators_.erase(stream_id);
+      RetainedPlanDecisionProvenance provenance{};
+      provenance.valid = retained_plan_decision.requested.valid;
+      provenance.selected = retained_plan_decision.steady.valid
+          ? retained_plan_decision.steady
+          : retained_plan_decision.requested;
+      stream_retained_plan_decisions_[stream_id] = provenance;
     }
 
     const ProviderResult r = p->create_stream(effective);
@@ -2224,6 +2303,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
       // Best-effort rollback; create_stream failure must not leave a ghost record.
       (void)streams_.forget_stream(effective.stream_id);
       stream_retained_plan_evaluators_.erase(stream_id);
+      stream_retained_plan_decisions_.erase(stream_id);
     }
   });
 
@@ -2380,6 +2460,7 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
       return;
     }
     stream_retained_plan_evaluators_.erase(stream_id);
+    stream_retained_plan_decisions_.erase(stream_id);
     (void)refresh_capture_retained_plan_state_(
         rec->device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
@@ -2469,6 +2550,7 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
       return;
     }
     capture_retained_plan_evaluators_.erase(device_instance_id);
+    capture_retained_plan_decisions_.erase(device_instance_id);
     result_promise->set_value(TryCloseDeviceStatus::OK);
   });
 

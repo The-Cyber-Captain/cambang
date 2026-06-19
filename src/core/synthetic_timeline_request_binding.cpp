@@ -60,7 +60,7 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       (void)runtime.try_create_stream(
           ev.stream_id,
           ev.device_instance_id,
-          StreamIntent::PREVIEW,
+          ev.stream_intent,
           nullptr,
           nullptr,
           0);

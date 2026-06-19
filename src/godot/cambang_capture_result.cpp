@@ -21,13 +21,28 @@ bool capture_member_has_cpu_payload(const CoreCaptureResultData::ImageMemberData
 
 const char* capture_to_image_evidence_route(const CoreCaptureResultData::ImageMemberData* member) {
   if (!member) return result_access_cost_evidence::kRouteCaptureAccessUnsupported;
-  if (capture_member_has_cpu_payload(*member)) return result_access_cost_evidence::kRouteCaptureToImageCpuPacked;
+  if (capture_member_has_cpu_payload(*member)) {
+    if (member->payload_kind == ResultPayloadKind::GPU_SURFACE) {
+      return result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar;
+    }
+    return result_access_cost_evidence::kRouteCaptureToImageCpuPacked;
+  }
   if (member->payload_kind == ResultPayloadKind::GPU_SURFACE && member->retained_gpu_backing &&
       member->retained_gpu_backing_descriptor.valid &&
       member->retained_gpu_backing_descriptor.materialization_available) {
-    return result_access_cost_evidence::kRouteCaptureToImageGpuSyntheticBackingMaterializer;
+    return result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryNoCpuSidecarMaterializer;
   }
   return result_access_cost_evidence::kRouteCaptureAccessUnsupported;
+}
+
+const char* capture_gpu_materializer_evidence_route_for_posture(
+    const CoreCaptureResultData::ImageMemberData* member) {
+  if (!member) {
+    return result_access_cost_evidence::kRouteCaptureAccessUnsupported;
+  }
+  return member->access_posture.has_retained_cpu_payload
+      ? result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecarMaterializer
+      : result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryNoCpuSidecarMaterializer;
 }
 } // namespace
 
@@ -217,7 +232,9 @@ godot::Ref<godot::Image> perform_capture_to_image_member_cpu_payload_access(
   }
   image = payload_to_image(member->payload);
   result_access_cost_evidence::record_capture_member_access(
-      result_access_cost_evidence::kRouteCaptureToImageCpuPacked,
+      member->payload_kind == ResultPayloadKind::GPU_SURFACE
+          ? result_access_cost_evidence::kRouteCaptureToImageGpuPrimaryCpuSidecar
+          : result_access_cost_evidence::kRouteCaptureToImageCpuPacked,
       data,
       member,
       result_access_now_ns() - begin_ns,
@@ -242,6 +259,7 @@ godot::Ref<godot::Image> perform_capture_to_image_member_gpu_materializer_access
     return image;
   }
   const auto* member = data->image_member_at(static_cast<uint32_t>(image_member_index));
+  const char* route = capture_gpu_materializer_evidence_route_for_posture(member);
   if (!member ||
       member->payload_kind != ResultPayloadKind::GPU_SURFACE ||
       !member->retained_gpu_backing ||
@@ -260,7 +278,7 @@ godot::Ref<godot::Image> perform_capture_to_image_member_gpu_materializer_access
       member->retained_gpu_backing_descriptor,
       member->retained_gpu_backing);
   result_access_cost_evidence::record_capture_member_access(
-      result_access_cost_evidence::kRouteCaptureToImageGpuSyntheticBackingMaterializer,
+      route,
       data,
       member,
       result_access_now_ns() - begin_ns,

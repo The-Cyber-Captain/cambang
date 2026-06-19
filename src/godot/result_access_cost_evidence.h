@@ -15,12 +15,15 @@ constexpr uint64_t kCheapWithinBestMultiplier =
 
 constexpr const char* kRouteStreamToImageCpuPacked = "stream_to_image.cpu_packed";
 constexpr const char* kRouteStreamToImageGpuPrimaryCpuSidecar = "stream_to_image.gpu_primary_cpu_sidecar";
-constexpr const char* kRouteStreamToImageGpuSyntheticBackingMaterializer = "stream_to_image.gpu_synthetic_backing_materializer";
+constexpr const char* kRouteStreamToImageGpuPrimaryCpuSidecarMaterializer = "stream_to_image.gpu_primary_cpu_sidecar_materializer";
+constexpr const char* kRouteStreamToImageGpuPrimaryNoCpuSidecarMaterializer = "stream_to_image.gpu_primary_no_cpu_sidecar_materializer";
 constexpr const char* kRouteStreamDisplayViewRetainedGpuBacking = "stream_display_view.retained_gpu_backing";
 constexpr const char* kRouteStreamDisplayViewCpuLiveDisplayView = "stream_display_view.cpu_live_display_view";
 constexpr const char* kRouteStreamAccessUnsupported = "stream_access.unsupported";
 constexpr const char* kRouteCaptureToImageCpuPacked = "capture_to_image.cpu_packed";
-constexpr const char* kRouteCaptureToImageGpuSyntheticBackingMaterializer = "capture_to_image.gpu_synthetic_backing_materializer";
+constexpr const char* kRouteCaptureToImageGpuPrimaryCpuSidecar = "capture_to_image.gpu_primary_cpu_sidecar";
+constexpr const char* kRouteCaptureToImageGpuPrimaryCpuSidecarMaterializer = "capture_to_image.gpu_primary_cpu_sidecar_materializer";
+constexpr const char* kRouteCaptureToImageGpuPrimaryNoCpuSidecarMaterializer = "capture_to_image.gpu_primary_no_cpu_sidecar_materializer";
 constexpr const char* kRouteCaptureAccessUnsupported = "capture_access.unsupported";
 
 struct RecordedAccessMeasurement {

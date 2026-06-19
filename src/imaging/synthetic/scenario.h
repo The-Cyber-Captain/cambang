@@ -33,6 +33,7 @@ struct SyntheticScheduledEvent {
   std::uint64_t device_instance_id = 0;
   std::uint64_t root_id = 0;
   std::uint64_t stream_id = 0;
+  StreamIntent stream_intent = StreamIntent::PREVIEW;
   bool has_picture = false;
   PictureConfig picture{};
 };

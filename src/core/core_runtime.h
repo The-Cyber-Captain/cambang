@@ -50,6 +50,9 @@ struct CoreRetainedPlanChooserReport {
   bool evaluator_active = false;
   uint8_t current_candidate_index = 0;
   std::vector<CoreRetainedProductionPlan> candidate_sequence{};
+  bool decision_from_evaluation = false;
+  CoreRetainedProductionPlan decision_selected{};
+  std::vector<CoreRetainedProductionPlan> decision_candidate_sequence{};
 };
 
 enum class TrySetStreamPictureStatus : uint8_t {
@@ -591,8 +594,18 @@ private:
     MeasuredPlanEvidence evidence[3]{};
   };
 
+  struct RetainedPlanDecisionProvenance {
+    bool valid = false;
+    bool from_evaluation = false;
+    CoreRetainedProductionPlan selected{};
+    uint8_t candidate_count = 0;
+    CoreRetainedProductionPlan candidate_sequence[2]{};
+  };
+
   std::map<uint64_t, RetainedPlanEvaluatorState> stream_retained_plan_evaluators_;
   std::map<uint64_t, RetainedPlanEvaluatorState> capture_retained_plan_evaluators_;
+  std::map<uint64_t, RetainedPlanDecisionProvenance> stream_retained_plan_decisions_;
+  std::map<uint64_t, RetainedPlanDecisionProvenance> capture_retained_plan_decisions_;
 
   struct CaptureStreamPreemptionRecord {
     uint64_t capture_id = 0;
