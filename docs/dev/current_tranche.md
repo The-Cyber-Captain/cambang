@@ -10,9 +10,9 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The retained-result access calibration/classification tranche is implemented and remains accepted.
 
-The currently landed chooser implementation is partial rather than accepted. Useful groundwork already exists in source: the agreed internal posture vocabulary, requested-plan plumbing through stream/capture/provider-delivered results, provider-capability distinctions for the three settled posture shapes, and the requested-vs-steady storage seam.
+The currently landed intent-based chooser implementation is partial rather than accepted. Useful groundwork already exists in source: the three posture shapes, requested-plan plumbing through stream/capture/provider-delivered results, provider-capability distinctions for those shapes, the requested-vs-steady storage seam, the result-access evidence seam, and the access-posture/topology-triggered invalidation work.
 
-The immediate focus is to complete the missing measured evaluator lifecycle so Core can truthfully drive bounded posture evaluation and steady-posture settlement. Do not redesign the architecture, expand public diagnostics, or introduce a broad benchmarking/policy subsystem in this tranche.
+The immediate focus is no longer to complete the old chooser model as previously described in this file. The active direction is to prepare a source-grounded terminology and design reset for retained-plan selection before further implementation continues. The next durable artifact should be the design note for that reset, preceded by terminology hygiene where needed.
 
 Important settled state:
 
@@ -41,38 +41,33 @@ Synthetic maintainer tooling direction remains:
 * These downgrade controls are Synthetic-only, maintainer-only, internal, and downgrade-only: they may narrow an effectively mixed parent context to `cpu_only`, remain inert when the truthful outer envelope is already `cpu_only`, and are rejected when contradictory to a `gpu_only` outer envelope.
 * Do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing the next stage.
 
-
-Settled chooser direction for this tranche:
-
-* Intent states are exactly `Default` and `Stream-active`.
-* Posture shapes are exactly `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`.
-* Sidecar retention is optional and must earn its keep.
-* `Default` optimizes for measured `to_image()` / `to_image_member()` behavior.
-* `Stream-active` preserves the preferred `get_display_view()` path first, then uses measured `to_image()` behavior to decide whether a CPU sidecar earns its keep.
-* The chooser reuses the existing real retained-result measurement seam.
-* When evidence is needed, Core requests bounded evaluation postures one at a time; Provider executes the currently requested posture; `CoreResultStore` validates against the currently requested posture; once enough evidence exists, Core records a steady posture until expiry/rerun.
-* Backing/output-form chooser input is split between the truthful provider/runtime envelope and the parent-context capability of the owning `Stream` or `AcquisitionSession`.
-* Ordinary capture under a live active-stream structure consumes the active elevated stream policy instead of reopening a coarse independent capture lane for the same live structure.
-
 ## Immediate implementation direction
 
-Treat the landed chooser work as a partial implementation, not as finished evaluator behaviour.
+Treat the landed chooser work as a partial and now superseded implementation direction, not as accepted architecture and not as the basis for new terminology growth.
 
 What already exists and should be preserved unless source inspection disproves it:
 
-* intent states are `Default` and `Stream-active`;
 * posture shapes are `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`;
 * sidecar retention is optional and must earn its keep;
 * requested retained-plan carriage already exists through Core requests and provider-delivered results;
 * provider capability truth already distinguishes the viable settled posture shapes;
-* the chooser should continue reusing the existing retained-result measurement seam rather than adding a broad benchmark subsystem.
+* the project already has a real result-access measurement seam and access-posture invalidation seam that should be reused rather than replaced with per-frame polling or a broad benchmark subsystem.
 
 Immediate tranche goal:
 
-* complete the missing Core-owned measured evaluator lifecycle;
-* keep requested posture distinct from steady posture until evaluation actually settles when multiple viable postures need evidence;
-* make `CoreResultStore` validate against Core-held requested posture/plan rather than provider echo fallback;
-* use the smallest truthful internal provider-control seam needed for bounded one-at-a-time evaluation posture execution.
+* produce a source-grounded terminology reset covering which existing chooser terms remain valid, which are redefined, and which are defunct;
+* produce the design note for parent-scoped retained-plan evaluation after that terminology reset is agreed;
+* redefine retained-plan selection around the Native Payload Support parent rather than the old chooser-intent model;
+* preserve the bounded, topology-triggered, non-per-frame nature of evaluation and reevaluation;
+* preserve provider-truth, requested-vs-steady separation, and `CoreResultStore` validation against Core-held requested plan state.
+
+Terminology guardrail for this reset:
+
+* treat `best posture` as defunct wording;
+* treat chooser `intent` states such as `Default` and `Stream-active` as defunct policy vocabulary for new design work;
+* do not extend the old `retained backing plan` / `retained backing truth` / `retained access truth` family in new design writing when the agreed replacement vocabulary is available;
+* prefer the reset vocabulary in new design work: `Native Payload Support Parent`, `Backing Plan`, `Backing State`, `Operation Support`, `Access Evidence`, `Requested Plan`, `Steady Plan`, and `Posture Shape`;
+* use `parent context` only as a fixed qualifier, not as a loose substitute for the defined owner concept.
 
 Current checkpoint status:
 
@@ -91,10 +86,10 @@ Current checkpoint status:
 Immediate next focus:
 
 * do not assume the chooser tranche is accepted yet;
-* do not assume Scene 68 is automatically the correct harness host;
-* first perform a read-only definition of what an evaluation-choice verification harness must prove;
-* then decide whether Scene 68 should be augmented or whether a different narrow harness is cleaner;
-* desired harness output is explicit chooser/reporting truth such as viable posture set, requested evaluation posture, steady chosen posture, and decision-relevant evidence buckets.
+* do not extend the old chooser terminology or intent model in code comments, tranche notes, or new design material;
+* first complete the terminology and design reset for parent-scoped retained-plan evaluation;
+* only then decide what verification harness should prove the redesigned evaluator and whether Scene 68 remains the right host;
+* desired harness output for the redesigned evaluator is explicit parent-scoped decision truth such as viable posture set, requested plan, steady plan, chosen posture shape, and decision-relevant evidence buckets.
 
 Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of the chooser, but does not by itself prove the tranche successful.
 ## Recent committed checkpoint
