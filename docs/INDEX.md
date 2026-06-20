@@ -146,6 +146,9 @@ Maintainer tooling / provider validation:
 - `dev/maintainer_tools.md`
 - `dev/provider_compliance_checklist.md`
 
+Current design work / architecture reset:
+- `dev/backing_plan_parent_evaluation_reset.md`
+
 C++ code quality / audit aids:
 - `dev/cpp_code_quality_policy.md`
 - `dev/cpp_audit_checklist.md`
