@@ -113,6 +113,20 @@ godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification
 godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verification.tscn --quit-after 20
 ```
 
+PowerShell helper for local/Codex runs:
+
+```powershell
+.\run_godot.ps1 -Scene res://scenes/63_snapshot_observer_minimal.tscn -QuitAfter 10
+.\run_godot.ps1 -Scene res://scenes/65_public_boundary_verify.tscn -QuitAfter 10
+.\run_godot.ps1 -Script res://scripts/status_panel_harness.gd -ScriptArgs fixtures/status_panel/fixture_valid_basic_authoritative.json
+```
+
+Notes for Codex/agent validation on this machine:
+
+- prefer `run_godot.ps1` or `godot_test_suite.ps1` from PowerShell so the Godot executable path and project path are explicit
+- Codex sandboxed Godot launches on this machine can crash with a signal-11 / "memory could not be read" dialog even when the same command succeeds unsandboxed
+- treat an approved unsandboxed Godot run as the authoritative local validation path for scene/harness verification
+
 Notes:
 - Scenes that need synthetic mode start directly with
   `CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC, CamBANGServer.SYNTHETIC_ROLE_TIMELINE, CamBANGServer.TIMING_DRIVER_VIRTUAL_TIME)`.
