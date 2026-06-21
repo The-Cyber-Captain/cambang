@@ -338,7 +338,25 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     } else {
       integrated_ts_ns = frame_ts_to_core_ns(p.frame.capture_timestamp);
     }
-    if (devices_ && p.frame.device_instance_id != 0) {
+    uint64_t resolved_capture_session_id = 0;
+    if (acquisition_sessions_ && p.frame.device_instance_id != 0 &&
+        p.frame.capture_id != 0) {
+      resolved_capture_session_id =
+          acquisition_sessions_->resolve_session_id_for_capture(
+              p.frame.device_instance_id,
+              p.frame.capture_id,
+              p.frame.acquisition_session_id);
+      if (resolved_capture_session_id != 0) {
+        if (const auto* session_rec =
+                acquisition_sessions_->find(resolved_capture_session_id);
+            session_rec != nullptr) {
+          capture_access_posture_epoch = session_rec->capture_access_posture_epoch;
+          capture_requested_retained_plan = session_rec->requested_retained_plan;
+        }
+      }
+    }
+    if (capture_requested_retained_plan.valid == false &&
+        devices_ && p.frame.device_instance_id != 0) {
       if (const CoreDeviceRegistry::DeviceRecord* device_rec = devices_->find(p.frame.device_instance_id);
           device_rec != nullptr) {
         capture_access_posture_epoch = device_rec->capture_access_posture_epoch;

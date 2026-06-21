@@ -99,8 +99,27 @@ static godot::Dictionary core_retained_plan_to_dictionary(CoreRetainedProduction
   return d;
 }
 
+static godot::String chooser_parent_kind_name(
+    CoreRetainedPlanChooserReport::ParentKind parent_kind) {
+  switch (parent_kind) {
+    case CoreRetainedPlanChooserReport::ParentKind::Stream:
+      return "stream";
+    case CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession:
+      return "acquisition_session";
+    case CoreRetainedPlanChooserReport::ParentKind::CapturePriming:
+      return "capture_priming";
+  }
+  return "unknown";
+}
+
 static godot::Dictionary chooser_report_to_dictionary(const CoreRetainedPlanChooserReport& report) {
   godot::Dictionary d;
+  d["parent_kind"] = chooser_parent_kind_name(report.parent_kind);
+  d["parent_id"] = static_cast<uint64_t>(report.parent_id);
+  d["stream_id"] = static_cast<uint64_t>(report.stream_id);
+  d["acquisition_session_id"] = static_cast<uint64_t>(report.acquisition_session_id);
+  d["device_instance_id"] = static_cast<uint64_t>(report.device_instance_id);
+  d["provisional_parent"] = report.provisional_parent;
   d["target_kind"] = report.target_kind == CoreRetainedPlanChooserReport::TargetKind::Stream
       ? godot::String("stream")
       : godot::String("capture");

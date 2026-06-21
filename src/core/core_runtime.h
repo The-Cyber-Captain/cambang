@@ -37,11 +37,23 @@ namespace cambang {
 
 
 struct CoreRetainedPlanChooserReport {
+  enum class ParentKind : uint8_t {
+    Stream = 0,
+    AcquisitionSession = 1,
+    CapturePriming = 2,
+  };
+
   enum class TargetKind : uint8_t {
     Stream = 0,
     Capture = 1,
   };
 
+  ParentKind parent_kind = ParentKind::Stream;
+  uint64_t parent_id = 0;
+  uint64_t stream_id = 0;
+  uint64_t acquisition_session_id = 0;
+  uint64_t device_instance_id = 0;
+  bool provisional_parent = false;
   TargetKind target_kind = TargetKind::Stream;
   uint64_t target_id = 0;
   CoreProductionIntent intent = CoreProductionIntent::Default;
@@ -525,6 +537,33 @@ private:
   bool refresh_capture_retained_plan_state_(
       uint64_t device_instance_id,
       bool requested_bump_access_posture_epoch);
+  struct CaptureRetainedPlanParentKey {
+    enum class Kind : uint8_t {
+      AcquisitionSession = 0,
+      CapturePriming = 1,
+    };
+
+    Kind kind = Kind::CapturePriming;
+    uint64_t id = 0;
+
+    bool operator<(const CaptureRetainedPlanParentKey& other) const noexcept {
+      if (kind != other.kind) {
+        return kind < other.kind;
+      }
+      return id < other.id;
+    }
+  };
+  struct ResolvedCaptureRetainedPlanParent {
+    CaptureRetainedPlanParentKey key{};
+    uint64_t acquisition_session_id = 0;
+    uint64_t device_instance_id = 0;
+    bool provisional = true;
+  };
+  ResolvedCaptureRetainedPlanParent
+  resolve_capture_retained_plan_parent_(uint64_t device_instance_id) const;
+  void erase_capture_retained_plan_state_for_device_(
+      uint64_t device_instance_id,
+      const CaptureRetainedPlanParentKey* keep = nullptr);
   void handle_stream_retained_to_image_observation_(
       uint64_t stream_id,
       uint64_t posture_id,
@@ -586,6 +625,8 @@ private:
   };
 
   struct RetainedPlanEvaluatorState {
+    uint64_t device_instance_id = 0;
+    uint64_t acquisition_session_id = 0;
     CoreProductionIntent intent = CoreProductionIntent::Default;
     bool active = false;
     uint8_t candidate_count = 0;
@@ -595,6 +636,8 @@ private:
   };
 
   struct RetainedPlanDecisionProvenance {
+    uint64_t device_instance_id = 0;
+    uint64_t acquisition_session_id = 0;
     bool valid = false;
     bool from_evaluation = false;
     CoreRetainedProductionPlan selected{};
@@ -603,9 +646,11 @@ private:
   };
 
   std::map<uint64_t, RetainedPlanEvaluatorState> stream_retained_plan_evaluators_;
-  std::map<uint64_t, RetainedPlanEvaluatorState> capture_retained_plan_evaluators_;
+  std::map<CaptureRetainedPlanParentKey, RetainedPlanEvaluatorState>
+      capture_retained_plan_evaluators_;
   std::map<uint64_t, RetainedPlanDecisionProvenance> stream_retained_plan_decisions_;
-  std::map<uint64_t, RetainedPlanDecisionProvenance> capture_retained_plan_decisions_;
+  std::map<CaptureRetainedPlanParentKey, RetainedPlanDecisionProvenance>
+      capture_retained_plan_decisions_;
 
   struct CaptureStreamPreemptionRecord {
     uint64_t capture_id = 0;
