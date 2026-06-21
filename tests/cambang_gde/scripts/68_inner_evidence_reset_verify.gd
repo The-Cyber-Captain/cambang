@@ -10,7 +10,7 @@ extends Node
 ## - prove chooser state and timing evidence stay correctly scoped to the
 ##   owning stream/capture parent context in both single-device and dual-device
 ##   structures
-## - prove that result_access_timing_evidence and retained_plan_chooser_reports
+## - prove that result_access_timing_evidence and backing_plan_evaluation_reports
 ##   are cleared by stop() and re-established after restart
 ##
 ## Scope guardrail:
@@ -48,6 +48,7 @@ const STREAM_RESULT_TIMEOUT_FRAMES := 900
 const DEFAULT_STILL_PROFILE_TIMEOUT_FRAMES := 900
 const CAPTURE_RESULT_TIMEOUT_FRAMES := 900
 const STOP_TIMEOUT_FRAMES := 240
+const ERR_UNAVAILABLE := 2
 
 var _step := 0
 var _done := false
@@ -226,7 +227,7 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	await _emit_capture_decision_from_snapshot(
 		initial_open_snapshot,
 		target_hardware_id,
-		"Default",
+		"capture_ready_and_materialize",
 		"%s_initial_open_capture_default" % label,
 		label
 	)
@@ -271,7 +272,7 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	await _emit_capture_decision_from_snapshot(
 		final_pre_stream_snapshot,
 		target_hardware_id,
-		"Default",
+		"capture_ready_and_materialize",
 		"%s_final_pre_stream_capture_default" % label,
 		label
 	)
@@ -355,16 +356,15 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 	_step_ok("%s default still profile snapshot-visible" % label)
-	var capture_chooser := await _wait_for_capture_chooser_matching_stream(
+	var capture_chooser := await _wait_for_capture_chooser_ready(
 		device_instance_id,
-		steady_stream_chooser,
 		target_label,
 		str(context.get("tag", "capture"))
 	)
-	_print_chooser_report("%s_capture_reused_active_stream_policy" % label, capture_chooser)
+	_print_chooser_report("%s_capture_parent_ready" % label, capture_chooser)
 	if _done:
 		return {}
-	_step_ok("%s capture chooser reused the live active stream policy" % label)
+	_step_ok("%s capture parent evaluation remained capture-scoped" % label)
 
 	var capture_result = await _trigger_and_wait_capture(device, context, label)
 	if _done:
@@ -457,7 +457,7 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	await _emit_capture_decision_from_snapshot(
 		initial_cam0_open_snapshot,
 		cam0_hardware_id,
-		"Default",
+		"capture_ready_and_materialize",
 		"%s_initial_cam0_capture_default" % label,
 		label
 	)
@@ -519,7 +519,7 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	await _emit_capture_decision_from_snapshot(
 		dual_no_stream_snapshot,
 		cam0_hardware_id,
-		"Default",
+		"capture_ready_and_materialize",
 		"%s_dual_no_stream_cam0_capture_default" % label,
 		label
 	)
@@ -528,7 +528,7 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	await _emit_capture_decision_from_snapshot(
 		dual_no_stream_snapshot,
 		cam1_hardware_id,
-		"Default",
+		"capture_ready_and_materialize",
 		"%s_dual_no_stream_cam1_capture_default" % label,
 		label
 	)
@@ -549,7 +549,7 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	await _emit_capture_decision_from_snapshot(
 		mixed_dual_snapshot,
 		cam1_hardware_id,
-		"Default",
+		"capture_ready_and_materialize",
 		"%s_mixed_dual_cam1_capture_default" % label,
 		label
 	)
@@ -635,16 +635,15 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		if _done:
 			return {}
 		_step_ok("%s default still profile snapshot-visible" % target_label)
-		var capture_chooser := await _wait_for_capture_chooser_matching_stream(
+		var capture_chooser := await _wait_for_capture_chooser_ready(
 			device_instance_id,
-			steady_stream_chooser,
 			target_label,
 			str(context.get("tag", "capture"))
 		)
 		if _done:
 			return {}
-		_print_chooser_report("%s_capture_reused_active_stream_policy" % target_label, capture_chooser)
-		_step_ok("%s capture chooser reused the live active stream policy" % target_label)
+		_print_chooser_report("%s_capture_parent_ready" % target_label, capture_chooser)
+		_step_ok("%s capture parent evaluation remained capture-scoped" % target_label)
 
 		var capture_result = await _trigger_and_wait_capture(device, context, target_label)
 		if _done:
@@ -1062,6 +1061,9 @@ func _trigger_and_wait_capture(device, ids: Dictionary, label: String):
 	var baseline_completed := int(baseline_progress.get("captures_completed", 0))
 
 	var trigger_err := int(device.trigger_capture())
+	if trigger_err == ERR_UNAVAILABLE:
+		_fail("%s: device.trigger_capture() explicitly unavailable before result publication" % label)
+		return null
 	_require(trigger_err == OK, "%s: device.trigger_capture() failed err=%d" % [label, trigger_err])
 	if _done:
 		return null
@@ -1169,6 +1171,29 @@ func _wait_for_evidence_route(route: String, label: String) -> Dictionary:
 			continue
 		return evidence
 	_fail("%s: timed out waiting for evidence route %s" % [label, route])
+	return {}
+
+
+func _wait_for_evidence_route_prefix(prefix: String, label: String) -> Dictionary:
+	for _i in range(CAPTURE_RESULT_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var evidence := _get_result_access_timing_evidence()
+		if evidence.is_empty():
+			continue
+		for key in evidence.keys():
+			var route := str(key)
+			if not route.begins_with(prefix):
+				continue
+			var entry_v = evidence.get(route, null)
+			if typeof(entry_v) != TYPE_DICTIONARY:
+				continue
+			return {
+				"route": route,
+				"evidence": evidence,
+			}
+	_fail("%s: timed out waiting for evidence route prefix %s" % [label, prefix])
 	return {}
 
 
@@ -1324,7 +1349,9 @@ func _get_retained_plan_chooser_reports() -> Array:
 	var metrics = CamBANGServer.get_synthetic_metrics_snapshot()
 	if typeof(metrics) != TYPE_DICTIONARY:
 		return []
-	var reports = metrics.get("retained_plan_chooser_reports", [])
+	var reports = metrics.get("backing_plan_evaluation_reports", [])
+	if typeof(reports) != TYPE_ARRAY:
+		reports = metrics.get("retained_plan_chooser_reports", [])
 	if typeof(reports) != TYPE_ARRAY:
 		return []
 	return reports
@@ -1340,13 +1367,13 @@ func _get_stream_chooser_report(stream_id: int) -> Dictionary:
 	return {}
 
 
-func _wait_for_stream_chooser_with_intent(
+func _wait_for_stream_chooser_with_primary_function(
 	stream_id: int,
 	label: String,
 	target_label: String,
-	expected_intent: String
+	expected_primary_function: String
 ) -> Dictionary:
-	var last_intent := ""
+	var last_primary_function := ""
 	for _i in range(ID_TIMEOUT_FRAMES):
 		if _timed_out():
 			return {}
@@ -1354,11 +1381,11 @@ func _wait_for_stream_chooser_with_intent(
 		var report := _get_stream_chooser_report(stream_id)
 		if report.is_empty():
 			continue
-		last_intent = str(report.get("intent", ""))
-		if last_intent != expected_intent:
+		last_primary_function = str(report.get("primary_function", ""))
+		if last_primary_function != expected_primary_function:
 			continue
 		return report
-	_fail("%s: timed out waiting for %s stream chooser report with intent %s (last_intent=%s)" % [label, target_label, expected_intent, last_intent])
+	_fail("%s: timed out waiting for %s stream chooser report with primary_function %s (last_primary_function=%s)" % [label, target_label, expected_primary_function, last_primary_function])
 	return {}
 
 
@@ -1384,13 +1411,13 @@ func _wait_for_capture_chooser_report(device_instance_id: int, label: String) ->
 	return {}
 
 
-func _wait_for_capture_chooser_with_intent(
+func _wait_for_capture_chooser_with_primary_function(
 	device_instance_id: int,
 	label: String,
 	target_label: String,
-	expected_intent: String
+	expected_primary_function: String
 ) -> Dictionary:
-	var last_intent := ""
+	var last_primary_function := ""
 	for _i in range(ID_TIMEOUT_FRAMES):
 		if _timed_out():
 			return {}
@@ -1398,22 +1425,19 @@ func _wait_for_capture_chooser_with_intent(
 		var report := _get_capture_chooser_report(device_instance_id)
 		if report.is_empty():
 			continue
-		last_intent = str(report.get("intent", ""))
-		if last_intent != expected_intent:
+		last_primary_function = str(report.get("primary_function", ""))
+		if last_primary_function != expected_primary_function:
 			continue
 		return report
-	_fail("%s: timed out waiting for %s capture chooser report with intent %s (last_intent=%s)" % [label, target_label, expected_intent, last_intent])
+	_fail("%s: timed out waiting for %s capture chooser report with primary_function %s (last_primary_function=%s)" % [label, target_label, expected_primary_function, last_primary_function])
 	return {}
 
 
-func _wait_for_capture_chooser_matching_stream(
+func _wait_for_capture_chooser_ready(
 	device_instance_id: int,
-	stream_chooser: Dictionary,
 	label: String,
 	target_label: String
 ) -> Dictionary:
-	var expected_posture := _chooser_selection_posture(stream_chooser)
-	_require(expected_posture != "", "%s: %s stream chooser selection posture missing before capture chooser refresh" % [label, target_label])
 	if _done:
 		return {}
 	for _i in range(ID_TIMEOUT_FRAMES):
@@ -1423,19 +1447,18 @@ func _wait_for_capture_chooser_matching_stream(
 		var report := _get_capture_chooser_report(device_instance_id)
 		if report.is_empty():
 			continue
-		_assert_chooser_intent(report, label, "%s capture" % target_label, "Stream-active")
+		_assert_chooser_primary_function(
+			report,
+			label,
+			"%s capture" % target_label,
+			"capture_ready_and_materialize"
+		)
 		if _done:
 			return {}
-		if bool(report.get("evaluator_active", false)):
-			continue
-		if not _chooser_plan_valid(report, "requested") or not _chooser_plan_valid(report, "steady"):
-			continue
-		if _chooser_posture(report, "requested") != expected_posture:
-			continue
-		if _chooser_posture(report, "steady") != expected_posture:
+		if not _chooser_plan_valid(report, "requested"):
 			continue
 		return report
-	_fail("%s: timed out waiting for %s capture chooser to mirror settled stream posture %s" % [label, target_label, expected_posture])
+	_fail("%s: timed out waiting for %s capture chooser requested posture to become available" % [label, target_label])
 	return {}
 
 
@@ -1725,7 +1748,7 @@ func _print_retained_plan_decision_summary(
 func _emit_capture_decision_from_snapshot(
 	snapshot: Dictionary,
 	hardware_id: String,
-	expected_intent: String,
+	expected_primary_function: String,
 	context_tag: String,
 	label: String
 ) -> void:
@@ -1739,11 +1762,11 @@ func _emit_capture_decision_from_snapshot(
 	_require(device_instance_id != 0, "%s: device instance id missing for hardware_id=%s" % [label, hardware_id])
 	if _done:
 		return
-	var report := await _wait_for_capture_chooser_with_intent(
+	var report := await _wait_for_capture_chooser_with_primary_function(
 		device_instance_id,
 		label,
 		context_tag,
-		expected_intent
+		expected_primary_function
 	)
 	if _done:
 		return
@@ -1783,11 +1806,11 @@ func _emit_stream_decision_from_snapshot(
 	_require(stream_id != 0, "%s: stream id missing for hardware_id=%s intent=%s" % [label, hardware_id, stream_intent])
 	if _done:
 		return
-	var report := await _wait_for_stream_chooser_with_intent(
+	var report := await _wait_for_stream_chooser_with_primary_function(
 		stream_id,
 		label,
 		context_tag,
-		"Stream-active"
+		"display_view"
 	)
 	if _done:
 		return
@@ -1836,21 +1859,21 @@ func _seed_capture_access_only_evidence_from_snapshot(
 	_assert_access_only_probe_contract(label, access_probe)
 	if _done:
 		return
-	var evidence := await _wait_for_evidence_route("capture_to_image.cpu_packed", label)
+	var capture_route_match := await _wait_for_evidence_route_prefix("capture_to_image.", label)
 	if _done:
 		return
-	_require(not evidence.is_empty(), "%s: capture_to_image.cpu_packed evidence missing after access-only capture" % label)
+	_require(not capture_route_match.is_empty(), "%s: capture_to_image.* evidence missing after access-only capture" % label)
 
 
-func _assert_chooser_intent(report: Dictionary, label: String, target_label: String, expected_intent: String) -> void:
+func _assert_chooser_primary_function(report: Dictionary, label: String, target_label: String, expected_primary_function: String) -> void:
 	_require(not report.is_empty(), "%s: %s chooser report missing" % [label, target_label])
 	if _done:
 		return
-	_require(str(report.get("intent", "")) == expected_intent, "%s: %s chooser intent expected %s got %s" % [label, target_label, expected_intent, str(report.get("intent", ""))])
+	_require(str(report.get("primary_function", "")) == expected_primary_function, "%s: %s chooser primary_function expected %s got %s" % [label, target_label, expected_primary_function, str(report.get("primary_function", ""))])
 
 
 func _classify_and_assert_stream_chooser_shape(report: Dictionary, label: String) -> String:
-	_assert_chooser_intent(report, label, "stream", "Stream-active")
+	_assert_chooser_primary_function(report, label, "stream", "display_view")
 	if _done:
 		return ""
 	_require(_chooser_plan_valid(report, "requested"), "%s: stream chooser requested posture missing" % label)
@@ -1909,7 +1932,7 @@ func _observe_multi_candidate_chooser_until_steady(stream_id: int, initial_repor
 		var report := _get_stream_chooser_report(stream_id)
 		if report.is_empty():
 			continue
-		_assert_chooser_intent(report, label, target_label, "Stream-active")
+		_assert_chooser_primary_function(report, label, target_label, "display_view")
 		if _done:
 			return {}
 		if bool(report.get("evaluator_active", false)):

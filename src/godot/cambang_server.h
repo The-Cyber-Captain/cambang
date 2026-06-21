@@ -121,7 +121,9 @@ public:
   void retain_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand(uint64_t stream_id);
   void release_stream_display_demand_async(uint64_t stream_id);
-  uint64_t trigger_device_capture(uint64_t device_instance_id);
+  godot::Error trigger_device_capture(
+      uint64_t device_instance_id,
+      uint64_t& out_capture_id);
   godot::Error set_device_still_capture_profile(uint64_t device_instance_id,
                                                 const CaptureProfile& profile,
                                                 const CaptureStillImageBundle& still_image_bundle);

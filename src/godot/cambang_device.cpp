@@ -149,9 +149,11 @@ godot::Error CamBANGDevice::trigger_capture() {
   if (!server_->is_running()) {
     return godot::ERR_UNAVAILABLE;
   }
-  const uint64_t capture_id = server_->trigger_device_capture(device_instance_id);
-  if (capture_id == 0) {
-    return godot::ERR_BUSY;
+  uint64_t capture_id = 0;
+  const godot::Error trigger_error =
+      server_->trigger_device_capture(device_instance_id, capture_id);
+  if (trigger_error != godot::OK) {
+    return trigger_error;
   }
   current_capture_id_ = capture_id;
   return godot::OK;

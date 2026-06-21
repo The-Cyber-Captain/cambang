@@ -112,9 +112,22 @@ static godot::String chooser_parent_kind_name(
   return "unknown";
 }
 
+static godot::String report_primary_function_name(
+    CoreRetainedPlanChooserReport::ParentKind parent_kind) {
+  switch (parent_kind) {
+    case CoreRetainedPlanChooserReport::ParentKind::Stream:
+      return "display_view";
+    case CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession:
+    case CoreRetainedPlanChooserReport::ParentKind::CapturePriming:
+      return "capture_ready_and_materialize";
+  }
+  return "unknown";
+}
+
 static godot::Dictionary chooser_report_to_dictionary(const CoreRetainedPlanChooserReport& report) {
   godot::Dictionary d;
   d["parent_kind"] = chooser_parent_kind_name(report.parent_kind);
+  d["primary_function"] = report_primary_function_name(report.parent_kind);
   d["parent_id"] = static_cast<uint64_t>(report.parent_id);
   d["stream_id"] = static_cast<uint64_t>(report.stream_id);
   d["acquisition_session_id"] = static_cast<uint64_t>(report.acquisition_session_id);
@@ -378,6 +391,21 @@ static godot::Error map_try_set_warm_hold_status(TrySetWarmHoldStatus s) noexcep
     case TrySetWarmHoldStatus::Busy: return godot::ERR_BUSY;
     case TrySetWarmHoldStatus::InvalidArgument: return godot::ERR_INVALID_PARAMETER;
     default: return godot::FAILED;
+  }
+}
+
+static godot::Error map_try_trigger_device_capture_status(
+    TryTriggerDeviceCaptureStatus s) noexcept {
+  switch (s) {
+    case TryTriggerDeviceCaptureStatus::OK: return godot::OK;
+    case TryTriggerDeviceCaptureStatus::Busy: return godot::ERR_BUSY;
+    case TryTriggerDeviceCaptureStatus::InvalidArgument:
+      return godot::ERR_INVALID_PARAMETER;
+    case TryTriggerDeviceCaptureStatus::ProviderRejected:
+    case TryTriggerDeviceCaptureStatus::Unavailable:
+      return godot::ERR_UNAVAILABLE;
+    default:
+      return godot::FAILED;
   }
 }
 
@@ -1233,9 +1261,12 @@ void CamBANGServer::release_stream_display_demand_async(uint64_t stream_id) {
   runtime_.release_stream_display_demand_async(stream_id);
 }
 
-uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
+godot::Error CamBANGServer::trigger_device_capture(
+    uint64_t device_instance_id,
+    uint64_t& out_capture_id) {
+  out_capture_id = 0;
   if (device_instance_id == 0 || !is_public_boundary_ready_()) {
-    return 0;
+    return godot::ERR_BUSY;
   }
 
   uint64_t capture_id = next_capture_id_.fetch_add(1, std::memory_order_relaxed);
@@ -1246,9 +1277,10 @@ uint64_t CamBANGServer::trigger_device_capture(uint64_t device_instance_id) {
   const TryTriggerDeviceCaptureStatus status =
       runtime_.try_trigger_device_capture_with_capture_id_for_server(device_instance_id, capture_id);
   if (status != TryTriggerDeviceCaptureStatus::OK) {
-    return 0;
+    return map_try_trigger_device_capture_status(status);
   }
-  return capture_id;
+  out_capture_id = capture_id;
+  return godot::OK;
 }
 
 godot::Error CamBANGServer::set_device_still_capture_profile(
@@ -1806,6 +1838,9 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   for (const CoreRetainedPlanChooserReport& report : runtime_.retained_plan_chooser_reports()) {
     chooser_reports.append(chooser_report_to_dictionary(report));
   }
+  d.set(
+      godot::Variant(godot::String("backing_plan_evaluation_reports")),
+      godot::Variant(chooser_reports));
   d.set(
       godot::Variant(godot::String("retained_plan_chooser_reports")),
       godot::Variant(chooser_reports));

@@ -12,7 +12,7 @@ The retained-result access calibration/classification tranche is implemented and
 
 The currently landed intent-based chooser implementation is partial rather than accepted. Useful groundwork already exists in source: the three posture shapes, requested-plan plumbing through stream/capture/provider-delivered results, provider-capability distinctions for those shapes, the requested-vs-steady storage seam, the result-access evidence seam, and the access-posture/topology-triggered invalidation work.
 
-The immediate focus is no longer to complete the old chooser model as previously described in this file. The active direction is to prepare a source-grounded terminology and design reset for retained-plan selection before further implementation continues. The next durable artifact should be the design note for that reset, preceded by terminology hygiene where needed.
+The immediate focus is no longer to complete the old chooser model as previously described in this file. The terminology reset and parent-scoped design note are now landed, and the active direction is to implement that reset in source without allowing the older intent-based chooser model to drift forward in parallel.
 
 Important settled state:
 
@@ -55,8 +55,7 @@ What already exists and should be preserved unless source inspection disproves i
 
 Immediate tranche goal:
 
-* produce a source-grounded terminology reset covering which existing chooser terms remain valid, which are redefined, and which are defunct;
-* produce the design note for parent-scoped retained-plan evaluation after that terminology reset is agreed;
+* preserve the landed terminology reset and `docs/dev/backing_plan_parent_evaluation_reset.md` as the active design direction;
 * redefine retained-plan selection around the Native Payload Support parent rather than the old chooser-intent model;
 * preserve the bounded, topology-triggered, non-per-frame nature of evaluation and reevaluation;
 * preserve provider-truth, requested-vs-steady separation, and `CoreResultStore` validation against Core-held requested plan state.
@@ -80,15 +79,16 @@ Current checkpoint status:
   * Compatibility `runtime_default` resolves to CPU-primary;
   * Mobile `runtime_default` resolves to GPU-primary, no CPU sidecar.
 * Current forced `cpu_only` / `gpu_only` comparisons support that inference.
-* Deterministic maintainer coverage now also includes a Synthetic parent-context downgrade matrix plus active-stream capture-policy mirroring in `provider_compliance_verify`.
-* Stream-side results look promising; capture-side effect remains mixed and is not yet treated as final acceptance evidence.
+* Deterministic maintainer coverage includes the Synthetic parent-context downgrade matrix and the targeted retained-plan evaluator check.
+* The targeted retained-plan evaluator check now exercises parent-scoped stream `display_view` evaluation and independent capture-parent evaluation in `provider_compliance_verify`.
+* Scene 68 still remains a verification/reporting surface, but any remaining assertions of capture-policy mirroring or chooser-intent semantics are harness drift rather than accepted architecture.
 
 Immediate next focus:
 
 * do not assume the chooser tranche is accepted yet;
 * do not extend the old chooser terminology or intent model in code comments, tranche notes, or new design material;
-* first complete the terminology and design reset for parent-scoped retained-plan evaluation;
-* only then decide what verification harness should prove the redesigned evaluator and whether Scene 68 remains the right host;
+* continue replacing the older chooser-intent implementation and harness assumptions with the parent-scoped Backing Plan evaluation model;
+* keep Scene 68 aligned only as a verification/reporting surface unless and until it clearly proves the redesigned evaluator without reintroducing old policy semantics;
 * desired harness output for the redesigned evaluator is explicit parent-scoped decision truth such as viable posture set, requested plan, steady plan, chosen posture shape, and decision-relevant evidence buckets.
 
 Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of the chooser, but does not by itself prove the tranche successful.

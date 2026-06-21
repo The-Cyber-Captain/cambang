@@ -3181,11 +3181,10 @@ bool run_core_measured_retained_plan_evaluator_check() {
         return rec &&
                plan_equals(rec->requested_retained_plan,
                            CoreProductionPostureShape::CpuPrimary) &&
-               plan_equals(rec->steady_retained_plan,
-                           CoreProductionPostureShape::CpuPrimary);
+               !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator default capture fast path mismatch");
+        "FAIL core measured retained-plan evaluator default capture parent initial requested/steady mismatch");
   }
 
   if (rt.try_create_stream(
@@ -3228,10 +3227,10 @@ bool run_core_measured_retained_plan_evaluator_check() {
 
   const SharedStreamResultData first_stream_result =
       rt.get_latest_stream_result(kStreamId);
-  rt.report_stream_retained_to_image_observation(
+  rt.report_stream_retained_display_view_observation(
       kStreamId,
       first_stream_result->access_posture.posture_id,
-      first_stream_result->retained_access_truth.to_image,
+      first_stream_result->retained_access_truth.display_view,
       true,
       80);
   if (!wait_until([&]() {
@@ -3265,32 +3264,73 @@ bool run_core_measured_retained_plan_evaluator_check() {
 
   const SharedStreamResultData second_stream_result =
       rt.get_latest_stream_result(kStreamId);
-  rt.report_stream_retained_to_image_observation(
+  rt.report_stream_retained_display_view_observation(
       kStreamId,
       second_stream_result->access_posture.posture_id,
-      second_stream_result->retained_access_truth.to_image,
+      second_stream_result->retained_access_truth.display_view,
       true,
-      40);
+      90);
   if (!wait_until([&]() {
         const auto* rec = rt.stream_record(kStreamId);
         return rec &&
                plan_equals(rec->requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+                           CoreProductionPostureShape::CpuPrimary) &&
+               !rec->steady_retained_plan.valid &&
+               provider.stream_plan_update_count(kStreamId) >= 2 &&
+               plan_equals(
+                   provider.stream_requested_plan(kStreamId),
+                   CoreProductionPostureShape::CpuPrimary);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not advance stream to cpu candidate");
+  }
+
+  if (!provider.emit_stream_frame(kStreamId, true)) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator third stream frame emit failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_latest_stream_result(kStreamId);
+        return result &&
+               result->payload_kind == ResultPayloadKind::CPU_PACKED &&
+               !result->access_posture.has_retained_gpu_backing;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator cpu stream result missing");
+  }
+
+  const SharedStreamResultData third_stream_result =
+      rt.get_latest_stream_result(kStreamId);
+  rt.report_stream_retained_display_view_observation(
+      kStreamId,
+      third_stream_result->access_posture.posture_id,
+      third_stream_result->retained_access_truth.display_view,
+      true,
+      120);
+  if (!wait_until([&]() {
+        const auto* rec = rt.stream_record(kStreamId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
                plan_equals(rec->steady_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
+               provider.stream_plan_update_count(kStreamId) >= 3 &&
+               plan_equals(
+                   provider.stream_requested_plan(kStreamId),
+                   CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator did not settle stream steady posture");
   }
 
-  CaptureRequest mirrored_capture_req{};
+  CaptureRequest independent_capture_req{};
   if (!wait_until([&]() {
-        return rt.materialize_capture_request(kDeviceId, mirrored_capture_req) &&
-               plan_equals(mirrored_capture_req.requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+        return rt.materialize_capture_request(kDeviceId, independent_capture_req) &&
+               plan_equals(independent_capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not mirror active stream steady posture into capture");
+        "FAIL core measured retained-plan evaluator capture parent did not remain independent of stream steady posture");
   }
 
   PictureConfig stream_picture = provider.stream_template().picture;
@@ -3305,21 +3345,20 @@ bool run_core_measured_retained_plan_evaluator_check() {
         return rec &&
                plan_equals(rec->requested_retained_plan,
                            CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
-               !rec->steady_retained_plan.valid &&
-               provider.stream_plan_update_count(kStreamId) >= 2;
+               !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator stream rerun/reset mismatch");
   }
 
-  CaptureRequest reset_mirrored_capture_req{};
+  CaptureRequest reset_independent_capture_req{};
   if (!wait_until([&]() {
-        return rt.materialize_capture_request(kDeviceId, reset_mirrored_capture_req) &&
-               plan_equals(reset_mirrored_capture_req.requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+        return rt.materialize_capture_request(kDeviceId, reset_independent_capture_req) &&
+               plan_equals(reset_independent_capture_req.requested_retained_plan,
+                           CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not mirror active stream requested posture into capture after rerun");
+        "FAIL core measured retained-plan evaluator capture parent drifted during stream rerun");
   }
 
   if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK ||
@@ -3335,14 +3374,12 @@ bool run_core_measured_retained_plan_evaluator_check() {
                rt.materialize_capture_request(kDeviceId, reopened_capture_req) &&
                plan_equals(reopened_capture_req.requested_retained_plan,
                            CoreProductionPostureShape::CpuPrimary) &&
-               plan_equals(rec->steady_retained_plan,
-                           CoreProductionPostureShape::CpuPrimary);
+               !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not reopen independent capture lane after stream teardown");
+        "FAIL core measured retained-plan evaluator did not preserve independent capture parent after stream teardown");
   }
 
-  provider.set_capture_cpu_available(false);
   PictureConfig capture_picture = provider.capture_template().picture;
   capture_picture.seed = 88;
   if (rt.try_set_capture_picture_config(kDeviceId, capture_picture) !=
@@ -3354,7 +3391,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
         const auto* rec = rt.device_record(kDeviceId);
         return rec &&
                plan_equals(rec->requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
+                           CoreProductionPostureShape::CpuPrimary) &&
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
@@ -3365,7 +3402,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
   if (!wait_until([&]() {
         return rt.materialize_capture_request(kDeviceId, capture_req) &&
                plan_equals(capture_req.requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+                           CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator materialized capture request mismatch");
@@ -3380,8 +3417,8 @@ bool run_core_measured_retained_plan_evaluator_check() {
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdA, kDeviceId);
         return result &&
-               result->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE &&
-               !result->default_image.access_posture.has_retained_cpu_payload;
+               result->default_image.payload_kind == ResultPayloadKind::CPU_PACKED &&
+               !result->default_image.access_posture.has_retained_gpu_backing;
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator first capture result missing");
@@ -3391,29 +3428,32 @@ bool run_core_measured_retained_plan_evaluator_check() {
       rt.get_capture_result(kCaptureIdA, kDeviceId);
   rt.report_capture_retained_to_image_observation(
       kDeviceId,
+      kCaptureIdA,
       first_capture_result->default_image.access_posture.posture_id,
       first_capture_result->default_image.retained_access_truth.to_image,
       true,
-      80);
+      80'000'000,
+      true,
+      80'000'000);
   if (!wait_until([&]() {
         const auto* rec = rt.device_record(kDeviceId);
         return rec &&
                plan_equals(rec->requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar) &&
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator did not advance capture candidate");
   }
 
-  CaptureRequest capture_req_sidecar{};
+  CaptureRequest capture_req_no_sidecar{};
   if (!wait_until([&]() {
-        return rt.materialize_capture_request(kDeviceId, capture_req_sidecar) &&
-               plan_equals(capture_req_sidecar.requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+        return rt.materialize_capture_request(kDeviceId, capture_req_no_sidecar) &&
+               plan_equals(capture_req_no_sidecar.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator sidecar capture request mismatch");
+        "FAIL core measured retained-plan evaluator no-sidecar capture request mismatch");
   }
 
   constexpr uint64_t kCaptureIdB = 8802;
@@ -3426,7 +3466,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
         const auto result = rt.get_capture_result(kCaptureIdB, kDeviceId);
         return result &&
                result->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE &&
-               result->default_image.access_posture.has_retained_cpu_payload;
+               !result->default_image.access_posture.has_retained_cpu_payload;
       })) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator second capture result missing");
@@ -3436,10 +3476,61 @@ bool run_core_measured_retained_plan_evaluator_check() {
       rt.get_capture_result(kCaptureIdB, kDeviceId);
   rt.report_capture_retained_to_image_observation(
       kDeviceId,
+      kCaptureIdB,
       second_capture_result->default_image.access_posture.posture_id,
       second_capture_result->default_image.retained_access_truth.to_image,
       true,
-      40);
+      80'000'000,
+      true,
+      80'000'000);
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kDeviceId);
+        return rec &&
+               plan_equals(rec->requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               !rec->steady_retained_plan.valid;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not advance capture to sidecar candidate");
+  }
+
+  CaptureRequest capture_req_sidecar{};
+  if (!wait_until([&]() {
+        return rt.materialize_capture_request(kDeviceId, capture_req_sidecar) &&
+               plan_equals(capture_req_sidecar.requested_retained_plan,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator sidecar capture request mismatch");
+  }
+
+  constexpr uint64_t kCaptureIdC = 8803;
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceId, kCaptureIdC) != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator third trigger_capture failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_capture_result(kCaptureIdC, kDeviceId);
+        return result &&
+               result->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE &&
+               result->default_image.access_posture.has_retained_cpu_payload;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator third capture result missing");
+  }
+
+  const SharedCaptureResultData third_capture_result =
+      rt.get_capture_result(kCaptureIdC, kDeviceId);
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      kCaptureIdC,
+      third_capture_result->default_image.access_posture.posture_id,
+      third_capture_result->default_image.retained_access_truth.to_image,
+      true,
+      40'000'000,
+      true,
+      40'000'000);
   if (!wait_until([&]() {
         const auto* rec = rt.device_record(kDeviceId);
         return rec &&

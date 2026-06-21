@@ -160,6 +160,33 @@ void report_stream_to_image_observation(
           : 0);
 }
 
+void report_stream_display_view_observation(
+    const SharedStreamResultData& data,
+    CoreRuntime* runtime) {
+  if (!runtime || !data || data->stream_id == 0 || data->access_posture.posture_id == 0) {
+    return;
+  }
+  std::optional<result_access_cost_evidence::RecordedAccessMeasurement> measurement;
+  if (data->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      data->retained_gpu_backing) {
+    measurement = result_access_cost_evidence::latest_stream_measurement(
+        result_access_cost_evidence::kRouteStreamDisplayViewRetainedGpuBacking,
+        data->access_posture.posture_id);
+  } else {
+    measurement = result_access_cost_evidence::latest_stream_measurement(
+        result_access_cost_evidence::kRouteStreamDisplayViewCpuLiveDisplayView,
+        data->access_posture.posture_id);
+  }
+  runtime->report_stream_retained_display_view_observation(
+      data->stream_id,
+      data->access_posture.posture_id,
+      data->retained_access_truth.display_view,
+      measurement.has_value() && measurement->success,
+      measurement.has_value() && measurement->success
+          ? measurement->elapsed_ns
+          : 0);
+}
+
 void report_capture_to_image_observation(
     const SharedCaptureResultData& data,
     const CoreCaptureResultData::ImageMemberData& member,
@@ -193,8 +220,13 @@ void report_capture_to_image_observation(
   }
   runtime->report_capture_retained_to_image_observation(
       data->device_instance_id,
+      data->capture_id,
       member.access_posture.posture_id,
       member.retained_access_truth.to_image,
+      measurement.has_value() && measurement->success,
+      measurement.has_value() && measurement->success
+          ? measurement->elapsed_ns
+          : 0,
       measurement.has_value() && measurement->success,
       measurement.has_value() && measurement->success
           ? measurement->normalized_cost_units()
@@ -213,6 +245,10 @@ void calibrate_stream_result(const SharedStreamResultData& data,
   if (data->retained_access_truth.display_view != ResultCapability::UNSUPPORTED &&
       mark_needed(display_identity)) {
     (void)CamBANGStreamResult::calibrate_display_view_for_retained_access(data);
+    report_stream_display_view_observation(data, runtime);
+  } else if (data->retained_access_truth.display_view == ResultCapability::UNSUPPORTED &&
+             mark_needed(display_identity)) {
+    report_stream_display_view_observation(data, runtime);
   }
 
   const CalibrationIdentity image_identity{
@@ -227,7 +263,6 @@ void calibrate_stream_result(const SharedStreamResultData& data,
       (void)CamBANGStreamResult::calibrate_to_image_gpu_materializer_for_retained_access(data);
     }
     refine_stream_to_image_classification(data);
-    report_stream_to_image_observation(data, runtime);
   } else if (data->retained_access_truth.to_image == ResultCapability::UNSUPPORTED &&
              mark_needed(image_identity)) {
     report_stream_to_image_observation(data, runtime);

@@ -121,6 +121,32 @@ PowerShell helper for local/Codex runs:
 .\run_godot.ps1 -Script res://scripts/status_panel_harness.gd -ScriptArgs fixtures/status_panel/fixture_valid_basic_authoritative.json
 ```
 
+Optional per-run logging/classification for Windows-first automation:
+
+```powershell
+.\run_godot.ps1 `
+  -Scene res://scenes/65_public_boundary_verify.tscn `
+  -QuitAfter 10 `
+  -CaptureLogs `
+  -RunLabel scene65_win_compat `
+  -ExpectedOkPattern "OK:\s+godot public boundary verify PASS"
+```
+
+When `-CaptureLogs` is enabled, `run_godot.ps1` writes one run directory beneath:
+
+- `run-logs/ok/` for locally classified successful runs
+- `run-logs/error/` for non-zero exit, timeout, hard-failure marker, or missing expected PASS-marker runs
+- `run-logs/summary.jsonl` as one compact JSON record per run for summary-first inspection
+
+Each run directory contains:
+
+- `stdout.log`
+- `stderr.log`
+- `meta.json`
+- `verdict.txt`
+
+This is intended to keep Codex/token usage bounded: inspect `summary.jsonl` first, then open only the failing run directories unless you are explicitly doing later OK-run timing/statistics work.
+
 Notes for Codex/agent validation on this machine:
 
 - prefer `run_godot.ps1` or `godot_test_suite.ps1` from PowerShell so the Godot executable path and project path are explicit

@@ -14,6 +14,7 @@ bin/*.dll
 bin/*.a
 bin/*.so
 bin/*.dylib
+run-logs/
 
 # If copied for MinGW runtime
 bin/libstdc++-6.dll

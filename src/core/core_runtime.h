@@ -67,6 +67,11 @@ struct CoreRetainedPlanChooserReport {
   std::vector<CoreRetainedProductionPlan> decision_candidate_sequence{};
 };
 
+enum class BackingPlanEvaluationPrimaryFunction : uint8_t {
+  StreamDisplayView = 0,
+  CaptureReadyAndMaterialize = 1,
+};
+
 enum class TrySetStreamPictureStatus : uint8_t {
   OK = 0,
   NotSupported = 1,
@@ -99,6 +104,7 @@ enum class TryTriggerDeviceCaptureStatus : uint8_t {
   Busy = 1,
   InvalidArgument = 2,
   ProviderRejected = 3,
+  Unavailable = 4,
 };
 
 enum class TryCreateStreamStatus : uint8_t {
@@ -393,11 +399,16 @@ enum class TryCloseDeviceStatus : uint8_t {
 
   std::vector<CoreRetainedPlanChooserReport> retained_plan_chooser_reports() const;
 
-  // Narrow internal chooser-evidence handoff. Godot-side retained-result
-  // calibration reports structural/support truth and any measured to_image cost
-  // back to Core so the measured evaluator can settle requested vs steady
-  // retained-production posture without inventing a separate benchmarking
-  // subsystem.
+  // Narrow internal backing-plan evaluation handoff. Godot-side retained-result
+  // calibration reports structural/support truth plus measured public-operation
+  // timing back to Core so parent-scoped requested vs steady planning can
+  // settle without inventing a separate benchmarking subsystem.
+  void report_stream_retained_display_view_observation(
+      uint64_t stream_id,
+      uint64_t posture_id,
+      ResultCapability provisional_display_view,
+      bool has_display_view_elapsed_ns,
+      uint64_t display_view_elapsed_ns);
   void report_stream_retained_to_image_observation(
       uint64_t stream_id,
       uint64_t posture_id,
@@ -406,8 +417,11 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t normalized_cost_units);
   void report_capture_retained_to_image_observation(
       uint64_t device_instance_id,
+      uint64_t capture_id,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
+      bool has_materialization_elapsed_ns,
+      uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units);
 
@@ -570,10 +584,19 @@ private:
       ResultCapability provisional_to_image,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units);
+  void handle_stream_retained_display_view_observation_(
+      uint64_t stream_id,
+      uint64_t posture_id,
+      ResultCapability provisional_display_view,
+      bool has_display_view_elapsed_ns,
+      uint64_t display_view_elapsed_ns);
   void handle_capture_retained_to_image_observation_(
       uint64_t device_instance_id,
+      uint64_t capture_id,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
+      bool has_materialization_elapsed_ns,
+      uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units);
   void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
@@ -581,6 +604,10 @@ private:
       std::vector<SharedCaptureResultData> candidates) const;
 
 private:
+  struct MeasuredPlanEvidence;
+  struct RetainedPlanEvaluatorState;
+  struct RetainedPlanDecisionProvenance;
+
   CoreThread core_thread_;
   CoreRigRegistry rigs_;
   CoreDeviceRegistry devices_;
@@ -618,20 +645,31 @@ private:
   size_t provider_capture_facts_queued_ = 0;
 
   struct MeasuredPlanEvidence {
-    bool observed = false;
+    bool observed_display_view = false;
+    ResultCapability provisional_display_view = ResultCapability::UNSUPPORTED;
+    bool has_display_view_elapsed_ns = false;
+    uint64_t display_view_elapsed_ns = 0;
+    bool observed_to_image = false;
+    ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
+    bool has_materialization_elapsed_ns = false;
+    uint64_t materialization_elapsed_ns = 0;
+    bool has_capture_ready_elapsed_ns = false;
+    uint64_t capture_ready_elapsed_ns = 0;
+    bool has_total_elapsed_ns = false;
+    uint64_t total_elapsed_ns = 0;
     bool has_normalized_cost_units = false;
     uint64_t normalized_cost_units = 0;
-    ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
   };
 
   struct RetainedPlanEvaluatorState {
     uint64_t device_instance_id = 0;
     uint64_t acquisition_session_id = 0;
-    CoreProductionIntent intent = CoreProductionIntent::Default;
+    BackingPlanEvaluationPrimaryFunction primary_function =
+        BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
     bool active = false;
     uint8_t candidate_count = 0;
     uint8_t current_candidate_index = 0;
-    CoreRetainedProductionPlan candidate_sequence[2]{};
+    CoreRetainedProductionPlan candidate_sequence[3]{};
     MeasuredPlanEvidence evidence[3]{};
   };
 
@@ -640,10 +678,28 @@ private:
     uint64_t acquisition_session_id = 0;
     bool valid = false;
     bool from_evaluation = false;
+    BackingPlanEvaluationPrimaryFunction primary_function =
+        BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
     CoreRetainedProductionPlan selected{};
     uint8_t candidate_count = 0;
-    CoreRetainedProductionPlan candidate_sequence[2]{};
+    CoreRetainedProductionPlan candidate_sequence[3]{};
   };
+
+  static bool plan_is_strictly_better_for_stream_(
+      const MeasuredPlanEvidence& candidate,
+      const MeasuredPlanEvidence* current_best) noexcept;
+  static bool plan_is_strictly_better_for_capture_(
+      const MeasuredPlanEvidence& candidate,
+      const MeasuredPlanEvidence* current_best) noexcept;
+  static RetainedPlanDecisionProvenance build_decision_provenance_(
+      const RetainedPlanEvaluatorState& state,
+      CoreRetainedProductionPlan selected) noexcept;
+  static RetainedPlanDecisionProvenance build_non_evaluated_decision_provenance_(
+      BackingPlanEvaluationPrimaryFunction primary_function,
+      uint64_t device_instance_id,
+      uint64_t acquisition_session_id,
+      CoreRetainedProductionPlan requested,
+      CoreRetainedProductionPlan steady) noexcept;
 
   std::map<uint64_t, RetainedPlanEvaluatorState> stream_retained_plan_evaluators_;
   std::map<CaptureRetainedPlanParentKey, RetainedPlanEvaluatorState>
