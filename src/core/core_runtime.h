@@ -424,6 +424,8 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units);
+  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept;
+  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept;
 
   IProviderCallbacks* provider_callbacks() { return &ingress_; }
 

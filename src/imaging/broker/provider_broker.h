@@ -76,6 +76,8 @@ public:
   ProducerBackingCapabilities capture_parent_context_backing_capabilities(
       uint64_t device_instance_id,
       const CaptureRequest& req) noexcept override;
+  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override;
+  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override;
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;

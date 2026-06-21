@@ -242,6 +242,16 @@ ProducerBackingCapabilities ProviderBroker::capture_parent_context_backing_capab
                  : ProducerBackingCapabilities{false, false};
 }
 
+uint64_t ProviderBroker::stream_backing_plan_evaluation_settle_delay_ns() const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  return active_ ? active_->stream_backing_plan_evaluation_settle_delay_ns() : 0;
+}
+
+uint64_t ProviderBroker::capture_backing_plan_evaluation_settle_delay_ns() const noexcept {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  return active_ ? active_->capture_backing_plan_evaluation_settle_delay_ns() : 0;
+}
+
 ProviderResult ProviderBroker::update_stream_retained_production_plan(
     uint64_t stream_id,
     CoreRetainedProductionPlan requested_retained_plan) {

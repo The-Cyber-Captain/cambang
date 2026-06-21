@@ -82,6 +82,12 @@ public:
   bool supports_stream_picture_updates() const noexcept override { return false; }
   bool supports_capture_picture_updates() const noexcept override { return false; }
   bool supports_multi_image_still_sequence() const noexcept override { return false; }
+  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+    return kBackingPlanEvaluationSettleDelayNs;
+  }
+  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+    return kBackingPlanEvaluationSettleDelayNs;
+  }
 
   ProviderResult initialize(IProviderCallbacks* callbacks) override;
   ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>& out_endpoints) override;
@@ -120,6 +126,8 @@ public:
   ProviderResult shutdown() override;
 
 private:
+  static constexpr uint64_t kBackingPlanEvaluationSettleDelayNs = 50'000'000ull;
+
   struct DeviceState {
     std::string hardware_id;
     uint64_t device_instance_id = 0;

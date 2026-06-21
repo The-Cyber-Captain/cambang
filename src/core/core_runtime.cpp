@@ -835,6 +835,16 @@ void CoreRuntime::report_capture_retained_to_image_observation(
   (void)pr;
 }
 
+uint64_t CoreRuntime::stream_backing_plan_evaluation_settle_delay_ns() const noexcept {
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  return prov ? prov->stream_backing_plan_evaluation_settle_delay_ns() : 0;
+}
+
+uint64_t CoreRuntime::capture_backing_plan_evaluation_settle_delay_ns() const noexcept {
+  ICameraProvider* prov = provider_.load(std::memory_order_acquire);
+  return prov ? prov->capture_backing_plan_evaluation_settle_delay_ns() : 0;
+}
+
 bool CoreRuntime::build_effective_capture_request_without_retained_plan_(
     uint64_t device_instance_id,
     CaptureRequest& out) const {
@@ -1302,15 +1312,18 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
       const bool crosses_display_backing_family =
           rec->requested_retained_plan.primary_cpu() != next_plan.primary_cpu();
       if (crosses_display_backing_family) {
-        // Live stream display evaluation must not probe across CPU/GPU display
-        // families. Crossing families can invalidate or freeze already
-        // published StreamResult display paths before or after the first
-        // public get_display_view() call, because GPU-backed bindings rely on
-        // stream-owned backing identity remaining stable while the stream is
-        // active. Preserve the best evidence observed within the current
-        // family and settle immediately.
-        finalize_stream_evaluation(rec->requested_retained_plan);
-        return;
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+        if (result_store_.is_stream_display_demand_active(stream_id, now_ns)) {
+          // Once a live display view is being held by public consumers, do not
+          // flip the stream across CPU/GPU display families mid-evaluation.
+          // That family transition can invalidate an already published live
+          // display binding. Preserve the best evidence gathered so far and
+          // settle within the current family.
+          finalize_stream_evaluation(rec->requested_retained_plan);
+          return;
+        }
       }
       ++state.current_candidate_index;
       if (!same_retained_plan(rec->requested_retained_plan, next_plan)) {

@@ -144,6 +144,16 @@ public:
     return capture_backing_capabilities(req);
   }
 
+  // Small bounded delay before a newly realized or newly switched backing-plan
+  // measurement is treated as representative for this provider/runtime.
+  virtual uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept {
+    return 0;
+  }
+
+  virtual uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept {
+    return 0;
+  }
+
   // Core supplies callback sink. Provider retains only a raw pointer (no ownership).
   // Provider MUST call callbacks on a single serialized callback context.
   virtual ProviderResult initialize(IProviderCallbacks* callbacks) = 0;

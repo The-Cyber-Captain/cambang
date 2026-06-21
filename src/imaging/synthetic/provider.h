@@ -63,6 +63,12 @@ public:
   bool supports_stream_picture_updates() const noexcept override { return true; }
   bool supports_capture_picture_updates() const noexcept override { return true; }
   bool supports_multi_image_still_sequence() const noexcept override { return true; }
+  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+    return kBackingPlanEvaluationSettleDelayNs;
+  }
+  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+    return kBackingPlanEvaluationSettleDelayNs;
+  }
 
   ProducerBackingCapabilities stream_backing_capabilities(
       const CaptureProfile& profile,
@@ -144,6 +150,8 @@ public:
   std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
 
 private:
+  static constexpr uint64_t kBackingPlanEvaluationSettleDelayNs = 20'000'000ull;
+
   CBProviderStrand strand_;
   struct TimelineEventCompare {
     bool operator()(const SyntheticScheduledEvent& a, const SyntheticScheduledEvent& b) const noexcept {

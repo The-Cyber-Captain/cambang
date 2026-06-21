@@ -1,7 +1,9 @@
 #include "godot/retained_result_access_calibration.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -32,13 +34,43 @@ struct CalibrationIdentity final {
 
 std::mutex g_mutex;
 std::set<CalibrationIdentity> g_completed;
+std::map<CalibrationIdentity, uint64_t> g_first_seen_ns;
 
-bool mark_needed(const CalibrationIdentity& identity) {
+uint64_t calibration_now_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+bool mark_immediate_needed(const CalibrationIdentity& identity) {
   if (identity.posture_id == 0) {
     return false;
   }
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_completed.insert(identity).second;
+}
+
+bool mark_supported_measurement_needed(
+    const CalibrationIdentity& identity,
+    uint64_t settle_delay_ns) {
+  if (identity.posture_id == 0) {
+    return false;
+  }
+  const uint64_t now_ns = calibration_now_ns();
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_completed.find(identity) != g_completed.end()) {
+    return false;
+  }
+  auto [it, inserted] = g_first_seen_ns.emplace(identity, now_ns);
+  if (inserted && settle_delay_ns != 0) {
+    return false;
+  }
+  const uint64_t first_seen_ns = it->second;
+  if (settle_delay_ns != 0 && now_ns - first_seen_ns < settle_delay_ns) {
+    return false;
+  }
+  g_first_seen_ns.erase(identity);
+  g_completed.insert(identity);
+  return true;
 }
 
 struct CandidateMeasurement final {
@@ -240,31 +272,33 @@ void calibrate_stream_result(const SharedStreamResultData& data,
   if (!data) {
     return;
   }
+  const uint64_t settle_delay_ns =
+      runtime ? runtime->stream_backing_plan_evaluation_settle_delay_ns() : 0;
   const CalibrationIdentity display_identity{
       "stream_display_view", data->access_posture.posture_id, data->stream_id, 0};
   if (data->retained_access_truth.display_view != ResultCapability::UNSUPPORTED &&
-      mark_needed(display_identity)) {
+      mark_supported_measurement_needed(display_identity, settle_delay_ns)) {
     (void)CamBANGStreamResult::calibrate_display_view_for_retained_access(data);
     report_stream_display_view_observation(data, runtime);
   } else if (data->retained_access_truth.display_view == ResultCapability::UNSUPPORTED &&
-             mark_needed(display_identity)) {
+             mark_immediate_needed(display_identity)) {
     report_stream_display_view_observation(data, runtime);
   }
 
   const CalibrationIdentity image_identity{
       "stream_to_image", data->access_posture.posture_id, data->stream_id, 0};
   if (data->retained_access_truth.to_image != ResultCapability::UNSUPPORTED &&
-      mark_needed(image_identity)) {
+      mark_supported_measurement_needed(image_identity, settle_delay_ns)) {
     if (data->access_posture.has_retained_cpu_payload) {
       (void)CamBANGStreamResult::calibrate_to_image_cpu_payload_for_retained_access(data);
     }
     if (data->access_posture.has_retained_gpu_backing &&
         data->access_posture.gpu_materialization_available) {
       (void)CamBANGStreamResult::calibrate_to_image_gpu_materializer_for_retained_access(data);
-    }
-    refine_stream_to_image_classification(data);
+      }
+      refine_stream_to_image_classification(data);
   } else if (data->retained_access_truth.to_image == ResultCapability::UNSUPPORTED &&
-             mark_needed(image_identity)) {
+             mark_immediate_needed(image_identity)) {
     report_stream_to_image_observation(data, runtime);
   }
 }
@@ -274,6 +308,8 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
   if (!data) {
     return;
   }
+  const uint64_t settle_delay_ns =
+      runtime ? runtime->capture_backing_plan_evaluation_settle_delay_ns() : 0;
   for (uint32_t i = 0; i < data->image_member_count(); ++i) {
     const auto* member = data->image_member_at(i);
     if (!member) {
@@ -282,21 +318,23 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
     const CalibrationIdentity identity{
         "capture_to_image", member->access_posture.posture_id, member->access_posture.stream_id,
         member->image_member_index};
-    if (mark_needed(identity)) {
-      if (member->retained_access_truth.to_image != ResultCapability::UNSUPPORTED &&
-          member->access_posture.has_retained_cpu_payload) {
+    if (member->retained_access_truth.to_image == ResultCapability::UNSUPPORTED) {
+      if (mark_immediate_needed(identity)) {
+        report_capture_to_image_observation(data, *member, runtime);
+      }
+      continue;
+    }
+    if (mark_supported_measurement_needed(identity, settle_delay_ns)) {
+      if (member->access_posture.has_retained_cpu_payload) {
         (void)CamBANGCaptureResult::calibrate_to_image_member_cpu_payload_for_retained_access(
             data, member->image_member_index);
       }
-      if (member->retained_access_truth.to_image != ResultCapability::UNSUPPORTED &&
-          member->access_posture.has_retained_gpu_backing &&
+      if (member->access_posture.has_retained_gpu_backing &&
           member->access_posture.gpu_materialization_available) {
         (void)CamBANGCaptureResult::calibrate_to_image_member_gpu_materializer_for_retained_access(
             data, member->image_member_index);
       }
-      if (member->retained_access_truth.to_image != ResultCapability::UNSUPPORTED) {
-        refine_capture_to_image_classification(*member);
-      }
+      refine_capture_to_image_classification(*member);
       report_capture_to_image_observation(data, *member, runtime);
     }
   }
@@ -305,6 +343,7 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
 void clear() noexcept {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_completed.clear();
+  g_first_seen_ns.clear();
 }
 
 } // namespace cambang::retained_result_access_calibration
