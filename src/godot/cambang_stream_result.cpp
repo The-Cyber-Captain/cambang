@@ -66,6 +66,13 @@ uint64_t result_access_now_ns() {
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+uint64_t elapsed_ns_since(const std::chrono::steady_clock::time_point& begin) {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - begin)
+          .count());
+}
+
 const char* to_image_evidence_route(const SharedStreamResultData& data) {
   if (!data) {
     return result_access_cost_evidence::kRouteStreamAccessUnsupported;
@@ -107,41 +114,64 @@ const char* display_view_evidence_route(const SharedStreamResultData& data) {
 struct LiveCpuDisplayViewEntry final {
   godot::Ref<godot::ImageTexture> texture;
   godot::Ref<godot::Image> image;
-  godot::PackedByteArray upload_bytes;
-  std::vector<uint8_t> converted_rgba;
   uint64_t last_capture_timestamp_ns = 0;
   uint32_t width = 0;
   uint32_t height = 0;
 };
 
-bool upload_live_cpu_rgba_bytes(
+bool ensure_live_cpu_image_storage(
+    LiveCpuDisplayViewEntry& entry,
+    uint32_t width,
+    uint32_t height) {
+  if (width == 0 || height == 0) {
+    return false;
+  }
+  const bool need_recreate =
+      entry.image.is_null() ||
+      entry.width != width ||
+      entry.height != height;
+  if (!need_recreate) {
+    return true;
+  }
+  entry.image = godot::Image::create_empty(
+      static_cast<int32_t>(width),
+      static_cast<int32_t>(height),
+      false,
+      godot::Image::FORMAT_RGBA8);
+  return entry.image.is_valid();
+}
+
+bool write_live_cpu_rgba_pixels(
     LiveCpuDisplayViewEntry& entry,
     const SharedStreamResultData& data,
     uint32_t width,
     uint32_t height) {
-  if (!data) {
+  if (!data || entry.image.is_null()) {
     return false;
   }
   const size_t required = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
   if (data->payload.size_bytes() < required) {
     return false;
   }
-
+  uint8_t* dst = entry.image->ptrw();
+  if (!dst) {
+    return false;
+  }
+  const uint8_t* src = data->payload.data();
+  if (!src) {
+    return false;
+  }
   if (data->payload.format_fourcc == FOURCC_RGBA) {
-    entry.converted_rgba.clear();
-    entry.upload_bytes.resize(static_cast<int64_t>(required));
-    std::memcpy(entry.upload_bytes.ptrw(), data->payload.data(), required);
+    std::memcpy(dst, src, required);
     return true;
   }
   if (data->payload.format_fourcc == FOURCC_BGRA) {
-    entry.converted_rgba.resize(required);
-    std::memcpy(entry.converted_rgba.data(), data->payload.data(), required);
-    for (size_t i = 0; i + 3 < entry.converted_rgba.size(); i += 4) {
-      std::swap(entry.converted_rgba[i], entry.converted_rgba[i + 2]);
-      entry.converted_rgba[i + 3] = 255;
+    for (size_t i = 0; i + 3 < required; i += 4) {
+      dst[i] = src[i + 2];
+      dst[i + 1] = src[i + 1];
+      dst[i + 2] = src[i];
+      dst[i + 3] = 255;
     }
-    entry.upload_bytes.resize(static_cast<int64_t>(required));
-    std::memcpy(entry.upload_bytes.ptrw(), entry.converted_rgba.data(), required);
     return true;
   }
   return false;
@@ -186,22 +216,10 @@ bool refresh_live_cpu_display_view_entry(
   }
   const uint32_t width = data->payload.width;
   const uint32_t height = data->payload.height;
-  if (!upload_live_cpu_rgba_bytes(entry, data, width, height)) {
+  if (!ensure_live_cpu_image_storage(entry, width, height) ||
+      !write_live_cpu_rgba_pixels(entry, data, width, height)) {
     return false;
   }
-
-  if (entry.image.is_null()) {
-    entry.image.instantiate();
-    if (entry.image.is_null()) {
-      return false;
-    }
-  }
-  entry.image->set_data(
-      static_cast<int64_t>(width),
-      static_cast<int64_t>(height),
-      false,
-      godot::Image::FORMAT_RGBA8,
-      entry.upload_bytes);
 
   const bool need_recreate =
       entry.texture.is_null() ||
@@ -594,9 +612,15 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     }
   }
 
+  const auto refresh_begin = std::chrono::steady_clock::now();
+  uint32_t removed_count = 0;
+  uint32_t refreshed_count = 0;
+  uint32_t updated_count = 0;
   for (uint64_t stream_id : stream_ids) {
     SharedStreamResultData data = runtime.get_latest_stream_result(stream_id);
     if (!data) {
+      std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+      removed_count += static_cast<uint32_t>(g_live_cpu_display_views.erase(stream_id));
       continue;
     }
     std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
@@ -605,9 +629,39 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
       continue;
     }
     if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_current_retained_cpu_payload(data)) {
-      (void)refresh_live_cpu_display_view_entry(it->second, data);
+      const uint64_t prior_capture_timestamp_ns = it->second.last_capture_timestamp_ns;
+      if (refresh_live_cpu_display_view_entry(it->second, data)) {
+        ++refreshed_count;
+        if (it->second.last_capture_timestamp_ns != prior_capture_timestamp_ns) {
+          ++updated_count;
+        }
+      }
     }
   }
+  if (display_demand_trace_enabled()) {
+    const uint64_t refresh_elapsed_ns = elapsed_ns_since(refresh_begin);
+    if (refreshed_count != 0 || removed_count != 0 || refresh_elapsed_ns >= 1'000'000ull) {
+      godot::UtilityFunctions::print(
+          "[CamBANG][DemandTrace] cpu_display_refresh tracked=",
+          static_cast<uint64_t>(stream_ids.size()),
+          " refreshed=",
+          static_cast<uint64_t>(refreshed_count),
+          " updated=",
+          static_cast<uint64_t>(updated_count),
+          " removed=",
+          static_cast<uint64_t>(removed_count),
+          " elapsed_us=",
+          refresh_elapsed_ns / 1000ull);
+    }
+  }
+}
+
+void CamBANGStreamResult::remove_live_stream_cpu_display_view(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
+  g_live_cpu_display_views.erase(stream_id);
 }
 
 void CamBANGStreamResult::clear_live_stream_cpu_display_views() {

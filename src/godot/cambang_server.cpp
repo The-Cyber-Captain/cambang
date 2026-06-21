@@ -1101,6 +1101,7 @@ godot::Error CamBANGServer::destroy_direct_stream_handle(
   const TryDestroyStreamStatus status = runtime_.try_destroy_stream(stream_id);
   const godot::Error rc = map_try_destroy_stream_status(status);
   if (rc == godot::OK) {
+    CamBANGStreamResult::remove_live_stream_cpu_display_view(stream_id);
     direct_stream_hardware_id_by_stream_id_.erase(it);
   } else if (status == TryDestroyStreamStatus::Started) {
     ERR_PRINT("CamBANGServer: destroy_stream rejected because stream is started; call stop() before destroy().");
