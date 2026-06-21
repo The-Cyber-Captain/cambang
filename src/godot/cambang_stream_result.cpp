@@ -234,6 +234,17 @@ godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResu
   return entry.texture;
 }
 
+godot::Ref<godot::Texture2D> make_ephemeral_cpu_display_view(const SharedStreamResultData& data) {
+  if (!data || data->stream_id == 0 || !has_current_retained_cpu_payload(data)) {
+    return {};
+  }
+  LiveCpuDisplayViewEntry entry;
+  if (!refresh_live_cpu_display_view_entry(entry, data)) {
+    return {};
+  }
+  return entry.texture;
+}
+
 } // namespace
 
 uint32_t CamBANGStreamResult::get_width() const { return data_ ? data_->image_width : 0; }
@@ -305,13 +316,17 @@ int CamBANGStreamResult::get_display_view_path_kind() const {
   if (data_->payload_kind == ResultPayloadKind::GPU_SURFACE && data_->retained_gpu_backing) {
     return DISPLAY_PATH_RETAINED_GPU_BACKING;
   }
-  if (ensure_live_cpu_display_view(data_).is_valid()) {
+  if (has_current_retained_cpu_payload(data_)) {
     return DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW;
   }
   return DISPLAY_PATH_NONE;
 }
 
-godot::Variant perform_stream_display_view_access(const SharedStreamResultData& data, bool mark_display_demand) {
+godot::Variant perform_stream_display_view_access(
+    const SharedStreamResultData& data,
+    bool mark_display_demand,
+    bool attach_display_demand_tokens,
+    bool persistent_cpu_display_view) {
   if (!data) {
     const uint64_t begin_ns = result_access_now_ns();
     result_access_cost_evidence::record_stream_access(
@@ -340,7 +355,9 @@ godot::Variant perform_stream_display_view_access(const SharedStreamResultData& 
           data->retained_gpu_backing_descriptor,
           data->retained_gpu_backing);
       if (retained.is_valid()) {
-        attach_display_demand_token(retained, data->stream_id, "retained_gpu_backing");
+        if (attach_display_demand_tokens) {
+          attach_display_demand_token(retained, data->stream_id, "retained_gpu_backing");
+        }
         trace_stream_display_path("retained_gpu_backing");
         result = retained;
         result_access_cost_evidence::record_stream_access(
@@ -360,9 +377,13 @@ godot::Variant perform_stream_display_view_access(const SharedStreamResultData& 
         reported_capability);
     return result;
   }
-  godot::Ref<godot::Texture2D> live_cpu = ensure_live_cpu_display_view(data);
+  godot::Ref<godot::Texture2D> live_cpu = persistent_cpu_display_view
+      ? ensure_live_cpu_display_view(data)
+      : make_ephemeral_cpu_display_view(data);
   if (live_cpu.is_valid()) {
-    attach_display_demand_token(live_cpu, data->stream_id, "stream_live_cpu_display_view");
+    if (attach_display_demand_tokens) {
+      attach_display_demand_token(live_cpu, data->stream_id, "stream_live_cpu_display_view");
+    }
     trace_stream_display_path("stream_live_cpu_display_view");
     result = live_cpu;
     result_access_cost_evidence::record_stream_access(
@@ -488,7 +509,11 @@ godot::Ref<godot::Image> perform_stream_to_image_gpu_materializer_access(const S
 }
 
 godot::Variant CamBANGStreamResult::get_display_view() const {
-  return perform_stream_display_view_access(data_, true);
+  return perform_stream_display_view_access(
+      data_,
+      /*mark_display_demand=*/true,
+      /*attach_display_demand_tokens=*/true,
+      /*persistent_cpu_display_view=*/true);
 }
 
 godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
@@ -496,7 +521,11 @@ godot::Ref<godot::Image> CamBANGStreamResult::to_image() const {
 }
 
 godot::Variant CamBANGStreamResult::calibrate_display_view_for_retained_access(const SharedStreamResultData& data) {
-  return perform_stream_display_view_access(data, false);
+  return perform_stream_display_view_access(
+      data,
+      /*mark_display_demand=*/false,
+      /*attach_display_demand_tokens=*/false,
+      /*persistent_cpu_display_view=*/false);
 }
 
 godot::Ref<godot::Image> CamBANGStreamResult::calibrate_to_image_for_retained_access(const SharedStreamResultData& data) {

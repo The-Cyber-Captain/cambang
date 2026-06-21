@@ -1258,12 +1258,61 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
     evidence.display_view_elapsed_ns = display_view_elapsed_ns;
   }
 
+  auto finalize_stream_evaluation =
+      [&](CoreRetainedProductionPlan fallback_plan) {
+        CoreRetainedProductionPlan chosen{};
+        const MeasuredPlanEvidence* chosen_evidence = nullptr;
+        for (uint8_t i = 0; i < state.candidate_count; ++i) {
+          const CoreRetainedProductionPlan candidate =
+              state.candidate_sequence[i];
+          const MeasuredPlanEvidence& candidate_evidence =
+              state.evidence[retained_plan_evidence_index(candidate.posture)];
+          if (!plan_is_strictly_better_for_stream_(
+                  candidate_evidence, chosen_evidence)) {
+            continue;
+          }
+          chosen = candidate;
+          chosen_evidence = &candidate_evidence;
+        }
+        if (!chosen.valid) {
+          chosen = fallback_plan.valid ? fallback_plan : state.candidate_sequence[0];
+        }
+
+        if (!same_retained_plan(rec->requested_retained_plan, chosen)) {
+          (void)streams_.set_requested_retained_plan(stream_id, chosen, true);
+          if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
+            (void)prov->update_stream_retained_production_plan(stream_id, chosen);
+          }
+        }
+        (void)streams_.set_steady_retained_plan(stream_id, chosen);
+        RetainedPlanDecisionProvenance provenance =
+            build_decision_provenance_(state, chosen);
+        stream_retained_plan_decisions_[stream_id] = provenance;
+        stream_retained_plan_evaluators_.erase(state_it);
+        (void)refresh_capture_retained_plan_state_(
+            rec->device_instance_id,
+            /*requested_bump_access_posture_epoch=*/false);
+      };
+
   if (state.current_candidate_index + 1u < state.candidate_count) {
     if (provisional_display_view == ResultCapability::UNSUPPORTED ||
         has_display_view_elapsed_ns) {
-      ++state.current_candidate_index;
       const CoreRetainedProductionPlan next_plan =
-          state.candidate_sequence[state.current_candidate_index];
+          state.candidate_sequence[state.current_candidate_index + 1u];
+      const bool crosses_display_backing_family =
+          rec->requested_retained_plan.primary_cpu() != next_plan.primary_cpu();
+      if (crosses_display_backing_family) {
+        // Live stream display evaluation must not probe across CPU/GPU display
+        // families. Crossing families can invalidate or freeze already
+        // published StreamResult display paths before or after the first
+        // public get_display_view() call, because GPU-backed bindings rely on
+        // stream-owned backing identity remaining stable while the stream is
+        // active. Preserve the best evidence observed within the current
+        // family and settle immediately.
+        finalize_stream_evaluation(rec->requested_retained_plan);
+        return;
+      }
+      ++state.current_candidate_index;
       if (!same_retained_plan(rec->requested_retained_plan, next_plan)) {
         (void)streams_.set_requested_retained_plan(stream_id, next_plan, true);
         (void)streams_.clear_steady_retained_plan(stream_id);
@@ -1279,37 +1328,7 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
     }
     return;
   }
-
-  CoreRetainedProductionPlan chosen{};
-  const MeasuredPlanEvidence* chosen_evidence = nullptr;
-  for (uint8_t i = 0; i < state.candidate_count; ++i) {
-    const CoreRetainedProductionPlan candidate = state.candidate_sequence[i];
-    const MeasuredPlanEvidence& candidate_evidence =
-        state.evidence[retained_plan_evidence_index(candidate.posture)];
-    if (!plan_is_strictly_better_for_stream_(candidate_evidence, chosen_evidence)) {
-      continue;
-    }
-    chosen = candidate;
-    chosen_evidence = &candidate_evidence;
-  }
-  if (!chosen.valid) {
-    chosen = state.candidate_sequence[0];
-  }
-
-  if (!same_retained_plan(rec->requested_retained_plan, chosen)) {
-    (void)streams_.set_requested_retained_plan(stream_id, chosen, true);
-    if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
-      (void)prov->update_stream_retained_production_plan(stream_id, chosen);
-    }
-  }
-  (void)streams_.set_steady_retained_plan(stream_id, chosen);
-  RetainedPlanDecisionProvenance provenance =
-      build_decision_provenance_(state, chosen);
-  stream_retained_plan_decisions_[stream_id] = provenance;
-  stream_retained_plan_evaluators_.erase(state_it);
-  (void)refresh_capture_retained_plan_state_(
-      rec->device_instance_id,
-      /*requested_bump_access_posture_epoch=*/false);
+  finalize_stream_evaluation(state.candidate_sequence[0]);
 }
 
 void CoreRuntime::handle_capture_retained_to_image_observation_(
