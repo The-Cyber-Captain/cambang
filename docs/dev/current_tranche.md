@@ -14,6 +14,14 @@ The currently landed intent-based chooser implementation is partial rather than 
 
 The immediate focus is no longer to complete the old chooser model as previously described in this file. The terminology reset and parent-scoped design note are now landed, and the active direction is to implement that reset in source without allowing the older intent-based chooser model to drift forward in parallel.
 
+Current source-truth refinement:
+
+* Stream-side parent-scoped evaluation is now materially implemented.
+* Capture-side evaluation already distinguishes a provisional device-scoped priming owner from a real `AcquisitionSession` owner and migrates active evaluation onto the real parent once observed.
+* Capture-side same-signature seed reuse is now implemented as a bounded provisional seeding mechanism for later epochs in the same runtime generation.
+* First-use still-only priming is now implemented as an explicit provider/Core seam that can realize a truthful primed `AcquisitionSession` parent before the first real capture trigger when the provider supports it.
+* Same-signature seed reuse remains distinct from that priming seam: seed reuse carries prior winner preference forward, while explicit priming pre-realizes the parent lifetime seam without fabricating capture-completed evidence.
+
 Important settled state:
 
 * Scene 68 calibration/evidence harness repair and validation are complete.
@@ -59,6 +67,7 @@ Immediate tranche goal:
 * redefine retained-plan selection around the Native Payload Support parent rather than the old chooser-intent model;
 * preserve the bounded, topology-triggered, non-per-frame nature of evaluation and reevaluation;
 * preserve provider-truth, requested-vs-steady separation, and `CoreResultStore` validation against Core-held requested plan state.
+* keep the distinction explicit between provisional capture seeding, real `AcquisitionSession`-owned capture evaluation, and the now-landed explicit first-use priming seam.
 
 Terminology guardrail for this reset:
 
@@ -74,6 +83,9 @@ Current checkpoint status:
   * `core_result_path_smoke` PASS;
   * `provider_compliance_verify` PASS;
   * `synthetic_only_provider_support_verify` PASS.
+* Deterministic verifier coverage now also proves stream parent evaluation remains independent of capture parent evaluation.
+* Deterministic verifier coverage now also proves capture evaluation can settle under a provisional parent and later reuse the prior winner as the first requested plan for a same-signature reopened capture epoch.
+* Deterministic verifier coverage now also proves same-signature capture seed reuse does not itself mark capture `steady` without fresh evidence.
 * Scene 70 `runtime_default` verification currently passes on the tested Windows/Android and Compatibility/Mobile combinations.
 * Current Scene 70 evidence suggests:
   * Compatibility `runtime_default` resolves to CPU-primary;
@@ -90,9 +102,23 @@ Immediate next focus:
 * continue replacing the older chooser-intent implementation and harness assumptions with the parent-scoped Backing Plan evaluation model;
 * keep Scene 68 aligned only as a verification/reporting surface unless and until it clearly proves the redesigned evaluator without reintroducing old policy semantics;
 * desired harness output for the redesigned evaluator is explicit parent-scoped decision truth such as viable posture set, requested plan, steady plan, chosen posture shape, and decision-relevant evidence buckets.
+* before implementing any further capture-latency work, preserve the now-landed distinction between bounded same-signature seed reuse already in source and the explicit first-use still-only priming path now also landed in source.
 
 Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of the chooser, but does not by itself prove the tranche successful.
 ## Recent committed checkpoint
+
+Most recent uncommitted source checkpoint:
+
+* Capture-side parent-scoped source truth was hardened further.
+* Provider-defined settle delays are implemented for stream and capture backing-plan evaluation.
+* Stream evaluation now avoids crossing CPU/GPU display families only while live display demand is active, preserving bounded all-candidate comparison when no public display binding is being held.
+* Capture evaluation now retains a bounded same-signature priming seed cache and can start a later reopened capture epoch from the previously settled winner when the effective capture signature still matches.
+* Providers that support explicit still-only parent priming can now also synchronize a truthful primed `AcquisitionSession` seam ahead of the first real capture trigger for the current device/signature.
+* The seed cache remains provisional only: it does not fabricate `AcquisitionSession` truth, it does not replace real parent ownership, and it does not skip bounded reevaluation.
+* Deterministic native verification for that checkpoint is currently green:
+  * `core_result_path_smoke` PASS;
+  * `provider_compliance_verify` PASS;
+  * `synthetic_only_provider_support_verify` PASS.
 
 The most recent implemented checkpoint completed the retained-result access calibration/classification seam after the earlier Synthetic retained GPU backing materialization work.
 

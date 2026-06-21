@@ -292,12 +292,14 @@ public:
   ProviderResult open_device(
       const std::string& hardware_id,
       uint64_t device_instance_id,
-      uint64_t) override {
+      uint64_t root_id) override {
     std::lock_guard<std::mutex> lk(mu_);
-    if (!initialized_ || hardware_id != "chooser:0" || device_instance_id == 0) {
+    if (!initialized_ || hardware_id != "chooser:0" || device_instance_id == 0 ||
+        root_id == 0) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     devices_[device_instance_id].open = true;
+    devices_[device_instance_id].root_id = root_id;
     if (callbacks_) {
       callbacks_->on_device_opened(device_instance_id);
     }
@@ -305,8 +307,26 @@ public:
   }
 
   ProviderResult close_device(uint64_t device_instance_id) override {
+    uint64_t primed_acquisition_session_id = 0;
     std::lock_guard<std::mutex> lk(mu_);
-    devices_.erase(device_instance_id);
+    auto device_it = devices_.find(device_instance_id);
+    if (device_it != devices_.end()) {
+      primed_acquisition_session_id =
+          device_it->second.primed_acquisition_session_id;
+      devices_.erase(device_it);
+    }
+    for (auto it = pending_captures_.begin(); it != pending_captures_.end();) {
+      if (it->second.device_instance_id != device_instance_id) {
+        ++it;
+        continue;
+      }
+      it = pending_captures_.erase(it);
+    }
+    if (callbacks_ && primed_acquisition_session_id != 0) {
+      NativeObjectDestroyInfo info{};
+      info.native_id = primed_acquisition_session_id;
+      callbacks_->on_native_object_destroyed(info);
+    }
     if (callbacks_) {
       callbacks_->on_device_closed(device_instance_id);
     }
@@ -408,12 +428,97 @@ public:
     return ProviderResult::success();
   }
 
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override {
+    uint64_t root_id = 0;
+    uint64_t acquisition_session_id = 0;
+    bool newly_created = false;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      auto it = devices_.find(req.device_instance_id);
+      if (!initialized_ || req.device_instance_id == 0 ||
+          it == devices_.end() || !it->second.open) {
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      root_id = it->second.root_id;
+      acquisition_session_id = it->second.primed_acquisition_session_id;
+      if (acquisition_session_id == 0 && callbacks_) {
+        acquisition_session_id = callbacks_->allocate_native_id(
+            NativeObjectType::AcquisitionSession);
+        it->second.primed_acquisition_session_id = acquisition_session_id;
+        newly_created = true;
+      }
+    }
+    if (callbacks_ && newly_created && acquisition_session_id != 0) {
+      NativeObjectCreateInfo info{};
+      info.native_id = acquisition_session_id;
+      info.type = static_cast<uint32_t>(NativeObjectType::AcquisitionSession);
+      info.root_id = root_id;
+      info.owner_device_instance_id = req.device_instance_id;
+      callbacks_->on_native_object_created(info);
+    }
+    return acquisition_session_id != 0
+        ? ProviderResult::success()
+        : ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override {
+    uint64_t acquisition_session_id = 0;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      auto it = devices_.find(device_instance_id);
+      if (!initialized_ || device_instance_id == 0 ||
+          it == devices_.end() || !it->second.open) {
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      acquisition_session_id = it->second.primed_acquisition_session_id;
+      it->second.primed_acquisition_session_id = 0;
+    }
+    if (callbacks_ && acquisition_session_id != 0) {
+      NativeObjectDestroyInfo info{};
+      info.native_id = acquisition_session_id;
+      callbacks_->on_native_object_destroyed(info);
+    }
+    return ProviderResult::success();
+  }
+
   ProviderResult trigger_capture(const CaptureRequest& req) override {
-    const FrameView frame = build_capture_frame_(req, true);
+    uint64_t root_id = 0;
+    uint64_t acquisition_session_id = 0;
+    bool destroy_acquisition_session_on_emit = false;
+    FrameView frame{};
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      auto it = devices_.find(req.device_instance_id);
+      if (it == devices_.end() || !it->second.open) {
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      if (pending_captures_.find(req.capture_id) != pending_captures_.end()) {
+        return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+      }
+      root_id = it->second.root_id;
+      acquisition_session_id = it->second.primed_acquisition_session_id;
+      if (acquisition_session_id == 0 && callbacks_) {
+        acquisition_session_id = callbacks_->allocate_native_id(
+            NativeObjectType::AcquisitionSession);
+        destroy_acquisition_session_on_emit = true;
+      }
+      frame = build_capture_frame_(req, true, acquisition_session_id);
+      pending_captures_[req.capture_id] = PendingCapture{
+          frame,
+          req.device_instance_id,
+          acquisition_session_id,
+          destroy_acquisition_session_on_emit};
+    }
     if (callbacks_) {
+      if (destroy_acquisition_session_on_emit && acquisition_session_id != 0) {
+        NativeObjectCreateInfo info{};
+        info.native_id = acquisition_session_id;
+        info.type = static_cast<uint32_t>(NativeObjectType::AcquisitionSession);
+        info.root_id = root_id;
+        info.owner_device_instance_id = req.device_instance_id;
+        callbacks_->on_native_object_created(info);
+      }
       callbacks_->on_capture_started(req.capture_id, req.device_instance_id);
-      callbacks_->on_frame(frame);
-      callbacks_->on_capture_completed(req.capture_id, req.device_instance_id);
     }
     return ProviderResult::success();
   }
@@ -437,8 +542,20 @@ public:
 
   ProviderResult shutdown() override {
     std::lock_guard<std::mutex> lk(mu_);
+    if (callbacks_) {
+      for (const auto& [device_instance_id, device] : devices_) {
+        (void)device_instance_id;
+        if (device.primed_acquisition_session_id == 0) {
+          continue;
+        }
+        NativeObjectDestroyInfo info{};
+        info.native_id = device.primed_acquisition_session_id;
+        callbacks_->on_native_object_destroyed(info);
+      }
+    }
     streams_.clear();
     devices_.clear();
+    pending_captures_.clear();
     return ProviderResult::success();
   }
 
@@ -478,10 +595,44 @@ public:
     return it == streams_.end() ? 0ull : it->second.plan_updates;
   }
 
+  bool emit_pending_capture(uint64_t capture_id) {
+    PendingCapture pending{};
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      auto it = pending_captures_.find(capture_id);
+      if (it == pending_captures_.end()) {
+        return false;
+      }
+      pending = it->second;
+      pending_captures_.erase(it);
+    }
+    if (!callbacks_) {
+      return false;
+    }
+    callbacks_->on_frame(pending.frame);
+    callbacks_->on_capture_completed(capture_id, pending.device_instance_id);
+    if (pending.destroy_acquisition_session_on_emit &&
+        pending.acquisition_session_id != 0) {
+      NativeObjectDestroyInfo info{};
+      info.native_id = pending.acquisition_session_id;
+      callbacks_->on_native_object_destroyed(info);
+    }
+    return true;
+  }
+
 private:
   struct DeviceState {
     bool open = false;
+    uint64_t root_id = 0;
     PictureConfig picture{};
+    uint64_t primed_acquisition_session_id = 0;
+  };
+
+  struct PendingCapture {
+    FrameView frame{};
+    uint64_t device_instance_id = 0;
+    uint64_t acquisition_session_id = 0;
+    bool destroy_acquisition_session_on_emit = false;
   };
 
   struct StreamState {
@@ -500,12 +651,14 @@ private:
       uint64_t device_instance_id,
       uint64_t stream_id,
       uint64_t capture_id,
+      uint64_t acquisition_session_id,
       CoreRetainedProductionPlan requested_retained_plan,
       bool gpu_materialization_available) {
     FrameView frame{};
     frame.device_instance_id = device_instance_id;
     frame.stream_id = stream_id;
     frame.capture_id = capture_id;
+    frame.acquisition_session_id = acquisition_session_id;
     frame.width = 16;
     frame.height = 16;
     frame.format_fourcc = FOURCC_RGBA;
@@ -559,17 +712,20 @@ private:
         req.device_instance_id,
         req.stream_id,
         0,
+        0,
         req.requested_retained_plan,
         gpu_materialization_available);
   }
 
   static FrameView build_capture_frame_(
       const CaptureRequest& req,
-      bool gpu_materialization_available) {
+      bool gpu_materialization_available,
+      uint64_t acquisition_session_id) {
     return build_frame_from_plan_(
         req.device_instance_id,
         0,
         req.capture_id,
+        acquisition_session_id,
         req.requested_retained_plan,
         gpu_materialization_available);
   }
@@ -579,6 +735,7 @@ private:
   bool initialized_ = false;
   bool capture_cpu_available_ = true;
   std::map<uint64_t, DeviceState> devices_;
+  std::map<uint64_t, PendingCapture> pending_captures_;
   std::map<uint64_t, StreamState> streams_;
 };
 
@@ -3132,6 +3289,20 @@ bool run_core_measured_retained_plan_evaluator_check() {
                         CoreProductionPostureShape posture) {
     return plan.valid && plan.posture == posture;
   };
+  auto find_capture_report = [](const CoreRuntime& rt,
+                                uint64_t device_instance_id,
+                                CoreRetainedPlanChooserReport& out) {
+    const auto reports = rt.retained_plan_chooser_reports();
+    for (const auto& report : reports) {
+      if (report.target_kind != CoreRetainedPlanChooserReport::TargetKind::Capture ||
+          report.target_id != device_instance_id) {
+        continue;
+      }
+      out = report;
+      return true;
+    }
+    return false;
+  };
   auto wait_until = [](const std::function<bool()>& predicate) {
     for (int i = 0; i < kMaxIters; ++i) {
       if (predicate()) {
@@ -3170,6 +3341,8 @@ bool run_core_measured_retained_plan_evaluator_check() {
 
   constexpr uint64_t kDeviceId = 71;
   constexpr uint64_t kRootId = 7101;
+  constexpr uint64_t kReopenedDeviceId = 72;
+  constexpr uint64_t kReopenedRootId = 7202;
   constexpr uint64_t kStreamId = 7201;
   if (rt.try_open_device("chooser:0", kDeviceId, kRootId) !=
       TryOpenDeviceStatus::OK) {
@@ -3397,6 +3570,20 @@ bool run_core_measured_retained_plan_evaluator_check() {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator capture initial requested/steady mismatch");
   }
+  if (!wait_until([&]() {
+        CoreRetainedPlanChooserReport report{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.parent_kind ==
+                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+               report.acquisition_session_id != 0 &&
+               !report.provisional_parent &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::CpuPrimary) &&
+               !report.steady.valid;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not realize first-use still-only primed acquisition-session parent");
+  }
 
   CaptureRequest capture_req{};
   if (!wait_until([&]() {
@@ -3413,6 +3600,25 @@ bool run_core_measured_retained_plan_evaluator_check() {
           kDeviceId, kCaptureIdA) != TryTriggerDeviceCaptureStatus::OK) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator first trigger_capture failed");
+  }
+  if (!wait_until([&]() {
+        CoreRetainedPlanChooserReport report{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.parent_kind ==
+                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+               report.acquisition_session_id != 0 &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::CpuPrimary) &&
+               !report.steady.valid &&
+               report.evaluator_active &&
+               report.current_candidate_index == 0;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not mirror active capture evaluation onto real acquisition-session parent");
+  }
+  if (!provider.emit_pending_capture(kCaptureIdA)) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator first pending capture publish failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdA, kDeviceId);
@@ -3462,6 +3668,10 @@ bool run_core_measured_retained_plan_evaluator_check() {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator second trigger_capture failed");
   }
+  if (!provider.emit_pending_capture(kCaptureIdB)) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator second pending capture publish failed");
+  }
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdB, kDeviceId);
         return result &&
@@ -3510,6 +3720,10 @@ bool run_core_measured_retained_plan_evaluator_check() {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator third trigger_capture failed");
   }
+  if (!provider.emit_pending_capture(kCaptureIdC)) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator third pending capture publish failed");
+  }
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdC, kDeviceId);
         return result &&
@@ -3542,6 +3756,23 @@ bool run_core_measured_retained_plan_evaluator_check() {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator did not settle capture steady posture");
   }
+  if (!wait_until([&]() {
+        CoreRetainedPlanChooserReport report{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.parent_kind ==
+                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+               !report.provisional_parent &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               plan_equals(report.steady,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               report.decision_from_evaluation &&
+               plan_equals(report.decision_selected,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not preserve settled capture decision when acquisition-session parent retired");
+  }
 
   CaptureRequest settled_capture_req{};
   if (!wait_until([&]() {
@@ -3556,6 +3787,41 @@ bool run_core_measured_retained_plan_evaluator_check() {
   if (rt.try_close_device(kDeviceId) != TryCloseDeviceStatus::OK) {
     return fail_with_cleanup(
         "FAIL core measured retained-plan evaluator teardown failed");
+  }
+  if (rt.try_open_device("chooser:0", kReopenedDeviceId, kReopenedRootId) !=
+      TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator reopen_device failed");
+  }
+  if (rt.try_set_capture_picture_config(kReopenedDeviceId, capture_picture) !=
+      TrySetCapturePictureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator reopen capture picture restore failed");
+  }
+
+  CaptureRequest seeded_reopen_capture_req{};
+  if (!wait_until([&]() {
+        const auto* rec = rt.device_record(kReopenedDeviceId);
+        CoreRetainedPlanChooserReport report{};
+        return rec &&
+               find_capture_report(rt, kReopenedDeviceId, report) &&
+               report.parent_kind ==
+                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+               report.acquisition_session_id != 0 &&
+               !report.provisional_parent &&
+               rt.materialize_capture_request(
+                   kReopenedDeviceId, seeded_reopen_capture_req) &&
+               plan_equals(
+                   seeded_reopen_capture_req.requested_retained_plan,
+                   CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               !rec->steady_retained_plan.valid;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator did not seed same-hardware reopen from prior capture winner");
+  }
+  if (rt.try_close_device(kReopenedDeviceId) != TryCloseDeviceStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured retained-plan evaluator reopened teardown failed");
   }
 
   (void)provider.shutdown();

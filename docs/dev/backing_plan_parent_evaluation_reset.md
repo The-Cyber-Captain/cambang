@@ -11,6 +11,28 @@ It does not by itself redefine canonical documents such as
 `pixel_payload_and_result_contract.md`. Once this direction is accepted and
 implemented, those canonical documents should be updated deliberately.
 
+Source-truth note:
+
+This note now tracks two distinct implementation states that must not be
+blurred together:
+
+- bounded provisional seeding before or between real parent epochs; and
+- real parent-owned evaluation once a concrete `Stream` or
+  `AcquisitionSession` exists.
+
+At the time of this note update, source already includes:
+
+- parent-scoped stream evaluation;
+- parent-scoped capture evaluation that migrates from a provisional
+  device-scoped priming owner to a real `AcquisitionSession` owner once that
+  session is observed; and
+- bounded same-signature capture seed reuse for later capture epochs in the
+  same runtime generation; and
+- an explicit provider/Core first-use still-only priming seam that can
+  proactively realize and retain a truthful provider/native
+  `AcquisitionSession` seam before the user's first real capture trigger when
+  the provider supports it.
+
 ---
 
 ## 1. Purpose
@@ -345,6 +367,53 @@ device-scoped priming cache for future evaluation seeding, but that provisional
 cache is not itself the final evaluation owner and must not replace the real
 session-scoped decision once a concrete parent exists.
 
+### Current implemented provisional behavior
+
+Current source implements only the bounded provisional cache/seeding part of
+this direction.
+
+That means:
+
+- capture evaluation may begin under a provisional device-scoped priming owner
+  before a real `AcquisitionSession` has been resolved;
+- when later capture truth identifies a real `AcquisitionSession`, the active
+  evaluation state migrates onto that real parent;
+- once a capture evaluation epoch settles, Core may reuse the winning plan as
+  the first `Requested Plan` for a later capture epoch only when the later
+  device-level effective signature still matches the prior one.
+
+That same-signature seed reuse is intentionally narrow:
+
+- it does not skip bounded evaluation across viable plans;
+- it does not fabricate `AcquisitionSession` lifecycle truth;
+- it does not treat the provisional cache as the final evaluation owner; and
+- it does not yet solve the first-ever still-only capture latency problem by
+  itself.
+
+### Current explicit priming implementation
+
+Current source now closes that first-use still-only gap through an explicit
+provider/Core priming seam.
+
+That means:
+
+- when no live `AcquisitionSession` parent exists yet for a still-only device,
+  Core may ask the provider to synchronize a truthful primed capture parent for
+  the current effective capture request;
+- providers that support this seam may realize and retain a concrete native
+  acquisition-session resource ahead of the user's first real capture trigger;
+- Core continues to treat this as lifetime truth, not fabricated capture truth;
+  and
+- same-signature settled seed reuse remains a separate mechanism from the
+  provider-backed primed parent seam.
+
+The explicit priming seam is still bounded:
+
+- it is driven by parent-topology/capture-shape invalidation boundaries rather
+  than per-frame or per-access polling;
+- it does not itself fabricate capture-ready/materialization measurements; and
+- it does not replace bounded real-capture reevaluation across viable plans.
+
 ---
 
 ## 12. Settle Delay
@@ -420,3 +489,15 @@ The expected implementation direction after this note is accepted is:
 
 This is expected to require a meaningful refactor rather than another local
 patch on the older chooser implementation.
+
+Current source-progress note:
+
+- the older chooser intent model has been displaced further by parent-scoped
+  evaluation;
+- stream-side parent evaluation and demand-aware probing guardrails are now
+  implemented;
+- provider-defined settle delays are now implemented;
+- capture-side provisional parent evaluation and same-signature seed reuse are
+  now implemented;
+- explicit first-use still-only priming is now implemented through a
+  provider/Core seam when the provider supports it.

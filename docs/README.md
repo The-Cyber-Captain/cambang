@@ -16,8 +16,14 @@ The project is currently in active development. The current repository contains:
 
 ## Current platform status
 
-The current SCons entrypoint explicitly rejects `platform=android`. Android /
-Camera2 support is therefore future work, not the current build path.
+The current SCons entrypoint supports an Android GDE build path. On this source
+snapshot, `platform=android` builds the Android-targeted GDExtension artifact
+through the pinned Android NDK toolchain when the local SDK/NDK is available.
+
+Android platform-backed provider work is not yet compiled into that artifact:
+the current `android_camera2` provider family reports `not_compiled`, and the
+Android GDE build therefore remains synthetic-only rather than a platform-backed
+runtime path.
 
 Current provider work should follow the provider contract and architecture docs
 rather than platform-specific assumptions from older drafts. The MF dev

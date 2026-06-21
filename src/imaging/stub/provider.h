@@ -82,6 +82,8 @@ uint64_t frames_released() const noexcept { return frames_released_.load(std::me
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult abort_capture(uint64_t capture_id) override;
@@ -108,6 +110,7 @@ private:
     uint64_t stream_id = 0;
     uint64_t native_id = 0;
     uint64_t acquisition_session_native_id = 0;
+    bool acquisition_session_primed = false;
     PictureConfig capture_picture{};
   };
 

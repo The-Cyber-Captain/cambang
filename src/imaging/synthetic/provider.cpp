@@ -1018,8 +1018,19 @@ void SyntheticProvider::retain_native_acquisition_session_for_capture_(DeviceSta
   ++d.acquisition_session_capture_refs;
 }
 
+void SyntheticProvider::retain_native_acquisition_session_for_priming_(DeviceState& d) {
+  if (ensure_native_acquisition_session_(d) == 0) {
+    return;
+  }
+  if (d.acquisition_session_priming_refs == 0) {
+    d.acquisition_session_priming_refs = 1;
+  }
+}
+
 void SyntheticProvider::release_native_acquisition_session_if_unheld_(DeviceState& d) {
-  if (d.acquisition_session_stream_refs != 0 || d.acquisition_session_capture_refs != 0) {
+  if (d.acquisition_session_stream_refs != 0 ||
+      d.acquisition_session_capture_refs != 0 ||
+      d.acquisition_session_priming_refs != 0) {
     return;
   }
   if (d.acquisition_session_native_id != 0) {
@@ -1051,6 +1062,19 @@ void SyntheticProvider::release_native_acquisition_session_for_capture_(uint64_t
     return;
   }
   --d.acquisition_session_capture_refs;
+  release_native_acquisition_session_if_unheld_(d);
+}
+
+void SyntheticProvider::release_native_acquisition_session_for_priming_(uint64_t device_instance_id) {
+  auto dit = devices_.find(device_instance_id);
+  if (dit == devices_.end()) {
+    return;
+  }
+  DeviceState& d = dit->second;
+  if (d.acquisition_session_priming_refs == 0) {
+    return;
+  }
+  d.acquisition_session_priming_refs = 0;
   release_native_acquisition_session_if_unheld_(d);
 }
 
@@ -1116,6 +1140,7 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
     it->second.acquisition_session_native_id = 0;
     it->second.acquisition_session_stream_refs = 0;
     it->second.acquisition_session_capture_refs = 0;
+    it->second.acquisition_session_priming_refs = 0;
   }
   strand_.post_device_closed(device_instance_id);
   emit_native_destroy_(it->second.native_id);
@@ -1378,6 +1403,40 @@ ProviderResult SyntheticProvider::set_capture_picture_config(uint64_t device_ins
     invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
   }
   it->second.capture_picture = picture;
+  return ProviderResult::success();
+}
+
+ProviderResult SyntheticProvider::sync_capture_parent_priming(const CaptureRequest& req) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  auto it = devices_.find(req.device_instance_id);
+  if (it == devices_.end() || !it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  retain_native_acquisition_session_for_priming_(it->second);
+  return (it->second.acquisition_session_native_id != 0)
+      ? ProviderResult::success()
+      : ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+}
+
+ProviderResult SyntheticProvider::release_capture_parent_priming(uint64_t device_instance_id) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  auto it = devices_.find(device_instance_id);
+  if (it == devices_.end() || !it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  release_native_acquisition_session_for_priming_(device_instance_id);
   return ProviderResult::success();
 }
 
@@ -2120,6 +2179,7 @@ void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::i
     it->second.acquisition_session_native_id = 0;
     it->second.acquisition_session_stream_refs = 0;
     it->second.acquisition_session_capture_refs = 0;
+    it->second.acquisition_session_priming_refs = 0;
   }
   it->second.open = false;
   strand_.post_device_closed(it->second.device_instance_id);

@@ -201,6 +201,27 @@ public:
   // Providers that do not support this must return ERR_NOT_SUPPORTED.
   virtual ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) = 0;
 
+  // Optional explicit priming seam for still-capture parents.
+  // A successful return means the provider has synchronized any provider-owned
+  // primed acquisition-session seam for this device/request shape so Core can
+  // avoid paying first-use session realization cost at trigger time.
+  //
+  // The operation must be idempotent for repeated equivalent requests and must
+  // not fabricate capture-completed truth. Providers that cannot support this
+  // safely should return ERR_NOT_SUPPORTED.
+  virtual ProviderResult sync_capture_parent_priming(const CaptureRequest& req) {
+    (void)req;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
+  // Optional release of provider-owned capture-parent priming for a device.
+  // Providers that implement sync_capture_parent_priming() should make this
+  // idempotent and safe even when no primed seam is currently held.
+  virtual ProviderResult release_capture_parent_priming(uint64_t device_instance_id) {
+    (void)device_instance_id;
+    return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  }
+
   // Trigger a still capture for a device instance. A successful return is
   // admission/ownership transfer: the provider will later report terminal
   // capture success or failure through the provider callback/strand path.

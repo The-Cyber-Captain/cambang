@@ -125,7 +125,7 @@ uint64_t StubProvider::ensure_native_acquisition_session_(DeviceState& dev) {
 }
 
 void StubProvider::release_native_acquisition_session_(DeviceState& dev) {
-  if (dev.acquisition_session_native_id == 0) {
+  if (dev.acquisition_session_native_id == 0 || dev.acquisition_session_primed) {
     return;
   }
   emit_native_destroyed_(dev.acquisition_session_native_id);
@@ -225,6 +225,7 @@ ProviderResult StubProvider::close_device(uint64_t device_instance_id) {
   }
 
   it->second.open = false;
+  it->second.acquisition_session_primed = false;
   release_native_acquisition_session_(it->second);
   const uint64_t native_id = it->second.native_id;
   strand_.post_device_closed(device_instance_id);
@@ -603,6 +604,41 @@ ProviderResult StubProvider::set_capture_picture_config(uint64_t device_instance
   return ProviderResult::success();
 }
 
+ProviderResult StubProvider::sync_capture_parent_priming(const CaptureRequest& req) {
+  if (!initialized_ || shutting_down_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (req.device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto dev_it = devices_.find(req.device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  dev_it->second.acquisition_session_primed = true;
+  return ensure_native_acquisition_session_(dev_it->second) != 0
+      ? ProviderResult::success()
+      : ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+}
+
+ProviderResult StubProvider::release_capture_parent_priming(uint64_t device_instance_id) {
+  if (!initialized_) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  if (device_instance_id == 0) {
+    return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
+  }
+  auto dev_it = devices_.find(device_instance_id);
+  if (dev_it == devices_.end() || !dev_it->second.open) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  dev_it->second.acquisition_session_primed = false;
+  if (dev_it->second.stream_id == 0) {
+    release_native_acquisition_session_(dev_it->second);
+  }
+  return ProviderResult::success();
+}
+
 ProviderResult StubProvider::trigger_capture(const CaptureRequest& req) {
   if (!initialized_ || shutting_down_) {
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
@@ -695,6 +731,8 @@ ProviderResult StubProvider::shutdown() {
   // Close all devices.
   for (auto& [dev_id, dev] : devices_) {
     if (dev.open) {
+      dev.acquisition_session_primed = false;
+      release_native_acquisition_session_(dev);
       dev.open = false;
       strand_.post_device_closed(dev_id);
       emit_native_destroyed_(dev.native_id);

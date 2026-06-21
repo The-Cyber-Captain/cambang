@@ -109,6 +109,8 @@ public:
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;
@@ -207,6 +209,7 @@ private:
     uint64_t acquisition_session_native_id = 0;
     uint32_t acquisition_session_stream_refs = 0;
     uint32_t acquisition_session_capture_refs = 0;
+    uint32_t acquisition_session_priming_refs = 0;
     PictureConfig capture_picture{};
   };
 
@@ -256,8 +259,10 @@ private:
   uint64_t ensure_native_acquisition_session_(DeviceState& d);
   void retain_native_acquisition_session_for_stream_(DeviceState& d);
   void retain_native_acquisition_session_for_capture_(DeviceState& d);
+  void retain_native_acquisition_session_for_priming_(DeviceState& d);
   void release_native_acquisition_session_for_stream_(uint64_t device_instance_id);
   void release_native_acquisition_session_for_capture_(uint64_t device_instance_id);
+  void release_native_acquisition_session_for_priming_(uint64_t device_instance_id);
   void release_native_acquisition_session_if_unheld_(DeviceState& d);
 
   void emit_due_frames_();

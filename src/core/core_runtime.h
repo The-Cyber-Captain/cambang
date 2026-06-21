@@ -553,6 +553,13 @@ private:
   bool refresh_capture_retained_plan_state_(
       uint64_t device_instance_id,
       bool requested_bump_access_posture_epoch);
+  bool sync_capture_parent_priming_(
+      uint64_t device_instance_id,
+      const CaptureRequest& effective,
+      const ProducerBackingCapabilities& runtime_backing_capabilities,
+      const ProducerBackingCapabilities& parent_context_backing_capabilities);
+  void release_capture_parent_priming_(uint64_t device_instance_id);
+  bool device_has_any_stream_(uint64_t device_instance_id) const noexcept;
   struct CaptureRetainedPlanParentKey {
     enum class Kind : uint8_t {
       AcquisitionSession = 0,
@@ -577,6 +584,8 @@ private:
   };
   ResolvedCaptureRetainedPlanParent
   resolve_capture_retained_plan_parent_(uint64_t device_instance_id) const;
+  bool rehome_capture_retained_plan_parent_state_(
+      uint64_t device_instance_id);
   void erase_capture_retained_plan_state_for_device_(
       uint64_t device_instance_id,
       const CaptureRetainedPlanParentKey* keep = nullptr);
@@ -663,11 +672,34 @@ private:
     uint64_t normalized_cost_units = 0;
   };
 
+  struct CapturePrimingSeedSignature {
+    std::string hardware_id;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format_fourcc = 0;
+    PictureConfig picture{};
+    CaptureStillImageBundle still_image_bundle =
+        make_default_metered_still_image_bundle();
+    ProducerBackingCapabilities runtime_backing_capabilities{};
+    ProducerBackingCapabilities parent_context_backing_capabilities{};
+  };
+
+  struct CapturePrimingSeed {
+    CapturePrimingSeedSignature signature{};
+    CoreRetainedProductionPlan selected{};
+  };
+
+  struct CaptureParentPrimingState {
+    CapturePrimingSeedSignature signature{};
+    bool provider_hold_active = false;
+  };
+
   struct RetainedPlanEvaluatorState {
     uint64_t device_instance_id = 0;
     uint64_t acquisition_session_id = 0;
     BackingPlanEvaluationPrimaryFunction primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+    CapturePrimingSeedSignature capture_priming_seed_signature{};
     bool active = false;
     uint8_t candidate_count = 0;
     uint8_t current_candidate_index = 0;
@@ -702,6 +734,17 @@ private:
       uint64_t acquisition_session_id,
       CoreRetainedProductionPlan requested,
       CoreRetainedProductionPlan steady) noexcept;
+  CapturePrimingSeedSignature build_capture_priming_seed_signature_(
+      uint64_t device_instance_id,
+      const CaptureRequest& effective,
+      ProducerBackingCapabilities runtime_backing_capabilities,
+      ProducerBackingCapabilities parent_context_backing_capabilities) const;
+  bool try_find_capture_priming_seed_(
+      const CapturePrimingSeedSignature& signature,
+      CoreRetainedProductionPlan& out_selected) const;
+  void remember_capture_priming_seed_(
+      const CapturePrimingSeedSignature& signature,
+      CoreRetainedProductionPlan selected);
 
   std::map<uint64_t, RetainedPlanEvaluatorState> stream_retained_plan_evaluators_;
   std::map<CaptureRetainedPlanParentKey, RetainedPlanEvaluatorState>
@@ -709,6 +752,8 @@ private:
   std::map<uint64_t, RetainedPlanDecisionProvenance> stream_retained_plan_decisions_;
   std::map<CaptureRetainedPlanParentKey, RetainedPlanDecisionProvenance>
       capture_retained_plan_decisions_;
+  std::map<std::string, CapturePrimingSeed> capture_priming_seeds_;
+  std::map<uint64_t, CaptureParentPrimingState> capture_parent_priming_states_;
 
   struct CaptureStreamPreemptionRecord {
     uint64_t capture_id = 0;

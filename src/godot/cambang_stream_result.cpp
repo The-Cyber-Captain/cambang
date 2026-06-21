@@ -651,7 +651,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
           " removed=",
           static_cast<uint64_t>(removed_count),
           " elapsed_us=",
-          refresh_elapsed_ns / 1000ull);
+          static_cast<uint64_t>(refresh_elapsed_ns / 1000ull));
     }
   }
 }
