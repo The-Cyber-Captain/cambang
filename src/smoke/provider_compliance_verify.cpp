@@ -229,9 +229,9 @@ struct RecorderCallbacks final : IProviderCallbacks {
   }
 };
 
-class ChooserTestProvider final : public ICameraProvider {
-public:
-  const char* provider_name() const override { return "ChooserTestProvider"; }
+class BackingPlanEvaluationTestProvider final : public ICameraProvider {
+ public:
+  const char* provider_name() const override { return "BackingPlanEvaluationTestProvider"; }
   ProviderKind provider_kind() const noexcept override {
     return ProviderKind::synthetic;
   }
@@ -285,7 +285,7 @@ public:
   ProviderResult enumerate_endpoints(
       std::vector<CameraEndpoint>& out_endpoints) override {
     out_endpoints.clear();
-    out_endpoints.push_back(CameraEndpoint{"chooser:0", "Chooser"});
+    out_endpoints.push_back(CameraEndpoint{"backing_plan_eval:0", "Backing Plan Evaluation"});
     return ProviderResult::success();
   }
 
@@ -294,7 +294,7 @@ public:
       uint64_t device_instance_id,
       uint64_t root_id) override {
     std::lock_guard<std::mutex> lk(mu_);
-    if (!initialized_ || hardware_id != "chooser:0" || device_instance_id == 0 ||
+    if (!initialized_ || hardware_id != "backing_plan_eval:0" || device_instance_id == 0 ||
         root_id == 0) {
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
@@ -3284,17 +3284,17 @@ bool run_synthetic_stream_plus_still_single_session_truth_check() {
   return assert_native_balance(cb_events, "synthetic_stream_plus_still");
 }
 
-bool run_core_measured_retained_plan_evaluator_check() {
+bool run_core_measured_backing_plan_evaluation_check() {
   auto plan_equals = [](CoreRetainedProductionPlan plan,
                         CoreProductionPostureShape posture) {
     return plan.valid && plan.posture == posture;
   };
   auto find_capture_report = [](const CoreRuntime& rt,
                                 uint64_t device_instance_id,
-                                CoreRetainedPlanChooserReport& out) {
-    const auto reports = rt.retained_plan_chooser_reports();
+                                CoreBackingPlanEvaluationReport& out) {
+    const auto reports = rt.backing_plan_evaluation_reports();
     for (const auto& report : reports) {
-      if (report.target_kind != CoreRetainedPlanChooserReport::TargetKind::Capture ||
+      if (report.target_kind != CoreBackingPlanEvaluationReport::TargetKind::Capture ||
           report.target_id != device_instance_id) {
         continue;
       }
@@ -3315,16 +3315,16 @@ bool run_core_measured_retained_plan_evaluator_check() {
 
   CoreRuntime rt;
   if (!rt.start()) {
-    std::cerr << "FAIL core measured retained-plan evaluator runtime start failed\n";
+    std::cerr << "FAIL core measured backing-plan evaluation runtime start failed\n";
     return false;
   }
   if (!wait_for_core_runtime_live(rt)) {
-    std::cerr << "FAIL core measured retained-plan evaluator runtime did not reach LIVE\n";
+    std::cerr << "FAIL core measured backing-plan evaluation runtime did not reach LIVE\n";
     rt.stop();
     return false;
   }
 
-  ChooserTestProvider provider;
+  BackingPlanEvaluationTestProvider provider;
   const auto fail_with_cleanup = [&](const char* msg) -> bool {
     std::cerr << msg << "\n";
     (void)provider.shutdown();
@@ -3335,7 +3335,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
 
   if (!provider.initialize(rt.provider_callbacks()).ok()) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator provider init failed");
+        "FAIL core measured backing-plan evaluation provider init failed");
   }
   rt.attach_provider(&provider);
 
@@ -3344,10 +3344,10 @@ bool run_core_measured_retained_plan_evaluator_check() {
   constexpr uint64_t kReopenedDeviceId = 72;
   constexpr uint64_t kReopenedRootId = 7202;
   constexpr uint64_t kStreamId = 7201;
-  if (rt.try_open_device("chooser:0", kDeviceId, kRootId) !=
+  if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
       TryOpenDeviceStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator open_device failed");
+        "FAIL core measured backing-plan evaluation open_device failed");
   }
   if (!wait_until([&]() {
         const auto* rec = rt.device_record(kDeviceId);
@@ -3357,14 +3357,14 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator default capture parent initial requested/steady mismatch");
+        "FAIL core measured backing-plan evaluation default capture parent initial requested/steady mismatch");
   }
 
   if (rt.try_create_stream(
           kStreamId, kDeviceId, StreamIntent::PREVIEW, nullptr, nullptr, 0) !=
       TryCreateStreamStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator create_stream failed");
+        "FAIL core measured backing-plan evaluation create_stream failed");
   }
   if (!wait_until([&]() {
         const auto* rec = rt.stream_record(kStreamId);
@@ -3377,16 +3377,16 @@ bool run_core_measured_retained_plan_evaluator_check() {
                    CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator stream initial requested/steady mismatch");
+        "FAIL core measured backing-plan evaluation stream initial requested/steady mismatch");
   }
 
   if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator start_stream failed");
+        "FAIL core measured backing-plan evaluation start_stream failed");
   }
   if (!provider.emit_stream_frame(kStreamId, true)) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator first stream frame emit failed");
+        "FAIL core measured backing-plan evaluation first stream frame emit failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_latest_stream_result(kStreamId);
@@ -3395,7 +3395,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !result->access_posture.has_retained_cpu_payload;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator first posture result missing");
+        "FAIL core measured backing-plan evaluation first posture result missing");
   }
 
   const SharedStreamResultData first_stream_result =
@@ -3418,12 +3418,12 @@ bool run_core_measured_retained_plan_evaluator_check() {
                    CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not advance stream candidate");
+        "FAIL core measured backing-plan evaluation did not advance stream candidate");
   }
 
   if (!provider.emit_stream_frame(kStreamId, true)) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator second stream frame emit failed");
+        "FAIL core measured backing-plan evaluation second stream frame emit failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_latest_stream_result(kStreamId);
@@ -3432,7 +3432,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                result->access_posture.has_retained_cpu_payload;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator sidecar result missing");
+        "FAIL core measured backing-plan evaluation sidecar result missing");
   }
 
   const SharedStreamResultData second_stream_result =
@@ -3455,12 +3455,12 @@ bool run_core_measured_retained_plan_evaluator_check() {
                    CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not advance stream to cpu candidate");
+        "FAIL core measured backing-plan evaluation did not advance stream to cpu candidate");
   }
 
   if (!provider.emit_stream_frame(kStreamId, true)) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator third stream frame emit failed");
+        "FAIL core measured backing-plan evaluation third stream frame emit failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_latest_stream_result(kStreamId);
@@ -3469,7 +3469,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !result->access_posture.has_retained_gpu_backing;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator cpu stream result missing");
+        "FAIL core measured backing-plan evaluation cpu stream result missing");
   }
 
   const SharedStreamResultData third_stream_result =
@@ -3493,7 +3493,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                    CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not settle stream steady posture");
+        "FAIL core measured backing-plan evaluation did not settle stream steady posture");
   }
 
   CaptureRequest independent_capture_req{};
@@ -3503,7 +3503,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator capture parent did not remain independent of stream steady posture");
+        "FAIL core measured backing-plan evaluation capture parent did not remain independent of stream steady posture");
   }
 
   PictureConfig stream_picture = provider.stream_template().picture;
@@ -3511,7 +3511,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
   if (rt.try_set_stream_picture_config(kStreamId, stream_picture) !=
       TrySetStreamPictureStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator stream reset failed");
+        "FAIL core measured backing-plan evaluation stream reset failed");
   }
   if (!wait_until([&]() {
         const auto* rec = rt.stream_record(kStreamId);
@@ -3521,7 +3521,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator stream rerun/reset mismatch");
+        "FAIL core measured backing-plan evaluation stream rerun/reset mismatch");
   }
 
   CaptureRequest reset_independent_capture_req{};
@@ -3531,13 +3531,13 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator capture parent drifted during stream rerun");
+        "FAIL core measured backing-plan evaluation capture parent drifted during stream rerun");
   }
 
   if (rt.try_stop_stream(kStreamId) != TryStopStreamStatus::OK ||
       rt.try_destroy_stream(kStreamId) != TryDestroyStreamStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator stream teardown before capture lane failed");
+        "FAIL core measured backing-plan evaluation stream teardown before capture lane failed");
   }
 
   CaptureRequest reopened_capture_req{};
@@ -3550,7 +3550,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not preserve independent capture parent after stream teardown");
+        "FAIL core measured backing-plan evaluation did not preserve independent capture parent after stream teardown");
   }
 
   PictureConfig capture_picture = provider.capture_template().picture;
@@ -3558,7 +3558,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
   if (rt.try_set_capture_picture_config(kDeviceId, capture_picture) !=
       TrySetCapturePictureStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator capture reset failed");
+        "FAIL core measured backing-plan evaluation capture reset failed");
   }
   if (!wait_until([&]() {
         const auto* rec = rt.device_record(kDeviceId);
@@ -3568,13 +3568,13 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator capture initial requested/steady mismatch");
+        "FAIL core measured backing-plan evaluation capture initial requested/steady mismatch");
   }
   if (!wait_until([&]() {
-        CoreRetainedPlanChooserReport report{};
+        CoreBackingPlanEvaluationReport report{};
         return find_capture_report(rt, kDeviceId, report) &&
                report.parent_kind ==
-                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
                report.acquisition_session_id != 0 &&
                !report.provisional_parent &&
                plan_equals(report.requested,
@@ -3582,7 +3582,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !report.steady.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not realize first-use still-only primed acquisition-session parent");
+        "FAIL core measured backing-plan evaluation did not realize first-use still-only primed acquisition-session parent");
   }
 
   CaptureRequest capture_req{};
@@ -3592,20 +3592,20 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::CpuPrimary);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator materialized capture request mismatch");
+        "FAIL core measured backing-plan evaluation materialized capture request mismatch");
   }
 
   constexpr uint64_t kCaptureIdA = 8801;
   if (rt.try_trigger_device_capture_with_capture_id_for_server(
           kDeviceId, kCaptureIdA) != TryTriggerDeviceCaptureStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator first trigger_capture failed");
+        "FAIL core measured backing-plan evaluation first trigger_capture failed");
   }
   if (!wait_until([&]() {
-        CoreRetainedPlanChooserReport report{};
+        CoreBackingPlanEvaluationReport report{};
         return find_capture_report(rt, kDeviceId, report) &&
                report.parent_kind ==
-                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
                report.acquisition_session_id != 0 &&
                plan_equals(report.requested,
                            CoreProductionPostureShape::CpuPrimary) &&
@@ -3614,11 +3614,11 @@ bool run_core_measured_retained_plan_evaluator_check() {
                report.current_candidate_index == 0;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not mirror active capture evaluation onto real acquisition-session parent");
+        "FAIL core measured backing-plan evaluation did not mirror active capture evaluation onto real acquisition-session parent");
   }
   if (!provider.emit_pending_capture(kCaptureIdA)) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator first pending capture publish failed");
+        "FAIL core measured backing-plan evaluation first pending capture publish failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdA, kDeviceId);
@@ -3627,7 +3627,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !result->default_image.access_posture.has_retained_gpu_backing;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator first capture result missing");
+        "FAIL core measured backing-plan evaluation first capture result missing");
   }
 
   const SharedCaptureResultData first_capture_result =
@@ -3649,7 +3649,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not advance capture candidate");
+        "FAIL core measured backing-plan evaluation did not advance capture candidate");
   }
 
   CaptureRequest capture_req_no_sidecar{};
@@ -3659,18 +3659,18 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator no-sidecar capture request mismatch");
+        "FAIL core measured backing-plan evaluation no-sidecar capture request mismatch");
   }
 
   constexpr uint64_t kCaptureIdB = 8802;
   if (rt.try_trigger_device_capture_with_capture_id_for_server(
           kDeviceId, kCaptureIdB) != TryTriggerDeviceCaptureStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator second trigger_capture failed");
+        "FAIL core measured backing-plan evaluation second trigger_capture failed");
   }
   if (!provider.emit_pending_capture(kCaptureIdB)) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator second pending capture publish failed");
+        "FAIL core measured backing-plan evaluation second pending capture publish failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdB, kDeviceId);
@@ -3679,7 +3679,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !result->default_image.access_posture.has_retained_cpu_payload;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator second capture result missing");
+        "FAIL core measured backing-plan evaluation second capture result missing");
   }
 
   const SharedCaptureResultData second_capture_result =
@@ -3701,7 +3701,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not advance capture to sidecar candidate");
+        "FAIL core measured backing-plan evaluation did not advance capture to sidecar candidate");
   }
 
   CaptureRequest capture_req_sidecar{};
@@ -3711,18 +3711,18 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator sidecar capture request mismatch");
+        "FAIL core measured backing-plan evaluation sidecar capture request mismatch");
   }
 
   constexpr uint64_t kCaptureIdC = 8803;
   if (rt.try_trigger_device_capture_with_capture_id_for_server(
           kDeviceId, kCaptureIdC) != TryTriggerDeviceCaptureStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator third trigger_capture failed");
+        "FAIL core measured backing-plan evaluation third trigger_capture failed");
   }
   if (!provider.emit_pending_capture(kCaptureIdC)) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator third pending capture publish failed");
+        "FAIL core measured backing-plan evaluation third pending capture publish failed");
   }
   if (!wait_until([&]() {
         const auto result = rt.get_capture_result(kCaptureIdC, kDeviceId);
@@ -3731,7 +3731,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                result->default_image.access_posture.has_retained_cpu_payload;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator third capture result missing");
+        "FAIL core measured backing-plan evaluation third capture result missing");
   }
 
   const SharedCaptureResultData third_capture_result =
@@ -3754,13 +3754,13 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not settle capture steady posture");
+        "FAIL core measured backing-plan evaluation did not settle capture steady posture");
   }
   if (!wait_until([&]() {
-        CoreRetainedPlanChooserReport report{};
+        CoreBackingPlanEvaluationReport report{};
         return find_capture_report(rt, kDeviceId, report) &&
                report.parent_kind ==
-                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
                !report.provisional_parent &&
                plan_equals(report.requested,
                            CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
@@ -3771,7 +3771,7 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not preserve settled capture decision when acquisition-session parent retired");
+        "FAIL core measured backing-plan evaluation did not preserve settled capture decision when acquisition-session parent retired");
   }
 
   CaptureRequest settled_capture_req{};
@@ -3781,32 +3781,32 @@ bool run_core_measured_retained_plan_evaluator_check() {
                            CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not reuse settled capture posture");
+        "FAIL core measured backing-plan evaluation did not reuse settled capture posture");
   }
 
   if (rt.try_close_device(kDeviceId) != TryCloseDeviceStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator teardown failed");
+        "FAIL core measured backing-plan evaluation teardown failed");
   }
-  if (rt.try_open_device("chooser:0", kReopenedDeviceId, kReopenedRootId) !=
+  if (rt.try_open_device("backing_plan_eval:0", kReopenedDeviceId, kReopenedRootId) !=
       TryOpenDeviceStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator reopen_device failed");
+        "FAIL core measured backing-plan evaluation reopen_device failed");
   }
   if (rt.try_set_capture_picture_config(kReopenedDeviceId, capture_picture) !=
       TrySetCapturePictureStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator reopen capture picture restore failed");
+        "FAIL core measured backing-plan evaluation reopen capture picture restore failed");
   }
 
   CaptureRequest seeded_reopen_capture_req{};
   if (!wait_until([&]() {
         const auto* rec = rt.device_record(kReopenedDeviceId);
-        CoreRetainedPlanChooserReport report{};
+        CoreBackingPlanEvaluationReport report{};
         return rec &&
                find_capture_report(rt, kReopenedDeviceId, report) &&
                report.parent_kind ==
-                   CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession &&
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
                report.acquisition_session_id != 0 &&
                !report.provisional_parent &&
                rt.materialize_capture_request(
@@ -3817,11 +3817,11 @@ bool run_core_measured_retained_plan_evaluator_check() {
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator did not seed same-hardware reopen from prior capture winner");
+        "FAIL core measured backing-plan evaluation did not seed same-hardware reopen from prior capture winner");
   }
   if (rt.try_close_device(kReopenedDeviceId) != TryCloseDeviceStatus::OK) {
     return fail_with_cleanup(
-        "FAIL core measured retained-plan evaluator reopened teardown failed");
+        "FAIL core measured backing-plan evaluation reopened teardown failed");
   }
 
   (void)provider.shutdown();
@@ -3863,7 +3863,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
-      {"run_core_measured_retained_plan_evaluator_check", [] { return run_core_measured_retained_plan_evaluator_check(); }},
+      {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},
   };
 
   if (!opt.only_check.empty()) {

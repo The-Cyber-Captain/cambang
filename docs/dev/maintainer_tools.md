@@ -225,7 +225,7 @@ Behavior:
   envelope
 - stream conditions apply to stream-owned contexts
 - capture conditions apply to capture/`AcquisitionSession`-owned contexts
-- they are intended for deterministic verification of chooser consumption and
+- they are intended for deterministic verification of backing-plan evaluation consumption and
   must not be used to fabricate capability truth
 
 ### 4.x.3 Synthetic stream GPU/update maintainer controls
@@ -240,12 +240,14 @@ user runtime configuration and do not redefine provider-contract truth.
 
 Scene 68 (`68_inner_evidence_reset_verify`) now also uses the existing
 `CamBANGServer.get_synthetic_metrics_snapshot()` maintainer surface to report a
-minimal retained-plan chooser view under `retained_plan_chooser_reports`. This
-is a verification-only seam, not public API and not snapshot schema. The payload
-contains only the target kind/id, intent, requested posture, steady posture,
-evaluator-active flag, current candidate index, and candidate sequence needed by
-the scene to prove first-slice chooser lifecycle behaviour while continuing to
-use `result_access_timing_evidence` for retained-result measurement detail.
+minimal parent-scoped backing-plan evaluation view under
+`backing_plan_evaluation_reports`. This is a verification-only seam, not public
+API and not snapshot schema. The payload contains only the target kind/id,
+parent kind/id, primary function, requested posture, steady posture,
+evaluator-active flag, current candidate index, and candidate sequence needed
+by the scene to prove first-slice backing-plan evaluation lifecycle behaviour
+while continuing to use `result_access_timing_evidence` for retained-result
+measurement detail.
 
 Retained maintainer diagnostics:
 

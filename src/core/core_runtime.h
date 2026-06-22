@@ -36,7 +36,12 @@
 namespace cambang {
 
 
-struct CoreRetainedPlanChooserReport {
+enum class BackingPlanEvaluationPrimaryFunction : uint8_t {
+  StreamDisplayView = 0,
+  CaptureReadyAndMaterialize = 1,
+};
+
+struct CoreBackingPlanEvaluationReport {
   enum class ParentKind : uint8_t {
     Stream = 0,
     AcquisitionSession = 1,
@@ -54,9 +59,10 @@ struct CoreRetainedPlanChooserReport {
   uint64_t acquisition_session_id = 0;
   uint64_t device_instance_id = 0;
   bool provisional_parent = false;
+  BackingPlanEvaluationPrimaryFunction primary_function =
+      BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
   TargetKind target_kind = TargetKind::Stream;
   uint64_t target_id = 0;
-  CoreProductionIntent intent = CoreProductionIntent::Default;
   CoreRetainedProductionPlan requested{};
   CoreRetainedProductionPlan steady{};
   bool evaluator_active = false;
@@ -65,11 +71,6 @@ struct CoreRetainedPlanChooserReport {
   bool decision_from_evaluation = false;
   CoreRetainedProductionPlan decision_selected{};
   std::vector<CoreRetainedProductionPlan> decision_candidate_sequence{};
-};
-
-enum class BackingPlanEvaluationPrimaryFunction : uint8_t {
-  StreamDisplayView = 0,
-  CaptureReadyAndMaterialize = 1,
 };
 
 enum class TrySetStreamPictureStatus : uint8_t {
@@ -397,7 +398,7 @@ enum class TryCloseDeviceStatus : uint8_t {
     return devices_.find(device_instance_id);
   }
 
-  std::vector<CoreRetainedPlanChooserReport> retained_plan_chooser_reports() const;
+  std::vector<CoreBackingPlanEvaluationReport> backing_plan_evaluation_reports() const;
 
   // Narrow internal backing-plan evaluation handoff. Godot-side retained-result
   // calibration reports structural/support truth plus measured public-operation

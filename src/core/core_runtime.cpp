@@ -187,17 +187,6 @@ RetainedPlanResetDecision build_retained_plan_reset_decision(
   return decision;
 }
 
-CoreProductionIntent compatibility_intent_for_primary_function(
-    BackingPlanEvaluationPrimaryFunction primary_function) noexcept {
-  switch (primary_function) {
-    case BackingPlanEvaluationPrimaryFunction::StreamDisplayView:
-      return CoreProductionIntent::StreamActive;
-    case BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize:
-      return CoreProductionIntent::Default;
-  }
-  return CoreProductionIntent::Default;
-}
-
 
 // Stage A command-fairness bounds: provider facts remain FIFO and non-dropping,
 // but Core yields to pending request work after deterministic slices so sustained
@@ -1871,27 +1860,26 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
 
 
 
-std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_reports() const {
-  std::vector<CoreRetainedPlanChooserReport> out;
+std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluation_reports() const {
+  std::vector<CoreBackingPlanEvaluationReport> out;
   out.reserve(streams_.all().size() + devices_.all().size());
 
   for (const auto& [stream_id, rec] : streams_.all()) {
-    CoreRetainedPlanChooserReport report{};
-    report.parent_kind = CoreRetainedPlanChooserReport::ParentKind::Stream;
+    CoreBackingPlanEvaluationReport report{};
+    report.parent_kind = CoreBackingPlanEvaluationReport::ParentKind::Stream;
     report.parent_id = stream_id;
     report.stream_id = stream_id;
     report.device_instance_id = rec.device_instance_id;
-    report.target_kind = CoreRetainedPlanChooserReport::TargetKind::Stream;
+    report.primary_function =
+        BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+    report.target_kind = CoreBackingPlanEvaluationReport::TargetKind::Stream;
     report.target_id = stream_id;
-    report.intent = compatibility_intent_for_primary_function(
-        BackingPlanEvaluationPrimaryFunction::StreamDisplayView);
     report.requested = rec.requested_retained_plan;
     report.steady = rec.steady_retained_plan;
     if (const auto it = stream_retained_plan_evaluators_.find(stream_id);
         it != stream_retained_plan_evaluators_.end()) {
       const RetainedPlanEvaluatorState& state = it->second;
-      report.intent =
-          compatibility_intent_for_primary_function(state.primary_function);
+      report.primary_function = state.primary_function;
       report.evaluator_active = state.active;
       report.current_candidate_index = state.current_candidate_index;
       report.candidate_sequence.reserve(state.candidate_count);
@@ -1922,18 +1910,18 @@ std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_re
     }
     emitted_capture_parents[parent.key] = true;
 
-    CoreRetainedPlanChooserReport report{};
+    CoreBackingPlanEvaluationReport report{};
     report.parent_kind = parent.provisional
-        ? CoreRetainedPlanChooserReport::ParentKind::CapturePriming
-        : CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession;
+        ? CoreBackingPlanEvaluationReport::ParentKind::CapturePriming
+        : CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession;
     report.parent_id = parent.key.id;
     report.acquisition_session_id = parent.acquisition_session_id;
     report.device_instance_id = device_instance_id;
     report.provisional_parent = parent.provisional;
-    report.target_kind = CoreRetainedPlanChooserReport::TargetKind::Capture;
+    report.primary_function =
+        BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize;
+    report.target_kind = CoreBackingPlanEvaluationReport::TargetKind::Capture;
     report.target_id = device_instance_id;
-    report.intent = compatibility_intent_for_primary_function(
-        BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize);
     if (parent.acquisition_session_id != 0) {
       if (const auto* session =
               acquisition_sessions_.find(parent.acquisition_session_id);
@@ -1952,8 +1940,7 @@ std::vector<CoreRetainedPlanChooserReport> CoreRuntime::retained_plan_chooser_re
         it != capture_retained_plan_evaluators_.end()) {
       const RetainedPlanEvaluatorState& state = it->second;
       report.acquisition_session_id = state.acquisition_session_id;
-      report.intent =
-          compatibility_intent_for_primary_function(state.primary_function);
+      report.primary_function = state.primary_function;
       report.evaluator_active = state.active;
       report.current_candidate_index = state.current_candidate_index;
       report.candidate_sequence.reserve(state.candidate_count);

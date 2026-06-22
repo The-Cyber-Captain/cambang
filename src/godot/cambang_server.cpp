@@ -67,16 +67,6 @@ static const char* mode_to_cstr(RuntimeMode m) noexcept {
 }
 
 
-static godot::String core_production_intent_name(CoreProductionIntent intent) {
-  switch (intent) {
-    case CoreProductionIntent::Default:
-      return "Default";
-    case CoreProductionIntent::StreamActive:
-      return "Stream-active";
-  }
-  return "unknown";
-}
-
 static godot::String core_production_posture_name(CoreRetainedProductionPlan plan) {
   if (!plan.valid) {
     return "";
@@ -99,45 +89,45 @@ static godot::Dictionary core_retained_plan_to_dictionary(CoreRetainedProduction
   return d;
 }
 
-static godot::String chooser_parent_kind_name(
-    CoreRetainedPlanChooserReport::ParentKind parent_kind) {
+static godot::String backing_plan_evaluation_parent_kind_name(
+    CoreBackingPlanEvaluationReport::ParentKind parent_kind) {
   switch (parent_kind) {
-    case CoreRetainedPlanChooserReport::ParentKind::Stream:
+    case CoreBackingPlanEvaluationReport::ParentKind::Stream:
       return "stream";
-    case CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession:
+    case CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession:
       return "acquisition_session";
-    case CoreRetainedPlanChooserReport::ParentKind::CapturePriming:
+    case CoreBackingPlanEvaluationReport::ParentKind::CapturePriming:
       return "capture_priming";
   }
   return "unknown";
 }
 
-static godot::String report_primary_function_name(
-    CoreRetainedPlanChooserReport::ParentKind parent_kind) {
-  switch (parent_kind) {
-    case CoreRetainedPlanChooserReport::ParentKind::Stream:
+static godot::String backing_plan_evaluation_primary_function_name(
+    BackingPlanEvaluationPrimaryFunction primary_function) {
+  switch (primary_function) {
+    case BackingPlanEvaluationPrimaryFunction::StreamDisplayView:
       return "display_view";
-    case CoreRetainedPlanChooserReport::ParentKind::AcquisitionSession:
-    case CoreRetainedPlanChooserReport::ParentKind::CapturePriming:
+    case BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize:
       return "capture_ready_and_materialize";
   }
   return "unknown";
 }
 
-static godot::Dictionary chooser_report_to_dictionary(const CoreRetainedPlanChooserReport& report) {
+static godot::Dictionary backing_plan_evaluation_report_to_dictionary(
+    const CoreBackingPlanEvaluationReport& report) {
   godot::Dictionary d;
-  d["parent_kind"] = chooser_parent_kind_name(report.parent_kind);
-  d["primary_function"] = report_primary_function_name(report.parent_kind);
+  d["parent_kind"] = backing_plan_evaluation_parent_kind_name(report.parent_kind);
+  d["primary_function"] =
+      backing_plan_evaluation_primary_function_name(report.primary_function);
   d["parent_id"] = static_cast<uint64_t>(report.parent_id);
   d["stream_id"] = static_cast<uint64_t>(report.stream_id);
   d["acquisition_session_id"] = static_cast<uint64_t>(report.acquisition_session_id);
   d["device_instance_id"] = static_cast<uint64_t>(report.device_instance_id);
   d["provisional_parent"] = report.provisional_parent;
-  d["target_kind"] = report.target_kind == CoreRetainedPlanChooserReport::TargetKind::Stream
+  d["target_kind"] = report.target_kind == CoreBackingPlanEvaluationReport::TargetKind::Stream
       ? godot::String("stream")
       : godot::String("capture");
   d["target_id"] = static_cast<uint64_t>(report.target_id);
-  d["intent"] = core_production_intent_name(report.intent);
   d["requested"] = core_retained_plan_to_dictionary(report.requested);
   d["steady"] = core_retained_plan_to_dictionary(report.steady);
   d["evaluator_active"] = report.evaluator_active;
@@ -1835,16 +1825,14 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d.set(
       godot::Variant(godot::String("result_access_timing_evidence")),
       godot::Variant(result_access_cost_evidence::snapshot()));
-  godot::Array chooser_reports;
-  for (const CoreRetainedPlanChooserReport& report : runtime_.retained_plan_chooser_reports()) {
-    chooser_reports.append(chooser_report_to_dictionary(report));
+  godot::Array evaluation_reports;
+  for (const CoreBackingPlanEvaluationReport& report :
+       runtime_.backing_plan_evaluation_reports()) {
+    evaluation_reports.append(backing_plan_evaluation_report_to_dictionary(report));
   }
   d.set(
       godot::Variant(godot::String("backing_plan_evaluation_reports")),
-      godot::Variant(chooser_reports));
-  d.set(
-      godot::Variant(godot::String("retained_plan_chooser_reports")),
-      godot::Variant(chooser_reports));
+      godot::Variant(evaluation_reports));
   return d;
 }
 

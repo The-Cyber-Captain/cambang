@@ -1,13 +1,13 @@
 extends Node
 
-## Scene 68: retained-plan evaluator and timing evidence verify
+## Scene 68: backing-plan evaluation and timing evidence verify
 ##
 ## Purpose:
-## - verify posture-evaluator lifecycle and retained-plan chooser reporting
+## - verify posture-evaluator lifecycle and backing-plan evaluation reporting
 ## - verify internally calibrated stream and capture result-access timing evidence
 ## - first prove that materialization-route evidence can appear without any
 ##   public to_image()/to_image_member() calls from the scene itself
-## - prove chooser state and timing evidence stay correctly scoped to the
+## - prove backing-plan evaluation state and timing evidence stay correctly scoped to the
 ##   owning stream/capture parent context in both single-device and dual-device
 ##   structures
 ## - prove that result_access_timing_evidence and backing_plan_evaluation_reports
@@ -306,49 +306,49 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	var stream_result = await _wait_for_stream_result(stream_id, label)
 	if _done:
 		return {}
-	var initial_stream_chooser := _get_stream_chooser_report(stream_id)
-	_print_chooser_report("%s_stream_initial" % label, initial_stream_chooser)
-	var stream_chooser_shape := _classify_and_assert_stream_chooser_shape(initial_stream_chooser, target_label)
+	var initial_stream_report := _get_stream_backing_plan_evaluation_report(stream_id)
+	_print_backing_plan_evaluation_report("%s_stream_initial" % label, initial_stream_report)
+	var stream_plan_shape := _classify_and_assert_stream_backing_plan_shape(initial_stream_report, target_label)
 	if _done:
 		return {}
-	var stream_candidate_source_chooser := initial_stream_chooser
+	var stream_candidate_source_report := initial_stream_report
 
 	await _exercise_stream_access_without_public_to_image(stream_id, stream_result, label)
 	if _done:
 		return {}
 	_step_ok("%s stream access-only evidence seeded" % label)
 
-	var stream_chooser_after_stream_access := initial_stream_chooser
-	if stream_chooser_shape == "multi":
-		var stream_observation := await _observe_multi_candidate_chooser_until_steady(
+	var stream_report_after_stream_access := initial_stream_report
+	if stream_plan_shape == "multi":
+		var stream_observation := await _observe_multi_candidate_backing_plan_until_steady(
 			stream_id,
-			initial_stream_chooser,
+			initial_stream_report,
 			target_label,
 			"stream"
 		)
 		if _done:
 			return {}
-		stream_candidate_source_chooser = stream_observation.get(
+		stream_candidate_source_report = stream_observation.get(
 			"candidate_source_report",
-			initial_stream_chooser
+			initial_stream_report
 		)
-		stream_chooser_after_stream_access = stream_observation.get(
+		stream_report_after_stream_access = stream_observation.get(
 			"steady_report",
-			initial_stream_chooser
+			initial_stream_report
 		)
-		_print_chooser_report("%s_stream_after_multi_observation" % label, stream_chooser_after_stream_access)
+		_print_backing_plan_evaluation_report("%s_stream_after_multi_observation" % label, stream_report_after_stream_access)
 
-	var steady_stream_chooser := await _resolve_stream_steady_chooser(
+	var steady_stream_report := await _resolve_stream_steady_backing_plan(
 		stream_id,
-		stream_chooser_after_stream_access,
-		stream_chooser_shape,
+		stream_report_after_stream_access,
+		stream_plan_shape,
 		target_label,
 		"stream"
 	)
 	if _done:
 		return {}
-	_print_chooser_report("%s_stream_steady" % label, steady_stream_chooser)
-	await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, target_label, "stream")
+	_print_backing_plan_evaluation_report("%s_stream_steady" % label, steady_stream_report)
+	await _assert_backing_plan_steady_reused(stream_id, steady_stream_report, target_label, "stream")
 	if _done:
 		return {}
 
@@ -356,12 +356,12 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 	_step_ok("%s default still profile snapshot-visible" % label)
-	var capture_chooser := await _wait_for_capture_chooser_ready(
+	var capture_report := await _wait_for_capture_backing_plan_evaluation_ready(
 		device_instance_id,
 		target_label,
 		str(context.get("tag", "capture"))
 	)
-	_print_chooser_report("%s_capture_parent_ready" % label, capture_chooser)
+	_print_backing_plan_evaluation_report("%s_capture_parent_ready" % label, capture_report)
 	if _done:
 		return {}
 	_step_ok("%s capture parent evaluation remained capture-scoped" % label)
@@ -377,14 +377,14 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	var route_expectations := _build_expected_route_counts([
 		{
 			"context": context,
-			"stream_chooser": steady_stream_chooser,
-			"capture_chooser": capture_chooser,
+			"stream_report": steady_stream_report,
+			"capture_report": capture_report,
 		}
 	])
 	var evidence := await _wait_for_expected_evidence_routes(label, route_expectations)
 	if _done:
 		return {}
-	_assert_expected_evidence_family(evidence, target_label, steady_stream_chooser, capture_chooser)
+	_assert_expected_evidence_family(evidence, target_label, steady_stream_report, capture_report)
 	if _done:
 		return {}
 	_assert_expected_route_posture_counts(evidence, route_expectations, target_label)
@@ -395,15 +395,15 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 		return {}
 	_print_retained_plan_decision_summary(
 		"%s_stream_final" % label,
-		stream_candidate_source_chooser,
-		steady_stream_chooser,
+		stream_candidate_source_report,
+		steady_stream_report,
 		evidence,
 		"stream"
 	)
 	_print_retained_plan_decision_summary(
 		"%s_capture_reused_final" % label,
-		stream_candidate_source_chooser,
-		capture_chooser,
+		stream_candidate_source_report,
+		capture_report,
 		evidence,
 		"capture"
 	)
@@ -587,47 +587,47 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		var stream_result = await _wait_for_stream_result(stream_id, target_label)
 		if _done:
 			return {}
-		var initial_stream_chooser := _get_stream_chooser_report(stream_id)
-		_print_chooser_report("%s_stream_initial" % target_label, initial_stream_chooser)
-		var stream_chooser_shape := _classify_and_assert_stream_chooser_shape(initial_stream_chooser, target_label)
+		var initial_stream_report := _get_stream_backing_plan_evaluation_report(stream_id)
+		_print_backing_plan_evaluation_report("%s_stream_initial" % target_label, initial_stream_report)
+		var stream_plan_shape := _classify_and_assert_stream_backing_plan_shape(initial_stream_report, target_label)
 		if _done:
 			return {}
-		var stream_candidate_source_chooser := initial_stream_chooser
+		var stream_candidate_source_report := initial_stream_report
 		await _exercise_stream_access(stream_id, stream_result, target_label)
 		if _done:
 			return {}
 		_step_ok("%s stream evidence seeded" % target_label)
 
-		var observed_stream_chooser := initial_stream_chooser
-		if stream_chooser_shape == "multi":
-			var stream_observation := await _observe_multi_candidate_chooser_until_steady(
+		var observed_stream_report := initial_stream_report
+		if stream_plan_shape == "multi":
+			var stream_observation := await _observe_multi_candidate_backing_plan_until_steady(
 				stream_id,
-				initial_stream_chooser,
+				initial_stream_report,
 				target_label,
 				"stream"
 			)
 			if _done:
 				return {}
-			stream_candidate_source_chooser = stream_observation.get(
+			stream_candidate_source_report = stream_observation.get(
 				"candidate_source_report",
-				initial_stream_chooser
+				initial_stream_report
 			)
-			observed_stream_chooser = stream_observation.get(
+			observed_stream_report = stream_observation.get(
 				"steady_report",
-				initial_stream_chooser
+				initial_stream_report
 			)
-			_print_chooser_report("%s_stream_after_multi_observation" % target_label, observed_stream_chooser)
-		var steady_stream_chooser := await _resolve_stream_steady_chooser(
+			_print_backing_plan_evaluation_report("%s_stream_after_multi_observation" % target_label, observed_stream_report)
+		var steady_stream_report := await _resolve_stream_steady_backing_plan(
 			stream_id,
-			observed_stream_chooser,
-			stream_chooser_shape,
+			observed_stream_report,
+			stream_plan_shape,
 			target_label,
 			"stream"
 		)
 		if _done:
 			return {}
-		_print_chooser_report("%s_stream_steady" % target_label, steady_stream_chooser)
-		await _assert_chooser_steady_reused(stream_id, steady_stream_chooser, target_label, "stream")
+		_print_backing_plan_evaluation_report("%s_stream_steady" % target_label, steady_stream_report)
+		await _assert_backing_plan_steady_reused(stream_id, steady_stream_report, target_label, "stream")
 		if _done:
 			return {}
 
@@ -635,14 +635,14 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		if _done:
 			return {}
 		_step_ok("%s default still profile snapshot-visible" % target_label)
-		var capture_chooser := await _wait_for_capture_chooser_ready(
+		var capture_report := await _wait_for_capture_backing_plan_evaluation_ready(
 			device_instance_id,
 			target_label,
 			str(context.get("tag", "capture"))
 		)
 		if _done:
 			return {}
-		_print_chooser_report("%s_capture_parent_ready" % target_label, capture_chooser)
+		_print_backing_plan_evaluation_report("%s_capture_parent_ready" % target_label, capture_report)
 		_step_ok("%s capture parent evaluation remained capture-scoped" % target_label)
 
 		var capture_result = await _trigger_and_wait_capture(device, context, target_label)
@@ -655,9 +655,9 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 
 		records.append({
 			"context": context,
-			"stream_candidate_source_chooser": stream_candidate_source_chooser,
-			"stream_chooser": steady_stream_chooser,
-			"capture_chooser": capture_chooser,
+			"stream_candidate_source_report": stream_candidate_source_report,
+			"stream_report": steady_stream_report,
+			"capture_report": capture_report,
 		})
 
 	var evidence := await _wait_for_expected_evidence_routes(
@@ -667,37 +667,37 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	if _done:
 		return {}
 	var route_expectations := _build_expected_route_counts(records)
-	_assert_chooser_reports_distinct(records, label)
+	_assert_backing_plan_evaluation_reports_distinct(records, label)
 	if _done:
 		return {}
 	for record_v in records:
 		var record: Dictionary = record_v
 		var context: Dictionary = record.get("context", {})
 		var target_label := "%s_%s" % [label, str(context.get("tag", "target"))]
-		var stream_candidate_source_chooser: Dictionary = record.get("stream_candidate_source_chooser", {})
-		var stream_chooser: Dictionary = record.get("stream_chooser", {})
-		var capture_chooser: Dictionary = record.get("capture_chooser", {})
-		_assert_expected_evidence_family(evidence, target_label, stream_chooser, capture_chooser)
+		var stream_candidate_source_report: Dictionary = record.get("stream_candidate_source_report", {})
+		var stream_report: Dictionary = record.get("stream_report", {})
+		var capture_report: Dictionary = record.get("capture_report", {})
+		_assert_expected_evidence_family(evidence, target_label, stream_report, capture_report)
 		if _done:
 			return {}
 		_print_retained_plan_decision_summary(
 			"%s_stream_final" % target_label,
-			stream_candidate_source_chooser,
-			stream_chooser,
+			stream_candidate_source_report,
+			stream_report,
 			evidence,
 			"stream"
 		)
 		_print_retained_plan_decision_summary(
 			"%s_capture_reused_final" % target_label,
-			stream_candidate_source_chooser,
-			capture_chooser,
+			stream_candidate_source_report,
+			capture_report,
 			evidence,
 			"capture"
 		)
 	_assert_expected_route_posture_counts(evidence, route_expectations, label)
 	if _done:
 		return {}
-	_step_ok("%s dual-device chooser and evidence scoping verified" % label)
+	_step_ok("%s dual-device backing-plan evaluation and evidence scoping verified" % label)
 
 	return {
 		"gen": gen,
@@ -1226,9 +1226,9 @@ func _stop_and_verify_reset() -> void:
 			_require(evidence.is_empty(), "post-stop result_access_timing_evidence was not cleared by stop()")
 			if _done:
 				return
-			var chooser_reports := _get_retained_plan_chooser_reports()
-			print("CHOOSER: post_stop %s" % JSON.stringify(chooser_reports))
-			_require(chooser_reports.is_empty(), "post-stop retained_plan_chooser_reports was not cleared by stop()")
+			var evaluation_reports := _get_backing_plan_evaluation_reports()
+			print("BACKING_PLAN_EVAL: post_stop %s" % JSON.stringify(evaluation_reports))
+			_require(evaluation_reports.is_empty(), "post-stop backing_plan_evaluation_reports was not cleared by stop()")
 			if _done:
 				return
 			_step_ok("stop/reset verified")
@@ -1345,20 +1345,18 @@ func _get_capture_progress_snapshot(device_instance_id: int) -> Dictionary:
 
 
 
-func _get_retained_plan_chooser_reports() -> Array:
+func _get_backing_plan_evaluation_reports() -> Array:
 	var metrics = CamBANGServer.get_synthetic_metrics_snapshot()
 	if typeof(metrics) != TYPE_DICTIONARY:
 		return []
 	var reports = metrics.get("backing_plan_evaluation_reports", [])
 	if typeof(reports) != TYPE_ARRAY:
-		reports = metrics.get("retained_plan_chooser_reports", [])
-	if typeof(reports) != TYPE_ARRAY:
 		return []
 	return reports
 
 
-func _get_stream_chooser_report(stream_id: int) -> Dictionary:
-	for report_v in _get_retained_plan_chooser_reports():
+func _get_stream_backing_plan_evaluation_report(stream_id: int) -> Dictionary:
+	for report_v in _get_backing_plan_evaluation_reports():
 		if typeof(report_v) != TYPE_DICTIONARY:
 			continue
 		var report: Dictionary = report_v
@@ -1367,7 +1365,7 @@ func _get_stream_chooser_report(stream_id: int) -> Dictionary:
 	return {}
 
 
-func _wait_for_stream_chooser_with_primary_function(
+func _wait_for_stream_backing_plan_evaluation_with_primary_function(
 	stream_id: int,
 	label: String,
 	target_label: String,
@@ -1378,19 +1376,19 @@ func _wait_for_stream_chooser_with_primary_function(
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
-		var report := _get_stream_chooser_report(stream_id)
+		var report := _get_stream_backing_plan_evaluation_report(stream_id)
 		if report.is_empty():
 			continue
 		last_primary_function = str(report.get("primary_function", ""))
 		if last_primary_function != expected_primary_function:
 			continue
 		return report
-	_fail("%s: timed out waiting for %s stream chooser report with primary_function %s (last_primary_function=%s)" % [label, target_label, expected_primary_function, last_primary_function])
+	_fail("%s: timed out waiting for %s stream backing-plan evaluation report with primary_function %s (last_primary_function=%s)" % [label, target_label, expected_primary_function, last_primary_function])
 	return {}
 
 
-func _get_capture_chooser_report(device_instance_id: int) -> Dictionary:
-	for report_v in _get_retained_plan_chooser_reports():
+func _get_capture_backing_plan_evaluation_report(device_instance_id: int) -> Dictionary:
+	for report_v in _get_backing_plan_evaluation_reports():
 		if typeof(report_v) != TYPE_DICTIONARY:
 			continue
 		var report: Dictionary = report_v
@@ -1399,19 +1397,19 @@ func _get_capture_chooser_report(device_instance_id: int) -> Dictionary:
 	return {}
 
 
-func _wait_for_capture_chooser_report(device_instance_id: int, label: String) -> Dictionary:
+func _wait_for_capture_backing_plan_evaluation_report(device_instance_id: int, label: String) -> Dictionary:
 	for _i in range(ID_TIMEOUT_FRAMES):
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
-		var report := _get_capture_chooser_report(device_instance_id)
+		var report := _get_capture_backing_plan_evaluation_report(device_instance_id)
 		if not report.is_empty():
 			return report
-	_fail("%s: timed out waiting for capture chooser report for device_instance_id=%d" % [label, device_instance_id])
+	_fail("%s: timed out waiting for capture backing-plan evaluation report for device_instance_id=%d" % [label, device_instance_id])
 	return {}
 
 
-func _wait_for_capture_chooser_with_primary_function(
+func _wait_for_capture_backing_plan_evaluation_with_primary_function(
 	device_instance_id: int,
 	label: String,
 	target_label: String,
@@ -1422,18 +1420,18 @@ func _wait_for_capture_chooser_with_primary_function(
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
-		var report := _get_capture_chooser_report(device_instance_id)
+		var report := _get_capture_backing_plan_evaluation_report(device_instance_id)
 		if report.is_empty():
 			continue
 		last_primary_function = str(report.get("primary_function", ""))
 		if last_primary_function != expected_primary_function:
 			continue
 		return report
-	_fail("%s: timed out waiting for %s capture chooser report with primary_function %s (last_primary_function=%s)" % [label, target_label, expected_primary_function, last_primary_function])
+	_fail("%s: timed out waiting for %s capture backing-plan evaluation report with primary_function %s (last_primary_function=%s)" % [label, target_label, expected_primary_function, last_primary_function])
 	return {}
 
 
-func _wait_for_capture_chooser_ready(
+func _wait_for_capture_backing_plan_evaluation_ready(
 	device_instance_id: int,
 	label: String,
 	target_label: String
@@ -1444,10 +1442,10 @@ func _wait_for_capture_chooser_ready(
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
-		var report := _get_capture_chooser_report(device_instance_id)
+		var report := _get_capture_backing_plan_evaluation_report(device_instance_id)
 		if report.is_empty():
 			continue
-		_assert_chooser_primary_function(
+		_assert_backing_plan_primary_function(
 			report,
 			label,
 			"%s capture" % target_label,
@@ -1455,32 +1453,32 @@ func _wait_for_capture_chooser_ready(
 		)
 		if _done:
 			return {}
-		if not _chooser_plan_valid(report, "requested"):
+		if not _backing_plan_valid(report, "requested"):
 			continue
 		return report
-	_fail("%s: timed out waiting for %s capture chooser requested posture to become available" % [label, target_label])
+	_fail("%s: timed out waiting for %s capture backing-plan requested posture to become available" % [label, target_label])
 	return {}
 
 
-func _chooser_posture(report: Dictionary, key: String) -> String:
+func _backing_plan_posture(report: Dictionary, key: String) -> String:
 	var plan_v = report.get(key, {})
 	if typeof(plan_v) != TYPE_DICTIONARY:
 		return ""
 	return str((plan_v as Dictionary).get("posture", ""))
 
 
-func _chooser_plan_valid(report: Dictionary, key: String) -> bool:
+func _backing_plan_valid(report: Dictionary, key: String) -> bool:
 	var plan_v = report.get(key, {})
 	if typeof(plan_v) != TYPE_DICTIONARY:
 		return false
 	return bool((plan_v as Dictionary).get("valid", false))
 
 
-func _print_chooser_report(tag: String, report: Dictionary) -> void:
-	print("CHOOSER: %s %s" % [tag, JSON.stringify(report)])
+func _print_backing_plan_evaluation_report(tag: String, report: Dictionary) -> void:
+	print("BACKING_PLAN_EVAL: %s %s" % [tag, JSON.stringify(report)])
 
 
-func _chooser_candidate_postures(report: Dictionary) -> Array:
+func _backing_plan_candidate_postures(report: Dictionary) -> Array:
 	var postures: Array = []
 	var candidates_v = report.get("candidate_sequence", [])
 	if typeof(candidates_v) != TYPE_ARRAY:
@@ -1497,7 +1495,7 @@ func _chooser_candidate_postures(report: Dictionary) -> Array:
 	return postures
 
 
-func _chooser_decision_candidate_postures(report: Dictionary) -> Array:
+func _backing_plan_decision_candidate_postures(report: Dictionary) -> Array:
 	var postures: Array = []
 	var candidates_v = report.get("decision_candidate_sequence", [])
 	if typeof(candidates_v) != TYPE_ARRAY:
@@ -1514,28 +1512,28 @@ func _chooser_decision_candidate_postures(report: Dictionary) -> Array:
 	return postures
 
 
-func _chooser_decision_from_evaluation(report: Dictionary) -> bool:
+func _backing_plan_decision_from_evaluation(report: Dictionary) -> bool:
 	return bool(report.get("decision_from_evaluation", false))
 
 
-func _chooser_has_made_decision(report: Dictionary) -> bool:
+func _backing_plan_has_made_decision(report: Dictionary) -> bool:
 	if report.is_empty():
 		return false
-	if _chooser_plan_valid(report, "decision_selected"):
+	if _backing_plan_valid(report, "decision_selected"):
 		return true
 	if bool(report.get("evaluator_active", false)):
 		return false
-	if not _chooser_plan_valid(report, "requested") or not _chooser_plan_valid(report, "steady"):
+	if not _backing_plan_valid(report, "requested") or not _backing_plan_valid(report, "steady"):
 		return false
-	return _chooser_posture(report, "requested") == _chooser_posture(report, "steady")
+	return _backing_plan_posture(report, "requested") == _backing_plan_posture(report, "steady")
 
 
-func _chooser_selection_posture(report: Dictionary) -> String:
-	var steady_posture := _chooser_posture(report, "steady")
-	if _chooser_plan_valid(report, "steady") and steady_posture != "":
+func _backing_plan_selection_posture(report: Dictionary) -> String:
+	var steady_posture := _backing_plan_posture(report, "steady")
+	if _backing_plan_valid(report, "steady") and steady_posture != "":
 		return steady_posture
-	if _chooser_plan_valid(report, "requested"):
-		return _chooser_posture(report, "requested")
+	if _backing_plan_valid(report, "requested"):
+		return _backing_plan_posture(report, "requested")
 	return ""
 
 
@@ -1678,27 +1676,27 @@ func _print_retained_plan_decision_summary(
 ) -> void:
 	if selected_report.is_empty():
 		return
-	if not _chooser_has_made_decision(selected_report):
+	if not _backing_plan_has_made_decision(selected_report):
 		return
-	var selection := _chooser_selection_posture(selected_report)
+	var selection := _backing_plan_selection_posture(selected_report)
 	if selection == "":
 		return
-	var candidates := _chooser_candidate_postures(candidate_source_report)
+	var candidates := _backing_plan_candidate_postures(candidate_source_report)
 	if candidates.is_empty():
-		candidates = _chooser_decision_candidate_postures(selected_report)
+		candidates = _backing_plan_decision_candidate_postures(selected_report)
 	if candidates.is_empty():
-		candidates = _chooser_candidate_postures(selected_report)
+		candidates = _backing_plan_candidate_postures(selected_report)
 	if candidates.is_empty():
 		candidates = [selection]
 	var mode := "single_viable_selection"
-	if _chooser_decision_from_evaluation(selected_report) or candidates.size() > 1:
+	if _backing_plan_decision_from_evaluation(selected_report) or candidates.size() > 1:
 		mode = "multiple_viable_selection"
 
 	var fields: Array = [
 		"context=%s" % context_tag,
 		"target_kind=%s" % str(selected_report.get("target_kind", "")),
 		"target_id=%d" % int(selected_report.get("target_id", 0)),
-		"intent=%s" % str(selected_report.get("intent", "")),
+		"primary_function=%s" % str(selected_report.get("primary_function", "")),
 		"mode=%s" % mode,
 		"selection=%s" % JSON.stringify(selection),
 		"candidates=%s" % JSON.stringify(candidates),
@@ -1762,7 +1760,7 @@ func _emit_capture_decision_from_snapshot(
 	_require(device_instance_id != 0, "%s: device instance id missing for hardware_id=%s" % [label, hardware_id])
 	if _done:
 		return
-	var report := await _wait_for_capture_chooser_with_primary_function(
+	var report := await _wait_for_capture_backing_plan_evaluation_with_primary_function(
 		device_instance_id,
 		label,
 		context_tag,
@@ -1770,7 +1768,7 @@ func _emit_capture_decision_from_snapshot(
 	)
 	if _done:
 		return
-	if _chooser_has_made_decision(report):
+	if _backing_plan_has_made_decision(report):
 		var evidence := _get_result_access_timing_evidence()
 		_print_retained_plan_decision_summary(
 			context_tag,
@@ -1806,7 +1804,7 @@ func _emit_stream_decision_from_snapshot(
 	_require(stream_id != 0, "%s: stream id missing for hardware_id=%s intent=%s" % [label, hardware_id, stream_intent])
 	if _done:
 		return
-	var report := await _wait_for_stream_chooser_with_primary_function(
+	var report := await _wait_for_stream_backing_plan_evaluation_with_primary_function(
 		stream_id,
 		label,
 		context_tag,
@@ -1814,7 +1812,7 @@ func _emit_stream_decision_from_snapshot(
 	)
 	if _done:
 		return
-	if _chooser_has_made_decision(report):
+	if _backing_plan_has_made_decision(report):
 		var evidence := _get_result_access_timing_evidence()
 		_print_retained_plan_decision_summary(
 			context_tag,
@@ -1865,26 +1863,26 @@ func _seed_capture_access_only_evidence_from_snapshot(
 	_require(not capture_route_match.is_empty(), "%s: capture_to_image.* evidence missing after access-only capture" % label)
 
 
-func _assert_chooser_primary_function(report: Dictionary, label: String, target_label: String, expected_primary_function: String) -> void:
-	_require(not report.is_empty(), "%s: %s chooser report missing" % [label, target_label])
+func _assert_backing_plan_primary_function(report: Dictionary, label: String, target_label: String, expected_primary_function: String) -> void:
+	_require(not report.is_empty(), "%s: %s backing-plan evaluation report missing" % [label, target_label])
 	if _done:
 		return
-	_require(str(report.get("primary_function", "")) == expected_primary_function, "%s: %s chooser primary_function expected %s got %s" % [label, target_label, expected_primary_function, str(report.get("primary_function", ""))])
+	_require(str(report.get("primary_function", "")) == expected_primary_function, "%s: %s backing-plan primary_function expected %s got %s" % [label, target_label, expected_primary_function, str(report.get("primary_function", ""))])
 
 
-func _classify_and_assert_stream_chooser_shape(report: Dictionary, label: String) -> String:
-	_assert_chooser_primary_function(report, label, "stream", "display_view")
+func _classify_and_assert_stream_backing_plan_shape(report: Dictionary, label: String) -> String:
+	_assert_backing_plan_primary_function(report, label, "stream", "display_view")
 	if _done:
 		return ""
-	_require(_chooser_plan_valid(report, "requested"), "%s: stream chooser requested posture missing" % label)
+	_require(_backing_plan_valid(report, "requested"), "%s: stream backing-plan requested posture missing" % label)
 	if _done:
 		return ""
 
 	var candidates: Array = report.get("candidate_sequence", [])
 	var evaluator_active := bool(report.get("evaluator_active", false))
-	var requested_posture := _chooser_posture(report, "requested")
-	var steady_valid := _chooser_plan_valid(report, "steady")
-	var steady_posture := _chooser_posture(report, "steady")
+	var requested_posture := _backing_plan_posture(report, "requested")
+	var steady_valid := _backing_plan_valid(report, "steady")
+	var steady_posture := _backing_plan_posture(report, "steady")
 
 	if candidates.size() <= 1 and not evaluator_active:
 		_require(steady_valid, "%s: stream single-viable selection must expose steady posture" % label)
@@ -1893,7 +1891,7 @@ func _classify_and_assert_stream_chooser_shape(report: Dictionary, label: String
 		_require(requested_posture == steady_posture, "%s: stream single-viable selection requested posture must equal steady posture" % label)
 		if _done:
 			return ""
-		_step_ok("%s stream chooser classified single-viable selection" % label)
+		_step_ok("%s stream backing-plan evaluation classified single-viable selection" % label)
 		return "single"
 
 	_require(candidates.size() > 1, "%s: stream multi-candidate evaluator must expose candidate sequence" % label)
@@ -1911,17 +1909,17 @@ func _classify_and_assert_stream_chooser_shape(report: Dictionary, label: String
 	_assert_candidate_index_bounded(report, label, "stream")
 	if _done:
 		return ""
-	_step_ok("%s stream chooser classified multi-candidate evaluation path" % label)
+	_step_ok("%s stream backing-plan evaluation classified multi-candidate evaluation path" % label)
 	return "multi"
 
 
 func _assert_candidate_index_bounded(report: Dictionary, label: String, target_label: String) -> void:
 	var candidates: Array = report.get("candidate_sequence", [])
 	var idx := int(report.get("current_candidate_index", 0))
-	_require(idx >= 0 and idx < candidates.size(), "%s: %s chooser candidate index out of bounds (idx=%d size=%d)" % [label, target_label, idx, candidates.size()])
+	_require(idx >= 0 and idx < candidates.size(), "%s: %s backing-plan candidate index out of bounds (idx=%d size=%d)" % [label, target_label, idx, candidates.size()])
 
 
-func _observe_multi_candidate_chooser_until_steady(stream_id: int, initial_report: Dictionary, label: String, target_label: String) -> Dictionary:
+func _observe_multi_candidate_backing_plan_until_steady(stream_id: int, initial_report: Dictionary, label: String, target_label: String) -> Dictionary:
 	var last_active_report := initial_report
 	var last_index := int(initial_report.get("current_candidate_index", 0))
 	var observed_active_transition := false
@@ -1929,10 +1927,10 @@ func _observe_multi_candidate_chooser_until_steady(stream_id: int, initial_repor
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
-		var report := _get_stream_chooser_report(stream_id)
+		var report := _get_stream_backing_plan_evaluation_report(stream_id)
 		if report.is_empty():
 			continue
-		_assert_chooser_primary_function(report, label, target_label, "display_view")
+		_assert_backing_plan_primary_function(report, label, target_label, "display_view")
 		if _done:
 			return {}
 		if bool(report.get("evaluator_active", false)):
@@ -1940,96 +1938,96 @@ func _observe_multi_candidate_chooser_until_steady(stream_id: int, initial_repor
 			if _done:
 				return {}
 			var idx := int(report.get("current_candidate_index", 0))
-			_require(idx >= last_index, "%s: %s chooser candidate index regressed (%d -> %d); prev=%s current=%s" % [label, target_label, last_index, idx, JSON.stringify(last_active_report), JSON.stringify(report)])
+			_require(idx >= last_index, "%s: %s backing-plan candidate index regressed (%d -> %d); prev=%s current=%s" % [label, target_label, last_index, idx, JSON.stringify(last_active_report), JSON.stringify(report)])
 			if _done:
 				return {}
-			_require(idx <= last_index + 1, "%s: %s chooser progressed by more than one candidate (%d -> %d); prev=%s current=%s" % [label, target_label, last_index, idx, JSON.stringify(last_active_report), JSON.stringify(report)])
+			_require(idx <= last_index + 1, "%s: %s backing-plan evaluation progressed by more than one candidate (%d -> %d); prev=%s current=%s" % [label, target_label, last_index, idx, JSON.stringify(last_active_report), JSON.stringify(report)])
 			if _done:
 				return {}
 			if idx != last_index:
-				print("CHOOSER: %s_%s_progress_compare previous=%s current=%s" % [label, target_label, JSON.stringify(last_active_report), JSON.stringify(report)])
+				print("BACKING_PLAN_EVAL: %s_%s_progress_compare previous=%s current=%s" % [label, target_label, JSON.stringify(last_active_report), JSON.stringify(report)])
 				observed_active_transition = true
 			last_index = idx
 			last_active_report = report
 			continue
-		if _chooser_plan_valid(report, "steady"):
-			_require(_chooser_posture(report, "requested") == _chooser_posture(report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+		if _backing_plan_valid(report, "steady"):
+			_require(_backing_plan_posture(report, "requested") == _backing_plan_posture(report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
 			if _done:
 				return {}
 			if observed_active_transition:
-				_step_ok("%s %s chooser active progression observed as monotonic and bounded" % [label, target_label])
+				_step_ok("%s %s backing-plan active progression observed as monotonic and bounded" % [label, target_label])
 			else:
-				print("CHOOSER: %s_%s_no_distinct_active_transition initial=%s steady=%s" % [label, target_label, JSON.stringify(initial_report), JSON.stringify(report)])
-				_step_ok("%s %s chooser remained bounded from first observed active candidate to steady" % [label, target_label])
-			_step_ok("%s %s chooser reached steady posture" % [label, target_label])
+				print("BACKING_PLAN_EVAL: %s_%s_no_distinct_active_transition initial=%s steady=%s" % [label, target_label, JSON.stringify(initial_report), JSON.stringify(report)])
+				_step_ok("%s %s backing-plan evaluation remained bounded from first observed active candidate to steady" % [label, target_label])
+			_step_ok("%s %s backing-plan evaluation reached steady posture" % [label, target_label])
 			return {
 				"candidate_source_report": last_active_report,
 				"steady_report": report,
 			}
-	_fail("%s: timed out waiting for %s chooser steady posture settlement" % [label, target_label])
+	_fail("%s: timed out waiting for %s backing-plan steady posture settlement" % [label, target_label])
 	return {}
 
 
-func _wait_for_chooser_steady(stream_id: int, label: String, target_label: String) -> Dictionary:
+func _wait_for_backing_plan_steady(stream_id: int, label: String, target_label: String) -> Dictionary:
 	for _i in range(STREAM_RESULT_TIMEOUT_FRAMES):
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
-		var report := _get_stream_chooser_report(stream_id)
+		var report := _get_stream_backing_plan_evaluation_report(stream_id)
 		if report.is_empty():
 			continue
 		if bool(report.get("evaluator_active", false)):
 			continue
-		if not _chooser_plan_valid(report, "steady"):
+		if not _backing_plan_valid(report, "steady"):
 			continue
-		_require(_chooser_posture(report, "requested") == _chooser_posture(report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+		_require(_backing_plan_posture(report, "requested") == _backing_plan_posture(report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
 		if _done:
 			return {}
-		_step_ok("%s %s chooser reached steady posture" % [label, target_label])
+		_step_ok("%s %s backing-plan evaluation reached steady posture" % [label, target_label])
 		return report
-	_fail("%s: timed out waiting for %s chooser steady posture settlement" % [label, target_label])
+	_fail("%s: timed out waiting for %s backing-plan steady posture settlement" % [label, target_label])
 	return {}
 
 
-func _assert_chooser_steady_reused(stream_id: int, steady_report: Dictionary, label: String, target_label: String) -> void:
-	var steady_posture := _chooser_posture(steady_report, "steady")
+func _assert_backing_plan_steady_reused(stream_id: int, steady_report: Dictionary, label: String, target_label: String) -> void:
+	var steady_posture := _backing_plan_posture(steady_report, "steady")
 	for _i in range(3):
 		await get_tree().process_frame
-		var report := _get_stream_chooser_report(stream_id)
-		_require(not report.is_empty(), "%s: %s chooser report missing while checking steady reuse" % [label, target_label])
+		var report := _get_stream_backing_plan_evaluation_report(stream_id)
+		_require(not report.is_empty(), "%s: %s backing-plan evaluation report missing while checking steady reuse" % [label, target_label])
 		if _done:
 			return
 		_require(not bool(report.get("evaluator_active", false)), "%s: %s evaluator reactivated while checking steady reuse" % [label, target_label])
 		if _done:
 			return
-		_require(_chooser_posture(report, "requested") == steady_posture and _chooser_posture(report, "steady") == steady_posture, "%s: %s steady posture was not reused" % [label, target_label])
+		_require(_backing_plan_posture(report, "requested") == steady_posture and _backing_plan_posture(report, "steady") == steady_posture, "%s: %s steady posture was not reused" % [label, target_label])
 		if _done:
 			return
-	_step_ok("%s %s chooser steady posture reused" % [label, target_label])
+	_step_ok("%s %s backing-plan steady posture reused" % [label, target_label])
 
 
-func _resolve_stream_steady_chooser(
+func _resolve_stream_steady_backing_plan(
 	stream_id: int,
 	observed_report: Dictionary,
-	stream_chooser_shape: String,
+	stream_plan_shape: String,
 	label: String,
 	target_label: String
 ) -> Dictionary:
-	if stream_chooser_shape == "single":
-		var current := _get_stream_chooser_report(stream_id)
-		if not current.is_empty() and not bool(current.get("evaluator_active", false)) and _chooser_plan_valid(current, "steady"):
-			_require(_chooser_posture(current, "requested") == _chooser_posture(current, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+	if stream_plan_shape == "single":
+		var current := _get_stream_backing_plan_evaluation_report(stream_id)
+		if not current.is_empty() and not bool(current.get("evaluator_active", false)) and _backing_plan_valid(current, "steady"):
+			_require(_backing_plan_posture(current, "requested") == _backing_plan_posture(current, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
 			if _done:
 				return {}
 			return current
-		return await _wait_for_chooser_steady(stream_id, label, target_label)
+		return await _wait_for_backing_plan_steady(stream_id, label, target_label)
 
-	if not observed_report.is_empty() and not bool(observed_report.get("evaluator_active", false)) and _chooser_plan_valid(observed_report, "steady"):
-		_require(_chooser_posture(observed_report, "requested") == _chooser_posture(observed_report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
+	if not observed_report.is_empty() and not bool(observed_report.get("evaluator_active", false)) and _backing_plan_valid(observed_report, "steady"):
+		_require(_backing_plan_posture(observed_report, "requested") == _backing_plan_posture(observed_report, "steady"), "%s: %s requested posture did not settle to steady posture" % [label, target_label])
 		if _done:
 			return {}
 		return observed_report
-	return await _wait_for_chooser_steady(stream_id, label, target_label)
+	return await _wait_for_backing_plan_steady(stream_id, label, target_label)
 
 
 func _assert_context_identity_scope(contexts: Array, label: String) -> void:
@@ -2079,10 +2077,10 @@ func _build_expected_route_counts(records: Array) -> Dictionary:
 		if typeof(record_v) != TYPE_DICTIONARY:
 			continue
 		var record: Dictionary = record_v
-		var stream_chooser: Dictionary = record.get("stream_chooser", {})
-		var capture_chooser: Dictionary = record.get("capture_chooser", {})
-		var stream_posture := _chooser_selection_posture(stream_chooser)
-		var capture_posture := _chooser_selection_posture(capture_chooser)
+		var stream_report: Dictionary = record.get("stream_report", {})
+		var capture_report: Dictionary = record.get("capture_report", {})
+		var stream_posture := _backing_plan_selection_posture(stream_report)
+		var capture_posture := _backing_plan_selection_posture(capture_report)
 
 		var display_view_key := _display_view_evidence_key_for_posture(stream_posture)
 		if display_view_key != "":
@@ -2148,8 +2146,8 @@ func _assert_expected_route_posture_counts(evidence: Dictionary, route_expectati
 	_step_ok("%s expected evidence posture counts verified" % label)
 
 
-func _assert_chooser_reports_distinct(records: Array, label: String) -> void:
-	var reports := _get_retained_plan_chooser_reports()
+func _assert_backing_plan_evaluation_reports_distinct(records: Array, label: String) -> void:
+	var reports := _get_backing_plan_evaluation_reports()
 	var stream_reports := {}
 	var capture_reports := {}
 	for report_v in reports:
@@ -2170,13 +2168,13 @@ func _assert_chooser_reports_distinct(records: Array, label: String) -> void:
 		var context: Dictionary = record.get("context", {})
 		var stream_id := int(context.get("stream_id", 0))
 		var device_instance_id := int(context.get("device_instance_id", 0))
-		_require(stream_reports.has(stream_id), "%s: missing distinct stream chooser report for stream_id=%d" % [label, stream_id])
+		_require(stream_reports.has(stream_id), "%s: missing distinct stream backing-plan evaluation report for stream_id=%d" % [label, stream_id])
 		if _done:
 			return
-		_require(capture_reports.has(device_instance_id), "%s: missing distinct capture chooser report for device_instance_id=%d" % [label, device_instance_id])
+		_require(capture_reports.has(device_instance_id), "%s: missing distinct capture backing-plan evaluation report for device_instance_id=%d" % [label, device_instance_id])
 		if _done:
 			return
-	_step_ok("%s chooser report target identity verified" % label)
+	_step_ok("%s backing-plan evaluation report target identity verified" % label)
 
 
 func _get_result_access_timing_evidence() -> Dictionary:
@@ -2194,8 +2192,8 @@ func _print_evidence(tag: String, evidence: Dictionary) -> void:
 func _assert_expected_evidence_family(
 	evidence: Dictionary,
 	label: String,
-	stream_chooser: Dictionary,
-	capture_chooser: Dictionary
+	stream_report: Dictionary,
+	capture_report: Dictionary
 ) -> void:
 	var stored_selection := _synthetic_producer_output_form_setting()
 	var effective_selection := _synthetic_producer_output_form_effective_selection()
@@ -2207,19 +2205,19 @@ func _assert_expected_evidence_family(
 		_synthetic_capture_capability_downgrade_effective_selection(),
 	])
 
-	_require(not stream_chooser.is_empty(), "%s: stream chooser report missing for evidence verification" % label)
+	_require(not stream_report.is_empty(), "%s: stream backing-plan evaluation report missing for evidence verification" % label)
 	if _done:
 		return
-	_require(not capture_chooser.is_empty(), "%s: capture chooser report missing for evidence verification" % label)
+	_require(not capture_report.is_empty(), "%s: capture backing-plan evaluation report missing for evidence verification" % label)
 	if _done:
 		return
 
-	var stream_posture := _chooser_selection_posture(stream_chooser)
-	var capture_posture := _chooser_selection_posture(capture_chooser)
-	_require(stream_posture != "", "%s: stream chooser selection posture missing" % label)
+	var stream_posture := _backing_plan_selection_posture(stream_report)
+	var capture_posture := _backing_plan_selection_posture(capture_report)
+	_require(stream_posture != "", "%s: stream backing-plan selection posture missing" % label)
 	if _done:
 		return
-	_require(capture_posture != "", "%s: capture chooser selection posture missing" % label)
+	_require(capture_posture != "", "%s: capture backing-plan selection posture missing" % label)
 	if _done:
 		return
 
