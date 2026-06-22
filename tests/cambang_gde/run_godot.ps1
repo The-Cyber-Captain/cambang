@@ -306,8 +306,30 @@ function Invoke-CapturedProcess {
     try {
         Push-Location $workingDirResolved
         try {
-            & $FilePath @Arguments 1> $stdoutTemp 2> $stderrTemp
-            $exitCode = $LASTEXITCODE
+            $previousErrorActionPreference = $ErrorActionPreference
+            $hasNativeCommandPreference = Test-Path variable:PSNativeCommandUseErrorActionPreference
+            $previousNativeCommandPreference = $false
+            try {
+                # Let native stderr stay in the captured log files; the real failure signal is exit code.
+                $ErrorActionPreference = "Continue"
+                if ($hasNativeCommandPreference) {
+                    $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+                    $PSNativeCommandUseErrorActionPreference = $false
+                }
+
+                & $FilePath @Arguments 1> $stdoutTemp 2> $stderrTemp
+                $exitCode = $LASTEXITCODE
+            }
+            finally {
+                if ($hasNativeCommandPreference) {
+                    $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+                }
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+
+            if ($null -eq $exitCode -or [string]::IsNullOrWhiteSpace([string]$exitCode)) {
+                $exitCode = if ($?) { 0 } else { 1 }
+            }
         }
         finally {
             Pop-Location
