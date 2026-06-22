@@ -147,6 +147,27 @@ Each run directory contains:
 
 This is intended to keep Codex/token usage bounded: inspect `summary.jsonl` first, then open only the failing run directories unless you are explicitly doing later OK-run timing/statistics work.
 
+Android export/deploy can use the same launcher and log bucketing:
+
+```powershell
+.\run_godot.ps1 `
+  -RunPlatform android `
+  -Scene res://scenes/68_inner_evidence_reset_verify.tscn `
+  -CaptureLogs `
+  -TimeoutSec 15 `
+  -ExpectedOkPattern "step\s+\d+\s+OK:\s+posture evaluator lifecycle and retained timing evidence verified" `
+  -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
+```
+
+Android-mode notes:
+
+- it exports a debug APK, installs it with `adb`, launches it, and stores host logs plus `device_logcat.log` in the same per-run directory
+- it currently supports `-Scene` only, not `-Script`
+- it currently translates maintainer settings from `--cambang-synth-producer-output-form=...`, `--cambang-synth-stream-capability-downgrades=...`, and `--cambang-synth-capture-capability-downgrades=...`
+- it does not support `-QuitAfter`; use `-TimeoutSec` as the outer observation guard
+- when an expected `OK:` pattern is observed, Android mode keeps the app running until it exits naturally or `-TimeoutSec` is reached, so headed/manual-inspection scenes can stay open
+- it supports `--rendering-method=mobile` and `--rendering-method=gl_compatibility` during export/deploy runs; `--rendering-method=compatibility` is normalized to `gl_compatibility`
+
 Notes for Codex/agent validation on this machine:
 
 - prefer `run_godot.ps1` or `godot_test_suite.ps1` from PowerShell so the Godot executable path and project path are explicit
