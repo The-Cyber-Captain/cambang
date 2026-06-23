@@ -76,12 +76,11 @@ void godot_gpu_display_invalidate_stream(uint64_t stream_id) {
   if (stream_id == 0) {
     return;
   }
-  // No stream-keyed display cache exists in this slice. Future providers may
-  // use this boundary for Godot-layer adapter invalidation only.
+  synthetic_gpu_backing_invalidate_live_display_wrappers_for_stream(stream_id);
 }
 
 void godot_gpu_display_invalidate_all() {
-  // Non-owning today: no service cache owns Godot Texture2D refs.
+  synthetic_gpu_backing_invalidate_all_live_display_wrappers();
 }
 
 } // namespace cambang

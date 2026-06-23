@@ -60,11 +60,6 @@ enum class ProducerBackingKind : uint8_t {
   GPU = 1,
 };
 
-enum class CoreProductionIntent : uint8_t {
-  Default = 0,
-  StreamActive = 1,
-};
-
 enum class CoreProductionPostureShape : uint8_t {
   CpuPrimary = 0,
   GpuPrimaryNoCpuSidecar = 1,

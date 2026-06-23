@@ -6,10 +6,10 @@ evaluation in CamBANG. It is a development note, not canonical architecture.
 It exists to replace the older partial chooser direction with a clearer,
 source-grounded model before further implementation continues.
 
-It does not by itself redefine canonical documents such as
+It did not by itself redefine canonical documents such as
 `provider_architecture.md`, `state_snapshot.md`, `naming.md`, or
-`pixel_payload_and_result_contract.md`. Once this direction is accepted and
-implemented, those canonical documents should be updated deliberately.
+`pixel_payload_and_result_contract.md`. Those canonical documents have now been
+updated deliberately to reflect the accepted parent-scoped Backing Plan model.
 
 Source-truth note:
 

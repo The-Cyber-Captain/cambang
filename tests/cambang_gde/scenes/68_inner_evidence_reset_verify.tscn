@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=2 format=3 uid="uid://cekcg7vxpohh2"]
 
-[ext_resource type="Script" path="res://scripts/68_inner_evidence_reset_verify.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://5arfjrwysaoy" path="res://scripts/68_inner_evidence_reset_verify.gd" id="1_script"]
 
 [node name="68_InnerEvidenceResetVerify" type="Node"]
 script = ExtResource("1_script")

@@ -466,27 +466,28 @@ capture-originated truth, and it does not depend on any `FrameProducer` row.
 Native Payload Support is interpreted through this placement rule and is not
 parented by a producer-row concept.
 
-### Chooser-relevant capability placement
+### Backing Plan evaluation capability placement
 
-Backing/output-form capability relevant to retained-plan or posture evaluation
-is not treated as one undifferentiated provider-wide input.
+Backing/output-form capability relevant to parent-scoped Backing Plan
+evaluation is not treated as one undifferentiated provider-wide input.
 
 CamBANG keeps two levels of truth separate:
 
 - the **provider/runtime envelope capability**, which is the truthful outer set
   available from the current provider/runtime configuration
 - the **parent-context capability**, which is the capability of the specific
-  owning context that carries Native Payload Support truth for the operation
+  Native Payload Support Parent that carries the image-bearing truth for the
+  operation
 
-For chooser-relevant image-bearing work, the owning parent context is:
+For parent-scoped image-bearing work, the Native Payload Support Parent is:
 
 - `Stream` for stream-originated payload/backing operations
 - `AcquisitionSession` for capture-originated payload/backing operations
 
 This distinction is internal architecture truth. It does not require a new
-public Godot API surface and it must not be blurred with retained backing plan,
-retained backing truth, retained access truth, or measured access-cost
-evidence.
+public Godot API surface and it must not be blurred with the parent's Backing
+Plan, any result Backing State, result-facing Operation Support, or measured
+Access Evidence.
 
 ### Native Payload Support as a projection grouping concept
 

@@ -257,48 +257,51 @@ For synthetic stream results, current retained-primary `GPU_SURFACE` truth is
 determined by the emitted/retained GPU artifact itself, not by whether a
 sidecar CPU backing is also retained.
 
-### 6.x.3 Retained backing plan vs retained result truth
+### 6.x.3 Backing Plan, Backing State, Operation Support, and Access Evidence
 
-CamBANG separates pre-retention intent from retained result truth.
+CamBANG separates parent-scoped retention planning from the truth carried by a
+retained result.
 
-A retained backing plan is an internal production/retention intent record. It
-captures the backing forms CamBANG intends to retain for a stream or capture
-artifact before retained result truth is populated. It is not public API,
-provider API, snapshot schema, a route table, or a per-call route-economics
-mechanism.
+**Backing Plan** is the internal production/retention plan owned by the
+relevant Native Payload Support Parent. It states which backing forms CamBANG
+intends to retain for that parent's image-bearing work. During bounded
+evaluation this may temporarily exist as both a Requested Plan and a Steady
+Plan. It is not public API, provider API, snapshot schema, a route table, or a
+per-call route-economics mechanism.
 
-Retained backing truth is the concrete backing state actually associated with a
+**Backing State** is the concrete backing state actually associated with a
 retained result or capture member.
 
-Retained access truth is operation-level access capability for the retained
+**Operation Support** is operation-level support for that retained
 artifact/member, expressed using `ResultCapability` for operations such as
-`display_view`, `to_image`, and `encoded_bytes`. It is populated from retained
-backing truth and implemented access paths. Godot result capability methods
-consume retained access truth, while materialization methods remain defensive and
+`display_view`, `to_image`, and `encoded_bytes`. It is populated from current
+Backing State and implemented access paths. Godot result capability methods
+consume Operation Support, while materialization methods remain defensive and
 verify the concrete backing/path they use.
 
-Godot-layer result-access timing evidence, when exposed through Synthetic dev
-metrics, is evidence collected at the real retained-result operation seam. It is
-not retained access truth, not `CamBANGStateSnapshot`, not schema v1, and not an
-input to state publication. Bounded internal calibration uses this evidence for
-live retained artifacts/postures, and records a refined result-facing
-classification beside provisional retained access truth. Public user-triggered
-`get_display_view()`, `to_image()`, and `to_image_member()` calls remain
-instrumented, but they are not the normal recalibration heartbeat; calibration
-renewal belongs to the live applied production-posture boundary.
+**Access Evidence**, when exposed through Synthetic dev metrics, is evidence
+collected at the real retained-result operation seam. It is not Operation
+Support, not `CamBANGStateSnapshot`, not schema v1, and not an input to state
+publication. Bounded internal calibration uses this evidence for live retained
+artifacts/postures and records a refined result-facing classification beside
+provisional Operation Support. Public user-triggered `get_display_view()`,
+`to_image()`, and `to_image_member()` calls remain instrumented, but they are
+not the normal recalibration heartbeat; calibration renewal belongs to the live
+applied production-posture boundary.
 
-Chooser-facing capability input is kept separate from all of the above.
-CamBANG first resolves the truthful outer provider/runtime envelope, then
-resolves the parent-context capability for the owning `Stream` or
-`AcquisitionSession` context. That parent-context capability is the chooser
-input; it is not itself a retained backing plan, retained backing truth,
-retained access truth, or measured evidence record.
+Parent-scoped evaluation input is kept separate from all of the above. CamBANG
+first resolves the truthful outer provider/runtime envelope, then resolves the
+parent-context capability for the owning `Stream` or `AcquisitionSession`. That
+parent-context capability is input to parent-scoped Backing Plan evaluation; it
+is not itself Backing Plan, Backing State, Operation Support, or Access
+Evidence.
 
-When ordinary still capture runs under a live active-stream structure, capture
-consumes the active elevated stream policy instead of reopening a coarse
-independent lane for the same live structure. Capture-side independent chooser
-evaluation remains valid for capture-parent contexts that are not currently
-covered by an active stream-owned elevated policy.
+Capture-side Backing Plan evaluation remains owned by the capture-side Native
+Payload Support Parent. When a real `AcquisitionSession` exists, it owns the
+capture Backing Plan decision. When capture admission must happen before a real
+session exists, provisional priming or seed reuse may supply the first
+Requested Plan, but real `AcquisitionSession` ownership takes over once the
+session is truthfully realized.
 
 ### 6.x.4 Unsupported GPU-only realization
 
@@ -692,8 +695,8 @@ In particular:
   single-primary-payload rule
 
 `to_image()` remains explicit CPU materialization. Its reported capability is
-retained access truth populated from the current retained backing truth and the
-implemented access paths, not a per-call route-economics recalculation.
+Operation Support populated from the current Backing State and the implemented
+access paths, not a per-call route-economics recalculation.
 
 Recommended first-pass capability/cost states:
 
@@ -827,7 +830,7 @@ path because it is the real retained-result access seam. CPU-packed stream
 results and GPU-primary results with a current retained CPU sidecar are expected
 to calibrate within the cheap access class; GPU-only stream results without
 materialization remain unsupported; GPU-only stream results with the Synthetic
-retained backing materializer remain expensive. Invalidation/renewal belongs to
+GPU backing materializer remain expensive. Invalidation/renewal belongs to
 live applied production-posture changes as described in 11.7.
 
 ## 11.6 Capture-result guardrail
@@ -840,25 +843,24 @@ A Capture Result is the device-level still-capture result at the public result s
 ## 11.7 Access-cost evidence guardrail
 
 Real access-cost evidence exists to inform actual retained-result
-capability/cost classification for a supported access path. It does not change
-snapshot truth, support truth, direct retained-availability truth, or original
-retained-artifact truth.
+Operation Support classification for a supported access path. It does not
+change snapshot truth, structural support/availability truth, direct retained
+target-representation availability truth, or the underlying Backing State.
 
-Provisional result-facing classification starts from structural retained access
-truth. `UNSUPPORTED` remains structural support/availability truth. `READY`
+Provisional result-facing classification starts from structural Operation
+Support. `UNSUPPORTED` remains structural support/availability truth. `READY`
 remains operation-specific direct retained target-representation availability
 truth. Measured evidence is used only to refine supported non-ready paths,
 primarily the split between `CHEAP` and `EXPENSIVE`.
 
-Evidence must be tied to the current live applied production posture and the
-realized retained backing/access path. It must not be treated as a generic
-property of a method name, and it must not be treated as repeating-stream-only
-evidence.
+Evidence must be tied to the current live applied Backing Plan and the realized
+Backing State/access path. It must not be treated as a generic property of a
+method name, and it must not be treated as repeating-stream-only evidence.
 
-When a new live applied stream or still-capture production posture changes the
-realized retained backing/access domain, prior evidence for that domain is
-stale. Renewal should be launched from that live-acceptance boundary rather than
-from first user-visible `to_image()` demand.
+When a new live applied stream or still-capture Backing Plan changes the
+realized Backing State/access domain, prior evidence for that domain is stale.
+Renewal should be launched from that live-acceptance boundary rather than from
+first user-visible `to_image()` demand.
 
 Evidence gathering must remain at the real result-access seam. It must not be
 interpreted as provider-local generation/staging cost, snapshot publication

@@ -189,6 +189,7 @@ struct CoreCaptureResultData {
 
   uint64_t capture_id = 0;
   uint64_t device_instance_id = 0;
+  uint64_t acquisition_session_id = 0;
 
   uint32_t image_width = 0;
   uint32_t image_height = 0;

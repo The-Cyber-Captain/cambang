@@ -419,6 +419,7 @@ enum class TryCloseDeviceStatus : uint8_t {
   void report_capture_retained_to_image_observation(
       uint64_t device_instance_id,
       uint64_t capture_id,
+      uint64_t acquisition_session_id_hint,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
       bool has_materialization_elapsed_ns,
@@ -605,12 +606,38 @@ private:
   void handle_capture_retained_to_image_observation_(
       uint64_t device_instance_id,
       uint64_t capture_id,
+      uint64_t acquisition_session_id_hint,
       uint64_t posture_id,
       ResultCapability provisional_to_image,
       bool has_materialization_elapsed_ns,
       uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
-      uint64_t normalized_cost_units);
+      uint64_t normalized_cost_units,
+      uint8_t deferred_retries_remaining = 0);
+  void enqueue_pending_capture_observation_(
+      uint64_t device_instance_id,
+      uint64_t capture_id,
+      uint64_t acquisition_session_id_hint,
+      uint64_t posture_id,
+      ResultCapability provisional_to_image,
+      bool has_materialization_elapsed_ns,
+      uint64_t materialization_elapsed_ns,
+      bool has_normalized_cost_units,
+      uint64_t normalized_cost_units,
+      uint8_t deferred_retries_remaining,
+      uint64_t not_before_ns);
+  void process_pending_capture_observations_(
+      uint64_t now_ns,
+      bool& has_next_delay,
+      uint64_t& next_delay_ns);
+  void mark_capture_retained_plan_state_orphaned_for_device_(
+      uint64_t device_instance_id,
+      uint64_t retire_after_ns);
+  size_t retire_expired_capture_retained_plan_orphans_(uint64_t now_ns);
+  void next_capture_retained_plan_orphan_retirement_delay_(
+      uint64_t now_ns,
+      bool& has_next_delay,
+      uint64_t& next_delay_ns) const;
   void account_display_demand_release_async_post_failure_(CoreThread::PostResult result) noexcept;
   std::vector<SharedCaptureResultData> curate_capture_result_set_accept_all_assembly_successful_(
       std::vector<SharedCaptureResultData> candidates) const;
@@ -698,6 +725,7 @@ private:
   struct RetainedPlanEvaluatorState {
     uint64_t device_instance_id = 0;
     uint64_t acquisition_session_id = 0;
+    uint64_t orphan_retire_after_ns = 0;
     BackingPlanEvaluationPrimaryFunction primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
     CapturePrimingSeedSignature capture_priming_seed_signature{};
@@ -711,10 +739,12 @@ private:
   struct RetainedPlanDecisionProvenance {
     uint64_t device_instance_id = 0;
     uint64_t acquisition_session_id = 0;
+    uint64_t orphan_retire_after_ns = 0;
     bool valid = false;
     bool from_evaluation = false;
     BackingPlanEvaluationPrimaryFunction primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+    CapturePrimingSeedSignature capture_priming_seed_signature{};
     CoreRetainedProductionPlan selected{};
     uint8_t candidate_count = 0;
     CoreRetainedProductionPlan candidate_sequence[3]{};
@@ -760,7 +790,21 @@ private:
     uint64_t capture_id = 0;
     uint64_t device_instance_id = 0;
   };
+  struct PendingCaptureObservation {
+    uint64_t device_instance_id = 0;
+    uint64_t capture_id = 0;
+    uint64_t acquisition_session_id_hint = 0;
+    uint64_t posture_id = 0;
+    ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
+    bool has_materialization_elapsed_ns = false;
+    uint64_t materialization_elapsed_ns = 0;
+    bool has_normalized_cost_units = false;
+    uint64_t normalized_cost_units = 0;
+    uint8_t deferred_retries_remaining = 0;
+    uint64_t not_before_ns = 0;
+  };
   std::map<uint64_t, std::map<uint64_t, CaptureStreamPreemptionRecord>> capture_stream_preemptions_by_device_;
+  std::deque<PendingCaptureObservation> pending_capture_observations_;
   std::deque<CoreThread::Task> requests_;
 
   enum class ShutdownPhase : uint8_t {

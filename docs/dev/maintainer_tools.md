@@ -130,19 +130,19 @@ The terse provider-audit checklist remains separately documented in:
 ```text
 docs/dev/provider_compliance_checklist.md
 ```
-## 4.x Synthetic provider output-form and retained-plan controls
+## 4.x Synthetic provider output-form and Backing Plan controls
 
 Synthetic provider backing advertisement reports the output forms available from
-the current runtime. Retained-plan policy chooses primary and auxiliary retention
-within that truthful set. Maintainer controls for Synthetic output-form and
-retained-plan behavior belong on truthful production paths and must not redefine
-provider-contract truth.
+the current runtime. Backing Plan policy chooses primary and auxiliary
+retention within that truthful set. Maintainer controls for Synthetic
+output-form and Backing Plan behavior belong on truthful production paths and
+must not redefine provider-contract truth.
 
 For backing-contract truth and result/payload semantics, use:
 
 - `docs/architecture/pixel_payload_and_result_contract.md`
 
-### 4.x.1 Synthetic producer output-form / retained-plan maintainer control
+### 4.x.1 Synthetic producer output-form / Backing Plan maintainer control
 
 This control is a maintainer/verification aid only. It is Synthetic-only, is not
 product or user runtime configuration, and does not affect platform-backed
@@ -179,7 +179,7 @@ providers or public Godot API.
     CPU
 
 Use this control for local validation of real result/backing/materialization
-routes and retained-plan behaviour. It must not be used to fabricate capability
+routes and Backing Plan behaviour. It must not be used to fabricate capability
 advertisement.
 
 ### 4.x.2 Synthetic parent-context capability downgrade controls

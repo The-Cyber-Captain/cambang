@@ -25,6 +25,7 @@ namespace cambang {
 
 
 struct SyntheticMetricsSnapshot {
+  uint64_t current_virtual_timeline_ns = 0;
   uint64_t total_emitted_frames = 0;
   uint64_t gpu_update_attempts = 0;
   uint64_t gpu_update_demand_skipped = 0;
@@ -127,7 +128,7 @@ public:
 
   ProviderResult shutdown() override;
 
-  void advance(uint64_t dt_ns);
+  void advance(uint64_t dt_ns, bool allow_paused_timeline_step = false);
 
   // Smoke/scenario-only helpers. These preserve the main runtime architecture
   // while allowing deterministic lifecycle edge cases to be exercised.
@@ -170,7 +171,7 @@ private:
   void timeline_activate_or_dispatch_(const SyntheticScheduledEvent& ev, bool allow_pending);
   bool timeline_destructive_prereq_ready_(const SyntheticScheduledEvent& ev, const char*& reason) const;
   bool timeline_is_destructive_primitive_(SyntheticEventType type) const;
-  void timeline_pump_();
+  void timeline_pump_(bool allow_paused_timeline_step = false);
   bool materialize_staged_canonical_scenario_(SyntheticTimelineScenario& out, std::vector<SyntheticStagedRigTopology>& rigs_out, std::string& error) const;
   static bool has_runtime_gpu_backing_path_() noexcept;
   ProducerBackingCapabilities query_stream_producer_capabilities_(
@@ -277,7 +278,8 @@ private:
   void destroy_stream_storage_(std::map<uint64_t, StreamState>::iterator it,
                                ProviderError stop_error,
                                bool emit_stop_event);
-  void close_device_storage_(std::map<uint64_t, DeviceState>::iterator it);
+  void close_device_storage_(std::map<uint64_t, DeviceState>::iterator it,
+                             const char* source);
 
   enum class CaptureTerminalKind : uint8_t {
     Completed,
@@ -298,6 +300,17 @@ private:
     uint64_t rig_id = 0;
     uint64_t generation = 0;
     std::vector<DeviceCaptureJob> device_jobs{};
+  };
+
+  struct CaptureAdmissionFailureInfo {
+    const char* reason = "unknown";
+    uint64_t device_instance_id = 0;
+    bool device_present = false;
+    bool device_open = false;
+    uint64_t acquisition_session_native_id = 0;
+    uint32_t acquisition_session_stream_refs = 0;
+    uint32_t acquisition_session_capture_refs = 0;
+    uint32_t acquisition_session_priming_refs = 0;
   };
 
   struct InFlightCaptureDevice {
@@ -322,7 +335,8 @@ private:
 
   ProviderResult validate_and_admit_capture_submission_locked_(
       const CaptureSubmission& submission,
-      CaptureSubmissionJob& out_job);
+      CaptureSubmissionJob& out_job,
+      CaptureAdmissionFailureInfo* failure_info);
   bool capture_shutdown_requested_() const noexcept;
   bool should_stop_capture_job_(uint64_t generation) const noexcept;
   void run_capture_submission_(CaptureSubmissionJob job);
@@ -335,6 +349,7 @@ private:
   void start_capture_thread_(const CaptureSubmissionJob& job);
   void join_finished_capture_threads_();
   void stop_and_join_capture_threads_();
+  void drain_paused_capture_descendants_for_host_();
   bool has_in_flight_capture_for_device_locked_(uint64_t device_instance_id) const;
 
 

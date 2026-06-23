@@ -743,7 +743,7 @@ bool SyntheticProvider::materialize_staged_canonical_scenario_(
   return true;
 }
 
-void SyntheticProvider::timeline_pump_() {
+void SyntheticProvider::timeline_pump_(bool allow_paused_timeline_step) {
   // Pump all events due at the current provider virtual time. A caller may reach
   // this through advance(0), which is intentionally meaningful for deterministic
   // deferred startup: already-due at_ns=0 events can dispatch without wall-clock
@@ -766,7 +766,7 @@ void SyntheticProvider::timeline_pump_() {
           self->triage_timeline_pump_max_ns_);
     }
   } pump_timing_scope{this, pump_t0};
-  if (!timeline_running_ || timeline_paused_) {
+  if (!timeline_running_ || (timeline_paused_ && !allow_paused_timeline_step)) {
     return;
   }
   const uint64_t now = clock_.now_ns();
@@ -1134,6 +1134,14 @@ ProviderResult SyntheticProvider::close_device(uint64_t device_instance_id) {
     }
   }
 
+  capture_latency_trace_printf(
+      "synthetic_close_device device_id=%llu source=api acquisition_session_id=%llu session_stream_refs=%u session_capture_refs=%u session_priming_refs=%u",
+      static_cast<unsigned long long>(device_instance_id),
+      static_cast<unsigned long long>(it->second.acquisition_session_native_id),
+      static_cast<unsigned>(it->second.acquisition_session_stream_refs),
+      static_cast<unsigned>(it->second.acquisition_session_capture_refs),
+      static_cast<unsigned>(it->second.acquisition_session_priming_refs));
+
   it->second.open = false;
   if (it->second.acquisition_session_native_id != 0) {
     emit_native_destroy_(it->second.acquisition_session_native_id);
@@ -1453,6 +1461,7 @@ ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmis
   const uint64_t admission_begin_ns = capture_latency_trace_now_ns();
   CaptureSubmissionJob job{};
   ProviderResult admission_result = ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
+  CaptureAdmissionFailureInfo failure_info{};
   uint64_t capture_lock_wait_ns = 0;
   uint64_t provider_lock_wait_ns = 0;
   uint64_t validation_ns = 0;
@@ -1466,11 +1475,12 @@ ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmis
     const uint64_t provider_lock_acquired_ns = capture_latency_trace_now_ns();
     provider_lock_wait_ns = provider_lock_acquired_ns - provider_lock_wait_begin_ns;
     const uint64_t validation_begin_ns = capture_latency_trace_now_ns();
-    admission_result = validate_and_admit_capture_submission_locked_(submission, job);
+    admission_result =
+        validate_and_admit_capture_submission_locked_(submission, job, &failure_info);
     validation_ns = capture_latency_trace_now_ns() - validation_begin_ns;
     if (!admission_result.ok()) {
       capture_latency_trace_printf(
-          "synthetic_admission capture_id=%llu rig_id=%llu origin=%u devices=%llu capture_lock_wait_us=%llu provider_lock_wait_us=%llu validation_us=%llu thread_create_us=0 thread_store_us=0 total_us=%llu ok=0 code=%u",
+          "synthetic_admission capture_id=%llu rig_id=%llu origin=%u devices=%llu capture_lock_wait_us=%llu provider_lock_wait_us=%llu validation_us=%llu thread_create_us=0 thread_store_us=0 total_us=%llu ok=0 code=%u reason=%s failure_device_id=%llu device_present=%u device_open=%u acquisition_session_id=%llu session_stream_refs=%u session_capture_refs=%u session_priming_refs=%u",
           static_cast<unsigned long long>(submission.capture_id),
           static_cast<unsigned long long>(submission.rig_id),
           static_cast<unsigned>(submission.origin),
@@ -1479,7 +1489,15 @@ ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmis
           static_cast<unsigned long long>(provider_lock_wait_ns / 1000ull),
           static_cast<unsigned long long>(validation_ns / 1000ull),
           static_cast<unsigned long long>((capture_latency_trace_now_ns() - admission_begin_ns) / 1000ull),
-          static_cast<unsigned>(admission_result.code));
+          static_cast<unsigned>(admission_result.code),
+          failure_info.reason ? failure_info.reason : "unknown",
+          static_cast<unsigned long long>(failure_info.device_instance_id),
+          failure_info.device_present ? 1u : 0u,
+          failure_info.device_open ? 1u : 0u,
+          static_cast<unsigned long long>(failure_info.acquisition_session_native_id),
+          static_cast<unsigned>(failure_info.acquisition_session_stream_refs),
+          static_cast<unsigned>(failure_info.acquisition_session_capture_refs),
+          static_cast<unsigned>(failure_info.acquisition_session_priming_refs));
       return admission_result;
     }
   }
@@ -1521,14 +1539,38 @@ ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmis
 
 ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     const CaptureSubmission& submission,
-    CaptureSubmissionJob& out_job) {
+    CaptureSubmissionJob& out_job,
+    CaptureAdmissionFailureInfo* failure_info) {
+  auto set_failure_info =
+      [&](const char* reason,
+          uint64_t device_instance_id,
+          const DeviceState* device_state) {
+        if (!failure_info) {
+          return;
+        }
+        failure_info->reason = reason;
+        failure_info->device_instance_id = device_instance_id;
+        failure_info->device_present = device_state != nullptr;
+        failure_info->device_open = device_state != nullptr && device_state->open;
+        failure_info->acquisition_session_native_id =
+            device_state ? device_state->acquisition_session_native_id : 0;
+        failure_info->acquisition_session_stream_refs =
+            device_state ? device_state->acquisition_session_stream_refs : 0;
+        failure_info->acquisition_session_capture_refs =
+            device_state ? device_state->acquisition_session_capture_refs : 0;
+        failure_info->acquisition_session_priming_refs =
+            device_state ? device_state->acquisition_session_priming_refs : 0;
+      };
   if (!initialized_ || shutting_down_ || capture_admission_closed_) {
+    set_failure_info("provider_not_accepting_captures", 0, nullptr);
     return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
   }
   if (submission.capture_id == 0 || submission.device_requests.empty()) {
+    set_failure_info("invalid_submission_shape", 0, nullptr);
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
   if (submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE && submission.rig_id == 0) {
+    set_failure_info("rig_submission_missing_rig_id", 0, nullptr);
     return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
   }
 
@@ -1542,33 +1584,43 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
   std::map<uint64_t, bool> seen_devices;
   for (const CaptureRequest& req : submission.device_requests) {
     if (req.capture_id != submission.capture_id || req.device_instance_id == 0 || req.width == 0 || req.height == 0) {
+      set_failure_info("invalid_request_shape", req.device_instance_id, nullptr);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     if (submission.origin == CaptureSubmissionOrigin::RIG_CAPTURE) {
       if (req.rig_id != submission.rig_id || req.rig_id == 0) {
+        set_failure_info("rig_request_mismatch", req.device_instance_id, nullptr);
         return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
       }
     } else if (req.rig_id != 0 || submission.rig_id != 0) {
+      set_failure_info("device_request_has_rig_fields", req.device_instance_id, nullptr);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     if (seen_devices.find(req.device_instance_id) != seen_devices.end()) {
+      set_failure_info("duplicate_device_in_submission", req.device_instance_id, nullptr);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     seen_devices.emplace(req.device_instance_id, true);
 
     auto dev_it = devices_.find(req.device_instance_id);
     if (dev_it == devices_.end() || !dev_it->second.open) {
+      const DeviceState* device_state =
+          dev_it == devices_.end() ? nullptr : &dev_it->second;
+      set_failure_info("device_not_open_during_precheck", req.device_instance_id, device_state);
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
 
     const uint32_t fmt = req.format_fourcc == 0 ? FOURCC_RGBA : req.format_fourcc;
     if (!(fmt == FOURCC_RGBA || fmt == FOURCC_BGRA)) {
+      set_failure_info("unsupported_capture_format", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
     }
     if (req.width > (std::numeric_limits<uint32_t>::max() / 4u)) {
+      set_failure_info("capture_dimensions_overflow", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     if (!is_valid_capture_still_image_bundle(req.still_image_bundle, supports_multi_image_still_sequence())) {
+      set_failure_info("invalid_still_image_bundle", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_INVALID_ARGUMENT);
     }
     const ProducerBackingCapabilities capture_truth =
@@ -1577,6 +1629,7 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
     const bool selected_mode_requires_gpu =
         cfg_.producer_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly;
     if (selected_mode_requires_gpu && !capture_truth.gpu_backed_available) {
+      set_failure_info("gpu_only_capture_not_supported", req.device_instance_id, &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
     }
 
@@ -1592,11 +1645,17 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
   for (DeviceCaptureJob& device_job : job.device_jobs) {
     auto dev_it = devices_.find(device_job.request.device_instance_id);
     if (dev_it == devices_.end() || !dev_it->second.open) {
+      const DeviceState* device_state =
+          dev_it == devices_.end() ? nullptr : &dev_it->second;
       for (const DeviceCaptureJob& retained : job.device_jobs) {
         if (retained.acquisition_session_id != 0) {
           release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
         }
       }
+      set_failure_info(
+          "device_not_open_during_retain",
+          device_job.request.device_instance_id,
+          device_state);
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
     const uint64_t retain_begin_ns = capture_latency_trace_now_ns();
@@ -1608,6 +1667,10 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
           release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
         }
       }
+      set_failure_info(
+          "capture_session_retain_failed",
+          device_job.request.device_instance_id,
+          &dev_it->second);
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
     device_job.acquisition_session_id = dev_it->second.acquisition_session_native_id;
@@ -1621,6 +1684,13 @@ ProviderResult SyntheticProvider::validate_and_admit_capture_submission_locked_(
           release_native_acquisition_session_for_capture_(retained.request.device_instance_id);
         }
       }
+      auto dev_it = devices_.find(device_job.request.device_instance_id);
+      const DeviceState* device_state =
+          dev_it == devices_.end() ? nullptr : &dev_it->second;
+      set_failure_info(
+          "duplicate_inflight_capture_key",
+          device_job.request.device_instance_id,
+          device_state);
       return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
     }
   }
@@ -2077,6 +2147,28 @@ void SyntheticProvider::join_finished_capture_threads_() {
   // hook for future executor maintenance; shutdown performs the deterministic join.
 }
 
+void SyntheticProvider::drain_paused_capture_descendants_for_host_() {
+  constexpr auto kDrainPollSleep = std::chrono::milliseconds(1);
+  constexpr uint64_t kDrainMaxWaitNs = 2'000'000'000ull;
+  const uint64_t wait_begin_ns = capture_latency_trace_now_ns();
+  while (true) {
+    advance(0, /*allow_paused_timeline_step=*/true);
+    bool any_in_flight = false;
+    {
+      std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+      any_in_flight = !in_flight_captures_.empty();
+    }
+    if (!any_in_flight) {
+      return;
+    }
+    if (shutting_down_ ||
+        capture_latency_trace_now_ns() - wait_begin_ns >= kDrainMaxWaitNs) {
+      return;
+    }
+    std::this_thread::sleep_for(kDrainPollSleep);
+  }
+}
+
 void SyntheticProvider::stop_and_join_capture_threads_() {
   std::vector<std::thread> threads;
   {
@@ -2169,10 +2261,19 @@ void SyntheticProvider::destroy_stream_storage_(std::map<uint64_t, StreamState>:
   streams_.erase(it);
 }
 
-void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::iterator it) {
+void SyntheticProvider::close_device_storage_(std::map<uint64_t, DeviceState>::iterator it,
+                                              const char* source) {
   if (it == devices_.end()) {
     return;
   }
+  capture_latency_trace_printf(
+      "synthetic_close_device device_id=%llu source=%s acquisition_session_id=%llu session_stream_refs=%u session_capture_refs=%u session_priming_refs=%u",
+      static_cast<unsigned long long>(it->second.device_instance_id),
+      source ? source : "unknown",
+      static_cast<unsigned long long>(it->second.acquisition_session_native_id),
+      static_cast<unsigned>(it->second.acquisition_session_stream_refs),
+      static_cast<unsigned>(it->second.acquisition_session_capture_refs),
+      static_cast<unsigned>(it->second.acquisition_session_priming_refs));
   capture_pause_depth_by_device_.erase(it->second.device_instance_id);
   if (it->second.acquisition_session_native_id != 0) {
     emit_native_destroy_(it->second.acquisition_session_native_id);
@@ -2209,7 +2310,7 @@ ProviderResult SyntheticProvider::disconnect_device_for_test(uint64_t device_ins
     }
   }
 
-  close_device_storage_(dit);
+  close_device_storage_(dit, "disconnect_device_for_test");
   return ProviderResult::success();
 }
 
@@ -2235,7 +2336,7 @@ ProviderResult SyntheticProvider::force_close_device_for_test(uint64_t device_in
     }
   }
 
-  close_device_storage_(dit);
+  close_device_storage_(dit, "force_close_device_for_test");
   return ProviderResult::success();
 }
 
@@ -2435,7 +2536,15 @@ ProviderResult SyntheticProvider::advance_timeline_for_host(uint64_t dt_ns) {
   if (cfg_.timing_driver != TimingDriver::VirtualTime) {
     return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
   }
-  advance(dt_ns);
+  advance(dt_ns, /*allow_paused_timeline_step=*/true);
+  if (timeline_paused_) {
+    // In paused/manual stepping, capture result production is still real work on
+    // background threads. Drain already-triggered capture descendants here so
+    // host-driven virtual-time verification does not become platform-speed
+    // sensitive, while leaving later evaluator-only convergence to explicit
+    // caller-provided budget.
+    drain_paused_capture_descendants_for_host_();
+  }
   return ProviderResult::success();
 }
 
@@ -2482,7 +2591,7 @@ ProviderResult SyntheticProvider::shutdown() {
       destroy_stream_storage_(streams_.begin(), ProviderError::OK, false);
     }
     while (!devices_.empty()) {
-      close_device_storage_(devices_.begin());
+      close_device_storage_(devices_.begin(), "shutdown");
     }
 
     // Clear any pending timeline events.
@@ -3068,6 +3177,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
 
 SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() const {
   SyntheticMetricsSnapshot out{};
+  out.current_virtual_timeline_ns = clock_.now_ns();
   uint64_t pattern_base_copy_total_ns = 0;
   uint64_t pattern_overlay_total_ns = 0;
   uint64_t gpu_upload_copy_calls = 0;
@@ -3109,7 +3219,7 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   return out;
 }
 
-void SyntheticProvider::advance(uint64_t dt_ns) {
+void SyntheticProvider::advance(uint64_t dt_ns, bool allow_paused_timeline_step) {
   const uint64_t advance_begin_ns = capture_latency_trace_now_ns();
   if (!initialized_ || shutting_down_) {
     return;
@@ -3118,11 +3228,14 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   std::unique_lock<std::mutex> state_lock(provider_state_mutex_);
   const uint64_t state_lock_acquired_ns = capture_latency_trace_now_ns();
 
-  // For timeline-role synthetic operation, a host pause must be a true
-  // scenario-time pause. Advancing the virtual clock while paused causes due
-  // events to accumulate and then burst on unpause, which breaks checkpointed
-  // host/timeline synchronization.
-  if (cfg_.synthetic_role == SyntheticRole::Timeline && timeline_running_ && timeline_paused_) {
+  // Ordinary runtime ticking must respect timeline pause. Explicit host-driven
+  // advance_timeline() stepping is the exception: it advances scenario time
+  // deterministically while leaving the paused flag in place so automatic
+  // ticking remains suspended.
+  if (cfg_.synthetic_role == SyntheticRole::Timeline &&
+      timeline_running_ &&
+      timeline_paused_ &&
+      !allow_paused_timeline_step) {
     const uint64_t before_unlock_ns = capture_latency_trace_now_ns();
     capture_latency_trace_emit_or_suppress_advance(
         dt_ns,
@@ -3144,7 +3257,7 @@ void SyntheticProvider::advance(uint64_t dt_ns) {
   g_capture_latency_due_frame_stats = CaptureLatencyDueFrameStats{};
   clock_.advance(dt_ns);
   if (cfg_.synthetic_role == SyntheticRole::Timeline) {
-    timeline_pump_();
+    timeline_pump_(allow_paused_timeline_step);
     if (triage_trace_enabled_ && !triage_timeline_path_banner_emitted_) {
       synthetic_triage_printf("[CamBANG][SyntheticTriage] timeline-advance-path-reached");
       triage_timeline_path_banner_emitted_ = true;

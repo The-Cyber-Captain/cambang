@@ -961,40 +961,47 @@ ProviderResult ProviderBroker::set_timeline_scenario_paused_for_host(bool paused
 }
 
 ProviderResult ProviderBroker::advance_timeline_for_host(uint64_t dt_ns) {
-  std::vector<SyntheticScheduledEvent> deferred_dispatches;
-  std::function<void(const SyntheticScheduledEvent&)> hook;
+  constexpr uint32_t kMaxCurrentTimeDrainPasses = 16;
   ProviderResult result = ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
+  uint64_t step_dt_ns = dt_ns;
 
-  {
-    std::lock_guard<std::mutex> lock(active_provider_mutex_);
-    ProviderResult pr = ensure_active_or_err_();
-    if (!pr.ok()) {
-      return pr;
-    }
+  for (uint32_t pass = 0; pass < kMaxCurrentTimeDrainPasses; ++pass) {
+    std::vector<SyntheticScheduledEvent> deferred_dispatches;
+    std::function<void(const SyntheticScheduledEvent&)> hook;
+
+    {
+      std::lock_guard<std::mutex> lock(active_provider_mutex_);
+      ProviderResult pr = ensure_active_or_err_();
+      if (!pr.ok()) {
+        return pr;
+      }
 #if defined(CAMBANG_ENABLE_SYNTHETIC) && CAMBANG_ENABLE_SYNTHETIC
-    if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
-      {
-        std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
-        deferring_synthetic_timeline_dispatches_ = true;
-        deferred_synthetic_timeline_dispatches_.clear();
+      if (auto* syn = dynamic_cast<SyntheticProvider*>(active_.get())) {
+        {
+          std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
+          deferring_synthetic_timeline_dispatches_ = true;
+          deferred_synthetic_timeline_dispatches_.clear();
+        }
+        result = syn->advance_timeline_for_host(step_dt_ns);
+        {
+          std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
+          deferred_dispatches.swap(deferred_synthetic_timeline_dispatches_);
+          deferring_synthetic_timeline_dispatches_ = false;
+          hook = synthetic_timeline_request_dispatch_hook_;
+        }
       }
-      result = syn->advance_timeline_for_host(dt_ns);
-      {
-        std::lock_guard<std::mutex> dispatch_lock(synthetic_timeline_dispatch_mutex_);
-        deferred_dispatches.swap(deferred_synthetic_timeline_dispatches_);
-        deferring_synthetic_timeline_dispatches_ = false;
-        hook = synthetic_timeline_request_dispatch_hook_;
-      }
-    }
 #endif
-  }
+    }
 
-  if (hook) {
+    if (!hook || deferred_dispatches.empty()) {
+      return result;
+    }
     for (const auto& ev : deferred_dispatches) {
       hook(ev);
     }
+    step_dt_ns = 0;
   }
-  (void)dt_ns;
+
   return result;
 }
 

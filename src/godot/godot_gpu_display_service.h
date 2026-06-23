@@ -13,7 +13,7 @@ namespace cambang {
 // Internal Godot-side display adapter resolver/factory for retained GPU stream
 // views. The service is deliberately non-owning: it does not cache or retain
 // Texture2D refs, Godot RIDs, or backend-native handles. Current synthetic GPU
-// display resolution still uses the legacy retained backing artifact as the
+// display resolution still uses the legacy GPU backing artifact as the
 // compatibility behavior carrier; RetainedGpuBackingDescriptor is the
 // provider-neutral scalar metadata seam for future descriptor/platform-backed
 // activation. A descriptor with backing_id == 0 must not be treated as valid

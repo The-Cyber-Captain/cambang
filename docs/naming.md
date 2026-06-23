@@ -37,19 +37,39 @@ maintainer-authored validation procedures.
 
 ------------------------------------------------------------------------
 
-## 0.1 Terminology guardrail: retained backing and access truth
+## 0.1 Terminology guardrail: Backing Plan evaluation
 
-Use **retained backing plan** for the internal pre-retention intent record that
-states which backing forms CamBANG intends to retain. Do not describe this as a
-route planner, route table, route outcome descriptor, provider capability
-surface, format negotiation surface, or per-call route-economics mechanism.
+Use **Backing Plan** for the internal parent-scoped production/retention plan
+that states which backing forms CamBANG intends to retain for image-bearing
+work. A Backing Plan belongs to a **Native Payload Support Parent**. It is not
+a provider-capability surface, format-negotiation surface, route table, or
+per-call route-economics mechanism.
 
-Use **retained backing truth** for the concrete backing state actually associated
-with a retained result or capture member.
+Use **Native Payload Support Parent** for the owner of parent-scoped Backing
+Plan evaluation:
 
-Use **retained access truth** for operation-level access capability on that
-retained artifact/member, expressed with `ResultCapability` for operations such
-as `display_view`, `to_image`, and `encoded_bytes`.
+- `Stream` for stream-originated payload/backing work
+- `AcquisitionSession` for capture-originated payload/backing work
+
+Use **Requested Plan** for the currently applied or probed Backing Plan during
+an evaluation epoch.
+
+Use **Steady Plan** for the settled winning Backing Plan for that parent.
+
+Use **Backing State** for the concrete backing state actually associated with a
+retained result or capture member.
+
+Use **Operation Support** for operation-level support on that retained
+artifact/member, expressed with `ResultCapability` for operations such as
+`display_view`, `to_image`, and `encoded_bytes`.
+
+Use **Access Evidence** for timing/measurement evidence gathered from real
+public retained-result operations. This evidence can refine supported non-ready
+Operation Support and inform bounded parent-scoped Backing Plan evaluation, but
+it is not snapshot truth.
+
+Older source identifiers may still carry the earlier retained-family names
+during migration, but canonical prose should use the terms above.
 
 Use **primary backing** for the principal retained representation that determines
 `payload_kind`. Use **sidecar backing** for an associated retained representation
@@ -572,5 +592,12 @@ support records does not redefine the Godot-facing result/object vocabulary.
 - **Detached**: a branch no longer attached to the active tree but still present due to teardown/retention.
 - **StreamIntent**: purpose of a repeating stream (`PREVIEW` or `VIEWFINDER`).
 - **Native Payload Support**: projection grouping concept for provider-owned native support entities whose lifetime/release matters for payload/backing truth.
+- **Native Payload Support Parent**: the parent owner of image-bearing Backing Plan evaluation (`Stream` or `AcquisitionSession`).
+- **Backing Plan**: the internal parent-scoped production/retention plan for retained backing forms.
+- **Requested Plan**: the currently applied or probed Backing Plan during evaluation.
+- **Steady Plan**: the settled winning Backing Plan for a parent.
+- **Backing State**: the concrete retained backing state on a result or capture member.
+- **Operation Support**: result-facing operation support expressed through `ResultCapability`.
+- **Access Evidence**: measured evidence from real public retained-result operations.
 
 - Snapshot still-capture profile truth uses nested `capture_profile.still.{version,width,height,format,still_image_bundle}` on `DeviceState` and `AcquisitionSessionState` (latched per-session context truth).

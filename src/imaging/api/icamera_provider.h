@@ -121,7 +121,8 @@ public:
     return ProducerBackingCapabilities{false, false};
   }
 
-  // Internal parent-context capability truth used by chooser/evaluator logic.
+  // Internal parent-context capability truth used by parent-scoped backing-plan
+  // evaluation.
   // These default to the provider/runtime envelope above; providers that can
   // narrow a specific owning context without changing the truthful outer
   // envelope should override them.
@@ -182,7 +183,7 @@ public:
       const PictureConfig& picture) = 0;
   virtual ProviderResult stop_stream(uint64_t stream_id) = 0;
 
-  // Narrow internal seam for Core-owned retained-plan evaluation.
+  // Narrow internal seam for Core-owned parent-scoped backing-plan evaluation.
   // A successful return commits the requested retained-production plan for
   // subsequent frames from this created stream; providers must not emit a frame
   // synchronously from this call.

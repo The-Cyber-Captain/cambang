@@ -8,6 +8,7 @@
 #include "godot/result_access_cost_evidence.h"
 #include "godot/retained_result_access_calibration.h"
 #include "godot/synthetic_gpu_backing_bridge.h"
+#include "godot/godot_gpu_display_service.h"
 #include "godot/cambang_rig.h"
 
 #include <godot_cpp/core/class_db.hpp>
@@ -1197,12 +1198,14 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  // Capture-only access paths can outlive the brief live AcquisitionSession
-  // snapshot presence that the per-tick background calibrator relies on. Run
-  // the retained-result calibration here as well so dev/verification evidence
-  // remains available when a capture result is fetched through the public
-  // object path, without mutating Core chooser state from this const getter.
+  // Capture-only public access is itself decision-driving evidence for capture
+  // parent evaluation, but the public getter must still produce immediate
+  // evidence without inheriting provider settle-delay gating from the live
+  // background sweep. Calibrate first for evidence, then separately report the
+  // resulting observation into Core.
   retained_result_access_calibration::calibrate_capture_result(data, nullptr);
+  retained_result_access_calibration::report_capture_result_observation(
+      data, const_cast<CoreRuntime*>(&runtime_));
   godot::Ref<CamBANGCaptureResult> out;
   out.instantiate();
   out->set_data(std::move(data));
@@ -1216,6 +1219,8 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
   for (const SharedCaptureResultData& result : results) {
     retained_result_access_calibration::calibrate_capture_result(result, nullptr);
+    retained_result_access_calibration::report_capture_result_observation(
+        result, const_cast<CoreRuntime*>(&runtime_));
   }
   godot::Ref<CamBANGCaptureResultSet> out;
   out.instantiate();
@@ -1635,6 +1640,27 @@ bool CamBANGServer::_consume_latest_core_snapshot() {
     }
   }
 
+  if (latest_) {
+    std::unordered_set<uint64_t> next_stream_ids;
+    next_stream_ids.reserve(snap->streams.size());
+    for (const StreamState& stream : snap->streams) {
+      if (stream.stream_id != 0) {
+        next_stream_ids.insert(stream.stream_id);
+      }
+    }
+
+    for (const StreamState& prior_stream : latest_->streams) {
+      if (prior_stream.stream_id == 0) {
+        continue;
+      }
+      if (next_stream_ids.find(prior_stream.stream_id) != next_stream_ids.end()) {
+        continue;
+      }
+      godot_gpu_display_invalidate_stream(prior_stream.stream_id);
+      CamBANGStreamResult::remove_live_stream_cpu_display_view(prior_stream.stream_id);
+    }
+  }
+
   latest_ = snap;
   _reconcile_endpoint_lifecycle_from_snapshot(*snap);
 
@@ -1809,6 +1835,7 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
     return godot::Variant();
   }
   godot::Dictionary d;
+  d["current_virtual_timeline_ns"] = static_cast<uint64_t>(snap.current_virtual_timeline_ns);
   d["total_emitted_frames"] = static_cast<uint64_t>(snap.total_emitted_frames);
   d["gpu_update_attempts"] = static_cast<uint64_t>(snap.gpu_update_attempts);
   d["gpu_update_demand_skipped"] = static_cast<uint64_t>(snap.gpu_update_demand_skipped);

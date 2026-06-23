@@ -11,6 +11,8 @@ void install_synthetic_gpu_backing_godot_bridge();
 void uninstall_synthetic_gpu_backing_godot_bridge();
 
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing);
+void synthetic_gpu_backing_invalidate_live_display_wrappers_for_stream(uint64_t stream_id);
+void synthetic_gpu_backing_invalidate_all_live_display_wrappers();
 void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop();
 godot::Ref<godot::Image> synthetic_gpu_backing_materialize_to_image(const std::shared_ptr<void>& backing);
 

@@ -47,9 +47,10 @@ static bool gpu_trace_enabled() noexcept {
 
 
 struct SharedDisplayTextureRidState final {
-  std::mutex mutex;
+  mutable std::mutex mutex;
   godot::RID rd_texture;
   bool abandoned_after_runtime_stop = false;
+  bool invalidated = false;
 
   explicit SharedDisplayTextureRidState(const godot::RID& rid) : rd_texture(rid) {}
 
@@ -67,6 +68,16 @@ struct SharedDisplayTextureRidState final {
     abandoned_after_runtime_stop = true;
   }
 
+  void mark_invalidated() {
+    std::lock_guard<std::mutex> lock(mutex);
+    invalidated = true;
+  }
+
+  bool draw_allowed() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return !invalidated && rd_texture.is_valid();
+  }
+
   void release_now() {
     godot::RID rid;
     bool abandon_release = false;
@@ -75,6 +86,7 @@ struct SharedDisplayTextureRidState final {
       rid = rd_texture;
       rd_texture = godot::RID();
       abandon_release = abandoned_after_runtime_stop;
+      invalidated = true;
     }
     if (!rid.is_valid() || abandon_release) {
       return;
@@ -356,7 +368,7 @@ void DeferredDisplayTexture2DRD::_draw(
     const godot::Vector2& pos,
     const godot::Color& modulate,
     bool transpose) const {
-  if (texture_.is_valid()) {
+  if (texture_.is_valid() && state_ && state_->draw_allowed()) {
     texture_->draw(to_canvas_item, pos, modulate, transpose);
   }
 }
@@ -367,7 +379,7 @@ void DeferredDisplayTexture2DRD::_draw_rect(
     bool tile,
     const godot::Color& modulate,
     bool transpose) const {
-  if (texture_.is_valid()) {
+  if (texture_.is_valid() && state_ && state_->draw_allowed()) {
     texture_->draw_rect(to_canvas_item, rect, tile, modulate, transpose);
   }
 }
@@ -379,7 +391,7 @@ void DeferredDisplayTexture2DRD::_draw_rect_region(
     const godot::Color& modulate,
     bool transpose,
     bool clip_uv) const {
-  if (texture_.is_valid()) {
+  if (texture_.is_valid() && state_ && state_->draw_allowed()) {
     texture_->draw_rect_region(to_canvas_item, rect, src_rect, modulate, transpose, clip_uv);
   }
 }
@@ -923,6 +935,7 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
   std::map<uint64_t, uint64_t> counts_by_stream_id;
   for (const LiveDisplayWrapperBorrow& borrow : borrows) {
     if (borrow.rid_state) {
+      borrow.rid_state->mark_invalidated();
       borrow.rid_state->mark_abandoned_after_runtime_stop();
     }
     ++counts_by_stream_id[borrow.stream_id];
@@ -939,6 +952,29 @@ void synthetic_gpu_backing_warn_and_abandon_live_display_wrappers_before_stop() 
                                           static_cast<uint64_t>(stream_id),
                                           " wrapper_borrow_count=",
                                           static_cast<uint64_t>(borrow_count));
+  }
+}
+
+void synthetic_gpu_backing_invalidate_live_display_wrappers_for_stream(uint64_t stream_id) {
+  if (stream_id == 0) {
+    return;
+  }
+  const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
+  for (const LiveDisplayWrapperBorrow& borrow : borrows) {
+    if (borrow.stream_id != stream_id || !borrow.rid_state) {
+      continue;
+    }
+    borrow.rid_state->mark_invalidated();
+  }
+}
+
+void synthetic_gpu_backing_invalidate_all_live_display_wrappers() {
+  const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
+  for (const LiveDisplayWrapperBorrow& borrow : borrows) {
+    if (!borrow.rid_state) {
+      continue;
+    }
+    borrow.rid_state->mark_invalidated();
   }
 }
 

@@ -3,6 +3,7 @@
 #include <string>
 
 #include "core/core_runtime.h"
+#include "imaging/api/capture_latency_trace_diagnostics.h"
 #include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
@@ -48,6 +49,12 @@ void dispatch_timeline_request_to_core(const SyntheticScheduledEvent& ev, CoreRu
       break;
     }
     case SyntheticEventType::CloseDevice: {
+      char buffer[128];
+      std::snprintf(buffer,
+                    sizeof(buffer),
+                    "timeline_close_device_submit device_instance_id=%llu",
+                    static_cast<unsigned long long>(ev.device_instance_id));
+      capture_latency_trace_diagnostics::print_line(buffer);
       const TryCloseDeviceStatus rc = runtime.try_close_device(ev.device_instance_id);
       if (rc != TryCloseDeviceStatus::OK) {
         timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=submit_%s",

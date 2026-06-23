@@ -75,6 +75,15 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Uses dedicated external scenario fixture `scenarios/rig_capture_result_basic.json`.
   - Fixture topology: six devices A-F; Rig A = A+E; Rig B = B; Rig C = C+F; Device D standalone.
   - Capture remains API-driven via `CamBANGRig.trigger_capture()` (not scenario timeline-triggered), and verification asserts the object-level `CaptureResultSet` contains exactly Rig A members.
+- `scenes/568_backing_plan_evaluation_verify.tscn`
+  - Canonical backing-plan evaluation verifier; supersedes legacy Scene 68 as the focused automatable behavioral check for this topic.
+  - Proves stream-parent and capture-parent evaluation scoping, access-only evidence seeding without public `to_image()` calls from the scene itself, stop/reset clearing, and a paused `advance_timeline(...)` edge path with exact-same-time device+stream realization plus teardown/recreation cleanup.
+  - Its paused/clocked path spends explicit virtual-time budget for stream-evaluation completion; it does not rely on `advance_timeline(...)` to hide evaluator quiescence behind a single host step.
+  - Uses dedicated external scenario fixtures:
+    - `scenarios/568_backing_plan_single_access_live.json`
+    - `scenarios/568_backing_plan_dual_live.json`
+    - `scenarios/568_backing_plan_edge_clocked.json`
+  - Expected pass string: `step <n> OK: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified`
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -111,6 +120,7 @@ godot4 --headless --path . --scene res://scenes/66_public_lifecycle_verify.tscn 
 godot4 --headless --path . --scene res://scenes/67_status_panel_scenario_runtime.tscn --quit-after 10
 godot4 --headless --path . --scene res://scenes/70_result_retrieval_verification.tscn --quit-after 20
 godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verification.tscn --quit-after 20
+godot4 --headless --path . --scene res://scenes/568_backing_plan_evaluation_verify.tscn --quit-after 1000
 ```
 
 PowerShell helper for local/Codex runs:
@@ -150,12 +160,12 @@ This is intended to keep Codex/token usage bounded: inspect `summary.jsonl` firs
 Android export/deploy can use the same launcher and log bucketing:
 
 ```powershell
-.\run_godot.ps1 `
+  .\run_godot.ps1 `
   -RunPlatform android `
-  -Scene res://scenes/68_inner_evidence_reset_verify.tscn `
+  -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
   -CaptureLogs `
-  -TimeoutSec 15 `
-  -ExpectedOkPattern "step\s+\d+\s+OK:\s+posture evaluator lifecycle and retained timing evidence verified" `
+  -TimeoutSec 25 `
+  -ExpectedOkPattern "step\s+\d+\s+OK:\s+backing-plan evaluation lifecycle, scoping, and clocked cleanup verified" `
   -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
 ```
 

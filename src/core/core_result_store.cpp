@@ -693,6 +693,7 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   auto capture_result = std::make_shared<CoreCaptureResultData>();
   capture_result->capture_id = frame.capture_id;
   capture_result->device_instance_id = frame.device_instance_id;
+  capture_result->acquisition_session_id = frame.acquisition_session_id;
   capture_result->image_width = frame.width;
   capture_result->image_height = frame.height;
   capture_result->image_format_fourcc = frame.format_fourcc;

@@ -26,6 +26,9 @@ namespace cambang {
 namespace {
 
 constexpr uint64_t kNsPerMs = 1000000ull;
+constexpr uint64_t kCaptureObservationRetryDelayNs = 1'000'000ull;
+constexpr uint64_t kCaptureRetainedPlanOrphanRetentionWindowNs =
+    5ull * 1000ull * 1000ull * 1000ull;
 
 CoreRetainedProductionPlan make_retained_plan(
     CoreProductionPostureShape posture) noexcept {
@@ -706,6 +709,8 @@ CoreRuntime::build_decision_provenance_(
   provenance.valid = selected.valid;
   provenance.from_evaluation = true;
   provenance.primary_function = state.primary_function;
+  provenance.capture_priming_seed_signature =
+      state.capture_priming_seed_signature;
   provenance.selected = selected;
   provenance.candidate_count = state.candidate_count;
   for (uint8_t i = 0; i < state.candidate_count; ++i) {
@@ -1006,31 +1011,36 @@ void CoreRuntime::report_stream_retained_display_view_observation(
 void CoreRuntime::report_capture_retained_to_image_observation(
     uint64_t device_instance_id,
     uint64_t capture_id,
+    uint64_t acquisition_session_id_hint,
     uint64_t posture_id,
     ResultCapability provisional_to_image,
     bool has_materialization_elapsed_ns,
     uint64_t materialization_elapsed_ns,
     bool has_normalized_cost_units,
     uint64_t normalized_cost_units) {
+  constexpr uint8_t kCaptureObservationDeferredRetryCount = 4;
   const CoreThread::PostResult pr = try_post(
-      [this,
-       device_instance_id,
-       capture_id,
-       posture_id,
-       provisional_to_image,
-       has_materialization_elapsed_ns,
+       [this,
+        device_instance_id,
+        capture_id,
+        acquisition_session_id_hint,
+        posture_id,
+        provisional_to_image,
+        has_materialization_elapsed_ns,
        materialization_elapsed_ns,
        has_normalized_cost_units,
        normalized_cost_units]() {
         handle_capture_retained_to_image_observation_(
             device_instance_id,
             capture_id,
+            acquisition_session_id_hint,
             posture_id,
             provisional_to_image,
             has_materialization_elapsed_ns,
             materialization_elapsed_ns,
             has_normalized_cost_units,
-            normalized_cost_units);
+            normalized_cost_units,
+            kCaptureObservationDeferredRetryCount);
       });
   (void)pr;
 }
@@ -1231,6 +1241,15 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
   resolved.key.kind = CaptureRetainedPlanParentKey::Kind::CapturePriming;
   resolved.key.id = device_instance_id;
 
+  const auto priming_state_it =
+      capture_parent_priming_states_.find(device_instance_id);
+  const bool priming_hold_active =
+      priming_state_it != capture_parent_priming_states_.end() &&
+      priming_state_it->second.provider_hold_active;
+  if (priming_hold_active && !device_has_any_stream_(device_instance_id)) {
+    return resolved;
+  }
+
   uint64_t live_session_id = 0;
   uint32_t live_session_count = 0;
   for (const auto& [session_id, entry] : acquisition_sessions_.all()) {
@@ -1250,6 +1269,83 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
     resolved.key.id = live_session_id;
     resolved.acquisition_session_id = live_session_id;
     resolved.provisional = false;
+    return resolved;
+  }
+
+  uint64_t preserved_session_id = 0;
+  bool preserved_session_ambiguous = false;
+  uint32_t preserved_session_evaluator_count = 0;
+  uint32_t preserved_session_decision_count = 0;
+  uint32_t created_stream_count = 0;
+  for (const auto& [stream_id, rec] : streams_.all()) {
+    (void)stream_id;
+    if (rec.device_instance_id == device_instance_id && rec.created) {
+      ++created_stream_count;
+    }
+  }
+  auto consider_preserved_session =
+      [&](uint64_t acquisition_session_id) noexcept {
+        if (acquisition_session_id == 0 || preserved_session_ambiguous) {
+          return;
+        }
+        if (preserved_session_id == 0) {
+          preserved_session_id = acquisition_session_id;
+          return;
+        }
+        if (preserved_session_id != acquisition_session_id) {
+          preserved_session_ambiguous = true;
+        }
+      };
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    if (key.kind != CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
+        state.device_instance_id != device_instance_id) {
+      continue;
+    }
+    ++preserved_session_evaluator_count;
+    consider_preserved_session(key.id);
+  }
+  for (const auto& [key, decision] : capture_retained_plan_decisions_) {
+    if (key.kind != CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
+        decision.device_instance_id != device_instance_id) {
+      continue;
+    }
+    ++preserved_session_decision_count;
+    consider_preserved_session(key.id);
+  }
+  if (!preserved_session_ambiguous && preserved_session_id != 0) {
+    resolved.key.kind = CaptureRetainedPlanParentKey::Kind::AcquisitionSession;
+    resolved.key.id = preserved_session_id;
+    resolved.acquisition_session_id = preserved_session_id;
+    resolved.provisional = false;
+    return resolved;
+  }
+
+  if (!device_has_any_stream_(device_instance_id)) {
+    if (preserved_session_ambiguous) {
+      capture_latency_trace_printf(
+          "capture_parent_resolve_priming_with_session_state device_id=%llu created_stream_count=%u priming_hold_active=%u preserved_session_id=%llu preserved_session_ambiguous=%u evaluator_count=%u decision_count=%u",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(created_stream_count),
+          priming_hold_active ? 1u : 0u,
+          static_cast<unsigned long long>(preserved_session_id),
+          preserved_session_ambiguous ? 1u : 0u,
+          static_cast<unsigned>(preserved_session_evaluator_count),
+          static_cast<unsigned>(preserved_session_decision_count));
+    }
+    return resolved;
+  }
+  if (resolved.key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+      (preserved_session_evaluator_count != 0 ||
+       preserved_session_decision_count != 0)) {
+    capture_latency_trace_printf(
+        "capture_parent_resolve_priming_with_session_state device_id=%llu created_stream_count=%u priming_hold_active=%u preserved_session_id=%llu preserved_session_ambiguous=%u evaluator_count=%u decision_count=%u",
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned>(created_stream_count),
+        priming_hold_active ? 1u : 0u,
+        static_cast<unsigned long long>(preserved_session_id),
+        preserved_session_ambiguous ? 1u : 0u,
+        static_cast<unsigned>(preserved_session_evaluator_count),
+        static_cast<unsigned>(preserved_session_decision_count));
   }
   return resolved;
 }
@@ -1303,6 +1399,83 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
                             const CaptureRetainedPlanParentKey& b) noexcept {
     return !(a < b) && !(b < a);
   };
+  auto merge_measured_plan_evidence =
+      [](MeasuredPlanEvidence& dst,
+         const MeasuredPlanEvidence& src) noexcept {
+        dst.observed_display_view = dst.observed_display_view || src.observed_display_view;
+        if (src.observed_display_view) {
+          dst.provisional_display_view = src.provisional_display_view;
+        }
+        if (src.has_display_view_elapsed_ns &&
+            (!dst.has_display_view_elapsed_ns ||
+             src.display_view_elapsed_ns < dst.display_view_elapsed_ns)) {
+          dst.has_display_view_elapsed_ns = true;
+          dst.display_view_elapsed_ns = src.display_view_elapsed_ns;
+        }
+
+        dst.observed_to_image = dst.observed_to_image || src.observed_to_image;
+        if (src.observed_to_image) {
+          dst.provisional_to_image = src.provisional_to_image;
+        }
+        if (src.has_materialization_elapsed_ns &&
+            (!dst.has_materialization_elapsed_ns ||
+             src.materialization_elapsed_ns < dst.materialization_elapsed_ns)) {
+          dst.has_materialization_elapsed_ns = true;
+          dst.materialization_elapsed_ns = src.materialization_elapsed_ns;
+        }
+        if (src.has_capture_ready_elapsed_ns &&
+            (!dst.has_capture_ready_elapsed_ns ||
+             src.capture_ready_elapsed_ns < dst.capture_ready_elapsed_ns)) {
+          dst.has_capture_ready_elapsed_ns = true;
+          dst.capture_ready_elapsed_ns = src.capture_ready_elapsed_ns;
+        }
+        if (src.has_total_elapsed_ns &&
+            (!dst.has_total_elapsed_ns ||
+             src.total_elapsed_ns < dst.total_elapsed_ns)) {
+          dst.has_total_elapsed_ns = true;
+          dst.total_elapsed_ns = src.total_elapsed_ns;
+        }
+        if (src.has_normalized_cost_units &&
+            (!dst.has_normalized_cost_units ||
+             src.normalized_cost_units < dst.normalized_cost_units)) {
+          dst.has_normalized_cost_units = true;
+          dst.normalized_cost_units = src.normalized_cost_units;
+        }
+      };
+  auto retained_plan_evaluator_has_evidence =
+      [](const RetainedPlanEvaluatorState& state) noexcept {
+        for (const MeasuredPlanEvidence& evidence : state.evidence) {
+          if (evidence.observed_display_view ||
+              evidence.has_display_view_elapsed_ns ||
+              evidence.observed_to_image ||
+              evidence.has_materialization_elapsed_ns ||
+              evidence.has_capture_ready_elapsed_ns ||
+              evidence.has_total_elapsed_ns ||
+              evidence.has_normalized_cost_units) {
+            return true;
+          }
+        }
+        return false;
+      };
+  auto should_prefer_retained_plan_evaluator_state =
+      [&](const RetainedPlanEvaluatorState& current,
+          const RetainedPlanEvaluatorState& candidate) noexcept {
+        if (candidate.active != current.active) {
+          return candidate.active;
+        }
+        if (candidate.current_candidate_index != current.current_candidate_index) {
+          return candidate.current_candidate_index >
+                 current.current_candidate_index;
+        }
+        const bool current_has_evidence =
+            retained_plan_evaluator_has_evidence(current);
+        const bool candidate_has_evidence =
+            retained_plan_evaluator_has_evidence(candidate);
+        if (candidate_has_evidence != current_has_evidence) {
+          return candidate_has_evidence;
+        }
+        return false;
+      };
 
   bool changed = false;
   if (parent.acquisition_session_id != 0) {
@@ -1361,6 +1534,16 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       }
       RetainedPlanEvaluatorState moved = it->second;
       moved.acquisition_session_id = parent.acquisition_session_id;
+      moved.orphan_retire_after_ns = 0;
+      capture_latency_trace_printf(
+          "capture_plan_state_rehome device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu src_candidate_index=%u src_candidate_count=%u",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(parent.key.kind),
+          static_cast<unsigned long long>(parent.key.id),
+          static_cast<unsigned>(it->first.kind),
+          static_cast<unsigned long long>(it->first.id),
+          static_cast<unsigned>(moved.current_candidate_index),
+          static_cast<unsigned>(moved.candidate_count));
       capture_retained_plan_evaluators_.erase(it);
       current_eval_it =
           capture_retained_plan_evaluators_
@@ -1373,6 +1556,7 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
              parent.acquisition_session_id) {
     current_eval_it->second.acquisition_session_id =
         parent.acquisition_session_id;
+    current_eval_it->second.orphan_retire_after_ns = 0;
     changed = true;
   }
   for (auto it = capture_retained_plan_evaluators_.begin();
@@ -1381,6 +1565,45 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
         same_parent_key(it->first, parent.key)) {
       ++it;
       continue;
+    }
+    if (current_eval_it != capture_retained_plan_evaluators_.end()) {
+      RetainedPlanEvaluatorState& current = current_eval_it->second;
+      const RetainedPlanEvaluatorState& candidate = it->second;
+      if (should_prefer_retained_plan_evaluator_state(current, candidate)) {
+        capture_latency_trace_printf(
+            "capture_plan_state_rehome_merge device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu action=prefer_src src_candidate_index=%u dst_candidate_index=%u",
+            static_cast<unsigned long long>(device_instance_id),
+            static_cast<unsigned>(parent.key.kind),
+            static_cast<unsigned long long>(parent.key.id),
+            static_cast<unsigned>(it->first.kind),
+            static_cast<unsigned long long>(it->first.id),
+            static_cast<unsigned>(candidate.current_candidate_index),
+            static_cast<unsigned>(current.current_candidate_index));
+        current.primary_function = candidate.primary_function;
+        current.capture_priming_seed_signature =
+            candidate.capture_priming_seed_signature;
+        current.active = candidate.active;
+        current.candidate_count = candidate.candidate_count;
+        current.current_candidate_index = candidate.current_candidate_index;
+        for (uint8_t i = 0; i < candidate.candidate_count; ++i) {
+          current.candidate_sequence[i] = candidate.candidate_sequence[i];
+        }
+      }
+      capture_latency_trace_printf(
+          "capture_plan_state_rehome_merge device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu action=merge_evidence dst_candidate_index=%u src_candidate_index=%u",
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned>(parent.key.kind),
+          static_cast<unsigned long long>(parent.key.id),
+          static_cast<unsigned>(it->first.kind),
+          static_cast<unsigned long long>(it->first.id),
+          static_cast<unsigned>(current.current_candidate_index),
+          static_cast<unsigned>(candidate.current_candidate_index));
+      for (size_t i = 0; i < std::size(current.evidence); ++i) {
+        merge_measured_plan_evidence(current.evidence[i], candidate.evidence[i]);
+      }
+      current.acquisition_session_id = parent.acquisition_session_id;
+      current.orphan_retire_after_ns = 0;
+      changed = true;
     }
     it = capture_retained_plan_evaluators_.erase(it);
     changed = true;
@@ -1398,6 +1621,7 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       }
       RetainedPlanDecisionProvenance moved = it->second;
       moved.acquisition_session_id = parent.acquisition_session_id;
+      moved.orphan_retire_after_ns = 0;
       capture_retained_plan_decisions_.erase(it);
       current_decision_it =
           capture_retained_plan_decisions_
@@ -1410,6 +1634,7 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
              parent.acquisition_session_id) {
     current_decision_it->second.acquisition_session_id =
         parent.acquisition_session_id;
+    current_decision_it->second.orphan_retire_after_ns = 0;
     changed = true;
   }
   for (auto it = capture_retained_plan_decisions_.begin();
@@ -1446,12 +1671,33 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     release_capture_parent_priming_(device_instance_id);
     return false;
   }
+  auto evaluator_matches_device =
+      [device_instance_id](const CaptureRetainedPlanParentKey& key,
+                           const RetainedPlanEvaluatorState& state) noexcept {
+        return state.device_instance_id == device_instance_id ||
+               (key.kind ==
+                    CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+                key.id == device_instance_id);
+      };
+  auto decision_matches_device =
+      [device_instance_id](const CaptureRetainedPlanParentKey& key,
+                           const RetainedPlanDecisionProvenance& decision) noexcept {
+        return decision.device_instance_id == device_instance_id ||
+               (key.kind ==
+                    CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+                key.id == device_instance_id);
+      };
+  auto same_parent_key = [](const CaptureRetainedPlanParentKey& a,
+                            const CaptureRetainedPlanParentKey& b) noexcept {
+    return !(a < b) && !(b < a);
+  };
+  if (device_has_any_stream_(device_instance_id)) {
+    release_capture_parent_priming_(device_instance_id);
+  }
   (void)devices_.set_backing_capabilities(
       device_instance_id, runtime_caps, parent_context_caps);
   const ResolvedCaptureRetainedPlanParent parent =
       resolve_capture_retained_plan_parent_(device_instance_id);
-  erase_capture_retained_plan_state_for_device_(
-      device_instance_id, &parent.key);
   if (parent.acquisition_session_id != 0) {
     (void)acquisition_sessions_.set_backing_capabilities(
         parent.acquisition_session_id,
@@ -1468,6 +1714,165 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
           BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize,
           parent_context_caps,
           preferred_requested);
+  auto preserved_evaluator_matches_decision =
+      [&](const RetainedPlanEvaluatorState& state) noexcept {
+        if (!state.active || !decision.evaluation_active ||
+            state.candidate_count != decision.candidate_count) {
+          return false;
+        }
+        for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+          if (!state.candidate_sequence[i].valid ||
+              state.candidate_sequence[i].posture !=
+                  decision.candidate_sequence[i]) {
+            return false;
+          }
+        }
+        return true;
+      };
+  auto preserved_evaluator_matches_signature =
+      [&](const RetainedPlanEvaluatorState& state) noexcept {
+        const CapturePrimingSeedSignature& signature =
+            state.capture_priming_seed_signature;
+        return signature.hardware_id == seed_signature.hardware_id &&
+               signature.width == seed_signature.width &&
+               signature.height == seed_signature.height &&
+               signature.format_fourcc == seed_signature.format_fourcc &&
+               same_picture_config(signature.picture, seed_signature.picture) &&
+               same_bundle_members(
+                   signature.still_image_bundle,
+                   seed_signature.still_image_bundle) &&
+               same_backing_capabilities(
+                   signature.runtime_backing_capabilities,
+                   seed_signature.runtime_backing_capabilities) &&
+               same_backing_capabilities(
+                   signature.parent_context_backing_capabilities,
+                   seed_signature.parent_context_backing_capabilities);
+      };
+  auto retained_plan_evaluator_has_evidence =
+      [](const RetainedPlanEvaluatorState& state) noexcept {
+        for (const MeasuredPlanEvidence& evidence : state.evidence) {
+          if (evidence.observed_display_view ||
+              evidence.has_display_view_elapsed_ns ||
+              evidence.observed_to_image ||
+              evidence.has_materialization_elapsed_ns ||
+              evidence.has_capture_ready_elapsed_ns ||
+              evidence.has_total_elapsed_ns ||
+              evidence.has_normalized_cost_units) {
+            return true;
+          }
+        }
+        return false;
+      };
+  auto should_prefer_preserved_evaluator =
+      [&](const RetainedPlanEvaluatorState& current,
+          const RetainedPlanEvaluatorState& candidate) noexcept {
+        if (candidate.active != current.active) {
+          return candidate.active;
+        }
+        if (candidate.current_candidate_index != current.current_candidate_index) {
+          return candidate.current_candidate_index >
+                 current.current_candidate_index;
+        }
+        const bool current_has_evidence =
+            retained_plan_evaluator_has_evidence(current);
+        const bool candidate_has_evidence =
+            retained_plan_evaluator_has_evidence(candidate);
+        if (candidate_has_evidence != current_has_evidence) {
+          return candidate_has_evidence;
+        }
+        return false;
+      };
+  RetainedPlanEvaluatorState preserved_evaluator{};
+  CaptureRetainedPlanParentKey preserved_evaluator_key{};
+  bool have_preserved_evaluator = false;
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    if (!evaluator_matches_device(key, state) ||
+        !preserved_evaluator_matches_signature(state) ||
+        !preserved_evaluator_matches_decision(state)) {
+      continue;
+    }
+    if (!have_preserved_evaluator ||
+        should_prefer_preserved_evaluator(preserved_evaluator, state)) {
+      preserved_evaluator = state;
+      preserved_evaluator_key = key;
+      have_preserved_evaluator = true;
+    }
+  }
+  const bool preserve_existing_evaluator = have_preserved_evaluator;
+  auto preserved_decision_matches_signature =
+      [&](const RetainedPlanDecisionProvenance& provenance) noexcept {
+        const CapturePrimingSeedSignature& signature =
+            provenance.capture_priming_seed_signature;
+        return provenance.valid &&
+               provenance.selected.valid &&
+               provenance.primary_function ==
+                   BackingPlanEvaluationPrimaryFunction::
+                       CaptureReadyAndMaterialize &&
+               signature.hardware_id == seed_signature.hardware_id &&
+               signature.width == seed_signature.width &&
+               signature.height == seed_signature.height &&
+               signature.format_fourcc == seed_signature.format_fourcc &&
+               same_picture_config(signature.picture, seed_signature.picture) &&
+               same_bundle_members(
+                   signature.still_image_bundle,
+                   seed_signature.still_image_bundle) &&
+               same_backing_capabilities(
+                   signature.runtime_backing_capabilities,
+                   seed_signature.runtime_backing_capabilities) &&
+               same_backing_capabilities(
+                   signature.parent_context_backing_capabilities,
+                   seed_signature.parent_context_backing_capabilities) &&
+               parent_context_caps.viable(provenance.selected.posture);
+      };
+  auto should_prefer_preserved_decision =
+      [&](const CaptureRetainedPlanParentKey& current_key,
+          const RetainedPlanDecisionProvenance& current,
+          const CaptureRetainedPlanParentKey& candidate_key,
+          const RetainedPlanDecisionProvenance& candidate) noexcept {
+        const bool candidate_is_current_parent =
+            same_parent_key(candidate_key, parent.key);
+        const bool current_is_current_parent =
+            same_parent_key(current_key, parent.key);
+        if (candidate_is_current_parent != current_is_current_parent) {
+          return candidate_is_current_parent;
+        }
+        if (candidate.from_evaluation != current.from_evaluation) {
+          return candidate.from_evaluation;
+        }
+        const bool candidate_is_session =
+            candidate_key.kind ==
+            CaptureRetainedPlanParentKey::Kind::AcquisitionSession;
+        const bool current_is_session =
+            current_key.kind ==
+            CaptureRetainedPlanParentKey::Kind::AcquisitionSession;
+        if (candidate_is_session != current_is_session) {
+          return candidate_is_session;
+        }
+        return false;
+      };
+  RetainedPlanDecisionProvenance preserved_decision{};
+  CaptureRetainedPlanParentKey preserved_decision_key{};
+  bool have_preserved_decision = false;
+  for (const auto& [key, provenance] : capture_retained_plan_decisions_) {
+    if (!decision_matches_device(key, provenance) ||
+        !preserved_decision_matches_signature(provenance)) {
+      continue;
+    }
+    if (!have_preserved_decision ||
+        should_prefer_preserved_decision(
+            preserved_decision_key,
+            preserved_decision,
+            key,
+            provenance)) {
+      preserved_decision = provenance;
+      preserved_decision_key = key;
+      have_preserved_decision = true;
+    }
+  }
+  const bool preserve_existing_decision = have_preserved_decision;
+
+  erase_capture_retained_plan_state_for_device_(
+      device_instance_id, &parent.key);
   if (!decision.requested.valid) {
     release_capture_parent_priming_(device_instance_id);
     (void)devices_.set_requested_retained_plan(
@@ -1486,6 +1891,78 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     capture_retained_plan_evaluators_.erase(parent.key);
     capture_retained_plan_decisions_.erase(parent.key);
     return false;
+  }
+
+  if (preserve_existing_evaluator) {
+    RetainedPlanEvaluatorState state = preserved_evaluator;
+    state.device_instance_id = device_instance_id;
+    state.acquisition_session_id = parent.acquisition_session_id;
+    state.orphan_retire_after_ns = 0;
+    state.capture_priming_seed_signature = seed_signature;
+    CoreRetainedProductionPlan requested = decision.requested;
+    if (state.current_candidate_index < state.candidate_count &&
+        state.candidate_sequence[state.current_candidate_index].valid) {
+      requested = state.candidate_sequence[state.current_candidate_index];
+    }
+    (void)devices_.set_requested_retained_plan(
+        device_instance_id,
+        requested,
+        requested_bump_access_posture_epoch);
+    (void)devices_.clear_steady_retained_plan(device_instance_id);
+    if (parent.acquisition_session_id != 0) {
+      (void)acquisition_sessions_.set_requested_retained_plan(
+          parent.acquisition_session_id,
+          requested,
+          requested_bump_access_posture_epoch);
+      (void)acquisition_sessions_.clear_steady_retained_plan(
+          parent.acquisition_session_id);
+    }
+    capture_latency_trace_printf(
+        "capture_plan_state_refresh_preserve device_id=%llu parent_kind=%u parent_id=%llu source=evaluator source_parent_kind=%u source_parent_id=%llu current_candidate_index=%u requested_posture=%d",
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned>(parent.key.kind),
+        static_cast<unsigned long long>(parent.key.id),
+        static_cast<unsigned>(preserved_evaluator_key.kind),
+        static_cast<unsigned long long>(preserved_evaluator_key.id),
+        static_cast<unsigned>(state.current_candidate_index),
+        static_cast<int>(requested.posture));
+    capture_retained_plan_evaluators_[parent.key] = state;
+    capture_retained_plan_decisions_.erase(parent.key);
+    return true;
+  }
+
+  if (preserve_existing_decision) {
+    RetainedPlanDecisionProvenance provenance = preserved_decision;
+    provenance.device_instance_id = device_instance_id;
+    provenance.acquisition_session_id = parent.acquisition_session_id;
+    provenance.orphan_retire_after_ns = 0;
+    provenance.capture_priming_seed_signature = seed_signature;
+    (void)devices_.set_requested_retained_plan(
+        device_instance_id,
+        provenance.selected,
+        requested_bump_access_posture_epoch);
+    (void)devices_.set_steady_retained_plan(
+        device_instance_id, provenance.selected);
+    if (parent.acquisition_session_id != 0) {
+      (void)acquisition_sessions_.set_requested_retained_plan(
+          parent.acquisition_session_id,
+          provenance.selected,
+          requested_bump_access_posture_epoch);
+      (void)acquisition_sessions_.set_steady_retained_plan(
+          parent.acquisition_session_id, provenance.selected);
+    }
+    capture_latency_trace_printf(
+        "capture_plan_state_refresh_preserve device_id=%llu parent_kind=%u parent_id=%llu source=decision source_parent_kind=%u source_parent_id=%llu selected_posture=%d from_evaluation=%u",
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned>(parent.key.kind),
+        static_cast<unsigned long long>(parent.key.id),
+        static_cast<unsigned>(preserved_decision_key.kind),
+        static_cast<unsigned long long>(preserved_decision_key.id),
+        static_cast<int>(provenance.selected.posture),
+        provenance.from_evaluation ? 1u : 0u);
+    capture_retained_plan_evaluators_.erase(parent.key);
+    capture_retained_plan_decisions_[parent.key] = provenance;
+    return true;
   }
 
   (void)devices_.set_requested_retained_plan(
@@ -1516,6 +1993,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     RetainedPlanEvaluatorState state{};
     state.device_instance_id = device_instance_id;
     state.acquisition_session_id = parent.acquisition_session_id;
+    state.orphan_retire_after_ns = 0;
     state.primary_function =
         BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize;
     state.capture_priming_seed_signature = seed_signature;
@@ -1526,6 +2004,16 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
       state.candidate_sequence[i] = make_retained_plan(
           decision.candidate_sequence[i]);
     }
+    capture_latency_trace_printf(
+        "capture_plan_state_refresh device_id=%llu parent_kind=%u parent_id=%llu requested_posture=%d steady_valid=%u candidate_count=%u preferred_requested_valid=%u preferred_requested_posture=%d",
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned>(parent.key.kind),
+        static_cast<unsigned long long>(parent.key.id),
+        static_cast<int>(decision.requested.posture),
+        decision.steady.valid ? 1u : 0u,
+        static_cast<unsigned>(decision.candidate_count),
+        preferred_requested.valid ? 1u : 0u,
+        static_cast<int>(preferred_requested.posture));
     capture_retained_plan_evaluators_[parent.key] = state;
     capture_retained_plan_decisions_.erase(parent.key);
   } else {
@@ -1540,6 +2028,8 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
             parent.acquisition_session_id,
             decision.requested,
             decision.steady);
+    provenance.orphan_retire_after_ns = 0;
+    provenance.capture_priming_seed_signature = seed_signature;
     capture_retained_plan_decisions_[parent.key] = provenance;
   }
   (void)sync_capture_parent_priming_(
@@ -1700,25 +2190,202 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
   finalize_stream_evaluation(state.candidate_sequence[0]);
 }
 
-void CoreRuntime::handle_capture_retained_to_image_observation_(
+void CoreRuntime::enqueue_pending_capture_observation_(
     uint64_t device_instance_id,
     uint64_t capture_id,
+    uint64_t acquisition_session_id_hint,
     uint64_t posture_id,
     ResultCapability provisional_to_image,
     bool has_materialization_elapsed_ns,
     uint64_t materialization_elapsed_ns,
     bool has_normalized_cost_units,
-    uint64_t normalized_cost_units) {
+    uint64_t normalized_cost_units,
+    uint8_t deferred_retries_remaining,
+    uint64_t not_before_ns) {
+  assert(core_thread_.is_core_thread());
+  pending_capture_observations_.push_back(PendingCaptureObservation{
+      device_instance_id,
+      capture_id,
+      acquisition_session_id_hint,
+      posture_id,
+      provisional_to_image,
+      has_materialization_elapsed_ns,
+      materialization_elapsed_ns,
+      has_normalized_cost_units,
+      normalized_cost_units,
+      deferred_retries_remaining,
+      not_before_ns});
+  core_thread_.request_timer_tick();
+}
+
+void CoreRuntime::process_pending_capture_observations_(
+    uint64_t now_ns,
+    bool& has_next_delay,
+    uint64_t& next_delay_ns) {
+  assert(core_thread_.is_core_thread());
+
+  std::deque<PendingCaptureObservation> due;
+  for (auto it = pending_capture_observations_.begin();
+       it != pending_capture_observations_.end();) {
+    if (it->not_before_ns <= now_ns) {
+      due.push_back(*it);
+      it = pending_capture_observations_.erase(it);
+      continue;
+    }
+    const uint64_t remaining_ns = it->not_before_ns - now_ns;
+    if (!has_next_delay || remaining_ns < next_delay_ns) {
+      has_next_delay = true;
+      next_delay_ns = remaining_ns;
+    }
+    ++it;
+  }
+
+  while (!due.empty()) {
+    PendingCaptureObservation pending = due.front();
+    due.pop_front();
+    handle_capture_retained_to_image_observation_(
+        pending.device_instance_id,
+        pending.capture_id,
+        pending.acquisition_session_id_hint,
+        pending.posture_id,
+        pending.provisional_to_image,
+        pending.has_materialization_elapsed_ns,
+        pending.materialization_elapsed_ns,
+        pending.has_normalized_cost_units,
+        pending.normalized_cost_units,
+        pending.deferred_retries_remaining);
+  }
+
+  for (const PendingCaptureObservation& pending : pending_capture_observations_) {
+    if (pending.not_before_ns <= now_ns) {
+      continue;
+    }
+    const uint64_t remaining_ns = pending.not_before_ns - now_ns;
+    if (!has_next_delay || remaining_ns < next_delay_ns) {
+      has_next_delay = true;
+      next_delay_ns = remaining_ns;
+    }
+  }
+}
+
+void CoreRuntime::mark_capture_retained_plan_state_orphaned_for_device_(
+    uint64_t device_instance_id,
+    uint64_t retire_after_ns) {
+  assert(core_thread_.is_core_thread());
+  if (device_instance_id == 0 || retire_after_ns == 0) {
+    return;
+  }
+  for (auto& [key, state] : capture_retained_plan_evaluators_) {
+    if (state.device_instance_id == device_instance_id ||
+        (key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+         key.id == device_instance_id)) {
+      state.orphan_retire_after_ns = retire_after_ns;
+    }
+  }
+  for (auto& [key, decision] : capture_retained_plan_decisions_) {
+    if (decision.device_instance_id == device_instance_id ||
+        (key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+         key.id == device_instance_id)) {
+      decision.orphan_retire_after_ns = retire_after_ns;
+    }
+  }
+}
+
+size_t CoreRuntime::retire_expired_capture_retained_plan_orphans_(
+    uint64_t now_ns) {
+  assert(core_thread_.is_core_thread());
+  size_t retired = 0;
+  for (auto it = capture_retained_plan_evaluators_.begin();
+       it != capture_retained_plan_evaluators_.end();) {
+    if (it->second.orphan_retire_after_ns != 0 &&
+        it->second.orphan_retire_after_ns <= now_ns) {
+      it = capture_retained_plan_evaluators_.erase(it);
+      ++retired;
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = capture_retained_plan_decisions_.begin();
+       it != capture_retained_plan_decisions_.end();) {
+    if (it->second.orphan_retire_after_ns != 0 &&
+        it->second.orphan_retire_after_ns <= now_ns) {
+      it = capture_retained_plan_decisions_.erase(it);
+      ++retired;
+    } else {
+      ++it;
+    }
+  }
+  return retired;
+}
+
+void CoreRuntime::next_capture_retained_plan_orphan_retirement_delay_(
+    uint64_t now_ns,
+    bool& has_next_delay,
+    uint64_t& next_delay_ns) const {
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    (void)key;
+    if (state.orphan_retire_after_ns == 0 ||
+        state.orphan_retire_after_ns <= now_ns) {
+      continue;
+    }
+    const uint64_t remaining_ns = state.orphan_retire_after_ns - now_ns;
+    if (!has_next_delay || remaining_ns < next_delay_ns) {
+      has_next_delay = true;
+      next_delay_ns = remaining_ns;
+    }
+  }
+  for (const auto& [key, decision] : capture_retained_plan_decisions_) {
+    (void)key;
+    if (decision.orphan_retire_after_ns == 0 ||
+        decision.orphan_retire_after_ns <= now_ns) {
+      continue;
+    }
+    const uint64_t remaining_ns = decision.orphan_retire_after_ns - now_ns;
+    if (!has_next_delay || remaining_ns < next_delay_ns) {
+      has_next_delay = true;
+      next_delay_ns = remaining_ns;
+    }
+  }
+}
+
+void CoreRuntime::handle_capture_retained_to_image_observation_(
+    uint64_t device_instance_id,
+    uint64_t capture_id,
+    uint64_t acquisition_session_id_hint,
+    uint64_t posture_id,
+    ResultCapability provisional_to_image,
+    bool has_materialization_elapsed_ns,
+    uint64_t materialization_elapsed_ns,
+    bool has_normalized_cost_units,
+    uint64_t normalized_cost_units,
+    uint8_t deferred_retries_remaining) {
   assert(core_thread_.is_core_thread());
   if (device_instance_id == 0 || posture_id == 0) {
     return;
   }
+  const auto priming_state_it =
+      capture_parent_priming_states_.find(device_instance_id);
+  const bool keep_priming_parent =
+      priming_state_it != capture_parent_priming_states_.end() &&
+      priming_state_it->second.provider_hold_active &&
+      !device_has_any_stream_(device_instance_id);
+  const bool allow_session_parent_observation =
+      device_has_any_stream_(device_instance_id) && !keep_priming_parent;
   uint64_t observed_session_id = 0;
   auto state_it = capture_retained_plan_evaluators_.end();
-  if (capture_id != 0) {
+  if (allow_session_parent_observation && acquisition_session_id_hint != 0) {
+    observed_session_id = acquisition_session_id_hint;
+    const CaptureRetainedPlanParentKey parent_key{
+        CaptureRetainedPlanParentKey::Kind::AcquisitionSession,
+        observed_session_id};
+    state_it = capture_retained_plan_evaluators_.find(parent_key);
+  }
+  if (allow_session_parent_observation &&
+      capture_id != 0 &&
+      state_it == capture_retained_plan_evaluators_.end()) {
     observed_session_id =
         acquisition_sessions_.resolve_session_id_for_capture(
-            device_instance_id, capture_id);
+            device_instance_id, capture_id, acquisition_session_id_hint);
     if (observed_session_id != 0) {
       const CaptureRetainedPlanParentKey parent_key{
           CaptureRetainedPlanParentKey::Kind::AcquisitionSession,
@@ -1743,6 +2410,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   }
   if (state_it != capture_retained_plan_evaluators_.end() &&
       observed_session_id != 0 &&
+      !keep_priming_parent &&
       state_it->first.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
       state_it->second.acquisition_session_id == 0) {
     RetainedPlanEvaluatorState migrated_state = state_it->second;
@@ -1756,25 +2424,124 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
             session_key, migrated_state).first;
   }
   const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
-  if (state_it == capture_retained_plan_evaluators_.end() ||
-      rec == nullptr ||
-      !rec->requested_retained_plan.valid) {
+  if (state_it == capture_retained_plan_evaluators_.end()) {
+    if (deferred_retries_remaining != 0) {
+      const uint64_t now_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - epoch_)
+              .count());
+      enqueue_pending_capture_observation_(
+          device_instance_id,
+          capture_id,
+          acquisition_session_id_hint,
+          posture_id,
+          provisional_to_image,
+          has_materialization_elapsed_ns,
+          materialization_elapsed_ns,
+          has_normalized_cost_units,
+          normalized_cost_units,
+          static_cast<uint8_t>(deferred_retries_remaining - 1u),
+          now_ns + kCaptureObservationRetryDelayNs);
+      capture_latency_trace_printf(
+          "capture_plan_observation_deferred capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu retries_remaining=%u delay_ns=%llu",
+          static_cast<unsigned long long>(capture_id),
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned long long>(posture_id),
+          static_cast<unsigned long long>(observed_session_id),
+          static_cast<unsigned>(deferred_retries_remaining),
+          static_cast<unsigned long long>(kCaptureObservationRetryDelayNs));
+      return;
+    }
+    size_t matching_state_count = 0;
+    CaptureRetainedPlanParentKey first_matching_key{};
+    for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+      if (state.device_instance_id != device_instance_id) {
+        continue;
+      }
+      if (matching_state_count == 0) {
+        first_matching_key = key;
+      }
+      ++matching_state_count;
+    }
+    const ResolvedCaptureRetainedPlanParent resolved_parent =
+        resolve_capture_retained_plan_parent_(device_instance_id);
+    capture_latency_trace_printf(
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu reason=no_state_or_requested_plan device_exists=%u resolved_parent_kind=%u resolved_parent_id=%llu matching_state_count=%llu first_matching_parent_kind=%u first_matching_parent_id=%llu",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>(posture_id),
+        static_cast<unsigned long long>(observed_session_id),
+        rec != nullptr ? 1u : 0u,
+        static_cast<unsigned>(resolved_parent.key.kind),
+        static_cast<unsigned long long>(resolved_parent.key.id),
+        static_cast<unsigned long long>(matching_state_count),
+        static_cast<unsigned>(first_matching_key.kind),
+        static_cast<unsigned long long>(first_matching_key.id));
     return;
   }
 
   RetainedPlanEvaluatorState& state = state_it->second;
   if (!state.active || state.current_candidate_index >= state.candidate_count) {
+    capture_latency_trace_printf(
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=inactive_or_oob current_candidate_index=%u candidate_count=%u",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>(posture_id),
+        static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(state_it->first.kind),
+        static_cast<unsigned long long>(state_it->first.id),
+        static_cast<unsigned>(state.current_candidate_index),
+        static_cast<unsigned>(state.candidate_count));
     return;
+  }
+  CoreRetainedProductionPlan effective_requested{};
+  if (state.acquisition_session_id != 0) {
+    if (const auto* session =
+            acquisition_sessions_.find(state.acquisition_session_id);
+        session != nullptr &&
+        session->requested_retained_plan.valid) {
+      effective_requested = session->requested_retained_plan;
+    }
+  }
+  if (!effective_requested.valid && rec != nullptr &&
+      rec->requested_retained_plan.valid) {
+    effective_requested = rec->requested_retained_plan;
   }
   const CoreRetainedProductionPlan expected_plan =
       state.candidate_sequence[state.current_candidate_index];
-  if (!same_retained_plan(rec->requested_retained_plan, expected_plan)) {
+  if (!effective_requested.valid && expected_plan.valid) {
+    effective_requested = expected_plan;
+  }
+  if (!effective_requested.valid) {
+    capture_latency_trace_printf(
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=no_requested_plan current_candidate_index=%u",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>(posture_id),
+        static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(state_it->first.kind),
+        static_cast<unsigned long long>(state_it->first.id),
+        static_cast<unsigned>(state.current_candidate_index));
+    return;
+  }
+  if (!same_retained_plan(effective_requested, expected_plan)) {
+    capture_latency_trace_printf(
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=requested_mismatch current_candidate_index=%u expected_posture=%d requested_posture=%d",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>(posture_id),
+        static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(state_it->first.kind),
+        static_cast<unsigned long long>(state_it->first.id),
+        static_cast<unsigned>(state.current_candidate_index),
+        static_cast<int>(expected_plan.posture),
+        static_cast<int>(effective_requested.posture));
     return;
   }
 
   MeasuredPlanEvidence& evidence =
       state.evidence[retained_plan_evidence_index(
-          rec->requested_retained_plan.posture)];
+          expected_plan.posture)];
   evidence.observed_to_image = true;
   evidence.provisional_to_image = provisional_to_image;
   if (has_materialization_elapsed_ns) {
@@ -1802,6 +2569,29 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
                 : 0,
             evidence.materialization_elapsed_ns);
   }
+  capture_latency_trace_printf(
+      "capture_plan_observation_applied capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu current_candidate_index=%u requested_posture=%d provisional_to_image=%d has_materialization=%u materialization_elapsed_ns=%llu has_normalized=%u normalized_cost_units=%llu has_capture_ready=%u capture_ready_elapsed_ns=%llu",
+      static_cast<unsigned long long>(capture_id),
+      static_cast<unsigned long long>(device_instance_id),
+      static_cast<unsigned long long>(posture_id),
+      static_cast<unsigned long long>(observed_session_id),
+      static_cast<unsigned>(state_it->first.kind),
+      static_cast<unsigned long long>(state_it->first.id),
+      static_cast<unsigned>(state.current_candidate_index),
+      static_cast<int>(effective_requested.posture),
+      static_cast<int>(provisional_to_image),
+      evidence.has_materialization_elapsed_ns ? 1u : 0u,
+      static_cast<unsigned long long>(evidence.has_materialization_elapsed_ns
+                                          ? evidence.materialization_elapsed_ns
+                                          : 0),
+      evidence.has_normalized_cost_units ? 1u : 0u,
+      static_cast<unsigned long long>(evidence.has_normalized_cost_units
+                                          ? evidence.normalized_cost_units
+                                          : 0),
+      evidence.has_capture_ready_elapsed_ns ? 1u : 0u,
+      static_cast<unsigned long long>(evidence.has_capture_ready_elapsed_ns
+                                          ? evidence.capture_ready_elapsed_ns
+                                          : 0));
 
   if (state.current_candidate_index + 1u < state.candidate_count) {
     if (provisional_to_image == ResultCapability::UNSUPPORTED ||
@@ -1810,8 +2600,18 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
       ++state.current_candidate_index;
       const CoreRetainedProductionPlan next_plan =
           state.candidate_sequence[state.current_candidate_index];
-      (void)devices_.set_requested_retained_plan(device_instance_id, next_plan, true);
-      (void)devices_.clear_steady_retained_plan(device_instance_id);
+      capture_latency_trace_printf(
+          "capture_plan_observation_advance capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu next_candidate_index=%u next_posture=%d",
+          static_cast<unsigned long long>(capture_id),
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned long long>(posture_id),
+          static_cast<unsigned long long>(observed_session_id),
+          static_cast<unsigned>(state.current_candidate_index),
+          static_cast<int>(next_plan.posture));
+      if (rec != nullptr) {
+        (void)devices_.set_requested_retained_plan(device_instance_id, next_plan, true);
+        (void)devices_.clear_steady_retained_plan(device_instance_id);
+      }
       if (state.acquisition_session_id != 0) {
         (void)acquisition_sessions_.set_requested_retained_plan(
             state.acquisition_session_id, next_plan, true);
@@ -1837,24 +2637,50 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   if (!chosen.valid) {
     chosen = state.candidate_sequence[0];
   }
+  capture_latency_trace_printf(
+      "capture_plan_observation_finalize capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu chosen_posture=%d decision_from_evaluation=1",
+      static_cast<unsigned long long>(capture_id),
+      static_cast<unsigned long long>(device_instance_id),
+      static_cast<unsigned long long>(posture_id),
+      static_cast<unsigned long long>(observed_session_id),
+      static_cast<int>(chosen.posture));
 
-  if (!same_retained_plan(rec->requested_retained_plan, chosen)) {
+  if (rec != nullptr && !same_retained_plan(effective_requested, chosen)) {
     (void)devices_.set_requested_retained_plan(device_instance_id, chosen, true);
   }
   if (state.acquisition_session_id != 0) {
     (void)acquisition_sessions_.set_requested_retained_plan(
         state.acquisition_session_id, chosen, true);
   }
-  (void)devices_.set_steady_retained_plan(device_instance_id, chosen);
+  if (rec != nullptr) {
+    (void)devices_.set_steady_retained_plan(device_instance_id, chosen);
+  }
   if (state.acquisition_session_id != 0) {
     (void)acquisition_sessions_.set_steady_retained_plan(
         state.acquisition_session_id, chosen);
   }
+  const auto* session =
+      state.acquisition_session_id != 0
+          ? acquisition_sessions_.find(state.acquisition_session_id)
+          : nullptr;
+  const bool session_still_live =
+      session != nullptr && session->phase == CBLifecyclePhase::LIVE;
   remember_capture_priming_seed_(
       state.capture_priming_seed_signature, chosen);
   RetainedPlanDecisionProvenance provenance =
       build_decision_provenance_(state, chosen);
-  capture_retained_plan_decisions_[state_it->first] = provenance;
+  if (rec == nullptr && !session_still_live) {
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - epoch_)
+            .count());
+    provenance.orphan_retire_after_ns =
+        now_ns + kCaptureRetainedPlanOrphanRetentionWindowNs;
+  } else {
+    provenance.orphan_retire_after_ns = 0;
+  }
+  const CaptureRetainedPlanParentKey decision_key = state_it->first;
+  capture_retained_plan_decisions_[decision_key] = provenance;
   capture_retained_plan_evaluators_.erase(state_it);
 }
 
@@ -1961,6 +2787,85 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
       }
     }
     out.push_back(std::move(report));
+  }
+
+  std::map<uint64_t, bool> emitted_orphan_capture_targets;
+  auto emit_orphan_capture_report_from_evaluator =
+      [&](const CaptureRetainedPlanParentKey& key,
+          const RetainedPlanEvaluatorState& state) {
+        if (state.device_instance_id == 0 ||
+            devices_.find(state.device_instance_id) != nullptr ||
+            emitted_orphan_capture_targets.find(state.device_instance_id) !=
+                emitted_orphan_capture_targets.end()) {
+          return;
+        }
+        emitted_orphan_capture_targets[state.device_instance_id] = true;
+        CoreBackingPlanEvaluationReport report{};
+        report.parent_kind =
+            key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming
+                ? CoreBackingPlanEvaluationReport::ParentKind::CapturePriming
+                : CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession;
+        report.parent_id = key.id;
+        report.acquisition_session_id = state.acquisition_session_id;
+        report.device_instance_id = state.device_instance_id;
+        report.provisional_parent =
+            key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming;
+        report.primary_function = state.primary_function;
+        report.target_kind =
+            CoreBackingPlanEvaluationReport::TargetKind::Capture;
+        report.target_id = state.device_instance_id;
+        if (state.current_candidate_index < state.candidate_count) {
+          report.requested =
+              state.candidate_sequence[state.current_candidate_index];
+        }
+        report.evaluator_active = state.active;
+        report.current_candidate_index = state.current_candidate_index;
+        report.candidate_sequence.reserve(state.candidate_count);
+        for (uint8_t i = 0; i < state.candidate_count; ++i) {
+          report.candidate_sequence.push_back(state.candidate_sequence[i]);
+        }
+        out.push_back(std::move(report));
+      };
+  auto emit_orphan_capture_report_from_decision =
+      [&](const CaptureRetainedPlanParentKey& key,
+          const RetainedPlanDecisionProvenance& decision) {
+        if (decision.device_instance_id == 0 ||
+            devices_.find(decision.device_instance_id) != nullptr ||
+            emitted_orphan_capture_targets.find(decision.device_instance_id) !=
+                emitted_orphan_capture_targets.end()) {
+          return;
+        }
+        emitted_orphan_capture_targets[decision.device_instance_id] = true;
+        CoreBackingPlanEvaluationReport report{};
+        report.parent_kind =
+            key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming
+                ? CoreBackingPlanEvaluationReport::ParentKind::CapturePriming
+                : CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession;
+        report.parent_id = key.id;
+        report.acquisition_session_id = decision.acquisition_session_id;
+        report.device_instance_id = decision.device_instance_id;
+        report.provisional_parent =
+            key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming;
+        report.primary_function = decision.primary_function;
+        report.target_kind =
+            CoreBackingPlanEvaluationReport::TargetKind::Capture;
+        report.target_id = decision.device_instance_id;
+        report.requested = decision.selected;
+        report.steady = decision.selected;
+        report.decision_from_evaluation = decision.from_evaluation;
+        report.decision_selected = decision.selected;
+        report.decision_candidate_sequence.reserve(decision.candidate_count);
+        for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+          report.decision_candidate_sequence.push_back(
+              decision.candidate_sequence[i]);
+        }
+        out.push_back(std::move(report));
+      };
+  for (const auto& [key, decision] : capture_retained_plan_decisions_) {
+    emit_orphan_capture_report_from_decision(key, decision);
+  }
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    emit_orphan_capture_report_from_evaluator(key, state);
   }
 
   return out;
@@ -2175,6 +3080,7 @@ bool CoreRuntime::start() {
   capture_stream_preemptions_by_device_.clear();
   provider_facts_.clear();
   provider_capture_facts_queued_ = 0;
+  pending_capture_observations_.clear();
   requests_.clear();
   shutdown_requested_from_stop_.store(false, std::memory_order_release);
   shutdown_requested_ = false;
@@ -2242,6 +3148,7 @@ void CoreRuntime::on_core_start() {
   capture_retained_plan_decisions_.clear();
   capture_priming_seeds_.clear();
   capture_parent_priming_states_.clear();
+  pending_capture_observations_.clear();
   state_.store(CoreRuntimeState::LIVE, std::memory_order_release);
 
   // Start "dirty": publish an initial baseline snapshot (version=0, topology_version=0)
@@ -2432,6 +3339,13 @@ void CoreRuntime::on_core_timer_tick() {
     }
   }
 
+  bool has_next_pending_capture_observation_delay = false;
+  uint64_t next_pending_capture_observation_delay_ns = 0;
+  process_pending_capture_observations_(
+      now_ns,
+      has_next_pending_capture_observation_delay,
+      next_pending_capture_observation_delay_ns);
+
   if (provider_facts_remain_after_fairness_slice) {
     core_thread_.request_timer_tick();
   }
@@ -2487,6 +3401,13 @@ void CoreRuntime::on_core_timer_tick() {
 
       if (rec.warm_deadline_active && now_ns >= rec.warm_deadline_ns) {
         if (!rec.warm_expired_close_requested && prov) {
+          capture_latency_trace_printf(
+              "core_close_device_request source=warm_expiry device_id=%llu warm_hold_ms=%u warm_deadline_ns=%llu now_ns=%llu has_flowing_stream=%u",
+              static_cast<unsigned long long>(rec.device_instance_id),
+              static_cast<unsigned>(rec.warm_hold_ms),
+              static_cast<unsigned long long>(rec.warm_deadline_ns),
+              static_cast<unsigned long long>(now_ns),
+              streams_.has_flowing_stream_for_device(rec.device_instance_id) ? 1u : 0u);
           (void)devices_.mark_warm_expired_close_requested(rec.device_instance_id, true);
           (void)prov->close_device(rec.device_instance_id);
           request_publish_from_core_unchecked();
@@ -2503,6 +3424,8 @@ void CoreRuntime::on_core_timer_tick() {
 
     const size_t retired_count =
         native_objects_.retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
+    const size_t retired_capture_orphan_count =
+        retire_expired_capture_retained_plan_orphans_(now_ns);
     global_resource_aggregate_telemetry().reconcile_lifecycle(
         now_ns,
         current_gen_,
@@ -2512,7 +3435,8 @@ void CoreRuntime::on_core_timer_tick() {
         &native_objects_);
     const size_t retired_telemetry_count =
         global_resource_aggregate_telemetry().retire_destroyed_older_than(now_ns, kDestroyedNativeObjectRetentionWindowNs);
-    if (retired_count > 0 || retired_telemetry_count > 0) {
+    if (retired_count > 0 || retired_capture_orphan_count > 0 ||
+        retired_telemetry_count > 0) {
       request_publish_from_core_unchecked();
     }
 
@@ -2536,6 +3460,14 @@ void CoreRuntime::on_core_timer_tick() {
       has_next_deadline_delay = true;
       next_deadline_delay_ns = next_warm_delay_ns;
     }
+    if (has_next_pending_capture_observation_delay &&
+        (!has_next_deadline_delay ||
+         next_pending_capture_observation_delay_ns < next_deadline_delay_ns)) {
+      has_next_deadline_delay = true;
+      next_deadline_delay_ns = next_pending_capture_observation_delay_ns;
+    }
+    next_capture_retained_plan_orphan_retirement_delay_(
+        now_ns, has_next_deadline_delay, next_deadline_delay_ns);
 
     if (has_next_deadline_delay) {
       core_thread_.set_timer_deadline_ns(next_deadline_delay_ns);
@@ -2729,6 +3661,11 @@ void CoreRuntime::on_core_timer_tick() {
           for (const auto& kv : devices_.all()) {
             const auto& rec = kv.second;
             if (rec.open) {
+              capture_latency_trace_printf(
+                  "core_close_device_request source=shutdown_close_devices device_id=%llu warm_hold_ms=%u has_flowing_stream=%u",
+                  static_cast<unsigned long long>(rec.device_instance_id),
+                  static_cast<unsigned>(rec.warm_hold_ms),
+                  streams_.has_flowing_stream_for_device(rec.device_instance_id) ? 1u : 0u);
               (void)prov->close_device(rec.device_instance_id);
             }
           }
@@ -2830,6 +3767,7 @@ void CoreRuntime::on_core_stop() {
   capture_retained_plan_decisions_.clear();
   capture_priming_seeds_.clear();
   capture_parent_priming_states_.clear();
+  pending_capture_observations_.clear();
   // Core thread is exiting. Ensure external gating sees STOPPED promptly.
   state_.store(CoreRuntimeState::STOPPED, std::memory_order_release);
 }
@@ -3043,6 +3981,11 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
       (void)streams_.forget_stream(effective.stream_id);
       stream_retained_plan_evaluators_.erase(stream_id);
       stream_retained_plan_decisions_.erase(stream_id);
+      request_publish_from_core_unchecked();
+      return;
+    }
+    if (streams_.on_stream_created(effective.stream_id)) {
+      request_publish_from_core_unchecked();
     }
   });
 
@@ -3099,10 +4042,13 @@ TryStartStreamStatus CoreRuntime::try_start_stream(uint64_t stream_id) noexcept 
       result_promise->set_value(TryStartStreamStatus::ProviderRejected);
       return;
     }
-    (void)streams_.on_core_stream_started(stream_id);
+    const bool state_changed = streams_.on_core_stream_started(stream_id);
     (void)refresh_capture_retained_plan_state_(
         owner_device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
+    if (state_changed) {
+      request_publish_from_core_unchecked();
+    }
     result_promise->set_value(TryStartStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
@@ -3147,10 +4093,14 @@ TryStopStreamStatus CoreRuntime::try_stop_stream(uint64_t stream_id) noexcept {
       result_promise->set_value(TryStopStreamStatus::ProviderRejected);
       return;
     }
-    (void)streams_.on_core_stream_stopped(stream_id, /*error_code=*/0);
+    const bool state_changed =
+        streams_.on_core_stream_stopped(stream_id, /*error_code=*/0);
     (void)refresh_capture_retained_plan_state_(
         rec->device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
+    if (state_changed) {
+      request_publish_from_core_unchecked();
+    }
     result_promise->set_value(TryStopStreamStatus::OK);
   });
   if (pr != CoreThread::PostResult::Enqueued) {
@@ -3190,6 +4140,7 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
       return;
     }
 
+    const uint64_t owner_device_instance_id = rec->device_instance_id;
     const ProviderResult dr = p->destroy_stream(stream_id);
     if (!dr.ok()) {
       timeline_teardown_trace_emit("fail DestroyStream stream_id=%llu reason=provider_rc_%u",
@@ -3198,11 +4149,18 @@ TryDestroyStreamStatus CoreRuntime::try_destroy_stream(uint64_t stream_id) noexc
       result_promise->set_value(TryDestroyStreamStatus::ProviderRejected);
       return;
     }
+    const bool state_changed = streams_.on_stream_destroyed(stream_id);
+    if (state_changed) {
+      result_store_.remove_stream_result(stream_id);
+    }
     stream_retained_plan_evaluators_.erase(stream_id);
     stream_retained_plan_decisions_.erase(stream_id);
     (void)refresh_capture_retained_plan_state_(
-        rec->device_instance_id,
+        owner_device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
+    if (state_changed) {
+      request_publish_from_core_unchecked();
+    }
     result_promise->set_value(TryDestroyStreamStatus::OK);
   });
 
@@ -3250,9 +4208,13 @@ TryOpenDeviceStatus CoreRuntime::try_open_device(
     (void)devices_.note_device_identity(device_instance_id, hardware_id);
     (void)seed_retained_device_still_profile_from_template(devices_, device_instance_id, capture_tmpl);
     (void)devices_.set_capture_picture(device_instance_id, capture_tmpl.picture);
+    const bool state_changed = devices_.on_device_opened(device_instance_id);
     (void)refresh_capture_retained_plan_state_(
         device_instance_id,
         /*requested_bump_access_posture_epoch=*/false);
+    if (state_changed) {
+      request_publish_from_core_unchecked();
+    }
     result_promise->set_value(TryOpenDeviceStatus::OK);
   });
 
@@ -3280,6 +4242,15 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
       result_promise->set_value(TryCloseDeviceStatus::Busy);
       return;
     }
+    const CoreDeviceRegistry::DeviceRecord* rec = devices_.find(device_instance_id);
+    capture_latency_trace_printf(
+        "core_close_device_request source=try_close_device device_id=%llu device_open=%u warm_hold_ms=%u warm_deadline_active=%u warm_deadline_ns=%llu has_flowing_stream=%u",
+        static_cast<unsigned long long>(device_instance_id),
+        (rec && rec->open) ? 1u : 0u,
+        rec ? static_cast<unsigned>(rec->warm_hold_ms) : 0u,
+        (rec && rec->warm_deadline_active) ? 1u : 0u,
+        rec ? static_cast<unsigned long long>(rec->warm_deadline_ns) : 0ull,
+        streams_.has_flowing_stream_for_device(device_instance_id) ? 1u : 0u);
     const ProviderResult cr = p->close_device(device_instance_id);
     if (!cr.ok()) {
       timeline_teardown_trace_emit("fail CloseDevice device_instance_id=%llu reason=provider_rc_%u",
@@ -3288,8 +4259,61 @@ TryCloseDeviceStatus CoreRuntime::try_close_device(uint64_t device_instance_id) 
       result_promise->set_value(TryCloseDeviceStatus::ProviderRejected);
       return;
     }
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - epoch_)
+            .count());
+    bool retain_capture_orphans = false;
+    for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+      if (state.device_instance_id == device_instance_id ||
+          (key.kind ==
+               CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+           key.id == device_instance_id)) {
+        retain_capture_orphans = true;
+        break;
+      }
+    }
+    if (!retain_capture_orphans) {
+      for (const PendingCaptureObservation& pending :
+           pending_capture_observations_) {
+        if (pending.device_instance_id == device_instance_id) {
+          retain_capture_orphans = true;
+          break;
+        }
+      }
+    }
+    const bool state_changed = devices_.on_device_closed(device_instance_id);
     capture_parent_priming_states_.erase(device_instance_id);
-    erase_capture_retained_plan_state_for_device_(device_instance_id);
+    if (retain_capture_orphans) {
+      mark_capture_retained_plan_state_orphaned_for_device_(
+          device_instance_id,
+          now_ns + kCaptureRetainedPlanOrphanRetentionWindowNs);
+    } else {
+      for (auto it = capture_retained_plan_evaluators_.begin();
+           it != capture_retained_plan_evaluators_.end();) {
+        if (it->second.device_instance_id == device_instance_id) {
+          it = capture_retained_plan_evaluators_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      for (auto it = capture_retained_plan_decisions_.begin();
+           it != capture_retained_plan_decisions_.end();) {
+        const bool same_device =
+            it->second.device_instance_id == device_instance_id ||
+            (it->first.kind ==
+                 CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+             it->first.id == device_instance_id);
+        if (same_device) {
+          it = capture_retained_plan_decisions_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+    if (state_changed) {
+      request_publish_from_core_unchecked();
+    }
     result_promise->set_value(TryCloseDeviceStatus::OK);
   });
 
@@ -3512,6 +4536,31 @@ bool CoreRuntime::materialize_capture_request_(uint64_t device_instance_id, Capt
   if (const auto* rec = devices_.find(device_instance_id);
       rec && rec->requested_retained_plan.valid) {
     out.requested_retained_plan = rec->requested_retained_plan;
+    return true;
+  }
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    (void)key;
+    if (state.device_instance_id != device_instance_id ||
+        !state.active ||
+        state.current_candidate_index >= state.candidate_count) {
+      continue;
+    }
+    const CoreRetainedProductionPlan requested =
+        state.candidate_sequence[state.current_candidate_index];
+    if (!requested.valid) {
+      continue;
+    }
+    out.requested_retained_plan = requested;
+    return true;
+  }
+  for (const auto& [key, decision] : capture_retained_plan_decisions_) {
+    (void)key;
+    if (decision.device_instance_id != device_instance_id ||
+        !decision.valid ||
+        !decision.selected.valid) {
+      continue;
+    }
+    out.requested_retained_plan = decision.selected;
     return true;
   }
   CoreRuntime* self = const_cast<CoreRuntime*>(this);

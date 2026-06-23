@@ -3,7 +3,7 @@ extends Node
 ## Scene 68: backing-plan evaluation and timing evidence verify
 ##
 ## Purpose:
-## - verify posture-evaluator lifecycle and backing-plan evaluation reporting
+## - verify backing-plan evaluation lifecycle and reporting
 ## - verify internally calibrated stream and capture result-access timing evidence
 ## - first prove that materialization-route evidence can appear without any
 ##   public to_image()/to_image_member() calls from the scene itself
@@ -41,7 +41,7 @@ const DUAL_TARGET_SPECS := [
 	{"tag": "cam1", "hardware_id": "synthetic:1", "intent": "VIEWFINDER", "mode": "FLOWING"},
 ]
 
-const TOTAL_TIMEOUT_MS := 12000
+const TOTAL_TIMEOUT_MS := 18000
 const BASELINE_TIMEOUT_FRAMES := 900
 const ID_TIMEOUT_FRAMES := 900
 const STREAM_RESULT_TIMEOUT_FRAMES := 900
@@ -186,7 +186,7 @@ func _run_impl() -> void:
 	if _done:
 		return
 
-	_step_ok("posture evaluator lifecycle and retained timing evidence verified")
+	_step_ok("backing-plan evaluation lifecycle and timing evidence verified")
 	_cleanup_and_quit(0)
 
 
@@ -234,7 +234,7 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 
-	await _wait_for_authored_structure_state(
+	var first_stream_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s first authored stream-context plateau" % label,
 		[target_hardware_id],
@@ -245,35 +245,56 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	if _done:
 		return {}
 	_step_ok("%s observed first authored stream-context plateau" % label)
+	var initial_stream_id := _stream_id_from_snapshot(first_stream_snapshot, target_hardware_id, target_intent, "FLOWING")
+	_require(initial_stream_id != 0, "%s: initial authored stream id missing" % label)
+	if _done:
+		return {}
 
-	await _wait_for_authored_structure_state(
+	var post_teardown_observation := await _wait_for_single_device_post_teardown_transition(
 		gen,
-		"%s post-teardown absent plateau" % label,
-		[],
-		[target_hardware_id],
-		[],
-		[]
+		"%s post-teardown single-device transition" % label,
+		target_hardware_id,
+		target_intent,
+		initial_stream_id
 	)
 	if _done:
 		return {}
-	_step_ok("%s observed post-teardown absent plateau" % label)
-
-	var final_pre_stream_snapshot := await _wait_for_authored_structure_state(
-		gen,
-		"%s final pre-stream plateau" % label,
-		[target_hardware_id],
-		[],
-		[],
-		[{"hardware_id": target_hardware_id, "intent": target_intent}]
-	)
-	if _done:
-		return {}
-	_step_ok("%s observed final pre-stream plateau" % label)
+	var final_phase_snapshot: Dictionary = {}
+	var post_teardown_variant_index := int(post_teardown_observation.get("variant_index", 0))
+	if post_teardown_variant_index == 0:
+		_step_ok("%s observed post-teardown absent plateau" % label)
+		var final_phase_observation := await _wait_for_any_authored_structure_state(
+			gen,
+			"%s final single-device phase" % label,
+			[
+				{
+					"tag": "final pre-stream plateau",
+					"required_device_hardware_ids": [target_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [],
+					"absent_stream_specs": [{"hardware_id": target_hardware_id, "intent": target_intent}],
+				},
+				{
+					"tag": "final flowing stream-context (coalesced pre-stream plateau)",
+					"required_device_hardware_ids": [target_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [{"hardware_id": target_hardware_id, "intent": target_intent, "mode": "FLOWING"}],
+					"absent_stream_specs": [],
+				},
+			]
+		)
+		if _done:
+			return {}
+		final_phase_snapshot = final_phase_observation.get("snapshot", {})
+		_step_ok("%s observed %s" % [label, str(final_phase_observation.get("variant_tag", "final single-device phase"))])
+	else:
+		final_phase_snapshot = post_teardown_observation.get("snapshot", {})
+		_step_ok("%s observed %s" % [label, str(post_teardown_observation.get("variant_tag", "post-teardown single-device transition"))])
 	await _emit_capture_decision_from_snapshot(
-		final_pre_stream_snapshot,
+		final_phase_snapshot,
 		target_hardware_id,
 		"capture_ready_and_materialize",
-		"%s_final_pre_stream_capture_default" % label,
+		"%s_final_capture_default" % label,
 		label
 	)
 	if _done:
@@ -294,6 +315,9 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	var device_instance_id := int(context.get("device_instance_id", 0))
 	var stream_id := int(context.get("stream_id", 0))
 	var target_label := "%s_%s" % [label, str(context.get("tag", "target"))]
+	_require(stream_id != initial_stream_id, "%s: teardown did not produce a new authored stream identity" % label)
+	if _done:
+		return {}
 
 	_require(device_instance_id != 0, "%s: snapshot device_instance_id is 0" % label)
 	if _done:
@@ -393,14 +417,14 @@ func _run_single_device_access_only_pass(previous_gen: int, label: String) -> Di
 	_assert_access_only_probe_contract(label, access_probe)
 	if _done:
 		return {}
-	_print_retained_plan_decision_summary(
+	_print_backing_plan_decision_summary(
 		"%s_stream_final" % label,
 		stream_candidate_source_report,
 		steady_stream_report,
 		evidence,
 		"stream"
 	)
-	_print_retained_plan_decision_summary(
+	_print_backing_plan_decision_summary(
 		"%s_capture_reused_final" % label,
 		stream_candidate_source_report,
 		capture_report,
@@ -464,7 +488,7 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	if _done:
 		return {}
 
-	await _wait_for_authored_structure_state(
+	var first_cam0_stream_snapshot := await _wait_for_authored_structure_state(
 		gen,
 		"%s first cam0 stream-context plateau" % label,
 		[cam0_hardware_id],
@@ -475,82 +499,136 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 	if _done:
 		return {}
 	_step_ok("%s observed first cam0 stream-context plateau" % label)
-
-	await _wait_for_authored_structure_state(
-		gen,
-		"%s post-teardown cam0 absent plateau" % label,
-		[],
-		[cam0_hardware_id],
-		[],
-		[]
-	)
+	var initial_cam0_stream_id := _stream_id_from_snapshot(first_cam0_stream_snapshot, cam0_hardware_id, cam0_intent, "FLOWING")
+	_require(initial_cam0_stream_id != 0, "%s: initial cam0 authored stream id missing" % label)
 	if _done:
 		return {}
-	_step_ok("%s observed post-teardown cam0 absent plateau" % label)
 
-	var dual_no_stream_snapshot := await _wait_for_authored_structure_state(
+	var post_teardown_dual_observation := await _wait_for_dual_device_post_teardown_transition(
 		gen,
-		"%s dual-device no-authored-stream plateau" % label,
-		[cam0_hardware_id, cam1_hardware_id],
-		[],
-		[],
-		[
-			{"hardware_id": cam0_hardware_id, "intent": cam0_intent},
-			{"hardware_id": cam1_hardware_id, "intent": cam1_intent},
-		]
-	)
-	if _done:
-		return {}
-	_step_ok("%s observed dual-device no-authored-stream plateau" % label)
-	await _seed_capture_access_only_evidence_from_snapshot(
-		dual_no_stream_snapshot,
+		"%s post-teardown dual-device transition" % label,
 		cam0_hardware_id,
-		"%s_dual_no_stream_cam0_capture_access_only" % label
+		cam0_intent,
+		cam1_hardware_id,
+		cam1_intent,
+		initial_cam0_stream_id
+	)
+	if _done:
+		return {}
+	var dual_phase_snapshot: Dictionary = {}
+	var dual_phase_variant_index := 0
+	var post_teardown_dual_variant_index := int(post_teardown_dual_observation.get("variant_index", 0))
+	if post_teardown_dual_variant_index == 0:
+		_step_ok("%s observed post-teardown cam0 absent plateau" % label)
+		var dual_phase_observation := await _wait_for_any_authored_structure_state(
+			gen,
+			"%s dual-device second-open phase" % label,
+			[
+				{
+					"tag": "dual-device no-authored-stream plateau",
+					"required_device_hardware_ids": [cam0_hardware_id, cam1_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [],
+					"absent_stream_specs": [
+						{"hardware_id": cam0_hardware_id, "intent": cam0_intent},
+						{"hardware_id": cam1_hardware_id, "intent": cam1_intent},
+					],
+				},
+				{
+					"tag": "mixed dual-device plateau (coalesced no-stream plateau)",
+					"required_device_hardware_ids": [cam0_hardware_id, cam1_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"}],
+					"absent_stream_specs": [{"hardware_id": cam1_hardware_id, "intent": cam1_intent}],
+				},
+				{
+					"tag": "full dual-device stream-context plateau (coalesced no-stream and mixed plateaus)",
+					"required_device_hardware_ids": [cam0_hardware_id, cam1_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [
+						{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"},
+						{"hardware_id": cam1_hardware_id, "intent": cam1_intent, "mode": "FLOWING"},
+					],
+					"absent_stream_specs": [],
+				},
+			]
+		)
+		if _done:
+			return {}
+		dual_phase_snapshot = dual_phase_observation.get("snapshot", {})
+		dual_phase_variant_index = int(dual_phase_observation.get("variant_index", 0))
+		_step_ok("%s observed %s" % [label, str(dual_phase_observation.get("variant_tag", "dual-device second-open phase"))])
+	else:
+		dual_phase_snapshot = post_teardown_dual_observation.get("snapshot", {})
+		dual_phase_variant_index = post_teardown_dual_variant_index - 1
+		_step_ok("%s observed %s" % [label, str(post_teardown_dual_observation.get("variant_tag", "post-teardown dual-device transition"))])
+	await _seed_capture_access_only_evidence_from_snapshot(
+		dual_phase_snapshot,
+		cam0_hardware_id,
+		"%s_dual_second_open_cam0_capture_access_only" % label
 	)
 	if _done:
 		return {}
 	await _seed_capture_access_only_evidence_from_snapshot(
-		dual_no_stream_snapshot,
+		dual_phase_snapshot,
 		cam1_hardware_id,
-		"%s_dual_no_stream_cam1_capture_access_only" % label
+		"%s_dual_second_open_cam1_capture_access_only" % label
 	)
 	if _done:
 		return {}
 	await _emit_capture_decision_from_snapshot(
-		dual_no_stream_snapshot,
+		dual_phase_snapshot,
 		cam0_hardware_id,
 		"capture_ready_and_materialize",
-		"%s_dual_no_stream_cam0_capture_default" % label,
+		"%s_dual_second_open_cam0_capture_default" % label,
 		label
 	)
 	if _done:
 		return {}
 	await _emit_capture_decision_from_snapshot(
-		dual_no_stream_snapshot,
+		dual_phase_snapshot,
 		cam1_hardware_id,
 		"capture_ready_and_materialize",
-		"%s_dual_no_stream_cam1_capture_default" % label,
+		"%s_dual_second_open_cam1_capture_default" % label,
 		label
 	)
 	if _done:
 		return {}
 
-	var mixed_dual_snapshot := await _wait_for_authored_structure_state(
-		gen,
-		"%s mixed dual-device plateau" % label,
-		[cam0_hardware_id, cam1_hardware_id],
-		[],
-		[{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"}],
-		[{"hardware_id": cam1_hardware_id, "intent": cam1_intent}]
-	)
-	if _done:
-		return {}
-	_step_ok("%s observed mixed dual-device plateau" % label)
+	var mixed_dual_snapshot: Dictionary = dual_phase_snapshot
+	if dual_phase_variant_index == 0:
+		var mixed_dual_observation := await _wait_for_any_authored_structure_state(
+			gen,
+			"%s mixed dual-device follow-up phase" % label,
+			[
+				{
+					"tag": "mixed dual-device plateau",
+					"required_device_hardware_ids": [cam0_hardware_id, cam1_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"}],
+					"absent_stream_specs": [{"hardware_id": cam1_hardware_id, "intent": cam1_intent}],
+				},
+				{
+					"tag": "full dual-device stream-context plateau (coalesced mixed plateau)",
+					"required_device_hardware_ids": [cam0_hardware_id, cam1_hardware_id],
+					"absent_device_hardware_ids": [],
+					"required_stream_specs": [
+						{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"},
+						{"hardware_id": cam1_hardware_id, "intent": cam1_intent, "mode": "FLOWING"},
+					],
+					"absent_stream_specs": [],
+				},
+			]
+		)
+		if _done:
+			return {}
+		mixed_dual_snapshot = mixed_dual_observation.get("snapshot", {})
+		_step_ok("%s observed %s" % [label, str(mixed_dual_observation.get("variant_tag", "mixed dual-device follow-up phase"))])
 	await _emit_capture_decision_from_snapshot(
 		mixed_dual_snapshot,
 		cam1_hardware_id,
 		"capture_ready_and_materialize",
-		"%s_mixed_dual_cam1_capture_default" % label,
+		"%s_cam1_with_cam0_stream_capture_default" % label,
 		label
 	)
 	if _done:
@@ -576,6 +654,10 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		])
 		var device_instance_id := int(context.get("device_instance_id", 0))
 		var stream_id := int(context.get("stream_id", 0))
+		if str(context.get("tag", "")) == "cam0":
+			_require(stream_id != initial_cam0_stream_id, "%s: cam0 teardown did not produce a new authored stream identity" % label)
+			if _done:
+				return {}
 		_require(device_instance_id != 0 and stream_id != 0, "%s: target ids missing for %s" % [label, str(context.get("tag", ""))])
 		if _done:
 			return {}
@@ -680,14 +762,14 @@ func _run_dual_device_materialized_pass(previous_gen: int, label: String) -> Dic
 		_assert_expected_evidence_family(evidence, target_label, stream_report, capture_report)
 		if _done:
 			return {}
-		_print_retained_plan_decision_summary(
+		_print_backing_plan_decision_summary(
 			"%s_stream_final" % target_label,
 			stream_candidate_source_report,
 			stream_report,
 			evidence,
 			"stream"
 		)
-		_print_retained_plan_decision_summary(
+		_print_backing_plan_decision_summary(
 			"%s_capture_reused_final" % target_label,
 			stream_candidate_source_report,
 			capture_report,
@@ -776,6 +858,155 @@ func _wait_for_authored_structure_state(
 			absent_stream_specs
 		):
 			return snapshot
+	_fail("%s: timed out waiting for authored structure state" % label)
+	return {}
+
+
+func _wait_for_any_authored_structure_state(expected_gen: int, label: String, variants: Array) -> Dictionary:
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var snapshot = CamBANGServer.get_state_snapshot()
+		if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+			continue
+		if int(snapshot.get("gen", -1)) != expected_gen:
+			continue
+		for variant_index in range(variants.size()):
+			var variant_v = variants[variant_index]
+			if typeof(variant_v) != TYPE_DICTIONARY:
+				continue
+			var variant: Dictionary = variant_v
+			if _snapshot_matches_authored_structure_state(
+				snapshot,
+				variant.get("required_device_hardware_ids", []),
+				variant.get("absent_device_hardware_ids", []),
+				variant.get("required_stream_specs", []),
+				variant.get("absent_stream_specs", [])
+			):
+				return {
+					"snapshot": snapshot,
+					"variant_index": variant_index,
+					"variant_tag": str(variant.get("tag", "authored structure state")),
+				}
+	_fail("%s: timed out waiting for authored structure state" % label)
+	return {}
+
+
+func _wait_for_single_device_post_teardown_transition(
+	expected_gen: int,
+	label: String,
+	hardware_id: String,
+	intent: String,
+	initial_stream_id: int
+) -> Dictionary:
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var snapshot = CamBANGServer.get_state_snapshot()
+		if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+			continue
+		if int(snapshot.get("gen", -1)) != expected_gen:
+			continue
+		if _snapshot_matches_authored_structure_state(snapshot, [], [hardware_id], [], []):
+			return {
+				"snapshot": snapshot,
+				"variant_index": 0,
+				"variant_tag": "post-teardown absent plateau",
+			}
+		if _snapshot_matches_authored_structure_state(
+			snapshot,
+			[hardware_id],
+			[],
+			[],
+			[{"hardware_id": hardware_id, "intent": intent}]
+		):
+			return {
+				"snapshot": snapshot,
+				"variant_index": 1,
+				"variant_tag": "final pre-stream plateau (coalesced absent plateau)",
+			}
+		var current_stream_id := _stream_id_from_snapshot(snapshot, hardware_id, intent, "FLOWING")
+		if current_stream_id != 0 and current_stream_id != initial_stream_id:
+			return {
+				"snapshot": snapshot,
+				"variant_index": 2,
+				"variant_tag": "final flowing stream-context (coalesced absent and pre-stream plateaus)",
+			}
+	_fail("%s: timed out waiting for authored structure state" % label)
+	return {}
+
+
+func _wait_for_dual_device_post_teardown_transition(
+	expected_gen: int,
+	label: String,
+	cam0_hardware_id: String,
+	cam0_intent: String,
+	cam1_hardware_id: String,
+	cam1_intent: String,
+	initial_cam0_stream_id: int
+) -> Dictionary:
+	for _i in range(ID_TIMEOUT_FRAMES):
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		var snapshot = CamBANGServer.get_state_snapshot()
+		if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+			continue
+		if int(snapshot.get("gen", -1)) != expected_gen:
+			continue
+		if _snapshot_matches_authored_structure_state(snapshot, [], [cam0_hardware_id], [], []):
+			return {
+				"snapshot": snapshot,
+				"variant_index": 0,
+				"variant_tag": "post-teardown cam0 absent plateau",
+			}
+		if _snapshot_matches_authored_structure_state(
+			snapshot,
+			[cam0_hardware_id, cam1_hardware_id],
+			[],
+			[],
+			[
+				{"hardware_id": cam0_hardware_id, "intent": cam0_intent},
+				{"hardware_id": cam1_hardware_id, "intent": cam1_intent},
+			]
+		):
+			return {
+				"snapshot": snapshot,
+				"variant_index": 1,
+				"variant_tag": "dual-device no-authored-stream plateau (coalesced cam0-absent plateau)",
+			}
+		var cam0_stream_id := _stream_id_from_snapshot(snapshot, cam0_hardware_id, cam0_intent, "FLOWING")
+		if cam0_stream_id == 0 or cam0_stream_id == initial_cam0_stream_id:
+			continue
+		if _snapshot_matches_authored_structure_state(
+			snapshot,
+			[cam0_hardware_id, cam1_hardware_id],
+			[],
+			[{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"}],
+			[{"hardware_id": cam1_hardware_id, "intent": cam1_intent}]
+		):
+			return {
+				"snapshot": snapshot,
+				"variant_index": 2,
+				"variant_tag": "mixed dual-device plateau (coalesced cam0-absent and no-stream plateaus)",
+			}
+		if _snapshot_matches_authored_structure_state(
+			snapshot,
+			[cam0_hardware_id, cam1_hardware_id],
+			[],
+			[
+				{"hardware_id": cam0_hardware_id, "intent": cam0_intent, "mode": "FLOWING"},
+				{"hardware_id": cam1_hardware_id, "intent": cam1_intent, "mode": "FLOWING"},
+			],
+			[]
+		):
+			return {
+				"snapshot": snapshot,
+				"variant_index": 3,
+				"variant_tag": "full dual-device stream-context plateau (coalesced cam0-absent, no-stream, and mixed plateaus)",
+			}
 	_fail("%s: timed out waiting for authored structure state" % label)
 	return {}
 
@@ -1282,6 +1513,24 @@ func _find_stream_snapshot_record(
 	return {}
 
 
+func _stream_id_from_snapshot(
+	snapshot: Dictionary,
+	hardware_id: String,
+	intent: String,
+	required_mode: String = ""
+) -> int:
+	var device_record := _find_device_snapshot_record_by_hardware_id(snapshot, hardware_id)
+	if device_record.is_empty():
+		return 0
+	var device_instance_id := int(device_record.get("instance_id", 0))
+	if device_instance_id == 0:
+		return 0
+	var stream_record := _find_stream_snapshot_record(snapshot, device_instance_id, intent, required_mode)
+	if stream_record.is_empty():
+		return 0
+	return int(stream_record.get("stream_id", 0))
+
+
 func _extract_snapshot_still_profile(device_snapshot: Dictionary) -> Dictionary:
 	var capture_profile_v = device_snapshot.get("capture_profile", null)
 	if typeof(capture_profile_v) != TYPE_DICTIONARY:
@@ -1667,7 +1916,7 @@ func _compared_auxiliary_gpu_materializer_evidence(
 	return compared
 
 
-func _print_retained_plan_decision_summary(
+func _print_backing_plan_decision_summary(
 	context_tag: String,
 	candidate_source_report: Dictionary,
 	selected_report: Dictionary,
@@ -1740,7 +1989,7 @@ func _print_retained_plan_decision_summary(
 	fields.append("effective_selection=%s" % _synthetic_producer_output_form_effective_selection())
 	fields.append("stream_downgrades=%s" % _synthetic_stream_capability_downgrade_effective_selection())
 	fields.append("capture_downgrades=%s" % _synthetic_capture_capability_downgrade_effective_selection())
-	print("RETAINED_PLAN_DECISION: %s" % " ".join(fields))
+	print("BACKING_PLAN_DECISION: %s" % " ".join(fields))
 
 
 func _emit_capture_decision_from_snapshot(
@@ -1770,7 +2019,7 @@ func _emit_capture_decision_from_snapshot(
 		return
 	if _backing_plan_has_made_decision(report):
 		var evidence := _get_result_access_timing_evidence()
-		_print_retained_plan_decision_summary(
+		_print_backing_plan_decision_summary(
 			context_tag,
 			report,
 			report,
@@ -1814,7 +2063,7 @@ func _emit_stream_decision_from_snapshot(
 		return
 	if _backing_plan_has_made_decision(report):
 		var evidence := _get_result_access_timing_evidence()
-		_print_retained_plan_decision_summary(
+		_print_backing_plan_decision_summary(
 			context_tag,
 			report,
 			report,

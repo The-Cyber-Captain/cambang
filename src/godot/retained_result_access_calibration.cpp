@@ -172,7 +172,7 @@ void report_stream_to_image_observation(
     // Chooser/report consumption follows the public to_image() path for the
     // realized posture. A sidecar posture may also have an auxiliary GPU
     // materializer measurement, but that remains a separate maintainer-only
-    // route rather than replacing the chooser-facing route.
+    // route rather than replacing the decision-facing public route.
     measurement = result_access_cost_evidence::latest_stream_measurement(
         result_access_cost_evidence::kRouteStreamToImageGpuPrimaryCpuSidecar,
         data->access_posture.posture_id);
@@ -236,7 +236,7 @@ void report_capture_to_image_observation(
         member.access_posture.posture_id,
         member.image_member_index);
   } else if (member.access_posture.has_retained_cpu_payload) {
-    // Capture follows the same split as stream: chooser/report input tracks
+    // Capture follows the same split as stream: decision/report input tracks
     // the realized public to_image() route, while any sidecar-present GPU
     // materializer timing remains an auxiliary maintainer-only route.
     measurement = result_access_cost_evidence::latest_capture_measurement(
@@ -253,6 +253,7 @@ void report_capture_to_image_observation(
   runtime->report_capture_retained_to_image_observation(
       data->device_instance_id,
       data->capture_id,
+      data->acquisition_session_id,
       member.access_posture.posture_id,
       member.retained_access_truth.to_image,
       measurement.has_value() && measurement->success,
@@ -295,8 +296,9 @@ void calibrate_stream_result(const SharedStreamResultData& data,
     if (data->access_posture.has_retained_gpu_backing &&
         data->access_posture.gpu_materialization_available) {
       (void)CamBANGStreamResult::calibrate_to_image_gpu_materializer_for_retained_access(data);
-      }
-      refine_stream_to_image_classification(data);
+    }
+    refine_stream_to_image_classification(data);
+    report_stream_to_image_observation(data, runtime);
   } else if (data->retained_access_truth.to_image == ResultCapability::UNSUPPORTED &&
              mark_immediate_needed(image_identity)) {
     report_stream_to_image_observation(data, runtime);
@@ -337,6 +339,20 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
       refine_capture_to_image_classification(*member);
       report_capture_to_image_observation(data, *member, runtime);
     }
+  }
+}
+
+void report_capture_result_observation(const SharedCaptureResultData& data,
+                                       CoreRuntime* runtime) {
+  if (!data || !runtime) {
+    return;
+  }
+  for (uint32_t i = 0; i < data->image_member_count(); ++i) {
+    const auto* member = data->image_member_at(i);
+    if (!member) {
+      continue;
+    }
+    report_capture_to_image_observation(data, *member, runtime);
   }
 }
 
