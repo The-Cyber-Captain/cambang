@@ -46,6 +46,7 @@ var _quit_requested := false
 var _start_ms := 0
 var _baseline_gens: Array[int] = []
 var _display_refs: Array = []
+var _reported_evaluation_signatures := {}
 
 
 func _ready() -> void:
@@ -62,6 +63,7 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 
 func _run() -> void:
 	print("RUN: %s" % SCENE_LABEL)
+	_log_maintainer_output_form_probe()
 	await _run_impl()
 
 
@@ -93,6 +95,7 @@ func _run_impl() -> void:
 		return
 
 	_step_ok("backing-plan evaluation lifecycle, scoping, and clocked cleanup verified")
+	_info("PASS: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified")
 	_cleanup_and_quit(0)
 
 
@@ -119,7 +122,7 @@ func _run_single_natural_pass(previous_gen: int) -> int:
 
 	var device_instance_id := int(device_record.get("instance_id", 0))
 	var capture_report := await _wait_for_capture_report(device_instance_id, LABEL)
-	_assert_capture_report_shape(capture_report, device_instance_id, LABEL, false)
+	_assert_capture_report_shape(capture_report, device_instance_id, LABEL, false, false)
 	if _done:
 		return previous_gen
 	_step_ok("%s capture parent report visible before explicit capture" % LABEL)
@@ -196,8 +199,8 @@ func _run_dual_natural_pass(previous_gen: int) -> int:
 	var cam1_capture_report := await _wait_for_capture_report(cam1_device_id, LABEL)
 	if _done:
 		return previous_gen
-	_assert_capture_report_shape(cam0_capture_report, cam0_device_id, LABEL + "_cam0", false)
-	_assert_capture_report_shape(cam1_capture_report, cam1_device_id, LABEL + "_cam1", false)
+	_assert_capture_report_shape(cam0_capture_report, cam0_device_id, LABEL + "_cam0", false, false)
+	_assert_capture_report_shape(cam1_capture_report, cam1_device_id, LABEL + "_cam1", false, false)
 	if _done:
 		return previous_gen
 	_assert_reports_distinct(
@@ -324,6 +327,7 @@ func _run_clocked_edge_pass(previous_gen: int) -> int:
 		initial_capture_report_before_probe,
 		initial_device_id,
 		LABEL + "_initial",
+		false,
 		false
 	)
 	if _done:
@@ -457,7 +461,7 @@ func _run_clocked_edge_pass(previous_gen: int) -> int:
 	)
 	if _done:
 		return previous_gen
-	_assert_capture_report_shape(final_capture_report, int(final_device.get("instance_id", 0)), LABEL + "_final", false)
+	_assert_capture_report_shape(final_capture_report, int(final_device.get("instance_id", 0)), LABEL + "_final", false, false)
 	_assert_stream_report_shape(final_stream_report, final_stream_id, int(final_device.get("instance_id", 0)), LABEL + "_final")
 	if _done:
 		return previous_gen
@@ -1082,6 +1086,7 @@ func _wait_for_capture_report(device_instance_id: int, label: String) -> Diction
 		await get_tree().process_frame
 		var report := _get_capture_backing_plan_evaluation_report(device_instance_id)
 		if not report.is_empty():
+			_emit_evaluation_info_if_changed(report, label)
 			return report
 	_fail("%s: timed out waiting for capture backing-plan evaluation report for device_instance_id=%d" % [label, device_instance_id])
 	return {}
@@ -1097,6 +1102,9 @@ func _wait_for_capture_report_decided(device_instance_id: int, label: String) ->
 		if report.is_empty():
 			continue
 		last_report = report
+		_emit_evaluation_info_if_changed(report, label)
+		if not _plan_valid(report, "requested"):
+			continue
 		if _report_has_decision(report):
 			return report
 	_fail("%s: timed out waiting for decided capture backing-plan evaluation report: %s" % [label, JSON.stringify(last_report)])
@@ -1118,6 +1126,9 @@ func _wait_for_capture_report_change_or_decision(
 		if report.is_empty():
 			continue
 		last_report = report
+		_emit_evaluation_info_if_changed(report, label)
+		if not _plan_valid(report, "requested"):
+			continue
 		if _report_has_decision(report):
 			return report
 		if _report_signature(report) != previous_signature:
@@ -1141,6 +1152,7 @@ func _wait_for_stream_report_decided(stream_id: int, label: String) -> Dictionar
 		if report.is_empty():
 			continue
 		last_report = report
+		_emit_evaluation_info_if_changed(report, label)
 		if _report_has_decision(report):
 			return report
 	_fail("%s: timed out waiting for decided stream backing-plan evaluation report: %s" % [label, JSON.stringify(last_report)])
@@ -1165,6 +1177,7 @@ func _advance_clocked_stream_evaluation_until_decided(
 		var report := _get_stream_backing_plan_evaluation_report(stream_id)
 		if not report.is_empty():
 			last_report = report
+			_emit_evaluation_info_if_changed(report, label)
 			if _report_has_decision(report):
 				return report
 		var current_ns := _current_virtual_timeline_ns()
@@ -1211,6 +1224,7 @@ func _wait_for_stream_report_absent(stream_id: int, label: String) -> void:
 			return
 		await get_tree().process_frame
 		if _get_stream_backing_plan_evaluation_report(stream_id).is_empty():
+			_emit_evaluation_cleared_info("stream", stream_id, label)
 			return
 	_fail("%s: timed out waiting for stream backing-plan report removal for stream_id=%d" % [label, stream_id])
 
@@ -1221,6 +1235,7 @@ func _wait_for_stream_report_absent_clocked(stream_id: int, label: String) -> vo
 			return
 		await get_tree().process_frame
 		if _get_stream_backing_plan_evaluation_report(stream_id).is_empty():
+			_emit_evaluation_cleared_info("stream", stream_id, label)
 			return
 		_drain_clocked_current_time(label)
 		if _done:
@@ -1323,6 +1338,63 @@ func _current_virtual_timeline_ns() -> int:
 	return int(metrics.get("current_virtual_timeline_ns", 0))
 
 
+func _synthetic_producer_output_form_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default"))
+
+
+func _synthetic_producer_output_form_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-producer-output-form="
+	return _single_namespaced_cmdline_selection(PREFIX)
+
+
+func _single_namespaced_cmdline_selection(prefix: String) -> String:
+	var found := ""
+	for arg in OS.get_cmdline_user_args():
+		var text := str(arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	if found != "":
+		return found
+	for arg in OS.get_cmdline_args():
+		var text := str(arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_producer_output_form_effective_selection() -> String:
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_producer_output_form_setting()
+
+
+func _log_maintainer_output_form_probe() -> void:
+	_info(
+		"Synthetic producer output-form stored project setting: %s" % [
+			_synthetic_producer_output_form_setting()
+		]
+	)
+	var effective_selection := _synthetic_producer_output_form_effective_selection()
+	var suffix := "stored project setting"
+	if effective_selection != _synthetic_producer_output_form_setting():
+		suffix = "transient command-line override"
+	_info(
+		"Synthetic producer output-form effective runtime selection: %s (%s)" % [
+			effective_selection,
+			suffix,
+		]
+	)
+
+
 func _snapshot_for_gen(expected_gen: int) -> Dictionary:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
@@ -1368,6 +1440,36 @@ func _get_capture_backing_plan_evaluation_report(device_instance_id: int) -> Dic
 	return {}
 
 
+func _emit_evaluation_info_if_changed(report: Dictionary, label: String) -> void:
+	if report.is_empty():
+		return
+	var key := _report_identity_key(report)
+	if key == "":
+		return
+	var signature := _report_signature(report)
+	if _reported_evaluation_signatures.get(key, "") == signature:
+		return
+	_reported_evaluation_signatures[key] = signature
+	_info(_format_evaluation_info_line(report, label))
+
+
+func _emit_evaluation_cleared_info(target_kind: String, target_id: int, label: String) -> void:
+	if target_id == 0:
+		return
+	var key := "%s:%d" % [target_kind, target_id]
+	if not _reported_evaluation_signatures.has(key):
+		return
+	_reported_evaluation_signatures.erase(key)
+	_info(
+		"INFO: %s timeline_ns=%d %s evaluation cleared target_id=%d" % [
+			label,
+			_current_virtual_timeline_ns(),
+			target_kind,
+			target_id,
+		]
+	)
+
+
 func _assert_stream_report_shape(report: Dictionary, stream_id: int, device_instance_id: int, label: String) -> void:
 	_require(not report.is_empty(), "%s: stream report missing" % label)
 	if _done:
@@ -1382,7 +1484,13 @@ func _assert_stream_report_shape(report: Dictionary, stream_id: int, device_inst
 	var decision_candidates := _decision_candidate_postures(report)
 	_require(decision_candidates.size() <= 3, "%s: stream report decision_candidate_sequence exceeds supported posture count" % label)
 
-func _assert_capture_report_shape(report: Dictionary, device_instance_id: int, label: String, require_decision: bool) -> void:
+func _assert_capture_report_shape(
+	report: Dictionary,
+	device_instance_id: int,
+	label: String,
+	require_decision: bool,
+	require_requested: bool = true
+) -> void:
 	_require(not report.is_empty(), "%s: capture report missing" % label)
 	if _done:
 		return
@@ -1399,7 +1507,8 @@ func _assert_capture_report_shape(report: Dictionary, device_instance_id: int, l
 	_require(int(report.get("device_instance_id", 0)) == device_instance_id, "%s: capture report device_instance_id mismatch" % label)
 	if bool(report.get("provisional_parent", false)):
 		_require(parent_kind == "capture_priming", "%s: provisional capture parent must report parent_kind=capture_priming" % label)
-	_require(_plan_valid(report, "requested"), "%s: capture report requested plan missing" % label)
+	if require_requested:
+		_require(_plan_valid(report, "requested"), "%s: capture report requested plan missing" % label)
 	if require_decision:
 		_require(_report_has_decision(report), "%s: capture report never resolved to a decision" % label)
 		var decision_candidates := _decision_candidate_postures(report)
@@ -1506,6 +1615,97 @@ func _report_signature(report: Dictionary) -> String:
 		"candidate_sequence": _report_candidate_postures(report, "candidate_sequence"),
 		"decision_candidate_sequence": _report_candidate_postures(report, "decision_candidate_sequence"),
 	})
+
+
+func _report_identity_key(report: Dictionary) -> String:
+	if report.is_empty():
+		return ""
+	return "%s:%d" % [str(report.get("target_kind", "")), int(report.get("target_id", 0))]
+
+
+func _format_evaluation_info_line(report: Dictionary, label: String) -> String:
+	var timeline_ns := _current_virtual_timeline_ns()
+	var target_kind := str(report.get("target_kind", ""))
+	var parent_kind := str(report.get("parent_kind", ""))
+	var parent_id := int(report.get("parent_id", 0))
+	var target_id := int(report.get("target_id", 0))
+	var requested := _plan_posture(report, "requested")
+	var steady := _plan_posture(report, "steady")
+	var decision := _plan_posture(report, "decision_selected")
+	var candidate_postures := _decision_candidate_postures(report)
+	var evidence_summary := _report_evidence_summary(report)
+	if _report_has_decision(report):
+		return (
+			"INFO: %s timeline_ns=%d %s evaluation chose %s for %s %d; requested=%s steady=%s candidates=%s evidence=%s" % [
+				label,
+				timeline_ns,
+				target_kind,
+				decision,
+				parent_kind,
+				parent_id,
+				requested,
+				steady,
+				JSON.stringify(candidate_postures),
+				evidence_summary,
+			]
+		)
+	return (
+		"INFO: %s timeline_ns=%d %s evaluation active for %s %d; target_id=%d requested=%s steady=%s candidate_index=%d candidates=%s evidence=%s" % [
+			label,
+			timeline_ns,
+			target_kind,
+			parent_kind,
+			parent_id,
+			target_id,
+			requested,
+			steady,
+			int(report.get("current_candidate_index", -1)),
+			JSON.stringify(candidate_postures),
+			evidence_summary,
+		]
+	)
+
+
+func _report_evidence_summary(report: Dictionary) -> String:
+	var prefixes: Array[String] = []
+	var target_kind := str(report.get("target_kind", ""))
+	var primary_function := str(report.get("primary_function", ""))
+	if target_kind == "capture":
+		prefixes.append("capture_to_image.")
+	elif target_kind == "stream" and primary_function == "display_view":
+		prefixes.append("stream_display_view.")
+	else:
+		prefixes.append("stream_to_image.")
+	var summaries: Array[String] = []
+	var evidence := _get_result_access_timing_evidence()
+	var keys := evidence.keys()
+	keys.sort()
+	for key_v in keys:
+		var route := str(key_v)
+		var matched := false
+		for prefix in prefixes:
+			if route.begins_with(prefix):
+				matched = true
+				break
+		if not matched:
+			continue
+		var entry_v = evidence.get(route, null)
+		if typeof(entry_v) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = entry_v
+		summaries.append(
+			"%s{calls=%d,successes=%d,first_success_ns=%d,max_ns=%d,postures=%d}" % [
+				route,
+				int(entry.get("calls", 0)),
+				int(entry.get("successes", 0)),
+				int(entry.get("first_success_ns", 0)),
+				int(entry.get("max_ns", 0)),
+				int(entry.get("posture_count", 0)),
+			]
+		)
+	if summaries.is_empty():
+		return "none"
+	return "; ".join(summaries)
 
 
 func _evidence_has_prefix(evidence: Dictionary, prefix: String) -> bool:
@@ -1663,6 +1863,8 @@ func _stop_and_verify_reset(label: String) -> void:
 		var reports := _get_backing_plan_evaluation_reports()
 		if not reports.is_empty():
 			continue
+		_reported_evaluation_signatures.clear()
+		_info("INFO: %s backing-plan reports and timing evidence cleared after stop()" % label)
 		_step_ok("%s stop() cleared snapshot, evidence, and reports" % label)
 		return
 	_fail("%s: stop() did not clear snapshot/evidence/reports in time" % label)
@@ -1673,28 +1875,36 @@ func _timed_out() -> bool:
 		return true
 	if Time.get_ticks_msec() - _start_ms <= TOTAL_TIMEOUT_MS:
 		return false
-	_fail("FAIL: total verification timeout")
+	_fail("total verification timeout")
 	return true
 
 
 func _require(condition: bool, message: String) -> void:
 	if condition or _done:
 		return
-	_fail("FAIL: " + message)
+	_fail(message)
 
 
 func _fail(message: String) -> void:
 	if _done:
 		return
 	_done = true
-	push_error(message)
-	print(message)
+	var detail := message
+	if detail.begins_with("FAIL: "):
+		detail = detail.substr(6)
+	push_error("step %d FAIL: %s" % [_step, detail])
+	printerr("FAIL: %s" % detail)
+	print("FAIL: %s" % detail)
 	_cleanup_and_quit(1)
 
 
 func _step_ok(message: String) -> void:
 	_step += 1
 	print("step %d OK: %s" % [_step, message])
+
+
+func _info(message: String) -> void:
+	print(message)
 
 
 func _cleanup_and_quit(exit_code: int) -> void:

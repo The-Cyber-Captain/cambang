@@ -79,11 +79,13 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Canonical backing-plan evaluation verifier; supersedes legacy Scene 68 as the focused automatable behavioral check for this topic.
   - Proves stream-parent and capture-parent evaluation scoping, access-only evidence seeding without public `to_image()` calls from the scene itself, stop/reset clearing, and a paused `advance_timeline(...)` edge path with exact-same-time device+stream realization plus teardown/recreation cleanup.
   - Its paused/clocked path spends explicit virtual-time budget for stream-evaluation completion; it does not rely on `advance_timeline(...)` to hide evaluator quiescence behind a single host step.
+  - At startup it reports the stored and effective Maintainer Synthetic producer output-form selection, so matrix failures can be correlated against the actual runtime selection in force.
+  - On each observed evaluation or re-evaluation event it emits `INFO:` lines describing the parent, chosen or active backing-plan state, current synthetic timeline position, and concise timing-evidence summary.
   - Uses dedicated external scenario fixtures:
     - `scenarios/568_backing_plan_single_access_live.json`
     - `scenarios/568_backing_plan_dual_live.json`
     - `scenarios/568_backing_plan_edge_clocked.json`
-  - Expected pass string: `step <n> OK: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified`
+  - Expected pass string: `PASS: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified`
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -165,7 +167,7 @@ Android export/deploy can use the same launcher and log bucketing:
   -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
   -CaptureLogs `
   -TimeoutSec 25 `
-  -ExpectedOkPattern "step\s+\d+\s+OK:\s+backing-plan evaluation lifecycle, scoping, and clocked cleanup verified" `
+  -ExpectedOkPattern "PASS:\s+backing-plan evaluation lifecycle, scoping, and clocked cleanup verified" `
   -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
 ```
 

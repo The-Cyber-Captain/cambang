@@ -73,12 +73,26 @@ func _synthetic_capture_capability_downgrade_setting() -> String:
 
 func _synthetic_producer_output_form_cmdline_selection() -> String:
 	const PREFIX := "--cambang-synth-producer-output-form="
+	return _single_namespaced_cmdline_selection(PREFIX)
+
+
+func _single_namespaced_cmdline_selection(prefix: String) -> String:
 	var found := ""
 	for arg in OS.get_cmdline_user_args():
 		var text := str(arg)
-		if not text.begins_with(PREFIX):
+		if not text.begins_with(prefix):
 			continue
-		var value := text.substr(PREFIX.length())
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	if found != "":
+		return found
+	for arg in OS.get_cmdline_args():
+		var text := str(arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
 		if found != "":
 			return "<duplicate>"
 		found = value
@@ -87,30 +101,12 @@ func _synthetic_producer_output_form_cmdline_selection() -> String:
 
 func _synthetic_stream_capability_downgrade_cmdline_selection() -> String:
 	const PREFIX := "--cambang-synth-stream-capability-downgrades="
-	var found := ""
-	for arg in OS.get_cmdline_user_args():
-		var text := str(arg)
-		if not text.begins_with(PREFIX):
-			continue
-		var value := text.substr(PREFIX.length())
-		if found != "":
-			return "<duplicate>"
-		found = value
-	return found
+	return _single_namespaced_cmdline_selection(PREFIX)
 
 
 func _synthetic_capture_capability_downgrade_cmdline_selection() -> String:
 	const PREFIX := "--cambang-synth-capture-capability-downgrades="
-	var found := ""
-	for arg in OS.get_cmdline_user_args():
-		var text := str(arg)
-		if not text.begins_with(PREFIX):
-			continue
-		var value := text.substr(PREFIX.length())
-		if found != "":
-			return "<duplicate>"
-		found = value
-	return found
+	return _single_namespaced_cmdline_selection(PREFIX)
 
 
 func _synthetic_producer_output_form_effective_selection() -> String:

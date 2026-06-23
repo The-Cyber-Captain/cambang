@@ -202,31 +202,62 @@ static bool read_synthetic_producer_output_form_project_setting(
   return parse_synthetic_producer_output_form_mode(mode, out_mode);
 }
 
-static bool apply_synthetic_producer_output_form_cmdline_to_project_setting() {
+static bool try_read_single_namespaced_cmdline_override(
+    const std::string& prefix,
+    std::string& out_value,
+    bool& out_found) {
+  out_value.clear();
+  out_found = false;
+
   godot::OS* os = godot::OS::get_singleton();
+  if (!os) {
+    return true;
+  }
+
+  const auto scan = [&](const godot::PackedStringArray& args) -> bool {
+    for (int64_t i = 0; i < args.size(); ++i) {
+      const std::string arg(args[i].utf8().get_data());
+      if (arg.rfind(prefix, 0) != 0) {
+        continue;
+      }
+      if (out_found) {
+        return false;
+      }
+      out_value = arg.substr(prefix.size());
+      out_found = true;
+    }
+    return true;
+  };
+
+  if (!scan(os->get_cmdline_user_args())) {
+    return false;
+  }
+  if (!out_found && !scan(os->get_cmdline_args())) {
+    return false;
+  }
+  return true;
+}
+
+static bool apply_synthetic_producer_output_form_cmdline_to_project_setting() {
   godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
-  if (!os || !settings) {
+  if (!settings) {
     return true;
   }
 
   const std::string prefix(kSyntheticProducerOutputFormArg);
-  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  std::string mode;
   bool found = false;
-  for (int64_t i = 0; i < args.size(); ++i) {
-    const std::string arg(args[i].utf8().get_data());
-    if (arg.rfind(prefix, 0) != 0) {
-      continue;
-    }
-    if (found) {
-      return false;
-    }
+  if (!try_read_single_namespaced_cmdline_override(prefix, mode, found)) {
+    return false;
+  }
+  if (found) {
     SyntheticProducerOutputFormMode parsed = SyntheticProducerOutputFormMode::Auto;
-    const std::string mode = arg.substr(prefix.size());
     if (!parse_synthetic_producer_output_form_mode(mode, parsed)) {
       return false;
     }
-    settings->set_setting(kSyntheticProducerOutputFormProjectSetting, godot::String(mode.c_str()));
-    found = true;
+    settings->set_setting(
+        kSyntheticProducerOutputFormProjectSetting,
+        godot::String(mode.c_str()));
   }
   return true;
 }
@@ -248,25 +279,19 @@ static bool read_synthetic_stream_capability_downgrade_project_setting(
 }
 
 static bool apply_synthetic_stream_capability_downgrade_cmdline_to_project_setting() {
-  godot::OS* os = godot::OS::get_singleton();
   godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
-  if (!os || !settings) {
+  if (!settings) {
     return true;
   }
 
   const std::string prefix(kSyntheticStreamCapabilityDowngradeArg);
-  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  std::string value;
   bool found = false;
-  for (int64_t i = 0; i < args.size(); ++i) {
-    const std::string arg(args[i].utf8().get_data());
-    if (arg.rfind(prefix, 0) != 0) {
-      continue;
-    }
-    if (found) {
-      return false;
-    }
+  if (!try_read_single_namespaced_cmdline_override(prefix, value, found)) {
+    return false;
+  }
+  if (found) {
     std::vector<SyntheticStreamCapabilityDowngradeCondition> parsed{};
-    const std::string value = arg.substr(prefix.size());
     if (!parse_synthetic_stream_capability_downgrade_conditions(
             value, parsed)) {
       return false;
@@ -274,7 +299,6 @@ static bool apply_synthetic_stream_capability_downgrade_cmdline_to_project_setti
     settings->set_setting(
         kSyntheticStreamCapabilityDowngradeProjectSetting,
         godot::String(value.c_str()));
-    found = true;
   }
   return true;
 }
@@ -296,25 +320,19 @@ static bool read_synthetic_capture_capability_downgrade_project_setting(
 }
 
 static bool apply_synthetic_capture_capability_downgrade_cmdline_to_project_setting() {
-  godot::OS* os = godot::OS::get_singleton();
   godot::ProjectSettings* settings = godot::ProjectSettings::get_singleton();
-  if (!os || !settings) {
+  if (!settings) {
     return true;
   }
 
   const std::string prefix(kSyntheticCaptureCapabilityDowngradeArg);
-  const godot::PackedStringArray args = os->get_cmdline_user_args();
+  std::string value;
   bool found = false;
-  for (int64_t i = 0; i < args.size(); ++i) {
-    const std::string arg(args[i].utf8().get_data());
-    if (arg.rfind(prefix, 0) != 0) {
-      continue;
-    }
-    if (found) {
-      return false;
-    }
+  if (!try_read_single_namespaced_cmdline_override(prefix, value, found)) {
+    return false;
+  }
+  if (found) {
     std::vector<SyntheticCaptureCapabilityDowngradeCondition> parsed{};
-    const std::string value = arg.substr(prefix.size());
     if (!parse_synthetic_capture_capability_downgrade_conditions(
             value, parsed)) {
       return false;
@@ -322,7 +340,6 @@ static bool apply_synthetic_capture_capability_downgrade_cmdline_to_project_sett
     settings->set_setting(
         kSyntheticCaptureCapabilityDowngradeProjectSetting,
         godot::String(value.c_str()));
-    found = true;
   }
   return true;
 }

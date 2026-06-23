@@ -85,6 +85,59 @@ function Test-PatternMatch {
     return $false
 }
 
+function Get-WindowsGodotExtraArgBuckets {
+    param([string[]]$ExtraArgValues)
+
+    $userArgPrefixes = @(
+        "--cambang-synth-producer-output-form=",
+        "--cambang-synth-stream-capability-downgrades=",
+        "--cambang-synth-capture-capability-downgrades="
+    )
+    $userArgFlags = @(
+        "--cambang-synth-producer-output-form",
+        "--cambang-synth-stream-capability-downgrades",
+        "--cambang-synth-capture-capability-downgrades"
+    )
+
+    $engineArgs = New-Object System.Collections.Generic.List[string]
+    $userArgs = New-Object System.Collections.Generic.List[string]
+
+    for ($index = 0; $index -lt $ExtraArgValues.Count; $index++) {
+        $arg = $ExtraArgValues[$index]
+        if ([string]::IsNullOrWhiteSpace($arg) -or $arg -eq "--") {
+            continue
+        }
+
+        $matchedPrefix = $false
+        foreach ($prefix in $userArgPrefixes) {
+            if ($arg.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+                $userArgs.Add($arg)
+                $matchedPrefix = $true
+                break
+            }
+        }
+        if ($matchedPrefix) {
+            continue
+        }
+
+        if ($userArgFlags -contains $arg) {
+            if ($index + 1 -ge $ExtraArgValues.Count) {
+                throw "Expected value after maintainer override arg '$arg'."
+            }
+            $index++
+            $userArgs.Add(("{0}={1}" -f $arg, $ExtraArgValues[$index]))
+            continue
+        }
+
+        $engineArgs.Add($arg)
+    }
+
+    return [PSCustomObject]@{
+        EngineArgs = @($engineArgs.ToArray())
+        UserArgs = @($userArgs.ToArray())
+    }
+}
+
 function Get-RunIdentity {
     param(
         [string]$ExplicitLabel,
@@ -1319,6 +1372,7 @@ $androidSawAppRunning = $false
 
 if ($RunPlatform -eq "windows") {
     $arguments = New-Object System.Collections.Generic.List[string]
+    $extraArgBuckets = Get-WindowsGodotExtraArgBuckets -ExtraArgValues $ExtraArgs
 
     if (-not $Windowed) {
         $arguments.Add("--headless")
@@ -1347,8 +1401,15 @@ if ($RunPlatform -eq "windows") {
         $arguments.Add($QuitAfter.ToString())
     }
 
-    foreach ($arg in $ExtraArgs) {
+    foreach ($arg in $extraArgBuckets.EngineArgs) {
         $arguments.Add($arg)
+    }
+
+    if ($extraArgBuckets.UserArgs.Count -gt 0) {
+        $arguments.Add("--")
+        foreach ($arg in $extraArgBuckets.UserArgs) {
+            $arguments.Add($arg)
+        }
     }
 
     $commandText = "{0} {1}" -f $GodotExe, ($arguments -join " ")
