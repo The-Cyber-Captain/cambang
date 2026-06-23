@@ -478,6 +478,21 @@ function Set-SingleLineValue {
     return $updated
 }
 
+function Get-SingleLineValue {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$LinePrefix
+    )
+
+    $pattern = "(?m)^" + [Regex]::Escape($LinePrefix) + "(.*)$"
+    $match = [Regex]::Match($Text, $pattern)
+    if (-not $match.Success) {
+        throw "Failed to read setting line: $LinePrefix"
+    }
+
+    return $match.Groups[1].Value.Trim()
+}
+
 function Normalize-RenderingMethodValue {
     param([string]$RenderingMethod)
 
@@ -591,6 +606,7 @@ function Get-PatchedAndroidProjectText {
         "mobile"
     }
     $updated = Set-SingleLineValue -Text $updated -LinePrefix 'renderer/rendering_method=' -NewValue ('"{0}"' -f $renderingMethod)
+    $updated = Set-SingleLineValue -Text $updated -LinePrefix 'renderer/rendering_method.mobile=' -NewValue ('"{0}"' -f $renderingMethod)
     return $updated
 }
 
@@ -1071,6 +1087,8 @@ function Invoke-AndroidRun {
     $processExitCode = $null
     $logcatText = ""
     $projectRestored = $false
+    $patchedProjectRenderingMethod = Get-SingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method='
+    $patchedProjectRenderingMethodMobile = Get-SingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method.mobile='
 
     Add-LogSection -Path $LogRecord.StdoutPath -Header "android_run" -Body @"
 run_platform=android
@@ -1082,6 +1100,8 @@ rendering_method=$(if ($AndroidLaunchSettings.HasRenderingMethod) { $AndroidLaun
 synthetic_producer_output_form=$($AndroidLaunchSettings.SyntheticProducerOutputForm)
 synthetic_stream_capability_downgrades=$($AndroidLaunchSettings.SyntheticStreamCapabilityDowngrades)
 synthetic_capture_capability_downgrades=$($AndroidLaunchSettings.SyntheticCaptureCapabilityDowngrades)
+patched_project_renderer_rendering_method=$patchedProjectRenderingMethod
+patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodMobile
 "@
 
     try {

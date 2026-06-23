@@ -190,6 +190,17 @@ RetainedPlanResetDecision build_retained_plan_reset_decision(
   return decision;
 }
 
+const char* backing_plan_primary_function_name(
+    BackingPlanEvaluationPrimaryFunction primary_function) noexcept {
+  switch (primary_function) {
+    case BackingPlanEvaluationPrimaryFunction::StreamDisplayView:
+      return "stream_display_view";
+    case BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize:
+      return "capture_ready_and_materialize";
+  }
+  return "unknown";
+}
+
 
 // Stage A command-fairness bounds: provider facts remain FIFO and non-dropping,
 // but Core yields to pending request work after deterministic slices so sustained
@@ -1905,6 +1916,23 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   erase_capture_retained_plan_state_for_device_(
       device_instance_id, &parent.key);
   if (!decision.requested.valid) {
+    const char* const parent_kind_name =
+        parent.acquisition_session_id != 0
+            ? "acquisition_session"
+            : "capture_priming";
+    capture_latency_trace_printf(
+        "capture_plan_state_refresh_rejected device_id=%llu parent_kind=%s parent_id=%llu reason=no_viable_parent_context_postures primary_function=%s runtime_caps_cpu=%u runtime_caps_gpu=%u runtime_caps_gpu_cpu_sidecar=%u parent_context_caps_cpu=%u parent_context_caps_gpu=%u parent_context_caps_gpu_cpu_sidecar=%u",
+        static_cast<unsigned long long>(device_instance_id),
+        parent_kind_name,
+        static_cast<unsigned long long>(parent.key.id),
+        backing_plan_primary_function_name(
+            BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize),
+        runtime_caps.cpu_backed_available ? 1u : 0u,
+        runtime_caps.gpu_backed_available ? 1u : 0u,
+        runtime_caps.gpu_with_cpu_sidecar_available ? 1u : 0u,
+        parent_context_caps.cpu_backed_available ? 1u : 0u,
+        parent_context_caps.gpu_backed_available ? 1u : 0u,
+        parent_context_caps.gpu_with_cpu_sidecar_available ? 1u : 0u);
     release_capture_parent_priming_(device_instance_id);
     (void)devices_.set_requested_retained_plan(
         device_instance_id,
@@ -4646,6 +4674,18 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
               parent_context_caps,
               viable_postures,
               3u) == 0u) {
+        capture_latency_trace_printf(
+            "capture_admission_unavailable capture_id=%llu device_id=%llu reason=no_viable_parent_context_postures primary_function=%s runtime_caps_cpu=%u runtime_caps_gpu=%u runtime_caps_gpu_cpu_sidecar=%u parent_context_caps_cpu=%u parent_context_caps_gpu=%u parent_context_caps_gpu_cpu_sidecar=%u",
+            static_cast<unsigned long long>(capture_id),
+            static_cast<unsigned long long>(device_instance_id),
+            backing_plan_primary_function_name(
+                BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize),
+            runtime_caps.cpu_backed_available ? 1u : 0u,
+            runtime_caps.gpu_backed_available ? 1u : 0u,
+            runtime_caps.gpu_with_cpu_sidecar_available ? 1u : 0u,
+            parent_context_caps.cpu_backed_available ? 1u : 0u,
+            parent_context_caps.gpu_backed_available ? 1u : 0u,
+            parent_context_caps.gpu_with_cpu_sidecar_available ? 1u : 0u);
         return TryTriggerDeviceCaptureStatus::Unavailable;
       }
     }
@@ -4653,6 +4693,10 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
   }
   req.capture_id = capture_id;
   if (!req.requested_retained_plan.valid) {
+    capture_latency_trace_printf(
+        "capture_admission_unavailable capture_id=%llu device_id=%llu reason=no_requested_backing_plan_after_refresh",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id));
     return TryTriggerDeviceCaptureStatus::Unavailable;
   }
   (void)devices_.set_requested_retained_plan(
