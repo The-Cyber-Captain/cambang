@@ -1246,9 +1246,6 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
   const bool priming_hold_active =
       priming_state_it != capture_parent_priming_states_.end() &&
       priming_state_it->second.provider_hold_active;
-  if (priming_hold_active && !device_has_any_stream_(device_instance_id)) {
-    return resolved;
-  }
 
   uint64_t live_session_id = 0;
   uint32_t live_session_count = 0;
@@ -1317,6 +1314,10 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
     resolved.key.id = preserved_session_id;
     resolved.acquisition_session_id = preserved_session_id;
     resolved.provisional = false;
+    return resolved;
+  }
+
+  if (priming_hold_active && !device_has_any_stream_(device_instance_id)) {
     return resolved;
   }
 
@@ -1646,6 +1647,36 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
     }
     it = capture_retained_plan_decisions_.erase(it);
     changed = true;
+  }
+
+  if (parent.acquisition_session_id != 0) {
+    if (device->requested_retained_plan.valid) {
+      changed =
+          acquisition_sessions_.set_requested_retained_plan(
+              parent.acquisition_session_id,
+              device->requested_retained_plan,
+              /*bump_capture_access_posture_epoch=*/false) ||
+          changed;
+    } else {
+      changed =
+          acquisition_sessions_.set_requested_retained_plan(
+              parent.acquisition_session_id,
+              CoreRetainedProductionPlan{},
+              /*bump_capture_access_posture_epoch=*/false) ||
+          changed;
+    }
+    if (device->steady_retained_plan.valid) {
+      changed =
+          acquisition_sessions_.set_steady_retained_plan(
+              parent.acquisition_session_id,
+              device->steady_retained_plan) ||
+          changed;
+    } else {
+      changed =
+          acquisition_sessions_.clear_steady_retained_plan(
+              parent.acquisition_session_id) ||
+          changed;
+    }
   }
 
   return changed;

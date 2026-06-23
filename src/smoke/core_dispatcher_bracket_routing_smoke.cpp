@@ -23,6 +23,8 @@ int main() {
     FrameView frame{};
     frame.capture_id = 900;
     frame.device_instance_id = 901;
+    frame.requested_retained_plan = CoreRetainedProductionPlan{
+        CoreProductionPostureShape::CpuPrimary, true};
     frame.capture_image.routing = routing;
     frame.capture_image.image_member_index =
         (routing == CaptureImageRouting::DEFAULT_METERED) ? 0u : 1u;

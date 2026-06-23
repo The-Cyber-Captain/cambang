@@ -355,6 +355,11 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
         }
       }
     }
+    if (stream_requested_retained_plan.valid == false &&
+        p.frame.stream_id != 0 &&
+        p.frame.requested_retained_plan.valid) {
+      stream_requested_retained_plan = p.frame.requested_retained_plan;
+    }
     if (capture_requested_retained_plan.valid == false &&
         devices_ && p.frame.device_instance_id != 0) {
       if (const CoreDeviceRegistry::DeviceRecord* device_rec = devices_->find(p.frame.device_instance_id);
@@ -362,6 +367,11 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
         capture_access_posture_epoch = device_rec->capture_access_posture_epoch;
         capture_requested_retained_plan = device_rec->requested_retained_plan;
       }
+    }
+    if (capture_requested_retained_plan.valid == false &&
+        p.frame.capture_id != 0 &&
+        p.frame.requested_retained_plan.valid) {
+      capture_requested_retained_plan = p.frame.requested_retained_plan;
     }
     const bool is_additional_bracket =
         p.frame.capture_image.routing == CaptureImageRouting::ADDITIONAL_BRACKET;
