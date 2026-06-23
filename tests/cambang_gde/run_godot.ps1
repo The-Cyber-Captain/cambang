@@ -98,6 +98,14 @@ function Get-WindowsGodotExtraArgBuckets {
         "--cambang-synth-stream-capability-downgrades",
         "--cambang-synth-capture-capability-downgrades"
     )
+    $engineArgValuePrefixes = @(
+        "--rendering-method=",
+        "--rendering-driver="
+    )
+    $engineArgFlagsWithValue = @(
+        "--rendering-method",
+        "--rendering-driver"
+    )
 
     $engineArgs = New-Object System.Collections.Generic.List[string]
     $userArgs = New-Object System.Collections.Generic.List[string]
@@ -126,6 +134,37 @@ function Get-WindowsGodotExtraArgBuckets {
             }
             $index++
             $userArgs.Add(("{0}={1}" -f $arg, $ExtraArgValues[$index]))
+            continue
+        }
+
+        if ($engineArgFlagsWithValue -contains $arg) {
+            if ($index + 1 -ge $ExtraArgValues.Count) {
+                throw "Expected value after engine arg '$arg'."
+            }
+            $index++
+            $value = $ExtraArgValues[$index]
+            if ($arg -eq "--rendering-method") {
+                $value = Normalize-RenderingMethodValue -RenderingMethod $value
+            }
+            $engineArgs.Add($arg)
+            $engineArgs.Add($value)
+            continue
+        }
+
+        $matchedEngineValuePrefix = $false
+        foreach ($prefix in $engineArgValuePrefixes) {
+            if ($arg.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+                $value = $arg.Substring($prefix.Length)
+                if ($prefix -eq "--rendering-method=") {
+                    $value = Normalize-RenderingMethodValue -RenderingMethod $value
+                }
+                $engineArgs.Add($prefix.Substring(0, $prefix.Length - 1))
+                $engineArgs.Add($value)
+                $matchedEngineValuePrefix = $true
+                break
+            }
+        }
+        if ($matchedEngineValuePrefix) {
             continue
         }
 
@@ -493,6 +532,48 @@ function Get-SingleLineValue {
     return $match.Groups[1].Value.Trim()
 }
 
+function Set-OrInsertSingleLineValue {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$LinePrefix,
+        [Parameter(Mandatory)][string]$NewValue,
+        [string]$InsertAfterLinePrefix = ""
+    )
+
+    $pattern = "(?m)^" + [Regex]::Escape($LinePrefix) + ".*$"
+    $replacement = $LinePrefix + $NewValue
+    if ([Regex]::IsMatch($Text, $pattern)) {
+        return [Regex]::Replace($Text, $pattern, $replacement)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($InsertAfterLinePrefix)) {
+        $afterPattern = "(?m)^" + [Regex]::Escape($InsertAfterLinePrefix) + ".*$"
+        $afterMatch = [Regex]::Match($Text, $afterPattern)
+        if ($afterMatch.Success) {
+            $insertAt = $afterMatch.Index + $afterMatch.Length
+            return $Text.Insert($insertAt, "`r`n" + $replacement)
+        }
+    }
+
+    throw "Failed to update setting line: $LinePrefix"
+}
+
+function Try-GetSingleLineValue {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$LinePrefix,
+        [string]$DefaultValue = ""
+    )
+
+    $pattern = "(?m)^" + [Regex]::Escape($LinePrefix) + "(.*)$"
+    $match = [Regex]::Match($Text, $pattern)
+    if (-not $match.Success) {
+        return $DefaultValue
+    }
+
+    return $match.Groups[1].Value.Trim()
+}
+
 function Normalize-RenderingMethodValue {
     param([string]$RenderingMethod)
 
@@ -606,7 +687,11 @@ function Get-PatchedAndroidProjectText {
         "mobile"
     }
     $updated = Set-SingleLineValue -Text $updated -LinePrefix 'renderer/rendering_method=' -NewValue ('"{0}"' -f $renderingMethod)
-    $updated = Set-SingleLineValue -Text $updated -LinePrefix 'renderer/rendering_method.mobile=' -NewValue ('"{0}"' -f $renderingMethod)
+    $updated = Set-OrInsertSingleLineValue `
+        -Text $updated `
+        -LinePrefix 'renderer/rendering_method.mobile=' `
+        -NewValue ('"{0}"' -f $renderingMethod) `
+        -InsertAfterLinePrefix 'renderer/rendering_method='
     return $updated
 }
 
@@ -1088,7 +1173,7 @@ function Invoke-AndroidRun {
     $logcatText = ""
     $projectRestored = $false
     $patchedProjectRenderingMethod = Get-SingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method='
-    $patchedProjectRenderingMethodMobile = Get-SingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method.mobile='
+    $patchedProjectRenderingMethodMobile = Try-GetSingleLineValue -Text $patchedProjectText -LinePrefix 'renderer/rendering_method.mobile=' -DefaultValue '(absent)'
 
     Add-LogSection -Path $LogRecord.StdoutPath -Header "android_run" -Body @"
 run_platform=android
