@@ -77,10 +77,12 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Capture remains API-driven via `CamBANGRig.trigger_capture()` (not scenario timeline-triggered), and verification asserts the object-level `CaptureResultSet` contains exactly Rig A members.
 - `scenes/568_backing_plan_evaluation_verify.tscn`
   - Canonical backing-plan evaluation verifier; supersedes legacy Scene 68 as the focused automatable behavioral check for this topic.
+  - Scene 68 remains only a secondary retained-result evidence/reset reporting surface; it is not the canonical parent-scoped evaluation proof.
   - Proves stream-parent and capture-parent evaluation scoping, access-only evidence seeding without public `to_image()` calls from the scene itself, stop/reset clearing, and a paused `advance_timeline(...)` edge path with exact-same-time device+stream realization plus teardown/recreation cleanup.
   - Its paused/clocked path spends explicit virtual-time budget for stream-evaluation completion; it does not rely on `advance_timeline(...)` to hide evaluator quiescence behind a single host step.
   - At startup it reports the stored and effective Maintainer Synthetic producer output-form selection, so matrix failures can be correlated against the actual runtime selection in force.
   - On each observed evaluation or re-evaluation event it emits `INFO:` lines describing the parent, chosen or active backing-plan state, current synthetic timeline position, and concise timing-evidence summary.
+  - Matrix expectation: supported combinations terminate in `PASS`/`OK`; structurally unsupported combinations terminate in explicit `FAIL`/`ERROR` rather than silent timeout or ambiguous review.
   - Uses dedicated external scenario fixtures:
     - `scenarios/568_backing_plan_single_access_live.json`
     - `scenarios/568_backing_plan_dual_live.json`
@@ -179,6 +181,11 @@ Android-mode notes:
 - it does not support `-QuitAfter`; use `-TimeoutSec` as the outer observation guard
 - when an expected `OK:` pattern is observed, Android mode keeps the app running until it exits naturally or `-TimeoutSec` is reached, so headed/manual-inspection scenes can stay open
 - it supports `--rendering-method=mobile` and `--rendering-method=gl_compatibility` during export/deploy runs; `--rendering-method=compatibility` is normalized to `gl_compatibility`
+
+Launcher note:
+
+- `run_godot.ps1` accepts `--rendering-method=mobile`, `--rendering-method=compatibility`, and `--rendering-method=gl_compatibility`; it normalizes `compatibility` to `gl_compatibility`
+- on Windows, it passes rendering-method/driver engine args in the split `--flag value` form expected by the local Godot executable, while maintainer override args remain user args after `--`
 
 Notes for Codex/agent validation on this machine:
 

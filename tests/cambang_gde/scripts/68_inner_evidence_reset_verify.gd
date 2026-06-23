@@ -1,8 +1,10 @@
 extends Node
 
-## Scene 68: backing-plan evaluation and timing evidence verify
+## Scene 68: legacy retained-result evidence/reset verify
 ##
 ## Purpose:
+## - remain as a secondary verification/reporting surface for retained-result
+##   evidence/reset behavior after the parent-scoped Backing Plan refactor
 ## - verify backing-plan evaluation lifecycle and reporting
 ## - verify internally calibrated stream and capture result-access timing evidence
 ## - first prove that materialization-route evidence can appear without any
@@ -15,6 +17,9 @@ extends Node
 ##
 ## Scope guardrail:
 ## - this is a verification scene / harness scene, not a scenario semantic owner
+## - Scene 568 is now the canonical automatable behavioral verifier for
+##   parent-scoped Backing Plan evaluation; Scene 68 should not grow new policy
+##   semantics or compete with that role
 ## - it stays at the retained-result operation seam and must not turn into a
 ##   rendering/teaching scene like Scene 70
 ## 

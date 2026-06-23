@@ -10,9 +10,13 @@ Continue source-grounded CamBANG development without broadening scope or weakeni
 
 The retained-result access calibration/classification tranche is implemented and remains accepted.
 
-The currently landed intent-based chooser implementation is partial rather than accepted. Useful groundwork already exists in source: the three posture shapes, requested-plan plumbing through stream/capture/provider-delivered results, provider-capability distinctions for those shapes, the requested-vs-steady storage seam, the result-access evidence seam, and the access-posture/topology-triggered invalidation work.
+The parent-scoped Backing Plan evaluation and timing-evidence refactor is now treated as functionally landed in source. The older intent-based chooser direction remains superseded and should not be allowed to drift forward in parallel through comments, tranche notes, harness wording, or follow-on implementation.
 
-The immediate focus is no longer to complete the old chooser model as previously described in this file. The terminology reset and parent-scoped design note are now landed, and the active direction is to implement that reset in source without allowing the older intent-based chooser model to drift forward in parallel.
+The immediate focus is therefore deliberately smaller:
+
+* keep unsupported-case truth explicit and source-faithful;
+* keep Scene 568 as the canonical automatable verifier for this topic;
+* close the remaining harness/reporting/documentation gaps without reopening the landed runtime model.
 
 Current source-truth refinement:
 
@@ -24,7 +28,7 @@ Current source-truth refinement:
 
 Important settled state:
 
-* The underlying Scene 68 calibration/evidence repair work is complete, but Scene 68 remains a verification/reporting surface rather than the authoritative architecture proof.
+* The underlying Scene 68 calibration/evidence repair work is complete, but Scene 68 remains a secondary verification/reporting surface rather than the authoritative architecture proof.
 * The boundedness/posture-identity fix is complete: calibration is keyed to live applied production posture/access identity rather than per-frame retained-form fluctuation or first user demand.
 * The evidence-to-classification seam is implemented for retained-result access.
 * Public `get_display_view()`, `to_image()`, and `to_image_member()` access remains instrumented, but those calls are not the normal recalibration heartbeat.
@@ -64,10 +68,10 @@ What already exists and should be preserved unless source inspection disproves i
 Immediate tranche goal:
 
 * preserve the landed terminology reset and `docs/dev/backing_plan_parent_evaluation_reset.md` as the active design direction;
-* redefine Backing Plan selection around the Native Payload Support parent rather than the old chooser-intent model;
 * preserve the bounded, topology-triggered, non-per-frame nature of evaluation and reevaluation;
-* preserve provider-truth, requested-vs-steady separation, and `CoreResultStore` validation against Core-held requested plan state.
-* keep the distinction explicit between provisional capture seeding, real `AcquisitionSession`-owned capture evaluation, and the now-landed explicit first-use priming seam.
+* preserve provider-truth, requested-vs-steady separation, and `CoreResultStore` validation against Core-held requested plan state;
+* keep the distinction explicit between provisional capture seeding, real `AcquisitionSession`-owned capture evaluation, and the now-landed explicit first-use priming seam;
+* tighten unsupported-case reporting and harness wording around the now-landed model rather than reopening the model itself.
 
 Terminology guardrail for this reset:
 
@@ -93,27 +97,29 @@ Current checkpoint status:
 * Current forced `cpu_only` / `gpu_only` comparisons support that inference.
 * Deterministic maintainer coverage includes the Synthetic parent-context downgrade matrix and the targeted Backing Plan evaluator check.
 * The targeted Backing Plan evaluator check now exercises parent-scoped stream `display_view` evaluation and independent capture-parent evaluation in `provider_compliance_verify`.
-* Scene 68 still remains a verification/reporting surface, but any remaining assertions of capture-policy mirroring or chooser-intent semantics are harness drift rather than accepted architecture.
+* Scene 68 still remains a secondary verification/reporting surface, but any remaining assertions of capture-policy mirroring or chooser-intent semantics are harness drift rather than accepted architecture.
 * Scene 568 is now the canonical automatable behavioral verifier for this tranche.
 * Authoritative Windows Godot verification now passes for Scene 568, including the paused/manual `advance_timeline(...)` path with explicit host-provided virtual-time budget for stream-evaluation completion.
 * That Scene 568 clocked-path result is intentionally aligned to the current design contract: `advance_timeline(...)` advances the scenario and drains same-time consequences of that step, but does not itself hide later evaluator completion behind implicit quiescence.
-* Android validation for this Scene 568 checkpoint remains pending-authoritative; Windows green does not yet settle the tranche.
+* Authoritative local Scene 568 matrix work has now produced the expected justified `OK` / `ERROR` buckets across the exercised Windows/Android, Mobile/Compatibility, and maintainer output-form combinations.
+* In that matrix, supported combinations terminate in `PASS`/`OK`, while structurally unsupported combinations terminate in explicit runtime/harness `FAIL` and are therefore correctly bucketed as `ERROR`.
+* Representative Scene 70 post-refactor matrix runs are also back to `OK`, so prior regression triage on that surface is no longer the immediate tranche blocker.
 
 Immediate next focus:
 
 * source-facing terminology and canonical architecture documents are now aligned to the parent-scoped Backing Plan model;
 * do not extend the old chooser terminology or intent model in code comments, tranche notes, or new design material;
 * treat the remaining retained-family identifier usage in source as explicit migration residue, not as canonical architectural vocabulary;
-* keep Scene 68 aligned only as a verification/reporting surface unless and until it clearly proves the redesigned evaluator without reintroducing old policy semantics;
+* keep Scene 68 aligned only as a secondary verification/reporting surface unless and until it is deliberately rebuilt around a narrower purpose;
 * treat Scene 568 as the canonical behavioral verifier for parent-scoped Backing Plan evaluation and paused/manual host timeline stepping;
-* complete authoritative Android build/run verification for the current Scene 568 checkpoint before calling this harness tranche settled;
+* keep the supported-vs-unsupported Scene 568 matrix truth explicit in docs and harness expectations;
 * desired harness output for the redesigned evaluator is explicit parent-scoped decision truth such as viable posture set, requested plan, steady plan, chosen posture shape, and decision-relevant evidence buckets;
 * before implementing any further capture-latency work, preserve the now-landed distinction between bounded same-signature seed reuse already in source and the explicit first-use still-only priming path now also landed in source.
 
 Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of bounded parent-scoped Backing Plan evaluation, but does not by itself prove the tranche successful.
 ## Recent committed checkpoint
 
-Most recent uncommitted source checkpoint:
+Most recent source checkpoint:
 
 * Capture-side parent-scoped source truth was hardened further.
 * Provider-defined settle delays are implemented for stream and capture backing-plan evaluation.
