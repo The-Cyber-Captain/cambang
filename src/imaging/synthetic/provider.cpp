@@ -15,7 +15,6 @@
 #include "imaging/synthetic/scenario_loader.h"
 #include "imaging/synthetic/gpu_update_policy_resolver.h"
 #include "imaging/api/timeline_teardown_trace.h"
-#include "imaging/api/capture_latency_trace_diagnostics.h"
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "pixels/pattern/pattern_render_target.h"
 #if __has_include(<godot_cpp/variant/utility_functions.hpp>)
@@ -26,6 +25,16 @@
 #endif
 
 namespace cambang {
+
+namespace capture_latency_trace_diagnostics {
+inline uint32_t capture_inflight() noexcept { return 0u; }
+inline uint32_t active_capture_count() noexcept { return 0u; }
+inline void note_capture_admitted(uint32_t) noexcept {}
+inline void note_capture_finished() noexcept {}
+inline void reset_trace_group_seen() noexcept {}
+inline void print_trace_group_seen_summary() noexcept {}
+inline void print_line(const char*) noexcept {}
+} // namespace capture_latency_trace_diagnostics
 
 ProviderAccessStatus SyntheticProvider::check_access_readiness() noexcept {
   return ProviderAccessStatus::ready("synthetic_provider_ready");

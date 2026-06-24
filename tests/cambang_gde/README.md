@@ -209,6 +209,11 @@ Notes:
   `63_snapshot_observer_minimal`, `65_public_boundary_verify`, `66_public_lifecycle_verify`, and
   `70_result_retrieval_verification` are intended to self-terminate with an explicit terminal `OK: ... PASS`
   or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
+- Large structured harness payloads should not rely on a single huge log line; `run_godot.ps1`
+  understands framed log records and writes recovered payloads into `records/` under the run directory.
+- Harnesses that need this may implement the tiny local framed-record emitter in their own script.
+- Scene 70 emits `scene70_summary` through that framed-record protocol, and the runner recovers it into
+  the run directory.
 - Scene 70 exercises public device still-profile authoring using a three-member `still_image_bundle`.
 - Scene 70 verifies the object-level `CamBANGDevice.get_result()` `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
 - Exact Device/AcquisitionSession snapshot-shape proof remains in native/snapshot verification harnesses, not Scene 70 pre-trigger gating.

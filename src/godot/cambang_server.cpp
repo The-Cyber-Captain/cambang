@@ -80,7 +80,7 @@ static godot::String core_production_posture_name(CoreProductionPostureShape pos
   return "unknown";
 }
 
-static godot::String core_production_posture_name(CoreRetainedProductionPlan plan) {
+static godot::String core_retained_production_plan_name(CoreRetainedProductionPlan plan) {
   if (!plan.valid) {
     return "";
   }
@@ -90,7 +90,7 @@ static godot::String core_production_posture_name(CoreRetainedProductionPlan pla
 static godot::Dictionary core_retained_plan_to_dictionary(CoreRetainedProductionPlan plan) {
   godot::Dictionary d;
   d["valid"] = plan.valid;
-  d["posture"] = core_production_posture_name(plan);
+  d["posture"] = core_retained_production_plan_name(plan);
   return d;
 }
 

@@ -679,6 +679,15 @@ Scenes must flush output before quitting so that PASS/FAIL messages are reliably
 Scene 70 is a maintainer-facing verification/teaching scene for stream result
 surfaces.
 
+Its replacement summary for the older temporary `CaptureLatencyTrace` path is
+transported through framed log records that `tests/cambang_gde/run_godot.ps1`
+parses back into recovered files. This is a runner/tooling transport
+convention, not a shared Godot harness layer.
+
+Harnesses remain encapsulated; another harness can locally implement the same
+tiny emitter if needed. Runner recovery preserves incomplete records too, so
+failed runs can still retain partial structured data.
+
 It now demonstrates:
 
 - live stream display via `StreamResult.get_display_view()` (display-oriented

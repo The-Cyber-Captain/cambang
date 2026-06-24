@@ -323,6 +323,272 @@ function Add-LogSection {
     Add-LogText -Path $Path -Text $section
 }
 
+function ConvertTo-StructuredRecordPath {
+    param(
+        [Parameter(Mandatory)][string]$RecordsDir,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$Kind,
+        [Parameter(Mandatory)][bool]$Partial
+    )
+
+    $safeName = Convert-ToSafeName -Value $Name
+    $safeId = Convert-ToSafeName -Value $Id
+    $baseName = "{0}__{1}" -f $safeName, $safeId
+    $extension = if ($Kind -eq "json") { ".json" } else { ".txt" }
+    if ($Partial) {
+        return Join-Path $RecordsDir ($baseName + ".partial" + $extension)
+    }
+
+    return Join-Path $RecordsDir ($baseName + $extension)
+}
+
+function ConvertFrom-StructuredRecordLog {
+    param(
+        [Parameter(Mandatory)][string]$LogText,
+        [Parameter(Mandatory)][string]$SourceLog
+    )
+
+    $recordTable = @{}
+    if ([string]::IsNullOrWhiteSpace($LogText)) {
+        return $recordTable
+    }
+
+    $startPattern = '^\[CamBANG\]\[RecordStart\] id=(?<id>\S+) name=(?<name>\S+) kind=(?<kind>\S+) chunks=(?<chunks>\d+) encoding=base64$'
+    $chunkPattern = '^\[CamBANG\]\[RecordChunk\] id=(?<id>\S+) index=(?<index>\d+) data=(?<data>.*)$'
+    $endPattern = '^\[CamBANG\]\[RecordEnd\] id=(?<id>\S+)$'
+
+    foreach ($line in ($LogText -split "\r?\n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $startMatch = [Regex]::Match($line, $startPattern)
+        if ($startMatch.Success) {
+            $recordId = $startMatch.Groups["id"].Value
+            if (-not $recordTable.ContainsKey($recordId)) {
+                $recordTable[$recordId] = [ordered]@{
+                    id = $recordId
+                    name = $startMatch.Groups["name"].Value
+                    kind = $startMatch.Groups["kind"].Value
+                    source_log = $SourceLog
+                    recovered_path = ""
+                    complete = $false
+                    chunk_count_seen = 0
+                    chunk_count_expected = [int]$startMatch.Groups["chunks"].Value
+                    end_seen = $false
+                    chunks = @{}
+                }
+            }
+            continue
+        }
+
+        $chunkMatch = [Regex]::Match($line, $chunkPattern)
+        if ($chunkMatch.Success) {
+            $recordId = $chunkMatch.Groups["id"].Value
+            if (-not $recordTable.ContainsKey($recordId)) {
+                $recordTable[$recordId] = [ordered]@{
+                    id = $recordId
+                    name = ""
+                    kind = "json"
+                    source_log = $SourceLog
+                    recovered_path = ""
+                    complete = $false
+                    chunk_count_seen = 0
+                    chunk_count_expected = $null
+                    end_seen = $false
+                    chunks = @{}
+                }
+            }
+            $record = $recordTable[$recordId]
+            $chunkIndex = [int]$chunkMatch.Groups["index"].Value
+            if (-not $record.chunks.ContainsKey($chunkIndex)) {
+                $record.chunks[$chunkIndex] = $chunkMatch.Groups["data"].Value
+                $record.chunk_count_seen = $record.chunks.Count
+            }
+            $recordTable[$recordId] = $record
+            continue
+        }
+
+        $endMatch = [Regex]::Match($line, $endPattern)
+        if ($endMatch.Success) {
+            $recordId = $endMatch.Groups["id"].Value
+            if (-not $recordTable.ContainsKey($recordId)) {
+                $recordTable[$recordId] = [ordered]@{
+                    id = $recordId
+                    name = ""
+                    kind = "json"
+                    source_log = $SourceLog
+                    recovered_path = ""
+                    complete = $false
+                    chunk_count_seen = 0
+                    chunk_count_expected = $null
+                    end_seen = $true
+                    chunks = @{}
+                }
+            }
+            else {
+                $record = $recordTable[$recordId]
+                $record.end_seen = $true
+                $recordTable[$recordId] = $record
+            }
+        }
+    }
+
+    return $recordTable
+}
+
+function Get-StructuredRecordRecoveryText {
+    param([Parameter(Mandatory)][object]$Record)
+
+    $orderedIndexes = @($Record.chunks.Keys | Sort-Object)
+    if ($orderedIndexes.Count -eq 0) {
+        return ""
+    }
+
+    $maxContiguousIndex = -1
+    for ($index = 0; $index -lt $orderedIndexes.Count; $index++) {
+        if ([int]$orderedIndexes[$index] -ne $index) {
+            break
+        }
+        $maxContiguousIndex = $index
+    }
+
+    if ($maxContiguousIndex -lt 0) {
+        return ""
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    for ($index = 0; $index -le $maxContiguousIndex; $index++) {
+        $null = $builder.Append([string]$Record.chunks[$index])
+    }
+
+    $base64Text = $builder.ToString()
+    if ([string]::IsNullOrWhiteSpace($base64Text)) {
+        return ""
+    }
+
+    $remainder = $base64Text.Length % 4
+    if ($remainder -ne 0) {
+        $base64Text = $base64Text + ("=" * (4 - $remainder))
+    }
+
+    try {
+        $bytes = [Convert]::FromBase64String($base64Text)
+        return [System.Text.Encoding]::UTF8.GetString($bytes)
+    }
+    catch {
+        return ""
+    }
+}
+
+function Recover-StructuredRecords {
+    param(
+        [Parameter(Mandatory)][string]$RunDir,
+        [Parameter(Mandatory)][hashtable]$SourceLogs
+    )
+
+    $recordsDir = Join-Path $RunDir "records"
+    New-Item -ItemType Directory -Force -Path $recordsDir | Out-Null
+
+    $recordsById = @{}
+    foreach ($sourceLogPath in $SourceLogs.Keys) {
+        if ([string]::IsNullOrWhiteSpace([string]$sourceLogPath) -or -not (Test-Path $sourceLogPath)) {
+            continue
+        }
+
+        $sourceLogText = Get-Content -LiteralPath $sourceLogPath -Raw -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($sourceLogText)) {
+            continue
+        }
+
+        $parsedRecords = ConvertFrom-StructuredRecordLog -LogText $sourceLogText -SourceLog $sourceLogPath
+        foreach ($recordId in $parsedRecords.Keys) {
+            $parsedRecord = $parsedRecords[$recordId]
+            if (-not $recordsById.ContainsKey($recordId)) {
+                $recordsById[$recordId] = $parsedRecord
+                continue
+            }
+
+            $existingRecord = $recordsById[$recordId]
+            if ([string]::IsNullOrWhiteSpace([string]$existingRecord.name) -and -not [string]::IsNullOrWhiteSpace([string]$parsedRecord.name)) {
+                $existingRecord.name = $parsedRecord.name
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$existingRecord.kind) -and -not [string]::IsNullOrWhiteSpace([string]$parsedRecord.kind)) {
+                $existingRecord.kind = $parsedRecord.kind
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$existingRecord.source_log)) {
+                $existingRecord.source_log = $parsedRecord.source_log
+            }
+            if ($existingRecord.chunk_count_expected -eq $null -and $parsedRecord.chunk_count_expected -ne $null) {
+                $existingRecord.chunk_count_expected = $parsedRecord.chunk_count_expected
+            }
+            foreach ($chunkIndex in $parsedRecord.chunks.Keys) {
+                if (-not $existingRecord.chunks.ContainsKey($chunkIndex)) {
+                    $existingRecord.chunks[$chunkIndex] = $parsedRecord.chunks[$chunkIndex]
+                }
+            }
+            $existingRecord.chunk_count_seen = $existingRecord.chunks.Count
+            $existingRecord.end_seen = [bool]$existingRecord.end_seen -or [bool]$parsedRecord.end_seen
+            $recordsById[$recordId] = $existingRecord
+        }
+    }
+
+    $recoveredSummaries = New-Object System.Collections.Generic.List[object]
+    foreach ($recordId in $recordsById.Keys) {
+        $record = $recordsById[$recordId]
+        if ([string]::IsNullOrWhiteSpace([string]$record.kind)) {
+            $record.kind = "json"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$record.name)) {
+            $record.name = [string]$record.id
+        }
+
+        $decodedText = Get-StructuredRecordRecoveryText -Record $record
+        $complete = [bool]$record.end_seen
+        if ($record.chunk_count_expected -ne $null) {
+            $complete = $complete -and ($record.chunk_count_seen -ge [int]$record.chunk_count_expected)
+        }
+        if ([string]::IsNullOrWhiteSpace($decodedText)) {
+            $complete = $false
+        }
+
+        $recoveredPath = ConvertTo-StructuredRecordPath -RecordsDir $recordsDir -Name $record.name -Id $record.id -Kind $record.kind -Partial (-not $complete)
+        if (-not [string]::IsNullOrWhiteSpace($decodedText)) {
+            Set-Content -LiteralPath $recoveredPath -Value $decodedText -NoNewline
+        }
+        else {
+            Ensure-FileExists -Path $recoveredPath
+        }
+
+        $record.recovered_path = $recoveredPath
+        $record.complete = $complete
+        $recoveredSummaries.Add([ordered]@{
+            id = $record.id
+            name = $record.name
+            kind = $record.kind
+            source_log = $record.source_log
+            recovered_path = $recoveredPath
+            complete = $complete
+            chunk_count_seen = $record.chunk_count_seen
+            chunk_count_expected = $record.chunk_count_expected
+        })
+    }
+
+    $scene70SummaryJson = $null
+    foreach ($summaryRecord in $recoveredSummaries) {
+        if ($summaryRecord.name -eq "scene70_summary" -and $summaryRecord.kind -eq "json") {
+            $scene70SummaryJson = Get-Content -LiteralPath $summaryRecord.recovered_path -Raw -ErrorAction SilentlyContinue
+            break
+        }
+    }
+
+    return [ordered]@{
+        StructuredRecords = @($recoveredSummaries.ToArray())
+        Scene70SummaryJson = $scene70SummaryJson
+    }
+}
+
 function Get-CommandText {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -1701,6 +1967,19 @@ else {
 }
 $logRecord = Finalize-LogRecord -LogRecord $logRecord -Bucket $bucket
 
+$structuredRecordSourceLogs = @{}
+if (-not [string]::IsNullOrWhiteSpace($logRecord.StdoutPath)) {
+    $structuredRecordSourceLogs[$logRecord.StdoutPath] = $true
+}
+if (-not [string]::IsNullOrWhiteSpace($logRecord.StderrPath)) {
+    $structuredRecordSourceLogs[$logRecord.StderrPath] = $true
+}
+if (-not [string]::IsNullOrWhiteSpace($deviceLogcatPath) -and (Test-Path $deviceLogcatPath)) {
+    $structuredRecordSourceLogs[$deviceLogcatPath] = $true
+}
+
+$structuredRecordResult = Recover-StructuredRecords -RunDir $logRecord.RunDir -SourceLogs $structuredRecordSourceLogs
+
 $finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
     Join-Path $logRecord.RunDir "device_logcat.log"
 }
@@ -1732,6 +2011,7 @@ $meta = [ordered]@{
     stdout_log = $logRecord.StdoutPath
     stderr_log = $logRecord.StderrPath
     run_dir = $logRecord.RunDir
+    structured_records = @($structuredRecordResult.StructuredRecords)
 }
 
 if ($RunPlatform -eq "android") {
@@ -1746,6 +2026,10 @@ if ($RunPlatform -eq "android") {
     $meta["device_logcat_log"] = $finalDeviceLogcatPath
     $meta["android_expected_pattern_observed"] = $androidSawExpectedPattern
     $meta["android_app_observed_running"] = $androidSawAppRunning
+}
+
+if ($null -ne $structuredRecordResult.Scene70SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$structuredRecordResult.Scene70SummaryJson)) {
+    $meta["scene70_summary_json"] = [string]$structuredRecordResult.Scene70SummaryJson
 }
 
 Set-Content -Path $logRecord.VerdictPath -Value $finalVerdict -NoNewline

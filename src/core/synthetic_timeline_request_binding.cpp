@@ -3,10 +3,19 @@
 #include <string>
 
 #include "core/core_runtime.h"
-#include "imaging/api/capture_latency_trace_diagnostics.h"
 #include "imaging/api/timeline_teardown_trace.h"
 
 namespace cambang {
+
+namespace capture_latency_trace_diagnostics {
+inline uint32_t capture_inflight() noexcept { return 0u; }
+inline uint32_t active_capture_count() noexcept { return 0u; }
+inline void note_capture_admitted(uint32_t) noexcept {}
+inline void note_capture_finished() noexcept {}
+inline void reset_trace_group_seen() noexcept {}
+inline void print_trace_group_seen_summary() noexcept {}
+inline void print_line(const char*) noexcept {}
+} // namespace capture_latency_trace_diagnostics
 
 namespace {
 
