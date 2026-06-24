@@ -104,6 +104,159 @@ uint64_t saturating_add_u64(uint64_t a, uint64_t b) noexcept {
   return a + b;
 }
 
+} // namespace
+
+bool CoreRuntime::infer_stream_result_posture_shape_(
+    const SharedStreamResultData& result,
+    CoreProductionPostureShape& out) noexcept {
+  if (!result) {
+    return false;
+  }
+  if (result->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      result->retained_gpu_backing) {
+    out = result->access_posture.has_retained_cpu_payload
+              ? CoreProductionPostureShape::GpuPrimaryWithCpuSidecar
+              : CoreProductionPostureShape::GpuPrimaryNoCpuSidecar;
+    return true;
+  }
+  if (result->payload_kind == ResultPayloadKind::CPU_PACKED) {
+    out = CoreProductionPostureShape::CpuPrimary;
+    return true;
+  }
+  return false;
+}
+
+bool CoreRuntime::infer_capture_member_posture_shape_(
+    const CoreCaptureResultData::ImageMemberData& member,
+    CoreProductionPostureShape& out) noexcept {
+  if (member.payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      member.retained_gpu_backing) {
+    out = member.access_posture.has_retained_cpu_payload
+              ? CoreProductionPostureShape::GpuPrimaryWithCpuSidecar
+              : CoreProductionPostureShape::GpuPrimaryNoCpuSidecar;
+    return true;
+  }
+  if (member.payload_kind == ResultPayloadKind::CPU_PACKED) {
+    out = CoreProductionPostureShape::CpuPrimary;
+    return true;
+  }
+  return false;
+}
+
+void CoreRuntime::fill_stream_observation_identity_(
+    MeasuredPlanEvidence& evidence,
+    const SharedStreamResultData& result,
+    CoreProductionPostureShape observed_posture) noexcept {
+  evidence.has_observed_posture = true;
+  evidence.observed_posture = observed_posture;
+  evidence.observed_access_posture_id = result->access_posture.posture_id;
+  evidence.observed_stream_id = result->stream_id;
+  evidence.observed_capture_id = 0;
+  evidence.observed_acquisition_session_id = 0;
+  evidence.observed_image_member_index = 0;
+  evidence.observed_payload_kind = result->payload_kind;
+  evidence.observed_has_retained_cpu_payload =
+      result->access_posture.has_retained_cpu_payload;
+  evidence.observed_has_retained_gpu_backing =
+      result->access_posture.has_retained_gpu_backing;
+  evidence.observed_gpu_materialization_available =
+      result->access_posture.gpu_materialization_available;
+  evidence.observed_gpu_materialization_requires_readback =
+      result->access_posture.gpu_materialization_requires_readback;
+}
+
+void CoreRuntime::fill_capture_observation_identity_(
+    MeasuredPlanEvidence& evidence,
+    const SharedCaptureResultData& result,
+    const CoreCaptureResultData::ImageMemberData& member,
+    CoreProductionPostureShape observed_posture) noexcept {
+  evidence.has_observed_posture = true;
+  evidence.observed_posture = observed_posture;
+  evidence.observed_access_posture_id = member.access_posture.posture_id;
+  evidence.observed_stream_id = member.access_posture.stream_id;
+  evidence.observed_capture_id = result->capture_id;
+  evidence.observed_acquisition_session_id = result->acquisition_session_id;
+  evidence.observed_image_member_index = member.image_member_index;
+  evidence.observed_payload_kind = member.payload_kind;
+  evidence.observed_has_retained_cpu_payload =
+      member.access_posture.has_retained_cpu_payload;
+  evidence.observed_has_retained_gpu_backing =
+      member.access_posture.has_retained_gpu_backing;
+  evidence.observed_gpu_materialization_available =
+      member.access_posture.gpu_materialization_available;
+  evidence.observed_gpu_materialization_requires_readback =
+      member.access_posture.gpu_materialization_requires_readback;
+}
+
+bool CoreRuntime::same_observation_identity_(const MeasuredPlanEvidence& a,
+                                             const MeasuredPlanEvidence& b) noexcept {
+  return a.has_observed_posture &&
+         b.has_observed_posture &&
+         a.observed_posture == b.observed_posture &&
+         a.observed_access_posture_id == b.observed_access_posture_id &&
+         a.observed_stream_id == b.observed_stream_id &&
+         a.observed_capture_id == b.observed_capture_id &&
+         a.observed_acquisition_session_id == b.observed_acquisition_session_id &&
+         a.observed_image_member_index == b.observed_image_member_index &&
+         a.observed_payload_kind == b.observed_payload_kind &&
+         a.observed_has_retained_cpu_payload ==
+             b.observed_has_retained_cpu_payload &&
+         a.observed_has_retained_gpu_backing ==
+             b.observed_has_retained_gpu_backing &&
+         a.observed_gpu_materialization_available ==
+             b.observed_gpu_materialization_available &&
+         a.observed_gpu_materialization_requires_readback ==
+             b.observed_gpu_materialization_requires_readback;
+}
+
+CoreBackingPlanCandidateEvidenceReport
+CoreRuntime::build_candidate_evidence_report_(
+    CoreRetainedProductionPlan candidate,
+    const MeasuredPlanEvidence& evidence) noexcept {
+  CoreBackingPlanCandidateEvidenceReport report{};
+  report.candidate = candidate;
+  report.observation_seen =
+      evidence.observed_display_view || evidence.observed_to_image;
+  report.evidence_complete =
+      evidence.display_view_evidence_complete || evidence.capture_evidence_complete;
+  report.evidence_accepted =
+      evidence.display_view_evidence_accepted || evidence.capture_evidence_accepted;
+  report.provisional_display_view = evidence.provisional_display_view;
+  report.has_display_view_elapsed_ns = evidence.has_display_view_elapsed_ns;
+  report.display_view_elapsed_ns = evidence.display_view_elapsed_ns;
+  report.provisional_to_image = evidence.provisional_to_image;
+  report.has_materialization_elapsed_ns =
+      evidence.has_materialization_elapsed_ns;
+  report.materialization_elapsed_ns = evidence.materialization_elapsed_ns;
+  report.has_capture_ready_elapsed_ns =
+      evidence.has_capture_ready_elapsed_ns;
+  report.capture_ready_elapsed_ns = evidence.capture_ready_elapsed_ns;
+  report.has_total_elapsed_ns = evidence.has_total_elapsed_ns;
+  report.total_elapsed_ns = evidence.total_elapsed_ns;
+  report.has_normalized_cost_units = evidence.has_normalized_cost_units;
+  report.normalized_cost_units = evidence.normalized_cost_units;
+  report.has_observed_posture = evidence.has_observed_posture;
+  report.observed_posture = evidence.observed_posture;
+  report.observed_access_posture_id = evidence.observed_access_posture_id;
+  report.observed_stream_id = evidence.observed_stream_id;
+  report.observed_capture_id = evidence.observed_capture_id;
+  report.observed_acquisition_session_id =
+      evidence.observed_acquisition_session_id;
+  report.observed_image_member_index = evidence.observed_image_member_index;
+  report.observed_payload_kind = evidence.observed_payload_kind;
+  report.observed_has_retained_cpu_payload =
+      evidence.observed_has_retained_cpu_payload;
+  report.observed_has_retained_gpu_backing =
+      evidence.observed_has_retained_gpu_backing;
+  report.observed_gpu_materialization_available =
+      evidence.observed_gpu_materialization_available;
+  report.observed_gpu_materialization_requires_readback =
+      evidence.observed_gpu_materialization_requires_readback;
+  return report;
+}
+
+namespace {
+
 struct RetainedPlanResetDecision {
   CoreRetainedProductionPlan requested{};
   CoreRetainedProductionPlan steady{};
@@ -177,16 +330,16 @@ RetainedPlanResetDecision build_retained_plan_reset_decision(
     }
   }
   decision.requested = make_retained_plan(ordered[0]);
+  decision.candidate_count = static_cast<uint8_t>(ordered_count);
+  for (size_t i = 0; i < ordered_count; ++i) {
+    decision.candidate_sequence[i] = ordered[i];
+  }
   if (ordered_count == 1u) {
     decision.steady = decision.requested;
     return decision;
   }
 
   decision.evaluation_active = true;
-  decision.candidate_count = static_cast<uint8_t>(ordered_count);
-  for (size_t i = 0; i < ordered_count; ++i) {
-    decision.candidate_sequence[i] = ordered[i];
-  }
   return decision;
 }
 
@@ -655,14 +808,16 @@ bool seed_retained_device_still_profile_from_template(CoreDeviceRegistry& device
 bool CoreRuntime::plan_is_strictly_better_for_stream_(
     const MeasuredPlanEvidence& candidate,
     const MeasuredPlanEvidence* current_best) noexcept {
-  if (candidate.provisional_display_view == ResultCapability::UNSUPPORTED ||
+  if (!candidate.display_view_evidence_accepted ||
+      candidate.provisional_display_view == ResultCapability::UNSUPPORTED ||
       !candidate.has_display_view_elapsed_ns) {
     return false;
   }
   if (!current_best) {
     return true;
   }
-  if (!current_best->has_display_view_elapsed_ns ||
+  if (!current_best->display_view_evidence_accepted ||
+      !current_best->has_display_view_elapsed_ns ||
       current_best->provisional_display_view == ResultCapability::UNSUPPORTED) {
     return true;
   }
@@ -672,42 +827,25 @@ bool CoreRuntime::plan_is_strictly_better_for_stream_(
 bool CoreRuntime::plan_is_strictly_better_for_capture_(
     const MeasuredPlanEvidence& candidate,
     const MeasuredPlanEvidence* current_best) noexcept {
-  if (candidate.provisional_to_image == ResultCapability::UNSUPPORTED) {
-    return false;
-  }
-  if (!candidate.has_total_elapsed_ns &&
-      !candidate.has_materialization_elapsed_ns &&
-      !candidate.has_normalized_cost_units) {
+  if (!candidate.capture_evidence_accepted ||
+      !candidate.capture_evidence_complete ||
+      candidate.provisional_to_image == ResultCapability::UNSUPPORTED ||
+      !candidate.has_capture_ready_elapsed_ns ||
+      !candidate.has_materialization_elapsed_ns ||
+      !candidate.has_total_elapsed_ns) {
     return false;
   }
   if (!current_best) {
     return true;
   }
-  if (candidate.has_total_elapsed_ns && current_best->has_total_elapsed_ns) {
-    return candidate.total_elapsed_ns < current_best->total_elapsed_ns;
+  if (!current_best->capture_evidence_accepted ||
+      !current_best->capture_evidence_complete ||
+      !current_best->has_capture_ready_elapsed_ns ||
+      !current_best->has_materialization_elapsed_ns ||
+      !current_best->has_total_elapsed_ns) {
+    return true;
   }
-  if (candidate.has_total_elapsed_ns != current_best->has_total_elapsed_ns) {
-    return candidate.has_total_elapsed_ns;
-  }
-  if (candidate.has_materialization_elapsed_ns &&
-      current_best->has_materialization_elapsed_ns) {
-    return candidate.materialization_elapsed_ns <
-           current_best->materialization_elapsed_ns;
-  }
-  if (candidate.has_materialization_elapsed_ns !=
-      current_best->has_materialization_elapsed_ns) {
-    return candidate.has_materialization_elapsed_ns;
-  }
-  if (candidate.has_normalized_cost_units &&
-      current_best->has_normalized_cost_units) {
-    return candidate.normalized_cost_units <
-           current_best->normalized_cost_units;
-  }
-  if (candidate.has_normalized_cost_units !=
-      current_best->has_normalized_cost_units) {
-    return candidate.has_normalized_cost_units;
-  }
-  return false;
+  return candidate.total_elapsed_ns < current_best->total_elapsed_ns;
 }
 
 CoreRuntime::RetainedPlanDecisionProvenance
@@ -720,12 +858,16 @@ CoreRuntime::build_decision_provenance_(
   provenance.valid = selected.valid;
   provenance.from_evaluation = true;
   provenance.primary_function = state.primary_function;
+  provenance.completion_reason = state.completion_reason;
   provenance.capture_priming_seed_signature =
       state.capture_priming_seed_signature;
   provenance.selected = selected;
   provenance.candidate_count = state.candidate_count;
   for (uint8_t i = 0; i < state.candidate_count; ++i) {
     provenance.candidate_sequence[i] = state.candidate_sequence[i];
+    provenance.evidence[i] =
+        state.evidence[retained_plan_evidence_index(
+            state.candidate_sequence[i].posture)];
   }
   return provenance;
 }
@@ -736,13 +878,25 @@ CoreRuntime::build_non_evaluated_decision_provenance_(
     uint64_t device_instance_id,
     uint64_t acquisition_session_id,
     CoreRetainedProductionPlan requested,
-    CoreRetainedProductionPlan steady) noexcept {
+    CoreRetainedProductionPlan steady,
+    uint8_t candidate_count,
+    const CoreRetainedProductionPlan* candidate_sequence) noexcept {
   RetainedPlanDecisionProvenance provenance{};
   provenance.device_instance_id = device_instance_id;
   provenance.acquisition_session_id = acquisition_session_id;
   provenance.valid = requested.valid;
   provenance.primary_function = primary_function;
   provenance.selected = steady.valid ? steady : requested;
+  provenance.candidate_count = candidate_count;
+  for (uint8_t i = 0; i < candidate_count; ++i) {
+    provenance.candidate_sequence[i] =
+        candidate_sequence != nullptr ? candidate_sequence[i]
+                                      : CoreRetainedProductionPlan{};
+  }
+  if (candidate_count == 1u && provenance.selected.valid) {
+    provenance.completion_reason =
+        BackingPlanEvaluationCompletionReason::SingleViableCandidate;
+  }
   return provenance;
 }
 
@@ -1207,6 +1361,7 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
     state.device_instance_id = rec->device_instance_id;
     state.primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+    state.completion_reason = BackingPlanEvaluationCompletionReason::None;
     state.active = true;
     state.candidate_count = decision.candidate_count;
     state.current_candidate_index = 0;
@@ -1218,13 +1373,19 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
     stream_retained_plan_decisions_.erase(stream_id);
   } else {
     stream_retained_plan_evaluators_.erase(stream_id);
+    CoreRetainedProductionPlan candidate_sequence[3]{};
+    for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+      candidate_sequence[i] = make_retained_plan(decision.candidate_sequence[i]);
+    }
     RetainedPlanDecisionProvenance provenance =
         build_non_evaluated_decision_provenance_(
             BackingPlanEvaluationPrimaryFunction::StreamDisplayView,
             rec->device_instance_id,
             0,
             decision.requested,
-            decision.steady);
+            decision.steady,
+            decision.candidate_count,
+            candidate_sequence);
     stream_retained_plan_decisions_[stream_id] = provenance;
   }
 
@@ -1453,6 +1614,70 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
           dst.has_normalized_cost_units = true;
           dst.normalized_cost_units = src.normalized_cost_units;
         }
+        if (src.display_view_evidence_complete &&
+            (!dst.display_view_evidence_complete ||
+             (src.has_display_view_elapsed_ns &&
+              (!dst.has_display_view_elapsed_ns ||
+               src.display_view_elapsed_ns <= dst.display_view_elapsed_ns)))) {
+          dst.display_view_evidence_complete = src.display_view_evidence_complete;
+          dst.display_view_evidence_accepted = src.display_view_evidence_accepted;
+          dst.provisional_display_view = src.provisional_display_view;
+          dst.has_display_view_elapsed_ns = src.has_display_view_elapsed_ns;
+          dst.display_view_elapsed_ns = src.display_view_elapsed_ns;
+          dst.has_observed_posture = src.has_observed_posture;
+          dst.observed_posture = src.observed_posture;
+          dst.observed_access_posture_id = src.observed_access_posture_id;
+          dst.observed_stream_id = src.observed_stream_id;
+          dst.observed_capture_id = src.observed_capture_id;
+          dst.observed_acquisition_session_id =
+              src.observed_acquisition_session_id;
+          dst.observed_image_member_index = src.observed_image_member_index;
+          dst.observed_payload_kind = src.observed_payload_kind;
+          dst.observed_has_retained_cpu_payload =
+              src.observed_has_retained_cpu_payload;
+          dst.observed_has_retained_gpu_backing =
+              src.observed_has_retained_gpu_backing;
+          dst.observed_gpu_materialization_available =
+              src.observed_gpu_materialization_available;
+          dst.observed_gpu_materialization_requires_readback =
+              src.observed_gpu_materialization_requires_readback;
+        }
+        if (src.capture_evidence_complete &&
+            (!dst.capture_evidence_complete ||
+             (src.has_total_elapsed_ns &&
+              (!dst.has_total_elapsed_ns ||
+               src.total_elapsed_ns <= dst.total_elapsed_ns)))) {
+          dst.capture_evidence_complete = src.capture_evidence_complete;
+          dst.capture_evidence_accepted = src.capture_evidence_accepted;
+          dst.provisional_to_image = src.provisional_to_image;
+          dst.has_materialization_elapsed_ns =
+              src.has_materialization_elapsed_ns;
+          dst.materialization_elapsed_ns = src.materialization_elapsed_ns;
+          dst.has_capture_ready_elapsed_ns =
+              src.has_capture_ready_elapsed_ns;
+          dst.capture_ready_elapsed_ns = src.capture_ready_elapsed_ns;
+          dst.has_total_elapsed_ns = src.has_total_elapsed_ns;
+          dst.total_elapsed_ns = src.total_elapsed_ns;
+          dst.has_normalized_cost_units = src.has_normalized_cost_units;
+          dst.normalized_cost_units = src.normalized_cost_units;
+          dst.has_observed_posture = src.has_observed_posture;
+          dst.observed_posture = src.observed_posture;
+          dst.observed_access_posture_id = src.observed_access_posture_id;
+          dst.observed_stream_id = src.observed_stream_id;
+          dst.observed_capture_id = src.observed_capture_id;
+          dst.observed_acquisition_session_id =
+              src.observed_acquisition_session_id;
+          dst.observed_image_member_index = src.observed_image_member_index;
+          dst.observed_payload_kind = src.observed_payload_kind;
+          dst.observed_has_retained_cpu_payload =
+              src.observed_has_retained_cpu_payload;
+          dst.observed_has_retained_gpu_backing =
+              src.observed_has_retained_gpu_backing;
+          dst.observed_gpu_materialization_available =
+              src.observed_gpu_materialization_available;
+          dst.observed_gpu_materialization_requires_readback =
+              src.observed_gpu_materialization_requires_readback;
+        }
       };
   auto retained_plan_evaluator_has_evidence =
       [](const RetainedPlanEvaluatorState& state) noexcept {
@@ -1592,11 +1817,14 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
             static_cast<unsigned>(candidate.current_candidate_index),
             static_cast<unsigned>(current.current_candidate_index));
         current.primary_function = candidate.primary_function;
+        current.completion_reason = candidate.completion_reason;
         current.capture_priming_seed_signature =
             candidate.capture_priming_seed_signature;
         current.active = candidate.active;
         current.candidate_count = candidate.candidate_count;
         current.current_candidate_index = candidate.current_candidate_index;
+        current.current_candidate_ready_after_ns =
+            candidate.current_candidate_ready_after_ns;
         for (uint8_t i = 0; i < candidate.candidate_count; ++i) {
           current.candidate_sequence[i] = candidate.candidate_sequence[i];
         }
@@ -2053,8 +2281,14 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     state.device_instance_id = device_instance_id;
     state.acquisition_session_id = parent.acquisition_session_id;
     state.orphan_retire_after_ns = 0;
+    state.current_candidate_ready_after_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - epoch_)
+            .count()) +
+        capture_backing_plan_evaluation_settle_delay_ns();
     state.primary_function =
         BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize;
+    state.completion_reason = BackingPlanEvaluationCompletionReason::None;
     state.capture_priming_seed_signature = seed_signature;
     state.active = true;
     state.candidate_count = decision.candidate_count;
@@ -2080,13 +2314,19 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     remember_capture_priming_seed_(
         seed_signature,
         decision.steady.valid ? decision.steady : decision.requested);
+    CoreRetainedProductionPlan candidate_sequence[3]{};
+    for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+      candidate_sequence[i] = make_retained_plan(decision.candidate_sequence[i]);
+    }
     RetainedPlanDecisionProvenance provenance =
         build_non_evaluated_decision_provenance_(
             BackingPlanEvaluationPrimaryFunction::CaptureReadyAndMaterialize,
             device_instance_id,
             parent.acquisition_session_id,
             decision.requested,
-            decision.steady);
+            decision.steady,
+            decision.candidate_count,
+            candidate_sequence);
     provenance.orphan_retire_after_ns = 0;
     provenance.capture_priming_seed_signature = seed_signature;
     capture_retained_plan_decisions_[parent.key] = provenance;
@@ -2162,19 +2402,49 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
   if (!same_retained_plan(rec->requested_retained_plan, expected_plan)) {
     return;
   }
+  const SharedStreamResultData observed_result =
+      result_store_.get_latest_stream_result(stream_id);
+  CoreProductionPostureShape observed_posture{};
+  if (!observed_result ||
+      observed_result->access_posture.posture_id != posture_id ||
+      !infer_stream_result_posture_shape_(observed_result, observed_posture) ||
+      observed_posture != expected_plan.posture) {
+    return;
+  }
 
   MeasuredPlanEvidence& evidence =
       state.evidence[retained_plan_evidence_index(
           rec->requested_retained_plan.posture)];
   evidence.observed_display_view = true;
   evidence.provisional_display_view = provisional_display_view;
+  fill_stream_observation_identity_(evidence, observed_result, observed_posture);
   if (has_display_view_elapsed_ns) {
     evidence.has_display_view_elapsed_ns = true;
     evidence.display_view_elapsed_ns = display_view_elapsed_ns;
   }
+  evidence.display_view_evidence_complete =
+      provisional_display_view != ResultCapability::UNSUPPORTED &&
+      evidence.has_display_view_elapsed_ns;
+  evidence.display_view_evidence_accepted =
+      evidence.display_view_evidence_complete;
+  for (uint8_t i = 0; i < state.candidate_count; ++i) {
+    const CoreRetainedProductionPlan candidate = state.candidate_sequence[i];
+    if (!candidate.valid || candidate.posture == expected_plan.posture) {
+      continue;
+    }
+    const MeasuredPlanEvidence& other =
+        state.evidence[retained_plan_evidence_index(candidate.posture)];
+    if (other.display_view_evidence_accepted &&
+        same_observation_identity_(other, evidence)) {
+      evidence.display_view_evidence_accepted = false;
+      evidence.display_view_evidence_complete = false;
+      return;
+    }
+  }
 
   auto finalize_stream_evaluation =
-      [&](CoreRetainedProductionPlan fallback_plan) {
+      [&](CoreRetainedProductionPlan fallback_plan,
+          BackingPlanEvaluationCompletionReason completion_reason) {
         CoreRetainedProductionPlan chosen{};
         const MeasuredPlanEvidence* chosen_evidence = nullptr;
         for (uint8_t i = 0; i < state.candidate_count; ++i) {
@@ -2200,6 +2470,7 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
           }
         }
         (void)streams_.set_steady_retained_plan(stream_id, chosen);
+        state.completion_reason = completion_reason;
         RetainedPlanDecisionProvenance provenance =
             build_decision_provenance_(state, chosen);
         stream_retained_plan_decisions_[stream_id] = provenance;
@@ -2226,7 +2497,10 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
           // That family transition can invalidate an already published live
           // display binding. Preserve the best evidence gathered so far and
           // settle within the current family.
-          finalize_stream_evaluation(rec->requested_retained_plan);
+          finalize_stream_evaluation(
+              rec->requested_retained_plan,
+              BackingPlanEvaluationCompletionReason::
+                  LiveDisplayDemandFamilyCrossing);
           return;
         }
       }
@@ -2246,7 +2520,9 @@ void CoreRuntime::handle_stream_retained_display_view_observation_(
     }
     return;
   }
-  finalize_stream_evaluation(state.candidate_sequence[0]);
+  finalize_stream_evaluation(
+      state.candidate_sequence[0],
+      BackingPlanEvaluationCompletionReason::AllViableCandidatesEvaluated);
 }
 
 void CoreRuntime::enqueue_pending_capture_observation_(
@@ -2553,6 +2829,10 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         static_cast<unsigned>(state.candidate_count));
     return;
   }
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - epoch_)
+          .count());
   CoreRetainedProductionPlan effective_requested{};
   if (state.acquisition_session_id != 0) {
     if (const auto* session =
@@ -2597,12 +2877,57 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         static_cast<int>(effective_requested.posture));
     return;
   }
+  if (state.current_candidate_ready_after_ns != 0 &&
+      now_ns < state.current_candidate_ready_after_ns) {
+    enqueue_pending_capture_observation_(
+        device_instance_id,
+        capture_id,
+        acquisition_session_id_hint,
+        posture_id,
+        provisional_to_image,
+        has_materialization_elapsed_ns,
+        materialization_elapsed_ns,
+        has_normalized_cost_units,
+        normalized_cost_units,
+        deferred_retries_remaining,
+        state.current_candidate_ready_after_ns);
+    return;
+  }
+  const SharedCaptureResultData observed_result =
+      result_store_.get_capture_result(capture_id, device_instance_id);
+  const CoreCaptureResultData::ImageMemberData* observed_member =
+      observed_result ? observed_result->image_member_at(0u) : nullptr;
+  CoreProductionPostureShape observed_posture{};
+  if (!observed_result ||
+      observed_member == nullptr ||
+      observed_result->acquisition_session_id == 0 ||
+      observed_result->acquisition_session_id != state.acquisition_session_id ||
+      observed_member->access_posture.posture_id != posture_id ||
+      observed_member->image_member_index != 0u ||
+      observed_member->role !=
+          CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED ||
+      !infer_capture_member_posture_shape_(*observed_member, observed_posture) ||
+      observed_posture != expected_plan.posture) {
+    capture_latency_trace_printf(
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=attribution_mismatch current_candidate_index=%u expected_posture=%d",
+        static_cast<unsigned long long>(capture_id),
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned long long>(posture_id),
+        static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(state_it->first.kind),
+        static_cast<unsigned long long>(state_it->first.id),
+        static_cast<unsigned>(state.current_candidate_index),
+        static_cast<int>(expected_plan.posture));
+    return;
+  }
 
   MeasuredPlanEvidence& evidence =
       state.evidence[retained_plan_evidence_index(
           expected_plan.posture)];
   evidence.observed_to_image = true;
   evidence.provisional_to_image = provisional_to_image;
+  fill_capture_observation_identity_(
+      evidence, observed_result, *observed_member, observed_posture);
   if (has_materialization_elapsed_ns) {
     evidence.has_materialization_elapsed_ns = true;
     evidence.materialization_elapsed_ns = materialization_elapsed_ns;
@@ -2614,19 +2939,69 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   if (state.acquisition_session_id != 0) {
     if (const auto* session =
             acquisition_sessions_.find(state.acquisition_session_id);
-        session != nullptr && session->last_capture_latency_ns != 0) {
+        session != nullptr &&
+        session->last_capture_id == capture_id &&
+        session->last_capture_latency_ns != 0) {
       evidence.has_capture_ready_elapsed_ns = true;
       evidence.capture_ready_elapsed_ns = session->last_capture_latency_ns;
     }
   }
-  if (evidence.has_materialization_elapsed_ns) {
+  if (evidence.has_capture_ready_elapsed_ns &&
+      evidence.has_materialization_elapsed_ns) {
     evidence.has_total_elapsed_ns = true;
     evidence.total_elapsed_ns =
         saturating_add_u64(
-            evidence.has_capture_ready_elapsed_ns
-                ? evidence.capture_ready_elapsed_ns
-                : 0,
+            evidence.capture_ready_elapsed_ns,
             evidence.materialization_elapsed_ns);
+  } else {
+    evidence.has_total_elapsed_ns = false;
+    evidence.total_elapsed_ns = 0;
+  }
+  evidence.capture_evidence_complete =
+      evidence.has_capture_ready_elapsed_ns &&
+      evidence.has_materialization_elapsed_ns &&
+      evidence.has_total_elapsed_ns &&
+      provisional_to_image != ResultCapability::UNSUPPORTED;
+  evidence.capture_evidence_accepted = evidence.capture_evidence_complete;
+  for (uint8_t i = 0; i < state.candidate_count; ++i) {
+    const CoreRetainedProductionPlan candidate = state.candidate_sequence[i];
+    if (!candidate.valid || candidate.posture == expected_plan.posture) {
+      continue;
+    }
+    const MeasuredPlanEvidence& other =
+        state.evidence[retained_plan_evidence_index(candidate.posture)];
+    if (other.capture_evidence_accepted &&
+        same_observation_identity_(other, evidence)) {
+      evidence.capture_evidence_accepted = false;
+      evidence.capture_evidence_complete = false;
+      capture_latency_trace_printf(
+          "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=duplicate_observation current_candidate_index=%u expected_posture=%d",
+          static_cast<unsigned long long>(capture_id),
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned long long>(posture_id),
+          static_cast<unsigned long long>(observed_session_id),
+          static_cast<unsigned>(state_it->first.kind),
+          static_cast<unsigned long long>(state_it->first.id),
+          static_cast<unsigned>(state.current_candidate_index),
+          static_cast<int>(expected_plan.posture));
+      return;
+    }
+  }
+  if (!evidence.capture_evidence_complete &&
+      provisional_to_image != ResultCapability::UNSUPPORTED &&
+      deferred_retries_remaining != 0) {
+    enqueue_pending_capture_observation_(
+        device_instance_id,
+        capture_id,
+        acquisition_session_id_hint,
+        posture_id,
+        provisional_to_image,
+        has_materialization_elapsed_ns,
+        materialization_elapsed_ns,
+        has_normalized_cost_units,
+        normalized_cost_units,
+        static_cast<uint8_t>(deferred_retries_remaining - 1u),
+        now_ns + kCaptureObservationRetryDelayNs);
   }
   capture_latency_trace_printf(
       "capture_plan_observation_applied capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu current_candidate_index=%u requested_posture=%d provisional_to_image=%d has_materialization=%u materialization_elapsed_ns=%llu has_normalized=%u normalized_cost_units=%llu has_capture_ready=%u capture_ready_elapsed_ns=%llu",
@@ -2654,11 +3029,12 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
 
   if (state.current_candidate_index + 1u < state.candidate_count) {
     if (provisional_to_image == ResultCapability::UNSUPPORTED ||
-        has_materialization_elapsed_ns ||
-        has_normalized_cost_units) {
+        evidence.capture_evidence_accepted) {
       ++state.current_candidate_index;
       const CoreRetainedProductionPlan next_plan =
           state.candidate_sequence[state.current_candidate_index];
+      state.current_candidate_ready_after_ns =
+          now_ns + capture_backing_plan_evaluation_settle_delay_ns();
       capture_latency_trace_printf(
           "capture_plan_observation_advance capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu next_candidate_index=%u next_posture=%d",
           static_cast<unsigned long long>(capture_id),
@@ -2694,8 +3070,10 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     chosen_evidence = &candidate_evidence;
   }
   if (!chosen.valid) {
-    chosen = state.candidate_sequence[0];
+    return;
   }
+  state.completion_reason =
+      BackingPlanEvaluationCompletionReason::AllViableCandidatesEvaluated;
   capture_latency_trace_printf(
       "capture_plan_observation_finalize capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu chosen_posture=%d decision_from_evaluation=1",
       static_cast<unsigned long long>(capture_id),
@@ -2729,10 +3107,6 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   RetainedPlanDecisionProvenance provenance =
       build_decision_provenance_(state, chosen);
   if (rec == nullptr && !session_still_live) {
-    const uint64_t now_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - epoch_)
-            .count());
     provenance.orphan_retire_after_ns =
         now_ns + kCaptureRetainedPlanOrphanRetentionWindowNs;
   } else {
@@ -2767,9 +3141,16 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
       report.primary_function = state.primary_function;
       report.evaluator_active = state.active;
       report.current_candidate_index = state.current_candidate_index;
+      report.completion_reason = state.completion_reason;
       report.candidate_sequence.reserve(state.candidate_count);
+      report.candidate_evidence.reserve(state.candidate_count);
       for (uint8_t i = 0; i < state.candidate_count; ++i) {
         report.candidate_sequence.push_back(state.candidate_sequence[i]);
+        report.candidate_evidence.push_back(
+            build_candidate_evidence_report_(
+                state.candidate_sequence[i],
+                state.evidence[retained_plan_evidence_index(
+                    state.candidate_sequence[i].posture)]));
       }
     }
     if (const auto decision_it = stream_retained_plan_decisions_.find(stream_id);
@@ -2777,10 +3158,17 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
       const RetainedPlanDecisionProvenance& decision = decision_it->second;
       report.decision_from_evaluation = decision.from_evaluation;
       report.decision_selected = decision.selected;
+      report.completion_reason = decision.completion_reason;
       report.decision_candidate_sequence.reserve(decision.candidate_count);
+      report.candidate_evidence.clear();
+      report.candidate_evidence.reserve(decision.candidate_count);
       for (uint8_t i = 0; i < decision.candidate_count; ++i) {
         report.decision_candidate_sequence.push_back(
             decision.candidate_sequence[i]);
+        report.candidate_evidence.push_back(
+            build_candidate_evidence_report_(
+                decision.candidate_sequence[i],
+                decision.evidence[i]));
       }
     }
     out.push_back(std::move(report));
@@ -2828,9 +3216,16 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
       report.primary_function = state.primary_function;
       report.evaluator_active = state.active;
       report.current_candidate_index = state.current_candidate_index;
+      report.completion_reason = state.completion_reason;
       report.candidate_sequence.reserve(state.candidate_count);
+      report.candidate_evidence.reserve(state.candidate_count);
       for (uint8_t i = 0; i < state.candidate_count; ++i) {
         report.candidate_sequence.push_back(state.candidate_sequence[i]);
+        report.candidate_evidence.push_back(
+            build_candidate_evidence_report_(
+                state.candidate_sequence[i],
+                state.evidence[retained_plan_evidence_index(
+                    state.candidate_sequence[i].posture)]));
       }
     }
     if (const auto decision_it =
@@ -2839,10 +3234,17 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
       const RetainedPlanDecisionProvenance& decision = decision_it->second;
       report.decision_from_evaluation = decision.from_evaluation;
       report.decision_selected = decision.selected;
+      report.completion_reason = decision.completion_reason;
       report.decision_candidate_sequence.reserve(decision.candidate_count);
+      report.candidate_evidence.clear();
+      report.candidate_evidence.reserve(decision.candidate_count);
       for (uint8_t i = 0; i < decision.candidate_count; ++i) {
         report.decision_candidate_sequence.push_back(
             decision.candidate_sequence[i]);
+        report.candidate_evidence.push_back(
+            build_candidate_evidence_report_(
+                decision.candidate_sequence[i],
+                decision.evidence[i]));
       }
     }
     out.push_back(std::move(report));
@@ -2879,9 +3281,16 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
         }
         report.evaluator_active = state.active;
         report.current_candidate_index = state.current_candidate_index;
+        report.completion_reason = state.completion_reason;
         report.candidate_sequence.reserve(state.candidate_count);
+        report.candidate_evidence.reserve(state.candidate_count);
         for (uint8_t i = 0; i < state.candidate_count; ++i) {
           report.candidate_sequence.push_back(state.candidate_sequence[i]);
+          report.candidate_evidence.push_back(
+              build_candidate_evidence_report_(
+                  state.candidate_sequence[i],
+                  state.evidence[retained_plan_evidence_index(
+                      state.candidate_sequence[i].posture)]));
         }
         out.push_back(std::move(report));
       };
@@ -2913,10 +3322,16 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
         report.steady = decision.selected;
         report.decision_from_evaluation = decision.from_evaluation;
         report.decision_selected = decision.selected;
+        report.completion_reason = decision.completion_reason;
         report.decision_candidate_sequence.reserve(decision.candidate_count);
+        report.candidate_evidence.reserve(decision.candidate_count);
         for (uint8_t i = 0; i < decision.candidate_count; ++i) {
           report.decision_candidate_sequence.push_back(
               decision.candidate_sequence[i]);
+          report.candidate_evidence.push_back(
+              build_candidate_evidence_report_(
+                  decision.candidate_sequence[i],
+                  decision.evidence[i]));
         }
         out.push_back(std::move(report));
       };
@@ -4014,6 +4429,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
       state.device_instance_id = effective.device_instance_id;
       state.primary_function =
           BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+      state.completion_reason = BackingPlanEvaluationCompletionReason::None;
       state.active = true;
       state.candidate_count = retained_plan_decision.candidate_count;
       for (uint8_t i = 0; i < retained_plan_decision.candidate_count; ++i) {
@@ -4024,13 +4440,20 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
       stream_retained_plan_decisions_.erase(stream_id);
     } else {
       stream_retained_plan_evaluators_.erase(stream_id);
+      CoreRetainedProductionPlan candidate_sequence[3]{};
+      for (uint8_t i = 0; i < retained_plan_decision.candidate_count; ++i) {
+        candidate_sequence[i] =
+            make_retained_plan(retained_plan_decision.candidate_sequence[i]);
+      }
       RetainedPlanDecisionProvenance provenance =
           build_non_evaluated_decision_provenance_(
               BackingPlanEvaluationPrimaryFunction::StreamDisplayView,
               device_instance_id,
               0,
               retained_plan_decision.requested,
-              retained_plan_decision.steady);
+              retained_plan_decision.steady,
+              retained_plan_decision.candidate_count,
+              candidate_sequence);
       stream_retained_plan_decisions_[stream_id] = provenance;
     }
 

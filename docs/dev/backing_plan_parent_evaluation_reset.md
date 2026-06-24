@@ -272,6 +272,13 @@ AcquisitionSession plan evaluation should combine:
 - still-result readiness evidence from the real capture/result path; and
 - real materialization Access Evidence from the public result seam.
 
+Comparable capture evidence must remain internally consistent:
+
+- readiness and materialization must belong to the same relevant parent epoch,
+  capture/result identity, and realized Posture Shape; and
+- a candidate is not complete merely because materialization exists while
+  readiness is missing.
+
 The still-result readiness part is explicitly broader than result-access
 classification and must not be mislabeled as ordinary result-access evidence.
 
@@ -299,6 +306,12 @@ The conceptual model is:
 5. gather the relevant evidence for that plan;
 6. repeat for the other viable plans in the epoch;
 7. choose the winning plan and record it as the Steady Plan.
+
+For capture-scoped evaluation, "gather the relevant evidence" means waiting for
+both readiness and materialization for the same accepted candidate/result
+identity. A materialization-only observation may be retained as partial
+evidence, but it must not settle the comparison, advance the candidate as
+though it were complete, or win via a synthesized zero-readiness total.
 
 The evaluator must not:
 
@@ -432,6 +445,10 @@ This settle delay is conceptually separate from `warm_hold_ms`.
 The scheduler support already present in Core should be reused for this bounded
 timed work rather than introducing ad hoc polling loops.
 
+Public result access may still return and instrument immediately, but decision-
+driving evaluation evidence must continue to respect the provider-defined
+settle boundary.
+
 ---
 
 ## 13. Provider Responsibilities
@@ -468,6 +485,15 @@ intent model?" It becomes:
 - did reevaluation happen only on the correct invalidation boundaries;
 - did priming remain truthful and leak-safe;
 - did the winning plan match the parent's defined primary-function score.
+
+Maintainer-facing decision reports should therefore expose, per candidate:
+
+- whether the candidate was merely viable or actually evaluated;
+- the accepted decision evidence for that candidate;
+- enough realized result/access identity to prove attribution;
+- whether the final decision was measured or direct single-viable;
+- and, when evaluation ends early, the explicit termination reason
+  (for example `live_display_demand_family_crossing`).
 
 Scene 68 may or may not remain the best host for that proof. That should be
 decided after the redesign is agreed, not assumed up front.

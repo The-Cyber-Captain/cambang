@@ -64,6 +64,9 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 func _run() -> void:
 	print("RUN: %s" % SCENE_LABEL)
 	_log_maintainer_output_form_probe()
+	if _synthetic_producer_output_form_effective_selection() == "gpu_only":
+		_fail("Scene 568 requires a capture-capable Synthetic producer output form; run with -- --cambang-synth-producer-output-form=cpu_gpu or cpu_only")
+		return
 	await _run_impl()
 
 
@@ -1483,6 +1486,9 @@ func _assert_stream_report_shape(report: Dictionary, stream_id: int, device_inst
 	_require(_report_has_decision(report), "%s: stream report never resolved to a decision" % label)
 	var decision_candidates := _decision_candidate_postures(report)
 	_require(decision_candidates.size() <= 3, "%s: stream report decision_candidate_sequence exceeds supported posture count" % label)
+	if _done:
+		return
+	_assert_stream_decision_consistency(report, label)
 
 func _assert_capture_report_shape(
 	report: Dictionary,
@@ -1513,6 +1519,9 @@ func _assert_capture_report_shape(
 		_require(_report_has_decision(report), "%s: capture report never resolved to a decision" % label)
 		var decision_candidates := _decision_candidate_postures(report)
 		_require(decision_candidates.size() <= 3, "%s: capture report decision_candidate_sequence exceeds supported posture count" % label)
+		if _done:
+			return
+		_assert_capture_decision_consistency(report, label)
 
 
 func _assert_reports_distinct(reports: Array, label: String) -> void:
@@ -1599,6 +1608,191 @@ func _decision_candidate_postures(report: Dictionary) -> Array:
 	return _report_candidate_postures(report, "candidate_sequence")
 
 
+func _candidate_evidence_entries(report: Dictionary) -> Array:
+	var entries: Array = []
+	var entries_v = report.get("candidate_evidence", [])
+	if typeof(entries_v) != TYPE_ARRAY:
+		return entries
+	for entry_v in entries_v:
+		if typeof(entry_v) == TYPE_DICTIONARY:
+			entries.append(entry_v)
+	return entries
+
+
+func _candidate_evidence_posture(entry: Dictionary) -> String:
+	var candidate_v = entry.get("candidate", {})
+	if typeof(candidate_v) != TYPE_DICTIONARY:
+		return ""
+	return str((candidate_v as Dictionary).get("posture", ""))
+
+
+func _candidate_evidence_by_posture(report: Dictionary) -> Dictionary:
+	var by_posture := {}
+	for entry_v in _candidate_evidence_entries(report):
+		var entry: Dictionary = entry_v
+		var posture := _candidate_evidence_posture(entry)
+		if posture != "":
+			by_posture[posture] = entry
+	return by_posture
+
+
+func _candidate_observation_key(entry: Dictionary) -> String:
+	if not bool(entry.get("has_observed_posture", false)):
+		return ""
+	return "%s|%d|%d|%d|%d|%s|%d|%d" % [
+		str(entry.get("observed_posture", "")),
+		int(entry.get("observed_access_posture_id", 0)),
+		int(entry.get("observed_stream_id", 0)),
+		int(entry.get("observed_capture_id", 0)),
+		int(entry.get("observed_acquisition_session_id", 0)),
+		str(entry.get("observed_payload_kind", "")),
+		int(entry.get("observed_image_member_index", 0)),
+		int(bool(entry.get("observed_has_retained_cpu_payload", false))),
+	]
+
+
+func _completion_reason(report: Dictionary) -> String:
+	return str(report.get("completion_reason", "none"))
+
+
+func _accepted_stream_candidate_entries(report: Dictionary) -> Array:
+	var accepted: Array = []
+	for entry_v in _candidate_evidence_entries(report):
+		var entry: Dictionary = entry_v
+		if bool(entry.get("evidence_accepted", false)) and bool(entry.get("has_display_view_elapsed_ns", false)):
+			accepted.append(entry)
+	return accepted
+
+
+func _accepted_capture_candidate_entries(report: Dictionary) -> Array:
+	var accepted: Array = []
+	for entry_v in _candidate_evidence_entries(report):
+		var entry: Dictionary = entry_v
+		if bool(entry.get("evidence_accepted", false)) and bool(entry.get("evidence_complete", false)) and bool(entry.get("has_total_elapsed_ns", false)):
+			accepted.append(entry)
+	return accepted
+
+
+func _assert_candidate_observations_distinct(report: Dictionary, label: String) -> void:
+	var seen := {}
+	for entry_v in _candidate_evidence_entries(report):
+		var entry: Dictionary = entry_v
+		var key := _candidate_observation_key(entry)
+		if key == "":
+			continue
+		var posture := _candidate_evidence_posture(entry)
+		_require(not seen.has(key), "%s: one result/access-posture observation was attributed to incompatible candidate plans (%s vs %s)" % [label, str(seen.get(key, "")), posture])
+		if _done:
+			return
+		seen[key] = posture
+
+
+func _assert_stream_decision_consistency(report: Dictionary, label: String) -> void:
+	_assert_candidate_observations_distinct(report, label)
+	if _done:
+		return
+	var viable_postures := _decision_candidate_postures(report)
+	var by_posture := _candidate_evidence_by_posture(report)
+	var completion := _completion_reason(report)
+	var selected_posture := _plan_posture(report, "decision_selected")
+	if not bool(report.get("decision_from_evaluation", false)):
+		_require(viable_postures.size() == 1, "%s: direct stream decision must expose exactly one viable candidate" % label)
+		if _done:
+			return
+		_require(completion == "single_viable_candidate", "%s: direct stream decision must report completion_reason=single_viable_candidate" % label)
+		if _done:
+			return
+		_require(selected_posture == str(viable_postures[0]), "%s: direct stream decision selected posture mismatch" % label)
+		return
+	_require(completion == "all_viable_candidates_evaluated" or completion == "live_display_demand_family_crossing", "%s: measured stream decision missing completion reason" % label)
+	if _done:
+		return
+	for posture_v in viable_postures:
+		var posture := str(posture_v)
+		_require(by_posture.has(posture), "%s: stream report missing candidate evidence for posture %s" % [label, posture])
+		if _done:
+			return
+	var accepted := _accepted_stream_candidate_entries(report)
+	_require(not accepted.is_empty(), "%s: stream report selected a winner without accepted display evidence" % label)
+	if _done:
+		return
+	_require(by_posture.has(selected_posture), "%s: stream report missing selected candidate evidence" % label)
+	if _done:
+		return
+	var selected_entry: Dictionary = by_posture[selected_posture]
+	_require(bool(selected_entry.get("evidence_accepted", false)) and bool(selected_entry.get("has_display_view_elapsed_ns", false)), "%s: selected stream candidate lacks accepted display evidence" % label)
+	if _done:
+		return
+	var selected_elapsed := int(selected_entry.get("display_view_elapsed_ns", 0))
+	for entry_v in accepted:
+		var entry: Dictionary = entry_v
+		_require(selected_elapsed <= int(entry.get("display_view_elapsed_ns", 0)), "%s: stream winner does not match the lowest accepted display measurement" % label)
+		if _done:
+			return
+	var unevaluated_viable := false
+	for posture_v in viable_postures:
+		var posture := str(posture_v)
+		var entry: Dictionary = by_posture[posture]
+		if not bool(entry.get("observation_seen", false)):
+			unevaluated_viable = true
+			break
+	if unevaluated_viable:
+		_require(completion == "live_display_demand_family_crossing", "%s: partial stream comparison must report the live-display-demand family-crossing guard" % label)
+	else:
+		_require(completion == "all_viable_candidates_evaluated", "%s: fully observed stream comparison must report all_viable_candidates_evaluated" % label)
+
+
+func _assert_capture_decision_consistency(report: Dictionary, label: String) -> void:
+	_assert_candidate_observations_distinct(report, label)
+	if _done:
+		return
+	var viable_postures := _decision_candidate_postures(report)
+	var by_posture := _candidate_evidence_by_posture(report)
+	var completion := _completion_reason(report)
+	var selected_posture := _plan_posture(report, "decision_selected")
+	if not bool(report.get("decision_from_evaluation", false)):
+		_require(viable_postures.size() == 1, "%s: direct capture decision must expose exactly one viable candidate" % label)
+		if _done:
+			return
+		_require(completion == "single_viable_candidate", "%s: direct capture decision must report completion_reason=single_viable_candidate" % label)
+		if _done:
+			return
+		_require(selected_posture == str(viable_postures[0]), "%s: direct capture decision selected posture mismatch" % label)
+		return
+	_require(completion == "all_viable_candidates_evaluated", "%s: measured capture decision must report all_viable_candidates_evaluated" % label)
+	if _done:
+		return
+	for posture_v in viable_postures:
+		var posture := str(posture_v)
+		_require(by_posture.has(posture), "%s: capture report missing candidate evidence for posture %s" % [label, posture])
+		if _done:
+			return
+	var accepted := _accepted_capture_candidate_entries(report)
+	_require(not accepted.is_empty(), "%s: capture report selected a winner without complete readiness-plus-materialization evidence" % label)
+	if _done:
+		return
+	_require(by_posture.has(selected_posture), "%s: capture report missing selected candidate evidence" % label)
+	if _done:
+		return
+	var selected_entry: Dictionary = by_posture[selected_posture]
+	_require(bool(selected_entry.get("evidence_complete", false)) and bool(selected_entry.get("evidence_accepted", false)) and bool(selected_entry.get("has_capture_ready_elapsed_ns", false)) and bool(selected_entry.get("has_materialization_elapsed_ns", false)) and bool(selected_entry.get("has_total_elapsed_ns", false)), "%s: selected capture candidate lacks a complete readiness-plus-materialization score" % label)
+	if _done:
+		return
+	var selected_total := int(selected_entry.get("total_elapsed_ns", 0))
+	for entry_v in accepted:
+		var entry: Dictionary = entry_v
+		_require(selected_total <= int(entry.get("total_elapsed_ns", 0)), "%s: capture winner does not match the defined readiness-plus-materialization score" % label)
+		if _done:
+			return
+		_require(int(entry.get("observed_capture_id", 0)) != 0, "%s: accepted capture candidate missing capture identity" % label)
+		if _done:
+			return
+		_require(int(entry.get("observed_acquisition_session_id", 0)) != 0, "%s: accepted capture candidate missing acquisition-session identity" % label)
+		if _done:
+			return
+		_require(_candidate_evidence_posture(entry) == str(entry.get("observed_posture", "")), "%s: capture evidence posture attribution mismatch" % label)
+
+
 func _report_signature(report: Dictionary) -> String:
 	if report.is_empty():
 		return ""
@@ -1612,8 +1806,10 @@ func _report_signature(report: Dictionary) -> String:
 		"decision_posture": _plan_posture(report, "decision_selected"),
 		"evaluator_active": bool(report.get("evaluator_active", false)),
 		"current_candidate_index": int(report.get("current_candidate_index", -1)),
+		"completion_reason": _completion_reason(report),
 		"candidate_sequence": _report_candidate_postures(report, "candidate_sequence"),
 		"decision_candidate_sequence": _report_candidate_postures(report, "decision_candidate_sequence"),
+		"candidate_evidence": _candidate_evidence_entries(report),
 	})
 
 
@@ -1633,10 +1829,11 @@ func _format_evaluation_info_line(report: Dictionary, label: String) -> String:
 	var steady := _plan_posture(report, "steady")
 	var decision := _plan_posture(report, "decision_selected")
 	var candidate_postures := _decision_candidate_postures(report)
+	var completion := _completion_reason(report)
 	var evidence_summary := _report_evidence_summary(report)
 	if _report_has_decision(report):
 		return (
-			"INFO: %s timeline_ns=%d %s evaluation chose %s for %s %d; requested=%s steady=%s candidates=%s evidence=%s" % [
+			"INFO: %s timeline_ns=%d %s evaluation chose %s for %s %d; requested=%s steady=%s completion=%s candidates=%s evidence=%s" % [
 				label,
 				timeline_ns,
 				target_kind,
@@ -1645,12 +1842,13 @@ func _format_evaluation_info_line(report: Dictionary, label: String) -> String:
 				parent_id,
 				requested,
 				steady,
+				completion,
 				JSON.stringify(candidate_postures),
 				evidence_summary,
 			]
 		)
 	return (
-		"INFO: %s timeline_ns=%d %s evaluation active for %s %d; target_id=%d requested=%s steady=%s candidate_index=%d candidates=%s evidence=%s" % [
+		"INFO: %s timeline_ns=%d %s evaluation active for %s %d; target_id=%d requested=%s steady=%s candidate_index=%d completion=%s candidates=%s evidence=%s" % [
 			label,
 			timeline_ns,
 			target_kind,
@@ -1660,6 +1858,7 @@ func _format_evaluation_info_line(report: Dictionary, label: String) -> String:
 			requested,
 			steady,
 			int(report.get("current_candidate_index", -1)),
+			completion,
 			JSON.stringify(candidate_postures),
 			evidence_summary,
 		]
@@ -1667,40 +1866,23 @@ func _format_evaluation_info_line(report: Dictionary, label: String) -> String:
 
 
 func _report_evidence_summary(report: Dictionary) -> String:
-	var prefixes: Array[String] = []
-	var target_kind := str(report.get("target_kind", ""))
-	var primary_function := str(report.get("primary_function", ""))
-	if target_kind == "capture":
-		prefixes.append("capture_to_image.")
-	elif target_kind == "stream" and primary_function == "display_view":
-		prefixes.append("stream_display_view.")
-	else:
-		prefixes.append("stream_to_image.")
 	var summaries: Array[String] = []
-	var evidence := _get_result_access_timing_evidence()
-	var keys := evidence.keys()
-	keys.sort()
-	for key_v in keys:
-		var route := str(key_v)
-		var matched := false
-		for prefix in prefixes:
-			if route.begins_with(prefix):
-				matched = true
-				break
-		if not matched:
-			continue
-		var entry_v = evidence.get(route, null)
-		if typeof(entry_v) != TYPE_DICTIONARY:
-			continue
+	for entry_v in _candidate_evidence_entries(report):
 		var entry: Dictionary = entry_v
+		var posture := _candidate_evidence_posture(entry)
+		var observed_key := _candidate_observation_key(entry)
+		var total_text := str(int(entry.get("total_elapsed_ns", 0))) if bool(entry.get("has_total_elapsed_ns", false)) else "-"
+		var display_text := str(int(entry.get("display_view_elapsed_ns", 0))) if bool(entry.get("has_display_view_elapsed_ns", false)) else "-"
 		summaries.append(
-			"%s{calls=%d,successes=%d,first_success_ns=%d,max_ns=%d,postures=%d}" % [
-				route,
-				int(entry.get("calls", 0)),
-				int(entry.get("successes", 0)),
-				int(entry.get("first_success_ns", 0)),
-				int(entry.get("max_ns", 0)),
-				int(entry.get("posture_count", 0)),
+			"%s{obs=%d,accepted=%d,complete=%d,observed=%s,display_ns=%s,total_ns=%s,access_posture=%d}" % [
+				posture,
+				int(bool(entry.get("observation_seen", false))),
+				int(bool(entry.get("evidence_accepted", false))),
+				int(bool(entry.get("evidence_complete", false))),
+				observed_key if observed_key != "" else "none",
+				display_text,
+				total_text,
+				int(entry.get("observed_access_posture_id", 0)),
 			]
 		)
 	if summaries.is_empty():

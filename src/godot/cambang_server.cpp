@@ -68,11 +68,8 @@ static const char* mode_to_cstr(RuntimeMode m) noexcept {
 }
 
 
-static godot::String core_production_posture_name(CoreRetainedProductionPlan plan) {
-  if (!plan.valid) {
-    return "";
-  }
-  switch (plan.posture) {
+static godot::String core_production_posture_name(CoreProductionPostureShape posture) {
+  switch (posture) {
     case CoreProductionPostureShape::CpuPrimary:
       return "CPU-primary";
     case CoreProductionPostureShape::GpuPrimaryNoCpuSidecar:
@@ -81,6 +78,13 @@ static godot::String core_production_posture_name(CoreRetainedProductionPlan pla
       return "GPU-primary, with CPU sidecar";
   }
   return "unknown";
+}
+
+static godot::String core_production_posture_name(CoreRetainedProductionPlan plan) {
+  if (!plan.valid) {
+    return "";
+  }
+  return core_production_posture_name(plan.posture);
 }
 
 static godot::Dictionary core_retained_plan_to_dictionary(CoreRetainedProductionPlan plan) {
@@ -114,6 +118,99 @@ static godot::String backing_plan_evaluation_primary_function_name(
   return "unknown";
 }
 
+static godot::String backing_plan_evaluation_completion_reason_name(
+    BackingPlanEvaluationCompletionReason reason) {
+  switch (reason) {
+    case BackingPlanEvaluationCompletionReason::None:
+      return "none";
+    case BackingPlanEvaluationCompletionReason::AllViableCandidatesEvaluated:
+      return "all_viable_candidates_evaluated";
+    case BackingPlanEvaluationCompletionReason::LiveDisplayDemandFamilyCrossing:
+      return "live_display_demand_family_crossing";
+    case BackingPlanEvaluationCompletionReason::SingleViableCandidate:
+      return "single_viable_candidate";
+  }
+  return "unknown";
+}
+
+static godot::String result_capability_name(ResultCapability capability) {
+  switch (capability) {
+    case ResultCapability::UNSUPPORTED:
+      return "unsupported";
+    case ResultCapability::READY:
+      return "ready";
+    case ResultCapability::CHEAP:
+      return "cheap";
+    case ResultCapability::EXPENSIVE:
+      return "expensive";
+  }
+  return "unknown";
+}
+
+static godot::String result_payload_kind_name(ResultPayloadKind payload_kind) {
+  switch (payload_kind) {
+    case ResultPayloadKind::CPU_PACKED:
+      return "cpu_packed";
+    case ResultPayloadKind::GPU_SURFACE:
+      return "gpu_surface";
+    case ResultPayloadKind::ENCODED_IMAGE:
+      return "encoded_image";
+    case ResultPayloadKind::RAW_IMAGE:
+      return "raw_image";
+  }
+  return "unknown";
+}
+
+static godot::Dictionary backing_plan_candidate_evidence_to_dictionary(
+    const CoreBackingPlanCandidateEvidenceReport& evidence) {
+  godot::Dictionary d;
+  d["candidate"] = core_retained_plan_to_dictionary(evidence.candidate);
+  d["observation_seen"] = evidence.observation_seen;
+  d["evidence_complete"] = evidence.evidence_complete;
+  d["evidence_accepted"] = evidence.evidence_accepted;
+  d["provisional_display_view"] =
+      result_capability_name(evidence.provisional_display_view);
+  d["has_display_view_elapsed_ns"] = evidence.has_display_view_elapsed_ns;
+  d["display_view_elapsed_ns"] =
+      static_cast<uint64_t>(evidence.display_view_elapsed_ns);
+  d["provisional_to_image"] =
+      result_capability_name(evidence.provisional_to_image);
+  d["has_materialization_elapsed_ns"] =
+      evidence.has_materialization_elapsed_ns;
+  d["materialization_elapsed_ns"] =
+      static_cast<uint64_t>(evidence.materialization_elapsed_ns);
+  d["has_capture_ready_elapsed_ns"] =
+      evidence.has_capture_ready_elapsed_ns;
+  d["capture_ready_elapsed_ns"] =
+      static_cast<uint64_t>(evidence.capture_ready_elapsed_ns);
+  d["has_total_elapsed_ns"] = evidence.has_total_elapsed_ns;
+  d["total_elapsed_ns"] = static_cast<uint64_t>(evidence.total_elapsed_ns);
+  d["has_normalized_cost_units"] = evidence.has_normalized_cost_units;
+  d["normalized_cost_units"] =
+      static_cast<uint64_t>(evidence.normalized_cost_units);
+  d["has_observed_posture"] = evidence.has_observed_posture;
+  d["observed_posture"] = core_production_posture_name(evidence.observed_posture);
+  d["observed_access_posture_id"] =
+      static_cast<uint64_t>(evidence.observed_access_posture_id);
+  d["observed_stream_id"] = static_cast<uint64_t>(evidence.observed_stream_id);
+  d["observed_capture_id"] = static_cast<uint64_t>(evidence.observed_capture_id);
+  d["observed_acquisition_session_id"] =
+      static_cast<uint64_t>(evidence.observed_acquisition_session_id);
+  d["observed_image_member_index"] =
+      static_cast<int>(evidence.observed_image_member_index);
+  d["observed_payload_kind"] =
+      result_payload_kind_name(evidence.observed_payload_kind);
+  d["observed_has_retained_cpu_payload"] =
+      evidence.observed_has_retained_cpu_payload;
+  d["observed_has_retained_gpu_backing"] =
+      evidence.observed_has_retained_gpu_backing;
+  d["observed_gpu_materialization_available"] =
+      evidence.observed_gpu_materialization_available;
+  d["observed_gpu_materialization_requires_readback"] =
+      evidence.observed_gpu_materialization_requires_readback;
+  return d;
+}
+
 static godot::Dictionary backing_plan_evaluation_report_to_dictionary(
     const CoreBackingPlanEvaluationReport& report) {
   godot::Dictionary d;
@@ -133,11 +230,20 @@ static godot::Dictionary backing_plan_evaluation_report_to_dictionary(
   d["steady"] = core_retained_plan_to_dictionary(report.steady);
   d["evaluator_active"] = report.evaluator_active;
   d["current_candidate_index"] = static_cast<int>(report.current_candidate_index);
+  d["completion_reason"] =
+      backing_plan_evaluation_completion_reason_name(report.completion_reason);
   godot::Array candidates;
   for (const CoreRetainedProductionPlan& candidate : report.candidate_sequence) {
     candidates.append(core_retained_plan_to_dictionary(candidate));
   }
   d["candidate_sequence"] = candidates;
+  godot::Array candidate_evidence;
+  for (const CoreBackingPlanCandidateEvidenceReport& evidence :
+       report.candidate_evidence) {
+    candidate_evidence.append(
+        backing_plan_candidate_evidence_to_dictionary(evidence));
+  }
+  d["candidate_evidence"] = candidate_evidence;
   d["decision_from_evaluation"] = report.decision_from_evaluation;
   d["decision_selected"] = core_retained_plan_to_dictionary(report.decision_selected);
   godot::Array decision_candidates;

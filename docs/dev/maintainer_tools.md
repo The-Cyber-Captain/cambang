@@ -238,16 +238,17 @@ user runtime configuration and do not redefine provider-contract truth.
   - `always` is a maintainer eager-update comparison override
 
 
-Scene 68 (`68_inner_evidence_reset_verify`) now also uses the existing
-`CamBANGServer.get_synthetic_metrics_snapshot()` maintainer surface to report a
-minimal parent-scoped backing-plan evaluation view under
-`backing_plan_evaluation_reports`. This is a verification-only seam, not public
-API and not snapshot schema. The payload contains only the target kind/id,
-parent kind/id, primary function, requested posture, steady posture,
-evaluator-active flag, current candidate index, and candidate sequence needed
-by the scene to prove first-slice backing-plan evaluation lifecycle behaviour
-while continuing to use `result_access_timing_evidence` for retained-result
-measurement detail.
+Scene 68 (`68_inner_evidence_reset_verify`) remains only a secondary
+retained-result evidence/reset surface.
+
+Scene 568 (`568_backing_plan_evaluation_verify`) is the canonical automatable
+Backing Plan evaluator verifier. It uses the existing
+`CamBANGServer.get_synthetic_metrics_snapshot()` maintainer surface to read
+parent-scoped `backing_plan_evaluation_reports`, including candidate-specific
+decision evidence and explicit completion reasons. This is a verification-only
+seam, not public API and not snapshot schema. Decision provenance for Scene 568
+comes from Core's per-candidate report payload rather than from the global
+`result_access_timing_evidence` aggregates.
 
 Retained maintainer diagnostics:
 
@@ -368,6 +369,11 @@ This is the primary maintainer check for provider-contract rules such as:
 - still-image-bundle capability-gate checks proving:
   - default-only bundle validity is not gated by multi-member capability
   - multi-member authored bundle rejection when multi-member capability is false
+- parent-scoped Backing Plan evaluator regressions proving:
+  - capture winners require complete readiness-plus-materialization evidence
+  - stale or duplicate result observations cannot satisfy another candidate
+  - direct single-viable selection remains visibly non-evaluated
+  - partial stream comparison reports the live-display-demand family-crossing guard truthfully
 
 ### What it proves for synthetic timeline destructive sequencing
 

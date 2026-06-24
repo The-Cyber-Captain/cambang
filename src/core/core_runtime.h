@@ -41,6 +41,45 @@ enum class BackingPlanEvaluationPrimaryFunction : uint8_t {
   CaptureReadyAndMaterialize = 1,
 };
 
+enum class BackingPlanEvaluationCompletionReason : uint8_t {
+  None = 0,
+  AllViableCandidatesEvaluated = 1,
+  LiveDisplayDemandFamilyCrossing = 2,
+  SingleViableCandidate = 3,
+};
+
+struct CoreBackingPlanCandidateEvidenceReport {
+  CoreRetainedProductionPlan candidate{};
+  bool observation_seen = false;
+  bool evidence_complete = false;
+  bool evidence_accepted = false;
+  ResultCapability provisional_display_view = ResultCapability::UNSUPPORTED;
+  bool has_display_view_elapsed_ns = false;
+  uint64_t display_view_elapsed_ns = 0;
+  ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
+  bool has_materialization_elapsed_ns = false;
+  uint64_t materialization_elapsed_ns = 0;
+  bool has_capture_ready_elapsed_ns = false;
+  uint64_t capture_ready_elapsed_ns = 0;
+  bool has_total_elapsed_ns = false;
+  uint64_t total_elapsed_ns = 0;
+  bool has_normalized_cost_units = false;
+  uint64_t normalized_cost_units = 0;
+  bool has_observed_posture = false;
+  CoreProductionPostureShape observed_posture =
+      CoreProductionPostureShape::CpuPrimary;
+  uint64_t observed_access_posture_id = 0;
+  uint64_t observed_stream_id = 0;
+  uint64_t observed_capture_id = 0;
+  uint64_t observed_acquisition_session_id = 0;
+  uint32_t observed_image_member_index = 0;
+  ResultPayloadKind observed_payload_kind = ResultPayloadKind::CPU_PACKED;
+  bool observed_has_retained_cpu_payload = false;
+  bool observed_has_retained_gpu_backing = false;
+  bool observed_gpu_materialization_available = false;
+  bool observed_gpu_materialization_requires_readback = false;
+};
+
 struct CoreBackingPlanEvaluationReport {
   enum class ParentKind : uint8_t {
     Stream = 0,
@@ -68,9 +107,12 @@ struct CoreBackingPlanEvaluationReport {
   bool evaluator_active = false;
   uint8_t current_candidate_index = 0;
   std::vector<CoreRetainedProductionPlan> candidate_sequence{};
+  std::vector<CoreBackingPlanCandidateEvidenceReport> candidate_evidence{};
   bool decision_from_evaluation = false;
   CoreRetainedProductionPlan decision_selected{};
   std::vector<CoreRetainedProductionPlan> decision_candidate_sequence{};
+  BackingPlanEvaluationCompletionReason completion_reason =
+      BackingPlanEvaluationCompletionReason::None;
 };
 
 enum class TrySetStreamPictureStatus : uint8_t {
@@ -685,10 +727,14 @@ private:
 
   struct MeasuredPlanEvidence {
     bool observed_display_view = false;
+    bool display_view_evidence_complete = false;
+    bool display_view_evidence_accepted = false;
     ResultCapability provisional_display_view = ResultCapability::UNSUPPORTED;
     bool has_display_view_elapsed_ns = false;
     uint64_t display_view_elapsed_ns = 0;
     bool observed_to_image = false;
+    bool capture_evidence_complete = false;
+    bool capture_evidence_accepted = false;
     ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
     bool has_materialization_elapsed_ns = false;
     uint64_t materialization_elapsed_ns = 0;
@@ -698,6 +744,19 @@ private:
     uint64_t total_elapsed_ns = 0;
     bool has_normalized_cost_units = false;
     uint64_t normalized_cost_units = 0;
+    bool has_observed_posture = false;
+    CoreProductionPostureShape observed_posture =
+        CoreProductionPostureShape::CpuPrimary;
+    uint64_t observed_access_posture_id = 0;
+    uint64_t observed_stream_id = 0;
+    uint64_t observed_capture_id = 0;
+    uint64_t observed_acquisition_session_id = 0;
+    uint32_t observed_image_member_index = 0;
+    ResultPayloadKind observed_payload_kind = ResultPayloadKind::CPU_PACKED;
+    bool observed_has_retained_cpu_payload = false;
+    bool observed_has_retained_gpu_backing = false;
+    bool observed_gpu_materialization_available = false;
+    bool observed_gpu_materialization_requires_readback = false;
   };
 
   struct CapturePrimingSeedSignature {
@@ -726,8 +785,11 @@ private:
     uint64_t device_instance_id = 0;
     uint64_t acquisition_session_id = 0;
     uint64_t orphan_retire_after_ns = 0;
+    uint64_t current_candidate_ready_after_ns = 0;
     BackingPlanEvaluationPrimaryFunction primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+    BackingPlanEvaluationCompletionReason completion_reason =
+        BackingPlanEvaluationCompletionReason::None;
     CapturePrimingSeedSignature capture_priming_seed_signature{};
     bool active = false;
     uint8_t candidate_count = 0;
@@ -744,10 +806,13 @@ private:
     bool from_evaluation = false;
     BackingPlanEvaluationPrimaryFunction primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
+    BackingPlanEvaluationCompletionReason completion_reason =
+        BackingPlanEvaluationCompletionReason::None;
     CapturePrimingSeedSignature capture_priming_seed_signature{};
     CoreRetainedProductionPlan selected{};
     uint8_t candidate_count = 0;
     CoreRetainedProductionPlan candidate_sequence[3]{};
+    MeasuredPlanEvidence evidence[3]{};
   };
 
   static bool plan_is_strictly_better_for_stream_(
@@ -756,6 +821,27 @@ private:
   static bool plan_is_strictly_better_for_capture_(
       const MeasuredPlanEvidence& candidate,
       const MeasuredPlanEvidence* current_best) noexcept;
+  static bool infer_stream_result_posture_shape_(
+      const SharedStreamResultData& result,
+      CoreProductionPostureShape& out) noexcept;
+  static bool infer_capture_member_posture_shape_(
+      const CoreCaptureResultData::ImageMemberData& member,
+      CoreProductionPostureShape& out) noexcept;
+  static void fill_stream_observation_identity_(
+      MeasuredPlanEvidence& evidence,
+      const SharedStreamResultData& result,
+      CoreProductionPostureShape observed_posture) noexcept;
+  static void fill_capture_observation_identity_(
+      MeasuredPlanEvidence& evidence,
+      const SharedCaptureResultData& result,
+      const CoreCaptureResultData::ImageMemberData& member,
+      CoreProductionPostureShape observed_posture) noexcept;
+  static bool same_observation_identity_(
+      const MeasuredPlanEvidence& a,
+      const MeasuredPlanEvidence& b) noexcept;
+  static CoreBackingPlanCandidateEvidenceReport build_candidate_evidence_report_(
+      CoreRetainedProductionPlan candidate,
+      const MeasuredPlanEvidence& evidence) noexcept;
   static RetainedPlanDecisionProvenance build_decision_provenance_(
       const RetainedPlanEvaluatorState& state,
       CoreRetainedProductionPlan selected) noexcept;
@@ -764,7 +850,9 @@ private:
       uint64_t device_instance_id,
       uint64_t acquisition_session_id,
       CoreRetainedProductionPlan requested,
-      CoreRetainedProductionPlan steady) noexcept;
+      CoreRetainedProductionPlan steady,
+      uint8_t candidate_count = 0,
+      const CoreRetainedProductionPlan* candidate_sequence = nullptr) noexcept;
   CapturePrimingSeedSignature build_capture_priming_seed_signature_(
       uint64_t device_instance_id,
       const CaptureRequest& effective,

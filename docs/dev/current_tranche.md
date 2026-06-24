@@ -24,6 +24,9 @@ Current source-truth refinement:
 * Capture-side evaluation already distinguishes a provisional device-scoped priming owner from a real `AcquisitionSession` owner and migrates active evaluation onto the real parent once observed.
 * Capture-side same-signature seed reuse is now implemented as a bounded provisional seeding mechanism for later epochs in the same runtime generation.
 * First-use still-only priming is now implemented as an explicit provider/Core seam that can realize a truthful primed `AcquisitionSession` parent before the first real capture trigger when the provider supports it.
+* Capture-side winner selection now requires complete accepted readiness-plus-materialization evidence for the same relevant capture/session/result truth; incomplete materialization-only observations remain incomplete and cannot win.
+* Parent-scoped observation ingestion now binds accepted evidence to realized access-posture/backing identity and rejects stale or duplicate cross-candidate attribution.
+* Maintainer-facing Backing Plan evaluation reports now expose per-candidate decision evidence and explicit completion reasons, keeping direct single-viable decisions distinct from measured evaluations and reporting live-display-demand family-crossing termination when that guard fires.
 * Same-signature seed reuse remains distinct from that priming seam: seed reuse carries prior winner preference forward, while explicit priming pre-realizes the parent lifetime seam without fabricating capture-completed evidence.
 
 Important settled state:
@@ -97,6 +100,11 @@ Current checkpoint status:
 * Current forced `cpu_only` / `gpu_only` comparisons support that inference.
 * Deterministic maintainer coverage includes the Synthetic parent-context downgrade matrix and the targeted Backing Plan evaluator check.
 * The targeted Backing Plan evaluator check now exercises parent-scoped stream `display_view` evaluation and independent capture-parent evaluation in `provider_compliance_verify`.
+* Deterministic maintainer coverage now also proves:
+  * materialization without matching readiness cannot complete or win a capture candidate;
+  * stale/different-capture or duplicate observations cannot satisfy another candidate;
+  * direct single-candidate selection remains reported as non-evaluated with explicit single-viable provenance; and
+  * partial stream comparison is accepted only when the report records the live-display-demand family-crossing guard.
 * Scene 68 still remains a secondary verification/reporting surface, but any remaining assertions of capture-policy mirroring or chooser-intent semantics are harness drift rather than accepted architecture.
 * Scene 568 is now the canonical automatable behavioral verifier for this tranche.
 * Authoritative Windows Godot verification now passes for Scene 568, including the paused/manual `advance_timeline(...)` path with explicit host-provided virtual-time budget for stream-evaluation completion.
@@ -124,10 +132,12 @@ Most recent source checkpoint:
 * Capture-side parent-scoped source truth was hardened further.
 * Provider-defined settle delays are implemented for stream and capture backing-plan evaluation.
 * Stream evaluation now avoids crossing CPU/GPU display families only while live display demand is active, preserving bounded all-candidate comparison when no public display binding is being held.
+* Capture evaluation now requires complete accepted readiness-plus-materialization evidence for final comparison, and stale or duplicate observation attribution is rejected against realized result truth.
 * Capture evaluation now retains a bounded same-signature priming seed cache and can start a later reopened capture epoch from the previously settled winner when the effective capture signature still matches.
 * Providers that support explicit still-only parent priming can now also synchronize a truthful primed `AcquisitionSession` seam ahead of the first real capture trigger for the current device/signature.
 * The seed cache remains provisional only: it does not fabricate `AcquisitionSession` truth, it does not replace real parent ownership, and it does not skip bounded reevaluation.
 * Provider/broker timeline seams now allow explicit host-driven paused synthetic timeline advancement while preserving paused automatic ticking.
+* Maintainer-facing evaluation reports and Scene 568 now use candidate-scoped decision evidence plus explicit completion reasons rather than global route aggregates to explain winners.
 * Scene 568 now spends explicit virtual-time budget for paused/manual stream-evaluation completion rather than relying on `advance_timeline(...)` to hide evaluator quiescence.
 * Deterministic native verification for that checkpoint is currently green:
   * `core_result_path_smoke` PASS;
