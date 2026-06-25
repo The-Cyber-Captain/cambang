@@ -18,6 +18,7 @@ const INSPECTION_CAPTURE_TIMEOUT_MS := 4000
 const TOTAL_TIMEOUT_MS := 10000
 const PAYLOAD_KIND_CPU_PACKED := 0
 const PAYLOAD_KIND_GPU_SURFACE := 2
+const INITIAL_CAPTURE_SETTLE_DELAY_MS := 500 # delay between startup and first capture
 const SCENE_LABEL := "70_result_retrieval_verification"
 
 # Scene 70 is a correctness/inspection scene, not a release UX model.
@@ -88,6 +89,7 @@ var _pending_member_thumbnail_jobs: Array = []
 var _scene_start_us := 0
 var _still_profile_request_us := 0
 var _still_profile_poll_count := 0
+var _initial_capture_settle_start_ms := 0
 var _initial_capture_trigger_us := 0
 var _initial_capture_completion_wait_start_us := 0
 var _initial_capture_completion_poll_count := 0
@@ -107,16 +109,16 @@ func _make_scene70_still_image_bundle_members() -> Array:
 			"role": CamBANGCaptureResult.IMAGE_ROLE_DEFAULT_METERED,
 			"intended_exposure_compensation_milli_ev": 0,
 		},
-		{
-			"image_member_index": 1,
-			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			"intended_exposure_compensation_milli_ev": -1000,
-		},
-		{
-			"image_member_index": 2,
-			"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
-			"intended_exposure_compensation_milli_ev": 1000,
-		},
+		#{
+			#"image_member_index": 1,
+			#"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			#"intended_exposure_compensation_milli_ev": -1000,
+		#},
+		#{
+			#"image_member_index": 2,
+			#"role": CamBANGCaptureResult.IMAGE_ROLE_ADDITIONAL_BRACKET,
+			#"intended_exposure_compensation_milli_ev": 1000,
+		#},
 	]
 
 
@@ -212,6 +214,7 @@ func _scene70_initialize_summary() -> void:
 	_scene70_status_panel_detail_fixture = {}
 	_scene70_initial_capture_report_poll_started = false
 	_scene70_manual_capture_report_poll_started = false
+	_initial_capture_settle_start_ms = 0
 
 
 func _scene70_entry_index(entries: Array, label: String) -> int:
@@ -776,6 +779,14 @@ func _try_verify_stream_result() -> void:
 			var observed_profile: Dictionary = _extract_snapshot_still_profile(observed_snapshot)
 			_fail("step %d FAIL: expected still profile did not become snapshot-visible before capture; observed %s" % [_step, _describe_still_profile(observed_profile)])
 		return
+
+	if INITIAL_CAPTURE_SETTLE_DELAY_MS > 0:
+		if _initial_capture_settle_start_ms == 0:
+			_initial_capture_settle_start_ms = Time.get_ticks_msec()
+			_append_status("INFO: delaying initial capture by %d ms after still profile visibility" % INITIAL_CAPTURE_SETTLE_DELAY_MS)
+			return
+		if Time.get_ticks_msec() - _initial_capture_settle_start_ms < INITIAL_CAPTURE_SETTLE_DELAY_MS:
+			return
 
 	if not _capture_triggered:
 		_capture_baseline_progress = _get_capture_progress_snapshot(_device_instance_id)

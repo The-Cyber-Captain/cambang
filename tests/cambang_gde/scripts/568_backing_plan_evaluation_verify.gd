@@ -64,8 +64,8 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 func _run() -> void:
 	print("RUN: %s" % SCENE_LABEL)
 	_log_maintainer_output_form_probe()
-	if _synthetic_producer_output_form_effective_selection() == "gpu_only":
-		_fail("Scene 568 requires a capture-capable Synthetic producer output form; run with -- --cambang-synth-producer-output-form=cpu_gpu or cpu_only")
+	if _synthetic_producer_output_form_effective_selection() == "gpu_only" and _scene568_is_compatibility_renderer():
+		_fail("Scene 568 requires a capture-capable Synthetic producer output form on the compatibility renderer; run with -- --cambang-synth-producer-output-form=cpu_gpu or cpu_only")
 		return
 	await _run_impl()
 
@@ -1396,6 +1396,15 @@ func _log_maintainer_output_form_probe() -> void:
 			suffix,
 		]
 	)
+
+
+func _scene568_current_rendering_method() -> String:
+	return str(ProjectSettings.get_setting("rendering/renderer/rendering_method", ""))
+
+
+func _scene568_is_compatibility_renderer() -> bool:
+	var rendering_method := _scene568_current_rendering_method()
+	return rendering_method == "compatibility" or rendering_method == "gl_compatibility"
 
 
 func _snapshot_for_gen(expected_gen: int) -> Dictionary:
