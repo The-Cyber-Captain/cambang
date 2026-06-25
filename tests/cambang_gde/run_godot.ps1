@@ -354,9 +354,9 @@ function ConvertFrom-StructuredRecordLog {
         return $recordTable
     }
 
-    $startPattern = '^\[CamBANG\]\[RecordStart\] id=(?<id>\S+) name=(?<name>\S+) kind=(?<kind>\S+) chunks=(?<chunks>\d+) encoding=base64$'
-    $chunkPattern = '^\[CamBANG\]\[RecordChunk\] id=(?<id>\S+) index=(?<index>\d+) data=(?<data>.*)$'
-    $endPattern = '^\[CamBANG\]\[RecordEnd\] id=(?<id>\S+)$'
+    $startPattern = '\[CamBANG\]\[RecordStart\] id=(?<id>\S+) name=(?<name>\S+) kind=(?<kind>\S+) chunks=(?<chunks>\d+) encoding=base64(?:\s*)$'
+    $chunkPattern = '\[CamBANG\]\[RecordChunk\] id=(?<id>\S+) index=(?<index>\d+) data=(?<data>.*)$'
+    $endPattern = '\[CamBANG\]\[RecordEnd\] id=(?<id>\S+)(?:\s*)$'
 
     foreach ($line in ($LogText -split "\r?\n")) {
         if ([string]::IsNullOrWhiteSpace($line)) {
@@ -578,7 +578,7 @@ function Recover-StructuredRecords {
     $scene70SummaryJson = $null
     foreach ($summaryRecord in $recoveredSummaries) {
         if ($summaryRecord.name -eq "scene70_summary" -and $summaryRecord.kind -eq "json") {
-            $scene70SummaryJson = Get-Content -LiteralPath $summaryRecord.recovered_path -Raw -ErrorAction SilentlyContinue
+            $scene70SummaryJson = [string]$summaryRecord.recovered_path
             break
         }
     }
@@ -1966,6 +1966,12 @@ else {
     1
 }
 $logRecord = Finalize-LogRecord -LogRecord $logRecord -Bucket $bucket
+$finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
+    Join-Path $logRecord.RunDir "device_logcat.log"
+}
+else {
+    ""
+}
 
 $structuredRecordSourceLogs = @{}
 if (-not [string]::IsNullOrWhiteSpace($logRecord.StdoutPath)) {
@@ -1974,18 +1980,14 @@ if (-not [string]::IsNullOrWhiteSpace($logRecord.StdoutPath)) {
 if (-not [string]::IsNullOrWhiteSpace($logRecord.StderrPath)) {
     $structuredRecordSourceLogs[$logRecord.StderrPath] = $true
 }
+if ($RunPlatform -eq "android") {
+    $deviceLogcatPath = $finalDeviceLogcatPath
+}
 if (-not [string]::IsNullOrWhiteSpace($deviceLogcatPath) -and (Test-Path $deviceLogcatPath)) {
     $structuredRecordSourceLogs[$deviceLogcatPath] = $true
 }
 
 $structuredRecordResult = Recover-StructuredRecords -RunDir $logRecord.RunDir -SourceLogs $structuredRecordSourceLogs
-
-$finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
-    Join-Path $logRecord.RunDir "device_logcat.log"
-}
-else {
-    ""
-}
 
 $meta = [ordered]@{
     timestamp_utc = $logRecord.TimestampUtc.ToString("o")

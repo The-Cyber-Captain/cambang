@@ -11,13 +11,13 @@ config_version=5
 [application]
 
 config/name="cambang_gde"
-run/main_scene="uid://ccadsiww0hwgd"
+run/main_scene="res://scenes/568_backing_plan_evaluation_verify.tscn"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
 
 [cambang]
 
-maintainer/synthetic_producer_output_form="gpu_only"
+maintainer/synthetic_producer_output_form="runtime_default"
 maintainer/synthetic_stream_capability_downgrades=""
 maintainer/synthetic_capture_capability_downgrades=""
 
@@ -62,7 +62,16 @@ request_server_stop={
 [rendering]
 
 renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
+
+
+
+
+
+
+
+
 
 
 
