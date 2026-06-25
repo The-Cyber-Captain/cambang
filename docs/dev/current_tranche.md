@@ -2,270 +2,197 @@
 
 This document records active development context for CamBANG. It is intentionally more volatile than `AGENTS.md` and `docs/dev/agent_context.md`.
 
-Agents should use this file for current workstream direction, recent decisions, and near-term constraints. Durable engineering rules belong in `AGENTS.md` or `docs/dev/agent_context.md`.
+Agents should use this file for current workstream direction, recent findings, and near-term constraints. Durable engineering rules belong in `AGENTS.md` or `docs/dev/agent_context.md`.
 
 ## Current focus
 
 Continue source-grounded CamBANG development without broadening scope or weakening verification.
 
-The retained-result access calibration/classification tranche is implemented and remains accepted.
+The parent-scoped Backing Plan design remains the accepted direction, and the older intent-based chooser remains superseded. However, Scene 568 log review and follow-up source inspection have reopened the implementation of the Backing Plan evaluation and retained-result access-calibration lifecycle.
 
-The parent-scoped Backing Plan evaluation and timing-evidence refactor is now treated as functionally landed in source. The older intent-based chooser direction remains superseded and should not be allowed to drift forward in parallel through comments, tranche notes, harness wording, or follow-on implementation.
+Do not treat the current implementation, existing PASS results, or prior wording that this tranche had fully landed as architecture acceptance.
 
-The immediate focus is therefore deliberately smaller:
+The immediate task is a read-only design-to-source reconciliation, followed by narrow implementation tranches. Preserve the agreed CamBANG-specific design; repair its implementation rather than replacing it with a generic calibration, scheduler, or benchmarking architecture.
 
-* keep unsupported-case truth explicit and source-faithful;
-* keep Scene 568 as the canonical automatable verifier for this topic;
-* close the remaining harness/reporting/documentation gaps without reopening the landed runtime model.
+## Design authority for this tranche
 
-Current source-truth refinement:
+Read together:
 
-* Stream-side parent-scoped evaluation is now materially implemented.
-* Capture-side evaluation already distinguishes a provisional device-scoped priming owner from a real `AcquisitionSession` owner and migrates active evaluation onto the real parent once observed.
-* Capture-side same-signature seed reuse is now implemented as a bounded provisional seeding mechanism for later epochs in the same runtime generation.
-* First-use still-only priming is now implemented as an explicit provider/Core seam that can realize a truthful primed `AcquisitionSession` parent before the first real capture trigger when the provider supports it.
-* Capture-side winner selection now requires complete accepted readiness-plus-materialization evidence for the same relevant capture/session/result truth; incomplete materialization-only observations remain incomplete and cannot win.
-* Parent-scoped observation ingestion now binds accepted evidence to realized access-posture/backing identity and rejects stale or duplicate cross-candidate attribution.
-* Maintainer-facing Backing Plan evaluation reports now expose per-candidate decision evidence and explicit completion reasons, keeping direct single-viable decisions distinct from measured evaluations and reporting live-display-demand family-crossing termination when that guard fires.
-* Same-signature seed reuse remains distinct from that priming seam: seed reuse carries prior winner preference forward, while explicit priming pre-realizes the parent lifetime seam without fabricating capture-completed evidence.
+* `AGENTS.md`;
+* `docs/dev/agent_context.md`;
+* this file; and
+* `docs/dev/backing_plan_parent_evaluation_reset.md`.
 
-Important settled state:
+The detailed parent-scoped design remains in `docs/dev/backing_plan_parent_evaluation_reset.md`. The following points are especially important for the current repair:
 
-* The underlying Scene 68 calibration/evidence repair work is complete, but Scene 68 remains a secondary verification/reporting surface rather than the authoritative architecture proof.
-* The boundedness/posture-identity fix is complete: calibration is keyed to live applied production posture/access identity rather than per-frame retained-form fluctuation or first user demand.
-* The evidence-to-classification seam is implemented for retained-result access.
-* Public `get_display_view()`, `to_image()`, and `to_image_member()` access remains instrumented, but those calls are not the normal recalibration heartbeat.
-* The endpoint-handle vs runtime-instance distinction is documented in the Godot boundary contract.
-* Scene 70 / Godot-side reporting and Synthetic dev metrics remain verification/reporting surfaces, not the authoritative architecture seam.
+* Backing Plan evaluation is owned by the Native Payload Support Parent: `Stream` for repeating-stream work and `AcquisitionSession` for still-capture work.
+* Stream evaluation optimizes the real display-access operation.
+* Capture evaluation optimizes still-result readiness plus real required-result materialization cost.
+* Measurement and classification are automatic, behind-the-scenes runtime work. Normal users and GDScript do not initiate, advance, acknowledge, or poll calibration.
+* Internal calibration uses the same real operation implementation as public `get_display_view()`, `to_image()`, and `to_image_member()` access, without requiring those public calls or creating public-demand semantics.
+* Calibration remains proactive at the live applied-posture boundary, bounded, and non-per-frame.
+* Single-viable-candidate Backing Plan selection is direct, but supported retained-result access operations for that applied posture are still automatically calibrated.
+* Capture may begin under the documented provisional device-scoped priming owner and migrate onto the first truthful `AcquisitionSession`.
+* Same-signature winner reuse seeds later candidate order but does not skip bounded reevaluation.
+* Explicit provider/Core first-use still-only priming remains distinct from same-signature seed reuse and must preserve truthful provider/native lifetime.
 
-Settled retained-result classification model:
+## Reopened implementation findings
 
-* `UNSUPPORTED` is structural support/availability truth.
-* `READY` is structural, operation-specific direct retained target-representation availability truth.
-* Supported non-ready paths start from provisional operation support and may be evidence-refined between `CHEAP` and `EXPENSIVE`.
-* Single-candidate supported non-ready paths retain their provisional non-ready classification after calibration rather than being auto-promoted/demoted merely for being alone.
+Current source and Scene 568 logs indicate the following implementation concerns. These are the subjects of the planned reconciliation and repair; they are not permission to redefine the design.
 
-Synthetic maintainer tooling direction remains:
+### Capture parent and evidence integrity
 
-* Synthetic provider backing advertisement reports the output forms available from the current runtime.
-* Backing Plan policy chooses primary and auxiliary retention within that truthful set.
-* Synthetic maintainer output-form selection is exposed through the project setting `cambang/maintainer/synthetic_producer_output_form=runtime_default|cpu_only|cpu_gpu|gpu_only`; `runtime_default` is the explicit no-forcing/default value that preserves the normal Synthetic runtime policy; host command-line runs may pass `--cambang-synth-producer-output-form=...`, which feeds that same project-setting authority path before provider construction; there is no environment-variable fallback for this selection.
-* The selection is Synthetic-only and drives both truthful output-form reporting and actual retained/produced behaviour for repeating-stream and still-capture Synthetic outputs where those backing seams exist.
-* `gpu_only` selections fail deterministically when the Synthetic GPU runtime cannot realize them; `cpu_gpu` selects the allowed CPU/GPU set and is truthfully narrowed by provider/runtime realizability, collapsing to CPU-backed behaviour when GPU backing is unrealizable.
-* Verification-only parent-context downgrades are exposed through `cambang/maintainer/synthetic_stream_capability_downgrades` and `cambang/maintainer/synthetic_capture_capability_downgrades`; host command-line runs may pass `--cambang-synth-stream-capability-downgrades=...` and `--cambang-synth-capture-capability-downgrades=...`, which feed those same project-setting authority paths before provider construction.
-* These downgrade controls are Synthetic-only, maintainer-only, internal, and downgrade-only: they may narrow an effectively mixed parent context to `cpu_only`, remain inert when the truthful outer envelope is already `cpu_only`, and are rejected when contradictory to a `gpu_only` outer envelope.
-* Do not add controls that misstate provider output-form truth, harness selectors, public API, or platform-backed-provider equivalents while preparing the next stage.
+* Completed capture decisions can contain candidate measurements attributed to several successive real `AcquisitionSession` IDs.
+* The documented provisional-to-first-real migration is valid; evidence preservation or minimum-merging between different real session parents is not established by the design.
+* SyntheticProvider appears to have native priming-reference support capable of holding a truthful session, so the exact Core/provider parent-lifetime failure must be traced before changing the provider seam.
 
-## Immediate implementation direction
+### Calibration scheduling and settle authority
 
-Treat the landed chooser work as a partial and now superseded implementation direction, not as accepted architecture and not as the basis for new terminology growth.
+* Core already carries bounded candidate settle state and timer support, including capture `current_candidate_ready_after_ns` and pending-observation processing.
+* Godot-side retained-result calibration also maintains an independent first-seen settle timer.
+* `CamBANGServer::_calibrate_live_retained_result_access_()` currently discovers work by scanning live streams, acquisition sessions, and rigs on ordinary Godot process ticks.
+* Real materialization is bounded by completed identities, but discovery remains permanently frame-driven rather than armed and retired from the applied-posture lifecycle.
+* The repair should reunify the existing lifecycle around Core/applied-posture settle truth and existing scheduler support. Do not invent a generic task queue, registry, benchmark subsystem, or public calibration surface.
 
-What already exists and should be preserved unless source inspection disproves it:
+### Getter-side calibration
 
-* posture shapes are `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`;
-* sidecar retention is optional and must earn its keep;
-* Requested Plan carriage already exists through Core requests and provider-delivered results;
-* provider capability truth already distinguishes the viable settled posture shapes;
-* the project already has a real result-access measurement seam and access-posture invalidation seam that should be reused rather than replaced with per-frame polling or a broad benchmark subsystem.
+* Capture result lookup currently calls calibration with a null runtime, bypassing the normal settle delay and potentially performing `to_image`-equivalent work during `get_result()` retrieval.
+* This appears to be an implementation workaround for unreliable proactive progress, not the intended user-facing lifecycle.
+* Do not remove it in isolation before the automatic bounded lifecycle is proven to progress without it.
 
-Immediate tranche goal:
+### Capture result completeness
 
-* preserve the landed terminology reset and `docs/dev/backing_plan_parent_evaluation_reset.md` as the active design direction;
-* preserve the bounded, topology-triggered, non-per-frame nature of evaluation and reevaluation;
-* preserve provider-truth, requested-vs-steady separation, and `CoreResultStore` validation against Core-held requested plan state;
-* keep the distinction explicit between provisional capture seeding, real `AcquisitionSession`-owned capture evaluation, and the now-landed explicit first-use priming seam;
-* tighten unsupported-case reporting and harness wording around the now-landed model rather than reopening the model itself.
+* Lower-level calibration may visit all capture members, while Backing Plan evaluator reporting currently accepts only `DEFAULT_METERED` member 0.
+* This does not yet satisfy the documented whole-required-result objective for bracketed capture.
 
-Terminology guardrail for this reset:
+### Verification and reporting
 
-* treat `best posture` as defunct wording;
-* treat chooser `intent` states such as `Default` and `Stream-active` as defunct policy vocabulary for new design work;
-* do not extend the old `retained backing plan` / `retained backing truth` / `retained access truth` family in new design writing when the agreed replacement vocabulary is available;
-* prefer the reset vocabulary in new design work: `Native Payload Support Parent`, `Backing Plan`, `Backing State`, `Operation Support`, `Access Evidence`, `Requested Plan`, `Steady Plan`, and `Posture Shape`;
-* use `parent context` only as a fixed qualifier, not as a loose substitute for the defined owner concept.
+* Scene 568 currently proves that the recorded scorer chooses the lowest accepted logged score, but does not yet prove the repaired lifecycle.
+* Most stream phases deliberately encounter the live-display-demand family guard; complete comparison and guard behaviour must remain separate verification concerns.
+* Final reopened capture evaluation, whole-result bracket coverage, and getter-independence require stronger proof.
+* Capture reports need readiness, materialization, and total timing components to diagnose anomalous measurements.
+* Windows Compatibility unsupported detection and Android expected-failure collection have narrow harness/runner defects.
 
-Current checkpoint status:
+## Preserved implementation seams
 
-* deterministic native verification passed:
-  * `core_result_path_smoke` PASS;
-  * `provider_compliance_verify` PASS;
-  * `synthetic_only_provider_support_verify` PASS.
-* Deterministic verifier coverage now also proves stream parent evaluation remains independent of capture parent evaluation.
-* Deterministic verifier coverage now also proves capture evaluation can settle under a provisional parent and later reuse the prior winner as the first requested plan for a same-signature reopened capture epoch.
-* Deterministic verifier coverage now also proves same-signature capture seed reuse does not itself mark capture `steady` without fresh evidence.
-* Scene 70 `runtime_default` verification currently passes on the tested Windows/Android and Compatibility/Mobile combinations.
-* Current Scene 70 evidence suggests:
-  * Compatibility `runtime_default` resolves to CPU-primary;
-  * Mobile `runtime_default` resolves to GPU-primary, no CPU sidecar.
-* Current forced `cpu_only` / `gpu_only` comparisons support that inference.
-* Deterministic maintainer coverage includes the Synthetic parent-context downgrade matrix and the targeted Backing Plan evaluator check.
-* The targeted Backing Plan evaluator check now exercises parent-scoped stream `display_view` evaluation and independent capture-parent evaluation in `provider_compliance_verify`.
-* Deterministic maintainer coverage now also proves:
-  * materialization without matching readiness cannot complete or win a capture candidate;
-  * stale/different-capture or duplicate observations cannot satisfy another candidate;
-  * direct single-candidate selection remains reported as non-evaluated with explicit single-viable provenance; and
-  * partial stream comparison is accepted only when the report records the live-display-demand family-crossing guard.
-* Scene 68 still remains a secondary verification/reporting surface, but any remaining assertions of capture-policy mirroring or chooser-intent semantics are harness drift rather than accepted architecture.
-* Scene 568 is now the canonical automatable behavioral verifier for this tranche.
-* Authoritative Windows Godot verification now passes for Scene 568, including the paused/manual `advance_timeline(...)` path with explicit host-provided virtual-time budget for stream-evaluation completion.
-* That Scene 568 clocked-path result is intentionally aligned to the current design contract: `advance_timeline(...)` advances the scenario and drains same-time consequences of that step, but does not itself hide later evaluator completion behind implicit quiescence.
-* Authoritative local Scene 568 matrix work has now produced the expected justified `OK` / `ERROR` buckets across the exercised Windows/Android, Mobile/Compatibility, and maintainer output-form combinations.
-* In that matrix, supported combinations terminate in `PASS`/`OK`, while structurally unsupported combinations terminate in explicit runtime/harness `FAIL` and are therefore correctly bucketed as `ERROR`.
-* Representative Scene 70 post-refactor matrix runs are also back to `OK`, so prior regression triage on that surface is no longer the immediate tranche blocker.
+Do not replace working project-specific seams without concrete source evidence that they cannot support the repair:
 
-Immediate next focus:
+* the three Posture Shapes: `CPU-primary`, `GPU-primary, no CPU sidecar`, and `GPU-primary, with CPU sidecar`;
+* Requested Plan versus Steady Plan;
+* provider capability truth and requested-plan validation;
+* real public-operation helper paths shared by internal calibration;
+* access-posture identity and invalidation;
+* Core timer/scheduler support for bounded settle work;
+* provisional capture priming, truthful first-use parent priming, and same-signature preference seeding;
+* public result-access evidence recording as additional real evidence, without making public access the normal calibration heartbeat;
+* the settled retained-result classification model:
+  * `UNSUPPORTED` is structural support/availability truth;
+  * `READY` is structural direct-target-representation availability truth;
+  * supported non-ready operations may be evidence-refined between `CHEAP` and `EXPENSIVE`;
+  * single-candidate status alone does not promote or demote that classification.
 
-* source-facing terminology and canonical architecture documents are now aligned to the parent-scoped Backing Plan model;
-* do not extend the old chooser terminology or intent model in code comments, tranche notes, or new design material;
-* treat the remaining retained-family identifier usage in source as explicit migration residue, not as canonical architectural vocabulary;
-* keep Scene 68 aligned only as a secondary verification/reporting surface unless and until it is deliberately rebuilt around a narrower purpose;
-* treat Scene 568 as the canonical behavioral verifier for parent-scoped Backing Plan evaluation and paused/manual host timeline stepping;
-* keep the supported-vs-unsupported Scene 568 matrix truth explicit in docs and harness expectations;
-* desired harness output for the redesigned evaluator is explicit parent-scoped decision truth such as viable posture set, requested plan, steady plan, chosen posture shape, and decision-relevant evidence buckets;
-* before implementing any further capture-latency work, preserve the now-landed distinction between bounded same-signature seed reuse already in source and the explicit first-use still-only priming path now also landed in source.
+Synthetic maintainer output-form and parent-context downgrade controls remain established verification tooling and are outside the repair unless a concrete defect requires a narrow change.
 
-Android CPU-backed / compatibility-style repeating-stream pressure remains an important motivating use-case for this validation/harness work. It continues to inform the expected value of bounded parent-scoped Backing Plan evaluation, but does not by itself prove the tranche successful.
-## Recent committed checkpoint
+## Non-negotiable user and GDScript behaviour
 
-Most recent source checkpoint:
+Backing Plan measurement and retained-result access classification impart no calibration-management burden on normal users or GDScript.
 
-* Capture-side parent-scoped source truth was hardened further.
-* Provider-defined settle delays are implemented for stream and capture backing-plan evaluation.
-* Stream evaluation now avoids crossing CPU/GPU display families only while live display demand is active, preserving bounded all-candidate comparison when no public display binding is being held.
-* Capture evaluation now requires complete accepted readiness-plus-materialization evidence for final comparison, and stale or duplicate observation attribution is rejected against realized result truth.
-* Capture evaluation now retains a bounded same-signature priming seed cache and can start a later reopened capture epoch from the previously settled winner when the effective capture signature still matches.
-* Providers that support explicit still-only parent priming can now also synchronize a truthful primed `AcquisitionSession` seam ahead of the first real capture trigger for the current device/signature.
-* The seed cache remains provisional only: it does not fabricate `AcquisitionSession` truth, it does not replace real parent ownership, and it does not skip bounded reevaluation.
-* Provider/broker timeline seams now allow explicit host-driven paused synthetic timeline advancement while preserving paused automatic ticking.
-* Maintainer-facing evaluation reports and Scene 568 now use candidate-scoped decision evidence plus explicit completion reasons rather than global route aggregates to explain winners.
-* Scene 568 now spends explicit virtual-time budget for paused/manual stream-evaluation completion rather than relying on `advance_timeline(...)` to hide evaluator quiescence.
-* Deterministic native verification for that checkpoint is currently green:
-  * `core_result_path_smoke` PASS;
-  * `provider_compliance_verify` PASS;
-  * `synthetic_only_provider_support_verify` PASS.
-* Authoritative Windows Godot verification for that checkpoint is also green:
-  * `568_backing_plan_evaluation_verify` PASS (`runtime_default`, headless, Windows).
+Normal code must not be required to:
 
-Most recent pre-reset checkpoint context:
+* call `get_display_view()`, `to_image()`, or `to_image_member()` to start or advance calibration;
+* repeatedly call `get_result()` to make evaluation progress;
+* poll or acknowledge a calibration object;
+* select candidates or supply timing information;
+* manage calibration lifecycle state.
 
-Checkpoint summary:
+Scene 568 observes and verifies this automatic lifecycle. Except in a separately identified phase deliberately testing genuine public display demand, it must not use public materialization/display calls as calibration stimuli.
 
-* Before the parent-scoped reset, Scene 68 calibration/evidence harness repair had been treated as completed.
-* Calibration boundedness and posture identity were corrected so evidence renewal follows live applied production-posture boundaries.
-* The real retained-result operation seam now supplies measured evidence for live retained artifacts/postures.
-* Refined result-facing classification now exists beside provisional operation support.
-* `UNSUPPORTED` and `READY` remain structural truth; measured evidence only refines supported non-ready paths.
-* Public result access remains instrumented for evidence, but first user-visible access is not the recalibration heartbeat.
-* The endpoint-handle vs runtime-instance distinction was documented for Godot-facing object access.
-
-Previous retained GPU backing checkpoint facts still apply:
-
-* `GPU_SURFACE` stream results with retained Synthetic GPU backing can advertise `to_image()` support when the retained backing explicitly reports materialization availability.
-* GPU-only stream `to_image()` remains `UNSUPPORTED` when no materializer is available.
-* GPU-only stream `to_image()` is classified as `EXPENSIVE` only when the Synthetic retained backing materializer is genuinely available.
-* GPU-primary stream results with a retained current CPU sidecar still prefer the CPU sidecar for `to_image()` and remain `CHEAP`.
-* CPU-packed stream results remain `CHEAP`.
-* The materializer is scoped to Synthetic retained GPU backing materialization through the Godot/Synthetic bridge. It is not generic platform GPU/RD readback.
-* Core consumes neutral backing-state truth and does not own Godot/RD/Image details.
-* The Godot display/materialization adapter owns Godot-facing materialization.
-* The Synthetic runtime wrapper owns the provider/runtime-neutral materialization-availability query.
-
-Validation notes:
-
-* Manual local validation remains authoritative for Windows, Godot, hardware, GPU, and platform-provider behaviour.
-* Scene 68/Synthetic metrics are verification/reporting surfaces; retained-result classification architecture is documented in `docs/architecture/pixel_payload_and_result_contract.md`.
-* Post-documentation local validation for the retained-result access calibration/classification checkpoint reported:
-  * `core_result_path_smoke` PASS;
-  * Godot suite `51 passed, 0 failed, 1 review`, with the review acceptable only while it remains the known Scene 65 public-boundary review case;
-  * representative Scene 68 retained-result evidence/reset runs exercised on CPU-backed and GPU-backed/runtime-default paths;
-  * Scene 70 result retrieval verification remained passing.
-
-## Current design posture
-
-Prefer the "avoid this unless" default:
-
-* avoid new public API concepts unless clearly earned;
-* avoid new abstraction layers unless they simplify or protect real design boundaries;
-* avoid route/outcome descriptors unless there is a concrete consumer;
-* avoid diagnostics that become permanent knobs for temporary investigations;
-* avoid broad refactors during narrow correctness or performance tranches.
-
-The desired codebase direction is logical, efficient, streamlined, and maintainable. UX simplicity depends on source-level design simplicity.
-
-## API and UX constraints
-
-The Godot public API is locked unless explicitly reopened.
-
-Normal users should interact with friendly object-level API shapes. Avoid making normal users handle capture IDs, route internals, retained-backing implementation details, or diagnostic-only concepts.
-
-Preferred result API direction:
+The friendly result API remains unchanged:
 
 * `CamBANGDevice.trigger_capture()`;
-* wait/check capture completion through the existing public flow;
-* `CamBANGDevice.get_result()` for the device’s current completed result;
-* `CamBANGRig.get_result()` for a curated result set;
-* `CamBANGStream.get_result()` for current observable stream state.
+* normal capture-completion observation;
+* `CamBANGDevice.get_result()`;
+* `CamBANGRig.get_result()`;
+* `CamBANGStream.get_result()`.
 
-Avoid “latest” in public method names. Keep ID-based lookup on server/dev tooling paths rather than normal user paths.
+Do not add public calibration API, user-facing settings, signals, required waits, or maintainer actions needed for ordinary runtime correctness.
 
-## Provider and performance cautions
+## Planned Codex sequence
 
-SyntheticProvider must remain deterministic and useful across builds, but Synthetic-specific performance work must not distort platform-provider architecture.
+Use a fresh Codex conversation for each accepted tranche. Do not ask Codex to commit.
 
-For future platform-backed providers:
+1. **Read-only implementation reconciliation**
+  * Trace capture parent migration/lifetime, settle authorities, automatic calibration dispatch, getter-side forcing, and capture-member aggregation.
+  * Distinguish confirmed defects from surprising but intended behaviour.
+  * Identify the smallest repair boundaries supported by current source.
 
-* Android Camera2 is the first release target;
-* Windows Media Foundation remains a development accelerator;
-* future providers may support genuine platform bursts, provider-managed exposure sequences, or different backing behaviour;
-* do not extrapolate the Synthetic bridge-retained upload-byte materializer to Android Camera2, Windows MF, or future native GPU-surface providers without a provider-specific retained-backing/materialization design.
+2. **Capture parent/evidence integrity**
+  * Preserve provisional-to-first-real migration, truthful priming, and same-signature preference seeding.
+  * Prevent evidence migration or merging between different real `AcquisitionSession` parents.
+  * Reject stale observations after real-parent loss.
 
-When assessing performance:
+3. **Bounded proactive calibration lifecycle**
+  * Reunify settle authority around existing Core/applied-posture lifecycle and scheduler support.
+  * Keep automatic single- and multi-candidate calibration.
+  * Retain the real Godot operation helpers.
+  * Replace permanent all-result discovery and the independent Godot settle authority with the narrowest existing-mechanism solution established by the audit.
 
-* gather source-grounded evidence before proposing architectural changes;
-* distinguish CPU image generation overhead from Core sequencing overhead;
-* do not assume stream responsiveness and capture sluggishness share the same root cause;
-* do not remove synchronous boundaries unless their safety purpose has been understood and preserved.
+4. **Getter cleanup**
+  * Remove getter-forced calibration only after the automatic lifecycle is proven to progress independently.
+  * Prove that result retrieval neither performs hidden materialization nor changes evaluator state.
 
-## Validation posture
+5. **Whole-required-result capture verification**
+  * Complete bracket-member evidence using the documented capture objective.
+  * Strengthen Scene 568 reporting and lifecycle assertions.
+  * Keep complete comparison and deliberate live-display-demand tests separate.
 
-Manual local validation remains authoritative.
+6. **Documentation reconciliation**
+  * Update this file after each accepted/committed tranche.
+  * Update canonical or maintainer documentation only to reflect accepted source truth.
 
-Agents may suggest validation commands and may run available sandbox checks, but must not claim validation of paths that were not actually exercised, especially:
+Do not introduce new scoring robustness machinery until parent attribution, settle timing, automatic dispatch, and result completeness are trustworthy. Reassess single-sample scoring only from repaired evidence.
 
-* Windows MF runtime behaviour;
-* Godot editor/runtime scenes;
-* GPU display-view behaviour;
-* hardware camera behaviour;
-* Android Camera2 behaviour;
-* local build environment behaviour.
+## Current verification interpretation
 
-Do not weaken tests or scenes merely to get PASS.
+Previously reported deterministic and Godot PASS results remain useful regression baselines, but they do not prove the reopened lifecycle correct.
 
-If a test must change because the design changed, preserve or increase the strength of verification and explain the design reason.
+In particular, a Scene 568 PASS currently means that the harness completed and the scorer was internally consistent with accepted logged evidence. It does not yet prove:
+
+* one real capture parent across a completed measured epoch;
+* one authoritative settle lifecycle;
+* absence of getter-driven calibration;
+* bounded non-per-frame automatic dispatch;
+* whole-required-result bracket scoring; or
+* stable decisions from uncontaminated evidence.
+
+Manual local validation remains authoritative for Windows, Godot, GPU, Android, hardware, and platform-provider behaviour. Do not weaken tests or scenes to obtain PASS.
+
+## Terminology and scope guardrails
+
+* Treat `best posture` and chooser policy `intent` states such as `Default` and `Stream-active` as defunct for new design work.
+* Prefer `Native Payload Support Parent`, `Backing Plan`, `Backing State`, `Operation Support`, `Access Evidence`, `Requested Plan`, `Steady Plan`, and `Posture Shape`.
+* Keep support/availability, retained truth, materialization choice, and cost classification distinct.
+* Keep changes narrow and source-grounded.
+* Avoid unrelated cleanup.
+* Preserve the locked Godot public API and provider seams.
+* Avoid new abstraction layers, registries, route descriptors, diagnostics, or settings unless a concrete need survives the read-only reconciliation.
 
 ## Expected agent behaviour for this tranche
 
 For read-only work:
 
 * inspect source before making claims;
+* cite files, functions, and relevant line ranges;
 * separate confirmed facts from hypotheses;
-* cite files and functions inspected;
-* identify likely validation points;
-* do not prepare patches unless a concrete issue is found.
+* identify existing validation surfaces;
+* do not prepare patches or detailed replacement architecture unless a concrete source finding requires it.
 
 For implementation work:
 
-* keep changes narrow;
-* avoid unrelated cleanup;
-* preserve public API unless explicitly instructed;
-* preserve provider seams;
+* state expected changed files before editing;
+* keep each tranche narrow;
+* preserve automatic behind-the-scenes behaviour;
 * report changed files and rationale;
-* list validation commands;
-* say plainly what was not run.
-
-For Codex Web:
-
-* assume cloud validation cannot prove local Windows/Godot/hardware/GPU paths;
-* do not claim local validation unless it actually happened;
-* do not create commits unless explicitly asked;
-* do not add persistent environment variables or diagnostic knobs without approval.
+* list validation commands run;
+* say plainly what was not run;
+* do not create commits unless explicitly asked.

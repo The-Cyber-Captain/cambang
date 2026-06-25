@@ -89,6 +89,20 @@ When discussing retained-result access calibration:
 * tie evidence to the realized retained backing/access path under the current live applied production posture;
 * keep result-access evidence distinct from provider-local generation/staging, snapshot publication, later render-thread draw/UI scheduling, and unrelated GPU upload/update work.
 
+### Automatic measurement and classification
+
+Backing Plan measurement and retained-result access classification are internal, automatic runtime responsibilities. They must not impose a calibration-management workflow on normal users or GDScript.
+
+Durable expectations:
+
+* arm proactive calibration from truthful live applied-posture/access identity and keep it bounded;
+* do not wait for first public `get_display_view()`, `to_image()`, or `to_image_member()` demand to begin normal calibration;
+* use the same real operation implementation as the public API without requiring the public call or creating public-demand/lifetime semantics;
+* do not require repeated `get_result()` calls, public access calls, calibration polling, acknowledgements, candidate selection, or user-supplied timing to advance the lifecycle;
+* result retrieval must not become the hidden substitute for automatic calibration progress;
+* verification scenes observe and assert the automatic lifecycle; public access calls are valid stimuli only in phases explicitly testing genuine public demand;
+* do not add public calibration API, GDScript controls, user-facing settings, or maintainer actions required for ordinary runtime correctness.
+
 ## Testing philosophy
 
 Do not weaken tests, smoke tools, or Godot verification scenes merely to get PASS.
