@@ -1581,149 +1581,27 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
                             const CaptureRetainedPlanParentKey& b) noexcept {
     return !(a < b) && !(b < a);
   };
-  auto merge_measured_plan_evidence =
-      [](MeasuredPlanEvidence& dst,
-         const MeasuredPlanEvidence& src) noexcept {
-        dst.observed_display_view = dst.observed_display_view || src.observed_display_view;
-        if (src.observed_display_view) {
-          dst.provisional_display_view = src.provisional_display_view;
-        }
-        if (src.has_display_view_elapsed_ns &&
-            (!dst.has_display_view_elapsed_ns ||
-             src.display_view_elapsed_ns < dst.display_view_elapsed_ns)) {
-          dst.has_display_view_elapsed_ns = true;
-          dst.display_view_elapsed_ns = src.display_view_elapsed_ns;
-        }
-
-        dst.observed_to_image = dst.observed_to_image || src.observed_to_image;
-        if (src.observed_to_image) {
-          dst.provisional_to_image = src.provisional_to_image;
-        }
-        if (src.has_materialization_elapsed_ns &&
-            (!dst.has_materialization_elapsed_ns ||
-             src.materialization_elapsed_ns < dst.materialization_elapsed_ns)) {
-          dst.has_materialization_elapsed_ns = true;
-          dst.materialization_elapsed_ns = src.materialization_elapsed_ns;
-        }
-        if (src.has_capture_ready_elapsed_ns &&
-            (!dst.has_capture_ready_elapsed_ns ||
-             src.capture_ready_elapsed_ns < dst.capture_ready_elapsed_ns)) {
-          dst.has_capture_ready_elapsed_ns = true;
-          dst.capture_ready_elapsed_ns = src.capture_ready_elapsed_ns;
-        }
-        if (src.has_total_elapsed_ns &&
-            (!dst.has_total_elapsed_ns ||
-             src.total_elapsed_ns < dst.total_elapsed_ns)) {
-          dst.has_total_elapsed_ns = true;
-          dst.total_elapsed_ns = src.total_elapsed_ns;
-        }
-        if (src.has_normalized_cost_units &&
-            (!dst.has_normalized_cost_units ||
-             src.normalized_cost_units < dst.normalized_cost_units)) {
-          dst.has_normalized_cost_units = true;
-          dst.normalized_cost_units = src.normalized_cost_units;
-        }
-        if (src.display_view_evidence_complete &&
-            (!dst.display_view_evidence_complete ||
-             (src.has_display_view_elapsed_ns &&
-              (!dst.has_display_view_elapsed_ns ||
-               src.display_view_elapsed_ns <= dst.display_view_elapsed_ns)))) {
-          dst.display_view_evidence_complete = src.display_view_evidence_complete;
-          dst.display_view_evidence_accepted = src.display_view_evidence_accepted;
-          dst.provisional_display_view = src.provisional_display_view;
-          dst.has_display_view_elapsed_ns = src.has_display_view_elapsed_ns;
-          dst.display_view_elapsed_ns = src.display_view_elapsed_ns;
-          dst.has_observed_posture = src.has_observed_posture;
-          dst.observed_posture = src.observed_posture;
-          dst.observed_access_posture_id = src.observed_access_posture_id;
-          dst.observed_stream_id = src.observed_stream_id;
-          dst.observed_capture_id = src.observed_capture_id;
-          dst.observed_acquisition_session_id =
-              src.observed_acquisition_session_id;
-          dst.observed_image_member_index = src.observed_image_member_index;
-          dst.observed_payload_kind = src.observed_payload_kind;
-          dst.observed_has_retained_cpu_payload =
-              src.observed_has_retained_cpu_payload;
-          dst.observed_has_retained_gpu_backing =
-              src.observed_has_retained_gpu_backing;
-          dst.observed_gpu_materialization_available =
-              src.observed_gpu_materialization_available;
-          dst.observed_gpu_materialization_requires_readback =
-              src.observed_gpu_materialization_requires_readback;
-        }
-        if (src.capture_evidence_complete &&
-            (!dst.capture_evidence_complete ||
-             (src.has_total_elapsed_ns &&
-              (!dst.has_total_elapsed_ns ||
-               src.total_elapsed_ns <= dst.total_elapsed_ns)))) {
-          dst.capture_evidence_complete = src.capture_evidence_complete;
-          dst.capture_evidence_accepted = src.capture_evidence_accepted;
-          dst.provisional_to_image = src.provisional_to_image;
-          dst.has_materialization_elapsed_ns =
-              src.has_materialization_elapsed_ns;
-          dst.materialization_elapsed_ns = src.materialization_elapsed_ns;
-          dst.has_capture_ready_elapsed_ns =
-              src.has_capture_ready_elapsed_ns;
-          dst.capture_ready_elapsed_ns = src.capture_ready_elapsed_ns;
-          dst.has_total_elapsed_ns = src.has_total_elapsed_ns;
-          dst.total_elapsed_ns = src.total_elapsed_ns;
-          dst.has_normalized_cost_units = src.has_normalized_cost_units;
-          dst.normalized_cost_units = src.normalized_cost_units;
-          dst.has_observed_posture = src.has_observed_posture;
-          dst.observed_posture = src.observed_posture;
-          dst.observed_access_posture_id = src.observed_access_posture_id;
-          dst.observed_stream_id = src.observed_stream_id;
-          dst.observed_capture_id = src.observed_capture_id;
-          dst.observed_acquisition_session_id =
-              src.observed_acquisition_session_id;
-          dst.observed_image_member_index = src.observed_image_member_index;
-          dst.observed_payload_kind = src.observed_payload_kind;
-          dst.observed_has_retained_cpu_payload =
-              src.observed_has_retained_cpu_payload;
-          dst.observed_has_retained_gpu_backing =
-              src.observed_has_retained_gpu_backing;
-          dst.observed_gpu_materialization_available =
-              src.observed_gpu_materialization_available;
-          dst.observed_gpu_materialization_requires_readback =
-              src.observed_gpu_materialization_requires_readback;
-        }
+  auto can_migrate_priming_evaluator_to_parent =
+      [&](const CaptureRetainedPlanParentKey& key,
+          const RetainedPlanEvaluatorState& state) noexcept {
+        return parent.key.kind ==
+                   CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+               key.kind ==
+                   CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+               parent.acquisition_session_id != 0 &&
+               state.acquisition_session_id == 0;
       };
-  auto retained_plan_evaluator_has_evidence =
-      [](const RetainedPlanEvaluatorState& state) noexcept {
-        for (const MeasuredPlanEvidence& evidence : state.evidence) {
-          if (evidence.observed_display_view ||
-              evidence.has_display_view_elapsed_ns ||
-              evidence.observed_to_image ||
-              evidence.has_materialization_elapsed_ns ||
-              evidence.has_capture_ready_elapsed_ns ||
-              evidence.has_total_elapsed_ns ||
-              evidence.has_normalized_cost_units) {
-            return true;
-          }
-        }
-        return false;
-      };
-  auto should_prefer_retained_plan_evaluator_state =
-      [&](const RetainedPlanEvaluatorState& current,
-          const RetainedPlanEvaluatorState& candidate) noexcept {
-        if (candidate.active != current.active) {
-          return candidate.active;
-        }
-        if (candidate.current_candidate_index != current.current_candidate_index) {
-          return candidate.current_candidate_index >
-                 current.current_candidate_index;
-        }
-        const bool current_has_evidence =
-            retained_plan_evaluator_has_evidence(current);
-        const bool candidate_has_evidence =
-            retained_plan_evaluator_has_evidence(candidate);
-        if (candidate_has_evidence != current_has_evidence) {
-          return candidate_has_evidence;
-        }
-        return false;
+  auto different_real_session_parent =
+      [&](const CaptureRetainedPlanParentKey& key) noexcept {
+        return parent.key.kind ==
+                   CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+               key.kind ==
+                   CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+               parent.acquisition_session_id != 0 && key.id != parent.key.id;
       };
 
   bool changed = false;
+  bool restart_from_seed = false;
   if (parent.acquisition_session_id != 0) {
     changed =
         acquisition_sessions_.set_backing_capabilities(
@@ -1778,6 +1656,12 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
           same_parent_key(it->first, parent.key)) {
         continue;
       }
+      if (!can_migrate_priming_evaluator_to_parent(it->first, it->second)) {
+        if (different_real_session_parent(it->first) && it->second.active) {
+          restart_from_seed = true;
+        }
+        continue;
+      }
       RetainedPlanEvaluatorState moved = it->second;
       moved.acquisition_session_id = parent.acquisition_session_id;
       moved.orphan_retire_after_ns = 0;
@@ -1812,48 +1696,16 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       ++it;
       continue;
     }
-    if (current_eval_it != capture_retained_plan_evaluators_.end()) {
-      RetainedPlanEvaluatorState& current = current_eval_it->second;
-      const RetainedPlanEvaluatorState& candidate = it->second;
-      if (should_prefer_retained_plan_evaluator_state(current, candidate)) {
-        capture_latency_trace_printf(
-            "capture_plan_state_rehome_merge device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu action=prefer_src src_candidate_index=%u dst_candidate_index=%u",
-            static_cast<unsigned long long>(device_instance_id),
-            static_cast<unsigned>(parent.key.kind),
-            static_cast<unsigned long long>(parent.key.id),
-            static_cast<unsigned>(it->first.kind),
-            static_cast<unsigned long long>(it->first.id),
-            static_cast<unsigned>(candidate.current_candidate_index),
-            static_cast<unsigned>(current.current_candidate_index));
-        current.primary_function = candidate.primary_function;
-        current.completion_reason = candidate.completion_reason;
-        current.capture_priming_seed_signature =
-            candidate.capture_priming_seed_signature;
-        current.active = candidate.active;
-        current.candidate_count = candidate.candidate_count;
-        current.current_candidate_index = candidate.current_candidate_index;
-        current.current_candidate_ready_after_ns =
-            candidate.current_candidate_ready_after_ns;
-        for (uint8_t i = 0; i < candidate.candidate_count; ++i) {
-          current.candidate_sequence[i] = candidate.candidate_sequence[i];
-        }
-      }
-      capture_latency_trace_printf(
-          "capture_plan_state_rehome_merge device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu action=merge_evidence dst_candidate_index=%u src_candidate_index=%u",
-          static_cast<unsigned long long>(device_instance_id),
-          static_cast<unsigned>(parent.key.kind),
-          static_cast<unsigned long long>(parent.key.id),
-          static_cast<unsigned>(it->first.kind),
-          static_cast<unsigned long long>(it->first.id),
-          static_cast<unsigned>(current.current_candidate_index),
-          static_cast<unsigned>(candidate.current_candidate_index));
-      for (size_t i = 0; i < std::size(current.evidence); ++i) {
-        merge_measured_plan_evidence(current.evidence[i], candidate.evidence[i]);
-      }
-      current.acquisition_session_id = parent.acquisition_session_id;
-      current.orphan_retire_after_ns = 0;
-      changed = true;
+    if (different_real_session_parent(it->first) && it->second.active) {
+      restart_from_seed = true;
     }
+    capture_latency_trace_printf(
+        "capture_plan_state_rehome_drop device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu action=discard_without_merge",
+        static_cast<unsigned long long>(device_instance_id),
+        static_cast<unsigned>(parent.key.kind),
+        static_cast<unsigned long long>(parent.key.id),
+        static_cast<unsigned>(it->first.kind),
+        static_cast<unsigned long long>(it->first.id));
     it = capture_retained_plan_evaluators_.erase(it);
     changed = true;
   }
@@ -1868,16 +1720,9 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
           same_parent_key(it->first, parent.key)) {
         continue;
       }
-      RetainedPlanDecisionProvenance moved = it->second;
-      moved.acquisition_session_id = parent.acquisition_session_id;
-      moved.orphan_retire_after_ns = 0;
-      capture_retained_plan_decisions_.erase(it);
-      current_decision_it =
-          capture_retained_plan_decisions_
-              .insert_or_assign(parent.key, moved)
-              .first;
-      changed = true;
-      break;
+      if (different_real_session_parent(it->first)) {
+        restart_from_seed = true;
+      }
     }
   } else if (current_decision_it->second.acquisition_session_id !=
              parent.acquisition_session_id) {
@@ -1893,8 +1738,43 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       ++it;
       continue;
     }
+    if (current_eval_it == capture_retained_plan_evaluators_.end() &&
+        current_decision_it == capture_retained_plan_decisions_.end() &&
+        it->first.kind ==
+            CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+        it->first.id == device_instance_id) {
+      ++it;
+      continue;
+    }
+    if (different_real_session_parent(it->first)) {
+      restart_from_seed = true;
+    }
     it = capture_retained_plan_decisions_.erase(it);
     changed = true;
+  }
+  if (current_eval_it == capture_retained_plan_evaluators_.end() &&
+      current_decision_it != capture_retained_plan_decisions_.end() &&
+      parent.acquisition_session_id != 0) {
+    release_capture_parent_priming_(device_instance_id);
+  }
+
+  if (parent.key.kind ==
+          CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+      parent.acquisition_session_id != 0 &&
+      current_eval_it == capture_retained_plan_evaluators_.end() &&
+      current_decision_it == capture_retained_plan_decisions_.end() &&
+      !device->steady_retained_plan.valid) {
+    restart_from_seed = true;
+  }
+
+  if (restart_from_seed &&
+      parent.key.kind ==
+          CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+      parent.acquisition_session_id != 0) {
+    return refresh_capture_retained_plan_state_(
+               device_instance_id,
+               /*requested_bump_access_posture_epoch=*/false) ||
+           changed;
   }
 
   if (parent.acquisition_session_id != 0) {
@@ -1938,6 +1818,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   CaptureRequest effective{};
   if (!build_effective_capture_request_without_retained_plan_(
           device_instance_id, effective)) {
+    release_capture_parent_priming_(device_instance_id);
     return false;
   }
   ProducerBackingCapabilities runtime_caps{};
@@ -1970,9 +1851,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
                             const CaptureRetainedPlanParentKey& b) noexcept {
     return !(a < b) && !(b < a);
   };
-  if (device_has_any_stream_(device_instance_id)) {
-    release_capture_parent_priming_(device_instance_id);
-  }
   (void)devices_.set_backing_capabilities(
       device_instance_id, runtime_caps, parent_context_caps);
   const ResolvedCaptureRetainedPlanParent parent =
@@ -2027,6 +1905,18 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
                    signature.parent_context_backing_capabilities,
                    seed_signature.parent_context_backing_capabilities);
       };
+  auto can_preserve_existing_evaluator =
+      [&](const CaptureRetainedPlanParentKey& key,
+          const RetainedPlanEvaluatorState& state) noexcept {
+        if (same_parent_key(key, parent.key)) {
+          return true;
+        }
+        return key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+               parent.key.kind ==
+                   CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+               parent.acquisition_session_id != 0 &&
+               state.acquisition_session_id == 0;
+      };
   auto retained_plan_evaluator_has_evidence =
       [](const RetainedPlanEvaluatorState& state) noexcept {
         for (const MeasuredPlanEvidence& evidence : state.evidence) {
@@ -2066,6 +1956,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   bool have_preserved_evaluator = false;
   for (const auto& [key, state] : capture_retained_plan_evaluators_) {
     if (!evaluator_matches_device(key, state) ||
+        !can_preserve_existing_evaluator(key, state) ||
         !preserved_evaluator_matches_signature(state) ||
         !preserved_evaluator_matches_decision(state)) {
       continue;
@@ -2103,6 +1994,10 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
                    seed_signature.parent_context_backing_capabilities) &&
                parent_context_caps.viable(provenance.selected.posture);
       };
+  auto can_preserve_existing_decision =
+      [&](const CaptureRetainedPlanParentKey& key) noexcept {
+        return same_parent_key(key, parent.key);
+      };
   auto should_prefer_preserved_decision =
       [&](const CaptureRetainedPlanParentKey& current_key,
           const RetainedPlanDecisionProvenance& current,
@@ -2134,6 +2029,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   bool have_preserved_decision = false;
   for (const auto& [key, provenance] : capture_retained_plan_decisions_) {
     if (!decision_matches_device(key, provenance) ||
+        !can_preserve_existing_decision(key) ||
         !preserved_decision_matches_signature(provenance)) {
       continue;
     }
@@ -2258,6 +2154,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         provenance.from_evaluation ? 1u : 0u);
     capture_retained_plan_evaluators_.erase(parent.key);
     capture_retained_plan_decisions_[parent.key] = provenance;
+    release_capture_parent_priming_(device_instance_id);
     return true;
   }
 
@@ -2339,6 +2236,12 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     provenance.orphan_retire_after_ns = 0;
     provenance.capture_priming_seed_signature = seed_signature;
     capture_retained_plan_decisions_[parent.key] = provenance;
+    if (parent.acquisition_session_id == 0) {
+      (void)sync_capture_parent_priming_(
+          device_instance_id, effective, runtime_caps, parent_context_caps);
+    }
+    release_capture_parent_priming_(device_instance_id);
+    return true;
   }
   (void)sync_capture_parent_priming_(
       device_instance_id, effective, runtime_caps, parent_context_caps);
@@ -3124,6 +3027,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   const CaptureRetainedPlanParentKey decision_key = state_it->first;
   capture_retained_plan_decisions_[decision_key] = provenance;
   capture_retained_plan_evaluators_.erase(state_it);
+  release_capture_parent_priming_(device_instance_id);
 }
 
 
@@ -3254,6 +3158,37 @@ std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluatio
             build_candidate_evidence_report_(
                 decision.candidate_sequence[i],
                 decision.evidence[i]));
+      }
+    }
+    if (!report.evaluator_active &&
+        !report.decision_selected.valid &&
+        parent.acquisition_session_id != 0) {
+      const CaptureRetainedPlanParentKey priming_key{
+          CaptureRetainedPlanParentKey::Kind::CapturePriming,
+          device_instance_id};
+      if (const auto decision_it =
+              capture_retained_plan_decisions_.find(priming_key);
+          decision_it != capture_retained_plan_decisions_.end()) {
+        const RetainedPlanDecisionProvenance& decision = decision_it->second;
+        if (decision.device_instance_id == device_instance_id &&
+            decision.valid &&
+            decision.acquisition_session_id == 0) {
+          report.decision_from_evaluation = decision.from_evaluation;
+          report.decision_selected = decision.selected;
+          report.completion_reason = decision.completion_reason;
+          report.decision_candidate_sequence.clear();
+          report.decision_candidate_sequence.reserve(decision.candidate_count);
+          report.candidate_evidence.clear();
+          report.candidate_evidence.reserve(decision.candidate_count);
+          for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+            report.decision_candidate_sequence.push_back(
+                decision.candidate_sequence[i]);
+            report.candidate_evidence.push_back(
+                build_candidate_evidence_report_(
+                    decision.candidate_sequence[i],
+                    decision.evidence[i]));
+          }
+        }
       }
     }
     out.push_back(std::move(report));
