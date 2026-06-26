@@ -439,6 +439,19 @@ enum class TryCloseDeviceStatus : uint8_t {
   const CoreDeviceRegistry::DeviceRecord* device_record(uint64_t device_instance_id) const noexcept {
     return devices_.find(device_instance_id);
   }
+#if defined(CAMBANG_INTERNAL_SMOKE)
+  std::optional<CoreCaptureAssemblyRegistry::DeviceCaptureAssembly>
+  capture_assembly_for_smoke(uint64_t capture_id,
+                             uint64_t device_instance_id) const {
+    return capture_assembly_registry_.find_for_smoke(
+        capture_id, device_instance_id);
+  }
+  SharedCaptureResultData capture_result_unguarded_for_smoke(
+      uint64_t capture_id,
+      uint64_t device_instance_id) const {
+    return result_store_.get_capture_result(capture_id, device_instance_id);
+  }
+#endif
 
   std::vector<CoreBackingPlanEvaluationReport> backing_plan_evaluation_reports() const;
 
@@ -602,8 +615,12 @@ private:
       const CaptureRequest& effective,
       const ProducerBackingCapabilities& runtime_backing_capabilities,
       const ProducerBackingCapabilities& parent_context_backing_capabilities);
-  void release_capture_parent_priming_(uint64_t device_instance_id);
+  void release_capture_parent_priming_(
+      uint64_t device_instance_id,
+      const char* reason = nullptr);
   bool device_has_any_stream_(uint64_t device_instance_id) const noexcept;
+  bool device_has_active_capture_evaluator_(
+      uint64_t device_instance_id) const noexcept;
   struct CaptureRetainedPlanParentKey {
     enum class Kind : uint8_t {
       AcquisitionSession = 0,
@@ -627,9 +644,13 @@ private:
     bool provisional = true;
   };
   ResolvedCaptureRetainedPlanParent
-  resolve_capture_retained_plan_parent_(uint64_t device_instance_id) const;
+  resolve_capture_retained_plan_parent_(
+      uint64_t device_instance_id,
+      uint64_t preferred_acquisition_session_id = 0) const;
+  bool integrate_pending_provider_facts_before_capture_request_();
   bool rehome_capture_retained_plan_parent_state_(
-      uint64_t device_instance_id);
+      uint64_t device_instance_id,
+      uint64_t preferred_acquisition_session_id = 0);
   void erase_capture_retained_plan_state_for_device_(
       uint64_t device_instance_id,
       const CaptureRetainedPlanParentKey* keep = nullptr);

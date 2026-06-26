@@ -627,6 +627,26 @@ ProviderResult ProviderBroker::set_capture_picture_config(uint64_t device_instan
   return active_->set_capture_picture_config(device_instance_id, picture);
 }
 
+ProviderResult ProviderBroker::sync_capture_parent_priming(
+    const CaptureRequest& req) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+  return active_->sync_capture_parent_priming(req);
+}
+
+ProviderResult ProviderBroker::release_capture_parent_priming(
+    uint64_t device_instance_id) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  ProviderResult pr = ensure_active_or_err_();
+  if (!pr.ok()) {
+    return pr;
+  }
+  return active_->release_capture_parent_priming(device_instance_id);
+}
+
 ProviderResult ProviderBroker::trigger_capture(const CaptureRequest& req) {
   const uint64_t wait_begin_ns = capture_latency_trace_now_ns();
   std::unique_lock<std::mutex> lock(active_provider_mutex_);

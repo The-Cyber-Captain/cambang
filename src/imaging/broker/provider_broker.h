@@ -103,6 +103,8 @@ public:
 
   ProviderResult set_stream_picture_config(uint64_t stream_id, const PictureConfig& picture) override;
   ProviderResult set_capture_picture_config(uint64_t device_instance_id, const PictureConfig& picture) override;
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override;
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override;
 
   ProviderResult trigger_capture(const CaptureRequest& req) override;
   ProviderResult trigger_capture_submission(const CaptureSubmission& submission) override;

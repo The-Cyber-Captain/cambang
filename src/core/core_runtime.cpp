@@ -969,8 +969,13 @@ void CoreRuntime::remember_capture_priming_seed_(
       CapturePrimingSeed{signature, selected};
 }
 
-void CoreRuntime::release_capture_parent_priming_(uint64_t device_instance_id) {
+void CoreRuntime::release_capture_parent_priming_(
+    uint64_t device_instance_id,
+    const char* reason) {
   if (device_instance_id == 0) {
+    return;
+  }
+  if (device_has_active_capture_evaluator_(device_instance_id)) {
     return;
   }
   const auto it = capture_parent_priming_states_.find(device_instance_id);
@@ -998,17 +1003,42 @@ bool CoreRuntime::device_has_any_stream_(uint64_t device_instance_id) const noex
   return false;
 }
 
+bool CoreRuntime::device_has_active_capture_evaluator_(
+    uint64_t device_instance_id) const noexcept {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    if (!state.active) {
+      continue;
+    }
+    if (state.device_instance_id == device_instance_id ||
+        (key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+         key.id == device_instance_id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool CoreRuntime::sync_capture_parent_priming_(
     uint64_t device_instance_id,
     const CaptureRequest& effective,
     const ProducerBackingCapabilities& runtime_backing_capabilities,
     const ProducerBackingCapabilities& parent_context_backing_capabilities) {
   assert(core_thread_.is_core_thread());
-  if (device_instance_id == 0 || device_has_any_stream_(device_instance_id)) {
+  const bool active_capture_evaluator =
+      device_has_active_capture_evaluator_(device_instance_id);
+  const uint64_t live_session_id =
+      acquisition_sessions_.resolve_live_session_id_for_device(
+          device_instance_id);
+  const bool any_stream = device_has_any_stream_(device_instance_id);
+  if (device_instance_id == 0 ||
+      (!active_capture_evaluator && any_stream)) {
     return false;
   }
-  if (acquisition_sessions_.resolve_live_session_id_for_device(device_instance_id) !=
-      0) {
+  if (!active_capture_evaluator &&
+      live_session_id != 0) {
     return false;
   }
 
@@ -1044,7 +1074,9 @@ bool CoreRuntime::sync_capture_parent_priming_(
       return true;
     }
     if (state.provider_hold_active) {
-      release_capture_parent_priming_(device_instance_id);
+      release_capture_parent_priming_(
+          device_instance_id,
+          "refresh.non_evaluated_priming_terminal");
     } else {
       capture_parent_priming_states_.erase(device_instance_id);
     }
@@ -1130,7 +1162,8 @@ CoreRuntime::~CoreRuntime() {
 }
 
 SharedCaptureResultData CoreRuntime::get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const {
-  if (!capture_assembly_registry_.is_assembly_successful(capture_id, device_instance_id)) {
+  if (!capture_assembly_registry_.is_assembly_successful(
+          capture_id, device_instance_id)) {
     return nullptr;
   }
   return result_store_.get_capture_result(capture_id, device_instance_id);
@@ -1416,7 +1449,8 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
 
 CoreRuntime::ResolvedCaptureRetainedPlanParent
 CoreRuntime::resolve_capture_retained_plan_parent_(
-    uint64_t device_instance_id) const {
+    uint64_t device_instance_id,
+    uint64_t preferred_acquisition_session_id) const {
   ResolvedCaptureRetainedPlanParent resolved{};
   resolved.device_instance_id = device_instance_id;
   resolved.key.kind = CaptureRetainedPlanParentKey::Kind::CapturePriming;
@@ -1427,9 +1461,18 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
   const bool priming_hold_active =
       priming_state_it != capture_parent_priming_states_.end() &&
       priming_state_it->second.provider_hold_active;
+  auto session_has_capture_activity =
+      [](const CoreAcquisitionSessionRegistry::AcquisitionSessionEntry& entry)
+          noexcept {
+        return entry.captures_triggered != 0 ||
+               entry.captures_completed != 0 ||
+               entry.captures_failed != 0 ||
+               entry.last_capture_id != 0;
+      };
 
   uint64_t live_session_id = 0;
   uint32_t live_session_count = 0;
+  bool live_session_has_capture_activity = false;
   for (const auto& [session_id, entry] : acquisition_sessions_.all()) {
     (void)session_id;
     if (entry.device_instance_id != device_instance_id ||
@@ -1438,16 +1481,35 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
     }
     ++live_session_count;
     live_session_id = entry.acquisition_session_id;
+    live_session_has_capture_activity =
+        session_has_capture_activity(entry);
     if (live_session_count > 1u) {
       break;
     }
   }
-  if (live_session_count == 1u && live_session_id != 0) {
+  if (live_session_count == 1u &&
+      live_session_id != 0 &&
+      (!priming_hold_active || live_session_has_capture_activity)) {
     resolved.key.kind = CaptureRetainedPlanParentKey::Kind::AcquisitionSession;
     resolved.key.id = live_session_id;
     resolved.acquisition_session_id = live_session_id;
     resolved.provisional = false;
     return resolved;
+  }
+  if (preferred_acquisition_session_id != 0) {
+    if (const auto* preferred =
+            acquisition_sessions_.find(preferred_acquisition_session_id);
+        preferred != nullptr &&
+        preferred->device_instance_id == device_instance_id &&
+        preferred->phase == CBLifecyclePhase::LIVE &&
+        (!priming_hold_active || session_has_capture_activity(*preferred))) {
+      resolved.key.kind =
+          CaptureRetainedPlanParentKey::Kind::AcquisitionSession;
+      resolved.key.id = preferred_acquisition_session_id;
+      resolved.acquisition_session_id = preferred_acquisition_session_id;
+      resolved.provisional = false;
+      return resolved;
+    }
   }
 
   uint64_t preserved_session_id = 0;
@@ -1532,6 +1594,74 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
   return resolved;
 }
 
+bool CoreRuntime::integrate_pending_provider_facts_before_capture_request_() {
+  assert(core_thread_.is_core_thread());
+
+  bool changed = false;
+  while (!provider_facts_.empty()) {
+    if (provider_capture_facts_queued_ != 0) {
+      (void)promote_capture_fact_over_repeating_stream_prefix(
+          provider_facts_, capture_cohort_registry_);
+    }
+    const ProviderFactSummary summary =
+        summarize_provider_fact(provider_facts_.front(),
+                                capture_cohort_registry_);
+    if (summary.fact_class == ProviderFactClass::RepeatingStreamFrame) {
+      break;
+    }
+
+    ProviderToCoreCommand cmd = std::move(provider_facts_.front());
+    provider_facts_.pop_front();
+    if (provider_fact_is_capture_critical(summary.fact_class) &&
+        provider_capture_facts_queued_ != 0) {
+      --provider_capture_facts_queued_;
+    }
+
+    uint64_t capture_parent_device_instance_id = 0;
+    uint64_t preferred_acquisition_session_id = 0;
+    if (summary.type == ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED) {
+      const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
+      if (p.type == static_cast<uint32_t>(NativeObjectType::AcquisitionSession)) {
+        capture_parent_device_instance_id = p.owner_device_instance_id;
+        preferred_acquisition_session_id = p.native_id;
+      }
+    } else if (summary.type ==
+               ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED) {
+      const auto& p = std::get<CmdProviderNativeObjectDestroyed>(cmd.payload);
+      if (const auto* session = acquisition_sessions_.find(p.native_id);
+          session != nullptr) {
+        capture_parent_device_instance_id = session->device_instance_id;
+      }
+    } else if (summary.type ==
+                   ProviderToCoreCommandType::PROVIDER_CAPTURE_STARTED ||
+               summary.type ==
+                   ProviderToCoreCommandType::PROVIDER_CAPTURE_COMPLETED ||
+               summary.type ==
+                   ProviderToCoreCommandType::PROVIDER_CAPTURE_FAILED) {
+      capture_parent_device_instance_id = summary.device_instance_id;
+    }
+
+    dispatcher_.dispatch(std::move(cmd));
+    if (capture_parent_device_instance_id != 0 &&
+        rehome_capture_retained_plan_parent_state_(
+            capture_parent_device_instance_id,
+            preferred_acquisition_session_id)) {
+      changed = true;
+    }
+    if (provider_fact_is_capture_critical(summary.fact_class)) {
+      release_result_safe_capture_stream_preemptions_();
+    }
+  }
+
+  if (dispatcher_.consume_relevant_state_changed()) {
+    changed = true;
+  }
+  if (changed) {
+    request_publish_from_core_unchecked();
+  }
+  return changed;
+}
+
 void CoreRuntime::erase_capture_retained_plan_state_for_device_(
     uint64_t device_instance_id,
     const CaptureRetainedPlanParentKey* keep) {
@@ -1563,7 +1693,8 @@ void CoreRuntime::erase_capture_retained_plan_state_for_device_(
 }
 
 bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
-    uint64_t device_instance_id) {
+    uint64_t device_instance_id,
+    uint64_t preferred_acquisition_session_id) {
   assert(core_thread_.is_core_thread());
   if (device_instance_id == 0) {
     return false;
@@ -1576,7 +1707,8 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
   }
 
   const ResolvedCaptureRetainedPlanParent parent =
-      resolve_capture_retained_plan_parent_(device_instance_id);
+      resolve_capture_retained_plan_parent_(
+          device_instance_id, preferred_acquisition_session_id);
   auto same_parent_key = [](const CaptureRetainedPlanParentKey& a,
                             const CaptureRetainedPlanParentKey& b) noexcept {
     return !(a < b) && !(b < a);
@@ -1609,24 +1741,6 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
             device->runtime_backing_capabilities,
             device->parent_context_backing_capabilities) ||
         changed;
-    changed =
-        acquisition_sessions_.set_requested_retained_plan(
-            parent.acquisition_session_id,
-            device->requested_retained_plan,
-            /*bump_capture_access_posture_epoch=*/false) ||
-        changed;
-    if (device->steady_retained_plan.valid) {
-      changed =
-          acquisition_sessions_.set_steady_retained_plan(
-              parent.acquisition_session_id,
-              device->steady_retained_plan) ||
-          changed;
-    } else {
-      changed =
-          acquisition_sessions_.clear_steady_retained_plan(
-              parent.acquisition_session_id) ||
-          changed;
-    }
   }
 
   auto evaluator_matches_device =
@@ -1755,7 +1869,11 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
   if (current_eval_it == capture_retained_plan_evaluators_.end() &&
       current_decision_it != capture_retained_plan_decisions_.end() &&
       parent.acquisition_session_id != 0) {
-    release_capture_parent_priming_(device_instance_id);
+    if (current_decision_it->second.from_evaluation) {
+      release_capture_parent_priming_(
+          device_instance_id,
+          "sync_capture_parent_priming.provider_sync_failed");
+    }
   }
 
   if (parent.key.kind ==
@@ -1778,14 +1896,22 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
   }
 
   if (parent.acquisition_session_id != 0) {
-    if (device->requested_retained_plan.valid) {
+    const bool session_owns_capture_plan_state =
+        current_eval_it != capture_retained_plan_evaluators_.end() ||
+        current_decision_it != capture_retained_plan_decisions_.end();
+    const auto* session_rec =
+        acquisition_sessions_.find(parent.acquisition_session_id);
+    const bool session_requested_unset =
+        session_rec == nullptr || !session_rec->requested_retained_plan.valid;
+    if ((!session_owns_capture_plan_state || session_requested_unset) &&
+        device->requested_retained_plan.valid) {
       changed =
           acquisition_sessions_.set_requested_retained_plan(
               parent.acquisition_session_id,
               device->requested_retained_plan,
               /*bump_capture_access_posture_epoch=*/false) ||
           changed;
-    } else {
+    } else if (!session_owns_capture_plan_state) {
       changed =
           acquisition_sessions_.set_requested_retained_plan(
               parent.acquisition_session_id,
@@ -1793,13 +1919,14 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
               /*bump_capture_access_posture_epoch=*/false) ||
           changed;
     }
-    if (device->steady_retained_plan.valid) {
+    if (!session_owns_capture_plan_state &&
+        device->steady_retained_plan.valid) {
       changed =
           acquisition_sessions_.set_steady_retained_plan(
               parent.acquisition_session_id,
               device->steady_retained_plan) ||
           changed;
-    } else {
+    } else if (!session_owns_capture_plan_state) {
       changed =
           acquisition_sessions_.clear_steady_retained_plan(
               parent.acquisition_session_id) ||
@@ -1818,7 +1945,10 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   CaptureRequest effective{};
   if (!build_effective_capture_request_without_retained_plan_(
           device_instance_id, effective)) {
-    release_capture_parent_priming_(device_instance_id);
+    erase_capture_retained_plan_state_for_device_(device_instance_id, nullptr);
+    release_capture_parent_priming_(
+        device_instance_id,
+        "refresh.build_effective_failed");
     return false;
   }
   ProducerBackingCapabilities runtime_caps{};
@@ -1828,7 +1958,10 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
           effective,
           runtime_caps,
           parent_context_caps)) {
-    release_capture_parent_priming_(device_instance_id);
+    erase_capture_retained_plan_state_for_device_(device_instance_id, nullptr);
+    release_capture_parent_priming_(
+        device_instance_id,
+        "refresh.resolve_backing_caps_failed");
     return false;
   }
   auto evaluator_matches_device =
@@ -1973,30 +2106,69 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
       [&](const RetainedPlanDecisionProvenance& provenance) noexcept {
         const CapturePrimingSeedSignature& signature =
             provenance.capture_priming_seed_signature;
-        return provenance.valid &&
-               provenance.selected.valid &&
-               provenance.primary_function ==
-                   BackingPlanEvaluationPrimaryFunction::
-                       CaptureReadyAndMaterialize &&
-               signature.hardware_id == seed_signature.hardware_id &&
-               signature.width == seed_signature.width &&
-               signature.height == seed_signature.height &&
-               signature.format_fourcc == seed_signature.format_fourcc &&
-               same_picture_config(signature.picture, seed_signature.picture) &&
-               same_bundle_members(
-                   signature.still_image_bundle,
-                   seed_signature.still_image_bundle) &&
-               same_backing_capabilities(
-                   signature.runtime_backing_capabilities,
-                   seed_signature.runtime_backing_capabilities) &&
-               same_backing_capabilities(
-                   signature.parent_context_backing_capabilities,
-                   seed_signature.parent_context_backing_capabilities) &&
-               parent_context_caps.viable(provenance.selected.posture);
+        if (!provenance.valid || !provenance.selected.valid ||
+            provenance.primary_function !=
+                BackingPlanEvaluationPrimaryFunction::
+                    CaptureReadyAndMaterialize) {
+          return false;
+        }
+        const bool same_base_signature =
+            signature.hardware_id == seed_signature.hardware_id &&
+            signature.width == seed_signature.width &&
+            signature.height == seed_signature.height &&
+            signature.format_fourcc == seed_signature.format_fourcc &&
+            same_picture_config(signature.picture, seed_signature.picture) &&
+            same_bundle_members(
+                signature.still_image_bundle, seed_signature.still_image_bundle);
+        const bool same_non_evaluated_seed_signature =
+            same_base_signature &&
+            same_backing_capabilities(
+                signature.runtime_backing_capabilities,
+                seed_signature.runtime_backing_capabilities);
+        const bool same_evaluated_seed_signature =
+            same_non_evaluated_seed_signature &&
+            same_backing_capabilities(
+                signature.parent_context_backing_capabilities,
+                seed_signature.parent_context_backing_capabilities);
+        if (!same_base_signature) {
+          return false;
+        }
+        if (provenance.from_evaluation) {
+          if (!same_evaluated_seed_signature) {
+            return false;
+          }
+          return parent_context_caps.viable(provenance.selected.posture);
+        }
+        if (same_non_evaluated_seed_signature) {
+          return true;
+        }
+        const CoreRetainedProductionPlan current_selected =
+            decision.steady.valid ? decision.steady : decision.requested;
+        if (!same_retained_plan(provenance.selected, current_selected) ||
+            provenance.candidate_count != decision.candidate_count) {
+          return false;
+        }
+        for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+          const CoreRetainedProductionPlan current_candidate =
+              make_retained_plan(decision.candidate_sequence[i]);
+          if (!same_retained_plan(
+                  provenance.candidate_sequence[i], current_candidate)) {
+            return false;
+          }
+        }
+        return parent_context_caps.viable(provenance.selected.posture);
       };
   auto can_preserve_existing_decision =
-      [&](const CaptureRetainedPlanParentKey& key) noexcept {
-        return same_parent_key(key, parent.key);
+      [&](const CaptureRetainedPlanParentKey& key,
+          const RetainedPlanDecisionProvenance& provenance) noexcept {
+        if (same_parent_key(key, parent.key)) {
+          return true;
+        }
+        return key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+               parent.key.kind ==
+                   CaptureRetainedPlanParentKey::Kind::AcquisitionSession &&
+               parent.acquisition_session_id != 0 &&
+               !provenance.from_evaluation;
       };
   auto should_prefer_preserved_decision =
       [&](const CaptureRetainedPlanParentKey& current_key,
@@ -2029,7 +2201,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   bool have_preserved_decision = false;
   for (const auto& [key, provenance] : capture_retained_plan_decisions_) {
     if (!decision_matches_device(key, provenance) ||
-        !can_preserve_existing_decision(key) ||
+        !can_preserve_existing_decision(key, provenance) ||
         !preserved_decision_matches_signature(provenance)) {
       continue;
     }
@@ -2045,6 +2217,32 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     }
   }
   const bool preserve_existing_decision = have_preserved_decision;
+  auto decision_matches_current_non_evaluated_shape =
+      [&](const RetainedPlanDecisionProvenance& provenance) noexcept {
+        if (!provenance.valid || provenance.from_evaluation) {
+          return false;
+        }
+        const CoreRetainedProductionPlan current_selected =
+            decision.steady.valid ? decision.steady : decision.requested;
+        if (!same_retained_plan(provenance.selected, current_selected) ||
+            provenance.candidate_count != decision.candidate_count) {
+          return false;
+        }
+        for (uint8_t i = 0; i < decision.candidate_count; ++i) {
+          if (!same_retained_plan(
+                  provenance.candidate_sequence[i],
+                  make_retained_plan(decision.candidate_sequence[i]))) {
+            return false;
+          }
+        }
+        return true;
+      };
+  const auto existing_parent_decision_it =
+      capture_retained_plan_decisions_.find(parent.key);
+  const bool same_non_evaluated_decision_already_installed =
+      existing_parent_decision_it != capture_retained_plan_decisions_.end() &&
+      decision_matches_current_non_evaluated_shape(
+          existing_parent_decision_it->second);
 
   erase_capture_retained_plan_state_for_device_(
       device_instance_id, &parent.key);
@@ -2066,7 +2264,6 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         parent_context_caps.cpu_backed_available ? 1u : 0u,
         parent_context_caps.gpu_backed_available ? 1u : 0u,
         parent_context_caps.gpu_with_cpu_sidecar_available ? 1u : 0u);
-    release_capture_parent_priming_(device_instance_id);
     (void)devices_.set_requested_retained_plan(
         device_instance_id,
         CoreRetainedProductionPlan{},
@@ -2082,6 +2279,9 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     }
     capture_retained_plan_evaluators_.erase(parent.key);
     capture_retained_plan_decisions_.erase(parent.key);
+    release_capture_parent_priming_(
+        device_instance_id,
+        "refresh.no_viable_requested_plan");
     return false;
   }
 
@@ -2154,7 +2354,11 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         provenance.from_evaluation ? 1u : 0u);
     capture_retained_plan_evaluators_.erase(parent.key);
     capture_retained_plan_decisions_[parent.key] = provenance;
-    release_capture_parent_priming_(device_instance_id);
+    if (provenance.from_evaluation) {
+      release_capture_parent_priming_(
+          device_instance_id,
+          "rehome.evaluated_decision_on_real_parent");
+    }
     return true;
   }
 
@@ -2236,11 +2440,14 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
     provenance.orphan_retire_after_ns = 0;
     provenance.capture_priming_seed_signature = seed_signature;
     capture_retained_plan_decisions_[parent.key] = provenance;
-    if (parent.acquisition_session_id == 0) {
+    if (parent.acquisition_session_id == 0 &&
+        !same_non_evaluated_decision_already_installed) {
       (void)sync_capture_parent_priming_(
           device_instance_id, effective, runtime_caps, parent_context_caps);
+      release_capture_parent_priming_(
+          device_instance_id,
+          "refresh.preserve_evaluated_decision");
     }
-    release_capture_parent_priming_(device_instance_id);
     return true;
   }
   (void)sync_capture_parent_priming_(
@@ -2610,14 +2817,36 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   if (device_instance_id == 0 || posture_id == 0) {
     return;
   }
+  bool has_real_session_parent_state = false;
+  for (const auto& [key, state] : capture_retained_plan_evaluators_) {
+    if (state.device_instance_id != device_instance_id) {
+      continue;
+    }
+    if (key.kind == CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
+        state.acquisition_session_id != 0) {
+      has_real_session_parent_state = true;
+      break;
+    }
+  }
+  if (!has_real_session_parent_state) {
+    for (const auto& [key, decision] : capture_retained_plan_decisions_) {
+      if (decision.device_instance_id != device_instance_id) {
+        continue;
+      }
+      if (key.kind == CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
+          decision.acquisition_session_id != 0) {
+        has_real_session_parent_state = true;
+        break;
+      }
+    }
+  }
   const auto priming_state_it =
       capture_parent_priming_states_.find(device_instance_id);
   const bool keep_priming_parent =
       priming_state_it != capture_parent_priming_states_.end() &&
       priming_state_it->second.provider_hold_active &&
-      !device_has_any_stream_(device_instance_id);
-  const bool allow_session_parent_observation =
-      device_has_any_stream_(device_instance_id) && !keep_priming_parent;
+      !has_real_session_parent_state;
+  const bool allow_session_parent_observation = !keep_priming_parent;
   uint64_t observed_session_id = 0;
   auto state_it = capture_retained_plan_evaluators_.end();
   if (allow_session_parent_observation && acquisition_session_id_hint != 0) {
@@ -3027,7 +3256,9 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   const CaptureRetainedPlanParentKey decision_key = state_it->first;
   capture_retained_plan_decisions_[decision_key] = provenance;
   capture_retained_plan_evaluators_.erase(state_it);
-  release_capture_parent_priming_(device_instance_id);
+  release_capture_parent_priming_(
+      device_instance_id,
+      "capture_observation.finalize");
 }
 
 
@@ -3686,11 +3917,13 @@ void CoreRuntime::on_core_timer_tick() {
         --provider_capture_facts_queued_;
       }
       uint64_t capture_parent_device_instance_id = 0;
+      uint64_t preferred_acquisition_session_id = 0;
       if (summary.type == ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_CREATED) {
         const auto& p = std::get<CmdProviderNativeObjectCreated>(cmd.payload);
         if (p.type ==
             static_cast<uint32_t>(NativeObjectType::AcquisitionSession)) {
           capture_parent_device_instance_id = p.owner_device_instance_id;
+          preferred_acquisition_session_id = p.native_id;
         }
       } else if (summary.type ==
                  ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED) {
@@ -3713,7 +3946,8 @@ void CoreRuntime::on_core_timer_tick() {
       emit_provider_fact_dispatch_slow_if_needed(summary, dispatch_us, provider_facts_.size());
       if (capture_parent_device_instance_id != 0 &&
           rehome_capture_retained_plan_parent_state_(
-              capture_parent_device_instance_id)) {
+              capture_parent_device_instance_id,
+              preferred_acquisition_session_id)) {
         request_publish_from_core_unchecked();
       }
       if (provider_fact_is_capture_critical(summary.fact_class)) {
@@ -5021,6 +5255,8 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
   if (device_instance_id == 0 || capture_id == 0) {
     return TryTriggerDeviceCaptureStatus::InvalidArgument;
   }
+
+  (void)integrate_pending_provider_facts_before_capture_request_();
 
   CaptureRequest req{};
   if (!materialize_capture_request_(device_instance_id, req)) {
