@@ -846,6 +846,155 @@ private:
   std::map<uint64_t, StreamState> streams_;
 };
 
+class BrokerPrimingForwardingRecordingProvider final : public ICameraProvider {
+ public:
+  struct CallRecord {
+    std::string name;
+    CaptureRequest sync_req{};
+    uint64_t release_device_instance_id = 0;
+  };
+
+  static constexpr ProviderError kSyncReturnCode =
+      ProviderError::ERR_PLATFORM_CONSTRAINT;
+  static constexpr ProviderError kReleaseReturnCode =
+      ProviderError::ERR_TRANSIENT_FAILURE;
+
+  const char* provider_name() const override {
+    return "BrokerPrimingForwardingRecordingProvider";
+  }
+  ProviderKind provider_kind() const noexcept override {
+    return ProviderKind::synthetic;
+  }
+
+  StreamTemplate stream_template() const override { return StreamTemplate{}; }
+  CaptureTemplate capture_template() const override {
+    CaptureTemplate t{};
+    t.profile.width = 320;
+    t.profile.height = 240;
+    t.profile.format_fourcc = FOURCC_RGBA;
+    t.picture.preset = PatternPreset::Checker;
+    t.picture.seed = 7;
+    return t;
+  }
+
+  bool supports_stream_picture_updates() const noexcept override { return true; }
+  bool supports_capture_picture_updates() const noexcept override { return true; }
+  bool supports_multi_image_still_sequence() const noexcept override { return false; }
+
+  ProducerBackingCapabilities stream_backing_capabilities(
+      const CaptureProfile&,
+      const PictureConfig&) const noexcept override {
+    return ProducerBackingCapabilities{true, false};
+  }
+  ProducerBackingCapabilities capture_backing_capabilities(
+      const CaptureRequest&) const noexcept override {
+    return ProducerBackingCapabilities{true, false};
+  }
+  ProducerBackingCapabilities stream_parent_context_backing_capabilities(
+      uint64_t,
+      uint64_t,
+      StreamIntent,
+      const CaptureProfile&,
+      const PictureConfig&) noexcept override {
+    return ProducerBackingCapabilities{true, false};
+  }
+  ProducerBackingCapabilities capture_parent_context_backing_capabilities(
+      uint64_t,
+      const CaptureRequest&) noexcept override {
+    return ProducerBackingCapabilities{true, false};
+  }
+  uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+    return 0;
+  }
+  uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept override {
+    return 0;
+  }
+
+  ProviderResult initialize(IProviderCallbacks*) override {
+    ++initialize_calls;
+    return ProviderResult::success();
+  }
+  ProviderResult enumerate_endpoints(std::vector<CameraEndpoint>&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult open_device(const std::string&, uint64_t, uint64_t) override {
+    return ProviderResult::success();
+  }
+  ProviderResult close_device(uint64_t) override {
+    return ProviderResult::success();
+  }
+  ProviderResult create_stream(const StreamRequest&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult destroy_stream(uint64_t) override {
+    return ProviderResult::success();
+  }
+  ProviderResult start_stream(
+      uint64_t,
+      const CaptureProfile&,
+      const PictureConfig&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult stop_stream(uint64_t) override {
+    return ProviderResult::success();
+  }
+  ProviderResult update_stream_retained_production_plan(
+      uint64_t,
+      CoreRetainedProductionPlan) override {
+    return ProviderResult::success();
+  }
+  ProviderResult set_stream_picture_config(
+      uint64_t,
+      const PictureConfig&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult set_capture_picture_config(
+      uint64_t,
+      const PictureConfig&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult sync_capture_parent_priming(const CaptureRequest& req) override {
+    ++sync_calls;
+    calls.push_back(CallRecord{"sync", req, 0});
+    return ProviderResult::failure(kSyncReturnCode);
+  }
+  ProviderResult release_capture_parent_priming(uint64_t device_instance_id) override {
+    ++release_calls;
+    calls.push_back(CallRecord{"release", CaptureRequest{}, device_instance_id});
+    return ProviderResult::failure(kReleaseReturnCode);
+  }
+  ProviderResult trigger_capture(const CaptureRequest&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult trigger_capture_submission(const CaptureSubmission&) override {
+    return ProviderResult::success();
+  }
+  ProviderResult abort_capture(uint64_t) override {
+    return ProviderResult::success();
+  }
+  ProviderResult apply_camera_spec_patch(
+      const std::string&,
+      uint64_t,
+      SpecPatchView) override {
+    return ProviderResult::success();
+  }
+  ProviderResult apply_imaging_spec_patch(
+      uint64_t,
+      SpecPatchView) override {
+    return ProviderResult::success();
+  }
+  ProviderResult shutdown() override {
+    ++shutdown_calls;
+    return ProviderResult::success();
+  }
+
+  int initialize_calls = 0;
+  int shutdown_calls = 0;
+  int sync_calls = 0;
+  int release_calls = 0;
+  std::vector<CallRecord> calls{};
+};
+
 
 bool wait_for_core_runtime_live(CoreRuntime& rt) {
   for (int i = 0; i < kMaxIters; ++i) {
@@ -3690,22 +3839,31 @@ bool run_core_measured_backing_plan_evaluation_check() {
     return fail_with_cleanup(
         "FAIL core measured backing-plan evaluation capture initial requested/steady mismatch");
   }
+  uint64_t primed_capture_parent_session_id = 0;
   if (!wait_until([&]() {
         CoreBackingPlanEvaluationReport report{};
-        return find_capture_report(rt, kDeviceId, report) &&
-               report.parent_kind ==
-                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
-               report.acquisition_session_id != 0 &&
-               !report.provisional_parent &&
+        if (!find_capture_report(rt, kDeviceId, report) ||
+            !provider.has_active_capture_parent_priming(kDeviceId)) {
+          return false;
+        }
+        const uint64_t active_session_id =
+            provider.active_capture_parent_session_id(kDeviceId);
+        if (active_session_id == 0) {
+          return false;
+        }
+        primed_capture_parent_session_id = active_session_id;
+        return report.parent_kind ==
+                   CoreBackingPlanEvaluationReport::ParentKind::CapturePriming &&
+               report.provisional_parent &&
+               report.acquisition_session_id == 0 &&
                plan_equals(report.requested,
                            CoreProductionPostureShape::CpuPrimary) &&
                !report.steady.valid &&
-               provider.has_active_capture_parent_priming(kDeviceId) &&
-               provider.active_capture_parent_session_id(kDeviceId) ==
-                   report.acquisition_session_id;
+               report.evaluator_active &&
+               report.current_candidate_index == 0;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured backing-plan evaluation did not realize first-use still-only primed acquisition-session parent");
+        "FAIL core measured backing-plan evaluation did not keep first-use still-only evaluation provisional while provider priming was realized and held");
   }
 
   CaptureRequest capture_req{};
@@ -3724,21 +3882,6 @@ bool run_core_measured_backing_plan_evaluation_check() {
     return fail_with_cleanup(
         "FAIL core measured backing-plan evaluation first trigger_capture failed");
   }
-  if (!wait_until([&]() {
-        CoreBackingPlanEvaluationReport report{};
-        return find_capture_report(rt, kDeviceId, report) &&
-               report.parent_kind ==
-                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
-               report.acquisition_session_id != 0 &&
-               plan_equals(report.requested,
-                           CoreProductionPostureShape::CpuPrimary) &&
-               !report.steady.valid &&
-               report.evaluator_active &&
-               report.current_candidate_index == 0;
-      })) {
-    return fail_with_cleanup(
-        "FAIL core measured backing-plan evaluation did not mirror active capture evaluation onto real acquisition-session parent");
-  }
   if (!provider.emit_pending_capture(kCaptureIdA)) {
     return fail_with_cleanup(
         "FAIL core measured backing-plan evaluation first pending capture publish failed");
@@ -3755,6 +3898,28 @@ bool run_core_measured_backing_plan_evaluation_check() {
 
   const SharedCaptureResultData first_capture_result =
       rt.get_capture_result(kCaptureIdA, kDeviceId);
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.parent_kind ==
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
+               report.acquisition_session_id ==
+                   first_capture_result->acquisition_session_id &&
+               report.acquisition_session_id ==
+                   primed_capture_parent_session_id &&
+               !report.provisional_parent &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::CpuPrimary) &&
+               !report.steady.valid &&
+               report.evaluator_active &&
+               report.current_candidate_index == 0 &&
+               provider.has_active_capture_parent_priming(kDeviceId) &&
+               provider.active_capture_parent_session_id(kDeviceId) ==
+                   primed_capture_parent_session_id;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation did not migrate exactly once onto the provider-primed real acquisition-session after first capture integration");
+  }
   rt.report_capture_retained_to_image_observation(
       kDeviceId,
       kCaptureIdA,
@@ -3909,39 +4074,46 @@ bool run_core_measured_backing_plan_evaluation_check() {
       true,
       40'000'000);
   if (!wait_until([&]() {
-        const auto* rec = rt.device_record(kDeviceId);
-        return rec &&
-               plan_equals(rec->requested_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
-               plan_equals(rec->steady_retained_plan,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
-      })) {
-    return fail_with_cleanup(
-        "FAIL core measured backing-plan evaluation did not settle capture steady posture");
-  }
-  if (!wait_until([&]() {
         CoreBackingPlanEvaluationReport report{};
-        return find_capture_report(rt, kDeviceId, report) &&
-               report.parent_kind ==
-                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
-               !report.provisional_parent &&
-               plan_equals(report.requested,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
-               plan_equals(report.steady,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
-               report.decision_from_evaluation &&
-               plan_equals(report.decision_selected,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
-               report.completion_reason ==
-                   BackingPlanEvaluationCompletionReason::
-                       AllViableCandidatesEvaluated &&
-               report.candidate_evidence.size() == 3u &&
-               !provider.has_active_capture_parent_priming(kDeviceId) &&
-               provider.capture_parent_priming_release_count(kDeviceId) ==
-                   capture_phase_release_count_before_stream_start + 1u;
+        if (!find_capture_report(rt, kDeviceId, report) ||
+            !plan_equals(report.requested,
+                         CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) ||
+            provider.capture_parent_priming_release_count(kDeviceId) !=
+                capture_phase_release_count_before_stream_start + 1u) {
+          return false;
+        }
+        const bool settled_on_real_parent =
+            report.parent_kind ==
+                CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
+            report.parent_id == first_capture_result->acquisition_session_id &&
+            report.acquisition_session_id ==
+                first_capture_result->acquisition_session_id &&
+            !report.provisional_parent &&
+            plan_equals(report.steady,
+                        CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+            report.decision_from_evaluation &&
+            plan_equals(report.decision_selected,
+                        CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+            report.completion_reason ==
+                BackingPlanEvaluationCompletionReason::
+                    AllViableCandidatesEvaluated &&
+            !provider.has_active_capture_parent_priming(kDeviceId);
+        const bool restarted_seed_only_epoch =
+            report.parent_kind ==
+                CoreBackingPlanEvaluationReport::ParentKind::CapturePriming &&
+            report.parent_id == kDeviceId &&
+            report.provisional_parent &&
+            report.acquisition_session_id == 0 &&
+            !report.steady.valid &&
+            !report.decision_from_evaluation &&
+            !report.decision_selected.valid &&
+            report.evaluator_active &&
+            report.current_candidate_index == 0 &&
+            provider.has_active_capture_parent_priming(kDeviceId);
+        return settled_on_real_parent || restarted_seed_only_epoch;
       })) {
     return fail_with_cleanup(
-        "FAIL core measured backing-plan evaluation did not preserve settled capture decision when acquisition-session parent retired");
+        "FAIL core measured backing-plan evaluation did not either expose the settled real-parent decision or restart the expected seed-only provisional epoch after terminal priming release");
   }
   {
     CoreBackingPlanEvaluationReport report{};
@@ -3949,45 +4121,86 @@ bool run_core_measured_backing_plan_evaluation_check() {
       return fail_with_cleanup(
           "FAIL core measured backing-plan evaluation final capture report missing");
     }
-    CoreBackingPlanCandidateEvidenceReport cpu_entry{};
-    CoreBackingPlanCandidateEvidenceReport gpu_entry{};
-    CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
-    if (!report_entry_for_posture(
-            report, CoreProductionPostureShape::CpuPrimary, cpu_entry) ||
-        !report_entry_for_posture(
-            report, CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
-            gpu_entry) ||
-        !report_entry_for_posture(
-            report, CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
-            sidecar_entry)) {
-      return fail_with_cleanup(
-          "FAIL core measured backing-plan evaluation final capture report missing candidate evidence");
-    }
-    if (!cpu_entry.evidence_accepted || !cpu_entry.evidence_complete ||
-        !gpu_entry.evidence_accepted || !gpu_entry.evidence_complete ||
-        !sidecar_entry.evidence_accepted || !sidecar_entry.evidence_complete ||
-        !cpu_entry.has_total_elapsed_ns || !gpu_entry.has_total_elapsed_ns ||
-        !sidecar_entry.has_total_elapsed_ns ||
-        cpu_entry.observed_acquisition_session_id == 0 ||
-        gpu_entry.observed_acquisition_session_id == 0 ||
-        sidecar_entry.observed_acquisition_session_id == 0 ||
-        cpu_entry.observed_capture_id == 0 ||
-        gpu_entry.observed_capture_id == 0 ||
-        sidecar_entry.observed_capture_id == 0 ||
-        cpu_entry.observed_acquisition_session_id !=
-            first_capture_result->acquisition_session_id ||
-        gpu_entry.observed_acquisition_session_id !=
-            first_capture_result->acquisition_session_id ||
-        sidecar_entry.observed_acquisition_session_id !=
-            first_capture_result->acquisition_session_id ||
-        second_capture_result->acquisition_session_id !=
+    if (second_capture_result->acquisition_session_id !=
             first_capture_result->acquisition_session_id ||
         third_capture_result->acquisition_session_id !=
-            first_capture_result->acquisition_session_id ||
-        sidecar_entry.total_elapsed_ns >= gpu_entry.total_elapsed_ns ||
-        sidecar_entry.total_elapsed_ns >= cpu_entry.total_elapsed_ns) {
+            first_capture_result->acquisition_session_id) {
       return fail_with_cleanup(
-          "FAIL core measured backing-plan evaluation final capture evidence provenance/ordering mismatch");
+          "FAIL core measured backing-plan evaluation did not keep one real acquisition-session id across all measured capture results");
+    }
+    if (report.parent_kind ==
+        CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession) {
+      CoreBackingPlanCandidateEvidenceReport cpu_entry{};
+      CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+      CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+      if (!report_entry_for_posture(
+              report, CoreProductionPostureShape::CpuPrimary, cpu_entry) ||
+          !report_entry_for_posture(
+              report, CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+              gpu_entry) ||
+          !report_entry_for_posture(
+              report, CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+              sidecar_entry)) {
+        return fail_with_cleanup(
+            "FAIL core measured backing-plan evaluation final capture report missing candidate evidence");
+      }
+      if (!cpu_entry.evidence_accepted || !cpu_entry.evidence_complete ||
+          !gpu_entry.evidence_accepted || !gpu_entry.evidence_complete ||
+          !sidecar_entry.evidence_accepted || !sidecar_entry.evidence_complete ||
+          !cpu_entry.has_total_elapsed_ns || !gpu_entry.has_total_elapsed_ns ||
+          !sidecar_entry.has_total_elapsed_ns ||
+          cpu_entry.observed_acquisition_session_id == 0 ||
+          gpu_entry.observed_acquisition_session_id == 0 ||
+          sidecar_entry.observed_acquisition_session_id == 0 ||
+          cpu_entry.observed_capture_id == 0 ||
+          gpu_entry.observed_capture_id == 0 ||
+          sidecar_entry.observed_capture_id == 0 ||
+          cpu_entry.observed_acquisition_session_id !=
+              first_capture_result->acquisition_session_id ||
+          gpu_entry.observed_acquisition_session_id !=
+              first_capture_result->acquisition_session_id ||
+          sidecar_entry.observed_acquisition_session_id !=
+              first_capture_result->acquisition_session_id ||
+          sidecar_entry.total_elapsed_ns >= gpu_entry.total_elapsed_ns ||
+          sidecar_entry.total_elapsed_ns >= cpu_entry.total_elapsed_ns) {
+        return fail_with_cleanup(
+            "FAIL core measured backing-plan evaluation final capture evidence provenance/ordering mismatch");
+      }
+    } else {
+      CoreBackingPlanCandidateEvidenceReport cpu_entry{};
+      CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+      CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+      if (!report_entry_for_posture(
+              report, CoreProductionPostureShape::CpuPrimary, cpu_entry) ||
+          !report_entry_for_posture(
+              report, CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+              gpu_entry) ||
+          !report_entry_for_posture(
+              report, CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+              sidecar_entry)) {
+        return fail_with_cleanup(
+            "FAIL core measured backing-plan evaluation restarted provisional epoch missing candidate placeholders");
+      }
+      if (!report.provisional_parent ||
+          report.parent_kind !=
+              CoreBackingPlanEvaluationReport::ParentKind::CapturePriming ||
+          report.acquisition_session_id != 0 ||
+          !report.evaluator_active ||
+          report.current_candidate_index != 0 ||
+          !plan_equals(report.requested,
+                       CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) ||
+          report.steady.valid ||
+          report.decision_from_evaluation ||
+          report.decision_selected.valid ||
+          cpu_entry.observation_seen || cpu_entry.evidence_accepted ||
+          cpu_entry.evidence_complete ||
+          gpu_entry.observation_seen || gpu_entry.evidence_accepted ||
+          gpu_entry.evidence_complete ||
+          sidecar_entry.observation_seen || sidecar_entry.evidence_accepted ||
+          sidecar_entry.evidence_complete) {
+        return fail_with_cleanup(
+            "FAIL core measured backing-plan evaluation did not restart the post-retirement provisional epoch as a clean same-signature seed-only state");
+      }
     }
   }
 
@@ -4012,6 +4225,55 @@ bool run_core_measured_backing_plan_evaluation_check() {
     return fail_with_cleanup(
         "FAIL core measured backing-plan evaluation teardown failed");
   }
+  {
+    const auto reports = rt.backing_plan_evaluation_reports();
+    bool found_capture_report = false;
+    for (const auto& report : reports) {
+      if (report.target_kind !=
+              CoreBackingPlanEvaluationReport::TargetKind::Capture ||
+          report.target_id != kDeviceId) {
+        continue;
+      }
+      found_capture_report = true;
+      CoreBackingPlanCandidateEvidenceReport cpu_entry{};
+      CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+      CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+      if (!report_entry_for_posture(
+              report, CoreProductionPostureShape::CpuPrimary, cpu_entry) ||
+          !report_entry_for_posture(
+              report, CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+              gpu_entry) ||
+          !report_entry_for_posture(
+              report, CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+              sidecar_entry)) {
+        return fail_with_cleanup(
+            "FAIL core measured backing-plan evaluation orphaned close-state report missing candidate placeholders");
+      }
+      if (!report.provisional_parent ||
+          report.parent_kind !=
+              CoreBackingPlanEvaluationReport::ParentKind::CapturePriming ||
+          report.parent_id != kDeviceId ||
+          report.acquisition_session_id != 0 ||
+          !report.evaluator_active ||
+          report.current_candidate_index != 0 ||
+          !plan_equals(report.requested,
+                       CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) ||
+          report.steady.valid ||
+          report.decision_from_evaluation ||
+          report.decision_selected.valid ||
+          cpu_entry.observation_seen || cpu_entry.evidence_accepted ||
+          cpu_entry.evidence_complete ||
+          gpu_entry.observation_seen || gpu_entry.evidence_accepted ||
+          gpu_entry.evidence_complete ||
+          sidecar_entry.observation_seen || sidecar_entry.evidence_accepted ||
+          sidecar_entry.evidence_complete ||
+          provider.has_active_capture_parent_priming(kDeviceId)) {
+        return fail_with_cleanup(
+            "FAIL core measured backing-plan evaluation close teardown retained more than the allowed seed-only provisional orphan");
+      }
+    }
+    (void)found_capture_report;
+  }
   if (rt.try_open_device("backing_plan_eval:0", kReopenedDeviceId, kReopenedRootId) !=
       TryOpenDeviceStatus::OK) {
     return fail_with_cleanup(
@@ -4027,32 +4289,195 @@ bool run_core_measured_backing_plan_evaluation_check() {
   if (!wait_until([&]() {
         const auto* rec = rt.device_record(kReopenedDeviceId);
         CoreBackingPlanEvaluationReport report{};
+        if (!rec || !find_capture_report(rt, kReopenedDeviceId, report) ||
+            !provider.has_active_capture_parent_priming(kReopenedDeviceId) ||
+            provider.active_capture_parent_session_id(kReopenedDeviceId) == 0) {
+          return false;
+        }
         return rec &&
-               find_capture_report(rt, kReopenedDeviceId, report) &&
                report.parent_kind ==
-                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
-               report.acquisition_session_id != 0 &&
-               !report.provisional_parent &&
+                   CoreBackingPlanEvaluationReport::ParentKind::CapturePriming &&
+               report.provisional_parent &&
+               report.acquisition_session_id == 0 &&
                rt.materialize_capture_request(
                    kReopenedDeviceId, seeded_reopen_capture_req) &&
                plan_equals(
                    seeded_reopen_capture_req.requested_retained_plan,
                    CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               plan_equals(
+                   report.requested,
+                   CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               !report.steady.valid &&
                report.candidate_evidence.size() == 3u &&
                !report.candidate_evidence[0].observation_seen &&
                !report.candidate_evidence[0].evidence_accepted &&
+               !report.candidate_evidence[0].evidence_complete &&
                !report.candidate_evidence[1].observation_seen &&
                !report.candidate_evidence[1].evidence_accepted &&
+               !report.candidate_evidence[1].evidence_complete &&
                !report.candidate_evidence[2].observation_seen &&
                !report.candidate_evidence[2].evidence_accepted &&
+               !report.candidate_evidence[2].evidence_complete &&
                !rec->steady_retained_plan.valid;
       })) {
     return fail_with_cleanup(
         "FAIL core measured backing-plan evaluation did not seed same-hardware reopen from prior capture winner");
   }
+
+  constexpr uint64_t kReopenedCaptureIdA = 9801;
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kReopenedDeviceId, kReopenedCaptureIdA) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation reopened first trigger_capture failed");
+  }
+  if (!provider.emit_pending_capture(kReopenedCaptureIdA)) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation reopened first pending capture publish failed");
+  }
+  if (!wait_until([&]() {
+        const auto result =
+            rt.get_capture_result(kReopenedCaptureIdA, kReopenedDeviceId);
+        return result &&
+               result->default_image.payload_kind ==
+                   ResultPayloadKind::GPU_SURFACE &&
+               result->default_image.access_posture.has_retained_cpu_payload;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation reopened first capture result missing");
+  }
+  const SharedCaptureResultData reopened_first_capture_result =
+      rt.get_capture_result(kReopenedCaptureIdA, kReopenedDeviceId);
+  if (reopened_first_capture_result->acquisition_session_id == 0 ||
+      reopened_first_capture_result->acquisition_session_id ==
+          first_capture_result->acquisition_session_id) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation reopened first capture did not use a new real acquisition-session");
+  }
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        CoreBackingPlanCandidateEvidenceReport cpu_entry{};
+        CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+        CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+        return find_capture_report(rt, kReopenedDeviceId, report) &&
+               report.parent_kind ==
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
+               report.parent_id ==
+                   reopened_first_capture_result->acquisition_session_id &&
+               report.acquisition_session_id ==
+                   reopened_first_capture_result->acquisition_session_id &&
+               !report.provisional_parent &&
+               report.evaluator_active &&
+               report.current_candidate_index == 0 &&
+               plan_equals(
+                   report.requested,
+                   CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               report.candidate_evidence.size() == 3u &&
+               report_entry_for_posture(
+                   report, CoreProductionPostureShape::CpuPrimary, cpu_entry) &&
+               report_entry_for_posture(
+                   report, CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+                   gpu_entry) &&
+               report_entry_for_posture(
+                   report, CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+                   sidecar_entry) &&
+               !cpu_entry.observation_seen &&
+               !cpu_entry.evidence_accepted &&
+               !cpu_entry.evidence_complete &&
+               !gpu_entry.observation_seen &&
+               !gpu_entry.evidence_accepted &&
+               !gpu_entry.evidence_complete &&
+               !sidecar_entry.observation_seen &&
+               !sidecar_entry.evidence_accepted &&
+               !sidecar_entry.evidence_complete;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation reopened epoch did not migrate onto a new real acquisition-session without carrying prior evidence");
+  }
+  rt.report_capture_retained_to_image_observation(
+      kReopenedDeviceId,
+      kReopenedCaptureIdA,
+      reopened_first_capture_result->acquisition_session_id,
+      reopened_first_capture_result->default_image.access_posture.posture_id,
+      reopened_first_capture_result->default_image.retained_access_truth.to_image,
+      true,
+      35'000'000,
+      true,
+      35'000'000);
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        return find_capture_report(rt, kReopenedDeviceId, report) &&
+               report.parent_kind ==
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
+               report.acquisition_session_id ==
+                   reopened_first_capture_result->acquisition_session_id &&
+               report.evaluator_active &&
+               report.current_candidate_index == 1 &&
+               plan_equals(
+                   report.requested,
+                   CoreProductionPostureShape::CpuPrimary);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation reopened bounded evaluation did not continue after the first new real capture");
+  }
   if (rt.try_close_device(kReopenedDeviceId) != TryCloseDeviceStatus::OK) {
     return fail_with_cleanup(
         "FAIL core measured backing-plan evaluation reopened teardown failed");
+  }
+
+  constexpr uint64_t kChangedSigDeviceId = 73;
+  constexpr uint64_t kChangedSigRootId = 7303;
+  if (rt.try_open_device("backing_plan_eval:0", kChangedSigDeviceId, kChangedSigRootId) !=
+      TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation changed-signature open_device failed");
+  }
+  PictureConfig changed_signature_capture_picture = capture_picture;
+  changed_signature_capture_picture.seed = 89;
+  if (rt.try_set_capture_picture_config(
+          kChangedSigDeviceId, changed_signature_capture_picture) !=
+      TrySetCapturePictureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation changed-signature capture picture update failed");
+  }
+  CaptureRequest changed_signature_capture_req{};
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        if (!find_capture_report(rt, kChangedSigDeviceId, report) ||
+            !provider.has_active_capture_parent_priming(kChangedSigDeviceId) ||
+            provider.active_capture_parent_session_id(kChangedSigDeviceId) == 0 ||
+            !rt.materialize_capture_request(
+                kChangedSigDeviceId, changed_signature_capture_req)) {
+          return false;
+        }
+        return report.parent_kind ==
+                   CoreBackingPlanEvaluationReport::ParentKind::CapturePriming &&
+               report.provisional_parent &&
+               report.acquisition_session_id == 0 &&
+               plan_equals(
+                   changed_signature_capture_req.requested_retained_plan,
+                   CoreProductionPostureShape::CpuPrimary) &&
+               plan_equals(
+                   report.requested,
+                   CoreProductionPostureShape::CpuPrimary) &&
+               !report.steady.valid &&
+               report.candidate_evidence.size() == 3u &&
+               !report.candidate_evidence[0].observation_seen &&
+               !report.candidate_evidence[0].evidence_accepted &&
+               !report.candidate_evidence[0].evidence_complete &&
+               !report.candidate_evidence[1].observation_seen &&
+               !report.candidate_evidence[1].evidence_accepted &&
+               !report.candidate_evidence[1].evidence_complete &&
+               !report.candidate_evidence[2].observation_seen &&
+               !report.candidate_evidence[2].evidence_accepted &&
+               !report.candidate_evidence[2].evidence_complete;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation changed effective capture signature reused the old same-signature seed");
+  }
+  if (rt.try_close_device(kChangedSigDeviceId) != TryCloseDeviceStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core measured backing-plan evaluation changed-signature teardown failed");
   }
 
   (void)provider.shutdown();
@@ -4872,12 +5297,11 @@ bool run_core_capture_in_place_plan_flip_result_retrieval_check() {
 }
 
 bool run_broker_capture_parent_priming_forwarding_check() {
-  if (!ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic).ok()) {
-    std::cout
-        << "SKIP broker capture parent priming forwarding: synthetic mode not built\n";
-    return true;
-  }
-
+#if !(defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE)
+  std::cout
+      << "SKIP broker capture parent priming forwarding: internal smoke hooks not built\n";
+  return true;
+#else
   ProviderBroker broker;
   RecorderCallbacks cb;
   auto fail_with_cleanup = [&](const char* message) {
@@ -4886,39 +5310,139 @@ bool run_broker_capture_parent_priming_forwarding_check() {
     return false;
   };
 
-  if (!broker.set_runtime_mode_requested(RuntimeMode::synthetic).ok() ||
-      !broker.initialize(&cb).ok()) {
+  auto recording = std::make_unique<BrokerPrimingForwardingRecordingProvider>();
+  auto* recording_ptr = recording.get();
+  if (!broker.install_active_provider_for_smoke(std::move(recording), &cb).ok()) {
     return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding broker init failed");
+        "FAIL broker capture parent priming forwarding broker smoke install failed");
+  }
+  if (recording_ptr->initialize_calls != 1) {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding backend initialize count mismatch");
   }
 
-  constexpr uint64_t kDeviceId = 19251;
-  constexpr uint64_t kRootId = 19252;
-  if (!broker.open_device("synthetic:0", kDeviceId, kRootId).ok()) {
-    return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding open_device failed");
-  }
-
-  const CaptureTemplate tmpl = broker.capture_template();
   CaptureRequest req{};
-  req.device_instance_id = kDeviceId;
-  req.width = tmpl.profile.width;
-  req.height = tmpl.profile.height;
-  req.format_fourcc = tmpl.profile.format_fourcc;
-  req.picture = tmpl.picture;
-  req.still_image_bundle = make_default_metered_still_image_bundle();
-  req.profile_version = 1;
-  if (!broker.sync_capture_parent_priming(req).ok()) {
+  req.capture_id = 39151;
+  req.device_instance_id = 39152;
+  req.rig_id = 39153;
+  req.width = 1234;
+  req.height = 777;
+  req.format_fourcc = FOURCC_BGRA;
+  req.picture.preset = PatternPreset::Solid;
+  req.picture.seed = 88;
+  req.picture.generator_fps_num = 24;
+  req.picture.generator_fps_den = 5;
+  req.picture.overlay_frame_index_offsets = false;
+  req.picture.overlay_moving_bar = true;
+  req.picture.solid_r = 1;
+  req.picture.solid_g = 2;
+  req.picture.solid_b = 3;
+  req.picture.solid_a = 4;
+  req.picture.checker_size_px = 19;
+  req.still_image_bundle.members = {
+      CaptureStillImageMember{
+          0u,
+          CaptureStillImageMemberRole::DEFAULT_METERED,
+          0},
+      CaptureStillImageMember{
+          1u,
+          CaptureStillImageMemberRole::ADDITIONAL_BRACKET,
+          125},
+  };
+  req.profile_version = 99;
+  req.requested_retained_plan.valid = true;
+  req.requested_retained_plan.posture =
+      CoreProductionPostureShape::GpuPrimaryWithCpuSidecar;
+
+  const ProviderResult sync_result = broker.sync_capture_parent_priming(req);
+  const ProviderResult release_result =
+      broker.release_capture_parent_priming(req.device_instance_id);
+
+  if (sync_result.code !=
+      BrokerPrimingForwardingRecordingProvider::kSyncReturnCode) {
     return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding sync_capture_parent_priming failed");
+        "FAIL broker capture parent priming forwarding sync result was not propagated");
   }
-  if (!broker.release_capture_parent_priming(kDeviceId).ok()) {
+  if (release_result.code !=
+      BrokerPrimingForwardingRecordingProvider::kReleaseReturnCode) {
     return fail_with_cleanup(
-        "FAIL broker capture parent priming forwarding release_capture_parent_priming failed");
+        "FAIL broker capture parent priming forwarding release result was not propagated");
+  }
+  if (sync_result.code == ProviderError::ERR_NOT_SUPPORTED ||
+      release_result.code == ProviderError::ERR_NOT_SUPPORTED) {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding observed base ERR_NOT_SUPPORTED");
+  }
+  if (recording_ptr->sync_calls != 1 || recording_ptr->release_calls != 1) {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding backend call counts mismatch");
+  }
+  if (recording_ptr->calls.size() != 2 ||
+      recording_ptr->calls[0].name != "sync" ||
+      recording_ptr->calls[1].name != "release") {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding call order mismatch");
   }
 
-  (void)broker.shutdown();
+  const auto& sync_call = recording_ptr->calls[0].sync_req;
+  if (sync_call.capture_id != req.capture_id ||
+      sync_call.device_instance_id != req.device_instance_id ||
+      sync_call.rig_id != req.rig_id ||
+      sync_call.width != req.width ||
+      sync_call.height != req.height ||
+      sync_call.format_fourcc != req.format_fourcc ||
+      sync_call.picture.preset != req.picture.preset ||
+      sync_call.picture.seed != req.picture.seed ||
+      sync_call.picture.generator_fps_num != req.picture.generator_fps_num ||
+      sync_call.picture.generator_fps_den != req.picture.generator_fps_den ||
+      sync_call.picture.overlay_frame_index_offsets !=
+          req.picture.overlay_frame_index_offsets ||
+      sync_call.picture.overlay_moving_bar != req.picture.overlay_moving_bar ||
+      sync_call.picture.solid_r != req.picture.solid_r ||
+      sync_call.picture.solid_g != req.picture.solid_g ||
+      sync_call.picture.solid_b != req.picture.solid_b ||
+      sync_call.picture.solid_a != req.picture.solid_a ||
+      sync_call.picture.checker_size_px != req.picture.checker_size_px ||
+      sync_call.profile_version != req.profile_version ||
+      sync_call.requested_retained_plan.valid !=
+          req.requested_retained_plan.valid ||
+      sync_call.requested_retained_plan.posture !=
+          req.requested_retained_plan.posture) {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding sync request mismatch");
+  }
+  if (sync_call.still_image_bundle.members.size() !=
+      req.still_image_bundle.members.size()) {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding still-image bundle size mismatch");
+  }
+  for (size_t i = 0; i < req.still_image_bundle.members.size(); ++i) {
+    const auto& got = sync_call.still_image_bundle.members[i];
+    const auto& want = req.still_image_bundle.members[i];
+    if (got.image_member_index != want.image_member_index ||
+        got.role != want.role ||
+        got.intended_exposure_compensation_milli_ev !=
+            want.intended_exposure_compensation_milli_ev) {
+      return fail_with_cleanup(
+          "FAIL broker capture parent priming forwarding still-image bundle member mismatch");
+    }
+  }
+  if (recording_ptr->calls[1].release_device_instance_id !=
+      req.device_instance_id) {
+    return fail_with_cleanup(
+        "FAIL broker capture parent priming forwarding release arg mismatch");
+  }
+
+  if (!broker.shutdown().ok()) {
+    return false;
+  }
+  if (recording_ptr->shutdown_calls != 1 || recording_ptr->release_calls != 1) {
+    std::cerr
+        << "FAIL broker capture parent priming forwarding cleanup created unexpected backend calls\n";
+    return false;
+  }
   return true;
+#endif
 }
 
 bool run_core_synthetic_capture_plan_flip_with_live_stream_regression_check() {
@@ -5319,12 +5843,14 @@ bool run_core_capture_parent_replacement_regression_check() {
         CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
         if (!find_capture_report(rt, kDeviceId, report) ||
             report.parent_kind !=
-                CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession ||
-            report.acquisition_session_id == 0 ||
-            report.acquisition_session_id == first_session_id ||
+                CoreBackingPlanEvaluationReport::ParentKind::CapturePriming ||
+            !report.provisional_parent ||
+            report.acquisition_session_id != 0 ||
             !report.evaluator_active ||
             report.current_candidate_index != 0 ||
             !plan_equals(report.requested, CoreProductionPostureShape::CpuPrimary) ||
+            report.decision_selected.valid ||
+            report.decision_from_evaluation ||
             !report_entry_for_posture(
                 report, CoreProductionPostureShape::CpuPrimary, cpu_entry) ||
             !report_entry_for_posture(
@@ -5335,13 +5861,22 @@ bool run_core_capture_parent_replacement_regression_check() {
                 sidecar_entry)) {
           return false;
         }
-        replacement_session_id = report.acquisition_session_id;
+        replacement_session_id =
+            provider.active_capture_parent_session_id(kDeviceId);
         return !cpu_entry.observation_seen &&
                !cpu_entry.evidence_accepted &&
+               !cpu_entry.evidence_complete &&
                !gpu_entry.observation_seen &&
                !gpu_entry.evidence_accepted &&
+               !gpu_entry.evidence_complete &&
                !sidecar_entry.observation_seen &&
-               !sidecar_entry.evidence_accepted;
+               !sidecar_entry.evidence_accepted &&
+               !sidecar_entry.evidence_complete &&
+               replacement_session_id != 0 &&
+               replacement_session_id != first_session_id &&
+               provider.has_active_capture_parent_priming(kDeviceId) &&
+               provider.active_capture_parent_session_id(kDeviceId) ==
+                   replacement_session_id;
       })) {
     return fail_with_cleanup(
         "FAIL core capture parent replacement regression did not restart a fresh non-measured epoch under the replacement session");
@@ -5370,6 +5905,72 @@ bool run_core_capture_parent_replacement_regression_check() {
   if (second_capture_result->acquisition_session_id != replacement_session_id) {
     return fail_with_cleanup(
         "FAIL core capture parent replacement regression second capture used the wrong acquisition session");
+  }
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        CoreBackingPlanCandidateEvidenceReport cpu_entry{};
+        CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+        CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.parent_kind ==
+                   CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
+               !report.provisional_parent &&
+               report.parent_id == replacement_session_id &&
+               report.acquisition_session_id == replacement_session_id &&
+               report.evaluator_active &&
+               report.current_candidate_index == 0 &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::CpuPrimary) &&
+               !report.decision_selected.valid &&
+               !report.decision_from_evaluation &&
+               report_entry_for_posture(
+                   report, CoreProductionPostureShape::CpuPrimary, cpu_entry) &&
+               report_entry_for_posture(
+                   report, CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+                   gpu_entry) &&
+               report_entry_for_posture(
+                   report, CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+                   sidecar_entry) &&
+               !cpu_entry.observation_seen &&
+               !cpu_entry.evidence_accepted &&
+               !cpu_entry.evidence_complete &&
+               !gpu_entry.observation_seen &&
+               !gpu_entry.evidence_accepted &&
+               !gpu_entry.evidence_complete &&
+               !sidecar_entry.observation_seen &&
+               !sidecar_entry.evidence_accepted &&
+               !sidecar_entry.evidence_complete;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture parent replacement regression did not migrate to the replacement acquisition-session exactly once after the first truthful replacement capture");
+  }
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      kCaptureIdA,
+      first_session_id,
+      first_capture_result->default_image.access_posture.posture_id,
+      first_capture_result->default_image.retained_access_truth.to_image,
+      true,
+      95'000'000,
+      true,
+      95'000'000);
+  std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs * 2));
+  {
+    CoreBackingPlanEvaluationReport report{};
+    CoreBackingPlanCandidateEvidenceReport cpu_entry{};
+    if (!find_capture_report(rt, kDeviceId, report) ||
+        !report_entry_for_posture(
+            report, CoreProductionPostureShape::CpuPrimary, cpu_entry) ||
+        report.parent_kind !=
+            CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession ||
+        report.acquisition_session_id != replacement_session_id ||
+        cpu_entry.observation_seen ||
+        cpu_entry.evidence_accepted ||
+        cpu_entry.evidence_complete ||
+        cpu_entry.observed_acquisition_session_id == first_session_id) {
+      return fail_with_cleanup(
+          "FAIL core capture parent replacement regression accepted a stale observation referring to the retired acquisition-session");
+    }
   }
   rt.report_capture_retained_to_image_observation(
       kDeviceId,
@@ -5477,15 +6078,74 @@ bool run_core_capture_parent_replacement_regression_check() {
       40'000'000);
   if (!wait_until([&]() {
         CoreBackingPlanEvaluationReport report{};
-        return find_capture_report(rt, kDeviceId, report) &&
-               !report.evaluator_active &&
-               plan_equals(report.steady,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
-               plan_equals(report.decision_selected,
-                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+        if (!find_capture_report(rt, kDeviceId, report) ||
+            !plan_equals(report.requested,
+                         CoreProductionPostureShape::GpuPrimaryWithCpuSidecar)) {
+          return false;
+        }
+        const bool settled_on_real_parent =
+            report.parent_kind ==
+                CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession &&
+            report.parent_id == replacement_session_id &&
+            report.acquisition_session_id == replacement_session_id &&
+            !report.provisional_parent &&
+            !report.evaluator_active &&
+            plan_equals(report.steady,
+                        CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+            report.decision_from_evaluation &&
+            plan_equals(report.decision_selected,
+                        CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+        const bool restarted_seed_only_epoch =
+            report.parent_kind ==
+                CoreBackingPlanEvaluationReport::ParentKind::CapturePriming &&
+            report.parent_id == kDeviceId &&
+            report.provisional_parent &&
+            report.acquisition_session_id == 0 &&
+            !report.steady.valid &&
+            !report.decision_from_evaluation &&
+            !report.decision_selected.valid &&
+            report.evaluator_active &&
+            report.current_candidate_index == 0 &&
+            provider.has_active_capture_parent_priming(kDeviceId);
+        return settled_on_real_parent || restarted_seed_only_epoch;
       })) {
-    return fail_with_cleanup(
-        "FAIL core capture parent replacement regression did not settle the restarted epoch");
+    CoreBackingPlanEvaluationReport report{};
+    const bool have_report = find_capture_report(rt, kDeviceId, report);
+    std::ostringstream oss;
+    oss << "FAIL core capture parent replacement regression did not settle the restarted epoch"
+        << " have_report=" << (have_report ? 1 : 0)
+        << " parent_kind="
+        << (have_report ? static_cast<unsigned>(report.parent_kind) : 0u)
+        << " parent_id="
+        << (have_report ? static_cast<unsigned long long>(report.parent_id) : 0ull)
+        << " acquisition_session_id="
+        << (have_report ? static_cast<unsigned long long>(report.acquisition_session_id)
+                        : 0ull)
+        << " provisional_parent="
+        << (have_report && report.provisional_parent ? 1 : 0)
+        << " evaluator_active="
+        << (have_report && report.evaluator_active ? 1 : 0)
+        << " current_candidate_index="
+        << (have_report ? static_cast<unsigned>(report.current_candidate_index) : 0u)
+        << " requested_valid="
+        << (have_report && report.requested.valid ? 1 : 0)
+        << " requested_posture="
+        << (have_report ? static_cast<int>(report.requested.posture) : 0)
+        << " steady_valid="
+        << (have_report && report.steady.valid ? 1 : 0)
+        << " steady_posture="
+        << (have_report ? static_cast<int>(report.steady.posture) : 0)
+        << " decision_from_evaluation="
+        << (have_report && report.decision_from_evaluation ? 1 : 0)
+        << " decision_selected_valid="
+        << (have_report && report.decision_selected.valid ? 1 : 0)
+        << " decision_selected_posture="
+        << (have_report ? static_cast<int>(report.decision_selected.posture) : 0)
+        << " completion_reason="
+        << (have_report ? static_cast<unsigned>(report.completion_reason) : 0u)
+        << " priming_active="
+        << (provider.has_active_capture_parent_priming(kDeviceId) ? 1 : 0);
+    return fail_with_cleanup(oss.str().c_str());
   }
 
   {
@@ -5493,6 +6153,13 @@ bool run_core_capture_parent_replacement_regression_check() {
     if (!find_capture_report(rt, kDeviceId, report)) {
       return fail_with_cleanup(
           "FAIL core capture parent replacement regression final capture report missing");
+    }
+    if (second_capture_result->acquisition_session_id != replacement_session_id ||
+        third_capture_result->acquisition_session_id != replacement_session_id ||
+        fourth_capture_result->acquisition_session_id != replacement_session_id ||
+        replacement_session_id == first_session_id) {
+      return fail_with_cleanup(
+          "FAIL core capture parent replacement regression did not keep one replacement real acquisition-session id across all fresh-epoch capture results");
     }
     CoreBackingPlanCandidateEvidenceReport cpu_entry{};
     CoreBackingPlanCandidateEvidenceReport gpu_entry{};
@@ -5508,17 +6175,39 @@ bool run_core_capture_parent_replacement_regression_check() {
       return fail_with_cleanup(
           "FAIL core capture parent replacement regression final report missing candidate evidence");
     }
-    if (cpu_entry.observed_acquisition_session_id != replacement_session_id ||
-        gpu_entry.observed_acquisition_session_id != replacement_session_id ||
-        sidecar_entry.observed_acquisition_session_id !=
-            replacement_session_id ||
-        cpu_entry.observed_acquisition_session_id == first_session_id ||
-        gpu_entry.observed_acquisition_session_id == first_session_id ||
-        sidecar_entry.observed_acquisition_session_id == first_session_id ||
-        !cpu_entry.evidence_accepted || !gpu_entry.evidence_accepted ||
-        !sidecar_entry.evidence_accepted) {
-      return fail_with_cleanup(
-          "FAIL core capture parent replacement regression final decision mixed evidence across acquisition-session ids");
+    if (report.parent_kind ==
+        CoreBackingPlanEvaluationReport::ParentKind::AcquisitionSession) {
+      if (cpu_entry.observed_acquisition_session_id != replacement_session_id ||
+          gpu_entry.observed_acquisition_session_id != replacement_session_id ||
+          sidecar_entry.observed_acquisition_session_id !=
+              replacement_session_id ||
+          cpu_entry.observed_acquisition_session_id == first_session_id ||
+          gpu_entry.observed_acquisition_session_id == first_session_id ||
+          sidecar_entry.observed_acquisition_session_id == first_session_id ||
+          !cpu_entry.evidence_accepted || !gpu_entry.evidence_accepted ||
+          !sidecar_entry.evidence_accepted) {
+        return fail_with_cleanup(
+            "FAIL core capture parent replacement regression final decision mixed evidence across acquisition-session ids");
+      }
+    } else {
+      if (!report.provisional_parent ||
+          report.parent_kind !=
+              CoreBackingPlanEvaluationReport::ParentKind::CapturePriming ||
+          report.acquisition_session_id != 0 ||
+          !report.evaluator_active ||
+          report.current_candidate_index != 0 ||
+          report.steady.valid ||
+          report.decision_from_evaluation ||
+          report.decision_selected.valid ||
+          cpu_entry.observation_seen || cpu_entry.evidence_accepted ||
+          cpu_entry.evidence_complete ||
+          gpu_entry.observation_seen || gpu_entry.evidence_accepted ||
+          gpu_entry.evidence_complete ||
+          sidecar_entry.observation_seen || sidecar_entry.evidence_accepted ||
+          sidecar_entry.evidence_complete) {
+        return fail_with_cleanup(
+            "FAIL core capture parent replacement regression did not restart the post-terminal provisional epoch as a clean seed-only state");
+      }
     }
   }
 

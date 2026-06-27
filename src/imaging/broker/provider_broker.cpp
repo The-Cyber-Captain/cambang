@@ -752,6 +752,28 @@ ProviderResult ProviderBroker::shutdown() {
   return ProviderResult::success();
 }
 
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+ProviderResult ProviderBroker::install_active_provider_for_smoke(
+    std::unique_ptr<ICameraProvider> provider,
+    IProviderCallbacks* callbacks) {
+  std::lock_guard<std::mutex> lock(active_provider_mutex_);
+  if (initialized_ || active_ || provider == nullptr || callbacks == nullptr) {
+    return ProviderResult::failure(ProviderError::ERR_BAD_STATE);
+  }
+  callbacks_ = callbacks;
+  active_ = std::move(provider);
+  ProviderResult pr = active_->initialize(callbacks_);
+  if (!pr.ok()) {
+    active_.reset();
+    callbacks_ = nullptr;
+    return pr;
+  }
+  initialized_ = true;
+  install_synthetic_timeline_request_dispatch_hook_locked_();
+  return ProviderResult::success();
+}
+#endif
+
 bool ProviderBroker::try_tick_virtual_time(uint64_t dt_ns) {
   std::vector<SyntheticScheduledEvent> deferred_dispatches;
   std::function<void(const SyntheticScheduledEvent&)> hook;

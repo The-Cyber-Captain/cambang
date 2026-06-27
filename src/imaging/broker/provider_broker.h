@@ -144,6 +144,12 @@ public:
   TimingDriver synthetic_timing_driver_latched() const noexcept { return timing_driver_latched_; }
   TimelineReconciliation synthetic_timeline_reconciliation_latched() const noexcept { return timeline_reconciliation_latched_; }
 
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  ProviderResult install_active_provider_for_smoke(
+      std::unique_ptr<ICameraProvider> provider,
+      IProviderCallbacks* callbacks);
+#endif
+
 private:
   ProviderBroker(const ProviderBroker&) = delete;
   ProviderBroker& operator=(const ProviderBroker&) = delete;

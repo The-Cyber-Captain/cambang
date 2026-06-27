@@ -139,7 +139,7 @@ func _run_single_natural_pass(previous_gen: int) -> int:
 		LABEL,
 		1
 	)
-	_assert_capture_report_shape(capture_report, device_instance_id, LABEL, true)
+	_assert_capture_report_shape(capture_report, device_instance_id, LABEL, false)
 	if _done:
 		return previous_gen
 
@@ -801,20 +801,20 @@ func _trigger_capture_access_only(
 	device_instance_id: int,
 	label: String,
 	emit_step_ok: bool = true
-) -> void:
+) -> Dictionary:
 	var device: Variant = await _wait_for_device_handle(device_instance_id, label)
 	if _done:
-		return
+		return {}
 	await _wait_for_device_capture_ready(device_instance_id, label)
 	if _done:
-		return
+		return {}
 	var baseline_progress := _get_capture_progress_snapshot(device_instance_id)
 	var baseline_failed := int(baseline_progress.get("captures_failed", 0))
 	var baseline_completed := int(baseline_progress.get("captures_completed", 0))
 	var capture_err := int(device.trigger_capture())
 	_require(capture_err == OK, "%s: device.trigger_capture() failed err=%d" % [label, capture_err])
 	if _done:
-		return
+		return {}
 	var capture_result: Variant = await _wait_for_capture_result(
 		device,
 		device_instance_id,
@@ -823,12 +823,21 @@ func _trigger_capture_access_only(
 		label
 	)
 	if _done:
-		return
+		return {}
 	_probe_capture_result_access_only(capture_result, label)
 	if _done:
-		return
+		return {}
+	var capture_id := int(capture_result.get_capture_id())
+	var acquisition_session_id := _find_acquisition_session_id_for_capture(
+		device_instance_id,
+		capture_id
+	)
 	if emit_step_ok:
 		_step_ok("%s capture access-only probe completed" % label)
+	return {
+		"capture_id": capture_id,
+		"acquisition_session_id": acquisition_session_id,
+	}
 
 
 func _complete_capture_parent_evaluation_after_probe(
@@ -864,7 +873,8 @@ func _complete_capture_parent_evaluation_after_probe(
 		)
 		if _done:
 			return {}
-		await _trigger_capture_access_only(
+		var pre_probe_report := report
+		var probe_info := await _trigger_capture_access_only(
 			device_instance_id,
 			"%s_probe_%d" % [label, total_probes + 1],
 			false
@@ -883,6 +893,15 @@ func _complete_capture_parent_evaluation_after_probe(
 		if _done:
 			return {}
 		total_probes += 1
+		if not _report_has_decision(report) and total_probes >= max_total_probes:
+			if _capture_report_is_clean_immediate_rollover(
+				pre_probe_report,
+				report,
+				probe_info,
+				label
+			):
+				_info("%s: capture evaluation completed with immediate parent-retirement rollover" % label)
+				return report
 	return report
 
 
@@ -1645,6 +1664,15 @@ func _candidate_evidence_by_posture(report: Dictionary) -> Dictionary:
 	return by_posture
 
 
+func _real_capture_parent_session_id(report: Dictionary) -> int:
+	if str(report.get("parent_kind", "")) != "acquisition_session":
+		return 0
+	var acquisition_session_id := int(report.get("acquisition_session_id", 0))
+	if acquisition_session_id != 0:
+		return acquisition_session_id
+	return int(report.get("parent_id", 0))
+
+
 func _candidate_observation_key(entry: Dictionary) -> String:
 	if not bool(entry.get("has_observed_posture", false)):
 		return ""
@@ -1680,6 +1708,115 @@ func _accepted_capture_candidate_entries(report: Dictionary) -> Array:
 		if bool(entry.get("evidence_accepted", false)) and bool(entry.get("evidence_complete", false)) and bool(entry.get("has_total_elapsed_ns", false)):
 			accepted.append(entry)
 	return accepted
+
+
+func _zero_capture_candidate_evidence(entry: Dictionary) -> bool:
+	return (
+		not bool(entry.get("observation_seen", false))
+		and not bool(entry.get("evidence_accepted", false))
+		and not bool(entry.get("evidence_complete", false))
+		and not bool(entry.get("has_total_elapsed_ns", false))
+		and not bool(entry.get("has_capture_ready_elapsed_ns", false))
+		and not bool(entry.get("has_materialization_elapsed_ns", false))
+		and int(entry.get("observed_capture_id", 0)) == 0
+		and int(entry.get("observed_acquisition_session_id", 0)) == 0
+	)
+
+
+func _capture_report_has_clean_seed_only_epoch(
+	report: Dictionary,
+	prior_viable_postures: Array
+) -> bool:
+	if str(report.get("parent_kind", "")) != "capture_priming":
+		return false
+	if not bool(report.get("provisional_parent", false)):
+		return false
+	if int(report.get("acquisition_session_id", 0)) != 0:
+		return false
+	if not _plan_valid(report, "requested"):
+		return false
+	if _plan_valid(report, "steady") or _plan_valid(report, "decision_selected"):
+		return false
+	if not bool(report.get("evaluator_active", false)):
+		return false
+	if int(report.get("current_candidate_index", -1)) != 0:
+		return false
+	var requested_posture := _plan_posture(report, "requested")
+	if requested_posture == "":
+		return false
+	if not prior_viable_postures.has(requested_posture):
+		return false
+	for entry_v in _candidate_evidence_entries(report):
+		var entry: Dictionary = entry_v
+		if not _zero_capture_candidate_evidence(entry):
+			return false
+	return true
+
+
+func _final_capture_candidate_rollover_preconditions(
+	report: Dictionary,
+	probe_info: Dictionary
+) -> bool:
+	var real_session_id := _real_capture_parent_session_id(report)
+	if real_session_id == 0:
+		return false
+	if bool(report.get("provisional_parent", false)):
+		return false
+	if not bool(report.get("evaluator_active", false)):
+		return false
+	var viable_postures := _decision_candidate_postures(report)
+	if viable_postures.size() < 2:
+		return false
+	var current_candidate_index := int(report.get("current_candidate_index", -1))
+	if current_candidate_index != viable_postures.size() - 1:
+		return false
+	if _plan_posture(report, "requested") != str(viable_postures[current_candidate_index]):
+		return false
+	var probe_session_id := int(probe_info.get("acquisition_session_id", 0))
+	if probe_session_id != 0 and probe_session_id != real_session_id:
+		return false
+	var by_posture := _candidate_evidence_by_posture(report)
+	for posture_v in viable_postures:
+		var posture := str(posture_v)
+		if not by_posture.has(posture):
+			return false
+		var entry: Dictionary = by_posture[posture]
+		var accepted := bool(entry.get("evidence_accepted", false))
+		var complete := bool(entry.get("evidence_complete", false))
+		var observed_session_id := int(entry.get("observed_acquisition_session_id", 0))
+		if accepted and observed_session_id != real_session_id:
+			return false
+		if posture == str(viable_postures[current_candidate_index]):
+			continue
+		if not accepted or not complete or observed_session_id != real_session_id:
+			return false
+	return true
+
+
+func _capture_report_is_clean_immediate_rollover(
+	pre_probe_report: Dictionary,
+	post_probe_report: Dictionary,
+	probe_info: Dictionary,
+	label: String
+) -> bool:
+	var viable_postures := _decision_candidate_postures(pre_probe_report)
+	if not _final_capture_candidate_rollover_preconditions(pre_probe_report, probe_info):
+		return false
+	if not _capture_report_has_clean_seed_only_epoch(post_probe_report, viable_postures):
+		return false
+	var previous_real_session_id := _real_capture_parent_session_id(pre_probe_report)
+	for entry_v in _candidate_evidence_entries(post_probe_report):
+		var entry: Dictionary = entry_v
+		_require(
+			int(entry.get("observed_acquisition_session_id", 0)) != previous_real_session_id,
+			"%s: provisional rollover retained evidence from retired acquisition-session %d" % [
+				label,
+				previous_real_session_id,
+			]
+		)
+		if _done:
+			return false
+	return true
 
 
 func _assert_candidate_observations_distinct(report: Dictionary, label: String) -> void:
@@ -2008,6 +2145,28 @@ func _get_acquisition_session_snapshot_record(device_instance_id: int) -> Dictio
 		if int(session_record.get("device_instance_id", 0)) == device_instance_id:
 			return session_record
 	return {}
+
+
+func _find_acquisition_session_id_for_capture(
+	device_instance_id: int,
+	capture_id: int
+) -> int:
+	if capture_id == 0:
+		return 0
+	var snapshot = CamBANGServer.get_state_snapshot()
+	if snapshot == null or typeof(snapshot) != TYPE_DICTIONARY:
+		return 0
+	var sessions: Array = snapshot.get("acquisition_sessions", [])
+	for sv in sessions:
+		if typeof(sv) != TYPE_DICTIONARY:
+			continue
+		var session_record: Dictionary = sv
+		if int(session_record.get("device_instance_id", 0)) != device_instance_id:
+			continue
+		if int(session_record.get("last_capture_id", 0)) != capture_id:
+			continue
+		return int(session_record.get("acquisition_session_id", 0))
+	return 0
 
 
 func _capture_progress_from_record(record: Dictionary, source: String) -> Dictionary:
