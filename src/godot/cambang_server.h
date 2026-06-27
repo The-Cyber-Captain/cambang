@@ -159,7 +159,10 @@ private:
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
-  void _calibrate_live_retained_result_access_();
+  void _arm_live_retained_result_access_calibration_from_snapshot_(uint64_t now_ns);
+  void _observe_active_stream_evaluation_calibration_identities_(uint64_t now_ns);
+  void _process_armed_live_retained_result_access_calibration_(uint64_t now_ns);
+  void _clear_live_retained_result_access_calibration_state_();
   void _drain_pending_stop_and_quit_();
   void _reconcile_endpoint_lifecycle_from_snapshot(const CamBANGStateSnapshot& snap);
 
@@ -231,6 +234,30 @@ private:
   // SceneTree tick hook state.
   bool tick_connected_ = false;
   uint64_t last_tick_time_ns_ = 0;
+
+  struct ArmedLiveStreamRetainedResultCalibration {
+    uint64_t stream_id = 0;
+    uint64_t posture_id = 0;
+    uint64_t evaluation_identity = 0;
+    ResultCapability display_view = ResultCapability::UNSUPPORTED;
+    ResultCapability to_image = ResultCapability::UNSUPPORTED;
+    uint64_t due_after_ns = 0;
+  };
+  struct ArmedLiveCaptureRetainedResultCalibration {
+    uint64_t device_instance_id = 0;
+    uint64_t capture_id = 0;
+    uint64_t acquisition_session_id = 0;
+    uint64_t member_identity_signature = 0;
+    uint64_t due_after_ns = 0;
+  };
+  std::unordered_map<uint64_t, ArmedLiveStreamRetainedResultCalibration>
+      pending_live_stream_retained_result_calibrations_;
+  std::unordered_map<uint64_t, ArmedLiveStreamRetainedResultCalibration>
+      completed_live_stream_retained_result_calibrations_;
+  std::unordered_map<uint64_t, ArmedLiveCaptureRetainedResultCalibration>
+      pending_live_capture_retained_result_calibrations_;
+  std::unordered_map<uint64_t, ArmedLiveCaptureRetainedResultCalibration>
+      completed_live_capture_retained_result_calibrations_;
 
   // Editor/debugger diagnostic flush workaround for stop_and_quit().
   static constexpr uint32_t kEditorDiagnosticQuitFlushFrames = 30;

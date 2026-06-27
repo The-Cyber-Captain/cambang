@@ -544,6 +544,68 @@ static godot::Error map_try_destroy_stream_status(TryDestroyStreamStatus s) noex
   }
 }
 
+static uint64_t mix_identity_u64(uint64_t seed, uint64_t value) noexcept {
+  seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+  return seed;
+}
+
+static uint64_t build_capture_member_identity_signature(
+    const SharedCaptureResultData& data) noexcept {
+  if (!data) {
+    return 0;
+  }
+  uint64_t signature = 0;
+  signature = mix_identity_u64(signature, data->capture_id);
+  signature = mix_identity_u64(signature, data->acquisition_session_id);
+  signature = mix_identity_u64(signature, data->image_member_count());
+  for (uint32_t i = 0; i < data->image_member_count(); ++i) {
+    const auto* member = data->image_member_at(i);
+    if (!member) {
+      continue;
+    }
+    signature = mix_identity_u64(signature, member->image_member_index);
+    signature = mix_identity_u64(signature, member->capture_timestamp_ns);
+    signature = mix_identity_u64(signature, member->access_posture.posture_id);
+    signature = mix_identity_u64(
+        signature,
+        static_cast<uint64_t>(member->retained_access_truth.to_image));
+  }
+  return signature;
+}
+
+static bool infer_stream_result_posture_shape_for_calibration(
+    const SharedStreamResultData& result,
+    CoreProductionPostureShape& out) noexcept {
+  if (!result) {
+    return false;
+  }
+  if (result->payload_kind == ResultPayloadKind::GPU_SURFACE &&
+      result->retained_gpu_backing) {
+    out = result->access_posture.has_retained_cpu_payload
+              ? CoreProductionPostureShape::GpuPrimaryWithCpuSidecar
+              : CoreProductionPostureShape::GpuPrimaryNoCpuSidecar;
+    return true;
+  }
+  if (result->payload_kind == ResultPayloadKind::CPU_PACKED) {
+    out = CoreProductionPostureShape::CpuPrimary;
+    return true;
+  }
+  return false;
+}
+
+static uint64_t build_stream_evaluator_identity_signature(
+    const CoreBackingPlanEvaluationReport& report) noexcept {
+  uint64_t signature = 0;
+  signature = mix_identity_u64(signature, report.stream_id);
+  signature = mix_identity_u64(signature, report.current_candidate_index);
+  signature = mix_identity_u64(
+      signature,
+      static_cast<uint64_t>(report.requested.valid
+                                ? static_cast<uint8_t>(report.requested.posture)
+                                : 0));
+  return signature;
+}
+
 static const char* try_destroy_stream_status_name(TryDestroyStreamStatus s) noexcept {
   switch (s) {
     case TryDestroyStreamStatus::OK: return "OK";
@@ -607,7 +669,7 @@ CamBANGServer::~CamBANGServer() {
   // Ensure graceful stop if the extension is torn down.
   runtime_.stop();
   result_access_cost_evidence::clear();
-  retained_result_access_calibration::clear();
+  _clear_live_retained_result_access_calibration_state_();
   if (singleton_ == this) {
     singleton_ = nullptr;
   }
@@ -744,7 +806,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   has_godot_counters_ = false;
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   result_access_cost_evidence::clear();
-  retained_result_access_calibration::clear();
+  _clear_live_retained_result_access_calibration_state_();
 
   // Begin a new boundary session and reject any prior-generation late publishes
   // until the first snapshot from the next expected generation is observed.
@@ -779,7 +841,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
     direct_stream_hardware_id_by_stream_id_.clear();
     CamBANGStreamResult::clear_live_stream_cpu_display_views();
     result_access_cost_evidence::clear();
-    retained_result_access_calibration::clear();
+    _clear_live_retained_result_access_calibration_state_();
 
     strict_scenario_unmet_logged_ = false;
     _reset_scenario_session_state_();
@@ -846,7 +908,7 @@ void CamBANGServer::stop() {
   provider_.reset();
   CamBANGStreamResult::clear_live_stream_cpu_display_views();
   result_access_cost_evidence::clear();
-  retained_result_access_calibration::clear();
+  _clear_live_retained_result_access_calibration_state_();
 
   strict_scenario_unmet_logged_ = false;
   _reset_scenario_session_state_();
@@ -1321,11 +1383,10 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  // Capture-only public access is itself decision-driving evidence for capture
-  // parent evaluation, but the public getter must still produce immediate
-  // evidence without inheriting provider settle-delay gating from the live
-  // background sweep. Calibrate first for evidence, then separately report the
-  // resulting observation into Core.
+  // Temporary compatibility fallback:
+  // automatic calibration is expected to arm from truthful live result identity,
+  // but capture-only public access still forces immediate evidence here until
+  // that lifecycle is proven complete across supported scenes.
   retained_result_access_calibration::calibrate_capture_result(data, nullptr);
   retained_result_access_calibration::report_capture_result_observation(
       data, const_cast<CoreRuntime*>(&runtime_));
@@ -1826,6 +1887,7 @@ void CamBANGServer::_reconcile_endpoint_lifecycle_from_snapshot(const CamBANGSta
 }
 
 void CamBANGServer::_on_godot_tick(double delta) {
+  const uint64_t now_ns = last_tick_time_ns_;
   // If a virtual_time provider is active (stub heartbeat, synthetic virtual_time),
   // advance it using the Godot frame delta.
   if (runtime_.is_running()) {
@@ -1865,44 +1927,430 @@ void CamBANGServer::_on_godot_tick(double delta) {
   if (_consume_latest_core_snapshot()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
     _drain_pending_scenario_start_after_baseline_();
-    _calibrate_live_retained_result_access_();
+    _arm_live_retained_result_access_calibration_from_snapshot_(now_ns);
   } else if (!pending_endpoint_startup_intents_.empty()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
-  } else {
-    _calibrate_live_retained_result_access_();
+  }
+  _observe_active_stream_evaluation_calibration_identities_(now_ns);
+  _process_armed_live_retained_result_access_calibration_(now_ns);
+}
+
+void CamBANGServer::_clear_live_retained_result_access_calibration_state_() {
+  pending_live_stream_retained_result_calibrations_.clear();
+  completed_live_stream_retained_result_calibrations_.clear();
+  pending_live_capture_retained_result_calibrations_.clear();
+  completed_live_capture_retained_result_calibrations_.clear();
+}
+
+void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
+    uint64_t now_ns) {
+  if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
+    _clear_live_retained_result_access_calibration_state_();
+    return;
+  }
+
+  std::unordered_set<uint64_t> active_stream_evaluator_ids;
+  for (const CoreBackingPlanEvaluationReport& report :
+       runtime_.backing_plan_evaluation_reports()) {
+    if (report.parent_kind ==
+            CoreBackingPlanEvaluationReport::ParentKind::Stream &&
+        report.evaluator_active &&
+        report.stream_id != 0 &&
+        report.requested.valid) {
+      active_stream_evaluator_ids.insert(report.stream_id);
+    }
+  }
+
+  std::unordered_set<uint64_t> live_stream_ids;
+  const auto same_stream_identity =
+      [](const ArmedLiveStreamRetainedResultCalibration& armed,
+         const SharedStreamResultData& data) noexcept {
+        return data &&
+               armed.stream_id == data->stream_id &&
+               armed.posture_id == data->access_posture.posture_id &&
+               armed.evaluation_identity == 0 &&
+               armed.display_view == data->retained_access_truth.display_view &&
+               armed.to_image == data->retained_access_truth.to_image;
+      };
+  for (const StreamState& stream : latest_->streams) {
+    if (stream.stream_id == 0 || stream.phase != CBLifecyclePhase::LIVE) {
+      continue;
+    }
+    live_stream_ids.insert(stream.stream_id);
+    if (active_stream_evaluator_ids.find(stream.stream_id) !=
+        active_stream_evaluator_ids.end()) {
+      continue;
+    }
+    SharedStreamResultData result = runtime_.get_latest_stream_result(stream.stream_id);
+    if (!result || result->access_posture.posture_id == 0) {
+      pending_live_stream_retained_result_calibrations_.erase(stream.stream_id);
+      completed_live_stream_retained_result_calibrations_.erase(stream.stream_id);
+      continue;
+    }
+    ArmedLiveStreamRetainedResultCalibration armed{};
+    armed.stream_id = result->stream_id;
+    armed.posture_id = result->access_posture.posture_id;
+    armed.evaluation_identity = 0;
+    armed.display_view = result->retained_access_truth.display_view;
+    armed.to_image = result->retained_access_truth.to_image;
+    const bool needs_settle_delay =
+        result->retained_access_truth.display_view != ResultCapability::UNSUPPORTED ||
+        result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED;
+    armed.due_after_ns = now_ns + (needs_settle_delay
+                                       ? runtime_.stream_backing_plan_evaluation_settle_delay_ns()
+                                       : 0);
+    const auto pending_it =
+        pending_live_stream_retained_result_calibrations_.find(stream.stream_id);
+    if (pending_it != pending_live_stream_retained_result_calibrations_.end() &&
+        same_stream_identity(pending_it->second, result)) {
+      continue;
+    }
+    const auto completed_it =
+        completed_live_stream_retained_result_calibrations_.find(stream.stream_id);
+    if (completed_it != completed_live_stream_retained_result_calibrations_.end() &&
+        same_stream_identity(completed_it->second, result)) {
+      continue;
+    }
+    pending_live_stream_retained_result_calibrations_[stream.stream_id] = armed;
+    completed_live_stream_retained_result_calibrations_.erase(stream.stream_id);
+  }
+  for (auto it = pending_live_stream_retained_result_calibrations_.begin();
+       it != pending_live_stream_retained_result_calibrations_.end();) {
+    if (live_stream_ids.find(it->first) == live_stream_ids.end()) {
+      completed_live_stream_retained_result_calibrations_.erase(it->first);
+      it = pending_live_stream_retained_result_calibrations_.erase(it);
+      continue;
+    }
+    ++it;
+  }
+  for (auto it = completed_live_stream_retained_result_calibrations_.begin();
+       it != completed_live_stream_retained_result_calibrations_.end();) {
+    if (live_stream_ids.find(it->first) == live_stream_ids.end()) {
+      it = completed_live_stream_retained_result_calibrations_.erase(it);
+      continue;
+    }
+    ++it;
+  }
+
+  std::unordered_set<uint64_t> live_capture_device_ids;
+  const auto same_capture_identity =
+      [](const ArmedLiveCaptureRetainedResultCalibration& armed,
+         const SharedCaptureResultData& data) noexcept {
+        return data &&
+               armed.device_instance_id == data->device_instance_id &&
+               armed.capture_id == data->capture_id &&
+               armed.acquisition_session_id == data->acquisition_session_id &&
+               armed.member_identity_signature ==
+                   build_capture_member_identity_signature(data);
+      };
+  for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
+    if (session.last_capture_id == 0 || session.device_instance_id == 0) {
+      continue;
+    }
+    live_capture_device_ids.insert(session.device_instance_id);
+    SharedCaptureResultData result =
+        runtime_.get_capture_result(session.last_capture_id, session.device_instance_id);
+    if (!result) {
+      pending_live_capture_retained_result_calibrations_.erase(
+          session.device_instance_id);
+      completed_live_capture_retained_result_calibrations_.erase(
+          session.device_instance_id);
+      continue;
+    }
+    ArmedLiveCaptureRetainedResultCalibration armed{};
+    armed.device_instance_id = result->device_instance_id;
+    armed.capture_id = result->capture_id;
+    armed.acquisition_session_id = result->acquisition_session_id;
+    armed.member_identity_signature =
+        build_capture_member_identity_signature(result);
+    bool needs_settle_delay = false;
+    for (uint32_t i = 0; i < result->image_member_count(); ++i) {
+      const auto* member = result->image_member_at(i);
+      if (member && member->retained_access_truth.to_image != ResultCapability::UNSUPPORTED) {
+        needs_settle_delay = true;
+        break;
+      }
+    }
+    armed.due_after_ns = now_ns + (needs_settle_delay
+                                       ? runtime_.capture_backing_plan_evaluation_settle_delay_ns()
+                                       : 0);
+    const auto pending_it = pending_live_capture_retained_result_calibrations_.find(
+        session.device_instance_id);
+    if (pending_it != pending_live_capture_retained_result_calibrations_.end() &&
+        same_capture_identity(pending_it->second, result)) {
+      continue;
+    }
+    const auto completed_it =
+        completed_live_capture_retained_result_calibrations_.find(
+            session.device_instance_id);
+    if (completed_it != completed_live_capture_retained_result_calibrations_.end() &&
+        same_capture_identity(completed_it->second, result)) {
+      continue;
+    }
+    pending_live_capture_retained_result_calibrations_[session.device_instance_id] =
+        armed;
+    completed_live_capture_retained_result_calibrations_.erase(
+        session.device_instance_id);
+  }
+  for (const RigState& rig : latest_->rigs) {
+    if (rig.last_capture_id == 0) {
+      continue;
+    }
+    std::vector<SharedCaptureResultData> results =
+        runtime_.get_capture_result_set(rig.last_capture_id);
+    for (const SharedCaptureResultData& result : results) {
+      if (!result || result->device_instance_id == 0) {
+        continue;
+      }
+      live_capture_device_ids.insert(result->device_instance_id);
+      ArmedLiveCaptureRetainedResultCalibration armed{};
+      armed.device_instance_id = result->device_instance_id;
+      armed.capture_id = result->capture_id;
+      armed.acquisition_session_id = result->acquisition_session_id;
+      armed.member_identity_signature =
+          build_capture_member_identity_signature(result);
+      bool needs_settle_delay = false;
+      for (uint32_t i = 0; i < result->image_member_count(); ++i) {
+        const auto* member = result->image_member_at(i);
+        if (member &&
+            member->retained_access_truth.to_image !=
+                ResultCapability::UNSUPPORTED) {
+          needs_settle_delay = true;
+          break;
+        }
+      }
+      armed.due_after_ns = now_ns + (needs_settle_delay
+                                         ? runtime_.capture_backing_plan_evaluation_settle_delay_ns()
+                                         : 0);
+      const auto pending_it =
+          pending_live_capture_retained_result_calibrations_.find(
+              result->device_instance_id);
+      if (pending_it !=
+              pending_live_capture_retained_result_calibrations_.end() &&
+          same_capture_identity(pending_it->second, result)) {
+        continue;
+      }
+      const auto completed_it =
+          completed_live_capture_retained_result_calibrations_.find(
+              result->device_instance_id);
+      if (completed_it !=
+              completed_live_capture_retained_result_calibrations_.end() &&
+          same_capture_identity(completed_it->second, result)) {
+        continue;
+      }
+      pending_live_capture_retained_result_calibrations_[result->device_instance_id] =
+          armed;
+      completed_live_capture_retained_result_calibrations_.erase(
+          result->device_instance_id);
+    }
+  }
+  for (auto it = pending_live_capture_retained_result_calibrations_.begin();
+       it != pending_live_capture_retained_result_calibrations_.end();) {
+    if (live_capture_device_ids.find(it->first) == live_capture_device_ids.end()) {
+      completed_live_capture_retained_result_calibrations_.erase(it->first);
+      it = pending_live_capture_retained_result_calibrations_.erase(it);
+      continue;
+    }
+    ++it;
+  }
+  for (auto it = completed_live_capture_retained_result_calibrations_.begin();
+       it != completed_live_capture_retained_result_calibrations_.end();) {
+    if (live_capture_device_ids.find(it->first) == live_capture_device_ids.end()) {
+      it = completed_live_capture_retained_result_calibrations_.erase(it);
+      continue;
+    }
+    ++it;
   }
 }
 
-void CamBANGServer::_calibrate_live_retained_result_access_() {
+void CamBANGServer::_observe_active_stream_evaluation_calibration_identities_(
+    uint64_t now_ns) {
   if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
     return;
   }
+
+  std::unordered_set<uint64_t> active_stream_evaluator_ids;
+  for (const CoreBackingPlanEvaluationReport& report :
+       runtime_.backing_plan_evaluation_reports()) {
+    if (report.parent_kind ==
+            CoreBackingPlanEvaluationReport::ParentKind::Stream &&
+        report.evaluator_active &&
+        report.stream_id != 0 &&
+        report.requested.valid) {
+      active_stream_evaluator_ids.insert(report.stream_id);
+    }
+  }
+
+  const auto same_stream_identity =
+      [](const ArmedLiveStreamRetainedResultCalibration& armed,
+         const SharedStreamResultData& data,
+         uint64_t evaluation_identity) noexcept {
+        return data &&
+               armed.stream_id == data->stream_id &&
+               armed.posture_id == data->access_posture.posture_id &&
+               armed.evaluation_identity == evaluation_identity &&
+               armed.display_view == data->retained_access_truth.display_view &&
+               armed.to_image == data->retained_access_truth.to_image;
+      };
 
   for (const StreamState& stream : latest_->streams) {
     if (stream.stream_id == 0 || stream.phase != CBLifecyclePhase::LIVE) {
       continue;
     }
-    SharedStreamResultData result = runtime_.get_latest_stream_result(stream.stream_id);
-    retained_result_access_calibration::calibrate_stream_result(result, &runtime_);
+    if (active_stream_evaluator_ids.find(stream.stream_id) !=
+        active_stream_evaluator_ids.end()) {
+      continue;
+    }
+    const SharedStreamResultData result =
+        runtime_.get_latest_stream_result(stream.stream_id);
+    if (!result || result->access_posture.posture_id == 0) {
+      continue;
+    }
+
+    ArmedLiveStreamRetainedResultCalibration armed{};
+    armed.stream_id = result->stream_id;
+    armed.posture_id = result->access_posture.posture_id;
+    armed.evaluation_identity = 0;
+    armed.display_view = result->retained_access_truth.display_view;
+    armed.to_image = result->retained_access_truth.to_image;
+    const bool needs_settle_delay =
+        result->retained_access_truth.display_view !=
+            ResultCapability::UNSUPPORTED ||
+        result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED;
+    armed.due_after_ns = now_ns + (needs_settle_delay
+                                       ? runtime_.stream_backing_plan_evaluation_settle_delay_ns()
+                                       : 0);
+
+    const auto pending_it =
+        pending_live_stream_retained_result_calibrations_.find(stream.stream_id);
+    if (pending_it != pending_live_stream_retained_result_calibrations_.end() &&
+        same_stream_identity(
+            pending_it->second, result, armed.evaluation_identity)) {
+      continue;
+    }
+    const auto completed_it =
+        completed_live_stream_retained_result_calibrations_.find(stream.stream_id);
+    if (completed_it != completed_live_stream_retained_result_calibrations_.end() &&
+        same_stream_identity(
+            completed_it->second, result, armed.evaluation_identity)) {
+      continue;
+    }
+
+    pending_live_stream_retained_result_calibrations_[stream.stream_id] = armed;
+    completed_live_stream_retained_result_calibrations_.erase(stream.stream_id);
   }
 
-  for (const AcquisitionSessionState& session : latest_->acquisition_sessions) {
-    if (session.last_capture_id == 0 || session.device_instance_id == 0) {
+  for (const CoreBackingPlanEvaluationReport& report :
+       runtime_.backing_plan_evaluation_reports()) {
+    if (report.parent_kind !=
+            CoreBackingPlanEvaluationReport::ParentKind::Stream ||
+        !report.evaluator_active ||
+        report.stream_id == 0 ||
+        !report.requested.valid) {
+      continue;
+    }
+
+    const SharedStreamResultData result =
+        runtime_.get_latest_stream_result(report.stream_id);
+    CoreProductionPostureShape observed_posture{};
+    if (!infer_stream_result_posture_shape_for_calibration(
+            result, observed_posture) ||
+        observed_posture != report.requested.posture) {
+      continue;
+    }
+
+    ArmedLiveStreamRetainedResultCalibration armed{};
+    armed.stream_id = result->stream_id;
+    armed.posture_id = result->access_posture.posture_id;
+    armed.evaluation_identity = build_stream_evaluator_identity_signature(report);
+    armed.display_view = result->retained_access_truth.display_view;
+    armed.to_image = result->retained_access_truth.to_image;
+    const bool needs_settle_delay =
+        result->retained_access_truth.display_view !=
+            ResultCapability::UNSUPPORTED ||
+        result->retained_access_truth.to_image != ResultCapability::UNSUPPORTED;
+    armed.due_after_ns = now_ns + (needs_settle_delay
+                                       ? runtime_.stream_backing_plan_evaluation_settle_delay_ns()
+                                       : 0);
+
+    const auto pending_it =
+        pending_live_stream_retained_result_calibrations_.find(report.stream_id);
+    if (pending_it != pending_live_stream_retained_result_calibrations_.end() &&
+        same_stream_identity(
+            pending_it->second, result, armed.evaluation_identity)) {
+      continue;
+    }
+    const auto completed_it =
+        completed_live_stream_retained_result_calibrations_.find(report.stream_id);
+    if (completed_it != completed_live_stream_retained_result_calibrations_.end() &&
+        same_stream_identity(
+            completed_it->second, result, armed.evaluation_identity)) {
+      continue;
+    }
+
+    pending_live_stream_retained_result_calibrations_[report.stream_id] = armed;
+    completed_live_stream_retained_result_calibrations_.erase(report.stream_id);
+  }
+}
+
+void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
+    uint64_t now_ns) {
+  if (!runtime_.is_running() || !is_public_boundary_ready_()) {
+    _clear_live_retained_result_access_calibration_state_();
+    return;
+  }
+
+  const auto same_stream_identity =
+      [](const ArmedLiveStreamRetainedResultCalibration& armed,
+         const SharedStreamResultData& data) noexcept {
+        return data &&
+               armed.stream_id == data->stream_id &&
+               armed.posture_id == data->access_posture.posture_id &&
+               armed.display_view == data->retained_access_truth.display_view &&
+               armed.to_image == data->retained_access_truth.to_image;
+      };
+  for (auto it = pending_live_stream_retained_result_calibrations_.begin();
+       it != pending_live_stream_retained_result_calibrations_.end();) {
+    if (now_ns < it->second.due_after_ns) {
+      ++it;
+      continue;
+    }
+    SharedStreamResultData result = runtime_.get_latest_stream_result(it->first);
+    if (!same_stream_identity(it->second, result)) {
+      it = pending_live_stream_retained_result_calibrations_.erase(it);
+      continue;
+    }
+    retained_result_access_calibration::calibrate_stream_result(result, &runtime_);
+    completed_live_stream_retained_result_calibrations_[it->first] = it->second;
+    it = pending_live_stream_retained_result_calibrations_.erase(it);
+  }
+
+  const auto same_capture_identity =
+      [](const ArmedLiveCaptureRetainedResultCalibration& armed,
+         const SharedCaptureResultData& data) noexcept {
+        return data &&
+               armed.device_instance_id == data->device_instance_id &&
+               armed.capture_id == data->capture_id &&
+               armed.acquisition_session_id == data->acquisition_session_id &&
+               armed.member_identity_signature ==
+                   build_capture_member_identity_signature(data);
+      };
+  for (auto it = pending_live_capture_retained_result_calibrations_.begin();
+       it != pending_live_capture_retained_result_calibrations_.end();) {
+    if (now_ns < it->second.due_after_ns) {
+      ++it;
       continue;
     }
     SharedCaptureResultData result =
-        runtime_.get_capture_result(session.last_capture_id, session.device_instance_id);
-    retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
-  }
-
-  for (const RigState& rig : latest_->rigs) {
-    if (rig.last_capture_id == 0) {
+        runtime_.get_capture_result(it->second.capture_id, it->first);
+    if (!same_capture_identity(it->second, result)) {
+      it = pending_live_capture_retained_result_calibrations_.erase(it);
       continue;
     }
-    std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(rig.last_capture_id);
-    for (const SharedCaptureResultData& result : results) {
-      retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
-    }
+    retained_result_access_calibration::calibrate_capture_result(result, &runtime_);
+    completed_live_capture_retained_result_calibrations_[it->first] =
+        it->second;
+    it = pending_live_capture_retained_result_calibrations_.erase(it);
   }
 }
 

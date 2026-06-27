@@ -1,13 +1,8 @@
 #include "godot/retained_result_access_calibration.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
-#include <map>
-#include <mutex>
 #include <optional>
-#include <set>
-#include <string>
 #include <vector>
 
 #include "core/core_runtime.h"
@@ -17,61 +12,6 @@
 
 namespace cambang::retained_result_access_calibration {
 namespace {
-
-struct CalibrationIdentity final {
-  std::string surface;
-  uint64_t posture_id = 0;
-  uint64_t stream_id = 0;
-  uint32_t image_member_index = 0;
-
-  bool operator<(const CalibrationIdentity& other) const noexcept {
-    if (surface != other.surface) return surface < other.surface;
-    if (posture_id != other.posture_id) return posture_id < other.posture_id;
-    if (stream_id != other.stream_id) return stream_id < other.stream_id;
-    return image_member_index < other.image_member_index;
-  }
-};
-
-std::mutex g_mutex;
-std::set<CalibrationIdentity> g_completed;
-std::map<CalibrationIdentity, uint64_t> g_first_seen_ns;
-
-uint64_t calibration_now_ns() {
-  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-bool mark_immediate_needed(const CalibrationIdentity& identity) {
-  if (identity.posture_id == 0) {
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(g_mutex);
-  return g_completed.insert(identity).second;
-}
-
-bool mark_supported_measurement_needed(
-    const CalibrationIdentity& identity,
-    uint64_t settle_delay_ns) {
-  if (identity.posture_id == 0) {
-    return false;
-  }
-  const uint64_t now_ns = calibration_now_ns();
-  std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_completed.find(identity) != g_completed.end()) {
-    return false;
-  }
-  auto [it, inserted] = g_first_seen_ns.emplace(identity, now_ns);
-  if (inserted && settle_delay_ns != 0) {
-    return false;
-  }
-  const uint64_t first_seen_ns = it->second;
-  if (settle_delay_ns != 0 && now_ns - first_seen_ns < settle_delay_ns) {
-    return false;
-  }
-  g_first_seen_ns.erase(identity);
-  g_completed.insert(identity);
-  return true;
-}
 
 struct CandidateMeasurement final {
   result_access_cost_evidence::RecordedAccessMeasurement measurement{};
@@ -273,23 +213,14 @@ void calibrate_stream_result(const SharedStreamResultData& data,
   if (!data) {
     return;
   }
-  const uint64_t settle_delay_ns =
-      runtime ? runtime->stream_backing_plan_evaluation_settle_delay_ns() : 0;
-  const CalibrationIdentity display_identity{
-      "stream_display_view", data->access_posture.posture_id, data->stream_id, 0};
-  if (data->retained_access_truth.display_view != ResultCapability::UNSUPPORTED &&
-      mark_supported_measurement_needed(display_identity, settle_delay_ns)) {
+  if (data->retained_access_truth.display_view != ResultCapability::UNSUPPORTED) {
     (void)CamBANGStreamResult::calibrate_display_view_for_retained_access(data);
     report_stream_display_view_observation(data, runtime);
-  } else if (data->retained_access_truth.display_view == ResultCapability::UNSUPPORTED &&
-             mark_immediate_needed(display_identity)) {
+  } else {
     report_stream_display_view_observation(data, runtime);
   }
 
-  const CalibrationIdentity image_identity{
-      "stream_to_image", data->access_posture.posture_id, data->stream_id, 0};
-  if (data->retained_access_truth.to_image != ResultCapability::UNSUPPORTED &&
-      mark_supported_measurement_needed(image_identity, settle_delay_ns)) {
+  if (data->retained_access_truth.to_image != ResultCapability::UNSUPPORTED) {
     if (data->access_posture.has_retained_cpu_payload) {
       (void)CamBANGStreamResult::calibrate_to_image_cpu_payload_for_retained_access(data);
     }
@@ -299,8 +230,7 @@ void calibrate_stream_result(const SharedStreamResultData& data,
     }
     refine_stream_to_image_classification(data);
     report_stream_to_image_observation(data, runtime);
-  } else if (data->retained_access_truth.to_image == ResultCapability::UNSUPPORTED &&
-             mark_immediate_needed(image_identity)) {
+  } else {
     report_stream_to_image_observation(data, runtime);
   }
 }
@@ -310,35 +240,26 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
   if (!data) {
     return;
   }
-  const uint64_t settle_delay_ns =
-      runtime ? runtime->capture_backing_plan_evaluation_settle_delay_ns() : 0;
   for (uint32_t i = 0; i < data->image_member_count(); ++i) {
     const auto* member = data->image_member_at(i);
     if (!member) {
       continue;
     }
-    const CalibrationIdentity identity{
-        "capture_to_image", member->access_posture.posture_id, member->access_posture.stream_id,
-        member->image_member_index};
     if (member->retained_access_truth.to_image == ResultCapability::UNSUPPORTED) {
-      if (mark_immediate_needed(identity)) {
-        report_capture_to_image_observation(data, *member, runtime);
-      }
+      report_capture_to_image_observation(data, *member, runtime);
       continue;
     }
-    if (mark_supported_measurement_needed(identity, settle_delay_ns)) {
-      if (member->access_posture.has_retained_cpu_payload) {
-        (void)CamBANGCaptureResult::calibrate_to_image_member_cpu_payload_for_retained_access(
-            data, member->image_member_index);
-      }
-      if (member->access_posture.has_retained_gpu_backing &&
-          member->access_posture.gpu_materialization_available) {
-        (void)CamBANGCaptureResult::calibrate_to_image_member_gpu_materializer_for_retained_access(
-            data, member->image_member_index);
-      }
-      refine_capture_to_image_classification(*member);
-      report_capture_to_image_observation(data, *member, runtime);
+    if (member->access_posture.has_retained_cpu_payload) {
+      (void)CamBANGCaptureResult::calibrate_to_image_member_cpu_payload_for_retained_access(
+          data, member->image_member_index);
     }
+    if (member->access_posture.has_retained_gpu_backing &&
+        member->access_posture.gpu_materialization_available) {
+      (void)CamBANGCaptureResult::calibrate_to_image_member_gpu_materializer_for_retained_access(
+          data, member->image_member_index);
+    }
+    refine_capture_to_image_classification(*member);
+    report_capture_to_image_observation(data, *member, runtime);
   }
 }
 
@@ -357,9 +278,6 @@ void report_capture_result_observation(const SharedCaptureResultData& data,
 }
 
 void clear() noexcept {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_completed.clear();
-  g_first_seen_ns.clear();
 }
 
 } // namespace cambang::retained_result_access_calibration
