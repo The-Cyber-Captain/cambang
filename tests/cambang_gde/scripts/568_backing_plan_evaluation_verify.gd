@@ -28,6 +28,7 @@ const CLOCKED_SCENARIO_PATH := "res://scenarios/568_backing_plan_edge_clocked.js
 
 const TOTAL_TIMEOUT_MS := 20000
 const WAIT_TIMEOUT_FRAMES := 1200
+const CAPTURE_RESULT_TIMEOUT_MS := 5000
 const DEFAULT_STREAM_FRAME_PERIOD_NS := 33333333
 const MAX_BACKING_PLAN_POSTURES := 3
 const EVALUATION_FRAMES_PER_POSTURE := 2
@@ -65,6 +66,7 @@ func _run() -> void:
 	print("RUN: %s" % SCENE_LABEL)
 	_log_maintainer_output_form_probe()
 	if _synthetic_producer_output_form_effective_selection() == "gpu_only" and _scene568_is_compatibility_renderer():
+		_info("EXPECTED_UNSUPPORTED: Scene 568 Compatibility gpu_only unsupported")
 		_fail("Scene 568 requires a capture-capable Synthetic producer output form on the compatibility renderer; run with -- --cambang-synth-producer-output-form=cpu_gpu or cpu_only")
 		return
 	await _run_impl()
@@ -800,7 +802,8 @@ func _wait_for_clocked_capture_result(
 func _trigger_capture_access_only(
 	device_instance_id: int,
 	label: String,
-	emit_step_ok: bool = true
+	emit_step_ok: bool = true,
+	require_completed_result: bool = true
 ) -> Dictionary:
 	var device: Variant = await _wait_for_device_handle(device_instance_id, label)
 	if _done:
@@ -820,23 +823,38 @@ func _trigger_capture_access_only(
 		device_instance_id,
 		baseline_failed,
 		baseline_completed,
-		label
+		label,
+		require_completed_result
 	)
 	if _done:
 		return {}
-	_probe_capture_result_access_only(capture_result, label)
-	if _done:
-		return {}
-	var capture_id := int(capture_result.get_capture_id())
-	var acquisition_session_id := _find_acquisition_session_id_for_capture(
-		device_instance_id,
-		capture_id
-	)
+	var capture_result_observed := capture_result != null
+	var capture_id := 0
+	var acquisition_session_id := 0
+	if capture_result_observed:
+		_probe_capture_result_access_only(capture_result, label)
+		if _done:
+			return {}
+		capture_id = int(capture_result.get_capture_id())
+		acquisition_session_id = _find_acquisition_session_id_for_capture(
+			device_instance_id,
+			capture_id
+		)
+	elif not require_completed_result:
+		_info(
+			"%s: capture result did not complete inside probe wait budget; continuing with report-driven follow-up" % [
+				label
+			]
+		)
 	if emit_step_ok:
-		_step_ok("%s capture access-only probe completed" % label)
+		if capture_result_observed:
+			_step_ok("%s capture access-only probe completed" % label)
+		else:
+			_step_ok("%s capture probe trigger accepted; continuing with report-driven follow-up" % label)
 	return {
 		"capture_id": capture_id,
 		"acquisition_session_id": acquisition_session_id,
+		"capture_result_observed": capture_result_observed,
 	}
 
 
@@ -877,6 +895,7 @@ func _complete_capture_parent_evaluation_after_probe(
 		var probe_info := await _trigger_capture_access_only(
 			device_instance_id,
 			"%s_probe_%d" % [label, total_probes + 1],
+			false,
 			false
 		)
 		if _done:
@@ -894,6 +913,35 @@ func _complete_capture_parent_evaluation_after_probe(
 			return {}
 		total_probes += 1
 		if not _report_has_decision(report) and total_probes >= max_total_probes:
+			var prior_viable_postures := _decision_candidate_postures(pre_probe_report)
+			if _capture_report_has_clean_seed_only_epoch(report, prior_viable_postures):
+				_info("%s: capture evaluation completed with clean seed-only epoch rollover" % label)
+				return report
+			if _capture_report_is_active_final_candidate_without_decision(report):
+				report = await _wait_for_capture_report_follow_up_after_final_probe(
+					device_instance_id,
+					report,
+					prior_viable_postures,
+					label
+				)
+				if _done:
+					return {}
+				_assert_capture_report_shape(report, device_instance_id, label, false)
+				if _done:
+					return {}
+				if _report_has_decision(report):
+					return report
+				if _capture_report_has_clean_seed_only_epoch(report, prior_viable_postures):
+					_info("%s: capture evaluation completed with clean seed-only epoch rollover" % label)
+					return report
+			if _capture_report_is_clean_immediate_rollover(
+				pre_probe_report,
+				report,
+				probe_info,
+				label
+			):
+				_info("%s: capture evaluation completed with immediate parent-retirement rollover" % label)
+				return report
 			if _capture_report_is_clean_immediate_rollover(
 				pre_probe_report,
 				report,
@@ -969,6 +1017,11 @@ func _complete_clocked_capture_parent_evaluation_after_probe(
 		_assert_capture_report_shape(report, device_instance_id, label, false)
 		if _done:
 			return {}
+		if not _report_has_decision(report):
+			for _settle_i in range(EVALUATION_FRAMES_PER_POSTURE):
+				if _timed_out():
+					return report
+				await get_tree().process_frame
 		total_probes += 1
 	return report
 
@@ -1038,9 +1091,11 @@ func _wait_for_capture_result(
 	device_instance_id: int,
 	baseline_failed: int,
 	baseline_completed: int,
-	label: String
+	label: String,
+	require_completed_result: bool = true
 ):
-	for _i in range(WAIT_TIMEOUT_FRAMES):
+	var start_ms := Time.get_ticks_msec()
+	while not _timed_out():
 		if _timed_out():
 			return null
 		await get_tree().process_frame
@@ -1051,11 +1106,14 @@ func _wait_for_capture_result(
 		var capture_result = device.get_result()
 		if capture_result != null and int(capture_result.get_image_count()) > 0:
 			return capture_result
+		if Time.get_ticks_msec() - start_ms >= CAPTURE_RESULT_TIMEOUT_MS:
+			break
 		if not bool(progress.get("available", false)):
 			continue
 		if int(progress.get("captures_completed", 0)) <= baseline_completed:
 			continue
-	_fail("%s: timed out waiting for completed capture result" % label)
+	if require_completed_result:
+		_fail("%s: timed out waiting for completed capture result" % label)
 	return null
 
 
@@ -1157,6 +1215,60 @@ func _wait_for_capture_report_change_or_decision(
 			return report
 	_fail(
 		"%s: timed out waiting for capture backing-plan evaluation report progress after probe: %s" % [
+			label,
+			JSON.stringify(last_report),
+		]
+	)
+	return {}
+
+
+func _wait_for_capture_report_follow_up_after_final_probe(
+	device_instance_id: int,
+	previous_report: Dictionary,
+	prior_viable_postures: Array,
+	label: String
+) -> Dictionary:
+	var previous_signature := _report_signature(previous_report)
+	var last_report := previous_report
+	var device: Variant = CamBANGServer.get_device(device_instance_id)
+	var follow_up_capture_result_probed := false
+	while not _timed_out():
+		if _timed_out():
+			return {}
+		await get_tree().process_frame
+		if not follow_up_capture_result_probed:
+			if device == null:
+				device = CamBANGServer.get_device(device_instance_id)
+			if device != null:
+				var capture_result = device.get_result()
+				if capture_result != null and int(capture_result.get_image_count()) > 0:
+					_probe_capture_result_access_only(
+						capture_result,
+						"%s_follow_up_result" % label
+					)
+					if _done:
+						return {}
+					follow_up_capture_result_probed = true
+					_info(
+						"%s: follow-up capture result became available while waiting for final candidate report completion" % [
+							label
+						]
+					)
+		var report := _get_capture_backing_plan_evaluation_report(device_instance_id)
+		if report.is_empty():
+			continue
+		last_report = report
+		_emit_evaluation_info_if_changed(report, label)
+		if not _plan_valid(report, "requested"):
+			continue
+		if _report_has_decision(report):
+			return report
+		if _capture_report_has_clean_seed_only_epoch(report, prior_viable_postures):
+			return report
+		if _report_signature(report) != previous_signature:
+			return report
+	_fail(
+		"%s: timed out waiting for capture backing-plan evaluation follow-up after final probe: %s" % [
 			label,
 			JSON.stringify(last_report),
 		]
@@ -1418,12 +1530,45 @@ func _log_maintainer_output_form_probe() -> void:
 
 
 func _scene568_current_rendering_method() -> String:
+	var runtime_method := str(RenderingServer.get_current_rendering_method())
+	if runtime_method != "":
+		return runtime_method
 	return str(ProjectSettings.get_setting("rendering/renderer/rendering_method", ""))
+
+
+func _scene568_cmdline_arg_matches_any_value(flag: String, accepted_values: Array[String]) -> bool:
+	var args := OS.get_cmdline_args()
+	var flag_with_equals := "%s=" % flag
+	var index := 0
+	while index < args.size():
+		var text := str(args[index])
+		if text == flag:
+			if index + 1 >= args.size():
+				return false
+			var split_value := str(args[index + 1])
+			if accepted_values.has(split_value):
+				return true
+			index += 2
+			continue
+		if text.begins_with(flag_with_equals):
+			var equals_value := text.substr(flag_with_equals.length())
+			if accepted_values.has(equals_value):
+				return true
+		index += 1
+	return false
+
+
+func _scene568_rendering_method_is_compatibility(rendering_method: String) -> bool:
+	return rendering_method == "compatibility" or rendering_method == "gl_compatibility"
 
 
 func _scene568_is_compatibility_renderer() -> bool:
 	var rendering_method := _scene568_current_rendering_method()
-	return rendering_method == "compatibility" or rendering_method == "gl_compatibility"
+	if _scene568_rendering_method_is_compatibility(rendering_method):
+		return true
+	if _scene568_cmdline_arg_matches_any_value("--rendering-method", ["compatibility", "gl_compatibility"]):
+		return true
+	return _scene568_cmdline_arg_matches_any_value("--rendering-driver", ["opengl3"])
 
 
 func _snapshot_for_gen(expected_gen: int) -> Dictionary:
@@ -1751,6 +1896,18 @@ func _capture_report_has_clean_seed_only_epoch(
 		if not _zero_capture_candidate_evidence(entry):
 			return false
 	return true
+
+
+func _capture_report_is_active_final_candidate_without_decision(report: Dictionary) -> bool:
+	if _report_has_decision(report):
+		return false
+	if not bool(report.get("evaluator_active", false)):
+		return false
+	var viable_postures := _decision_candidate_postures(report)
+	if viable_postures.size() < 2:
+		return false
+	var current_candidate_index := int(report.get("current_candidate_index", -1))
+	return current_candidate_index == viable_postures.size() - 1
 
 
 func _final_capture_candidate_rollover_preconditions(

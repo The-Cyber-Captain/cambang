@@ -12,6 +12,7 @@ param(
     [string]$LogRoot = "",
     [string]$RunLabel = "",
     [string]$ExpectedOkPattern = "",
+    [string]$ExpectedUnsupportedPattern = "",
     [string[]]$HardFailurePatterns = @(
         "SCRIPT ERROR:",
         "Parse Error",
@@ -244,7 +245,7 @@ function New-LogRecord {
 function Finalize-LogRecord {
     param(
         [Parameter(Mandatory)][object]$LogRecord,
-        [Parameter(Mandatory)][ValidateSet("ok", "error")][string]$Bucket
+        [Parameter(Mandatory)][ValidateSet("ok", "error", "expected_unsupported")][string]$Bucket
     )
 
     $bucketRoot = Join-Path $LogRecord.Root $Bucket
@@ -1410,6 +1411,7 @@ function Invoke-AndroidRun {
         [string]$ExplicitPackageName,
         [string]$ExplicitActivityName,
         [string]$ExpectedPattern,
+        [string]$ExpectedUnsupportedPattern,
         [string[]]$FailurePatterns
     )
 
@@ -1434,6 +1436,7 @@ function Invoke-AndroidRun {
     $androidPid = ""
     $sawAppRunning = $false
     $sawExpectedPattern = $false
+    $sawExpectedUnsupportedPattern = $false
     $timedOut = $false
     $processExitCode = $null
     $logcatText = ""
@@ -1640,6 +1643,11 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
                 $sawExpectedPattern = $true
             }
 
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedUnsupportedPattern) -and ($logcatText -match $ExpectedUnsupportedPattern)) {
+                $sawExpectedUnsupportedPattern = $true
+                break
+            }
+
             if ($sawAppRunning -and -not $isRunning) {
                 break
             }
@@ -1701,6 +1709,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         ProcessExitCode = $processExitCode
         TimedOut = $timedOut
         SawExpectedPattern = $sawExpectedPattern
+        SawExpectedUnsupportedPattern = $sawExpectedUnsupportedPattern
         SawAppRunning = $sawAppRunning
         AndroidPackage = $androidPackageName
         AndroidActivity = $androidActivityName
@@ -1801,37 +1810,18 @@ if ($RunPlatform -eq "windows") {
     Write-Host ("LOG DIR:  {0}" -f $logRecord.RunDir)
 
     try {
-        $proc = Start-Process `
+        $capturedResult = Invoke-CapturedProcess `
             -FilePath $GodotExe `
-            -ArgumentList $arguments `
+            -Arguments $arguments.ToArray() `
             -WorkingDirectory $projectFullPath `
-            -NoNewWindow `
-            -PassThru `
-            -RedirectStandardOutput $logRecord.StdoutPath `
-            -RedirectStandardError $logRecord.StderrPath
+            -CommandTimeoutSec $TimeoutSec `
+            -StdoutLogPath $logRecord.StdoutPath `
+            -StderrLogPath $logRecord.StderrPath `
+            -StepLabel "godot_run" `
+            -AppendToLogs
 
-        if ($TimeoutSec -gt 0) {
-            $exited = $proc.WaitForExit($TimeoutSec * 1000)
-            if (-not $exited) {
-                $timedOut = $true
-                try {
-                    $proc.Kill($true)
-                }
-                catch {
-                    try { $proc.Kill() } catch { }
-                }
-                $processExitCode = -7777
-            }
-            else {
-                $proc.Refresh()
-                $processExitCode = $proc.ExitCode
-            }
-        }
-        else {
-            $proc.WaitForExit()
-            $proc.Refresh()
-            $processExitCode = $proc.ExitCode
-        }
+        $timedOut = $capturedResult.TimedOut
+        $processExitCode = $capturedResult.ExitCode
     }
     finally {
         Ensure-FileExists -Path $logRecord.StdoutPath
@@ -1892,6 +1882,7 @@ else {
             -ExplicitPackageName $AndroidPackage `
             -ExplicitActivityName $AndroidActivity `
             -ExpectedPattern $ExpectedOkPattern `
+            -ExpectedUnsupportedPattern $ExpectedUnsupportedPattern `
             -FailurePatterns $HardFailurePatterns
 
         $timedOut = $androidResult.TimedOut
@@ -1901,6 +1892,7 @@ else {
         $androidActivityName = $androidResult.AndroidActivity
         $androidApkPath = $androidResult.ExportApkPath
         $androidSawExpectedPattern = $androidResult.SawExpectedPattern
+        $androidSawExpectedUnsupportedPattern = $androidResult.SawExpectedUnsupportedPattern
         $androidSawAppRunning = $androidResult.SawAppRunning
     }
     finally {
@@ -1924,46 +1916,69 @@ else {
 }
 $combinedText = "$stdoutText`n$stderrText`n$deviceLogcatText"
 $expectedOkObserved = (-not [string]::IsNullOrWhiteSpace($ExpectedOkPattern)) -and ($combinedText -match $ExpectedOkPattern)
+$expectedUnsupportedObserved = (-not [string]::IsNullOrWhiteSpace($ExpectedUnsupportedPattern)) -and ($combinedText -match $ExpectedUnsupportedPattern)
+$scriptParseLoadFailurePatterns = @(
+    "SCRIPT ERROR:",
+    "Parse Error",
+    "Failed to load script"
+)
+$scriptParseLoadFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $scriptParseLoadFailurePatterns
+$expectedUnsupportedClassified = $expectedUnsupportedObserved -and -not $timedOut -and -not $scriptParseLoadFailureObserved
 
 if ($null -eq $processExitCode -or [string]::IsNullOrWhiteSpace([string]$processExitCode)) {
     $processExitCode = $null
 }
 
 $verdictReasons = New-Object System.Collections.Generic.List[string]
-if ($timedOut) {
-    if (-not $expectedOkObserved) {
-        $verdictReasons.Add("timeout")
-    }
+if ($expectedUnsupportedObserved) {
+    $verdictReasons.Add("expected_unsupported_pattern_observed")
 }
 
-if ($null -ne $processExitCode -and $processExitCode -ne 0) {
-    if (-not ($timedOut -and $expectedOkObserved)) {
-        $verdictReasons.Add("exit_code=$processExitCode")
-    }
-}
-
-if ($RunPlatform -eq "android" -and -not $androidSawAppRunning) {
-    $verdictReasons.Add("app_never_observed_running")
-}
-
-if (Test-PatternMatch -Text $combinedText -Patterns $HardFailurePatterns) {
-    $verdictReasons.Add("hard_failure_pattern")
-}
-
-if (-not [string]::IsNullOrWhiteSpace($ExpectedOkPattern) -and -not $expectedOkObserved) {
-    $verdictReasons.Add("missing_expected_ok_pattern")
-}
-
-$bucket = if ($verdictReasons.Count -eq 0) { "ok" } else { "error" }
-$finalVerdict = if ($bucket -eq "ok") { "OK" } else { "ERROR" }
-$returnedExitCode = if ($bucket -eq "ok") {
-    if ($null -eq $processExitCode) { 0 } else { $processExitCode }
-}
-elseif ($null -ne $processExitCode -and $processExitCode -ne 0) {
-    $processExitCode
+if ($expectedUnsupportedClassified) {
+    $bucket = "expected_unsupported"
+    $finalVerdict = "EXPECTED_UNSUPPORTED"
+    $returnedExitCode = 0
 }
 else {
-    1
+    if ($timedOut) {
+        if (-not $expectedOkObserved) {
+            $verdictReasons.Add("timeout")
+        }
+    }
+
+    if ($null -ne $processExitCode -and $processExitCode -ne 0) {
+        if (-not ($timedOut -and $expectedOkObserved)) {
+            $verdictReasons.Add("exit_code=$processExitCode")
+        }
+    }
+
+    if ($RunPlatform -eq "android" -and -not $androidSawAppRunning) {
+        $verdictReasons.Add("app_never_observed_running")
+    }
+
+    if (Test-PatternMatch -Text $combinedText -Patterns $HardFailurePatterns) {
+        $verdictReasons.Add("hard_failure_pattern")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedOkPattern) -and -not $expectedOkObserved) {
+        $verdictReasons.Add("missing_expected_ok_pattern")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedUnsupportedPattern) -and -not $expectedUnsupportedObserved) {
+        $verdictReasons.Add("missing_expected_unsupported_pattern")
+    }
+
+    $bucket = if ($verdictReasons.Count -eq 0) { "ok" } else { "error" }
+    $finalVerdict = if ($bucket -eq "ok") { "OK" } else { "ERROR" }
+    $returnedExitCode = if ($bucket -eq "ok") {
+        if ($null -eq $processExitCode) { 0 } else { $processExitCode }
+    }
+    elseif ($null -ne $processExitCode -and $processExitCode -ne 0) {
+        $processExitCode
+    }
+    else {
+        1
+    }
 }
 $logRecord = Finalize-LogRecord -LogRecord $logRecord -Bucket $bucket
 $finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
@@ -2007,6 +2022,7 @@ $meta = [ordered]@{
     extra_args = @($ExtraArgs)
     quit_after = $QuitAfter
     expected_ok_pattern = $ExpectedOkPattern
+    expected_unsupported_pattern = $ExpectedUnsupportedPattern
     hard_failure_patterns = @($HardFailurePatterns)
     command = $commandText
     project_path = $projectFullPath
@@ -2034,17 +2050,22 @@ if ($null -ne $structuredRecordResult.Scene70SummaryJson -and -not [string]::IsN
     $meta["scene70_summary_json"] = [string]$structuredRecordResult.Scene70SummaryJson
 }
 
+$meta["expected_ok_pattern_observed"] = $expectedOkObserved
+$meta["expected_unsupported_pattern_observed"] = $expectedUnsupportedObserved
+$meta["expected_unsupported_classified"] = $expectedUnsupportedClassified
+$meta["script_parse_load_failure_observed"] = $scriptParseLoadFailureObserved
+
 Set-Content -Path $logRecord.VerdictPath -Value $finalVerdict -NoNewline
 $meta | ConvertTo-Json -Depth 6 | Set-Content -Path $logRecord.MetaPath
 ($meta | ConvertTo-Json -Depth 6 -Compress) | Add-Content -Path $logRecord.SummaryPath
 
-Write-Host ("VERDICT:  {0}" -f $finalVerdict) -ForegroundColor $(if ($bucket -eq "ok") { "Green" } else { "Red" })
+Write-Host ("VERDICT:  {0}" -f $finalVerdict) -ForegroundColor $(if ($bucket -eq "ok") { "Green" } elseif ($bucket -eq "expected_unsupported") { "Yellow" } else { "Red" })
 Write-Host ("EXIT:     {0}" -f $returnedExitCode)
 Write-Host ("DURATION: {0} sec" -f $durationSec)
 Write-Host ("RUN DIR:  {0}" -f $logRecord.RunDir)
 Write-Host ("SUMMARY:  {0}" -f $logRecord.SummaryPath)
 
-if ($bucket -eq "error") {
+if ($bucket -ne "ok") {
     Write-Host ("REASONS:  {0}" -f ($verdictReasons -join ", ")) -ForegroundColor Yellow
 }
 

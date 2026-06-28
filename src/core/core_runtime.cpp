@@ -3270,7 +3270,29 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
 
 
 
-std::vector<CoreBackingPlanEvaluationReport> CoreRuntime::backing_plan_evaluation_reports() const {
+std::vector<CoreBackingPlanEvaluationReport>
+CoreRuntime::backing_plan_evaluation_reports() const {
+  if (core_thread_.is_core_thread()) {
+    return backing_plan_evaluation_reports_on_core_thread_();
+  }
+
+  auto completion =
+      std::make_shared<std::promise<std::vector<CoreBackingPlanEvaluationReport>>>();
+  std::future<std::vector<CoreBackingPlanEvaluationReport>> completed =
+      completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, completion]() {
+    completion->set_value(backing_plan_evaluation_reports_on_core_thread_());
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return {};
+  }
+  return completed.get();
+}
+
+std::vector<CoreBackingPlanEvaluationReport>
+CoreRuntime::backing_plan_evaluation_reports_on_core_thread_() const {
+  assert(core_thread_.is_core_thread());
   std::vector<CoreBackingPlanEvaluationReport> out;
   out.reserve(streams_.all().size() + devices_.all().size());
 

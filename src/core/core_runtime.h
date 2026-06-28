@@ -863,6 +863,8 @@ private:
   static CoreBackingPlanCandidateEvidenceReport build_candidate_evidence_report_(
       CoreRetainedProductionPlan candidate,
       const MeasuredPlanEvidence& evidence) noexcept;
+  std::vector<CoreBackingPlanEvaluationReport>
+  backing_plan_evaluation_reports_on_core_thread_() const;
   static RetainedPlanDecisionProvenance build_decision_provenance_(
       const RetainedPlanEvaluatorState& state,
       CoreRetainedProductionPlan selected) noexcept;

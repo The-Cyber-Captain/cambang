@@ -149,9 +149,20 @@ Optional per-run logging/classification for Windows-first automation:
   -ExpectedOkPattern "OK:\s+godot public boundary verify PASS"
 ```
 
+```powershell
+.\run_godot.ps1 `
+  -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
+  -QuitAfter 10 `
+  -CaptureLogs `
+  -RunLabel scene568_gpu_only_expected_unsupported `
+  -ExpectedUnsupportedPattern "EXPECTED_UNSUPPORTED:\s+Scene 568 Compatibility gpu_only unsupported" `
+  -ExtraArgs @("--rendering-method=compatibility", "--cambang-synth-producer-output-form=gpu_only")
+```
+
 When `-CaptureLogs` is enabled, `run_godot.ps1` writes one run directory beneath:
 
 - `run-logs/ok/` for locally classified successful runs
+- `run-logs/expected_unsupported/` for runs that matched an explicit expected-unsupported marker
 - `run-logs/error/` for non-zero exit, timeout, hard-failure marker, or missing expected PASS-marker runs
 - `run-logs/summary.jsonl` as one compact JSON record per run for summary-first inspection
 
@@ -189,6 +200,7 @@ Launcher note:
 
 - `run_godot.ps1` accepts `--rendering-method=mobile`, `--rendering-method=compatibility`, and `--rendering-method=gl_compatibility`; it normalizes `compatibility` to `gl_compatibility`
 - on Windows, it passes rendering-method/driver engine args in the split `--flag value` form expected by the local Godot executable, while maintainer override args remain user args after `--`
+- `-ExpectedUnsupportedPattern` is the narrow companion to `-ExpectedOkPattern`; it only classifies a run as `EXPECTED_UNSUPPORTED` when the explicit marker is observed and the run does not hit timeout or script parse/load failure
 
 Notes for Codex/agent validation on this machine:
 
