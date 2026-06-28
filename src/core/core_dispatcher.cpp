@@ -368,7 +368,14 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
         p.frame.requested_retained_plan.valid) {
       stream_requested_retained_plan = p.frame.requested_retained_plan;
     }
-    if (capture_requested_retained_plan.valid == false &&
+    if (p.frame.capture_id != 0 &&
+        p.frame.requested_retained_plan.valid) {
+      // Capture frames carry the exact core-selected posture that produced the
+      // frame. Preserve that per-capture attribution even if the owning
+      // device/session requested plan has already advanced for a later
+      // evaluation candidate while this capture is still in flight.
+      capture_requested_retained_plan = p.frame.requested_retained_plan;
+    } else if (capture_requested_retained_plan.valid == false &&
         devices_ && p.frame.device_instance_id != 0) {
       if (const CoreDeviceRegistry::DeviceRecord* device_rec = devices_->find(p.frame.device_instance_id);
           device_rec != nullptr) {

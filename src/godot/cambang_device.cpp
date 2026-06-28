@@ -162,10 +162,17 @@ godot::Error CamBANGDevice::trigger_capture() {
 
 godot::Ref<CamBANGCaptureResult> CamBANGDevice::get_result() const {
   const uint64_t device_instance_id = get_instance_id();
-  if (!server_ || device_instance_id == 0 || current_capture_id_ == 0 || !server_->is_running()) {
+  if (!server_ || device_instance_id == 0 || !server_->is_running()) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  return server_->get_capture_result_by_id(current_capture_id_, device_instance_id);
+  uint64_t capture_id = current_capture_id_;
+  if (capture_id == 0) {
+    capture_id = server_->get_latest_capture_id_for_device(device_instance_id);
+  }
+  if (capture_id == 0) {
+    return godot::Ref<CamBANGCaptureResult>();
+  }
+  return server_->get_capture_result_by_id(capture_id, device_instance_id);
 }
 
 godot::Error CamBANGDevice::set_warm_policy(const godot::Dictionary& policy) {

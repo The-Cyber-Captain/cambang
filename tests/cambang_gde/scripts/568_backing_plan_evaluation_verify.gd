@@ -29,6 +29,7 @@ const CLOCKED_SCENARIO_PATH := "res://scenarios/568_backing_plan_edge_clocked.js
 const TOTAL_TIMEOUT_MS := 20000
 const WAIT_TIMEOUT_FRAMES := 1200
 const CAPTURE_RESULT_TIMEOUT_MS := 5000
+const FOLLOW_UP_RESULT_PUBLICATION_GRACE_FRAMES := 120
 const DEFAULT_STREAM_FRAME_PERIOD_NS := 33333333
 const MAX_BACKING_PLAN_POSTURES := 3
 const EVALUATION_FRAMES_PER_POSTURE := 2
@@ -855,6 +856,8 @@ func _trigger_capture_access_only(
 		"capture_id": capture_id,
 		"acquisition_session_id": acquisition_session_id,
 		"capture_result_observed": capture_result_observed,
+		"baseline_failed": baseline_failed,
+		"baseline_completed": baseline_completed,
 	}
 
 
@@ -922,6 +925,7 @@ func _complete_capture_parent_evaluation_after_probe(
 					device_instance_id,
 					report,
 					prior_viable_postures,
+					probe_info,
 					label
 				)
 				if _done:
@@ -1226,16 +1230,41 @@ func _wait_for_capture_report_follow_up_after_final_probe(
 	device_instance_id: int,
 	previous_report: Dictionary,
 	prior_viable_postures: Array,
+	probe_info: Dictionary,
 	label: String
 ) -> Dictionary:
 	var previous_signature := _report_signature(previous_report)
 	var last_report := previous_report
 	var device: Variant = CamBANGServer.get_device(device_instance_id)
 	var follow_up_capture_result_probed := false
+	var baseline_failed := int(probe_info.get("baseline_failed", 0))
+	var baseline_completed := int(probe_info.get("baseline_completed", 0))
+	var completed_seen_without_result := false
+	var completed_without_result_frames := 0
 	while not _timed_out():
 		if _timed_out():
 			return {}
 		await get_tree().process_frame
+		var progress := _get_capture_progress_snapshot(device_instance_id)
+		if bool(progress.get("available", false)):
+			var failed := int(progress.get("captures_failed", 0))
+			var completed := int(progress.get("captures_completed", 0))
+			if failed > baseline_failed:
+				_fail(
+					"%s: follow-up capture failed after final probe (progress=%s)" % [
+						label,
+						str(progress),
+					]
+				)
+				return {}
+			if completed > baseline_completed and not completed_seen_without_result:
+				completed_seen_without_result = true
+				completed_without_result_frames = 0
+				_info(
+					"%s: follow-up capture completed after final probe; waiting for public result publication" % [
+						label
+					]
+				)
 		if not follow_up_capture_result_probed:
 			if device == null:
 				device = CamBANGServer.get_device(device_instance_id)
@@ -1254,6 +1283,17 @@ func _wait_for_capture_report_follow_up_after_final_probe(
 							label
 						]
 					)
+				elif completed_seen_without_result:
+					completed_without_result_frames += 1
+					if completed_without_result_frames < FOLLOW_UP_RESULT_PUBLICATION_GRACE_FRAMES:
+						continue
+					_fail(
+						"%s: follow-up capture completed after final probe but device.get_result() still returned null/empty after %d grace frame(s)" % [
+							label,
+							completed_without_result_frames,
+						]
+					)
+					return {}
 		var report := _get_capture_backing_plan_evaluation_report(device_instance_id)
 		if report.is_empty():
 			continue

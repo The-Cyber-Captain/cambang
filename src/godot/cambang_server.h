@@ -116,6 +116,7 @@ public:
   godot::Ref<CamBANGRig> get_rig(uint64_t rig_id) const;
   godot::Ref<CamBANGStreamResult> get_stream_result_by_stream_id(uint64_t stream_id) const;
   godot::Ref<CamBANGCaptureResult> get_capture_result_by_id(uint64_t capture_id, uint64_t device_instance_id) const;
+  uint64_t get_latest_capture_id_for_device(uint64_t device_instance_id) const;
   godot::Ref<CamBANGCaptureResultSet> get_capture_result_set_by_id(uint64_t capture_id) const;
   void mark_stream_display_demand(uint64_t stream_id);
   void retain_stream_display_demand(uint64_t stream_id);
@@ -161,6 +162,7 @@ private:
   void _on_godot_tick(double delta);
   void _arm_live_retained_result_access_calibration_from_snapshot_(uint64_t now_ns);
   void _observe_active_stream_evaluation_calibration_identities_(uint64_t now_ns);
+  void _observe_active_capture_evaluation_calibration_identities_(uint64_t now_ns);
   void _process_armed_live_retained_result_access_calibration_(uint64_t now_ns);
   void _clear_live_retained_result_access_calibration_state_();
   void _drain_pending_stop_and_quit_();
@@ -248,6 +250,7 @@ private:
     uint64_t capture_id = 0;
     uint64_t acquisition_session_id = 0;
     uint64_t member_identity_signature = 0;
+    uint64_t evaluation_identity = 0;
     uint64_t due_after_ns = 0;
   };
   std::unordered_map<uint64_t, ArmedLiveStreamRetainedResultCalibration>
@@ -316,6 +319,7 @@ private:
   };
   std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
   std::unordered_map<uint64_t, godot::String> direct_stream_hardware_id_by_stream_id_;
+  std::unordered_map<uint64_t, uint64_t> latest_capture_id_by_device_instance_id_;
 };
 
 } // namespace cambang
