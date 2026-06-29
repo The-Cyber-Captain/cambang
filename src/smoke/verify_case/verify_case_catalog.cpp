@@ -2023,6 +2023,16 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
+  // Stream destroy can publish before the matching acquisition-session teardown
+  // becomes visible; wait for the fully settled topology boundary before checking
+  // the structural snapshot contract.
+  if (!h.wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
+        return s.acquisition_sessions.empty() &&
+               !VerifyCaseHarness::has_stream(s, VerifyCaseHarness::kStreamId);
+      }, error, 500, 5, "timed out waiting for acquisition session teardown publish")) {
+    cli::error("FAIL: ", error);
+    return 1;
+  }
   h.tick();
   if (!check_step(3,
                   SnapshotExpectation{}
