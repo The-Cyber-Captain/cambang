@@ -31,6 +31,105 @@ bool check_step(int index, const SnapshotExpectation& exp, const ObservedSnapsho
 bool expect_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed);
 bool fail_step(int index, const std::string& message);
 
+bool wait_for_settled_stream_create(VerifyCaseHarness& h,
+                                    VerifyCaseProviderKind provider_kind,
+                                    std::string& error) {
+  return h.wait_for_core_snapshot(
+      [&](const CamBANGStateSnapshot& s) {
+        if (!VerifyCaseHarness::has_stream(s, VerifyCaseHarness::kStreamId)) {
+          return false;
+        }
+        if (provider_kind == VerifyCaseProviderKind::Synthetic) {
+          return !s.acquisition_sessions.empty();
+        }
+        return true;
+      },
+      error,
+      500,
+      5,
+      "timed out waiting for settled stream create publish");
+}
+
+bool check_monotonic_stream_create_step(int index,
+                                        VerifyCaseProviderKind provider_kind,
+                                        const ObservedSnapshot& observed) {
+  if (!expect_step(index,
+                   SnapshotExpectation{}
+                       .device_count(1)
+                       .stream_count(1)
+                       .acquisition_session_count(
+                           provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
+                       .expect_acquisition_session(
+                           provider_kind == VerifyCaseProviderKind::Synthetic),
+                   observed)) {
+    return false;
+  }
+  if (provider_kind == VerifyCaseProviderKind::Synthetic) {
+    if (observed.version < 2) {
+      return fail_step(index, "version regressed below create boundary");
+    }
+    if (observed.topology_version < 2) {
+      return fail_step(index, "topology_version regressed below create boundary");
+    }
+  } else {
+    if (observed.version != 2) {
+      return fail_step(index, "version mismatch");
+    }
+    if (observed.topology_version != 2) {
+      return fail_step(index, "topology_version mismatch");
+    }
+  }
+  cli::line("step ", index, " OK");
+  return true;
+}
+
+bool check_stream_non_topology_step(int index,
+                                    const ObservedSnapshot& observed,
+                                    uint64_t expected_version,
+                                    uint64_t expected_topology_version,
+                                    size_t expected_acquisition_session_count,
+                                    bool expect_acquisition_session) {
+  return check_step(index,
+                    SnapshotExpectation{}
+                        .version(expected_version)
+                        .topology_version(expected_topology_version)
+                        .device_count(1)
+                        .stream_count(1)
+                        .acquisition_session_count(expected_acquisition_session_count)
+                        .expect_acquisition_session(expect_acquisition_session),
+                    observed);
+}
+
+bool check_topology_only_step(int index,
+                              const ObservedSnapshot& observed,
+                              size_t expected_device_count,
+                              size_t expected_stream_count,
+                              size_t expected_acquisition_session_count,
+                              bool expect_acquisition_session,
+                              uint64_t minimum_version,
+                              uint64_t minimum_topology_version) {
+  if (!expect_step(index,
+                   SnapshotExpectation{}
+                       .device_count(expected_device_count)
+                       .stream_count(expected_stream_count)
+                       .acquisition_session_count(expected_acquisition_session_count)
+                       .expect_acquisition_session(expect_acquisition_session),
+                   observed)) {
+    return false;
+  }
+  if (observed.version < minimum_version) {
+    return fail_step(index, "version regressed below prior topology boundary");
+  }
+  if (observed.topology_version < minimum_topology_version) {
+    return fail_step(index, "topology_version regressed below prior topology boundary");
+  }
+  if (observed.version != observed.topology_version) {
+    return fail_step(index, "version/topology_version diverged during topology-only sequence");
+  }
+  cli::line("step ", index, " OK");
+  return true;
+}
+
 bool wait_until_poll(const std::function<bool()>& pred,
                      std::string& error,
                      const char* timeout_message,
@@ -1892,35 +1991,28 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(2,
-                  SnapshotExpectation{}
-                      .version(2)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
+  h.tick();
+  if (!check_monotonic_stream_create_step(2, provider_kind, h.observed())) {
+    return 1;
+  }
+  const uint64_t create_version = h.observed().version;
+  const uint64_t create_topology_version = h.observed().topology_version;
 
   if (!h.start_stream(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
   h.tick();
-  if (!check_step(3,
-                  SnapshotExpectation{}
-                      .version(3)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!check_stream_non_topology_step(3,
+                                      h.observed(),
+                                      create_version + 1,
+                                      create_topology_version,
+                                      provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
+                                      provider_kind == VerifyCaseProviderKind::Synthetic)) {
     return 1;
   }
 
@@ -1929,16 +2021,12 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(4,
-                  SnapshotExpectation{}
-                      .version(4)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!check_stream_non_topology_step(4,
+                                      h.observed(),
+                                      create_version + 2,
+                                      create_topology_version,
+                                      provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
+                                      provider_kind == VerifyCaseProviderKind::Synthetic)) {
     return 1;
   }
 
@@ -1947,16 +2035,12 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(5,
-                  SnapshotExpectation{}
-                      .version(5)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!check_stream_non_topology_step(5,
+                                      h.observed(),
+                                      create_version + 3,
+                                      create_topology_version,
+                                      provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
+                                      provider_kind == VerifyCaseProviderKind::Synthetic)) {
     return 1;
   }
 
@@ -2005,19 +2089,23 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     cli::error("FAIL: ", error);
     return 1;
   }
-  h.tick();
-  if (!check_step(2,
-                  SnapshotExpectation{}
-                      .version(2)
-                      .topology_version(2)
-                      .device_count(1)
-                      .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
-                  h.observed())) {
+  if (!wait_for_settled_stream_create(h, provider_kind, error)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
+  h.tick();
+  if (!check_topology_only_step(2,
+                                h.observed(),
+                                1,
+                                1,
+                                provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
+                                provider_kind == VerifyCaseProviderKind::Synthetic,
+                                2,
+                                2)) {
+    return 1;
+  }
+  const uint64_t create_version = h.observed().version;
+  const uint64_t create_topology_version = h.observed().topology_version;
 
   if (!h.destroy_stream(error)) {
     cli::error("FAIL: ", error);
@@ -2034,34 +2122,32 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
   h.tick();
-  if (!check_step(3,
-                  SnapshotExpectation{}
-                      .version(3)
-                      .topology_version(3)
-                      .device_count(1)
-                      .stream_count(0)
-                      .acquisition_session_count(0)
-                      .expect_acquisition_session(false)
-                      ,
-                  h.observed())) {
+  if (!check_topology_only_step(3,
+                                h.observed(),
+                                1,
+                                0,
+                                0,
+                                false,
+                                create_version + 1,
+                                create_topology_version + 1)) {
     return 1;
   }
+  const uint64_t destroy_version = h.observed().version;
+  const uint64_t destroy_topology_version = h.observed().topology_version;
 
   if (!h.close_device(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
   h.tick();
-  if (!check_step(4,
-                  SnapshotExpectation{}
-                      .version(4)
-                      .topology_version(4)
-                      .device_count(0)
-                      .stream_count(0)
-                      .acquisition_session_count(0)
-                      .expect_acquisition_session(false)
-                      ,
-                  h.observed())) {
+  if (!check_topology_only_step(4,
+                                h.observed(),
+                                0,
+                                0,
+                                0,
+                                false,
+                                destroy_version + 1,
+                                destroy_topology_version + 1)) {
     return 1;
   }
 

@@ -63,6 +63,8 @@ Committed.
 Outcome:
 
 * `topology_change_versions()` waits after `destroy_stream()` for the settled observable shape before asserting.
+* The same settled-boundary concern also exists after `create_stream()` for the synthetic provider's asynchronously surfaced acquisition-session descendant.
+* Native verifier expectations should therefore anchor on settled visible shape plus the intended version/topology progression, not on a fragile assumption that synthetic descendant visibility always lands in the same absolute publish ordinal as stream creation.
 * The expected final shape remains strict: stream gone and top-level `acquisition_sessions[]` empty.
 * The issue was verifier-side early sampling of a valid transitional publication boundary, not a broken Core topology invariant.
 
