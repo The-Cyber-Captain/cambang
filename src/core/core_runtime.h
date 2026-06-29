@@ -480,7 +480,8 @@ enum class TryCloseDeviceStatus : uint8_t {
       bool has_materialization_elapsed_ns,
       uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
-      uint64_t normalized_cost_units);
+      uint64_t normalized_cost_units,
+      uint32_t image_member_index = 0);
   uint64_t stream_backing_plan_evaluation_settle_delay_ns() const noexcept;
   uint64_t capture_backing_plan_evaluation_settle_delay_ns() const noexcept;
 
@@ -676,6 +677,7 @@ private:
       uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units,
+      uint32_t image_member_index,
       uint8_t deferred_retries_remaining = 0);
   void enqueue_pending_capture_observation_(
       uint64_t device_instance_id,
@@ -687,6 +689,7 @@ private:
       uint64_t materialization_elapsed_ns,
       bool has_normalized_cost_units,
       uint64_t normalized_cost_units,
+      uint32_t image_member_index,
       uint8_t deferred_retries_remaining,
       uint64_t not_before_ns);
   void process_pending_capture_observations_(
@@ -747,6 +750,15 @@ private:
   size_t provider_capture_facts_queued_ = 0;
 
   struct MeasuredPlanEvidence {
+    struct CaptureMemberMaterializationEvidence {
+      bool observed = false;
+      ResultCapability provisional_to_image = ResultCapability::UNSUPPORTED;
+      bool has_materialization_elapsed_ns = false;
+      uint64_t materialization_elapsed_ns = 0;
+      bool has_normalized_cost_units = false;
+      uint64_t normalized_cost_units = 0;
+    };
+
     bool observed_display_view = false;
     bool display_view_evidence_complete = false;
     bool display_view_evidence_accepted = false;
@@ -778,6 +790,8 @@ private:
     bool observed_has_retained_gpu_backing = false;
     bool observed_gpu_materialization_available = false;
     bool observed_gpu_materialization_requires_readback = false;
+    std::vector<CaptureMemberMaterializationEvidence>
+        capture_member_materialization{};
   };
 
   struct CapturePrimingSeedSignature {
@@ -860,6 +874,15 @@ private:
   static bool same_observation_identity_(
       const MeasuredPlanEvidence& a,
       const MeasuredPlanEvidence& b) noexcept;
+  static bool same_capture_observation_family_(
+      const MeasuredPlanEvidence& a,
+      const MeasuredPlanEvidence& b) noexcept;
+  static bool capture_member_matches_required_bundle_(
+      const CaptureStillImageBundle& bundle,
+      const CoreCaptureResultData::ImageMemberData& member) noexcept;
+  static void recompute_capture_materialization_aggregate_(
+      MeasuredPlanEvidence& evidence,
+      const CaptureStillImageBundle& bundle) noexcept;
   static CoreBackingPlanCandidateEvidenceReport build_candidate_evidence_report_(
       CoreRetainedProductionPlan candidate,
       const MeasuredPlanEvidence& evidence) noexcept;
@@ -911,6 +934,7 @@ private:
     uint64_t materialization_elapsed_ns = 0;
     bool has_normalized_cost_units = false;
     uint64_t normalized_cost_units = 0;
+    uint32_t image_member_index = 0;
     uint8_t deferred_retries_remaining = 0;
     uint64_t not_before_ns = 0;
   };

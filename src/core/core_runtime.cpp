@@ -218,6 +218,137 @@ bool CoreRuntime::same_observation_identity_(const MeasuredPlanEvidence& a,
              b.observed_gpu_materialization_requires_readback;
 }
 
+bool CoreRuntime::same_capture_observation_family_(
+    const MeasuredPlanEvidence& a,
+    const MeasuredPlanEvidence& b) noexcept {
+  return a.has_observed_posture &&
+         b.has_observed_posture &&
+         a.observed_capture_id != 0 &&
+         b.observed_capture_id != 0 &&
+         a.observed_posture == b.observed_posture &&
+         a.observed_access_posture_id == b.observed_access_posture_id &&
+         a.observed_stream_id == b.observed_stream_id &&
+         a.observed_capture_id == b.observed_capture_id &&
+         a.observed_acquisition_session_id == b.observed_acquisition_session_id &&
+         a.observed_payload_kind == b.observed_payload_kind &&
+         a.observed_has_retained_cpu_payload ==
+             b.observed_has_retained_cpu_payload &&
+         a.observed_has_retained_gpu_backing ==
+             b.observed_has_retained_gpu_backing &&
+         a.observed_gpu_materialization_available ==
+             b.observed_gpu_materialization_available &&
+         a.observed_gpu_materialization_requires_readback ==
+             b.observed_gpu_materialization_requires_readback;
+}
+
+bool CoreRuntime::capture_member_matches_required_bundle_(
+    const CaptureStillImageBundle& bundle,
+    const CoreCaptureResultData::ImageMemberData& member) noexcept {
+  if (member.image_member_index >= bundle.members.size()) {
+    return false;
+  }
+  const CaptureStillImageMember& required =
+      bundle.members[member.image_member_index];
+  if (required.image_member_index != member.image_member_index) {
+    return false;
+  }
+  const CoreCaptureResultData::ImageMemberRole expected_role =
+      required.image_member_index == 0
+          ? CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED
+          : CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+  return member.role == expected_role;
+}
+
+void CoreRuntime::recompute_capture_materialization_aggregate_(
+    MeasuredPlanEvidence& evidence,
+    const CaptureStillImageBundle& bundle) noexcept {
+  evidence.provisional_to_image = ResultCapability::UNSUPPORTED;
+  evidence.has_materialization_elapsed_ns = false;
+  evidence.materialization_elapsed_ns = 0;
+  evidence.has_normalized_cost_units = false;
+  evidence.normalized_cost_units = 0;
+
+  uint32_t dominant_member_index = evidence.observed_image_member_index;
+  bool have_any_observation = false;
+  bool have_any_provisional_to_image = false;
+  bool have_all_required_materialization = true;
+  bool have_all_required_supported_materialization = true;
+
+  for (const CaptureStillImageMember& required : bundle.members) {
+    if (required.image_member_index >=
+        evidence.capture_member_materialization.size()) {
+      have_all_required_materialization = false;
+      have_all_required_supported_materialization = false;
+      continue;
+    }
+
+    const auto& member_evidence =
+        evidence.capture_member_materialization[required.image_member_index];
+    if (!member_evidence.observed) {
+      have_all_required_materialization = false;
+      have_all_required_supported_materialization = false;
+      continue;
+    }
+
+    have_any_observation = true;
+    if (!have_any_provisional_to_image ||
+        static_cast<uint8_t>(member_evidence.provisional_to_image) >
+            static_cast<uint8_t>(evidence.provisional_to_image)) {
+      evidence.provisional_to_image = member_evidence.provisional_to_image;
+      have_any_provisional_to_image = true;
+    }
+
+    if (member_evidence.has_materialization_elapsed_ns) {
+      if (!evidence.has_materialization_elapsed_ns ||
+          member_evidence.materialization_elapsed_ns >
+              evidence.materialization_elapsed_ns) {
+        evidence.has_materialization_elapsed_ns = true;
+        evidence.materialization_elapsed_ns =
+            member_evidence.materialization_elapsed_ns;
+        dominant_member_index = required.image_member_index;
+      }
+    } else {
+      have_all_required_materialization = false;
+    }
+
+    if (member_evidence.has_normalized_cost_units) {
+      if (!evidence.has_normalized_cost_units ||
+          member_evidence.normalized_cost_units >
+              evidence.normalized_cost_units) {
+        evidence.has_normalized_cost_units = true;
+        evidence.normalized_cost_units = member_evidence.normalized_cost_units;
+      }
+    }
+
+    if (member_evidence.provisional_to_image == ResultCapability::UNSUPPORTED ||
+        !member_evidence.has_materialization_elapsed_ns) {
+      have_all_required_supported_materialization = false;
+    }
+  }
+
+  if (have_any_observation) {
+    evidence.observed_image_member_index = dominant_member_index;
+  }
+
+  if (evidence.has_capture_ready_elapsed_ns &&
+      have_all_required_materialization &&
+      evidence.has_materialization_elapsed_ns) {
+    evidence.has_total_elapsed_ns = true;
+    evidence.total_elapsed_ns = saturating_add_u64(
+        evidence.capture_ready_elapsed_ns,
+        evidence.materialization_elapsed_ns);
+  } else {
+    evidence.has_total_elapsed_ns = false;
+    evidence.total_elapsed_ns = 0;
+  }
+
+  evidence.capture_evidence_complete =
+      evidence.has_capture_ready_elapsed_ns &&
+      have_all_required_supported_materialization &&
+      evidence.has_total_elapsed_ns;
+  evidence.capture_evidence_accepted = evidence.capture_evidence_complete;
+}
+
 CoreBackingPlanCandidateEvidenceReport
 CoreRuntime::build_candidate_evidence_report_(
     CoreRetainedProductionPlan candidate,
@@ -861,7 +992,7 @@ CoreRuntime::RetainedPlanDecisionProvenance
 CoreRuntime::build_decision_provenance_(
     const RetainedPlanEvaluatorState& state,
     CoreRetainedProductionPlan selected) noexcept {
-  RetainedPlanDecisionProvenance provenance{};
+  RetainedPlanDecisionProvenance provenance;
   provenance.device_instance_id = state.device_instance_id;
   provenance.acquisition_session_id = state.acquisition_session_id;
   provenance.valid = selected.valid;
@@ -890,7 +1021,7 @@ CoreRuntime::build_non_evaluated_decision_provenance_(
     CoreRetainedProductionPlan steady,
     uint8_t candidate_count,
     const CoreRetainedProductionPlan* candidate_sequence) noexcept {
-  RetainedPlanDecisionProvenance provenance{};
+  RetainedPlanDecisionProvenance provenance;
   provenance.device_instance_id = device_instance_id;
   provenance.acquisition_session_id = acquisition_session_id;
   provenance.valid = requested.valid;
@@ -1224,7 +1355,8 @@ void CoreRuntime::report_capture_retained_to_image_observation(
     bool has_materialization_elapsed_ns,
     uint64_t materialization_elapsed_ns,
     bool has_normalized_cost_units,
-    uint64_t normalized_cost_units) {
+    uint64_t normalized_cost_units,
+    uint32_t image_member_index) {
   constexpr uint8_t kCaptureObservationDeferredRetryCount = 4;
   const CoreThread::PostResult pr = try_post(
        [this,
@@ -1234,9 +1366,10 @@ void CoreRuntime::report_capture_retained_to_image_observation(
         posture_id,
         provisional_to_image,
         has_materialization_elapsed_ns,
-       materialization_elapsed_ns,
-       has_normalized_cost_units,
-       normalized_cost_units]() {
+        materialization_elapsed_ns,
+        has_normalized_cost_units,
+        normalized_cost_units,
+        image_member_index]() {
         handle_capture_retained_to_image_observation_(
             device_instance_id,
             capture_id,
@@ -1247,6 +1380,7 @@ void CoreRuntime::report_capture_retained_to_image_observation(
             materialization_elapsed_ns,
             has_normalized_cost_units,
             normalized_cost_units,
+            image_member_index,
             kCaptureObservationDeferredRetryCount);
       });
   (void)pr;
@@ -1399,7 +1533,7 @@ bool CoreRuntime::refresh_stream_retained_plan_state_(
   }
 
   if (decision.evaluation_active) {
-    RetainedPlanEvaluatorState state{};
+    RetainedPlanEvaluatorState state;
     state.device_instance_id = rec->device_instance_id;
     state.primary_function =
         BackingPlanEvaluationPrimaryFunction::StreamDisplayView;
@@ -2091,7 +2225,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         }
         return false;
       };
-  RetainedPlanEvaluatorState preserved_evaluator{};
+  RetainedPlanEvaluatorState preserved_evaluator;
   CaptureRetainedPlanParentKey preserved_evaluator_key{};
   bool have_preserved_evaluator = false;
   for (const auto& [key, state] : capture_retained_plan_evaluators_) {
@@ -2203,7 +2337,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
         }
         return false;
       };
-  RetainedPlanDecisionProvenance preserved_decision{};
+  RetainedPlanDecisionProvenance preserved_decision;
   CaptureRetainedPlanParentKey preserved_decision_key{};
   bool have_preserved_decision = false;
   for (const auto& [key, provenance] : capture_retained_plan_decisions_) {
@@ -2394,7 +2528,7 @@ bool CoreRuntime::refresh_capture_retained_plan_state_(
   }
 
   if (decision.evaluation_active) {
-    RetainedPlanEvaluatorState state{};
+    RetainedPlanEvaluatorState state;
     state.device_instance_id = device_instance_id;
     state.acquisition_session_id = parent.acquisition_session_id;
     state.orphan_retire_after_ns = 0;
@@ -2661,6 +2795,7 @@ void CoreRuntime::enqueue_pending_capture_observation_(
     uint64_t materialization_elapsed_ns,
     bool has_normalized_cost_units,
     uint64_t normalized_cost_units,
+    uint32_t image_member_index,
     uint8_t deferred_retries_remaining,
     uint64_t not_before_ns) {
   assert(core_thread_.is_core_thread());
@@ -2674,6 +2809,7 @@ void CoreRuntime::enqueue_pending_capture_observation_(
       materialization_elapsed_ns,
       has_normalized_cost_units,
       normalized_cost_units,
+      image_member_index,
       deferred_retries_remaining,
       not_before_ns});
   core_thread_.request_timer_tick();
@@ -2714,6 +2850,7 @@ void CoreRuntime::process_pending_capture_observations_(
         pending.materialization_elapsed_ns,
         pending.has_normalized_cost_units,
         pending.normalized_cost_units,
+        pending.image_member_index,
         pending.deferred_retries_remaining);
   }
 
@@ -2819,6 +2956,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     uint64_t materialization_elapsed_ns,
     bool has_normalized_cost_units,
     uint64_t normalized_cost_units,
+    uint32_t image_member_index,
     uint8_t deferred_retries_remaining) {
   assert(core_thread_.is_core_thread());
   if (device_instance_id == 0 || posture_id == 0) {
@@ -2923,14 +3061,16 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
           materialization_elapsed_ns,
           has_normalized_cost_units,
           normalized_cost_units,
+          image_member_index,
           static_cast<uint8_t>(deferred_retries_remaining - 1u),
           now_ns + kCaptureObservationRetryDelayNs);
       capture_latency_trace_printf(
-          "capture_plan_observation_deferred capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu retries_remaining=%u delay_ns=%llu",
+          "capture_plan_observation_deferred capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u retries_remaining=%u delay_ns=%llu",
           static_cast<unsigned long long>(capture_id),
           static_cast<unsigned long long>(device_instance_id),
           static_cast<unsigned long long>(posture_id),
           static_cast<unsigned long long>(observed_session_id),
+          static_cast<unsigned>(image_member_index),
           static_cast<unsigned>(deferred_retries_remaining),
           static_cast<unsigned long long>(kCaptureObservationRetryDelayNs));
       return;
@@ -2949,11 +3089,12 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     const ResolvedCaptureRetainedPlanParent resolved_parent =
         resolve_capture_retained_plan_parent_(device_instance_id);
     capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu reason=no_state_or_requested_plan device_exists=%u resolved_parent_kind=%u resolved_parent_id=%llu matching_state_count=%llu first_matching_parent_kind=%u first_matching_parent_id=%llu",
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u reason=no_state_or_requested_plan device_exists=%u resolved_parent_kind=%u resolved_parent_id=%llu matching_state_count=%llu first_matching_parent_kind=%u first_matching_parent_id=%llu",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
         static_cast<unsigned long long>(posture_id),
         static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(image_member_index),
         rec != nullptr ? 1u : 0u,
         static_cast<unsigned>(resolved_parent.key.kind),
         static_cast<unsigned long long>(resolved_parent.key.id),
@@ -2966,11 +3107,12 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   RetainedPlanEvaluatorState& state = state_it->second;
   if (!state.active || state.current_candidate_index >= state.candidate_count) {
     capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=inactive_or_oob current_candidate_index=%u candidate_count=%u",
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=inactive_or_oob current_candidate_index=%u candidate_count=%u",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
         static_cast<unsigned long long>(posture_id),
         static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(image_member_index),
         static_cast<unsigned>(state_it->first.kind),
         static_cast<unsigned long long>(state_it->first.id),
         static_cast<unsigned>(state.current_candidate_index),
@@ -3001,11 +3143,12 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   }
   if (!effective_requested.valid) {
     capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=no_requested_plan current_candidate_index=%u",
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=no_requested_plan current_candidate_index=%u",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
         static_cast<unsigned long long>(posture_id),
         static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(image_member_index),
         static_cast<unsigned>(state_it->first.kind),
         static_cast<unsigned long long>(state_it->first.id),
         static_cast<unsigned>(state.current_candidate_index));
@@ -3013,11 +3156,12 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   }
   if (!same_retained_plan(effective_requested, expected_plan)) {
     capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=requested_mismatch current_candidate_index=%u expected_posture=%d requested_posture=%d",
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=requested_mismatch current_candidate_index=%u expected_posture=%d requested_posture=%d",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
         static_cast<unsigned long long>(posture_id),
         static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(image_member_index),
         static_cast<unsigned>(state_it->first.kind),
         static_cast<unsigned long long>(state_it->first.id),
         static_cast<unsigned>(state.current_candidate_index),
@@ -3037,31 +3181,37 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         materialization_elapsed_ns,
         has_normalized_cost_units,
         normalized_cost_units,
+        image_member_index,
         deferred_retries_remaining,
         state.current_candidate_ready_after_ns);
+    return;
+  }
+  const CaptureStillImageBundle& required_bundle =
+      state.capture_priming_seed_signature.still_image_bundle;
+  if (required_bundle.members.empty()) {
     return;
   }
   const SharedCaptureResultData observed_result =
       result_store_.get_capture_result(capture_id, device_instance_id);
   const CoreCaptureResultData::ImageMemberData* observed_member =
-      observed_result ? observed_result->image_member_at(0u) : nullptr;
+      observed_result ? observed_result->image_member_at(image_member_index)
+                      : nullptr;
   CoreProductionPostureShape observed_posture{};
   if (!observed_result ||
       observed_member == nullptr ||
+      !capture_member_matches_required_bundle_(required_bundle, *observed_member) ||
       observed_result->acquisition_session_id == 0 ||
       observed_result->acquisition_session_id != state.acquisition_session_id ||
       observed_member->access_posture.posture_id != posture_id ||
-      observed_member->image_member_index != 0u ||
-      observed_member->role !=
-          CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED ||
       !infer_capture_member_posture_shape_(*observed_member, observed_posture) ||
       observed_posture != expected_plan.posture) {
     capture_latency_trace_printf(
-        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=attribution_mismatch current_candidate_index=%u expected_posture=%d",
+        "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=attribution_mismatch current_candidate_index=%u expected_posture=%d",
         static_cast<unsigned long long>(capture_id),
         static_cast<unsigned long long>(device_instance_id),
         static_cast<unsigned long long>(posture_id),
         static_cast<unsigned long long>(observed_session_id),
+        static_cast<unsigned>(image_member_index),
         static_cast<unsigned>(state_it->first.kind),
         static_cast<unsigned long long>(state_it->first.id),
         static_cast<unsigned>(state.current_candidate_index),
@@ -3072,17 +3222,46 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   MeasuredPlanEvidence& evidence =
       state.evidence[retained_plan_evidence_index(
           expected_plan.posture)];
+  if (evidence.observed_to_image &&
+      evidence.has_observed_posture) {
+    MeasuredPlanEvidence current_observation;
+    fill_capture_observation_identity_(
+        current_observation, observed_result, *observed_member, observed_posture);
+    if (!same_capture_observation_family_(evidence, current_observation)) {
+      capture_latency_trace_printf(
+          "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=family_mismatch current_candidate_index=%u expected_posture=%d",
+          static_cast<unsigned long long>(capture_id),
+          static_cast<unsigned long long>(device_instance_id),
+          static_cast<unsigned long long>(posture_id),
+          static_cast<unsigned long long>(observed_session_id),
+          static_cast<unsigned>(image_member_index),
+          static_cast<unsigned>(state_it->first.kind),
+          static_cast<unsigned long long>(state_it->first.id),
+          static_cast<unsigned>(state.current_candidate_index),
+          static_cast<int>(expected_plan.posture));
+      return;
+    }
+  }
   evidence.observed_to_image = true;
-  evidence.provisional_to_image = provisional_to_image;
-  fill_capture_observation_identity_(
-      evidence, observed_result, *observed_member, observed_posture);
+  if (!evidence.has_observed_posture) {
+    fill_capture_observation_identity_(
+        evidence, observed_result, *observed_member, observed_posture);
+  }
+  if (evidence.capture_member_materialization.size() <
+      required_bundle.members.size()) {
+    evidence.capture_member_materialization.resize(required_bundle.members.size());
+  }
+  auto& member_evidence =
+      evidence.capture_member_materialization[observed_member->image_member_index];
+  member_evidence.observed = true;
+  member_evidence.provisional_to_image = provisional_to_image;
   if (has_materialization_elapsed_ns) {
-    evidence.has_materialization_elapsed_ns = true;
-    evidence.materialization_elapsed_ns = materialization_elapsed_ns;
+    member_evidence.has_materialization_elapsed_ns = true;
+    member_evidence.materialization_elapsed_ns = materialization_elapsed_ns;
   }
   if (has_normalized_cost_units) {
-    evidence.has_normalized_cost_units = true;
-    evidence.normalized_cost_units = normalized_cost_units;
+    member_evidence.has_normalized_cost_units = true;
+    member_evidence.normalized_cost_units = normalized_cost_units;
   }
   if (state.acquisition_session_id != 0) {
     if (const auto* session =
@@ -3094,23 +3273,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
       evidence.capture_ready_elapsed_ns = session->last_capture_latency_ns;
     }
   }
-  if (evidence.has_capture_ready_elapsed_ns &&
-      evidence.has_materialization_elapsed_ns) {
-    evidence.has_total_elapsed_ns = true;
-    evidence.total_elapsed_ns =
-        saturating_add_u64(
-            evidence.capture_ready_elapsed_ns,
-            evidence.materialization_elapsed_ns);
-  } else {
-    evidence.has_total_elapsed_ns = false;
-    evidence.total_elapsed_ns = 0;
-  }
-  evidence.capture_evidence_complete =
-      evidence.has_capture_ready_elapsed_ns &&
-      evidence.has_materialization_elapsed_ns &&
-      evidence.has_total_elapsed_ns &&
-      provisional_to_image != ResultCapability::UNSUPPORTED;
-  evidence.capture_evidence_accepted = evidence.capture_evidence_complete;
+  recompute_capture_materialization_aggregate_(evidence, required_bundle);
   for (uint8_t i = 0; i < state.candidate_count; ++i) {
     const CoreRetainedProductionPlan candidate = state.candidate_sequence[i];
     if (!candidate.valid || candidate.posture == expected_plan.posture) {
@@ -3119,15 +3282,16 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     const MeasuredPlanEvidence& other =
         state.evidence[retained_plan_evidence_index(candidate.posture)];
     if (other.capture_evidence_accepted &&
-        same_observation_identity_(other, evidence)) {
+        same_capture_observation_family_(other, evidence)) {
       evidence.capture_evidence_accepted = false;
       evidence.capture_evidence_complete = false;
       capture_latency_trace_printf(
-          "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu reason=duplicate_observation current_candidate_index=%u expected_posture=%d",
+          "capture_plan_observation_ignored capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu reason=duplicate_observation current_candidate_index=%u expected_posture=%d",
           static_cast<unsigned long long>(capture_id),
           static_cast<unsigned long long>(device_instance_id),
           static_cast<unsigned long long>(posture_id),
           static_cast<unsigned long long>(observed_session_id),
+          static_cast<unsigned>(image_member_index),
           static_cast<unsigned>(state_it->first.kind),
           static_cast<unsigned long long>(state_it->first.id),
           static_cast<unsigned>(state.current_candidate_index),
@@ -3148,15 +3312,17 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
         materialization_elapsed_ns,
         has_normalized_cost_units,
         normalized_cost_units,
+        image_member_index,
         static_cast<uint8_t>(deferred_retries_remaining - 1u),
         now_ns + kCaptureObservationRetryDelayNs);
   }
   capture_latency_trace_printf(
-      "capture_plan_observation_applied capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu parent_kind=%u parent_id=%llu current_candidate_index=%u requested_posture=%d provisional_to_image=%d has_materialization=%u materialization_elapsed_ns=%llu has_normalized=%u normalized_cost_units=%llu has_capture_ready=%u capture_ready_elapsed_ns=%llu",
+      "capture_plan_observation_applied capture_id=%llu device_id=%llu posture_id=%llu observed_session_id=%llu image_member_index=%u parent_kind=%u parent_id=%llu current_candidate_index=%u requested_posture=%d provisional_to_image=%d has_materialization=%u materialization_elapsed_ns=%llu has_normalized=%u normalized_cost_units=%llu has_capture_ready=%u capture_ready_elapsed_ns=%llu",
       static_cast<unsigned long long>(capture_id),
       static_cast<unsigned long long>(device_instance_id),
       static_cast<unsigned long long>(posture_id),
       static_cast<unsigned long long>(observed_session_id),
+      static_cast<unsigned>(evidence.observed_image_member_index),
       static_cast<unsigned>(state_it->first.kind),
       static_cast<unsigned long long>(state_it->first.id),
       static_cast<unsigned>(state.current_candidate_index),
@@ -4632,7 +4798,7 @@ TryCreateStreamStatus CoreRuntime::try_create_stream(
     (void)streams_.set_backing_capabilities(
         effective.stream_id, runtime_caps, parent_context_caps);
     if (retained_plan_decision.evaluation_active) {
-      RetainedPlanEvaluatorState state{};
+      RetainedPlanEvaluatorState state;
       state.device_instance_id = effective.device_instance_id;
       state.primary_function =
           BackingPlanEvaluationPrimaryFunction::StreamDisplayView;

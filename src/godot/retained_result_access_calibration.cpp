@@ -164,9 +164,7 @@ void report_capture_to_image_observation(
     const CoreCaptureResultData::ImageMemberData& member,
     CoreRuntime* runtime) {
   if (!runtime || !data || data->device_instance_id == 0 ||
-      member.access_posture.posture_id == 0 ||
-      member.image_member_index != 0 ||
-      member.role != CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED) {
+      member.access_posture.posture_id == 0) {
     return;
   }
   std::optional<result_access_cost_evidence::RecordedAccessMeasurement> measurement;
@@ -203,7 +201,8 @@ void report_capture_to_image_observation(
       measurement.has_value() && measurement->success,
       measurement.has_value() && measurement->success
           ? measurement->normalized_cost_units()
-          : 0);
+          : 0,
+      member.image_member_index);
 }
 
 } // namespace

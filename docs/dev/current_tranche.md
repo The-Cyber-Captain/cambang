@@ -6,41 +6,55 @@ Durable project rules belong in `AGENTS.md`, `docs/dev/agent_context.md`, or the
 
 ## Active workstream
 
-Lightweight Godot validation convention.
+Timing measurement and evidence-quality review.
 
-The next task is to document a small, consistent convention for naming and reporting Godot validation surfaces.
+Bracket whole-result scoring is now closed. The next workstream should review the quality, interpretation, and usefulness of current timing/evidence measurements before any further score tuning or provider-backed work.
 
-This should remain low-investment documentation work. It should not become a new framework, runner redesign, or broad scene-refactor tranche.
-
-Desired direction:
-
-* define how a Godot validation surface is named;
-* define how supported cases, expected-negative cases, and not-run cases are reported;
-* make clear that native maintainer-tool validation does not imply Godot scene validation;
-* use Scene 568 as the current example of a scene that mostly meets the convention;
-* adapt older scenes only later, and only where doing so is cheaper than preserving ambiguous legacy wording.
-
-Expected output: one compact documentation update in the most appropriate existing dev/testing documentation location, or a small new dev note if no suitable location exists.
+Start with a source-grounded audit. Do not tune scoring constants or add new measurement machinery before identifying what current measurements mean, where they are taken, and which decisions they affect.
 
 ## Recently closed
 
-### Scene 568 Compatibility `gpu_only` expected-negative cleanup
+### Bracket whole-result scoring
 
 Committed.
 
 Outcome:
 
-* Scene 568 detects Compatibility renderer selection from ProjectSettings and command-line engine arguments.
-* Scene 568 + Compatibility renderer + Synthetic `gpu_only` is classified as expected unsupported.
-* The expected-negative rule remains narrow.
-* Fresh `CamBANGDevice` wrappers can observe completed capture results.
-* Active capture evaluators re-arm retained-result calibration consistently with stream evaluators.
+* Capture-side materialization observations now carry image-member identity through the internal runtime seam.
+* Capture candidate evidence now stores per-required-member materialization observations.
+* Capture candidate completeness now requires:
+
+    * capture readiness for the relevant capture/session identity; and
+    * materialization evidence for every required member in the applied still-image bundle for that evaluation epoch.
+* Capture scoring now counts readiness latency once and aggregates required-member materialization conservatively.
+* The slowest required member dominates aggregate materialization cost.
+* Single-member capture remains the degenerate member-0 case.
+* The required member set is derived from the applied still-image bundle/profile; no fixed three-member assumption was introduced.
+* Public Godot API was unchanged.
 
 Reported validation:
 
-* native maintainer checks passed;
-* Windows Scene 568 Mobile/runtime_default soak passed `30/30`;
-* Windows and Android Scene 568 Compatibility/`gpu_only` classified as `EXPECTED_UNSUPPORTED`.
+* `provider_compliance_verify` passed.
+* `provider_compliance_verify --only_check=run_core_capture_bracket_whole_result_scoring_check` passed.
+* `core_result_path_smoke` passed.
+* `synthetic_only_provider_support_verify` passed.
+* Scene 568 Windows/Android matrix logs were reviewed and showed complete, accurate plan-evaluation decisions for the covered matrix.
+* Scene 568 Compatibility `gpu_only` expected-negative classification remained correct.
+* Scene 70 was not run in this sweep.
+* Godot-side N-member whole-result scoring validation was not added or run.
+
+### Lightweight Godot validation convention
+
+Committed.
+
+Outcome:
+
+* Added a compact Godot validation convention to the Godot test-project README.
+* Defined a named Godot validation surface.
+* Defined reporting for supported cases, expected-negative cases, and not-run Godot validation.
+* Made the native maintainer-tool versus Godot-scene distinction explicit.
+* Used Scene 568 only as a current example.
+* Reaffirmed that Godot validation must not be claimed unless the relevant local/helper/manual path was actually run.
 
 ### `topology_change_versions` verifier sampling cleanup
 
@@ -60,9 +74,10 @@ Reported validation:
 
 Do not reopen the following without new source evidence:
 
-* current Backing Plan scoring;
 * parent ownership and migration semantics;
 * retained-result calibration lifecycle;
+* capture-side bundle-sensitive invalidation / seed reuse / re-arming;
+* bracket whole-result scoring aggregation;
 * Scene 568 terminal rollover semantics;
 * Scene 568 Compatibility `gpu_only` expected-negative classification;
 * `topology_change_versions` settled-snapshot wait;
@@ -70,11 +85,10 @@ Do not reopen the following without new source evidence:
 
 ## Deferred
 
-Not part of the active lightweight validation-convention work:
+Not part of the active timing/evidence-quality review:
 
-* bracket whole-result scoring;
-* timing measurement and evidence-quality review;
 * score tuning;
 * platform-backed provider work;
 * further removal or tightening of capture getter-side calibration fallback;
-* Scene 70 latency investigation only if reproducible after a clean system state.
+* Scene 70 latency investigation only if reproducible after a clean system state;
+* optional Godot-side N-member whole-result scoring proof, only if later judged worth the extra scene/harness work.
