@@ -16,6 +16,44 @@ Harnesses should:
 - document default exercise when `CAMBANG_EXERCISE` is unset,
 - fail clearly on unsupported exercise values (do not silently fall back).
 
+## Godot validation convention
+
+A **Godot validation surface** is one named Godot-side verification entry point
+that a maintainer can run and report as a distinct validation result. In
+practice this is usually a scene such as
+`568_backing_plan_evaluation_verify`, but the same naming/reporting convention
+also applies to other explicit Godot-side harness entry points under this
+project.
+
+Keep reporting simple:
+
+- supported cases should be reported as the named surface plus the exercised
+  case/matrix label and the observed terminal success marker, for example an
+  `OK`/`PASS` run through `run_godot.ps1`
+- expected-negative cases should be reported as the named surface plus the
+  exercised case and an explicit expected-negative classification such as
+  `EXPECTED_UNSUPPORTED`; do not report a generic failure as expected-negative
+  unless the scene or launcher emitted the narrow expected marker for that case
+- if a Godot surface was not executed, say so plainly as
+  `not run; requires local/manual Godot validation`
+- native maintainer-tool validation and Godot scene validation are different
+  surfaces: a passing native verifier or smoke tool does not by itself prove the
+  corresponding Godot scene or headed/runtime path
+
+For newer scenes, make validation intent easy to identify from the scene name,
+top-of-file comment, expected terminal markers, and any documented runner
+pattern. Scene 568 is the current example of a scene that mostly fits this:
+its topic is clear from the name, supported cases terminate with an explicit
+`PASS`, and the known Compatibility `gpu_only` negative is emitted as an
+explicit expected-unsupported marker rather than a silent timeout.
+
+Older scenes do not need broad refactors just to satisfy naming purity. If an
+older surface is ambiguous, it may later be lightly adapted or cloned only when
+that is cheaper and clearer than preserving the legacy wording.
+
+Do not claim Godot validation unless the relevant local helper/manual path was
+actually run.
+
 ## Tranche 4 boundary-hardening scenes
 
 These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary.
