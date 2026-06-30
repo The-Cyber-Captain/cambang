@@ -1,5 +1,6 @@
 #include "godot/cambang_capture_result.h"
 
+#include "godot/cambang_server.h"
 #include "godot/cambang_result_convert.h"
 #include "godot/godot_gpu_display_service.h"
 #include "godot/result_access_cost_evidence.h"
@@ -288,7 +289,13 @@ godot::Ref<godot::Image> perform_capture_to_image_member_gpu_materializer_access
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::to_image_member(int image_member_index) const {
-  return perform_capture_to_image_member_access(data_, image_member_index);
+  godot::Ref<godot::Image> image =
+      perform_capture_to_image_member_access(data_, image_member_index);
+  if (server_ && data_ && image_member_index >= 0) {
+    server_->report_capture_result_member_observation(
+        data_, static_cast<uint32_t>(image_member_index));
+  }
+  return image;
 }
 
 godot::Ref<godot::Image> CamBANGCaptureResult::calibrate_to_image_member_for_retained_access(

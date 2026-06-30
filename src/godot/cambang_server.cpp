@@ -1434,16 +1434,10 @@ godot::Ref<CamBANGCaptureResult> CamBANGServer::get_capture_result_by_id(uint64_
   if (!data) {
     return godot::Ref<CamBANGCaptureResult>();
   }
-  // Temporary compatibility fallback:
-  // automatic calibration is expected to arm from truthful live result identity,
-  // but capture-only public access still forces immediate evidence here until
-  // that lifecycle is proven complete across supported scenes.
-  retained_result_access_calibration::calibrate_capture_result(data, nullptr);
-  retained_result_access_calibration::report_capture_result_observation(
-      data, const_cast<CoreRuntime*>(&runtime_));
   godot::Ref<CamBANGCaptureResult> out;
   out.instantiate();
   out->set_data(std::move(data));
+  out->set_server(const_cast<CamBANGServer*>(this));
   return out;
 }
 
@@ -1452,16 +1446,24 @@ godot::Ref<CamBANGCaptureResultSet> CamBANGServer::get_capture_result_set_by_id(
     return godot::Ref<CamBANGCaptureResultSet>();
   }
   std::vector<SharedCaptureResultData> results = runtime_.get_capture_result_set(capture_id);
-  for (const SharedCaptureResultData& result : results) {
-    retained_result_access_calibration::calibrate_capture_result(result, nullptr);
-    retained_result_access_calibration::report_capture_result_observation(
-        result, const_cast<CoreRuntime*>(&runtime_));
-  }
   godot::Ref<CamBANGCaptureResultSet> out;
   out.instantiate();
   out->set_capture_id(capture_id);
+  out->set_server(const_cast<CamBANGServer*>(this));
   out->set_results(std::move(results));
   return out;
+}
+
+void CamBANGServer::report_capture_result_member_observation(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index) const {
+  if (!is_public_boundary_ready_()) {
+    return;
+  }
+  retained_result_access_calibration::report_capture_result_member_observation(
+      data,
+      image_member_index,
+      const_cast<CoreRuntime*>(&runtime_));
 }
 
 void CamBANGServer::mark_stream_display_demand(uint64_t stream_id) {

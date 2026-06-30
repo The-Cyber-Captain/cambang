@@ -262,6 +262,20 @@ void calibrate_capture_result(const SharedCaptureResultData& data,
   }
 }
 
+void report_capture_result_member_observation(
+    const SharedCaptureResultData& data,
+    uint32_t image_member_index,
+    CoreRuntime* runtime) {
+  if (!data || !runtime) {
+    return;
+  }
+  const auto* member = data->image_member_at(image_member_index);
+  if (!member) {
+    return;
+  }
+  report_capture_to_image_observation(data, *member, runtime);
+}
+
 void report_capture_result_observation(const SharedCaptureResultData& data,
                                        CoreRuntime* runtime) {
   if (!data || !runtime) {

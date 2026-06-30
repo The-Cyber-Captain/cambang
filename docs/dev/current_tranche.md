@@ -6,71 +6,54 @@ Durable project rules belong in `AGENTS.md`, `docs/dev/agent_context.md`, or the
 
 ## Active workstream
 
-Timing measurement and evidence-quality review.
+No small cleanup tranche is currently open.
 
-Bracket whole-result scoring is now closed. The next workstream should review the quality, interpretation, and usefulness of current timing/evidence measurements before any further score tuning or provider-backed work.
-
-Start with a source-grounded audit. Do not tune scoring constants or add new measurement machinery before identifying what current measurements mean, where they are taken, and which decisions they affect.
+The recent cleanup sequence is ready to close. The next substantial direction is platform-backed provider implementation readiness, likely best handled as a fresh independent session/workstream rather than continued in this cleanup context.
 
 ## Recently closed
 
-### Bracket whole-result scoring
-
-Committed.
+### Capture getter-side calibration fallback cleanup
 
 Outcome:
 
-* Capture-side materialization observations now carry image-member identity through the internal runtime seam.
-* Capture candidate evidence now stores per-required-member materialization observations.
-* Capture candidate completeness now requires:
+* Removed broad capture calibration/reporting side effects from ordinary capture-result getter paths.
+* Capture result retrieval no longer acts as a calibration heartbeat.
+* Explicit `to_image_member(index)` access remains instrumented and reports observed member access back into Core through a narrow internal server path.
+* Scene 568 now exercises the explicit capture member access seam rather than relying on legacy getter-side calibration.
+* No public Godot API, scoring constants, parent-scoped evaluation semantics, or result retrieval semantics changed.
 
-    * capture readiness for the relevant capture/session identity; and
-    * materialization evidence for every required member in the applied still-image bundle for that evaluation epoch.
-* Capture scoring now counts readiness latency once and aggregates required-member materialization conservatively.
-* The slowest required member dominates aggregate materialization cost.
-* Single-member capture remains the degenerate member-0 case.
-* The required member set is derived from the applied still-image bundle/profile; no fixed three-member assumption was introduced.
-* Public Godot API was unchanged.
+Final validation was run only after stray debug prints were removed and the real GDE DLL was rebuilt.
 
-Reported validation:
+Reported final validation:
 
 * `provider_compliance_verify` passed.
-* `provider_compliance_verify --only_check=run_core_capture_bracket_whole_result_scoring_check` passed.
 * `core_result_path_smoke` passed.
 * `synthetic_only_provider_support_verify` passed.
-* Scene 568 Windows/Android matrix logs were reviewed and showed complete, accurate plan-evaluation decisions for the covered matrix.
-* Scene 568 Compatibility `gpu_only` expected-negative classification remained correct.
-* Scene 70 was not run in this sweep.
-* Godot-side N-member whole-result scoring validation was not added or run.
+* Windows unsandboxed Scene 568 Mobile/runtime_default passed.
+* Windows unsandboxed Scene 68 passed.
+* Windows unsandboxed Scene 70 passed.
 
-### Lightweight Godot validation convention
+Not run:
 
-Committed.
+* Android Godot validation.
+* Final matrix/soak rerun.
 
-Outcome:
-
-* Added a compact Godot validation convention to the Godot test-project README.
-* Defined a named Godot validation surface.
-* Defined reporting for supported cases, expected-negative cases, and not-run Godot validation.
-* Made the native maintainer-tool versus Godot-scene distinction explicit.
-* Used Scene 568 only as a current example.
-* Reaffirmed that Godot validation must not be claimed unless the relevant local/helper/manual path was actually run.
-
-### `topology_change_versions` verifier sampling cleanup
-
-Committed.
+### Timing/evidence semantics clarification
 
 Outcome:
 
-* `topology_change_versions()` waits after `destroy_stream()` for the settled observable shape before asserting.
-* The same settled-boundary concern also exists after `create_stream()` for the synthetic provider's asynchronously surfaced acquisition-session descendant.
-* Native verifier expectations should therefore anchor on settled visible shape plus the intended version/topology progression, not on a fragile assumption that synthetic descendant visibility always lands in the same absolute publish ordinal as stream creation.
-* The expected final shape remains strict: stream gone and top-level `acquisition_sessions[]` empty.
-* The issue was verifier-side early sampling of a valid transitional publication boundary, not a broken Core topology invariant.
+* Clarified maintainer documentation for the current timing/evidence fields.
+* No runtime behaviour, public API, scoring constants, or measurement machinery changed.
+* Score tuning remains deferred.
 
-Reported validation:
+### Bracket whole-result scoring
 
-* `verify_case_runner.exe topology_change_versions --repeat=1000` passed.
+Outcome:
+
+* Capture-side scoring now uses readiness once plus conservative required-member materialization.
+* Required members are derived from the applied still-image bundle/profile.
+* Single-member capture remains the member-0 degenerate case.
+* No fixed three-member assumption was introduced.
 
 ## Near-term guardrails
 
@@ -78,19 +61,18 @@ Do not reopen the following without new source evidence:
 
 * parent ownership and migration semantics;
 * retained-result calibration lifecycle;
-* capture-side bundle-sensitive invalidation / seed reuse / re-arming;
 * bracket whole-result scoring aggregation;
+* capture getter-side fallback removal;
+* explicit `to_image_member(index)` capture observation reporting;
 * Scene 568 terminal rollover semantics;
 * Scene 568 Compatibility `gpu_only` expected-negative classification;
-* `topology_change_versions` settled-snapshot wait;
-* the distinction between current/live top-level `acquisition_sessions[]` truth and historical teardown visibility in `native_objects`.
+* `topology_change_versions` settled-snapshot wait.
 
 ## Deferred
 
-Not part of the active timing/evidence-quality review:
+Not part of any currently open cleanup tranche:
 
 * score tuning;
-* platform-backed provider work;
-* further removal or tightening of capture getter-side calibration fallback;
+* platform-backed provider implementation readiness;
 * Scene 70 latency investigation only if reproducible after a clean system state;
 * optional Godot-side N-member whole-result scoring proof, only if later judged worth the extra scene/harness work.

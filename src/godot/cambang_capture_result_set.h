@@ -12,6 +12,7 @@
 namespace cambang {
 
 class CamBANGCaptureResult;
+class CamBANGServer;
 
 class CamBANGCaptureResultSet final : public godot::RefCounted {
   GDCLASS(CamBANGCaptureResultSet, godot::RefCounted)
@@ -20,6 +21,7 @@ public:
   CamBANGCaptureResultSet() = default;
 
   void set_capture_id(uint64_t capture_id) { capture_id_ = capture_id; }
+  void set_server(CamBANGServer* server) { server_ = server; }
   void set_results(std::vector<SharedCaptureResultData> results);
 
   uint64_t get_capture_id() const { return capture_id_; }
@@ -33,6 +35,7 @@ public:
 private:
   uint64_t capture_id_ = 0;
   std::map<uint64_t, SharedCaptureResultData> results_by_device_;
+  CamBANGServer* server_ = nullptr;
 };
 
 } // namespace cambang

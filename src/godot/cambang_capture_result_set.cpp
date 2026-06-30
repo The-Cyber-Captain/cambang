@@ -27,6 +27,7 @@ godot::Array CamBANGCaptureResultSet::get_results() const {
     godot::Ref<CamBANGCaptureResult> r;
     r.instantiate();
     r->set_data(data);
+    r->set_server(server_);
     out.push_back(r);
   }
   return out;
@@ -40,6 +41,7 @@ godot::Ref<CamBANGCaptureResult> CamBANGCaptureResultSet::get_result_for_device(
   godot::Ref<CamBANGCaptureResult> r;
   r.instantiate();
   r->set_data(it->second);
+  r->set_server(server_);
   return r;
 }
 

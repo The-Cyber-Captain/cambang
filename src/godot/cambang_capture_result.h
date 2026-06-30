@@ -11,6 +11,8 @@
 
 namespace cambang {
 
+class CamBANGServer;
+
 class CamBANGCaptureResult final : public godot::RefCounted {
   GDCLASS(CamBANGCaptureResult, godot::RefCounted)
 
@@ -25,6 +27,7 @@ public:
   CamBANGCaptureResult() = default;
 
   void set_data(SharedCaptureResultData data) { data_ = std::move(data); }
+  void set_server(CamBANGServer* server) { server_ = server; }
 
   uint32_t get_width() const;
   uint32_t get_height() const;
@@ -76,6 +79,7 @@ public:
 
 private:
   SharedCaptureResultData data_;
+  CamBANGServer* server_ = nullptr;
 };
 
 } // namespace cambang

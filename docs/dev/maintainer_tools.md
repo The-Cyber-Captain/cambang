@@ -295,6 +295,23 @@ heartbeat. Retained GPU display-view timings measure wrapper/display-view
 acquisition, not later render-thread draw, UI scheduling, or Synthetic GPU
 upload/update cost.
 
+Timing semantics reminder:
+
+- `display_view_elapsed_ns` measures the real Godot `get_display_view()` seam
+  for stream results.
+- Capture member `materialization_elapsed_ns` measures the real Godot
+  `to_image_member()` seam for that member.
+- Capture `capture_ready_elapsed_ns` is lifecycle latency from dispatcher and
+  acquisition-session timestamps, not a Godot result-access call boundary.
+- Capture `total_elapsed_ns` is a conservative chooser score for the whole
+  required still result: readiness once plus the slowest required member
+  materialization.
+- `normalized_cost_units` is byte-normalized classification evidence for
+  supported non-ready access, not a chooser latency score or a general
+  provider/hardware benchmark.
+- These timings must not be read as provider-local generation/staging cost,
+  snapshot publication cost, or UI draw cost.
+
 Removed temporary knobs:
 
 - `CAMBANG_DEV_SYNTH_UPDATE_GPU_ONLY_WHEN_DISPLAY_REQUESTED`

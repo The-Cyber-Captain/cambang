@@ -1046,6 +1046,13 @@ func _probe_capture_result_access_only(capture_result, label: String) -> void:
 		member0_capability != int(CamBANGCaptureResult.CAPABILITY_UNSUPPORTED),
 		"%s: capture_result.can_to_image_member(0) returned unsupported" % label
 	)
+	if _done:
+		return
+	var member0_image: Variant = capture_result.to_image_member(0)
+	_require(
+		member0_image != null,
+		"%s: capture_result.to_image_member(0) returned null" % label
+	)
 
 
 func _wait_for_device_handle(device_instance_id: int, label: String):
