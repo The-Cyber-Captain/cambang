@@ -265,6 +265,14 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
   evidence.provisional_to_image = ResultCapability::UNSUPPORTED;
   evidence.has_materialization_elapsed_ns = false;
   evidence.materialization_elapsed_ns = 0;
+  evidence.required_capture_member_count =
+      static_cast<uint32_t>(bundle.members.size());
+  evidence.observed_capture_member_count = 0;
+  evidence.materialized_capture_member_count = 0;
+  evidence.has_first_missing_required_capture_member_index = false;
+  evidence.first_missing_required_capture_member_index = 0;
+  evidence.capture_evidence_incomplete_reason =
+      CaptureEvidenceIncompleteReason::None;
   evidence.has_normalized_cost_units = false;
   evidence.normalized_cost_units = 0;
 
@@ -273,12 +281,23 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
   bool have_any_provisional_to_image = false;
   bool have_all_required_materialization = true;
   bool have_all_required_supported_materialization = true;
+  bool saw_required_member_missing_materialization = false;
+  bool saw_required_member_unsupported = false;
+
+  auto note_first_missing_required_member = [&](uint32_t member_index) {
+    if (!evidence.has_first_missing_required_capture_member_index) {
+      evidence.has_first_missing_required_capture_member_index = true;
+      evidence.first_missing_required_capture_member_index = member_index;
+    }
+  };
 
   for (const CaptureStillImageMember& required : bundle.members) {
     if (required.image_member_index >=
         evidence.capture_member_materialization.size()) {
       have_all_required_materialization = false;
       have_all_required_supported_materialization = false;
+      saw_required_member_missing_materialization = true;
+      note_first_missing_required_member(required.image_member_index);
       continue;
     }
 
@@ -287,9 +306,12 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
     if (!member_evidence.observed) {
       have_all_required_materialization = false;
       have_all_required_supported_materialization = false;
+      saw_required_member_missing_materialization = true;
+      note_first_missing_required_member(required.image_member_index);
       continue;
     }
 
+    ++evidence.observed_capture_member_count;
     have_any_observation = true;
     if (!have_any_provisional_to_image ||
         static_cast<uint8_t>(member_evidence.provisional_to_image) >
@@ -299,6 +321,7 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
     }
 
     if (member_evidence.has_materialization_elapsed_ns) {
+      ++evidence.materialized_capture_member_count;
       if (!evidence.has_materialization_elapsed_ns ||
           member_evidence.materialization_elapsed_ns >
               evidence.materialization_elapsed_ns) {
@@ -309,6 +332,8 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
       }
     } else {
       have_all_required_materialization = false;
+      saw_required_member_missing_materialization = true;
+      note_first_missing_required_member(required.image_member_index);
     }
 
     if (member_evidence.has_normalized_cost_units) {
@@ -323,6 +348,11 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
     if (member_evidence.provisional_to_image == ResultCapability::UNSUPPORTED ||
         !member_evidence.has_materialization_elapsed_ns) {
       have_all_required_supported_materialization = false;
+      if (member_evidence.provisional_to_image ==
+          ResultCapability::UNSUPPORTED) {
+        saw_required_member_unsupported = true;
+        note_first_missing_required_member(required.image_member_index);
+      }
     }
   }
 
@@ -347,6 +377,22 @@ void CoreRuntime::recompute_capture_materialization_aggregate_(
       have_all_required_supported_materialization &&
       evidence.has_total_elapsed_ns;
   evidence.capture_evidence_accepted = evidence.capture_evidence_complete;
+  if (bundle.members.empty()) {
+    evidence.capture_evidence_incomplete_reason =
+        CaptureEvidenceIncompleteReason::NoRequiredBundle;
+  } else if (!evidence.has_capture_ready_elapsed_ns) {
+    evidence.capture_evidence_incomplete_reason =
+        CaptureEvidenceIncompleteReason::AwaitingCaptureReady;
+  } else if (saw_required_member_unsupported) {
+    evidence.capture_evidence_incomplete_reason =
+        CaptureEvidenceIncompleteReason::RequiredMemberUnsupported;
+  } else if (saw_required_member_missing_materialization) {
+    evidence.capture_evidence_incomplete_reason =
+        CaptureEvidenceIncompleteReason::AwaitingRequiredMemberMaterialization;
+  } else {
+    evidence.capture_evidence_incomplete_reason =
+        CaptureEvidenceIncompleteReason::None;
+  }
 }
 
 CoreBackingPlanCandidateEvidenceReport
@@ -373,6 +419,16 @@ CoreRuntime::build_candidate_evidence_report_(
   report.capture_ready_elapsed_ns = evidence.capture_ready_elapsed_ns;
   report.has_total_elapsed_ns = evidence.has_total_elapsed_ns;
   report.total_elapsed_ns = evidence.total_elapsed_ns;
+  report.required_capture_member_count = evidence.required_capture_member_count;
+  report.observed_capture_member_count = evidence.observed_capture_member_count;
+  report.materialized_capture_member_count =
+      evidence.materialized_capture_member_count;
+  report.has_first_missing_required_capture_member_index =
+      evidence.has_first_missing_required_capture_member_index;
+  report.first_missing_required_capture_member_index =
+      evidence.first_missing_required_capture_member_index;
+  report.capture_evidence_incomplete_reason =
+      evidence.capture_evidence_incomplete_reason;
   report.has_normalized_cost_units = evidence.has_normalized_cost_units;
   report.normalized_cost_units = evidence.normalized_cost_units;
   report.has_observed_posture = evidence.has_observed_posture;

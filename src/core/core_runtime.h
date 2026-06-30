@@ -48,6 +48,14 @@ enum class BackingPlanEvaluationCompletionReason : uint8_t {
   SingleViableCandidate = 3,
 };
 
+enum class CaptureEvidenceIncompleteReason : uint8_t {
+  None = 0,
+  NoRequiredBundle = 1,
+  AwaitingCaptureReady = 2,
+  AwaitingRequiredMemberMaterialization = 3,
+  RequiredMemberUnsupported = 4,
+};
+
 struct CoreBackingPlanCandidateEvidenceReport {
   CoreRetainedProductionPlan candidate{};
   bool observation_seen = false;
@@ -63,6 +71,13 @@ struct CoreBackingPlanCandidateEvidenceReport {
   uint64_t capture_ready_elapsed_ns = 0;
   bool has_total_elapsed_ns = false;
   uint64_t total_elapsed_ns = 0;
+  uint32_t required_capture_member_count = 0;
+  uint32_t observed_capture_member_count = 0;
+  uint32_t materialized_capture_member_count = 0;
+  bool has_first_missing_required_capture_member_index = false;
+  uint32_t first_missing_required_capture_member_index = 0;
+  CaptureEvidenceIncompleteReason capture_evidence_incomplete_reason =
+      CaptureEvidenceIncompleteReason::None;
   bool has_normalized_cost_units = false;
   uint64_t normalized_cost_units = 0;
   bool has_observed_posture = false;
@@ -775,6 +790,13 @@ private:
     uint64_t capture_ready_elapsed_ns = 0;
     bool has_total_elapsed_ns = false;
     uint64_t total_elapsed_ns = 0;
+    uint32_t required_capture_member_count = 0;
+    uint32_t observed_capture_member_count = 0;
+    uint32_t materialized_capture_member_count = 0;
+    bool has_first_missing_required_capture_member_index = false;
+    uint32_t first_missing_required_capture_member_index = 0;
+    CaptureEvidenceIncompleteReason capture_evidence_incomplete_reason =
+        CaptureEvidenceIncompleteReason::None;
     bool has_normalized_cost_units = false;
     uint64_t normalized_cost_units = 0;
     bool has_observed_posture = false;

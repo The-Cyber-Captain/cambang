@@ -161,6 +161,23 @@ static godot::String result_payload_kind_name(ResultPayloadKind payload_kind) {
   return "unknown";
 }
 
+static godot::String capture_evidence_incomplete_reason_name(
+    CaptureEvidenceIncompleteReason reason) {
+  switch (reason) {
+    case CaptureEvidenceIncompleteReason::None:
+      return "none";
+    case CaptureEvidenceIncompleteReason::NoRequiredBundle:
+      return "no_required_bundle";
+    case CaptureEvidenceIncompleteReason::AwaitingCaptureReady:
+      return "awaiting_capture_ready";
+    case CaptureEvidenceIncompleteReason::AwaitingRequiredMemberMaterialization:
+      return "awaiting_required_member_materialization";
+    case CaptureEvidenceIncompleteReason::RequiredMemberUnsupported:
+      return "required_member_unsupported";
+  }
+  return "unknown";
+}
+
 static godot::Dictionary backing_plan_candidate_evidence_to_dictionary(
     const CoreBackingPlanCandidateEvidenceReport& evidence) {
   godot::Dictionary d;
@@ -185,6 +202,19 @@ static godot::Dictionary backing_plan_candidate_evidence_to_dictionary(
       static_cast<uint64_t>(evidence.capture_ready_elapsed_ns);
   d["has_total_elapsed_ns"] = evidence.has_total_elapsed_ns;
   d["total_elapsed_ns"] = static_cast<uint64_t>(evidence.total_elapsed_ns);
+  d["required_capture_member_count"] =
+      static_cast<uint64_t>(evidence.required_capture_member_count);
+  d["observed_capture_member_count"] =
+      static_cast<uint64_t>(evidence.observed_capture_member_count);
+  d["materialized_capture_member_count"] =
+      static_cast<uint64_t>(evidence.materialized_capture_member_count);
+  d["has_first_missing_required_capture_member_index"] =
+      evidence.has_first_missing_required_capture_member_index;
+  d["first_missing_required_capture_member_index"] =
+      static_cast<uint64_t>(evidence.first_missing_required_capture_member_index);
+  d["capture_evidence_incomplete_reason"] =
+      capture_evidence_incomplete_reason_name(
+          evidence.capture_evidence_incomplete_reason);
   d["has_normalized_cost_units"] = evidence.has_normalized_cost_units;
   d["normalized_cost_units"] =
       static_cast<uint64_t>(evidence.normalized_cost_units);

@@ -5322,6 +5322,13 @@ bool run_core_capture_bracket_whole_result_scoring_check() {
                    report,
                    CoreProductionPostureShape::CpuPrimary,
                    cpu_entry) &&
+               cpu_entry.required_capture_member_count == 2u &&
+               cpu_entry.observed_capture_member_count == 1u &&
+               cpu_entry.materialized_capture_member_count == 1u &&
+               cpu_entry.has_first_missing_required_capture_member_index &&
+               cpu_entry.first_missing_required_capture_member_index == 1u &&
+               cpu_entry.capture_evidence_incomplete_reason ==
+                   CaptureEvidenceIncompleteReason::AwaitingRequiredMemberMaterialization &&
                cpu_entry.observation_seen &&
                cpu_entry.has_materialization_elapsed_ns &&
                cpu_entry.has_capture_ready_elapsed_ns &&
@@ -5356,6 +5363,12 @@ bool run_core_capture_bracket_whole_result_scoring_check() {
                    report,
                    CoreProductionPostureShape::CpuPrimary,
                    cpu_entry) &&
+               cpu_entry.required_capture_member_count == 2u &&
+               cpu_entry.observed_capture_member_count == 2u &&
+               cpu_entry.materialized_capture_member_count == 2u &&
+               !cpu_entry.has_first_missing_required_capture_member_index &&
+               cpu_entry.capture_evidence_incomplete_reason ==
+                   CaptureEvidenceIncompleteReason::None &&
                cpu_entry.evidence_complete &&
                cpu_entry.evidence_accepted &&
                cpu_entry.has_capture_ready_elapsed_ns &&
