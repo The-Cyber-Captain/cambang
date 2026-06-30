@@ -129,6 +129,12 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     - `scenarios/568_backing_plan_dual_live.json`
     - `scenarios/568_backing_plan_edge_clocked.json`
   - Expected pass string: `PASS: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified`
+- `scenes/870_to_image_soak_benchmark.tscn`
+  - Automated two-device + rig soak benchmark for `StreamResult.to_image()` and `CaptureResult.to_image()` under randomized human-like and tick-scale load.
+  - Runs the full phase matrix twice: metered-only still capture (`[0]`) and five-member exposure bracket (`[-2,-1,0,+1,+2]`).
+  - Displays live stream `get_display_view()` panels separately from latest explicit stream `to_image()` panels, standalone capture panels, bracket thumbnail strips, and rig-triggered multi-device capture panels.
+  - Emits framed JSON record `scene870_to_image_soak_summary`; `run_godot.ps1 -CaptureLogs` recovers it and records `scene870_summary_json` in `meta.json`.
+  - Expected pass string: `OK: to_image_soak_benchmark complete`
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -223,6 +229,19 @@ Android export/deploy can use the same launcher and log bucketing:
   -TimeoutSec 25 `
   -ExpectedOkPattern "PASS:\s+backing-plan evaluation lifecycle, scoping, and clocked cleanup verified" `
   -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
+```
+
+To collect the Scene 870 `to_image()` soak benchmark baseline:
+
+```powershell
+.\run_godot.ps1 `
+  -Scene res://scenes/870_to_image_soak_benchmark.tscn `
+  -Windowed `
+  -CaptureLogs `
+  -TimeoutSec 180 `
+  -RunLabel scene870_synthetic_mobile `
+  -ExpectedOkPattern "OK:\s+to_image_soak_benchmark complete" `
+  -ExtraArgs @("--rendering-method=mobile", "--cambang-bench-seed=870001")
 ```
 
 Android-mode notes:

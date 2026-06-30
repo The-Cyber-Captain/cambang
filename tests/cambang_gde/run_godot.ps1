@@ -92,12 +92,30 @@ function Get-WindowsGodotExtraArgBuckets {
     $userArgPrefixes = @(
         "--cambang-synth-producer-output-form=",
         "--cambang-synth-stream-capability-downgrades=",
-        "--cambang-synth-capture-capability-downgrades="
+        "--cambang-synth-capture-capability-downgrades=",
+        "--cambang-bench-provider=",
+        "--cambang-bench-seed=",
+        "--cambang-bench-human-phase-sec=",
+        "--cambang-bench-superhuman-phase-sec=",
+        "--cambang-bench-rig-phase-sec=",
+        "--cambang-bench-warmup-sec=",
+        "--cambang-bench-superhuman-actions-per-tick=",
+        "--cambang-bench-max-inflight-captures=",
+        "--cambang-bench-headless-texture="
     )
     $userArgFlags = @(
         "--cambang-synth-producer-output-form",
         "--cambang-synth-stream-capability-downgrades",
-        "--cambang-synth-capture-capability-downgrades"
+        "--cambang-synth-capture-capability-downgrades",
+        "--cambang-bench-provider",
+        "--cambang-bench-seed",
+        "--cambang-bench-human-phase-sec",
+        "--cambang-bench-superhuman-phase-sec",
+        "--cambang-bench-rig-phase-sec",
+        "--cambang-bench-warmup-sec",
+        "--cambang-bench-superhuman-actions-per-tick",
+        "--cambang-bench-max-inflight-captures",
+        "--cambang-bench-headless-texture"
     )
     $engineArgValuePrefixes = @(
         "--rendering-method=",
@@ -577,16 +595,20 @@ function Recover-StructuredRecords {
     }
 
     $scene70SummaryJson = $null
+    $scene870SummaryJson = $null
     foreach ($summaryRecord in $recoveredSummaries) {
         if ($summaryRecord.name -eq "scene70_summary" -and $summaryRecord.kind -eq "json") {
             $scene70SummaryJson = [string]$summaryRecord.recovered_path
-            break
+        }
+        if ($summaryRecord.name -eq "scene870_to_image_soak_summary" -and $summaryRecord.kind -eq "json") {
+            $scene870SummaryJson = [string]$summaryRecord.recovered_path
         }
     }
 
     return [ordered]@{
         StructuredRecords = @($recoveredSummaries.ToArray())
         Scene70SummaryJson = $scene70SummaryJson
+        Scene870SummaryJson = $scene870SummaryJson
     }
 }
 
@@ -2048,6 +2070,9 @@ if ($RunPlatform -eq "android") {
 
 if ($null -ne $structuredRecordResult.Scene70SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$structuredRecordResult.Scene70SummaryJson)) {
     $meta["scene70_summary_json"] = [string]$structuredRecordResult.Scene70SummaryJson
+}
+if ($null -ne $structuredRecordResult.Scene870SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$structuredRecordResult.Scene870SummaryJson)) {
+    $meta["scene870_summary_json"] = [string]$structuredRecordResult.Scene870SummaryJson
 }
 
 $meta["expected_ok_pattern_observed"] = $expectedOkObserved
