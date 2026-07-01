@@ -3247,6 +3247,8 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
   if (required_bundle.members.empty()) {
     return;
   }
+  const uint32_t required_member_count =
+      static_cast<uint32_t>(required_bundle.members.size());
   const SharedCaptureResultData observed_result =
       result_store_.get_capture_result(capture_id, device_instance_id);
   const CoreCaptureResultData::ImageMemberData* observed_member =
@@ -3254,6 +3256,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
                       : nullptr;
   CoreProductionPostureShape observed_posture{};
   if (!observed_result ||
+      observed_result->image_member_count() < required_member_count ||
       observed_member == nullptr ||
       !capture_member_matches_required_bundle_(required_bundle, *observed_member) ||
       observed_result->acquisition_session_id == 0 ||
