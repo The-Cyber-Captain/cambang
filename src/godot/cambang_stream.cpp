@@ -4,6 +4,22 @@
 
 namespace cambang {
 
+void CamBANGStream::_register_with_server_() {
+  if (!server_) {
+    return;
+  }
+  server_->register_tracked_stream_wrapper_(
+      static_cast<uint64_t>(godot::Object::get_instance_id()));
+}
+
+void CamBANGStream::_set_result_live_from_server_(bool live) {
+  if (result_live_ == live) {
+    return;
+  }
+  result_live_ = live;
+  emit_signal("result_live_changed", result_live_);
+}
+
 godot::Error CamBANGStream::start() {
   if (destroy_requested_ || !server_ || stream_id_ == 0 || device_instance_id_ == 0) {
     return godot::ERR_UNAVAILABLE;
@@ -44,11 +60,16 @@ void CamBANGStream::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_stream_id"), &CamBANGStream::get_stream_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_device_instance_id"), &CamBANGStream::get_device_instance_id);
   godot::ClassDB::bind_method(godot::D_METHOD("get_hardware_id"), &CamBANGStream::get_hardware_id);
+  godot::ClassDB::bind_method(godot::D_METHOD("is_result_live"), &CamBANGStream::is_result_live);
   godot::ClassDB::bind_method(godot::D_METHOD("is_valid_stream_handle"), &CamBANGStream::is_valid_stream_handle);
   godot::ClassDB::bind_method(godot::D_METHOD("start"), &CamBANGStream::start);
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGStream::stop);
   godot::ClassDB::bind_method(godot::D_METHOD("destroy"), &CamBANGStream::destroy);
   godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGStream::get_result);
+  ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "result_live"), "", "is_result_live");
+  ADD_SIGNAL(godot::MethodInfo(
+      "result_live_changed",
+      godot::PropertyInfo(godot::Variant::BOOL, "live")));
 }
 
 } // namespace cambang

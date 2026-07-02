@@ -897,6 +897,7 @@ godot::Error CamBANGServer::_start_with_provider_config(
   _refresh_timeline_teardown_trace_mode();
 
   const auto clear_start_attempt_state = [this]() {
+    _set_all_tracked_wrapper_live_states_false_();
     latest_.reset();
     latest_export_.clear();
     has_latest_export_ = false;
@@ -995,6 +996,8 @@ void CamBANGServer::stop() {
     has_last_completed_gen_ = true;
     last_completed_gen_ = godot_gen_;
   }
+
+  _set_all_tracked_wrapper_live_states_false_();
 
   // Enforce documented NIL pre-baseline behaviour across restart boundaries.
   latest_.reset();
@@ -1409,6 +1412,126 @@ uint64_t CamBANGServer::resolve_endpoint_instance_id(const godot::String& hardwa
     return 0;
   }
   return it->second.device_instance_id;
+}
+
+void CamBANGServer::register_tracked_device_wrapper_(uint64_t wrapper_object_id) {
+  if (wrapper_object_id == 0) {
+    return;
+  }
+  tracked_device_wrapper_object_ids_.insert(wrapper_object_id);
+  godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
+  CamBANGDevice* device = godot::Object::cast_to<CamBANGDevice>(object);
+  if (!device) {
+    tracked_device_wrapper_object_ids_.erase(wrapper_object_id);
+    return;
+  }
+  device->_set_live_from_server_(
+      _is_device_live_by_identity_(device->get_hardware_id(), device->get_instance_id()));
+}
+
+void CamBANGServer::register_tracked_stream_wrapper_(uint64_t wrapper_object_id) {
+  if (wrapper_object_id == 0) {
+    return;
+  }
+  tracked_stream_wrapper_object_ids_.insert(wrapper_object_id);
+  godot::Object* object = godot::ObjectDB::get_instance(wrapper_object_id);
+  CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
+  if (!stream) {
+    tracked_stream_wrapper_object_ids_.erase(wrapper_object_id);
+    return;
+  }
+  stream->_set_result_live_from_server_(
+      _is_stream_result_live_by_identity_(stream->get_stream_id()));
+}
+
+bool CamBANGServer::_is_device_live_by_identity_(const godot::String& hardware_id,
+                                                 uint64_t device_instance_id) const {
+  if (!is_public_boundary_ready_() || !latest_) {
+    return false;
+  }
+  for (const DeviceState& device : latest_->devices) {
+    if (device.phase != CBLifecyclePhase::LIVE) {
+      continue;
+    }
+    if (!hardware_id.is_empty() && hardware_id == device.hardware_id.c_str()) {
+      return true;
+    }
+    if (device_instance_id != 0 && device.instance_id == device_instance_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CamBANGServer::_is_stream_result_live_by_identity_(uint64_t stream_id) const {
+  if (stream_id == 0 || !is_public_boundary_ready_() || !latest_) {
+    return false;
+  }
+  for (const StreamState& stream : latest_->streams) {
+    if (stream.stream_id != stream_id) {
+      continue;
+    }
+    if (stream.phase != CBLifecyclePhase::LIVE ||
+        stream.mode != CBStreamMode::FLOWING) {
+      return false;
+    }
+    return runtime_.get_latest_stream_result(stream_id) != nullptr;
+  }
+  return false;
+}
+
+void CamBANGServer::_refresh_tracked_wrapper_live_states_from_snapshot_() {
+  for (auto it = tracked_device_wrapper_object_ids_.begin();
+       it != tracked_device_wrapper_object_ids_.end();) {
+    godot::Object* object = godot::ObjectDB::get_instance(*it);
+    CamBANGDevice* device = godot::Object::cast_to<CamBANGDevice>(object);
+    if (!device) {
+      it = tracked_device_wrapper_object_ids_.erase(it);
+      continue;
+    }
+    device->_set_live_from_server_(
+        _is_device_live_by_identity_(device->get_hardware_id(), device->get_instance_id()));
+    ++it;
+  }
+
+  for (auto it = tracked_stream_wrapper_object_ids_.begin();
+       it != tracked_stream_wrapper_object_ids_.end();) {
+    godot::Object* object = godot::ObjectDB::get_instance(*it);
+    CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
+    if (!stream) {
+      it = tracked_stream_wrapper_object_ids_.erase(it);
+      continue;
+    }
+    stream->_set_result_live_from_server_(
+        _is_stream_result_live_by_identity_(stream->get_stream_id()));
+    ++it;
+  }
+}
+
+void CamBANGServer::_set_all_tracked_wrapper_live_states_false_() {
+  for (auto it = tracked_device_wrapper_object_ids_.begin();
+       it != tracked_device_wrapper_object_ids_.end();) {
+    godot::Object* object = godot::ObjectDB::get_instance(*it);
+    CamBANGDevice* device = godot::Object::cast_to<CamBANGDevice>(object);
+    if (!device) {
+      it = tracked_device_wrapper_object_ids_.erase(it);
+      continue;
+    }
+    device->_set_live_from_server_(false);
+    ++it;
+  }
+
+  for (auto it = tracked_stream_wrapper_object_ids_.begin();
+       it != tracked_stream_wrapper_object_ids_.end();) {
+    godot::Object* object = godot::ObjectDB::get_instance(*it);
+    CamBANGStream* stream = godot::Object::cast_to<CamBANGStream>(object);
+    if (!stream) {
+      it = tracked_stream_wrapper_object_ids_.erase(it);
+      continue;
+    }
+    stream->_set_result_live_from_server_(false);
+    ++it;
+  }
 }
 
 godot::Ref<CamBANGDevice> CamBANGServer::get_device(uint64_t device_instance_id) const {
@@ -1935,6 +2058,7 @@ bool CamBANGServer::_consume_latest_core_snapshot() {
   // Export as a struct-like Variant graph for Godot inspection.
   latest_export_ = export_snapshot_to_godot(*snap, godot_gen_, godot_version_, godot_topology_version_);
   has_latest_export_ = true;
+  _refresh_tracked_wrapper_live_states_from_snapshot_();
 
   emit_signal("state_published",
               static_cast<uint64_t>(godot_gen_),

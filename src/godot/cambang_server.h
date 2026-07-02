@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 
 #include "imaging/api/provider_contract_datatypes.h"
@@ -157,6 +158,8 @@ protected:
   static void _bind_methods();
 
 private:
+  friend class CamBANGDevice;
+  friend class CamBANGStream;
   friend class CamBANGRig;
   // Called on the Godot main thread via the SceneTree "process_frame" signal.
   void _on_godot_process_frame();
@@ -192,6 +195,13 @@ private:
   void _drain_pending_endpoint_startup_intents_after_baseline_();
   godot::Error _start_scenario_now_();
   void _drain_pending_scenario_start_after_baseline_();
+  void _refresh_tracked_wrapper_live_states_from_snapshot_();
+  void _set_all_tracked_wrapper_live_states_false_();
+  bool _is_device_live_by_identity_(const godot::String& hardware_id,
+                                    uint64_t device_instance_id) const;
+  bool _is_stream_result_live_by_identity_(uint64_t stream_id) const;
+  void register_tracked_device_wrapper_(uint64_t wrapper_object_id);
+  void register_tracked_stream_wrapper_(uint64_t wrapper_object_id);
 
   static CamBANGServer* singleton_;
 
@@ -329,6 +339,8 @@ private:
   std::unordered_map<std::string, EndpointLifecycleState> endpoint_lifecycle_by_hardware_id_;
   std::unordered_map<uint64_t, godot::String> direct_stream_hardware_id_by_stream_id_;
   std::unordered_map<uint64_t, uint64_t> latest_capture_id_by_device_instance_id_;
+  std::unordered_set<uint64_t> tracked_device_wrapper_object_ids_;
+  std::unordered_set<uint64_t> tracked_stream_wrapper_object_ids_;
 };
 
 } // namespace cambang
