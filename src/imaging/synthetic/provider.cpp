@@ -3017,22 +3017,29 @@ void SyntheticProvider::emit_due_frames_() {
       s.consecutive_behind_ticks = 0;
     }
 
-    // Emit as many frames as are due (catch-up) in virtual time.
+    // Nominal live streams should not replay every overdue frame after a slow
+    // host tick. Doing so creates a positive feedback loop where a delayed tick
+    // emits many stale frames, which makes the next tick even later. Emit at
+    // most one frame for the current tick and snap past any missed intervals.
     uint32_t emitted_this_tick = 0;
-    while (s.next_due_ns <= now) {
-      if (triage_catchup_cap_per_tick_ > 0 && emitted_this_tick >= triage_catchup_cap_per_tick_) {
-        ++triage_catchup_ticks_capped_total_;
-        while (s.next_due_ns <= now) {
-          s.next_due_ns += period;
-          ++triage_catchup_frames_dropped_total_;
-        }
-        break;
-      }
+    if (s.next_due_ns <= now) {
       const uint64_t scheduled = s.next_due_ns;
       emit_one_frame_(s, scheduled);
-      s.next_due_ns += period;
       ++emitted_this_tick;
       ++triage_frames_emitted_total_;
+
+      const uint64_t next_due = scheduled + period;
+      if (next_due <= now) {
+        const uint64_t snapped_due = snap_repeating_due_after_(next_due, now, period);
+        if (snapped_due > next_due) {
+          ++triage_catchup_ticks_capped_total_;
+          triage_catchup_frames_dropped_total_ +=
+              static_cast<uint64_t>((snapped_due - next_due) / period);
+        }
+        s.next_due_ns = snapped_due;
+      } else {
+        s.next_due_ns = next_due;
+      }
     }
     if (emitted_this_tick > 0) {
       ++triage_catchup_bursts_total_;

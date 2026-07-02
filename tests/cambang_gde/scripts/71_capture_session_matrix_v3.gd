@@ -11,7 +11,8 @@ const HW_A: String = "synthetic:0"
 const HW_B: String = "synthetic:1"
 const SCENARIO_PATH: String = "res://scenarios/capture_session_matrix_v3.json"
 const LOG_SECOND_EPS: float = 0.05
-const EXERCISE_DISPLAY_ONESHOT := "display_oneshot"
+const EXERCISE_BIND_ONCE_LIVE_DISPLAY := "bind_once_live_display"
+const EXERCISE_DISPLAY_ONESHOT_ALIAS := "display_oneshot"
 
 const CHECKPOINTS: Array = [
 	{"time_s": 1.0,  "kind": "capture",         "id": 1,  "device": DEVICE_A_KEY,    "desc": "Capture-only on CameraA"},
@@ -78,7 +79,7 @@ var _timing_log_max_sec := 0.0
 var _timing_log_calls := 0
 var _summary_timing_logged := false
 var _display_demand_trace := false
-var _resolved_exercise := EXERCISE_DISPLAY_ONESHOT
+var _resolved_exercise := EXERCISE_BIND_ONCE_LIVE_DISPLAY
 var _last_phase_metrics_snapshot: Dictionary = {}
 
 
@@ -95,16 +96,19 @@ func _resolve_exercise_or_fail() -> bool:
 	var defaulted := false
 	var exercise := exercise_raw
 	if exercise == "":
-		exercise = EXERCISE_DISPLAY_ONESHOT
+		exercise = EXERCISE_BIND_ONCE_LIVE_DISPLAY
 		defaulted = true
+	elif exercise == EXERCISE_DISPLAY_ONESHOT_ALIAS:
+		exercise = EXERCISE_BIND_ONCE_LIVE_DISPLAY
 	_resolved_exercise = exercise
-	if exercise != EXERCISE_DISPLAY_ONESHOT:
-		push_error("[CamBANG][Scene71] exercise=%s supported=false supported_exercises=%s" % [exercise_raw, EXERCISE_DISPLAY_ONESHOT])
+	if exercise != EXERCISE_BIND_ONCE_LIVE_DISPLAY:
+		push_error("[CamBANG][Scene71] exercise=%s supported=false supported_exercises=%s,%s" % [exercise_raw, EXERCISE_BIND_ONCE_LIVE_DISPLAY, EXERCISE_DISPLAY_ONESHOT_ALIAS])
 		get_tree().quit(2)
 		return false
-	var resolved_line := "[CamBANG][Scene71] exercise=%s default=%s supported=true behavior=current_one_shot_display_contract" % [
+	var resolved_line := "[CamBANG][Scene71] exercise=%s default=%s supported=true behavior=bind_once_live_display alias_display_oneshot=%s" % [
 		exercise,
-		str(defaulted)
+		str(defaulted),
+		str(exercise_raw == EXERCISE_DISPLAY_ONESHOT_ALIAS)
 	]
 	print(resolved_line)
 	_append_log(resolved_line)

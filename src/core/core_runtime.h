@@ -520,6 +520,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   void release_stream_display_demand(uint64_t stream_id) {
     result_store_.release_stream_display_demand(stream_id);
   }
+  bool is_stream_display_demand_active(uint64_t stream_id) const {
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - epoch_).count());
+    return result_store_.is_stream_display_demand_active(stream_id, now_ns);
+  }
   void release_stream_display_demand_async(uint64_t stream_id);
 
 

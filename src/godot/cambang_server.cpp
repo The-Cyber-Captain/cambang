@@ -1994,6 +1994,7 @@ void CamBANGServer::_on_godot_tick(double delta) {
     // CPU_PACKED stream display views use stream-owned live ImageTexture
     // wrappers that are refreshed from latest retained stream state each tick.
     CamBANGStreamResult::refresh_live_stream_cpu_display_views(runtime_);
+    synthetic_gpu_backing_drain_pending_live_display_wrapper_refreshes();
   }
 
   std::string timeline_line;
@@ -2008,15 +2009,32 @@ void CamBANGServer::_on_godot_tick(double delta) {
   // Core may publish multiple intermediate snapshots between Godot ticks.
   // We emit at most once per tick, and only if *anything* has changed since
   // the previous tick.
+  std::vector<CoreBackingPlanEvaluationReport> backing_plan_reports;
+  bool have_backing_plan_reports = false;
+  const auto& ensure_backing_plan_reports = [&]() -> const std::vector<CoreBackingPlanEvaluationReport>& {
+    if (!have_backing_plan_reports) {
+      if (runtime_.is_running() && is_public_boundary_ready_() && latest_) {
+        backing_plan_reports = runtime_.backing_plan_evaluation_reports();
+      } else {
+        backing_plan_reports.clear();
+      }
+      have_backing_plan_reports = true;
+    }
+    return backing_plan_reports;
+  };
+
   if (_consume_latest_core_snapshot()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
     _drain_pending_scenario_start_after_baseline_();
-    _arm_live_retained_result_access_calibration_from_snapshot_(now_ns);
+    _arm_live_retained_result_access_calibration_from_snapshot_(
+        now_ns,
+        ensure_backing_plan_reports());
   } else if (!pending_endpoint_startup_intents_.empty()) {
     _drain_pending_endpoint_startup_intents_after_baseline_();
   }
-  _observe_active_stream_evaluation_calibration_identities_(now_ns);
-  _observe_active_capture_evaluation_calibration_identities_(now_ns);
+  const auto& backing_reports = ensure_backing_plan_reports();
+  _observe_active_stream_evaluation_calibration_identities_(now_ns, backing_reports);
+  _observe_active_capture_evaluation_calibration_identities_(now_ns, backing_reports);
   _process_armed_live_retained_result_access_calibration_(now_ns);
 }
 
@@ -2028,15 +2046,15 @@ void CamBANGServer::_clear_live_retained_result_access_calibration_state_() {
 }
 
 void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
-    uint64_t now_ns) {
+    uint64_t now_ns,
+    const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports) {
   if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
     _clear_live_retained_result_access_calibration_state_();
     return;
   }
 
   std::unordered_set<uint64_t> active_stream_evaluator_ids;
-  for (const CoreBackingPlanEvaluationReport& report :
-       runtime_.backing_plan_evaluation_reports()) {
+  for (const CoreBackingPlanEvaluationReport& report : backing_plan_reports) {
     if (report.parent_kind ==
             CoreBackingPlanEvaluationReport::ParentKind::Stream &&
         report.evaluator_active &&
@@ -2251,14 +2269,14 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
 }
 
 void CamBANGServer::_observe_active_stream_evaluation_calibration_identities_(
-    uint64_t now_ns) {
+    uint64_t now_ns,
+    const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports) {
   if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
     return;
   }
 
   std::unordered_set<uint64_t> active_stream_evaluator_ids;
-  for (const CoreBackingPlanEvaluationReport& report :
-       runtime_.backing_plan_evaluation_reports()) {
+  for (const CoreBackingPlanEvaluationReport& report : backing_plan_reports) {
     if (report.parent_kind ==
             CoreBackingPlanEvaluationReport::ParentKind::Stream &&
         report.evaluator_active &&
@@ -2381,7 +2399,8 @@ void CamBANGServer::_observe_active_stream_evaluation_calibration_identities_(
 }
 
 void CamBANGServer::_observe_active_capture_evaluation_calibration_identities_(
-    uint64_t now_ns) {
+    uint64_t now_ns,
+    const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports) {
   if (!runtime_.is_running() || !is_public_boundary_ready_()) {
     return;
   }
@@ -2399,8 +2418,7 @@ void CamBANGServer::_observe_active_capture_evaluation_calibration_identities_(
                    build_capture_member_identity_signature(data);
       };
 
-  for (const CoreBackingPlanEvaluationReport& report :
-       runtime_.backing_plan_evaluation_reports()) {
+  for (const CoreBackingPlanEvaluationReport& report : backing_plan_reports) {
     if (report.target_kind != CoreBackingPlanEvaluationReport::TargetKind::Capture ||
         !report.evaluator_active ||
         report.device_instance_id == 0 ||

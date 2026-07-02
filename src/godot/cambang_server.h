@@ -163,9 +163,15 @@ private:
 
   // Core tick handler (Godot main thread) invoked by _on_godot_process_frame().
   void _on_godot_tick(double delta);
-  void _arm_live_retained_result_access_calibration_from_snapshot_(uint64_t now_ns);
-  void _observe_active_stream_evaluation_calibration_identities_(uint64_t now_ns);
-  void _observe_active_capture_evaluation_calibration_identities_(uint64_t now_ns);
+  void _arm_live_retained_result_access_calibration_from_snapshot_(
+      uint64_t now_ns,
+      const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
+  void _observe_active_stream_evaluation_calibration_identities_(
+      uint64_t now_ns,
+      const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
+  void _observe_active_capture_evaluation_calibration_identities_(
+      uint64_t now_ns,
+      const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports);
   void _process_armed_live_retained_result_access_calibration_(uint64_t now_ns);
   void _clear_live_retained_result_access_calibration_state_();
   void _drain_pending_stop_and_quit_();

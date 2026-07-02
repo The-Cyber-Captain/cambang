@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="cambang_gde"
-run/main_scene="res://scenes/568_backing_plan_evaluation_verify.tscn"
+run/main_scene="uid://bqius85f2n78h"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
 
@@ -62,23 +62,4 @@ request_server_stop={
 [rendering]
 
 renderer/rendering_method="mobile"
-renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

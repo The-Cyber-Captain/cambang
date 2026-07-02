@@ -93,17 +93,21 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Expected pass string: `OK: result_retrieval_verification passed`
 - `scenes/71_capture_session_matrix_v3.tscn`
   - Capture/session matrix confidence harness covering staged stream-result binding and capture-result checkpoints.
-  - Supported exercises: `display_oneshot`
-  - Default when `CAMBANG_EXERCISE` is unset: `display_oneshot`
-  - This default represents the current customer/API confirmation behavior: one-shot `get_display_view()` binding.
+  - Supported exercises: `bind_once_live_display`
+  - Backward-compatible alias: `display_oneshot`
+  - Default when `CAMBANG_EXERCISE` is unset: `bind_once_live_display`
+  - This default represents the current customer/API confirmation behavior: bind once with `get_display_view()` and keep a persistent live display view while the returned object is held.
 - `scenes/72_stream_load_isolation.tscn`
   - Stream-load isolation/regression harness with retained display-path diagnostics and timing summaries.
   - Supported exercises:
-    - `display_oneshot` (default)
-    - `display_latest`
+    - `bind_once_live_display` (default)
+    - `reacquire_display_each_frame_debug`
     - `no_display_default`
     - `no_display_eager`
-  - `display_oneshot` is default because it represents the intended Godot-facing API contract:
+  - Backward-compatible aliases:
+    - `display_oneshot` => `bind_once_live_display`
+    - `display_latest` => `reacquire_display_each_frame_debug`
+  - `bind_once_live_display` is default because it represents the intended Godot-facing API contract:
     bind once and remain live without repeated `get_display_view()` refresh burden.
   - `no_display_eager` is self-contained via `CAMBANG_EXERCISE`: it implies effective GPU update policy `always` when no explicit low-level policy is set.
   - Precedence: explicit `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY` > exercise-derived (`no_display_eager` => `always`) > default (`display_demanded`).
@@ -306,6 +310,10 @@ Notes:
       - `CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
     - eager/no-display comparison via exercise only:
       - `CAMBANG_EXERCISE=no_display_eager godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
+    - bind-once live display comparison:
+      - `CAMBANG_EXERCISE=bind_once_live_display godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
+    - reacquire-each-frame debug comparison:
+      - `CAMBANG_EXERCISE=reacquire_display_each_frame_debug godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
     - explicit low-level override comparison (still supported):
       - `CAMBANG_SYNTH_STREAM_GPU_UPDATE_POLICY=always CAMBANG_EXERCISE=no_display_default godot4 --headless --path . --scene res://scenes/72_stream_load_isolation.tscn --quit-after 30`
 

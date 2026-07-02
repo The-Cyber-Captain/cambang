@@ -1,6 +1,7 @@
 #include "imaging/synthetic/gpu_backing_runtime.h"
 #include "godot/synthetic_gpu_backing_bridge_internal.h"
 #include "godot/godot_gpu_display_service.h"
+#include "godot/cambang_stream_result_internal.h"
 #include "core/resource_aggregate_telemetry.h"
 
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/core/object.hpp>
 
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
@@ -141,13 +143,16 @@ public:
   void init(
       godot::Ref<godot::Texture2DRD> texture,
       std::shared_ptr<SharedDisplayTextureRidState> state,
+      uint64_t stream_id,
       uint32_t width,
       uint32_t height);
+  void update_dimensions(uint32_t width, uint32_t height);
 
   int32_t _get_width() const override;
   int32_t _get_height() const override;
   bool _is_pixel_opaque(int32_t x, int32_t y) const override;
   bool _has_alpha() const override;
+  godot::RID _get_rid() const override;
   void _draw(
       const godot::RID& to_canvas_item,
       const godot::Vector2& pos,
@@ -168,8 +173,13 @@ public:
       bool clip_uv) const override;
 
 private:
+  void clear_runtime_references_();
+
   godot::Ref<godot::Texture2DRD> texture_;
   std::shared_ptr<SharedDisplayTextureRidState> state_;
+  godot::Ref<DisplayDemandToken> display_demand_token_;
+  uint64_t stream_id_ = 0;
+  uint64_t borrow_id_ = 0;
   uint32_t width_ = 0;
   uint32_t height_ = 0;
 };
@@ -282,12 +292,21 @@ namespace {
 
 struct LiveDisplayWrapperBorrow final {
   uint64_t stream_id = 0;
+  uint64_t wrapper_instance_id = 0;
   std::shared_ptr<SharedDisplayTextureRidState> rid_state;
+};
+
+struct PendingLiveDisplayWrapperRefresh final {
+  uint64_t stream_id = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
 };
 
 std::mutex g_live_display_wrapper_borrow_mutex;
 std::map<uint64_t, LiveDisplayWrapperBorrow> g_live_display_wrapper_borrows;
 uint64_t g_next_live_display_wrapper_borrow_id = 1;
+std::mutex g_pending_live_display_wrapper_refresh_mutex;
+std::map<uint64_t, PendingLiveDisplayWrapperRefresh> g_pending_live_display_wrapper_refreshes;
 
 uint64_t register_live_display_wrapper_borrow(
     uint64_t stream_id,
@@ -297,8 +316,20 @@ uint64_t register_live_display_wrapper_borrow(
   }
   std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
   const uint64_t borrow_id = g_next_live_display_wrapper_borrow_id++;
-  g_live_display_wrapper_borrows.emplace(borrow_id, LiveDisplayWrapperBorrow{stream_id, state});
+  g_live_display_wrapper_borrows.emplace(borrow_id, LiveDisplayWrapperBorrow{stream_id, 0, state});
   return borrow_id;
+}
+
+void set_live_display_wrapper_instance_id(uint64_t borrow_id, uint64_t wrapper_instance_id) {
+  if (borrow_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
+  const auto it = g_live_display_wrapper_borrows.find(borrow_id);
+  if (it == g_live_display_wrapper_borrows.end()) {
+    return;
+  }
+  it->second.wrapper_instance_id = wrapper_instance_id;
 }
 
 void unregister_live_display_wrapper_borrow(uint64_t borrow_id) {
@@ -307,6 +338,26 @@ void unregister_live_display_wrapper_borrow(uint64_t borrow_id) {
   }
   std::lock_guard<std::mutex> lock(g_live_display_wrapper_borrow_mutex);
   g_live_display_wrapper_borrows.erase(borrow_id);
+}
+
+void queue_live_display_wrapper_refresh(uint64_t stream_id, uint32_t width, uint32_t height) {
+  if (stream_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_pending_live_display_wrapper_refresh_mutex);
+  g_pending_live_display_wrapper_refreshes[stream_id] = PendingLiveDisplayWrapperRefresh{stream_id, width, height};
+}
+
+std::vector<PendingLiveDisplayWrapperRefresh> take_pending_live_display_wrapper_refreshes() {
+  std::lock_guard<std::mutex> lock(g_pending_live_display_wrapper_refresh_mutex);
+  std::vector<PendingLiveDisplayWrapperRefresh> refreshes;
+  refreshes.reserve(g_pending_live_display_wrapper_refreshes.size());
+  for (const auto& [stream_id, refresh] : g_pending_live_display_wrapper_refreshes) {
+    (void)stream_id;
+    refreshes.push_back(refresh);
+  }
+  g_pending_live_display_wrapper_refreshes.clear();
+  return refreshes;
 }
 
 std::vector<LiveDisplayWrapperBorrow> snapshot_live_display_wrapper_borrows() {
@@ -325,15 +376,27 @@ std::vector<LiveDisplayWrapperBorrow> snapshot_live_display_wrapper_borrows() {
 void DeferredDisplayTexture2DRD::init(
     godot::Ref<godot::Texture2DRD> texture,
     std::shared_ptr<SharedDisplayTextureRidState> state,
+    uint64_t stream_id,
     uint32_t width,
     uint32_t height) {
+  clear_runtime_references_();
   texture_ = std::move(texture);
   state_ = std::move(state);
+  stream_id_ = stream_id;
   width_ = width;
   height_ = height;
+  borrow_id_ = register_live_display_wrapper_borrow(stream_id_, state_);
+  set_live_display_wrapper_instance_id(borrow_id_, static_cast<uint64_t>(get_instance_id()));
+  if (stream_id != 0) {
+    display_demand_token_.instantiate();
+    if (display_demand_token_.is_valid()) {
+      display_demand_token_->init(stream_id, true);
+    }
+  }
 }
 
 DeferredDisplayTexture2DRD::~DeferredDisplayTexture2DRD() {
+  clear_runtime_references_();
   godot::Ref<godot::Texture2DRD> texture = std::move(texture_);
   std::shared_ptr<SharedDisplayTextureRidState> state = std::move(state_);
   if (texture.is_valid()) {
@@ -343,6 +406,12 @@ DeferredDisplayTexture2DRD::~DeferredDisplayTexture2DRD() {
       return;
     }
   }
+}
+
+void DeferredDisplayTexture2DRD::update_dimensions(uint32_t width, uint32_t height) {
+  width_ = width;
+  height_ = height;
+  emit_changed();
 }
 
 int32_t DeferredDisplayTexture2DRD::_get_width() const {
@@ -361,6 +430,10 @@ bool DeferredDisplayTexture2DRD::_is_pixel_opaque(int32_t x, int32_t y) const {
 
 bool DeferredDisplayTexture2DRD::_has_alpha() const {
   return true;
+}
+
+godot::RID DeferredDisplayTexture2DRD::_get_rid() const {
+  return state_ ? state_->snapshot_rid() : godot::RID();
 }
 
 void DeferredDisplayTexture2DRD::_draw(
@@ -394,6 +467,13 @@ void DeferredDisplayTexture2DRD::_draw_rect_region(
   if (texture_.is_valid() && state_ && state_->draw_allowed()) {
     texture_->draw_rect_region(to_canvas_item, rect, src_rect, modulate, transpose, clip_uv);
   }
+}
+
+void DeferredDisplayTexture2DRD::clear_runtime_references_() {
+  unregister_live_display_wrapper_borrow(borrow_id_);
+  borrow_id_ = 0;
+  display_demand_token_.unref();
+  stream_id_ = 0;
 }
 
 void DisplayTextureRidOwner::init(uint64_t stream_id, std::shared_ptr<SharedDisplayTextureRidState> state) {
@@ -784,6 +864,7 @@ bool update_stream_live_gpu_backing_rgba8(
         g_gpu_update_timing_stats.texture_update_calls,
         update_ns);
   }
+  queue_live_display_wrapper_refresh(retained->stream_id, width, height);
   return true;
 }
 
@@ -978,6 +1059,42 @@ void synthetic_gpu_backing_invalidate_all_live_display_wrappers() {
   }
 }
 
+void synthetic_gpu_backing_drain_pending_live_display_wrapper_refreshes() {
+  const std::vector<PendingLiveDisplayWrapperRefresh> refreshes =
+      take_pending_live_display_wrapper_refreshes();
+  if (refreshes.empty()) {
+    return;
+  }
+
+  std::map<uint64_t, PendingLiveDisplayWrapperRefresh> refreshes_by_stream_id;
+  for (const PendingLiveDisplayWrapperRefresh& refresh : refreshes) {
+    if (refresh.stream_id == 0) {
+      continue;
+    }
+    refreshes_by_stream_id[refresh.stream_id] = refresh;
+  }
+  if (refreshes_by_stream_id.empty()) {
+    return;
+  }
+
+  const std::vector<LiveDisplayWrapperBorrow> borrows = snapshot_live_display_wrapper_borrows();
+  for (const LiveDisplayWrapperBorrow& borrow : borrows) {
+    if (borrow.stream_id == 0 || borrow.wrapper_instance_id == 0) {
+      continue;
+    }
+    const auto refresh_it = refreshes_by_stream_id.find(borrow.stream_id);
+    if (refresh_it == refreshes_by_stream_id.end()) {
+      continue;
+    }
+    godot::Object* object = godot::ObjectDB::get_instance(borrow.wrapper_instance_id);
+    DeferredDisplayTexture2DRD* wrapper = godot::Object::cast_to<DeferredDisplayTexture2DRD>(object);
+    if (!wrapper) {
+      continue;
+    }
+    wrapper->update_dimensions(refresh_it->second.width, refresh_it->second.height);
+  }
+}
+
 godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::shared_ptr<void>& backing) {
   constexpr const char* kDisplayTextureRidOwnerMetaKey = "__cambang_synth_gpu_rid_owner";
   if (bridge_teardown_started()) {
@@ -1034,7 +1151,7 @@ godot::Ref<godot::Texture2D> synthetic_gpu_backing_display_texture(const std::sh
   if (display_view.is_null()) {
     return {};
   }
-  display_view->init(texture, state, width, height);
+  display_view->init(texture, state, stream_id, width, height);
 
   // Display view is a user-facing wrapper over stream-owned backing state.
   // The Texture2DRD delegate creates an internal RenderingServer texture wrapper
