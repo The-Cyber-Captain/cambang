@@ -260,14 +260,12 @@ StreamTemplate SyntheticProvider::stream_template() const {
   t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
   t.profile.target_fps_max = t.profile.target_fps_min;
 
-  // Temporary diagnostic default: use a simple static stream pattern so
-  // steady-state Compatibility cost is easier to attribute.
-  t.picture.preset = PatternPreset::Checker;
+  t.picture.preset = PatternPreset::Noise;
   t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed);
   t.picture.generator_fps_num = 30;
   t.picture.generator_fps_den = 1;
   t.picture.overlay_frame_index_offsets = false;
-  t.picture.overlay_moving_bar = false;
+  t.picture.overlay_moving_bar = true;
   return t;
 }
 

@@ -1,4 +1,6 @@
-[gd_scene load_steps=2 format=3 uid="uid://bqius85f2n78h"]
+[gd_scene load_steps=4 format=3 uid="uid://bqius85f2n78h"]
+
+[ext_resource type="Script" uid="uid://djv2vyhmruoh2" path="res://addons/cambang/cambang_status_panel.gd" id="1_bdgjy"]
 
 [sub_resource type="GDScript" id="GDScript_xnvps"]
 resource_name = "100_control"
@@ -59,6 +61,7 @@ var capture_profile_bun : Dictionary = {
 #var device_roster : Array[CamBANGDevice] = [CamBANGDevice.new()]
 var _metrics_sample_elapsed_s := 0.0
 var _last_metrics_snapshot: Dictionary = {}
+var _first_bind_trace_emitted := false
 
 func _make_still_image_bundle_members() -> Array:
 	return [
@@ -110,6 +113,61 @@ func _backing_plan_report_summary(metrics: Dictionary) -> String:
 		if bool(report.get(\"evaluator_active\", false)):
 			active_stream_evaluators += 1
 	return \"stream_reports=%d active_stream_evaluators=%d\" % [stream_reports, active_stream_evaluators]
+
+func _display_path_kind_name(path_kind: int) -> String:
+	match path_kind:
+		CamBANGStreamResult.DISPLAY_PATH_RETAINED_GPU_BACKING:
+			return \"retained_gpu_backing\"
+		CamBANGStreamResult.DISPLAY_PATH_STREAM_LIVE_CPU_DISPLAY_VIEW:
+			return \"stream_live_cpu_display_view\"
+		_:
+			return \"none\"
+
+func _find_stream_backing_plan_report(metrics: Dictionary, stream_id: int) -> Dictionary:
+	var reports_v: Variant = metrics.get(\"backing_plan_evaluation_reports\", [])
+	if typeof(reports_v) != TYPE_ARRAY:
+		return {}
+	var reports: Array = reports_v
+	for report_v in reports:
+		if typeof(report_v) != TYPE_DICTIONARY:
+			continue
+		var report: Dictionary = report_v
+		if str(report.get(\"target_kind\", \"\")) != \"stream\":
+			continue
+		if int(report.get(\"stream_id\", 0)) != stream_id:
+			continue
+		return report
+	return {}
+
+func _trace_first_stream_bind(stream: CamBANGStream, result: CamBANGStreamResult) -> void:
+	if _first_bind_trace_emitted:
+		return
+	_first_bind_trace_emitted = true
+	var metrics: Dictionary = {}
+	if CamBANGServer.has_method(\"get_synthetic_metrics_snapshot\"):
+		var snap_v: Variant = CamBANGServer.get_synthetic_metrics_snapshot()
+		if typeof(snap_v) == TYPE_DICTIONARY:
+			metrics = snap_v
+	var report := _find_stream_backing_plan_report(metrics, int(stream.get_stream_id()))
+	var requested: Dictionary = report.get(\"requested\", {}) if not report.is_empty() else {}
+	var steady: Dictionary = report.get(\"steady\", {}) if not report.is_empty() else {}
+	var decision_selected: Dictionary = report.get(\"decision_selected\", {}) if not report.is_empty() else {}
+	var bind_line := \"[CamBANG][Scene101BindTrace] stream_id=%d result_live=%s payload_kind=%d can_get_display_view=%d display_view_path=%s report_present=%s evaluator_active=%s current_candidate_index=%d requested=%s steady=%s completion_reason=%s decision_from_evaluation=%s decision_selected=%s\" % [
+		int(stream.get_stream_id()),
+		str(stream.result_live),
+		int(result.get_payload_kind()),
+		int(result.can_get_display_view()),
+		_display_path_kind_name(int(result.get_display_view_path_kind())),
+		str(not report.is_empty()),
+		str(bool(report.get(\"evaluator_active\", false))),
+		int(report.get(\"current_candidate_index\", -1)),
+		str(requested.get(\"posture\", \"\")),
+		str(steady.get(\"posture\", \"\")),
+		str(report.get(\"completion_reason\", \"\")),
+		str(bool(report.get(\"decision_from_evaluation\", false))),
+		str(decision_selected.get(\"posture\", \"\")),
+	]
+	print(bind_line)
 
 func _sample_synthetic_metrics(note: String) -> void:
 	if not CamBANGServer.has_method(\"get_synthetic_metrics_snapshot\"):
@@ -175,7 +233,12 @@ func _ready():
 	#await get_tree().create_timer(10.0).timeout
 	while not stream_00.result_live:
 		await stream_00.result_live_changed
-	%StreamDisplayTexture.texture = stream_00.get_result().get_display_view()
+	var stream_result := stream_00.get_result()
+	if stream_result == null:
+		push_error(\"KERR stream result unexpectedly null after result_live\")
+		return
+	_trace_first_stream_bind(stream_00, stream_result)
+	%StreamDisplayTexture.texture = stream_result.get_display_view()
 
 func _process(delta: float) -> void:
 	_metrics_sample_elapsed_s += delta
@@ -198,6 +261,13 @@ func _input(event: InputEvent) -> void:
 			_do_teardown()
 	
 "
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_lw56x"]
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_right = 6
+corner_radius_bottom_left = 6
 
 [node name="101_basic_ux_demo" type="Control"]
 layout_mode = 3
@@ -231,6 +301,14 @@ custom_minimum_size = Vector2(800, 600)
 layout_mode = 0
 offset_right = 40.0
 offset_bottom = 40.0
+
+[node name="CamBANGStatusPanel" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_lw56x")
+script = ExtResource("1_bdgjy")
+metadata/_custom_type_script = "uid://djv2vyhmruoh2"
 
 [node name="SceneInfoPanel" type="Panel" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
