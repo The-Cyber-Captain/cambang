@@ -65,6 +65,7 @@ public:
   static void refresh_live_stream_cpu_display_views(const CoreRuntime& runtime);
   static void remove_live_stream_cpu_display_view(uint64_t stream_id);
   static void clear_live_stream_cpu_display_views();
+  static godot::Dictionary get_live_stream_cpu_display_metrics_snapshot();
   static godot::Variant calibrate_display_view_for_retained_access(const SharedStreamResultData& data);
   static godot::Ref<godot::Image> calibrate_to_image_for_retained_access(const SharedStreamResultData& data);
   static godot::Ref<godot::Image> calibrate_to_image_cpu_payload_for_retained_access(const SharedStreamResultData& data);

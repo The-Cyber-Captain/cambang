@@ -260,14 +260,23 @@ StreamTemplate SyntheticProvider::stream_template() const {
   t.profile.target_fps_min = cfg_.nominal.fps_num / (cfg_.nominal.fps_den ? cfg_.nominal.fps_den : 1);
   t.profile.target_fps_max = t.profile.target_fps_min;
 
-  // Canonical default per tranche: noise_animated.
-  t.picture.preset = PatternPreset::NoiseAnimated;
+  // Temporary diagnostic default: use a simple static stream pattern so
+  // steady-state Compatibility cost is easier to attribute.
+  t.picture.preset = PatternPreset::Checker;
   t.picture.seed = static_cast<uint32_t>(cfg_.pattern.seed);
   t.picture.generator_fps_num = 30;
   t.picture.generator_fps_den = 1;
-  t.picture.overlay_frame_index_offsets = cfg_.pattern.overlay_frame_index;
-  t.picture.overlay_moving_bar = true;
+  t.picture.overlay_frame_index_offsets = false;
+  t.picture.overlay_moving_bar = false;
   return t;
+}
+
+static PatternSpec build_stream_render_spec(
+    const PictureConfig& picture,
+    uint32_t width,
+    uint32_t height,
+    bool* preset_valid) {
+  return to_pattern_spec(picture, width, height, PatternSpec::PackedFormat::RGBA8, preset_valid);
 }
 
 CaptureTemplate SyntheticProvider::capture_template() const {
@@ -1315,6 +1324,15 @@ ProviderResult SyntheticProvider::start_stream(
   s.prefer_gpu_backing = s.resolved_output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
                          s.resolved_output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu;
   s.gpu_staging.resize(size_bytes);
+  {
+    bool preset_valid = true;
+    s.render_spec = build_stream_render_spec(s.picture, w, h, &preset_valid);
+    s.render_spec_valid = true;
+    s.renderer.configure(s.render_spec);
+    if (!preset_valid) {
+      invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
 
   s.started = true;
   s.producing = true;
@@ -1403,7 +1421,23 @@ ProviderResult SyntheticProvider::set_stream_picture_config(uint64_t stream_id, 
   if (!find_preset_info(picture.preset)) {
     invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
   }
-  it->second.picture = picture;
+  StreamState& s = it->second;
+  s.picture = picture;
+  if (s.started) {
+    bool preset_valid = true;
+    s.render_spec = build_stream_render_spec(
+        s.picture,
+        s.req.profile.width,
+        s.req.profile.height,
+        &preset_valid);
+    s.render_spec_valid = true;
+    s.renderer.configure(s.render_spec);
+    if (!preset_valid) {
+      invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+    }
+  } else {
+    s.render_spec_valid = false;
+  }
   return ProviderResult::success();
 }
 
@@ -2755,22 +2789,30 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     return;
   }
 
-  bool preset_valid = true;
-  const auto spec_t0 = std::chrono::steady_clock::now();
-  PatternSpec spec = to_pattern_spec(s.picture, w, h, PatternSpec::PackedFormat::RGBA8, &preset_valid);
-  const auto spec_t1 = std::chrono::steady_clock::now();
-  const uint64_t spec_ns = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(spec_t1 - spec_t0).count());
-  triage_render_spec_build_total_ns_ += spec_ns;
-  triage_render_spec_build_max_ns_ = std::max(triage_render_spec_build_max_ns_, spec_ns);
-  if (!preset_valid) {
-    invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+  if (!s.render_spec_valid) {
+    bool preset_valid = true;
+    const auto spec_t0 = std::chrono::steady_clock::now();
+    s.render_spec = build_stream_render_spec(s.picture, w, h, &preset_valid);
+    const auto spec_t1 = std::chrono::steady_clock::now();
+    const uint64_t spec_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(spec_t1 - spec_t0).count());
+    triage_render_spec_build_total_ns_ += spec_ns;
+    triage_render_spec_build_max_ns_ = std::max(triage_render_spec_build_max_ns_, spec_ns);
+    s.render_spec_valid = true;
+    s.renderer.configure(s.render_spec);
+    if (!preset_valid) {
+      invalid_preset_requests_.fetch_add(1, std::memory_order_relaxed);
+    }
   }
+  const PatternSpec& spec = s.render_spec;
 
   const auto target_t0 = std::chrono::steady_clock::now();
+  const bool publish_cpu_payload =
+      s.resolved_output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
+  const bool render_direct_to_cpu_slot = publish_cpu_payload && !s.prefer_gpu_backing;
   PatternRenderTarget dst{};
-  dst.data = s.gpu_staging.data();
-  dst.size_bytes = s.gpu_staging.size();
+  dst.data = render_direct_to_cpu_slot ? static_cast<void*>(slot->bytes.data()) : static_cast<void*>(s.gpu_staging.data());
+  dst.size_bytes = render_direct_to_cpu_slot ? slot->bytes.size() : s.gpu_staging.size();
   dst.width = w;
   dst.height = h;
   dst.stride_bytes = stride;
@@ -2911,17 +2953,17 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     return;
   }
 
-  const bool publish_cpu_payload =
-      s.resolved_output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
   if (publish_cpu_payload) {
-    // Preserve a current CPU materialization source for the exact FrameView that
-    // is about to be retained. GPU-only mode keeps CPU staging provider-local.
-    const auto copy_t0 = std::chrono::steady_clock::now();
-    std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
-    const auto copy_t1 = std::chrono::steady_clock::now();
-    const uint64_t copy_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
-    record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
+    if (!render_direct_to_cpu_slot) {
+      // Preserve a current CPU materialization source for the exact FrameView that
+      // is about to be retained. GPU-only mode keeps CPU staging provider-local.
+      const auto copy_t0 = std::chrono::steady_clock::now();
+      std::memcpy(slot->bytes.data(), s.gpu_staging.data(), slot->bytes.size());
+      const auto copy_t1 = std::chrono::steady_clock::now();
+      const uint64_t copy_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(copy_t1 - copy_t0).count());
+      record_timing_sample(copy_ns, triage_frame_copy_calls_, triage_frame_copy_total_ns_, triage_frame_copy_max_ns_);
+    }
   }
 
   FrameView fv{};
@@ -2957,6 +2999,8 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
   if (publish_cpu_payload) {
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();
+    fv.cpu_payload_owner =
+        std::shared_ptr<const std::vector<uint8_t>>(slot, &slot->bytes);
   }
   fv.stride_bytes = stride;
   const bool profile_compatible =

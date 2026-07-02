@@ -225,6 +225,8 @@ private:
 
     PictureConfig picture{};
     CpuPackedPatternRenderer renderer{};
+    PatternSpec render_spec{};
+    bool render_spec_valid = false;
     bool prefer_gpu_backing = false;
     SyntheticProducerOutputFormMode resolved_output_form_mode = SyntheticProducerOutputFormMode::Auto;
     std::vector<std::uint8_t> gpu_staging;

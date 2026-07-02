@@ -188,11 +188,89 @@ bool write_live_cpu_rgba_pixels(
 std::mutex g_live_cpu_display_views_mutex;
 std::map<uint64_t, std::shared_ptr<LiveCpuDisplayViewEntry>> g_live_cpu_display_views;
 
+struct LiveCpuDisplayMetrics {
+  uint64_t refresh_attempts = 0;
+  uint64_t refresh_updated = 0;
+  uint64_t skipped_unchanged = 0;
+  uint64_t skipped_due_budget = 0;
+  uint64_t skipped_due_no_demand = 0;
+  uint64_t removed = 0;
+  uint64_t total_ns = 0;
+  uint64_t update_ns = 0;
+};
+
+std::mutex g_live_cpu_display_metrics_mutex;
+LiveCpuDisplayMetrics g_live_cpu_display_metrics;
+
+void note_live_cpu_display_refresh_attempt(
+    uint64_t total_ns,
+    uint64_t update_ns,
+    bool updated) {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  ++g_live_cpu_display_metrics.refresh_attempts;
+  if (updated) {
+    ++g_live_cpu_display_metrics.refresh_updated;
+  }
+  g_live_cpu_display_metrics.total_ns += total_ns;
+  g_live_cpu_display_metrics.update_ns += update_ns;
+}
+
+void note_live_cpu_display_refresh_skip_unchanged() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  ++g_live_cpu_display_metrics.skipped_unchanged;
+}
+
+void note_live_cpu_display_refresh_skip_due_budget() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  ++g_live_cpu_display_metrics.skipped_due_budget;
+}
+
+void note_live_cpu_display_refresh_skip_due_no_demand() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  ++g_live_cpu_display_metrics.skipped_due_no_demand;
+}
+
+void note_live_cpu_display_refresh_removed(uint32_t removed_count) {
+  if (removed_count == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  g_live_cpu_display_metrics.removed += removed_count;
+}
+
+godot::Dictionary snapshot_live_cpu_display_metrics() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  godot::Dictionary d;
+  d["cpu_display_refresh_attempts"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.refresh_attempts);
+  d["cpu_display_refresh_updated"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.refresh_updated);
+  d["cpu_display_refresh_skipped_unchanged"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.skipped_unchanged);
+  d["cpu_display_refresh_skipped_due_budget"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.skipped_due_budget);
+  d["cpu_display_refresh_skipped_due_no_demand"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.skipped_due_no_demand);
+  d["cpu_display_refresh_removed"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.removed);
+  d["cpu_display_refresh_total_ms"] =
+      static_cast<double>(g_live_cpu_display_metrics.total_ns) / 1'000'000.0;
+  d["cpu_display_refresh_update_ms"] =
+      static_cast<double>(g_live_cpu_display_metrics.update_ns) / 1'000'000.0;
+  return d;
+}
+
+void clear_live_cpu_display_metrics() {
+  std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
+  g_live_cpu_display_metrics = LiveCpuDisplayMetrics{};
+}
+
 bool refresh_live_cpu_display_view_entry(
     LiveCpuDisplayViewEntry& entry,
     const SharedStreamResultData& data,
     bool force_refresh,
     bool demand_active) {
+  const auto total_begin = std::chrono::steady_clock::now();
   if (!data || data->stream_id == 0 || !has_current_retained_cpu_payload(data)) {
     return false;
   }
@@ -212,6 +290,7 @@ bool refresh_live_cpu_display_view_entry(
         entry.rid_state &&
         entry.rid_state->snapshot_rid().is_valid();
     if (unchanged) {
+      note_live_cpu_display_refresh_skip_unchanged();
       if (display_demand_trace_enabled()) {
         godot::UtilityFunctions::print(
             "[CamBANG][DemandTrace] cpu_display_refresh stream_id=",
@@ -222,6 +301,7 @@ bool refresh_live_cpu_display_view_entry(
       return true;
     }
     if (!force_refresh && now_ns < entry.next_refresh_after_ns) {
+      note_live_cpu_display_refresh_skip_due_budget();
       if (display_demand_trace_enabled()) {
         godot::UtilityFunctions::print(
             "[CamBANG][DemandTrace] cpu_display_refresh stream_id=",
@@ -296,6 +376,10 @@ bool refresh_live_cpu_display_view_entry(
     entry.height = height;
   }
   notify_live_cpu_display_wrapper_refresh(data->stream_id, width, height);
+  note_live_cpu_display_refresh_attempt(
+      elapsed_ns_since(total_begin),
+      refresh_elapsed_ns,
+      true);
   if (display_demand_trace_enabled()) {
     godot::UtilityFunctions::print(
         "[CamBANG][DemandTrace] cpu_display_refresh stream_id=",
@@ -725,7 +809,10 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     SharedStreamResultData data = runtime.get_latest_stream_result(stream_id);
     if (!data) {
       std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
-      removed_count += static_cast<uint32_t>(g_live_cpu_display_views.erase(stream_id));
+      const uint32_t removed_now =
+          static_cast<uint32_t>(g_live_cpu_display_views.erase(stream_id));
+      removed_count += removed_now;
+      note_live_cpu_display_refresh_removed(removed_now);
       continue;
     }
     if (!candidate.entry) {
@@ -734,6 +821,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
     const bool wrapper_live = has_live_cpu_display_wrapper_borrow(stream_id);
     const bool demand_active = wrapper_live || runtime.is_stream_display_demand_active(stream_id);
     if (!demand_active) {
+      note_live_cpu_display_refresh_skip_due_no_demand();
       ++skipped_no_demand_count;
       if (display_demand_trace_enabled()) {
         godot::UtilityFunctions::print(
@@ -799,6 +887,11 @@ void CamBANGStreamResult::remove_live_stream_cpu_display_view(uint64_t stream_id
 void CamBANGStreamResult::clear_live_stream_cpu_display_views() {
   std::lock_guard<std::mutex> lock(g_live_cpu_display_views_mutex);
   g_live_cpu_display_views.clear();
+  clear_live_cpu_display_metrics();
+}
+
+godot::Dictionary CamBANGStreamResult::get_live_stream_cpu_display_metrics_snapshot() {
+  return snapshot_live_cpu_display_metrics();
 }
 
 } // namespace cambang

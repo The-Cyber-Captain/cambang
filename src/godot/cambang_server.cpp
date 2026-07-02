@@ -59,6 +59,59 @@ CamBANGServer* CamBANGServer::singleton_ = nullptr;
 
 namespace {
 
+struct LiveRetainedCalibrationMetrics final {
+  uint64_t arm_calls = 0;
+  uint64_t observe_stream_calls = 0;
+  uint64_t observe_capture_calls = 0;
+  uint64_t process_calls = 0;
+  uint64_t arm_total_ns = 0;
+  uint64_t observe_stream_total_ns = 0;
+  uint64_t observe_capture_total_ns = 0;
+  uint64_t process_total_ns = 0;
+  uint64_t arm_pending_stream_count = 0;
+  uint64_t observe_stream_pending_stream_count = 0;
+  uint64_t observe_capture_pending_capture_count = 0;
+  uint64_t process_pending_stream_count = 0;
+  uint64_t process_pending_capture_count = 0;
+};
+
+static LiveRetainedCalibrationMetrics g_live_retained_calibration_metrics;
+
+static double ns_to_ms_u64(uint64_t ns) noexcept {
+  return static_cast<double>(ns) / 1'000'000.0;
+}
+
+static godot::Dictionary live_retained_calibration_metrics_snapshot() {
+  godot::Dictionary d;
+  d["live_retained_calibration_arm_calls"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.arm_calls);
+  d["live_retained_calibration_observe_stream_calls"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.observe_stream_calls);
+  d["live_retained_calibration_observe_capture_calls"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.observe_capture_calls);
+  d["live_retained_calibration_process_calls"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.process_calls);
+  d["live_retained_calibration_arm_total_ms"] =
+      ns_to_ms_u64(g_live_retained_calibration_metrics.arm_total_ns);
+  d["live_retained_calibration_observe_stream_total_ms"] =
+      ns_to_ms_u64(g_live_retained_calibration_metrics.observe_stream_total_ns);
+  d["live_retained_calibration_observe_capture_total_ms"] =
+      ns_to_ms_u64(g_live_retained_calibration_metrics.observe_capture_total_ns);
+  d["live_retained_calibration_process_total_ms"] =
+      ns_to_ms_u64(g_live_retained_calibration_metrics.process_total_ns);
+  d["live_retained_calibration_arm_pending_stream_count"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.arm_pending_stream_count);
+  d["live_retained_calibration_observe_stream_pending_stream_count"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.observe_stream_pending_stream_count);
+  d["live_retained_calibration_observe_capture_pending_capture_count"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.observe_capture_pending_capture_count);
+  d["live_retained_calibration_process_pending_stream_count"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.process_pending_stream_count);
+  d["live_retained_calibration_process_pending_capture_count"] =
+      static_cast<uint64_t>(g_live_retained_calibration_metrics.process_pending_capture_count);
+  return d;
+}
+
 static const char* mode_to_cstr(RuntimeMode m) noexcept {
   switch (m) {
     case RuntimeMode::platform_backed: return "platform_backed";
@@ -2172,8 +2225,17 @@ void CamBANGServer::_clear_live_retained_result_access_calibration_state_() {
 void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
     uint64_t now_ns,
     const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports) {
+  const auto metrics_t0 = std::chrono::steady_clock::now();
+  ++g_live_retained_calibration_metrics.arm_calls;
   if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
     _clear_live_retained_result_access_calibration_state_();
+    const uint64_t elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - metrics_t0)
+            .count());
+    g_live_retained_calibration_metrics.arm_total_ns += elapsed_ns;
+    g_live_retained_calibration_metrics.arm_pending_stream_count +=
+        static_cast<uint64_t>(pending_live_stream_retained_result_calibrations_.size());
     return;
   }
 
@@ -2390,12 +2452,28 @@ void CamBANGServer::_arm_live_retained_result_access_calibration_from_snapshot_(
     }
     ++it;
   }
+  const uint64_t elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - metrics_t0)
+          .count());
+  g_live_retained_calibration_metrics.arm_total_ns += elapsed_ns;
+  g_live_retained_calibration_metrics.arm_pending_stream_count +=
+      static_cast<uint64_t>(pending_live_stream_retained_result_calibrations_.size());
 }
 
 void CamBANGServer::_observe_active_stream_evaluation_calibration_identities_(
     uint64_t now_ns,
     const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports) {
+  const auto metrics_t0 = std::chrono::steady_clock::now();
+  ++g_live_retained_calibration_metrics.observe_stream_calls;
   if (!runtime_.is_running() || !is_public_boundary_ready_() || !latest_) {
+    const uint64_t elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - metrics_t0)
+            .count());
+    g_live_retained_calibration_metrics.observe_stream_total_ns += elapsed_ns;
+    g_live_retained_calibration_metrics.observe_stream_pending_stream_count +=
+        static_cast<uint64_t>(pending_live_stream_retained_result_calibrations_.size());
     return;
   }
 
@@ -2469,8 +2547,7 @@ void CamBANGServer::_observe_active_stream_evaluation_calibration_identities_(
     completed_live_stream_retained_result_calibrations_.erase(stream.stream_id);
   }
 
-  for (const CoreBackingPlanEvaluationReport& report :
-       runtime_.backing_plan_evaluation_reports()) {
+  for (const CoreBackingPlanEvaluationReport& report : backing_plan_reports) {
     if (report.parent_kind !=
             CoreBackingPlanEvaluationReport::ParentKind::Stream ||
         !report.evaluator_active ||
@@ -2520,12 +2597,28 @@ void CamBANGServer::_observe_active_stream_evaluation_calibration_identities_(
     pending_live_stream_retained_result_calibrations_[report.stream_id] = armed;
     completed_live_stream_retained_result_calibrations_.erase(report.stream_id);
   }
+  const uint64_t elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - metrics_t0)
+          .count());
+  g_live_retained_calibration_metrics.observe_stream_total_ns += elapsed_ns;
+  g_live_retained_calibration_metrics.observe_stream_pending_stream_count +=
+      static_cast<uint64_t>(pending_live_stream_retained_result_calibrations_.size());
 }
 
 void CamBANGServer::_observe_active_capture_evaluation_calibration_identities_(
     uint64_t now_ns,
     const std::vector<CoreBackingPlanEvaluationReport>& backing_plan_reports) {
+  const auto metrics_t0 = std::chrono::steady_clock::now();
+  ++g_live_retained_calibration_metrics.observe_capture_calls;
   if (!runtime_.is_running() || !is_public_boundary_ready_()) {
+    const uint64_t elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - metrics_t0)
+            .count());
+    g_live_retained_calibration_metrics.observe_capture_total_ns += elapsed_ns;
+    g_live_retained_calibration_metrics.observe_capture_pending_capture_count +=
+        static_cast<uint64_t>(pending_live_capture_retained_result_calibrations_.size());
     return;
   }
 
@@ -2610,12 +2703,30 @@ void CamBANGServer::_observe_active_capture_evaluation_calibration_identities_(
     completed_live_capture_retained_result_calibrations_.erase(
         report.device_instance_id);
   }
+  const uint64_t elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - metrics_t0)
+          .count());
+  g_live_retained_calibration_metrics.observe_capture_total_ns += elapsed_ns;
+  g_live_retained_calibration_metrics.observe_capture_pending_capture_count +=
+      static_cast<uint64_t>(pending_live_capture_retained_result_calibrations_.size());
 }
 
 void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
     uint64_t now_ns) {
+  const auto metrics_t0 = std::chrono::steady_clock::now();
+  ++g_live_retained_calibration_metrics.process_calls;
   if (!runtime_.is_running() || !is_public_boundary_ready_()) {
     _clear_live_retained_result_access_calibration_state_();
+    const uint64_t elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - metrics_t0)
+            .count());
+    g_live_retained_calibration_metrics.process_total_ns += elapsed_ns;
+    g_live_retained_calibration_metrics.process_pending_stream_count +=
+        static_cast<uint64_t>(pending_live_stream_retained_result_calibrations_.size());
+    g_live_retained_calibration_metrics.process_pending_capture_count +=
+        static_cast<uint64_t>(pending_live_capture_retained_result_calibrations_.size());
     return;
   }
 
@@ -2674,6 +2785,15 @@ void CamBANGServer::_process_armed_live_retained_result_access_calibration_(
         it->second;
     it = pending_live_capture_retained_result_calibrations_.erase(it);
   }
+  const uint64_t elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - metrics_t0)
+          .count());
+  g_live_retained_calibration_metrics.process_total_ns += elapsed_ns;
+  g_live_retained_calibration_metrics.process_pending_stream_count +=
+      static_cast<uint64_t>(pending_live_stream_retained_result_calibrations_.size());
+  g_live_retained_calibration_metrics.process_pending_capture_count +=
+      static_cast<uint64_t>(pending_live_capture_retained_result_calibrations_.size());
 }
 
 void CamBANGServer::_drain_pending_stop_and_quit_() {
@@ -2742,6 +2862,21 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d["gpu_texture_update_total_ms"] = snap.gpu_texture_update_total_ms;
   d["catchup_ticks_capped"] = static_cast<uint64_t>(snap.catchup_ticks_capped);
   d["catchup_frames_dropped"] = static_cast<uint64_t>(snap.catchup_frames_dropped);
+  const godot::Dictionary cpu_display_metrics =
+      CamBANGStreamResult::get_live_stream_cpu_display_metrics_snapshot();
+  const godot::Array cpu_display_metric_keys = cpu_display_metrics.keys();
+  for (int i = 0; i < cpu_display_metric_keys.size(); ++i) {
+    const godot::Variant key = cpu_display_metric_keys[i];
+    d.set(key, cpu_display_metrics.get(key, godot::Variant()));
+  }
+  const godot::Dictionary live_retained_calibration_metrics =
+      live_retained_calibration_metrics_snapshot();
+  const godot::Array live_retained_calibration_metric_keys =
+      live_retained_calibration_metrics.keys();
+  for (int i = 0; i < live_retained_calibration_metric_keys.size(); ++i) {
+    const godot::Variant key = live_retained_calibration_metric_keys[i];
+    d.set(key, live_retained_calibration_metrics.get(key, godot::Variant()));
+  }
   d.set(
       godot::Variant(godot::String("result_access_timing_evidence")),
       godot::Variant(result_access_cost_evidence::snapshot()));
