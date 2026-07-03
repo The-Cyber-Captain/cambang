@@ -30,6 +30,7 @@ const PRINT_DECIMALS := 3
 const STILL_PROFILE_WIDTH := 1280
 const STILL_PROFILE_HEIGHT := 720
 const STILL_PROFILE_FORMAT_RGBA := 1094862674
+const PANEL_SEED_IMAGE_FORMAT := Image.FORMAT_RGBA8
 
 const PHASE_SETUP := "setup"
 const PHASE_PROFILE := "profile"
@@ -83,6 +84,7 @@ var _phase_started_us := 0
 var _last_stats_update_us := 0
 var _last_stream_observation_us := 0
 var _benchmark_metrics_frozen := false
+var _latest_device_snapshot_by_id := {}
 var _preflight_done := false
 var _preflight_stage := ""
 var _preflight_started_us := 0
@@ -191,7 +193,6 @@ func _process(delta: float) -> void:
 		return
 	_record_frame(delta)
 	_drain_visual_thumbnail_jobs(MAX_THUMBNAILS_PER_FRAME)
-	_observe_stream_display_updates()
 	_update_stream_display_views(false)
 	_poll_capture_jobs()
 	_poll_rig_jobs()
@@ -535,6 +536,7 @@ func _poll_setup() -> void:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
 		return
+	_refresh_device_snapshot_cache(snapshot)
 	_latch_devices(snapshot)
 	_latch_streams(snapshot)
 	_latch_rig(snapshot)
@@ -663,6 +665,9 @@ func _setup_ready() -> bool:
 
 func _update_stream_display_views(require_bind: bool) -> void:
 	var now_us := _now_us()
+	var observe_timestamps := now_us - _last_stream_observation_us >= 10000
+	if observe_timestamps:
+		_last_stream_observation_us = now_us
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
 		var label = _stream_live_labels.get(device_key, null)
@@ -672,20 +677,37 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if not should_recheck and prior_path_kind != int(CamBANGStreamResult.DISPLAY_PATH_RETAINED_GPU_BACKING):
 			var last_recheck_us := int(info.get("live_display_last_recheck_us", 0))
 			should_recheck = (now_us - last_recheck_us) >= STREAM_DISPLAY_REBIND_INTERVAL_US
-		if not should_recheck and bound:
-			_set_label_text_if_changed(label, "%s\nstream_id=%d\nts=%d\nobserved_update_fps=%.2f" % [
-				str(info.get("label", device_key)),
-				int(info.get("stream_id", 0)),
-				int(info.get("stream_last_ts", 0)),
-				_stream_observed_fps(device_key),
-			])
-			continue
 		var stream_id := int(info.get("stream_id", 0))
 		if stream_id <= 0:
 			continue
-		var stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
-		if stream_result == null:
+		var stream_result = null
+		if observe_timestamps or should_recheck:
+			stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
+			if stream_result != null and observe_timestamps:
+				var observed_ts := int(stream_result.get_capture_timestamp())
+				if observed_ts > 0:
+					if int(info.get("stream_observation_first_us", 0)) == 0:
+						info["stream_observation_first_us"] = now_us
+					var last_ts := int(info.get("stream_last_ts", 0))
+					if last_ts != 0 and last_ts != observed_ts:
+						info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + 1
+					info["stream_last_ts"] = observed_ts
+					info["stream_observation_last_us"] = now_us
+		if not should_recheck and bound:
+			_set_label_text_if_changed(label, "%s\nstream_id=%d\nts=%d\nobserved_update_fps=%.2f" % [
+				str(info.get("label", device_key)),
+				stream_id,
+				int(info.get("stream_last_ts", 0)),
+				_stream_observed_fps(device_key),
+			])
+			_devices[device_key] = info
 			continue
+		if stream_result == null:
+			stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
+		if stream_result == null:
+			_devices[device_key] = info
+			continue
+		var ts := int(stream_result.get_capture_timestamp())
 		info["live_display_last_recheck_us"] = now_us
 		if stream_result.has_method("get_display_view_path_kind"):
 			info["live_display_path_kind"] = int(stream_result.get_display_view_path_kind())
@@ -702,35 +724,9 @@ func _update_stream_display_views(require_bind: bool) -> void:
 			_set_label_text_if_changed(label, "%s\nstream_id=%d\nts=%d\nobserved_update_fps=%.2f" % [
 				str(info.get("label", device_key)),
 				stream_id,
-				int(stream_result.get_capture_timestamp()),
+				ts,
 				_stream_observed_fps(device_key),
 			])
-		_devices[device_key] = info
-
-
-func _observe_stream_display_updates() -> void:
-	var now := _now_us()
-	if now - _last_stream_observation_us < 10000:
-		return
-	_last_stream_observation_us = now
-	for device_key in [DEV_A, DEV_B]:
-		var info: Dictionary = _devices[device_key]
-		var stream_id := int(info.get("stream_id", 0))
-		if stream_id <= 0:
-			continue
-		var stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
-		if stream_result == null:
-			continue
-		var ts := int(stream_result.get_capture_timestamp())
-		if ts <= 0:
-			continue
-		if int(info.get("stream_observation_first_us", 0)) == 0:
-			info["stream_observation_first_us"] = now
-		var last_ts := int(info.get("stream_last_ts", 0))
-		if last_ts != 0 and last_ts != ts:
-			info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + 1
-		info["stream_last_ts"] = ts
-		info["stream_observation_last_us"] = now
 		_devices[device_key] = info
 
 
@@ -1038,21 +1034,37 @@ func _get_device_still_profile(device_instance_id: int) -> Dictionary:
 	var snapshot = CamBANGServer.get_state_snapshot()
 	if snapshot == null:
 		return {}
+	_refresh_device_snapshot_cache(snapshot)
+	var rec_v: Variant = _latest_device_snapshot_by_id.get(device_instance_id, {})
+	if typeof(rec_v) != TYPE_DICTIONARY:
+		return {}
+	var rec: Dictionary = rec_v
+	var capture_profile_v: Variant = rec.get("capture_profile", null)
+	if typeof(capture_profile_v) != TYPE_DICTIONARY:
+		return {}
+	var capture_profile: Dictionary = capture_profile_v
+	var still_v: Variant = capture_profile.get("still", null)
+	if typeof(still_v) != TYPE_DICTIONARY:
+		return {}
+	return still_v
+
+
+func _refresh_device_snapshot_cache(snapshot: Dictionary) -> void:
+	_latest_device_snapshot_by_id.clear()
 	for dv in snapshot.get("devices", []):
 		if typeof(dv) != TYPE_DICTIONARY:
 			continue
 		var rec: Dictionary = dv
-		if int(rec.get("instance_id", 0)) != device_instance_id:
+		var device_id := int(rec.get("instance_id", 0))
+		if device_id <= 0:
 			continue
-		var capture_profile_v: Variant = rec.get("capture_profile", null)
-		if typeof(capture_profile_v) != TYPE_DICTIONARY:
-			return {}
-		var capture_profile: Dictionary = capture_profile_v
-		var still_v: Variant = capture_profile.get("still", null)
-		if typeof(still_v) != TYPE_DICTIONARY:
-			return {}
-		return still_v
-	return {}
+		_latest_device_snapshot_by_id[device_id] = rec
+		var device_key := _device_key_for_id(device_id)
+		if device_key == "":
+			continue
+		var info: Dictionary = _devices[device_key]
+		info["last_capture_id"] = int(rec.get("last_capture_id", int(info.get("last_capture_id", 0))))
+		_devices[device_key] = info
 
 
 func _still_profile_matches_members(still_profile: Dictionary, expected_members: Array) -> bool:
@@ -1515,10 +1527,15 @@ func _request_stream_to_image(device_key: String, request_us: int) -> void:
 
 func _drain_stream_jobs(limit: int) -> void:
 	var drained := 0
-	while drained < limit and not _stream_jobs.is_empty():
-		var job: Dictionary = _stream_jobs.pop_front()
+	var keep := []
+	for job_v in _stream_jobs:
+		var job: Dictionary = job_v
+		if drained >= limit:
+			keep.append(job)
+			continue
 		_complete_stream_to_image_job(job)
 		drained += 1
+	_stream_jobs = keep
 
 
 func _complete_stream_to_image_job(job: Dictionary) -> void:
@@ -1678,6 +1695,7 @@ func _poll_one_capture_job(job: Dictionary) -> bool:
 func _complete_capture_result(job: Dictionary, capture_result, is_rig_member: bool) -> void:
 	var result_ready_us := _now_us()
 	var device_key := str(job.get("device_key", ""))
+	var capture_id := int(capture_result.get_capture_id()) if capture_result.has_method("get_capture_id") else 0
 	var get_count_start := _now_us()
 	var returned_count := int(capture_result.get_image_count()) if capture_result.has_method("get_image_count") else 1
 	var get_count_end := _now_us()
@@ -1693,7 +1711,7 @@ func _complete_capture_result(job: Dictionary, capture_result, is_rig_member: bo
 	var sample := {
 		"device_key": device_key,
 		"device_id": int(job.get("device_id", 0)),
-		"capture_id": int(capture_result.get_capture_id()) if capture_result.has_method("get_capture_id") else 0,
+		"capture_id": capture_id,
 		"bundle_label": str(job.get("bundle_label", "")),
 		"action_label": str(job.get("action_label", "")),
 		"scope": str(job.get("scope", "")),
@@ -1716,6 +1734,10 @@ func _complete_capture_result(job: Dictionary, capture_result, is_rig_member: bo
 	else:
 		_record_sample("device_capture", sample)
 		_release_device_capture_inflight(device_key)
+	if device_key != "" and capture_id > 0 and _devices.has(device_key):
+		var info: Dictionary = _devices[device_key]
+		info["last_capture_id"] = maxi(int(info.get("last_capture_id", 0)), capture_id)
+		_devices[device_key] = info
 	_update_capture_visuals(device_key, capture_result, image, texture, sample, is_rig_member)
 	if bool(job.get("is_preflight_capture", false)) and not is_rig_member:
 		_note_preflight_capture_result(device_key, capture_result, returned_count)
@@ -1907,17 +1929,7 @@ func _device_key_for_id(device_id: int) -> String:
 
 func _device_last_capture_id(device_key: String) -> int:
 	var info: Dictionary = _devices[device_key]
-	var snapshot = CamBANGServer.get_state_snapshot()
-	if snapshot == null:
-		return 0
-	var device_id := int(info.get("device_id", 0))
-	for dv in snapshot.get("devices", []):
-		if typeof(dv) != TYPE_DICTIONARY:
-			continue
-		var rec: Dictionary = dv
-		if int(rec.get("instance_id", 0)) == device_id:
-			return int(rec.get("last_capture_id", 0))
-	return 0
+	return int(info.get("last_capture_id", 0))
 
 
 func _release_device_capture_inflight(device_key: String) -> void:
@@ -1947,7 +1959,8 @@ func _rebuild_member_strip(row: HBoxContainer, capture_result, pre_image, pre_te
 	var returned_count := int(parent_sample.get("returned_member_count", 0))
 	var expected_count := int(parent_sample.get("expected_member_count", 0))
 	var count: int = returned_count if returned_count > 0 else 0
-	var row_serial := int(row.get_meta("capture_serial", 0)) + 1
+	_drop_thumbnail_jobs_for_row(row)
+	var row_serial := int(row.get_meta("capture_serial")) + 1 if row.has_meta("capture_serial") else 1
 	row.set_meta("capture_serial", row_serial)
 	if count <= 0:
 		_clear_member_strip_row(row)
@@ -1998,7 +2011,7 @@ func _rebuild_member_strip(row: HBoxContainer, capture_result, pre_image, pre_te
 
 
 func _ensure_member_strip_cells(row: HBoxContainer, count: int, members: Array) -> Array:
-	var cells_v: Variant = row.get_meta("member_cells", [])
+	var cells_v: Variant = row.get_meta("member_cells") if row.has_meta("member_cells") else []
 	var cells: Array = cells_v if typeof(cells_v) == TYPE_ARRAY else []
 	while cells.size() < count:
 		var index := cells.size()
@@ -2035,7 +2048,7 @@ func _ensure_member_strip_cells(row: HBoxContainer, count: int, members: Array) 
 
 
 func _ensure_member_strip_note(row: HBoxContainer) -> Label:
-	var note = row.get_meta("member_note", null)
+	var note = row.get_meta("member_note") if row.has_meta("member_note") else null
 	if note != null:
 		return note
 	note = Label.new()
@@ -2052,11 +2065,23 @@ func _clear_member_strip_row(row: HBoxContainer) -> void:
 		child.queue_free()
 
 
+func _drop_thumbnail_jobs_for_row(row: HBoxContainer) -> void:
+	if _thumbnail_jobs.is_empty():
+		return
+	var keep := []
+	for job_v in _thumbnail_jobs:
+		var job: Dictionary = job_v
+		if job.get("row", null) == row:
+			continue
+		keep.append(job)
+	_thumbnail_jobs = keep
+
+
 func _drain_visual_thumbnail_jobs(limit: int) -> void:
 	var drained := 0
 	var keep := []
-	while not _thumbnail_jobs.is_empty():
-		var job: Dictionary = _thumbnail_jobs.pop_front()
+	for job_v in _thumbnail_jobs:
+		var job: Dictionary = job_v
 		if drained >= limit:
 			keep.append(job)
 			continue
@@ -2070,8 +2095,11 @@ func _complete_thumbnail_job(job: Dictionary) -> void:
 	if capture_result == null:
 		return
 	var row = job.get("row", null)
-	if row != null and int(row.get_meta("capture_serial", 0)) != int(job.get("row_serial", 0)):
-		return
+	if row != null:
+		if not row.has_meta("capture_serial"):
+			return
+		if int(row.get_meta("capture_serial")) != int(job.get("row_serial", 0)):
+			return
 	var member_index := int(job.get("member_index", 0))
 	var to_image_start := _now_us()
 	var image = capture_result.to_image_member(member_index)
@@ -2307,8 +2335,14 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"run_frame_stats": _numeric_stats(_run_frame_ms),
 		"exit_visual_hold": _exit_visual_hold_summary(),
 		"stream_display_observation": _stream_display_observation_summary(),
+		"cpu_display_refresh_observation": _cpu_display_refresh_observation_summary(
+			synthetic_metrics
+		),
 		"acquisition_session_settlement_probe": acquisition_session_settlement_probe,
-		"run_quality_warnings": _run_quality_warnings_summary(acquisition_session_settlement_probe),
+		"run_quality_warnings": _run_quality_warnings_summary(
+			acquisition_session_settlement_probe,
+			synthetic_metrics
+		),
 		"backing_plan_acquisition_session_reports": _backing_plan_acquisition_session_reports_summary(
 			synthetic_metrics
 		),
@@ -2745,8 +2779,22 @@ func _acq_probe_attribution_mismatch_reason(
 	return ""
 
 
-func _run_quality_warnings_summary(acquisition_session_settlement_probe: Dictionary) -> Array:
+func _run_quality_warnings_summary(
+	acquisition_session_settlement_probe: Dictionary,
+	synthetic_metrics: Variant
+) -> Array:
 	var warnings: Array = []
+	var cpu_display_refresh := _cpu_display_refresh_observation_summary(synthetic_metrics)
+	if int(cpu_display_refresh.get("live_attempts", 0)) > 0:
+		warnings.append({
+			"code": "live_cpu_display_refresh_observed",
+			"live_attempts": int(cpu_display_refresh.get("live_attempts", 0)),
+			"live_updated": int(cpu_display_refresh.get("live_updated", 0)),
+			"live_total_ms": float(cpu_display_refresh.get("live_total_ms", 0.0)),
+			"live_update_ms": float(cpu_display_refresh.get("live_update_ms", 0.0)),
+			"aggregate_attempts": int(cpu_display_refresh.get("aggregate_attempts", 0)),
+			"aggregate_updated": int(cpu_display_refresh.get("aggregate_updated", 0)),
+		})
 	if not bool(acquisition_session_settlement_probe.get("attempted", false)):
 		return warnings
 	var required_count := int(acquisition_session_settlement_probe.get("required_member_count", 0))
@@ -2814,6 +2862,29 @@ func _run_quality_warnings_summary(acquisition_session_settlement_probe: Diction
 				"current_candidate_index": int(report.get("current_candidate_index", -1)),
 			})
 	return warnings
+
+
+func _cpu_display_refresh_observation_summary(synthetic_metrics: Variant) -> Dictionary:
+	if typeof(synthetic_metrics) != TYPE_DICTIONARY:
+		return {
+			"available": false,
+		}
+	var metrics: Dictionary = synthetic_metrics
+	return {
+		"available": true,
+		"aggregate_attempts": int(metrics.get("cpu_display_refresh_attempts", 0)),
+		"aggregate_updated": int(metrics.get("cpu_display_refresh_updated", 0)),
+		"aggregate_total_ms": float(metrics.get("cpu_display_refresh_total_ms", 0.0)),
+		"aggregate_update_ms": float(metrics.get("cpu_display_refresh_update_ms", 0.0)),
+		"live_attempts": int(metrics.get("cpu_display_refresh_live_attempts", 0)),
+		"live_updated": int(metrics.get("cpu_display_refresh_live_updated", 0)),
+		"live_total_ms": float(metrics.get("cpu_display_refresh_live_total_ms", 0.0)),
+		"live_update_ms": float(metrics.get("cpu_display_refresh_live_update_ms", 0.0)),
+		"ephemeral_attempts": int(metrics.get("cpu_display_refresh_ephemeral_attempts", 0)),
+		"ephemeral_updated": int(metrics.get("cpu_display_refresh_ephemeral_updated", 0)),
+		"ephemeral_total_ms": float(metrics.get("cpu_display_refresh_ephemeral_total_ms", 0.0)),
+		"ephemeral_update_ms": float(metrics.get("cpu_display_refresh_ephemeral_update_ms", 0.0)),
+	}
 
 
 func _backing_plan_candidate_evidence_summary_entries(report: Dictionary) -> Array:
@@ -3057,7 +3128,7 @@ func _prime_fixed_panel_texture(texture_map: Dictionary, key: String, rect_value
 	if texture_map.has(key):
 		_set_texture_if_changed(rect_value, texture_map.get(key, null))
 		return
-	var image := Image.create_empty(STILL_PROFILE_WIDTH, STILL_PROFILE_HEIGHT, false, STILL_PROFILE_FORMAT_RGBA)
+	var image := Image.create_empty(STILL_PROFILE_WIDTH, STILL_PROFILE_HEIGHT, false, PANEL_SEED_IMAGE_FORMAT)
 	if image == null:
 		return
 	image.fill(Color(0.0, 0.0, 0.0, 0.0))
@@ -3073,12 +3144,12 @@ func _can_update_image_texture(texture: ImageTexture, image: Image) -> bool:
 		and texture.get_height() == image.get_height()
 
 
-func _member_strip_texture_key(row: HBoxContainer, member_index: int) -> String:
+func _member_strip_texture_key(_row: HBoxContainer, member_index: int) -> String:
 	return "%d" % member_index
 
 
 func _member_strip_textures(row: HBoxContainer) -> Dictionary:
-	var textures_v: Variant = row.get_meta("member_strip_textures", {})
+	var textures_v: Variant = row.get_meta("member_strip_textures") if row.has_meta("member_strip_textures") else {}
 	return textures_v if typeof(textures_v) == TYPE_DICTIONARY else {}
 
 
@@ -3139,8 +3210,13 @@ func _set_label_text_if_changed(label_value: Variant, text: String) -> void:
 
 func _record_log_to_ui(message: String) -> void:
 	if _log_label != null:
+		var should_follow := true
+		var v_scroll = _log_label.get_v_scroll_bar()
+		if v_scroll != null:
+			should_follow = float(v_scroll.value) >= float(v_scroll.max_value - v_scroll.page) - 4.0
 		_log_label.append_text("%s\n" % message)
-		_log_label.scroll_to_line(maxi(0, _log_label.get_line_count() - 1))
+		if should_follow:
+			_log_label.scroll_to_line(maxi(0, _log_label.get_line_count() - 1))
 
 
 func _log(message: String) -> void:

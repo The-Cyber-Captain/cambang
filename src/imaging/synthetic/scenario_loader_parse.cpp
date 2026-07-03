@@ -1,4 +1,5 @@
 #include "imaging/synthetic/scenario_loader_parse.h"
+#include "imaging/synthetic/config.h"
 
 #include <cctype>
 #include <cstdint>
@@ -372,6 +373,24 @@ bool parse_u64(const JsonValue& value, const std::string& field, std::uint64_t& 
   return true;
 }
 
+bool parse_format_fourcc_json(const JsonValue& value,
+                              const std::string& field,
+                              std::uint32_t& out,
+                              std::string* error) {
+  if (value.type == JsonValue::Type::Number) {
+    return parse_u32(value, field, out, error);
+  }
+  if (value.type == JsonValue::Type::String) {
+    if (!parse_fourcc_token(value.string_value, out)) {
+      set_error(error, "field '" + field + "' must be uint32 integer or fourcc token");
+      return false;
+    }
+    return true;
+  }
+  set_error(error, "field '" + field + "' must be uint32 integer or fourcc token");
+  return false;
+}
+
 bool parse_capture_profile(const JsonValue& value,
                            SyntheticScenarioLoaderParsedCaptureProfile& out,
                            std::string* error,
@@ -395,7 +414,6 @@ bool parse_capture_profile(const JsonValue& value,
 
   if (!require_type(width, JsonValue::Type::Number, context + ".width", error) ||
       !require_type(height, JsonValue::Type::Number, context + ".height", error) ||
-      !require_type(format, JsonValue::Type::Number, context + ".format_fourcc", error) ||
       !require_type(fps_min, JsonValue::Type::Number, context + ".target_fps_min", error) ||
       !require_type(fps_max, JsonValue::Type::Number, context + ".target_fps_max", error)) {
     return false;
@@ -403,7 +421,7 @@ bool parse_capture_profile(const JsonValue& value,
 
   return parse_u32(*width, context + ".width", out.width, error) &&
          parse_u32(*height, context + ".height", out.height, error) &&
-         parse_u32(*format, context + ".format_fourcc", out.format_fourcc, error) &&
+         parse_format_fourcc_json(*format, context + ".format_fourcc", out.format_fourcc, error) &&
          parse_u32(*fps_min, context + ".target_fps_min", out.target_fps_min, error) &&
          parse_u32(*fps_max, context + ".target_fps_max", out.target_fps_max, error);
 }

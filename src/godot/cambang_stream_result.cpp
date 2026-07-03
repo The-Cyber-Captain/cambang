@@ -191,6 +191,14 @@ std::map<uint64_t, std::shared_ptr<LiveCpuDisplayViewEntry>> g_live_cpu_display_
 struct LiveCpuDisplayMetrics {
   uint64_t refresh_attempts = 0;
   uint64_t refresh_updated = 0;
+  uint64_t live_refresh_attempts = 0;
+  uint64_t live_refresh_updated = 0;
+  uint64_t live_total_ns = 0;
+  uint64_t live_update_ns = 0;
+  uint64_t ephemeral_refresh_attempts = 0;
+  uint64_t ephemeral_refresh_updated = 0;
+  uint64_t ephemeral_total_ns = 0;
+  uint64_t ephemeral_update_ns = 0;
   uint64_t skipped_unchanged = 0;
   uint64_t skipped_due_budget = 0;
   uint64_t skipped_due_no_demand = 0;
@@ -205,11 +213,27 @@ LiveCpuDisplayMetrics g_live_cpu_display_metrics;
 void note_live_cpu_display_refresh_attempt(
     uint64_t total_ns,
     uint64_t update_ns,
-    bool updated) {
+    bool updated,
+    bool persistent_live_display_view) {
   std::lock_guard<std::mutex> lock(g_live_cpu_display_metrics_mutex);
   ++g_live_cpu_display_metrics.refresh_attempts;
   if (updated) {
     ++g_live_cpu_display_metrics.refresh_updated;
+  }
+  if (persistent_live_display_view) {
+    ++g_live_cpu_display_metrics.live_refresh_attempts;
+    if (updated) {
+      ++g_live_cpu_display_metrics.live_refresh_updated;
+    }
+    g_live_cpu_display_metrics.live_total_ns += total_ns;
+    g_live_cpu_display_metrics.live_update_ns += update_ns;
+  } else {
+    ++g_live_cpu_display_metrics.ephemeral_refresh_attempts;
+    if (updated) {
+      ++g_live_cpu_display_metrics.ephemeral_refresh_updated;
+    }
+    g_live_cpu_display_metrics.ephemeral_total_ns += total_ns;
+    g_live_cpu_display_metrics.ephemeral_update_ns += update_ns;
   }
   g_live_cpu_display_metrics.total_ns += total_ns;
   g_live_cpu_display_metrics.update_ns += update_ns;
@@ -245,6 +269,22 @@ godot::Dictionary snapshot_live_cpu_display_metrics() {
       static_cast<uint64_t>(g_live_cpu_display_metrics.refresh_attempts);
   d["cpu_display_refresh_updated"] =
       static_cast<uint64_t>(g_live_cpu_display_metrics.refresh_updated);
+  d["cpu_display_refresh_live_attempts"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.live_refresh_attempts);
+  d["cpu_display_refresh_live_updated"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.live_refresh_updated);
+  d["cpu_display_refresh_live_total_ms"] =
+      static_cast<double>(g_live_cpu_display_metrics.live_total_ns) / 1'000'000.0;
+  d["cpu_display_refresh_live_update_ms"] =
+      static_cast<double>(g_live_cpu_display_metrics.live_update_ns) / 1'000'000.0;
+  d["cpu_display_refresh_ephemeral_attempts"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.ephemeral_refresh_attempts);
+  d["cpu_display_refresh_ephemeral_updated"] =
+      static_cast<uint64_t>(g_live_cpu_display_metrics.ephemeral_refresh_updated);
+  d["cpu_display_refresh_ephemeral_total_ms"] =
+      static_cast<double>(g_live_cpu_display_metrics.ephemeral_total_ns) / 1'000'000.0;
+  d["cpu_display_refresh_ephemeral_update_ms"] =
+      static_cast<double>(g_live_cpu_display_metrics.ephemeral_update_ns) / 1'000'000.0;
   d["cpu_display_refresh_skipped_unchanged"] =
       static_cast<uint64_t>(g_live_cpu_display_metrics.skipped_unchanged);
   d["cpu_display_refresh_skipped_due_budget"] =
@@ -269,7 +309,8 @@ bool refresh_live_cpu_display_view_entry(
     LiveCpuDisplayViewEntry& entry,
     const SharedStreamResultData& data,
     bool force_refresh,
-    bool demand_active) {
+    bool demand_active,
+    bool persistent_live_display_view) {
   const auto total_begin = std::chrono::steady_clock::now();
   if (!data || data->stream_id == 0 || !has_current_retained_cpu_payload(data)) {
     return false;
@@ -379,7 +420,8 @@ bool refresh_live_cpu_display_view_entry(
   note_live_cpu_display_refresh_attempt(
       elapsed_ns_since(total_begin),
       refresh_elapsed_ns,
-      true);
+      true,
+      persistent_live_display_view);
   if (display_demand_trace_enabled()) {
     godot::UtilityFunctions::print(
         "[CamBANG][DemandTrace] cpu_display_refresh stream_id=",
@@ -405,7 +447,7 @@ godot::Ref<godot::Texture2D> ensure_live_cpu_display_view(const SharedStreamResu
     }
     entry = slot;
   }
-  if (!entry || !refresh_live_cpu_display_view_entry(*entry, data, true, true)) {
+  if (!entry || !refresh_live_cpu_display_view_entry(*entry, data, true, true, true)) {
     return {};
   }
   std::shared_ptr<SharedLiveCpuTextureRidState> rid_state;
@@ -434,7 +476,7 @@ godot::Ref<godot::Texture2D> make_ephemeral_cpu_display_view(const SharedStreamR
     return {};
   }
   auto entry = std::make_shared<LiveCpuDisplayViewEntry>();
-  if (!refresh_live_cpu_display_view_entry(*entry, data, true, false)) {
+  if (!refresh_live_cpu_display_view_entry(*entry, data, true, false, false)) {
     return {};
   }
   std::shared_ptr<SharedLiveCpuTextureRidState> rid_state;
@@ -837,7 +879,7 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
         std::lock_guard<std::mutex> entry_lock(candidate.entry->mutex);
         prior_capture_timestamp_ns = candidate.entry->last_capture_timestamp_ns;
       }
-      if (refresh_live_cpu_display_view_entry(*candidate.entry, data, false, demand_active)) {
+      if (refresh_live_cpu_display_view_entry(*candidate.entry, data, false, demand_active, true)) {
         ++refreshed_count;
         uint64_t latest_capture_timestamp_ns = 0;
         {

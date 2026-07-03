@@ -12,7 +12,7 @@
       "capture_profile": {
         "width": 1280,
         "height": 720,
-        "format_fourcc": 1094862674,
+        "format_fourcc": "RGBA",
         "target_fps_min": 30,
         "target_fps_max": 30
       }
@@ -24,7 +24,7 @@
       "capture_profile": {
         "width": 1280,
         "height": 720,
-        "format_fourcc": 1094862674,
+        "format_fourcc": "RGBA",
         "target_fps_min": 30,
         "target_fps_max": 30
       }
