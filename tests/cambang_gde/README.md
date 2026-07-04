@@ -25,31 +25,43 @@ practice this is usually a scene such as
 also applies to other explicit Godot-side harness entry points under this
 project.
 
+For scenes driven by `run_godot.ps1`, terminal classification is defined by the
+shared harness verdict protocol, not by scene-specific success/error regexes.
+The authoritative line is:
+
+```text
+[CamBANG][HarnessVerdict] scene=<scene_name> status=<ok|expected_unsupported|fail|error> exit_code=<integer> reason=<token>
+```
+
+Rules:
+
+- `status=ok` means the scene completed successfully.
+- `status=expected_unsupported` means the scene deliberately bailed out because
+  the requested configuration is structurally unsupported.
+- `status=fail` means the scene reached a meaningful verifier/benchmark failure.
+- `status=error` means the scene detected a harness/runtime error distinct from
+  an ordinary verifier assertion failure.
+- the verdict line must be emitted before any large structured payload, so
+  Android/logcat tail loss cannot hide the classification.
+- `run_godot.ps1` classifies from this protocol only. It does not accept
+  per-scene expected OK or expected-unsupported regex parameters.
+
 Keep reporting simple:
 
 - supported cases should be reported as the named surface plus the exercised
-  case/matrix label and the observed terminal success marker, for example an
-  `OK`/`PASS` run through `run_godot.ps1`
+  case/matrix label and the observed `OK` verdict from `run_godot.ps1`
 - expected-negative cases should be reported as the named surface plus the
-  exercised case and an explicit expected-negative classification such as
-  `EXPECTED_UNSUPPORTED`; do not report a generic failure as expected-negative
-  unless the scene or launcher emitted the narrow expected marker for that case
+  exercised case and the observed `EXPECTED_UNSUPPORTED` verdict from
+  `run_godot.ps1`
 - if a Godot surface was not executed, say so plainly as
   `not run; requires local/manual Godot validation`
 - native maintainer-tool validation and Godot scene validation are different
   surfaces: a passing native verifier or smoke tool does not by itself prove the
   corresponding Godot scene or headed/runtime path
 
-For newer scenes, make validation intent easy to identify from the scene name,
-top-of-file comment, expected terminal markers, and any documented runner
-pattern. Scene 568 is the current example of a scene that mostly fits this:
-its topic is clear from the name, supported cases terminate with an explicit
-`PASS`, and the known Compatibility `gpu_only` negative is emitted as an
-explicit expected-unsupported marker rather than a silent timeout.
-
-Older scenes do not need broad refactors just to satisfy naming purity. If an
-older surface is ambiguous, it may later be lightly adapted or cloned only when
-that is cheaper and clearer than preserving the legacy wording.
+Scenes that have not yet been migrated to the shared harness verdict protocol
+may still be run directly with Godot for manual/local observation, but they are
+not suitable for `run_godot.ps1` log classification until migrated.
 
 Do not claim Godot validation unless the relevant local helper/manual path was
 actually run.
@@ -127,18 +139,19 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Its paused/clocked path spends explicit virtual-time budget for stream-evaluation completion; it does not rely on `advance_timeline(...)` to hide evaluator quiescence behind a single host step.
   - At startup it reports the stored and effective Maintainer Synthetic producer output-form selection, so matrix failures can be correlated against the actual runtime selection in force.
   - On each observed evaluation or re-evaluation event it emits `INFO:` lines describing the parent, chosen or active backing-plan state, current synthetic timeline position, completion reason, and candidate-specific decision evidence.
-  - Matrix expectation: supported combinations terminate in `PASS`/`OK`; structurally unsupported combinations terminate in explicit `FAIL`/`ERROR` rather than silent timeout or ambiguous review.
+  - Matrix expectation: supported combinations terminate with a shared harness verdict `status=ok`; structurally unsupported combinations such as Compatibility renderer + `gpu_only` terminate with `status=expected_unsupported` and reason `compatibility_gpu_only`, not by timeout.
   - Uses dedicated external scenario fixtures:
     - `scenarios/568_backing_plan_single_access_live.json`
     - `scenarios/568_backing_plan_dual_live.json`
     - `scenarios/568_backing_plan_edge_clocked.json`
-  - Expected pass string: `PASS: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified`
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=backing_plan_evaluation_verify status=<ok|expected_unsupported|fail|error> exit_code=<n> reason=<token>`
 - `scenes/870_to_image_soak_benchmark.tscn`
   - Automated two-device + rig soak benchmark for `StreamResult.to_image()` and `CaptureResult.to_image()` under randomized human-like and tick-scale load.
   - Runs the full phase matrix twice: metered-only still capture (`[0]`) and five-member exposure bracket (`[-2,-1,0,+1,+2]`).
   - Displays live stream `get_display_view()` panels separately from latest explicit stream `to_image()` panels, standalone capture panels, bracket thumbnail strips, and rig-triggered multi-device capture panels.
-  - Emits framed JSON record `scene870_to_image_soak_summary`; `run_godot.ps1 -CaptureLogs` recovers it and records `scene870_summary_json` in `meta.json`.
-  - Expected pass string: `OK: to_image_soak_benchmark complete`
+  - Emits the shared harness verdict before any large benchmark payload; Compatibility renderer + `gpu_only` exits as `status=expected_unsupported` with reason `compatibility_gpu_only`.
+  - Emits framed JSON record `scene870_to_image_soak_summary`; `run_godot.ps1 -CaptureLogs` recovers it and records `scene870_summary_json` in `meta.json`. On Android, Scene 870 also writes the same summary to `user://cambang_records/scene870_to_image_soak_summary.json`, and the runner recovers that file when the log marker is present.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=870_to_image_soak_benchmark status=<ok|expected_unsupported|fail|error> exit_code=<n> reason=<token>`
 
 ## Dev-node/mailbox scene retirement (May 2026)
 
@@ -178,23 +191,15 @@ godot4 --headless --path . --scene res://scenes/73_rig_capture_result_set_verifi
 godot4 --headless --path . --scene res://scenes/568_backing_plan_evaluation_verify.tscn --quit-after 1000
 ```
 
-PowerShell helper for local/Codex runs:
-
-```powershell
-.\run_godot.ps1 -Scene res://scenes/63_snapshot_observer_minimal.tscn -QuitAfter 10
-.\run_godot.ps1 -Scene res://scenes/65_public_boundary_verify.tscn -QuitAfter 10
-.\run_godot.ps1 -Script res://scripts/status_panel_harness.gd -ScriptArgs fixtures/status_panel/fixture_valid_basic_authoritative.json
-```
-
-Optional per-run logging/classification for Windows-first automation:
+PowerShell helper for local/Codex runs of harness-verdict scenes:
 
 ```powershell
 .\run_godot.ps1 `
-  -Scene res://scenes/65_public_boundary_verify.tscn `
+  -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
   -QuitAfter 10 `
   -CaptureLogs `
-  -RunLabel scene65_win_compat `
-  -ExpectedOkPattern "OK:\s+godot public boundary verify PASS"
+  -RunLabel scene568_runtime_default `
+  -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
 ```
 
 ```powershell
@@ -203,36 +208,7 @@ Optional per-run logging/classification for Windows-first automation:
   -QuitAfter 10 `
   -CaptureLogs `
   -RunLabel scene568_gpu_only_expected_unsupported `
-  -ExpectedUnsupportedPattern "EXPECTED_UNSUPPORTED:\s+Scene 568 Compatibility gpu_only unsupported" `
   -ExtraArgs @("--rendering-method=compatibility", "--cambang-synth-producer-output-form=gpu_only")
-```
-
-When `-CaptureLogs` is enabled, `run_godot.ps1` writes one run directory beneath:
-
-- `run-logs/ok/` for locally classified successful runs
-- `run-logs/expected_unsupported/` for runs that matched an explicit expected-unsupported marker
-- `run-logs/error/` for non-zero exit, timeout, hard-failure marker, or missing expected PASS-marker runs
-- `run-logs/summary.jsonl` as one compact JSON record per run for summary-first inspection
-
-Each run directory contains:
-
-- `stdout.log`
-- `stderr.log`
-- `meta.json`
-- `verdict.txt`
-
-This is intended to keep Codex/token usage bounded: inspect `summary.jsonl` first, then open only the failing run directories unless you are explicitly doing later OK-run timing/statistics work.
-
-Android export/deploy can use the same launcher and log bucketing:
-
-```powershell
-  .\run_godot.ps1 `
-  -RunPlatform android `
-  -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
-  -CaptureLogs `
-  -TimeoutSec 25 `
-  -ExpectedOkPattern "PASS:\s+backing-plan evaluation lifecycle, scoping, and clocked cleanup verified" `
-  -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
 ```
 
 To collect the Scene 870 `to_image()` soak benchmark baseline:
@@ -244,9 +220,38 @@ To collect the Scene 870 `to_image()` soak benchmark baseline:
   -CaptureLogs `
   -TimeoutSec 180 `
   -RunLabel scene870_synthetic_mobile `
-  -ExpectedOkPattern "OK:\s+to_image_soak_benchmark complete" `
   -ExtraArgs @("--rendering-method=mobile", "--cambang-bench-seed=870001")
 ```
+
+Android export/deploy uses the same launcher and harness-verdict classification:
+
+```powershell
+.\run_godot.ps1 `
+  -RunPlatform android `
+  -Scene res://scenes/568_backing_plan_evaluation_verify.tscn `
+  -CaptureLogs `
+  -TimeoutSec 25 `
+  -RunLabel scene568_android_runtime_default `
+  -ExtraArgs @("--cambang-synth-producer-output-form=runtime_default")
+```
+
+When `-CaptureLogs` is enabled, `run_godot.ps1` writes one run directory beneath:
+
+- `run-logs/ok/` for runs whose latest harness verdict is `status=ok` and which have no timeout/process/hard-failure override
+- `run-logs/expected_unsupported/` for runs whose latest harness verdict is `status=expected_unsupported` and which have no timeout/process/hard-failure override
+- `run-logs/error/` for timeout, non-zero process exit, hard-failure marker, missing harness verdict, or harness verdict `status=fail|error`
+- `run-logs/summary.jsonl` as one compact JSON record per run for summary-first inspection
+
+Each run directory contains:
+
+- `stdout.log`
+- `stderr.log`
+- `meta.json`
+- `verdict.txt`
+
+`meta.json` records all observed harness verdict markers in `harness_verdicts` and the classification-driving final marker in `harness_verdict`.
+
+This is intended to keep Codex/token usage bounded: inspect `summary.jsonl` first, then open only the failing run directories unless you are explicitly doing later OK-run timing/statistics work.
 
 Android-mode notes:
 
@@ -254,14 +259,15 @@ Android-mode notes:
 - it currently supports `-Scene` only, not `-Script`
 - it currently translates maintainer settings from `--cambang-synth-producer-output-form=...`, `--cambang-synth-stream-capability-downgrades=...`, and `--cambang-synth-capture-capability-downgrades=...`
 - it does not support `-QuitAfter`; use `-TimeoutSec` as the outer observation guard
-- when an expected `OK:` pattern is observed, Android mode keeps the app running until it exits naturally or `-TimeoutSec` is reached, so headed/manual-inspection scenes can stay open
+- after the Android app exits naturally, the runner performs a short bounded logcat drain so the harness verdict and any trailing record-file markers can be captured
 - it supports `--rendering-method=mobile` and `--rendering-method=gl_compatibility` during export/deploy runs; `--rendering-method=compatibility` is normalized to `gl_compatibility`
+- for Scene 870, the runner can recover the summary JSON from the scene-written `user://cambang_records/scene870_to_image_soak_summary.json` file when the log marker is present; this file-backed recovery is for large structured data, not verdict classification
 
 Launcher note:
 
 - `run_godot.ps1` accepts `--rendering-method=mobile`, `--rendering-method=compatibility`, and `--rendering-method=gl_compatibility`; it normalizes `compatibility` to `gl_compatibility`
 - on Windows, it passes rendering-method/driver engine args in the split `--flag value` form expected by the local Godot executable, while maintainer override args remain user args after `--`
-- `-ExpectedUnsupportedPattern` is the narrow companion to `-ExpectedOkPattern`; it only classifies a run as `EXPECTED_UNSUPPORTED` when the explicit marker is observed and the run does not hit timeout or script parse/load failure
+- `-ExpectedOkPattern` and `-ExpectedUnsupportedPattern` are intentionally not supported; add or fix a scene-level `[CamBANG][HarnessVerdict]` line instead of adding runner-side regex exceptions
 
 Notes for Codex/agent validation on this machine:
 
@@ -280,8 +286,9 @@ Notes:
   large value such as `--quit-after 1000`.
 - `60_restart_boundary_abuse`, `61_tick_bounded_coalescing_abuse`, `62_snapshot_polling_immutability_abuse`,
   `63_snapshot_observer_minimal`, `65_public_boundary_verify`, `66_public_lifecycle_verify`, and
-  `70_result_retrieval_verification` are intended to self-terminate with an explicit terminal `OK: ... PASS`
-  or `FAIL: ...` line; `--quit-after` is an outer iteration/frame guard for CLI runs.
+  `70_result_retrieval_verification` are older/non-protocol scenes unless separately migrated.
+  Their terminal `OK: ... PASS` / `FAIL: ...` lines are useful for direct Godot/manual checks,
+  but they are not `run_godot.ps1` classification verdicts.
 - Large structured harness payloads should not rely on a single huge log line; `run_godot.ps1`
   understands framed log records and writes recovered payloads into `records/` under the run directory.
 - Harnesses that need this may implement the tiny local framed-record emitter in their own script.

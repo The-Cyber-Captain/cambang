@@ -67,8 +67,9 @@ func _run() -> void:
 	print("RUN: %s" % SCENE_LABEL)
 	_log_maintainer_output_form_probe()
 	if _synthetic_producer_output_form_effective_selection() == "gpu_only" and _scene568_is_compatibility_renderer():
-		_info("EXPECTED_UNSUPPORTED: Scene 568 Compatibility gpu_only unsupported")
-		_fail("Scene 568 requires a capture-capable Synthetic producer output form on the compatibility renderer; run with -- --cambang-synth-producer-output-form=cpu_gpu or cpu_only")
+		_done = true
+		_emit_harness_verdict("expected_unsupported", 0, "compatibility_gpu_only")
+		_cleanup_and_quit(0)
 		return
 	await _run_impl()
 
@@ -102,6 +103,7 @@ func _run_impl() -> void:
 
 	_step_ok("backing-plan evaluation lifecycle, scoping, and clocked cleanup verified")
 	_info("PASS: backing-plan evaluation lifecycle, scoping, and clocked cleanup verified")
+	_emit_harness_verdict("ok", 0, "complete")
 	_cleanup_and_quit(0)
 
 
@@ -1558,6 +1560,25 @@ func _synthetic_producer_output_form_effective_selection() -> String:
 	return _synthetic_producer_output_form_setting()
 
 
+func _harness_rendering_method_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/harness_rendering_method", "")).strip_edges().to_lower()
+
+
+func _harness_rendering_method_cmdline_selection() -> String:
+	const PREFIX := "--cambang-harness-rendering-method="
+	return _single_namespaced_cmdline_selection(PREFIX).strip_edges().to_lower()
+
+
+func _scene568_requested_rendering_method() -> String:
+	var cmdline_selection := _harness_rendering_method_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	var setting_selection := _harness_rendering_method_setting()
+	if setting_selection != "":
+		return setting_selection
+	return _scene568_current_rendering_method()
+
+
 func _log_maintainer_output_form_probe() -> void:
 	_info(
 		"Synthetic producer output-form stored project setting: %s" % [
@@ -1577,13 +1598,16 @@ func _log_maintainer_output_form_probe() -> void:
 
 
 func _scene568_current_rendering_method() -> String:
-	var runtime_method := str(RenderingServer.get_current_rendering_method())
+	var runtime_method := str(RenderingServer.get_current_rendering_method()).strip_edges().to_lower()
 	if runtime_method != "":
 		return runtime_method
-	return str(ProjectSettings.get_setting("rendering/renderer/rendering_method", ""))
+	return str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "")).strip_edges().to_lower()
 
 
 func _scene568_cmdline_arg_matches_any_value(flag: String, accepted_values: Array[String]) -> bool:
+	var accepted_normalized := []
+	for value in accepted_values:
+		accepted_normalized.append(str(value).strip_edges().to_lower())
 	var args := OS.get_cmdline_args()
 	var flag_with_equals := "%s=" % flag
 	var index := 0
@@ -1592,25 +1616,26 @@ func _scene568_cmdline_arg_matches_any_value(flag: String, accepted_values: Arra
 		if text == flag:
 			if index + 1 >= args.size():
 				return false
-			var split_value := str(args[index + 1])
-			if accepted_values.has(split_value):
+			var split_value := str(args[index + 1]).strip_edges().to_lower()
+			if accepted_normalized.has(split_value):
 				return true
 			index += 2
 			continue
 		if text.begins_with(flag_with_equals):
-			var equals_value := text.substr(flag_with_equals.length())
-			if accepted_values.has(equals_value):
+			var equals_value := text.substr(flag_with_equals.length()).strip_edges().to_lower()
+			if accepted_normalized.has(equals_value):
 				return true
 		index += 1
 	return false
 
 
 func _scene568_rendering_method_is_compatibility(rendering_method: String) -> bool:
-	return rendering_method == "compatibility" or rendering_method == "gl_compatibility"
+	var normalized := rendering_method.strip_edges().to_lower()
+	return normalized == "compatibility" or normalized == "gl_compatibility" or normalized == "opengl3"
 
 
 func _scene568_is_compatibility_renderer() -> bool:
-	var rendering_method := _scene568_current_rendering_method()
+	var rendering_method := _scene568_requested_rendering_method()
 	if _scene568_rendering_method_is_compatibility(rendering_method):
 		return true
 	if _scene568_cmdline_arg_matches_any_value("--rendering-method", ["compatibility", "gl_compatibility"]):
@@ -2446,6 +2471,7 @@ func _fail(message: String) -> void:
 	var detail := message
 	if detail.begins_with("FAIL: "):
 		detail = detail.substr(6)
+	_emit_harness_verdict("fail", 1, "failure")
 	push_error("step %d FAIL: %s" % [_step, detail])
 	printerr("FAIL: %s" % detail)
 	print("FAIL: %s" % detail)
@@ -2459,6 +2485,15 @@ func _step_ok(message: String) -> void:
 
 func _info(message: String) -> void:
 	print(message)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(exit_code: int) -> void:

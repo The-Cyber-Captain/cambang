@@ -11,14 +11,12 @@ param(
     [switch]$CaptureLogs,
     [string]$LogRoot = "",
     [string]$RunLabel = "",
-    [string]$ExpectedOkPattern = "",
-    [string]$ExpectedUnsupportedPattern = "",
     [string[]]$HardFailurePatterns = @(
-        "SCRIPT ERROR:",
-        "Parse Error",
-        "Failed to load script",
-        "(?im)^\s*FAIL(?:ED)?\b"
-    ),
+    "SCRIPT ERROR:",
+    "Parse Error",
+    "Failed to load script",
+    "(?im)^\s*FAIL(?:ED)?\b"
+),
     [int]$TimeoutSec = 0,
     [string]$AndroidSdkRoot = "",
     [string]$AdbExe = "",
@@ -86,6 +84,51 @@ function Test-PatternMatch {
     return $false
 }
 
+function ConvertFrom-HarnessVerdictMarkers {
+    param([string]$Text)
+
+    $markers = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return @($markers.ToArray())
+    }
+
+    $pattern = '\[CamBANG\]\[HarnessVerdict\]\s+scene=(?<scene>\S+)\s+status=(?<status>ok|expected_unsupported|fail|error)\s+exit_code=(?<exit_code>-?\d+)(?:\s+reason=(?<reason>\S+))?'
+    $lineNumber = 0
+    foreach ($line in ($Text -split "\r?\n")) {
+        $lineNumber += 1
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $match = [Regex]::Match($line, $pattern)
+        if (-not $match.Success) {
+            continue
+        }
+
+        $markers.Add([PSCustomObject][ordered]@{
+            scene = $match.Groups["scene"].Value
+            status = $match.Groups["status"].Value
+            exit_code = [int]$match.Groups["exit_code"].Value
+            reason = $match.Groups["reason"].Value
+            line = $lineNumber
+            raw = $line
+        })
+    }
+
+    return @($markers.ToArray())
+}
+
+function Get-LastHarnessVerdict {
+    param([string]$Text)
+
+    $markers = @(ConvertFrom-HarnessVerdictMarkers -Text $Text)
+    if ($markers.Count -eq 0) {
+        return $null
+    }
+
+    return $markers[$markers.Count - 1]
+}
+
 function Get-WindowsGodotExtraArgBuckets {
     param([string[]]$ExtraArgValues)
 
@@ -101,7 +144,8 @@ function Get-WindowsGodotExtraArgBuckets {
         "--cambang-bench-warmup-sec=",
         "--cambang-bench-superhuman-actions-per-tick=",
         "--cambang-bench-max-inflight-captures=",
-        "--cambang-bench-headless-texture="
+        "--cambang-bench-headless-texture=",
+        "--cambang-harness-rendering-method="
     )
     $userArgFlags = @(
         "--cambang-synth-producer-output-form",
@@ -115,7 +159,8 @@ function Get-WindowsGodotExtraArgBuckets {
         "--cambang-bench-warmup-sec",
         "--cambang-bench-superhuman-actions-per-tick",
         "--cambang-bench-max-inflight-captures",
-        "--cambang-bench-headless-texture"
+        "--cambang-bench-headless-texture",
+        "--cambang-harness-rendering-method"
     )
     $engineArgValuePrefixes = @(
         "--rendering-method=",
@@ -128,6 +173,7 @@ function Get-WindowsGodotExtraArgBuckets {
 
     $engineArgs = New-Object System.Collections.Generic.List[string]
     $userArgs = New-Object System.Collections.Generic.List[string]
+    $requestedRenderingMethod = ""
 
     for ($index = 0; $index -lt $ExtraArgValues.Count; $index++) {
         $arg = $ExtraArgValues[$index]
@@ -164,6 +210,7 @@ function Get-WindowsGodotExtraArgBuckets {
             $value = $ExtraArgValues[$index]
             if ($arg -eq "--rendering-method") {
                 $value = Normalize-RenderingMethodValue -RenderingMethod $value
+                $requestedRenderingMethod = $value
             }
             $engineArgs.Add($arg)
             $engineArgs.Add($value)
@@ -176,6 +223,7 @@ function Get-WindowsGodotExtraArgBuckets {
                 $value = $arg.Substring($prefix.Length)
                 if ($prefix -eq "--rendering-method=") {
                     $value = Normalize-RenderingMethodValue -RenderingMethod $value
+                    $requestedRenderingMethod = $value
                 }
                 $engineArgs.Add($prefix.Substring(0, $prefix.Length - 1))
                 $engineArgs.Add($value)
@@ -188,6 +236,10 @@ function Get-WindowsGodotExtraArgBuckets {
         }
 
         $engineArgs.Add($arg)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($requestedRenderingMethod)) {
+        $userArgs.Add(("--cambang-harness-rendering-method={0}" -f $requestedRenderingMethod))
     }
 
     return [PSCustomObject]@{
@@ -612,6 +664,134 @@ function Recover-StructuredRecords {
     }
 }
 
+
+function ConvertFrom-AndroidStructuredRecordFileMarkers {
+    param([string]$LogText)
+
+    $markers = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrWhiteSpace($LogText)) {
+        return @($markers.ToArray())
+    }
+
+    $markerPattern = '\[CamBANG\]\[RecordFile\] id=(?<id>\S+) name=(?<name>\S+) kind=(?<kind>\S+) user_path=(?<user_path>\S+) bytes=(?<bytes>\d+)'
+    $seen = @{}
+    foreach ($line in ($LogText -split "\r?\n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $match = [Regex]::Match($line, $markerPattern)
+        if (-not $match.Success) {
+            continue
+        }
+
+        $recordId = $match.Groups["id"].Value
+        $recordName = $match.Groups["name"].Value
+        $recordKind = $match.Groups["kind"].Value
+        $userPath = $match.Groups["user_path"].Value
+        $dedupeKey = "{0}|{1}|{2}|{3}" -f $recordId, $recordName, $recordKind, $userPath
+        if ($seen.ContainsKey($dedupeKey)) {
+            continue
+        }
+        $seen[$dedupeKey] = $true
+
+        $markers.Add([ordered]@{
+            id = $recordId
+            name = $recordName
+            kind = $recordKind
+            user_path = $userPath
+            bytes = [int64]$match.Groups["bytes"].Value
+        })
+    }
+
+    return @($markers.ToArray())
+}
+
+function Recover-AndroidStructuredRecordFiles {
+    param(
+        [Parameter(Mandatory)][string]$RunDir,
+        [Parameter(Mandatory)][string]$LogText,
+        [Parameter(Mandatory)][string]$AdbPath,
+        [Parameter(Mandatory)][string]$DeviceSerial,
+        [Parameter(Mandatory)][string]$PackageName,
+        [Parameter(Mandatory)][string]$ProjectFullPath,
+        [string]$StderrLogPath = ""
+    )
+
+    $recordsDir = Join-Path $RunDir "records"
+    New-Item -ItemType Directory -Force -Path $recordsDir | Out-Null
+
+    $recoveredSummaries = New-Object System.Collections.Generic.List[object]
+    $scene870SummaryJson = $null
+
+    if ([string]::IsNullOrWhiteSpace($PackageName)) {
+        return [ordered]@{
+            StructuredRecords = @($recoveredSummaries.ToArray())
+            Scene870SummaryJson = $scene870SummaryJson
+        }
+    }
+
+    $markers = @(ConvertFrom-AndroidStructuredRecordFileMarkers -LogText $LogText)
+    foreach ($marker in $markers) {
+        $recordName = [string]$marker.name
+        $recordId = [string]$marker.id
+        $recordKind = [string]$marker.kind
+        $userPath = [string]$marker.user_path
+        if ([string]::IsNullOrWhiteSpace($recordName) -or [string]::IsNullOrWhiteSpace($recordId) -or [string]::IsNullOrWhiteSpace($userPath)) {
+            continue
+        }
+
+        $remoteRelativePath = "files/" + ($userPath -replace '^/+', '')
+        try {
+            $catResult = Invoke-CapturedProcess `
+                -FilePath $AdbPath `
+                -Arguments @("-s", $DeviceSerial, "exec-out", "run-as", $PackageName, "cat", $remoteRelativePath) `
+                -WorkingDirectory $ProjectFullPath `
+                -CommandTimeoutSec 30
+            if ($catResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($catResult.StdoutText)) {
+                if (-not [string]::IsNullOrWhiteSpace($StderrLogPath)) {
+                    Add-LogSection `
+                        -Path $StderrLogPath `
+                        -Header "android_record_file_recovery_failed" `
+                        -Body ("id={0}`r`nuser_path={1}`r`nexit_code={2}`r`nstderr={3}" -f $recordId, $userPath, $catResult.ExitCode, $catResult.StderrText)
+                }
+                continue
+            }
+
+            $recoveredPath = ConvertTo-StructuredRecordPath -RecordsDir $recordsDir -Name $recordName -Id $recordId -Kind $recordKind -Partial $false
+            Set-Content -LiteralPath $recoveredPath -Value $catResult.StdoutText -NoNewline
+            $recoveredSummaries.Add([ordered]@{
+                id = $recordId
+                name = $recordName
+                kind = $recordKind
+                source_log = "android_user_file:$userPath"
+                recovered_path = $recoveredPath
+                complete = $true
+                chunk_count_seen = 1
+                chunk_count_expected = 1
+            })
+
+            if ($recordName -eq "scene870_to_image_soak_summary" -and $recordKind -eq "json") {
+                $scene870SummaryJson = [string]$recoveredPath
+            }
+        }
+        catch {
+            if (-not [string]::IsNullOrWhiteSpace($StderrLogPath)) {
+                Add-LogSection `
+                    -Path $StderrLogPath `
+                    -Header "android_record_file_recovery_exception" `
+                    -Body ("id={0}`r`nuser_path={1}`r`nerror={2}" -f $recordId, $userPath, $_.Exception.Message)
+            }
+        }
+    }
+
+    return [ordered]@{
+        StructuredRecords = @($recoveredSummaries.ToArray())
+        Scene870SummaryJson = $scene870SummaryJson
+    }
+}
+
+
 function Get-CommandText {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -981,6 +1161,11 @@ function Get-PatchedAndroidProjectText {
         -LinePrefix 'renderer/rendering_method.mobile=' `
         -NewValue ('"{0}"' -f $renderingMethod) `
         -InsertAfterLinePrefix 'renderer/rendering_method='
+    $updated = Set-OrInsertSingleLineValue `
+        -Text $updated `
+        -LinePrefix 'maintainer/harness_rendering_method=' `
+        -NewValue ('"{0}"' -f $renderingMethod) `
+        -InsertAfterLinePrefix 'maintainer/synthetic_producer_output_form='
     return $updated
 }
 
@@ -996,10 +1181,10 @@ function Set-AndroidManifestRenderingMethodText {
     }
 
     return [Regex]::Replace(
-        $ManifestText,
-        $pattern,
-        ('android:name="org.godotengine.rendering.method" android:value="{0}"' -f $RenderingMethod),
-        1
+            $ManifestText,
+            $pattern,
+            ('android:name="org.godotengine.rendering.method" android:value="{0}"' -f $RenderingMethod),
+            1
     )
 }
 
@@ -1205,8 +1390,8 @@ function Get-LatestFileByFilter {
     )
 
     $file = Get-ChildItem -Path $RootPath -Recurse -File -Filter $Filter |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
 
     if ($null -eq $file) {
         throw "Could not find $Filter beneath $RootPath."
@@ -1432,8 +1617,6 @@ function Invoke-AndroidRun {
         [int]$ObservationTimeoutSec,
         [string]$ExplicitPackageName,
         [string]$ExplicitActivityName,
-        [string]$ExpectedPattern,
-        [string]$ExpectedUnsupportedPattern,
         [string[]]$FailurePatterns
     )
 
@@ -1457,8 +1640,8 @@ function Invoke-AndroidRun {
     $androidActivityName = ""
     $androidPid = ""
     $sawAppRunning = $false
-    $sawExpectedPattern = $false
-    $sawExpectedUnsupportedPattern = $false
+    $sawHarnessVerdict = $false
+    $lastHarnessVerdict = $null
     $timedOut = $false
     $processExitCode = $null
     $logcatText = ""
@@ -1661,16 +1844,47 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
                 -ProjectFullPath $ProjectFullPath `
                 -DeviceLogcatPath $deviceLogcatPath
 
-            if (-not [string]::IsNullOrWhiteSpace($ExpectedPattern) -and ($logcatText -match $ExpectedPattern)) {
-                $sawExpectedPattern = $true
-            }
+            $lastHarnessVerdict = Get-LastHarnessVerdict -Text $logcatText
+            $sawHarnessVerdict = $null -ne $lastHarnessVerdict
 
-            if (-not [string]::IsNullOrWhiteSpace($ExpectedUnsupportedPattern) -and ($logcatText -match $ExpectedUnsupportedPattern)) {
-                $sawExpectedUnsupportedPattern = $true
+            if ($sawHarnessVerdict) {
+                # A shared harness verdict is a terminal scene-level classification.
+                # Very fast expected-unsupported Android runs can emit the verdict and exit
+                # before PID polling ever observes the package as running. Treat the verdict
+                # as proof that the launched scene executed far enough to classify the run,
+                # then perform a short bounded drain for trailing record-file markers.
+                for ($drainIndex = 0; $drainIndex -lt 4; $drainIndex++) {
+                    Start-Sleep -Milliseconds 750
+                    $logcatText = Write-AndroidLogcatSnapshot `
+                        -AdbPath $AdbPath `
+                        -DeviceSerial $DeviceSerial `
+                        -ProjectFullPath $ProjectFullPath `
+                        -DeviceLogcatPath $deviceLogcatPath
+
+                    $latestHarnessVerdict = Get-LastHarnessVerdict -Text $logcatText
+                    if ($null -ne $latestHarnessVerdict) {
+                        $lastHarnessVerdict = $latestHarnessVerdict
+                        $sawHarnessVerdict = $true
+                    }
+                }
                 break
             }
 
             if ($sawAppRunning -and -not $isRunning) {
+                for ($drainIndex = 0; $drainIndex -lt 4; $drainIndex++) {
+                    Start-Sleep -Milliseconds 750
+                    $logcatText = Write-AndroidLogcatSnapshot `
+                        -AdbPath $AdbPath `
+                        -DeviceSerial $DeviceSerial `
+                        -ProjectFullPath $ProjectFullPath `
+                        -DeviceLogcatPath $deviceLogcatPath
+
+                    $latestHarnessVerdict = Get-LastHarnessVerdict -Text $logcatText
+                    if ($null -ne $latestHarnessVerdict) {
+                        $lastHarnessVerdict = $latestHarnessVerdict
+                        $sawHarnessVerdict = $true
+                    }
+                }
                 break
             }
 
@@ -1723,6 +1937,9 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         Remove-Item -LiteralPath $exportStagingDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    $lastHarnessVerdict = Get-LastHarnessVerdict -Text $logcatText
+    $sawHarnessVerdict = $null -ne $lastHarnessVerdict
+
     if (($null -eq $processExitCode) -and (Test-PatternMatch -Text $logcatText -Patterns $FailurePatterns)) {
         $processExitCode = 1
     }
@@ -1730,8 +1947,8 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
     return [PSCustomObject]@{
         ProcessExitCode = $processExitCode
         TimedOut = $timedOut
-        SawExpectedPattern = $sawExpectedPattern
-        SawExpectedUnsupportedPattern = $sawExpectedUnsupportedPattern
+        SawHarnessVerdict = $sawHarnessVerdict
+        HarnessVerdict = $lastHarnessVerdict
         SawAppRunning = $sawAppRunning
         AndroidPackage = $androidPackageName
         AndroidActivity = $androidActivityName
@@ -1769,8 +1986,10 @@ $androidPackageName = ""
 $androidActivityName = ""
 $androidDeviceSerialResolved = ""
 $androidApkPath = ""
-$androidSawExpectedPattern = $false
+$androidSawHarnessVerdict = $false
+$androidHarnessVerdict = $null
 $androidSawAppRunning = $false
+$runnerErrorMessage = ""
 
 if ($RunPlatform -eq "windows") {
     $arguments = New-Object System.Collections.Generic.List[string]
@@ -1881,6 +2100,7 @@ else {
     $startTime = Get-Date
     $timedOut = $false
     $processExitCode = $null
+    $deviceLogcatPath = Join-Path $logRecord.RunDir "device_logcat.log"
 
     Write-Host ("RUN: {0}" -f $commandText)
     Write-Host ("LOG ROOT: {0}" -f $logRecord.Root)
@@ -1889,6 +2109,7 @@ else {
     try {
         Ensure-FileExists -Path $logRecord.StdoutPath
         Ensure-FileExists -Path $logRecord.StderrPath
+        Ensure-FileExists -Path $deviceLogcatPath
 
         $androidResult = Invoke-AndroidRun `
             -LogRecord $logRecord `
@@ -1903,8 +2124,6 @@ else {
             -ObservationTimeoutSec $TimeoutSec `
             -ExplicitPackageName $AndroidPackage `
             -ExplicitActivityName $AndroidActivity `
-            -ExpectedPattern $ExpectedOkPattern `
-            -ExpectedUnsupportedPattern $ExpectedUnsupportedPattern `
             -FailurePatterns $HardFailurePatterns
 
         $timedOut = $androidResult.TimedOut
@@ -1913,9 +2132,14 @@ else {
         $androidPackageName = $androidResult.AndroidPackage
         $androidActivityName = $androidResult.AndroidActivity
         $androidApkPath = $androidResult.ExportApkPath
-        $androidSawExpectedPattern = $androidResult.SawExpectedPattern
-        $androidSawExpectedUnsupportedPattern = $androidResult.SawExpectedUnsupportedPattern
+        $androidSawHarnessVerdict = $androidResult.SawHarnessVerdict
+        $androidHarnessVerdict = $androidResult.HarnessVerdict
         $androidSawAppRunning = $androidResult.SawAppRunning
+    }
+    catch {
+        $runnerErrorMessage = $_.Exception.Message
+        $processExitCode = 1
+        Add-LogSection -Path $logRecord.StderrPath -Header "android_run_error" -Body $runnerErrorMessage
     }
     finally {
         Ensure-FileExists -Path $logRecord.StdoutPath
@@ -1937,70 +2161,106 @@ else {
     ""
 }
 $combinedText = "$stdoutText`n$stderrText`n$deviceLogcatText"
-$expectedOkObserved = (-not [string]::IsNullOrWhiteSpace($ExpectedOkPattern)) -and ($combinedText -match $ExpectedOkPattern)
-$expectedUnsupportedObserved = (-not [string]::IsNullOrWhiteSpace($ExpectedUnsupportedPattern)) -and ($combinedText -match $ExpectedUnsupportedPattern)
+$harnessVerdicts = @(ConvertFrom-HarnessVerdictMarkers -Text $combinedText)
+$harnessVerdict = if ($harnessVerdicts.Count -gt 0) { $harnessVerdicts[$harnessVerdicts.Count - 1] } else { $null }
+$harnessVerdictObserved = $null -ne $harnessVerdict
 $scriptParseLoadFailurePatterns = @(
     "SCRIPT ERROR:",
     "Parse Error",
     "Failed to load script"
 )
 $scriptParseLoadFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $scriptParseLoadFailurePatterns
-$expectedUnsupportedClassified = $expectedUnsupportedObserved -and -not $timedOut -and -not $scriptParseLoadFailureObserved
+$hardFailureObserved = Test-PatternMatch -Text $combinedText -Patterns $HardFailurePatterns
 
 if ($null -eq $processExitCode -or [string]::IsNullOrWhiteSpace([string]$processExitCode)) {
     $processExitCode = $null
 }
 
 $verdictReasons = New-Object System.Collections.Generic.List[string]
-if ($expectedUnsupportedObserved) {
-    $verdictReasons.Add("expected_unsupported_pattern_observed")
+if ($timedOut) {
+    $verdictReasons.Add("timeout")
 }
 
-if ($expectedUnsupportedClassified) {
-    $bucket = "expected_unsupported"
-    $finalVerdict = "EXPECTED_UNSUPPORTED"
-    $returnedExitCode = 0
+if ($null -ne $processExitCode -and $processExitCode -ne 0) {
+    $verdictReasons.Add("exit_code=$processExitCode")
+}
+
+if (-not [string]::IsNullOrWhiteSpace($runnerErrorMessage)) {
+    $verdictReasons.Add("runner_exception")
+}
+
+if ($RunPlatform -eq "android" -and -not $androidSawAppRunning -and -not $harnessVerdictObserved) {
+    $verdictReasons.Add("app_never_observed_running")
+}
+
+if ($scriptParseLoadFailureObserved) {
+    $verdictReasons.Add("script_parse_load_failure")
+}
+elseif ($hardFailureObserved) {
+    $verdictReasons.Add("hard_failure_pattern")
+}
+
+if (-not $harnessVerdictObserved) {
+    $verdictReasons.Add("missing_harness_verdict")
+    $bucket = "error"
+    $finalVerdict = "ERROR"
 }
 else {
-    if ($timedOut) {
-        if (-not $expectedOkObserved) {
-            $verdictReasons.Add("timeout")
+    $harnessStatus = [string]$harnessVerdict.status
+    $harnessReason = [string]$harnessVerdict.reason
+    if ([string]::IsNullOrWhiteSpace($harnessReason)) {
+        $harnessReason = "unspecified"
+    }
+
+    switch ($harnessStatus) {
+        "ok" {
+            if ($verdictReasons.Count -eq 0) {
+                $bucket = "ok"
+                $finalVerdict = "OK"
+            }
+            else {
+                $bucket = "error"
+                $finalVerdict = "ERROR"
+            }
+        }
+        "expected_unsupported" {
+            if ($verdictReasons.Count -eq 0) {
+                $bucket = "expected_unsupported"
+                $finalVerdict = "EXPECTED_UNSUPPORTED"
+            }
+            else {
+                $bucket = "error"
+                $finalVerdict = "ERROR"
+            }
+        }
+        "fail" {
+            $verdictReasons.Add("harness_status=fail")
+            $verdictReasons.Add("harness_reason=$harnessReason")
+            $bucket = "error"
+            $finalVerdict = "ERROR"
+        }
+        "error" {
+            $verdictReasons.Add("harness_status=error")
+            $verdictReasons.Add("harness_reason=$harnessReason")
+            $bucket = "error"
+            $finalVerdict = "ERROR"
+        }
+        default {
+            $verdictReasons.Add("unknown_harness_status=$harnessStatus")
+            $bucket = "error"
+            $finalVerdict = "ERROR"
         }
     }
+}
 
-    if ($null -ne $processExitCode -and $processExitCode -ne 0) {
-        if (-not ($timedOut -and $expectedOkObserved)) {
-            $verdictReasons.Add("exit_code=$processExitCode")
-        }
-    }
-
-    if ($RunPlatform -eq "android" -and -not $androidSawAppRunning) {
-        $verdictReasons.Add("app_never_observed_running")
-    }
-
-    if (Test-PatternMatch -Text $combinedText -Patterns $HardFailurePatterns) {
-        $verdictReasons.Add("hard_failure_pattern")
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedOkPattern) -and -not $expectedOkObserved) {
-        $verdictReasons.Add("missing_expected_ok_pattern")
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedUnsupportedPattern) -and -not $expectedUnsupportedObserved) {
-        $verdictReasons.Add("missing_expected_unsupported_pattern")
-    }
-
-    $bucket = if ($verdictReasons.Count -eq 0) { "ok" } else { "error" }
-    $finalVerdict = if ($bucket -eq "ok") { "OK" } else { "ERROR" }
-    $returnedExitCode = if ($bucket -eq "ok") {
-        if ($null -eq $processExitCode) { 0 } else { $processExitCode }
-    }
-    elseif ($null -ne $processExitCode -and $processExitCode -ne 0) {
-        $processExitCode
-    }
-    else {
-        1
-    }
+$returnedExitCode = if ($bucket -eq "ok" -or $bucket -eq "expected_unsupported") {
+    0
+}
+elseif ($null -ne $processExitCode -and $processExitCode -ne 0) {
+    $processExitCode
+}
+else {
+    1
 }
 $logRecord = Finalize-LogRecord -LogRecord $logRecord -Bucket $bucket
 $finalDeviceLogcatPath = if ($RunPlatform -eq "android") {
@@ -2025,6 +2285,33 @@ if (-not [string]::IsNullOrWhiteSpace($deviceLogcatPath) -and (Test-Path $device
 }
 
 $structuredRecordResult = Recover-StructuredRecords -RunDir $logRecord.RunDir -SourceLogs $structuredRecordSourceLogs
+$androidRecordFileResult = [ordered]@{
+    StructuredRecords = @()
+    Scene870SummaryJson = $null
+}
+if ($RunPlatform -eq "android" -and -not [string]::IsNullOrWhiteSpace($deviceLogcatText) -and -not [string]::IsNullOrWhiteSpace($androidPackageName)) {
+    $androidRecordFileResult = Recover-AndroidStructuredRecordFiles `
+        -RunDir $logRecord.RunDir `
+        -LogText $deviceLogcatText `
+        -AdbPath $adbExeResolved `
+        -DeviceSerial $androidDeviceSerialResolved `
+        -PackageName $androidPackageName `
+        -ProjectFullPath $projectFullPath `
+        -StderrLogPath $logRecord.StderrPath
+}
+
+$combinedStructuredRecords = New-Object System.Collections.Generic.List[object]
+foreach ($record in @($structuredRecordResult.StructuredRecords)) {
+    $combinedStructuredRecords.Add($record)
+}
+foreach ($record in @($androidRecordFileResult.StructuredRecords)) {
+    $combinedStructuredRecords.Add($record)
+}
+
+$scene870SummaryJson = $structuredRecordResult.Scene870SummaryJson
+if ($null -ne $androidRecordFileResult.Scene870SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$androidRecordFileResult.Scene870SummaryJson)) {
+    $scene870SummaryJson = $androidRecordFileResult.Scene870SummaryJson
+}
 
 $meta = [ordered]@{
     timestamp_utc = $logRecord.TimestampUtc.ToString("o")
@@ -2043,15 +2330,16 @@ $meta = [ordered]@{
     script_args = @($ScriptArgs)
     extra_args = @($ExtraArgs)
     quit_after = $QuitAfter
-    expected_ok_pattern = $ExpectedOkPattern
-    expected_unsupported_pattern = $ExpectedUnsupportedPattern
     hard_failure_patterns = @($HardFailurePatterns)
+    harness_verdict_observed = $harnessVerdictObserved
+    harness_verdicts = @($harnessVerdicts)
+    harness_verdict = $harnessVerdict
     command = $commandText
     project_path = $projectFullPath
     stdout_log = $logRecord.StdoutPath
     stderr_log = $logRecord.StderrPath
     run_dir = $logRecord.RunDir
-    structured_records = @($structuredRecordResult.StructuredRecords)
+    structured_records = @($combinedStructuredRecords.ToArray())
 }
 
 if ($RunPlatform -eq "android") {
@@ -2064,21 +2352,23 @@ if ($RunPlatform -eq "android") {
     $meta["android_activity"] = $androidActivityName
     $meta["android_apk_path"] = $(Join-Path $logRecord.RunDir "android_debug.apk")
     $meta["device_logcat_log"] = $finalDeviceLogcatPath
-    $meta["android_expected_pattern_observed"] = $androidSawExpectedPattern
+    $meta["android_harness_verdict_observed"] = $androidSawHarnessVerdict
+    $meta["android_harness_verdict"] = $androidHarnessVerdict
     $meta["android_app_observed_running"] = $androidSawAppRunning
 }
 
 if ($null -ne $structuredRecordResult.Scene70SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$structuredRecordResult.Scene70SummaryJson)) {
     $meta["scene70_summary_json"] = [string]$structuredRecordResult.Scene70SummaryJson
 }
-if ($null -ne $structuredRecordResult.Scene870SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$structuredRecordResult.Scene870SummaryJson)) {
-    $meta["scene870_summary_json"] = [string]$structuredRecordResult.Scene870SummaryJson
+if ($null -ne $scene870SummaryJson -and -not [string]::IsNullOrWhiteSpace([string]$scene870SummaryJson)) {
+    $meta["scene870_summary_json"] = [string]$scene870SummaryJson
 }
 
-$meta["expected_ok_pattern_observed"] = $expectedOkObserved
-$meta["expected_unsupported_pattern_observed"] = $expectedUnsupportedObserved
-$meta["expected_unsupported_classified"] = $expectedUnsupportedClassified
 $meta["script_parse_load_failure_observed"] = $scriptParseLoadFailureObserved
+$meta["hard_failure_observed"] = $hardFailureObserved
+if (-not [string]::IsNullOrWhiteSpace($runnerErrorMessage)) {
+    $meta["runner_error_message"] = $runnerErrorMessage
+}
 
 Set-Content -Path $logRecord.VerdictPath -Value $finalVerdict -NoNewline
 $meta | ConvertTo-Json -Depth 6 | Set-Content -Path $logRecord.MetaPath

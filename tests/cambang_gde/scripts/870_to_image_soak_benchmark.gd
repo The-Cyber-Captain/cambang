@@ -52,6 +52,7 @@ var _state := PHASE_SETUP
 var _done := false
 var _failed := false
 var _cleanup_started := false
+var _finish_reason := "complete"
 var _is_headless := false
 var _provider_arg := "synthetic"
 var _load_profile_arg := LOAD_PROFILE_DEFAULT
@@ -184,6 +185,9 @@ func _ready() -> void:
 	_rng.seed = _seed
 	_build_ui()
 	_log("RUN: %s provider=%s seed=%d headless=%s" % [SCENE_LABEL, _provider_arg, _seed, str(_is_headless)])
+	if _provider_arg == "synthetic" and _synthetic_producer_output_form_effective_selection() == "gpu_only" and _scene870_is_compatibility_renderer():
+		_finish(0, true, "compatibility_gpu_only")
+		return
 	set_process(true)
 	_bootstrap()
 
@@ -217,8 +221,7 @@ func _process(delta: float) -> void:
 
 func _bootstrap() -> void:
 	if _provider_arg != "synthetic":
-		print("EXPECTED_UNSUPPORTED: Scene 870 first draft currently supports synthetic provider only")
-		_finish(0, true)
+		_finish(0, true, "provider_not_supported")
 		return
 
 	CamBANGServer.stop()
@@ -298,6 +301,109 @@ func _parse_args() -> void:
 func _parse_bool(value: String) -> bool:
 	var normalized := value.strip_edges().to_lower()
 	return normalized == "1" or normalized == "yes" or normalized == "true" or normalized == "on"
+
+
+func _synthetic_producer_output_form_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/synthetic_producer_output_form", "runtime_default")).strip_edges().to_lower()
+
+
+func _synthetic_producer_output_form_cmdline_selection() -> String:
+	const PREFIX := "--cambang-synth-producer-output-form="
+	return _single_namespaced_cmdline_selection(PREFIX).strip_edges().to_lower()
+
+
+func _single_namespaced_cmdline_selection(prefix: String) -> String:
+	var found := ""
+	for raw_arg in OS.get_cmdline_user_args():
+		var text := str(raw_arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	if found != "":
+		return found
+	for raw_arg in OS.get_cmdline_args():
+		var text := str(raw_arg)
+		if not text.begins_with(prefix):
+			continue
+		var value := text.substr(prefix.length())
+		if found != "":
+			return "<duplicate>"
+		found = value
+	return found
+
+
+func _synthetic_producer_output_form_effective_selection() -> String:
+	var cmdline_selection := _synthetic_producer_output_form_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	return _synthetic_producer_output_form_setting()
+
+
+func _harness_rendering_method_setting() -> String:
+	return str(ProjectSettings.get_setting("cambang/maintainer/harness_rendering_method", "")).strip_edges().to_lower()
+
+
+func _harness_rendering_method_cmdline_selection() -> String:
+	const PREFIX := "--cambang-harness-rendering-method="
+	return _single_namespaced_cmdline_selection(PREFIX).strip_edges().to_lower()
+
+
+func _scene870_requested_rendering_method() -> String:
+	var cmdline_selection := _harness_rendering_method_cmdline_selection()
+	if cmdline_selection != "":
+		return cmdline_selection
+	var setting_selection := _harness_rendering_method_setting()
+	if setting_selection != "":
+		return setting_selection
+	return _scene870_current_rendering_method()
+
+
+func _scene870_current_rendering_method() -> String:
+	var runtime_method := str(RenderingServer.get_current_rendering_method()).strip_edges().to_lower()
+	if runtime_method != "":
+		return runtime_method
+	return str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "")).strip_edges().to_lower()
+
+
+func _scene870_cmdline_arg_matches_any_value(flag: String, accepted_values: Array[String]) -> bool:
+	var accepted_normalized := []
+	for value in accepted_values:
+		accepted_normalized.append(str(value).strip_edges().to_lower())
+	var args := OS.get_cmdline_args()
+	var flag_with_equals := "%s=" % flag
+	var index := 0
+	while index < args.size():
+		var text := str(args[index])
+		if text == flag:
+			if index + 1 >= args.size():
+				return false
+			var split_value := str(args[index + 1]).strip_edges().to_lower()
+			if accepted_normalized.has(split_value):
+				return true
+			index += 2
+			continue
+		if text.begins_with(flag_with_equals):
+			var equals_value := text.substr(flag_with_equals.length()).strip_edges().to_lower()
+			if accepted_normalized.has(equals_value):
+				return true
+		index += 1
+	return false
+
+
+func _scene870_rendering_method_is_compatibility(rendering_method: String) -> bool:
+	return rendering_method == "compatibility" or rendering_method == "gl_compatibility" or rendering_method == "opengl3"
+
+
+func _scene870_is_compatibility_renderer() -> bool:
+	var rendering_method := _scene870_requested_rendering_method()
+	if _scene870_rendering_method_is_compatibility(rendering_method):
+		return true
+	if _scene870_cmdline_arg_matches_any_value("--rendering-method", ["compatibility", "gl_compatibility"]):
+		return true
+	return _scene870_cmdline_arg_matches_any_value("--rendering-driver", ["opengl3"])
 
 
 func _apply_load_profile_defaults() -> void:
@@ -2293,7 +2399,9 @@ func _percentile(sorted_values: Array, q: float) -> float:
 func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 	var synthetic_metrics := {}
 	if CamBANGServer.has_method("get_synthetic_metrics_snapshot"):
-		synthetic_metrics = CamBANGServer.get_synthetic_metrics_snapshot()
+		var synthetic_metrics_value = CamBANGServer.get_synthetic_metrics_snapshot()
+		if typeof(synthetic_metrics_value) == TYPE_DICTIONARY:
+			synthetic_metrics = synthetic_metrics_value
 	var acquisition_session_settlement_probe := _acquisition_session_settlement_probe_summary(synthetic_metrics)
 	var load_model := _load_model_summary()
 	var load_delivery := _load_delivery_summary(_completed_phase_records)
@@ -2302,6 +2410,10 @@ func _build_summary(exit_code: int, expected_unsupported: bool) -> Dictionary:
 		"scene": SCENE_LABEL,
 		"exit_code": exit_code,
 		"expected_unsupported": expected_unsupported,
+		"harness": {
+			"status": _harness_status_for_finish(exit_code, expected_unsupported),
+			"reason": _finish_reason,
+		},
 		"run_context": _run_context(),
 		"config": {
 			"load_profile": _load_profile_arg,
@@ -2995,10 +3107,11 @@ func _emit_framed_record(record_name: String, kind: String, payload_text: String
 	print("[CamBANG][RecordEnd] id=%s" % SCENE_RECORD_ID)
 
 
-func _finish(exit_code: int, expected_unsupported: bool) -> void:
+func _finish(exit_code: int, expected_unsupported: bool, reason: String = "complete") -> void:
 	if _done:
 		return
 	_done = true
+	_finish_reason = reason if reason != "" else ("expected_unsupported" if expected_unsupported else ("complete" if exit_code == 0 else "failure"))
 	_state = PHASE_DONE
 	if not _active_phase.is_empty() and int(_active_phase.get("ended_us", 0)) == 0:
 		_active_phase["ended_us"] = _now_us()
@@ -3017,7 +3130,7 @@ func _fail(message: String) -> void:
 	_failed = true
 	push_error("%s: %s" % [SCENE_LABEL, message])
 	_log("FAIL: %s" % message)
-	_finish(1, false)
+	_finish(1, false, "failure")
 
 
 func _cleanup_and_quit(exit_code: int, preserve_visuals_for_hold: bool, expected_unsupported: bool) -> void:
@@ -3064,14 +3177,57 @@ func _run_exit_visual_hold() -> void:
 
 
 func _emit_final_summary_and_marker(exit_code: int, expected_unsupported: bool) -> void:
+	_emit_harness_verdict(_harness_status_for_finish(exit_code, expected_unsupported), exit_code, _finish_reason)
 	var summary := _build_summary(exit_code, expected_unsupported)
-	_emit_framed_record("scene870_to_image_soak_summary", "json", JSON.stringify(summary))
+	var payload_text := JSON.stringify(summary)
+	_write_summary_file(payload_text)
+	_emit_framed_record("scene870_to_image_soak_summary", "json", payload_text)
+
+
+func _harness_status_for_finish(exit_code: int, expected_unsupported: bool) -> String:
 	if expected_unsupported:
-		return
+		return "expected_unsupported"
 	if exit_code == 0:
-		print("OK: to_image_soak_benchmark complete")
-	else:
-		print("FAIL: to_image_soak_benchmark failed")
+		return "ok"
+	return "fail"
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
+
+
+func _write_summary_file(payload_text: String) -> void:
+	const SUMMARY_DIR := "user://cambang_records"
+	const SUMMARY_USER_PATH := "cambang_records/scene870_to_image_soak_summary.json"
+	const SUMMARY_FULL_PATH := "user://cambang_records/scene870_to_image_soak_summary.json"
+	var dir_err := DirAccess.make_dir_recursive_absolute(SUMMARY_DIR)
+	if dir_err != OK:
+		print("[CamBANG][RecordFileError] id=%s path=%s error=%d" % [
+			SCENE_RECORD_ID,
+			SUMMARY_FULL_PATH,
+			dir_err,
+		])
+		return
+	var file := FileAccess.open(SUMMARY_FULL_PATH, FileAccess.WRITE)
+	if file == null:
+		print("[CamBANG][RecordFileError] id=%s path=%s error=%d" % [
+			SCENE_RECORD_ID,
+			SUMMARY_FULL_PATH,
+			FileAccess.get_open_error(),
+		])
+		return
+	file.store_string(payload_text)
+	file.close()
+	print("[CamBANG][RecordFile] id=%s name=scene870_to_image_soak_summary kind=json user_path=%s bytes=%d" % [
+		SCENE_RECORD_ID,
+		SUMMARY_USER_PATH,
+		payload_text.to_utf8_buffer().size(),
+	])
 
 
 func _release_pending_runtime_references() -> void:
