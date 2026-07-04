@@ -190,13 +190,14 @@ Current implemented executable slice includes:
 
 - stream flow events: `StartStream`, `StopStream`, `EmitFrame`
 - minimal realization/lifecycle events: `OpenDevice`, `CloseDevice`, `CreateStream`, `DestroyStream`
-- stream-scoped appearance update event: `UpdateStreamPicture` (maps through provider `PictureConfig` semantics)
+- appearance update events:
+  - `UpdateStreamPicture` for stream-scoped synthetic picture/source appearance
+  - `UpdateCapturePicture` for capture-side synthetic picture/source appearance
 
-Implementation-status note (current verified path): stream appearance authoring
-in the built-in scenario library is verified through explicit
-`UpdateStreamPicture` events. In this slice, embedded picture payload on
-`StartStream` is not documented as the canonical/effective stream-picture
-application path.
+Implementation-status note: scenario appearance authoring is verified through
+explicit `UpdateStreamPicture` and `UpdateCapturePicture` events. Embedded
+picture payload on `StartStream` is not documented as the canonical/effective
+stream-picture application path.
 
 This implemented slice is still a starting boundary, not the architectural ceiling.
 

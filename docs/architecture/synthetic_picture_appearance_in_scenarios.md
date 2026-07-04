@@ -50,22 +50,18 @@ Godot/host layers may request scenario execution, but must not become the semant
 
 ---
 
-## 4. First-slice recommendation
+## 4. Implemented scenario appearance scope
 
-Preferred first slice: **stream-scoped appearance state**.
+Scenario-authored synthetic appearance currently has two explicit event scopes:
 
-- Scenario can set/update appearance state for a stream/frame-producing context.
-- Subsequent emitted frames use that appearance state until the scenario changes it.
-- Appearance change is an authored timeline action, not a host-side debug mutation.
+- `UpdateStreamPicture` updates stream-scoped appearance state for subsequent
+  emitted stream frames.
+- `UpdateCapturePicture` updates capture-side appearance state for later
+  API-driven still-capture output on the target device.
 
-This keeps the model small and deterministic while supporting meaningful visual source distinction.
-
-Implementation-status note (current verified path): built-in scenario appearance
-authoring is currently verified through explicit `UpdateStreamPicture` events
-in the timeline. `StartStream` embedded-picture fields are not documented here
-as the canonical/effective stream-picture application route.
-
-Per-frame appearance overrides may be considered later, but are not the primary first-slice model.
+Both map through provider-owned `PictureConfig` semantics. Appearance state is
+authored timeline intent; it is not structural capture-profile truth and does
+not author CPU/GPU backing policy.
 
 ---
 
@@ -93,12 +89,12 @@ Scenario layer chooses **what appearance intent applies when**; Pattern Module d
 
 ## 7. Relationship to PictureConfig
 
-Recommendation: first slice should use **provider-owned scenario appearance state that maps directly to existing `PictureConfig` semantics** for synthetic rendering.
+Scenario appearance state uses provider-owned `PictureConfig` semantics for synthetic rendering.
 
-This avoids introducing a parallel appearance model while preserving a clear boundary:
+This preserves a clear boundary:
 
 - scenario timeline owns authored appearance changes over time
-- provider owns application of those changes to stream render state
+- provider owns application of those changes to stream and capture render state
 - Pattern Module renders deterministically from resulting appearance state
 
 Scenario-authored appearance remains distinct from producer backing capability.
@@ -116,38 +112,27 @@ backing capability and realization choice.
 
 ## 8. Non-goals
 
-This tranche explicitly excludes:
+This tranche excludes:
 
-- JSON/schema design for scenario appearance encoding
 - GUI/editor tooling design
 - full recording pipeline design
 - broad release UX design
 - unrelated runtime/provider architecture redesign
 
-Capture-picture authoring behavior is intentionally left conservative here:
-this note only freezes the currently verified stream-picture path above and
-does not declare broader capture-picture authoring behavior as canonical yet.
-
 ---
 
 ## 9. Immediate implementation implications
 
-Current Tranche 2.5 slice now includes:
+Current scenario appearance behaviour includes:
 
-1. provider-owned scenario-authored stream-scoped appearance updates, persistent until changed
-2. canonical dev scenarios routing visual/source distinction through provider timeline appearance events
-3. host-side pattern cycling no longer acting as the canonical scenario mechanism
+1. provider-owned scenario-authored stream appearance updates, persistent until changed
+2. provider-owned scenario-authored capture appearance updates, persistent until changed
+3. canonical dev scenarios routing visual/source distinction through provider timeline appearance events
+4. host-side pattern cycling remaining manual/debug-only rather than canonical scenario semantics
 
-Remaining immediate discipline:
+Remaining discipline:
 
-- keep Godot thin (select/start/stop/observe only)
+- keep Godot thin: select, start, stop, and observe
 - keep host-side pattern cycling explicitly manual/debug-only
-- continue avoiding serialization/editor/recording scope expansion in this layer
-Next code tranche should:
+- avoid broadening this layer into editor, recording, or release UX design
 
-1. add minimal scenario-authored appearance update support in provider timeline execution (stream-scoped, persistent-until-changed)
-2. route dev scenario visual/source distinction through scenario-authored appearance updates
-3. reduce reliance on host-side pattern cycling for scenario semantics
-4. keep Godot thin: select/start/stop/observe; no appearance semantic reconstruction
-
-This enables canonical scenario-driven visual distinction for replay and authored timelines without broadening into serialization/editor work.

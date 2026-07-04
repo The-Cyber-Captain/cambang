@@ -25,7 +25,7 @@ is covered by dedicated Godot scene checks.
 #include <vector>
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "phase3_snapshot_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "phase3_snapshot_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include "core/core_dispatcher.h"

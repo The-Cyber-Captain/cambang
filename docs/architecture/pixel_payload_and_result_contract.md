@@ -43,7 +43,7 @@ The image-bearing path should satisfy the following goals.
 2. Avoid forcing all runtime image-bearing artifacts into GPU-only access semantics.
 3. Keep backend/platform specifics contained inside Providers.
 4. Keep Core authoritative for routing, retained truth, lifecycle/resource accounting, and result semantics.
-5. Expose release-facing image access through Result Objects rather than mailbox-oriented terms.
+5. Expose release-facing image access through Result Objects rather than sink-storage terms.
 6. Make expensive conversions/readbacks/materializations explicit rather than silently universal.
 7. Preserve truthful original image artifacts while allowing derived materializations.
 

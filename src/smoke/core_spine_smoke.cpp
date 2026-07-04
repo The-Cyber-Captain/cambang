@@ -35,7 +35,7 @@ Non-Goals
 #include <vector>
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "Core smoke: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "core_spine_smoke: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 #include "core/core_runtime.h"
 #include "core/provider_callback_ingress.h"
@@ -2437,7 +2437,7 @@ int main(int argc, char** argv) {
   const int progress_interval = 25;
 
 #if !defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
-  std::cerr << "Stress mode requires CAMBANG_SMOKE_WITH_STUB_PROVIDER (build with provider=stub).\n";
+  std::cerr << "Stress mode requires CAMBANG_SMOKE_WITH_STUB_PROVIDER; build core_spine_smoke through the repo SCons maintainer_tools alias.\n";
   return 2;
 #else
   for (int i = 1; i <= opt.loops; ++i) {

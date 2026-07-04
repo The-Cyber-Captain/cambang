@@ -24,17 +24,6 @@ Exception:
 - When the relevant upstream behaviour is intentional or otherwise does not match CamBANG’s needs in a way that has no meaningful “wait for upstream fix” endpoint, the entry may replace Removal criteria with a clearly labelled long-term note explaining why no concrete removal criterion currently applies.
 
 
-## godot-cpp-template #107 (Android cross-build naming mismatch)
-
-Upstream: https://github.com/godotengine/godot-cpp-template/issues/107
-
-Observation:
-- Reported mismatch in expected library naming/prefix/arch for Windows→Android cross-compilation.
-
-CamBANG status:
-- Not yet implementing Android cross-build; no workaround applied yet.
-- If encountered during CamBANG Android support, log the exact reproduction and apply an explicit, removable workaround.
-
 ## Godot docs / EditorDock (editor plugin API availability mismatch)
 
 Upstream: https://docs.godotengine.org/en/stable/classes/class_editordock.html

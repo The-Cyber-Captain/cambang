@@ -28,7 +28,7 @@ Non-Goals
 #include <vector>
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "Pattern render bench: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "pattern_render_bench: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include "pixels/pattern/cpu_packed_pattern_renderer.h"

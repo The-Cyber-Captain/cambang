@@ -2,7 +2,7 @@
 #include "imaging/broker/provider_broker.h"
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "synthetic_only_provider_support_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "synthetic_only_provider_support_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 using cambang::ProviderAccessCode;

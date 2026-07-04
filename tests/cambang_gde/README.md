@@ -132,7 +132,7 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
 - `scenes/568_backing_plan_evaluation_verify.tscn`
   - Canonical backing-plan evaluation verifier; supersedes legacy Scene 68 as the focused automatable behavioral check for this topic.
   - Scene 68 remains only a secondary retained-result evidence/reset reporting surface; it is not the canonical parent-scoped evaluation proof.
-  - Proves stream-parent and capture-parent evaluation scoping, access-only evidence seeding without public `to_image()` calls from the scene itself, stop/reset clearing, and a paused `advance_timeline(...)` edge path with exact-same-time device+stream realization plus teardown/recreation cleanup.
+  - Proves stream-parent and capture-parent evaluation scoping, access-only evidence seeding without relying on capture-result getter-side calibration fallback; the scene uses explicit `to_image_member(0)` access to exercise the capture-member materialization seam, stop/reset clearing, and a paused `advance_timeline(...)` edge path with exact-same-time device+stream realization plus teardown/recreation cleanup.
   - Audits Core's parent-scoped `candidate_evidence` and `completion_reason` directly rather than recomputing winners from global route aggregates.
   - Distinguishes viable candidates from measured candidates, direct single-viable decisions from measured decisions, and intentionally partial stream comparison from full all-candidate completion.
   - Fails when a capture winner lacks complete readiness-plus-materialization evidence, when one result/access-posture observation is attributed to incompatible candidates, or when the selected winner does not match the reported score.
@@ -152,27 +152,6 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Emits the shared harness verdict before any large benchmark payload; Compatibility renderer + `gpu_only` exits as `status=expected_unsupported` with reason `compatibility_gpu_only`.
   - Emits framed JSON record `scene870_to_image_soak_summary`; `run_godot.ps1 -CaptureLogs` recovers it and records `scene870_summary_json` in `meta.json`. On Android, Scene 870 also writes the same summary to `user://cambang_records/scene870_to_image_soak_summary.json`, and the runner recovers that file when the log marker is present.
   - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=870_to_image_soak_benchmark status=<ok|expected_unsupported|fail|error> exit_code=<n> reason=<token>`
-
-## Dev-node/mailbox scene retirement (May 2026)
-
-The following legacy dev-node/mailbox scenes were retired:
-
-- `scenes/00_extension_load.tscn`
-- `scenes/10_lifecycle_smoke.tscn`
-- `scenes/20_frameview_smoke.tscn`
-- `scenes/25_frameview_smoke_with_singleton_snapshots.tscn`
-- `scenes/40_frameview_mf_stress_test.tscn`
-- `scenes/50_frameview_cycling_patterns_chose_provider.tscn`
-- `scenes/51_heavy_probe_registry.tscn`
-
-Migration guidance:
-
-- `25_frameview_smoke_with_singleton_snapshots` → use `70_result_retrieval_verification` for modern result retrieval/materialization and `60-63` for snapshot/boundary confidence.
-- `40_frameview_mf_stress_test` → use `72_stream_load_isolation` for load/perf isolation and `60_restart_boundary_abuse` for restart semantics.
-- `50_frameview_cycling_patterns_chose_provider` → use `67_status_panel_scenario_runtime` for server-driven scenario/runtime observation.
-- `51_heavy_probe_registry` → use `63_snapshot_observer_minimal` for lightweight snapshot diagnostics plus `65_public_boundary_verify` for boundary contract checks.
-- `00_extension_load` / `10_lifecycle_smoke` / `20_frameview_smoke` → use `60_restart_boundary_abuse`, `61_tick_bounded_coalescing_abuse`, `62_snapshot_polling_immutability_abuse`, `63_snapshot_observer_minimal`, `65_public_boundary_verify`, and `66_public_lifecycle_verify` for boundary/status/snapshot/lifecycle confidence; use `70_result_retrieval_verification` for result retrieval, `71_capture_session_matrix_v3` for capture/session matrix, `72_stream_load_isolation` for stream-load isolation, and `73_rig_capture_result_set_verification` for rig-capture result-set proof.
-
 
 ## Running
 

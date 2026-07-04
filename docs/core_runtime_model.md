@@ -628,8 +628,8 @@ The smoke executable validates:
 - No frame leaks across repeated start/stop cycles
 
 This validation is platform-independent and must remain independent of
-platform-backed providers. Stub-backed stress/provider paths require a
-`provider=stub` smoke build.
+platform-backed providers. Stub-backed stress/provider paths are part of the
+host-native `maintainer_tools` build family.
 
 ### 13.2 Platform integration validation
 

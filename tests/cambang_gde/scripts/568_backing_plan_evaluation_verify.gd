@@ -8,8 +8,8 @@ extends Node
 ## - prove stream evaluation is scoped to the stream parent and capture
 ##   evaluation is scoped to the capture parent seam
 ## - prove access-only public probes can still seed measured evidence for both
-##   stream display and capture materialization without this scene calling
-##   public to_image() methods itself
+##   stream display and capture-member materialization without relying on
+##   capture-result getter-side calibration fallback
 ## - prove result-access evidence and backing-plan evaluation reports are
 ##   cleared by stop() and re-established after restart
 ## - prove a paused advance_timeline() path can safely handle exact-same-time

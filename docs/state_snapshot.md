@@ -667,8 +667,8 @@ StreamState {
 - `profile_version` is change lineage metadata for that applied profile and must
   not be used to infer configuration contents.
 - `frames_received` counts frames reported by the provider and integrated by core.
-- `frames_delivered` counts frames successfully handed to the core frame sink
-  (e.g., latest-frame mailbox in v1). This does not imply consumption by Godot.
+- `frames_delivered` counts frames successfully handed to an installed core
+  frame sink. This does not imply consumption by Godot.
 - `frames_dropped` counts frames dropped due to queue pressure or shutdown gating.
 - `queue_depth` reflects provider → core ingress buffering depth as observed
   by core at publish time.

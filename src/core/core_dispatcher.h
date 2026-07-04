@@ -81,7 +81,6 @@ public:
   void set_capture_assembly_registry(CoreCaptureAssemblyRegistry* capture_assembly_registry) noexcept {
     capture_assembly_registry_ = capture_assembly_registry;
   }
-  void set_result_routing_enabled(bool enabled) noexcept { result_routing_enabled_ = enabled; }
 
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
@@ -96,7 +95,6 @@ private:
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
   CoreCaptureAssemblyRegistry* capture_assembly_registry_ = nullptr; // non-owning; core-thread-only
-  bool result_routing_enabled_ = true;
   CoreDispatchStats stats_{};
 };
 

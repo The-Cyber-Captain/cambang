@@ -1,7 +1,7 @@
 #include "dev/cli_log.h"
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
-  #error "restart_boundary_verify: build with -DCAMBANG_INTERNAL_SMOKE=1 (via SCons: smoke=1)."
+  #error "restart_boundary_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 
 #include "smoke/verify_case/verify_case_harness.h"

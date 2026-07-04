@@ -357,6 +357,9 @@ Assignment-style variables outside the declared public set are rejected.
 - `use_llvm=yes|no|auto` — Windows MinGW-LLVM selection; default `auto`
 - `mingw_prefix=<path>` — optional MinGW installation prefix forwarded to `godot-cpp`; default empty
 - `warnings_as_errors=yes|no` — treat warnings as errors; default `no`
+- `android_api_level=<level>` — Android GDE NDK Clang target API level; default `24`
+- `ndk_version=<version>` — Android NDK version used with `ANDROID_HOME` / `ANDROID_SDK_ROOT`; default `28.1.13356709`
+- `ANDROID_HOME=<path>` — optional Android SDK root for Android GDE builds; default process environment fallback
 
 Assignment-style variables outside this declared public set are rejected by
 `SConstruct`.

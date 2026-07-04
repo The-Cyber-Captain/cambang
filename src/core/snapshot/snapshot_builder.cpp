@@ -385,9 +385,18 @@ uint64_t SnapshotBuilder::compute_topology_signature(const Inputs& in) const {
         }
     }
     if (in.acquisition_sessions) {
-        fnv1a_u64(h, static_cast<uint64_t>(in.acquisition_sessions->all().size()));
+        uint64_t visible_session_count = 0;
         for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
-            (void)rec;
+            (void)session_id;
+            if (rec.phase != CBLifecyclePhase::DESTROYED) {
+                ++visible_session_count;
+            }
+        }
+        fnv1a_u64(h, visible_session_count);
+        for (const auto& [session_id, rec] : in.acquisition_sessions->all()) {
+            if (rec.phase == CBLifecyclePhase::DESTROYED) {
+                continue;
+            }
             fnv1a_u64(h, session_id);
         }
     }

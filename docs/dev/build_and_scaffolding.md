@@ -93,6 +93,9 @@ Supported assignment-style variables are exactly:
 | `use_llvm` | `yes`, `no`, `auto` | `auto` | Windows MinGW-LLVM selection, meaningful with MinGW. |
 | `mingw_prefix` | path | empty | Optional MinGW installation prefix forwarded to `godot-cpp`. |
 | `warnings_as_errors` | `yes`, `no` | `no` | Treat compiler warnings as errors. |
+| `android_api_level` | Android API level | `24` | Android GDE NDK Clang target API level. |
+| `ndk_version` | Android NDK version | `28.1.13356709` | NDK version used with `ANDROID_HOME` / `ANDROID_SDK_ROOT` for Android GDE builds. |
+| `ANDROID_HOME` | path | process env fallback | Optional Android SDK root for Android GDE builds. |
 
 Assignment-style variables outside this declared public set are rejected by
 `SConstruct`.

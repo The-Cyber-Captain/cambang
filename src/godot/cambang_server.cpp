@@ -32,8 +32,6 @@
 #include "imaging/broker/provider_broker.h"
 #include "imaging/broker/banner_info.h"
 
-#include <cstdlib>
-
 #ifndef CAMBANG_GDE_TARGET_PLATFORM
 #define CAMBANG_GDE_TARGET_PLATFORM "unknown"
 #endif
@@ -48,11 +46,6 @@
 
 
 namespace cambang {
-
-static bool banners_enabled() noexcept {
-  const char* v = std::getenv("CAMBANG_BANNERS");
-  return !(v && v[0] == '0' && v[1] == '\0');
-}
 
 CamBANGServer* CamBANGServer::singleton_ = nullptr;
 
@@ -2161,11 +2154,9 @@ void CamBANGServer::_on_godot_tick(double delta) {
 
     // Echo any core-thread banner line through Godot logging so it's visible in
     // the editor output panel (stdout isn't reliably surfaced on Windows).
-    if (banners_enabled()) {
-      char line[192];
-      if (runtime_.take_core_banner_line(line, sizeof(line))) {
-        godot::UtilityFunctions::print(line);
-      }
+    char line[192];
+    if (runtime_.take_core_banner_line(line, sizeof(line))) {
+      godot::UtilityFunctions::print(line);
     }
 
     // CPU_PACKED stream display views use stream-owned live ImageTexture
@@ -3272,10 +3263,8 @@ bool CamBANGServer::_ensure_provider_attached_and_initialized(
   runtime_.attach_provider(provider_.get());
 
   // Banner 1: Godot-facing provider selection (effective runtime attachment).
-  if (banners_enabled()) {
-    const ProviderBannerInfo bi = describe_provider_for_banner(provider_.get());
-    godot::UtilityFunctions::print("[CamBANG] provider selected: ", bi.provider_mode, " / ", bi.provider_name);
-  }
+  const ProviderBannerInfo bi = describe_provider_for_banner(provider_.get());
+  godot::UtilityFunctions::print("[CamBANG] provider selected: ", bi.provider_mode, " / ", bi.provider_name);
 
   return true;
 }

@@ -1271,17 +1271,6 @@ bool CoreRuntime::sync_capture_parent_priming_(
   return false;
 }
 
-static bool banners_enabled() noexcept {
-  const char* v = std::getenv("CAMBANG_BANNERS");
-  // Spec: CAMBANG_BANNERS=0 disables banners.
-  return !(v && v[0] == '0' && v[1] == '\0');
-}
-
-static bool disable_result_routing_requested() noexcept {
-  const char* v = std::getenv("CAMBANG_DISABLE_RESULT_ROUTING");
-  return (v && v[0] == '1' && v[1] == '\0');
-}
-
 static bool display_demand_trace_enabled() noexcept {
   const char* v = std::getenv("CAMBANG_DEV_DISPLAY_DEMAND_TRACE");
   return v && v[0] != '\0' && v[0] != '0';
@@ -1340,8 +1329,6 @@ CoreRuntime::CoreRuntime()
       }) {
   dispatcher_.set_result_store(&result_store_);
   dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
-  const bool result_routing_enabled = !disable_result_routing_requested();
-  dispatcher_.set_result_routing_enabled(result_routing_enabled);
 }
 
 CoreRuntime::~CoreRuntime() {
@@ -4069,7 +4056,7 @@ void CoreRuntime::on_core_timer_tick() {
 
   // Banner 2: Core-loop provider attachment (effective runtime attachment).
   // Printed once per CoreRuntime session, the first time Core observes a non-null provider.
-  if (!provider_banner_printed_ && banners_enabled()) {
+  if (!provider_banner_printed_) {
     if (ICameraProvider* prov = provider_.load(std::memory_order_acquire)) {
 #if defined(CAMBANG_INTERNAL_SMOKE)
       // Smoke can be stress-loop spammy: print only once per *process*.

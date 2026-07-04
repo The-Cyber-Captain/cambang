@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
 #include <variant>
 
 namespace cambang {
@@ -397,7 +396,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     if (result_store_) {
       const bool lifecycle_allows_retention =
           result_retention_allowed_ ? result_retention_allowed_() : true;
-      if (result_routing_enabled_ && lifecycle_allows_retention && has_stream_record) {
+      if (lifecycle_allows_retention && has_stream_record) {
         if (is_additional_bracket) {
           // This tranche only accepts still-capture-only bracket frames.
           // Reject malformed/unsupported bracket routes deterministically.
