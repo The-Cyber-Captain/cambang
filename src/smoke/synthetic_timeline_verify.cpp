@@ -65,10 +65,11 @@ static void usage(const char* argv0) {
       << "Verification cases:\n"
       << "  basic_lifecycle\n"
       << "  invalid_sequence\n"
-      << "  catchup_stress\n"
+      << "  catchup_stress_uncapped\n"
       << "  one_active_stream_admission\n"
       << "  staged_endpoint_span_inference\n"
-      << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n";
+      << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n"
+      << "Legacy verification-case alias accepted: catchup_stress -> catchup_stress_uncapped\n";
 }
 
 static bool starts_with(const std::string& s, const std::string& prefix) {
@@ -98,7 +99,15 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
     usage(argv[0]);
     return false;
   }
+  if (opt.verify_case == "catchup_stress") {
+    opt.verify_case = "catchup_stress_uncapped";
+  }
   return true;
+}
+
+static bool catchup_uncapped_case_is_hermetic() {
+  const char* env = std::getenv("CAMBANG_DEV_SYNTH_CATCHUP_CAP");
+  return env == nullptr || env[0] == '\0';
 }
 
 static bool wait_until(const std::function<bool()>& pred, int max_iters = 400, int sleep_ms = 2) {
@@ -532,6 +541,15 @@ int main(int argc, char** argv) {
   if (!parse_opts(argc, argv, opt)) {
     return 2;
   }
+  if (opt.verify_case == "catchup_stress_uncapped" &&
+      !catchup_uncapped_case_is_hermetic()) {
+    std::cerr << "FAIL: verify_case=catchup_stress_uncapped requires "
+                 "CAMBANG_DEV_SYNTH_CATCHUP_CAP to be unset\n";
+    std::cout << "FAIL: synthetic_timeline_verify failed (verify_case="
+              << opt.verify_case
+              << ", reason=catchup_cap_env_set)\n";
+    return 1;
+  }
 
   CoreRuntime rt;
   StateSnapshotBuffer buf;
@@ -612,7 +630,7 @@ int main(int argc, char** argv) {
     r = run_basic_lifecycle(rt, buf, opt, period);
   } else if (opt.verify_case == "invalid_sequence") {
     r = run_invalid_sequence(rt, buf, opt);
-  } else if (opt.verify_case == "catchup_stress") {
+  } else if (opt.verify_case == "catchup_stress_uncapped") {
     r = run_catchup_stress(rt, buf, opt, period);
   } else if (opt.verify_case == "one_active_stream_admission") {
     r = run_one_active_stream_admission(rt, buf, opt);

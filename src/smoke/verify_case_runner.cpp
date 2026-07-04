@@ -88,12 +88,21 @@ int run_single_verify_case(const cambang::VerifyCaseDefinition& verify_case,
   cli::line("verify_case_runner ", verify_case.name, " --provider=", cambang::verify_case_provider_name(provider_kind));
   cli::blank();
   if (!repeat_specified) {
-    return verify_case.run();
+    const int rc = verify_case.run();
+    if (rc == cambang::kVerifyCaseSkipped) {
+      cli::line("Verification case SKIPPED");
+      return 0;
+    }
+    return rc;
   }
 
   for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
     cli::line("[repeat] iteration ", iteration, "/", repeat_count);
     const int rc = verify_case.run();
+    if (rc == cambang::kVerifyCaseSkipped) {
+      cli::line("Verification case SKIPPED");
+      return 0;
+    }
     if (rc != 0) {
       cli::error("[repeat] iteration ", iteration, "/", repeat_count, " FAILED");
       return rc;
@@ -108,10 +117,12 @@ int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verif
                          uint64_t repeat_count,
                          bool verbose) {
   size_t passed = 0;
+  size_t skipped = 0;
   size_t failed = 0;
 
   for (const auto& verify_case : verify_cases) {
     bool verify_case_failed = false;
+    bool verify_case_skipped = false;
     uint64_t completed = 0;
     uint64_t failed_iteration = 0;
     std::string case_log;
@@ -120,6 +131,11 @@ int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verif
       cli::scoped_line_sink capture(&append_line_to_buffer, &case_log);
       for (uint64_t iteration = 1; iteration <= repeat_count; ++iteration) {
         const int rc = verify_case.run();
+        if (rc == cambang::kVerifyCaseSkipped) {
+          verify_case_skipped = true;
+          ++skipped;
+          break;
+        }
         if (rc != 0) {
           verify_case_failed = true;
           failed_iteration = iteration;
@@ -136,6 +152,14 @@ int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verif
       continue;
     }
 
+    if (verify_case_skipped) {
+      if (verbose) {
+        print_case_log_dump(verify_case.name, case_log);
+      }
+      cli::line("[SKIP] ", verify_case.name);
+      continue;
+    }
+
     ++passed;
     if (verbose) {
       print_case_log_dump(verify_case.name, case_log);
@@ -143,7 +167,7 @@ int run_all_verify_cases(const std::vector<cambang::VerifyCaseDefinition>& verif
     cli::line("[PASS] ", verify_case.name, " (", completed, "/", repeat_count, ")");
   }
 
-  cli::line("Summary: ", passed, " passed, ", failed, " failed");
+  cli::line("Summary: ", passed, " passed, ", skipped, " skipped, ", failed, " failed");
   return failed == 0 ? 0 : 1;
 }
 

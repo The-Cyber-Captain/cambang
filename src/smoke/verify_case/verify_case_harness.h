@@ -33,6 +33,8 @@ enum class VerifyCaseProviderKind {
   Stub,
 };
 
+inline constexpr int kVerifyCaseSkipped = 3;
+
 inline const char* verify_case_provider_name(VerifyCaseProviderKind kind) noexcept {
   switch (kind) {
     case VerifyCaseProviderKind::Synthetic: return "synthetic";

@@ -5832,18 +5832,142 @@ bool run_core_synthetic_capture_plan_flip_with_live_stream_regression_check() {
         "FAIL core synthetic live-stream plan flip capture result A missing a real acquisition session");
   }
   const uint64_t session_id = capture_result_a->acquisition_session_id;
+  bool capture_plan_can_flip = false;
   if (!wait_until([&]() {
         CoreBackingPlanEvaluationReport report{};
-        return find_capture_report(rt, kDeviceId, report) &&
-               report.parent_kind ==
-                   CoreBackingPlanEvaluationReport::ParentKind::
-                       AcquisitionSession &&
-               report.acquisition_session_id == session_id &&
-               report.evaluator_active &&
-               report.current_candidate_index == 0;
+        if (!find_capture_report(rt, kDeviceId, report)) {
+          return false;
+        }
+        const bool active_multi_candidate_epoch =
+            report.parent_kind ==
+                CoreBackingPlanEvaluationReport::ParentKind::
+                    AcquisitionSession &&
+            report.acquisition_session_id == session_id &&
+            !report.provisional_parent &&
+            report.evaluator_active &&
+            report.current_candidate_index == 0;
+        const bool settled_single_candidate_epoch =
+            report.parent_kind ==
+                CoreBackingPlanEvaluationReport::ParentKind::
+                    CapturePriming &&
+            report.parent_id == kDeviceId &&
+            report.acquisition_session_id == 0 &&
+            report.provisional_parent &&
+            !report.evaluator_active &&
+            report.completion_reason ==
+                BackingPlanEvaluationCompletionReason::SingleViableCandidate &&
+            plan_equals(
+                report.requested,
+                CoreProductionPostureShape::CpuPrimary) &&
+            plan_equals(
+                report.steady,
+                CoreProductionPostureShape::CpuPrimary);
+        if (!active_multi_candidate_epoch &&
+            !settled_single_candidate_epoch) {
+          return false;
+        }
+        capture_plan_can_flip = active_multi_candidate_epoch;
+        return true;
       })) {
-    return fail_with_cleanup(
-        "FAIL core synthetic live-stream plan flip evaluator did not migrate to the real acquisition session after capture A");
+    CoreBackingPlanEvaluationReport report{};
+    std::ostringstream oss;
+    oss << "FAIL core synthetic live-stream plan flip evaluator did not migrate to the real acquisition session after capture A"
+        << " report_present=" << (find_capture_report(rt, kDeviceId, report) ? 1 : 0);
+    if (find_capture_report(rt, kDeviceId, report)) {
+      oss << " parent_kind=" << static_cast<unsigned>(report.parent_kind)
+          << " parent_id=" << report.parent_id
+          << " acquisition_session_id=" << report.acquisition_session_id
+          << " provisional_parent=" << (report.provisional_parent ? 1 : 0)
+          << " evaluator_active=" << (report.evaluator_active ? 1 : 0)
+          << " current_candidate_index="
+          << static_cast<unsigned>(report.current_candidate_index)
+          << " requested_posture="
+          << static_cast<int>(report.requested.posture)
+          << " requested_valid=" << (report.requested.valid ? 1 : 0)
+          << " steady_posture=" << static_cast<int>(report.steady.posture)
+          << " steady_valid=" << (report.steady.valid ? 1 : 0)
+          << " completion_reason="
+          << static_cast<unsigned>(report.completion_reason);
+    }
+    return fail_with_cleanup(oss.str());
+  }
+
+  if (!capture_plan_can_flip) {
+    if (rt.try_create_stream(
+            kStreamId, kDeviceId, StreamIntent::PREVIEW, nullptr, nullptr, 0) !=
+        TryCreateStreamStatus::OK) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip create_stream failed in single-candidate mode");
+    }
+    if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip start_stream failed in single-candidate mode");
+    }
+
+    CaptureRequest capture_req_b{};
+    uint64_t stream_backed_session_id = 0;
+    if (!wait_until([&]() {
+          CoreBackingPlanEvaluationReport report{};
+          if (!rt.materialize_capture_request(kDeviceId, capture_req_b) ||
+              !find_capture_report(rt, kDeviceId, report) ||
+              report.parent_kind !=
+                  CoreBackingPlanEvaluationReport::ParentKind::
+                      AcquisitionSession ||
+              report.acquisition_session_id == 0 ||
+              report.provisional_parent) {
+            return false;
+          }
+          stream_backed_session_id = report.acquisition_session_id;
+          return
+                 plan_equals(
+                     capture_req_b.requested_retained_plan,
+                     CoreProductionPostureShape::CpuPrimary) &&
+                 plan_equals(
+                     report.requested,
+                     CoreProductionPostureShape::CpuPrimary);
+        })) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip single-candidate session did not remain stable after stream start");
+    }
+
+    if (rt.try_trigger_device_capture_with_capture_id_for_server(
+            kDeviceId, kCaptureIdB) != TryTriggerDeviceCaptureStatus::OK) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip trigger_capture B failed in single-candidate mode");
+    }
+    if (!wait_until([&]() {
+          const auto assembly =
+              rt.capture_assembly_for_smoke(kCaptureIdB, kDeviceId);
+          return assembly.has_value() &&
+                 (assembly->has_default_image_retained ||
+                  assembly->terminal_state !=
+                      CoreCaptureAssemblyRegistry::TerminalState::NONE);
+        })) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip capture assembly B missing in single-candidate mode");
+    }
+    if (!wait_until([&]() {
+          const auto result = rt.get_capture_result(kCaptureIdB, kDeviceId);
+          return result &&
+                 result->default_image.payload_kind ==
+                     ResultPayloadKind::CPU_PACKED;
+        })) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip capture result B missing in single-candidate mode");
+    }
+    const SharedCaptureResultData capture_result_b =
+        rt.get_capture_result(kCaptureIdB, kDeviceId);
+    if (!capture_result_b ||
+        capture_result_b->acquisition_session_id == 0 ||
+        capture_result_b->acquisition_session_id != stream_backed_session_id) {
+      return fail_with_cleanup(
+          "FAIL core synthetic live-stream plan flip capture result B did not use the live stream-backed acquisition session in single-candidate mode");
+    }
+
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return true;
   }
 
   rt.report_capture_retained_to_image_observation(
@@ -6898,6 +7022,7 @@ int main(int argc, char** argv) {
       {"run_core_capture_observation_regression_check", [] { return run_core_capture_observation_regression_check(); }},
       {"run_core_capture_bracket_whole_result_scoring_check", [] { return run_core_capture_bracket_whole_result_scoring_check(); }},
       {"run_core_capture_in_place_plan_flip_result_retrieval_check", [] { return run_core_capture_in_place_plan_flip_result_retrieval_check(); }},
+      {"run_core_synthetic_capture_plan_flip_with_live_stream_regression_check", [] { return run_core_synthetic_capture_plan_flip_with_live_stream_regression_check(); }},
       {"run_broker_capture_parent_priming_forwarding_check", [] { return run_broker_capture_parent_priming_forwarding_check(); }},
       {"run_core_capture_parent_replacement_regression_check", [] { return run_core_capture_parent_replacement_regression_check(); }},
       {"run_core_stream_partial_reporting_check", [] { return run_core_stream_partial_reporting_check(); }},

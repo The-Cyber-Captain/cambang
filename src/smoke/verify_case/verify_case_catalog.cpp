@@ -643,6 +643,26 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
            count_native_type(s, NativeObjectType::Stream) == 1;
   };
 
+  const auto is_stream_realization_settled = [&](const CamBANGStateSnapshot& s) {
+    if (!is_stream_realization_native_shape(s)) {
+      return false;
+    }
+    if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+      return true;
+    }
+    return s.acquisition_sessions.size() == 1;
+  };
+
+  const auto is_full_realization_settled = [&](const CamBANGStateSnapshot& s) {
+    if (!is_full_realization_native_shape(s)) {
+      return false;
+    }
+    if (provider_kind != VerifyCaseProviderKind::Synthetic) {
+      return true;
+    }
+    return s.acquisition_sessions.size() == 1;
+  };
+
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
     return 1;
@@ -764,9 +784,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version + 1)
                       .device_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -776,7 +793,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            1,
                            "timed out waiting for stream-descendant native shape after stream realization",
-                           is_stream_realization_native_shape)) {
+                           is_stream_realization_settled)) {
     log_restarted_baseline_diagnostic(4, h.observed());
     fail_step(4, "stream realization native-object shape mismatch");
     return 1;
@@ -799,9 +816,6 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                       .version(current_version + 1)
                       .topology_version(current_topology_version)
                       .device_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      
                       .stream_count(1),
                   h.observed())) {
     return 1;
@@ -811,7 +825,7 @@ int provider_only_to_realized(VerifyCaseProviderKind provider_kind, const Realiz
                            1,
                            1,
                            "timed out waiting for continuity native shape after start_stream",
-                           is_full_realization_native_shape)) {
+                           is_full_realization_settled)) {
     log_restarted_baseline_diagnostic(5, h.observed());
     fail_step(5, "full realization native-object shape mismatch");
     return 1;
@@ -2174,10 +2188,20 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
     return 1;
   }
 
-  if (!h.perform_coalesced_burst(error)) {
+  if (!h.open_device(error) ||
+      !h.create_stream(error) ||
+      !h.start_stream(error) ||
+      (provider_kind == VerifyCaseProviderKind::Synthetic && !h.emit_frame(error)) ||
+      !h.stop_stream(error)) {
     cli::error("FAIL: ", error);
     return 1;
   }
+
+  const bool expect_acquisition_session =
+      provider_kind == VerifyCaseProviderKind::Synthetic ||
+      provider_kind == VerifyCaseProviderKind::Stub;
+  const size_t expected_acquisition_session_count =
+      expect_acquisition_session ? 1u : 0u;
 
   const ObservedSnapshot before_tick = h.observed();
   if (!SnapshotExpectation{}
@@ -2187,7 +2211,6 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
            .stream_count(0)
            .acquisition_session_count(0)
            .expect_acquisition_session(false)
-           
            .matches(before_tick, error)) {
     cli::error("step 1 FAIL (state changed before observation boundary)");
     return 1;
@@ -2200,9 +2223,8 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
-                      ,
+                      .acquisition_session_count(expected_acquisition_session_count)
+                      .expect_acquisition_session(expect_acquisition_session),
                   h.observed())) {
     return 1;
   }
@@ -2214,11 +2236,11 @@ int publication_coalescing(VerifyCaseProviderKind provider_kind) {
 int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'canonical_timeline_realization' requires synthetic provider");
-    return 0;
+    return kVerifyCaseSkipped;
   }
   if (!ProviderBroker::check_mode_supported_in_build(RuntimeMode::synthetic).ok()) {
     cli::line("SKIP: verification case 'canonical_timeline_realization' synthetic mode not built");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   CoreRuntime runtime;
@@ -2553,7 +2575,7 @@ int canonical_timeline_realization(VerifyCaseProviderKind provider_kind) {
 int device_disconnect(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'device_disconnect' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2709,7 +2731,7 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
 int frame_starvation(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'frame_starvation' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2799,7 +2821,7 @@ int frame_starvation(VerifyCaseProviderKind provider_kind) {
 int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'provider_error_mid_stream' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
@@ -2949,7 +2971,7 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
 int multi_device_topology_change(VerifyCaseProviderKind provider_kind) {
   if (provider_kind != VerifyCaseProviderKind::Synthetic) {
     cli::line("SKIP: verification case 'multi_device_topology_change' requires SyntheticProvider timeline support");
-    return 0;
+    return kVerifyCaseSkipped;
   }
 
   VerifyCaseHarness h(provider_kind);
