@@ -92,6 +92,7 @@ Supported assignment-style variables are exactly:
 | `use_mingw` | `yes`, `no`, `auto` | `auto` | Windows MinGW selection, mirrored to `godot-cpp` when applicable. |
 | `use_llvm` | `yes`, `no`, `auto` | `auto` | Windows MinGW-LLVM selection, meaningful with MinGW. |
 | `mingw_prefix` | path | empty | Optional MinGW installation prefix forwarded to `godot-cpp`. |
+| `windows_mingw_static_runtime` | `auto`, `yes`, `no` | `auto` | Windows MinGW GDE static-runtime link mode. `auto` enables it for Windows MinGW GDE builds. |
 | `warnings_as_errors` | `yes`, `no` | `no` | Treat compiler warnings as errors. |
 | `android_api_level` | Android API level | `24` | Android GDE NDK Clang target API level. |
 | `ndk_version` | Android NDK version | `28.1.13356709` | NDK version used with `ANDROID_HOME` / `ANDROID_SDK_ROOT` for Android GDE builds. |
@@ -343,22 +344,50 @@ otherwise find Git for Windows' bundled MinGW path. Passing
 
 ---
 
-## 10. Windows / MinGW runtime DLLs
+## 10. Windows / MinGW runtime linkage
 
-A MinGW-built plugin DLL may need these runtime DLLs beside the extension DLL or
-available on `PATH`:
+Windows MinGW GDE builds default to static MinGW compiler/runtime linkage for
+the CamBANG plugin DLL. The normal Windows MinGW GDE build therefore remains:
+
+```sh
+scons gde platform=windows use_mingw=yes mingw_prefix=/c/Compilers/mingw64
+```
+
+With the default `windows_mingw_static_runtime=auto`, that build links MinGW
+compiler/runtime support into the CamBANG GDE DLL. This keeps the Godot project
+payload to one Windows native library beside the `.gdextension` descriptor. It
+does not attempt to statically link Windows system or media APIs; those remain
+ordinary OS imports.
+
+Validate the resulting DLL import table when changing toolchain, target, or
+packaging logic. The expected result is that these MinGW runtime DLLs are absent
+from the import table:
 
 - `libstdc++-6.dll`
 - `libgcc_s_seh-1.dll`
 - `libwinpthread-1.dll`
 
-Current local copy examples:
+Example inspection command from Git Bash / MinGW:
 
 ```sh
-cp /c/Compilers/mingw64/bin/libstdc++-6.dll tests/cambang_gde/bin/
-cp /c/Compilers/mingw64/bin/libgcc_s_seh-1.dll tests/cambang_gde/bin/
-cp /c/Compilers/mingw64/bin/libwinpthread-1.dll tests/cambang_gde/bin/
+objdump -p tests/cambang_gde/bin/cambang.windows.template_debug.x86_64.dll | grep "DLL Name"
 ```
+
+If a local toolchain cannot link or load with static MinGW runtime support, use
+the explicit fallback:
+
+```sh
+scons gde platform=windows use_mingw=yes mingw_prefix=/c/Compilers/mingw64 windows_mingw_static_runtime=no
+```
+
+That fallback may require the MinGW runtime DLLs listed above beside the
+extension DLL or available on `PATH`.
+
+Windows GDE builds intentionally suppress SCons' generated import-library
+output (`libcambang.windows.<target>.<arch>.a` for MinGW). That file is a
+link-time developer artifact for native consumers of a DLL; Godot loads the GDE
+DLL through the `.gdextension` descriptor and does not need the import library
+beside the plugin.
 
 ---
 

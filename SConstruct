@@ -48,6 +48,7 @@ ALLOWED_VARIABLES = {
     "use_mingw",
     "use_llvm",
     "mingw_prefix",
+    "windows_mingw_static_runtime",
     "warnings_as_errors",
     "android_api_level",
     "ndk_version",
@@ -411,6 +412,12 @@ vars.Add(
     "Optional MinGW installation prefix forwarded to godot-cpp for Windows MinGW GDE builds.",
     "",
 )
+vars.Add(EnumVariable(
+    "windows_mingw_static_runtime",
+    "Windows MinGW GDE static-runtime link mode: auto/yes/no. Auto enables it for Windows MinGW GDE builds.",
+    "auto",
+    allowed_values=["auto", "yes", "no"],
+))
 vars.Add(BoolVariable(
     "warnings_as_errors",
     "Treat warnings as errors.",
@@ -452,6 +459,12 @@ if resolved_use_mingw == "auto":
     resolved_use_mingw = "yes" if (host_platform == "windows" and _looks_like_msys_or_bash()) else "no"
 
 windows_uses_mingw = gde_platform == "windows" and resolved_use_mingw == "yes"
+windows_mingw_static_runtime_mode = str(tmp_env["windows_mingw_static_runtime"])
+windows_mingw_static_runtime = (
+    build_gde and windows_uses_mingw
+    if windows_mingw_static_runtime_mode == "auto"
+    else windows_mingw_static_runtime_mode == "yes"
+)
 
 tools = None
 if host_platform == "windows" and windows_uses_mingw:
@@ -467,6 +480,9 @@ if not is_clean:
     if build_platform_runtime_validate and gde_platform not in RUNTIME_VALIDATORS:
         print(f"ERROR: platform_runtime_validate=yes has no validator for platform '{gde_platform}'.")
         print("  Currently implemented validator platform(s): " + ", ".join(sorted(RUNTIME_VALIDATORS)))
+        Exit(1)
+    if windows_mingw_static_runtime_mode == "yes" and not (build_gde and windows_uses_mingw):
+        print("ERROR: windows_mingw_static_runtime=yes applies only to GDE builds with platform=windows and use_mingw=yes.")
         Exit(1)
     if not (build_gde or build_maintainer_tools or build_platform_runtime_validate):
         print("ERROR: Nothing to build. Set gde=yes and/or maintainer_tools=yes and/or platform_runtime_validate=yes (or run with -c to clean).")
@@ -507,8 +523,8 @@ else:
 print("CamBANG SCons configuration:")
 print(f"  host_platform={host_platform} gde_platform={gde_platform} target={env['target']} (core_flags={core_target}, godot={godot_target}) arch={env['arch']} precision={env['precision']}")
 print(f"  toolchain={'msvc' if is_msvc else 'gcc/clang'} CXX={env.get('CXX')}")
-if host_platform == "windows":
-    print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']}")
+if host_platform == "windows" or gde_platform == "windows":
+    print(f"  use_mingw={env['use_mingw']} use_llvm={env['use_llvm']} windows_mingw_static_runtime={windows_mingw_static_runtime_mode} (effective={'yes' if windows_mingw_static_runtime else 'no'})")
 print(f"  gde={'yes' if build_gde else 'no'} maintainer_tools={'yes' if build_maintainer_tools else 'no'} platform_runtime_validate={'yes' if build_platform_runtime_validate else 'no'}")
 print(f"  godot_cpp={env['godot_cpp']}")
 print(f"  gde_provider={selected_provider['family']} ({selected_provider['location']})")
@@ -584,10 +600,18 @@ def _gde_artifact_base(platform, target, arch):
     return _gde_artifact_stem(platform, target, arch) + _gde_shared_library_suffix(platform)
 
 
+def _gde_windows_import_library_path(target, arch):
+    return os.path.join("tests", "cambang_gde", "bin", f"libcambang.windows.{target}.{arch}.a")
+
+
 def _planned_gde_artifact_paths(platform, target, arch):
     artifact = _gde_artifact_base(platform, target, arch)
     if platform == "windows":
-        return [artifact]
+        # Windows GDE builds intentionally ship/load only the extension DLL.
+        # The MinGW import library is a link-time developer artifact, not a
+        # Godot runtime dependency; include its historical location only so
+        # clean removes stale copies from the Godot project bin directory.
+        return [artifact, _gde_windows_import_library_path(target, arch)]
     legacy_stem = _gde_artifact_stem(platform, target, arch)
     return _unique_sources([artifact, legacy_stem, legacy_stem + ".so", legacy_stem + ".dylib", legacy_stem + ".dll"])
 
@@ -857,6 +881,12 @@ if build_gde_graph:
         # MinGW link set typically needs mf + uuid in addition to the usual MF libs.
         gde_env.Append(LIBS=selected_provider["libs"])
 
+    if windows_uses_mingw and windows_mingw_static_runtime:
+        # Distribution mode: keep the Godot extension as one CamBANG DLL by
+        # linking MinGW's compiler/runtime support into it. Windows
+        # system/media APIs remain ordinary OS imports.
+        gde_env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
+
     gde_sources += [
         os.path.join(gde_obj_dir, "godot", "module_init.cpp"),
         os.path.join(gde_obj_dir, "godot", "cambang_server.cpp"),
@@ -878,6 +908,11 @@ if build_gde_graph:
 
     gde_target = _gde_artifact_base(gde_platform, godot_target, env["arch"])
     gde_env["SHLIBSUFFIX"] = _gde_shared_library_suffix(gde_platform)
+    if gde_platform == "windows":
+        # The Godot runtime loads the GDE DLL directly from the .gdextension
+        # descriptor; CamBANG does not ship or consume the Windows import
+        # library that SCons would otherwise place beside the DLL.
+        gde_env["no_import_lib"] = 1
 
     gde_env.Append(LIBPATH=[godot_cpp_libdir])
     gde_env.Append(LIBS=[godot_cpp_libname])
