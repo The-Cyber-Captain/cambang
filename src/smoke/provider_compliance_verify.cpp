@@ -5459,6 +5459,8 @@ bool run_core_capture_bracket_whole_result_scoring_check() {
   constexpr uint64_t kDeviceId = 17151;
   constexpr uint64_t kRootId = 17152;
   constexpr uint64_t kCaptureIdA = 17161;
+  constexpr uint64_t kCaptureIdB = 17162;
+  constexpr uint64_t kCaptureIdC = 17163;
   if (rt.try_open_device("backing_plan_eval:0", kDeviceId, kRootId) !=
       TryOpenDeviceStatus::OK) {
     return fail_with_cleanup(
@@ -5602,6 +5604,267 @@ bool run_core_capture_bracket_whole_result_scoring_check() {
       })) {
     return fail_with_cleanup(
         "FAIL core capture bracket whole-result scoring did not wait for the full required bundle or did not let the slowest member dominate");
+  }
+
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceId, kCaptureIdB) != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu trigger_capture failed");
+  }
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.evaluator_active &&
+               report.current_candidate_index == 1 &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::GpuPrimaryNoCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring did not realize active gpu capture candidate");
+  }
+  if (!provider.emit_pending_capture(kCaptureIdB)) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu pending capture publish failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_capture_result(kCaptureIdB, kDeviceId);
+        return result &&
+               result->image_member_count() == 2 &&
+               result->image_member_at(0) != nullptr &&
+               result->image_member_at(1) != nullptr;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu capture result missing required members");
+  }
+
+  const SharedCaptureResultData gpu_capture_result =
+      rt.get_capture_result(kCaptureIdB, kDeviceId);
+  if (!gpu_capture_result ||
+      gpu_capture_result->acquisition_session_id == 0) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu result missing a real acquisition session");
+  }
+  const uint64_t gpu_session_id = gpu_capture_result->acquisition_session_id;
+  const auto* gpu_default_member = gpu_capture_result->image_member_at(0);
+  const auto* gpu_bracket_member = gpu_capture_result->image_member_at(1);
+  if (!gpu_default_member || !gpu_bracket_member) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu member lookup failed");
+  }
+
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      kCaptureIdB,
+      gpu_session_id,
+      gpu_default_member->access_posture.posture_id,
+      gpu_default_member->retained_access_truth.to_image,
+      true,
+      40'000'000,
+      true,
+      40'000'000,
+      0u);
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.evaluator_active &&
+               report.current_candidate_index == 1 &&
+               report_entry_for_posture(
+                   report,
+                   CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+                   gpu_entry) &&
+               gpu_entry.required_capture_member_count == 2u &&
+               gpu_entry.observed_capture_member_count == 1u &&
+               gpu_entry.materialized_capture_member_count == 1u &&
+               gpu_entry.has_first_missing_required_capture_member_index &&
+               gpu_entry.first_missing_required_capture_member_index == 1u &&
+               gpu_entry.capture_evidence_incomplete_reason ==
+                   CaptureEvidenceIncompleteReason::AwaitingRequiredMemberMaterialization &&
+               gpu_entry.observation_seen &&
+               gpu_entry.has_materialization_elapsed_ns &&
+               gpu_entry.has_capture_ready_elapsed_ns &&
+               !gpu_entry.has_total_elapsed_ns &&
+               !gpu_entry.evidence_complete &&
+               !gpu_entry.evidence_accepted;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu member-0-only evidence advanced or completed the candidate");
+  }
+
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      kCaptureIdB,
+      gpu_session_id,
+      gpu_bracket_member->access_posture.posture_id,
+      gpu_bracket_member->retained_access_truth.to_image,
+      true,
+      55'000'000,
+      true,
+      55'000'000,
+      1u);
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        CoreBackingPlanCandidateEvidenceReport gpu_entry{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.evaluator_active &&
+               report.current_candidate_index == 2 &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar) &&
+               report_entry_for_posture(
+                   report,
+                   CoreProductionPostureShape::GpuPrimaryNoCpuSidecar,
+                   gpu_entry) &&
+               gpu_entry.required_capture_member_count == 2u &&
+               gpu_entry.observed_capture_member_count == 2u &&
+               gpu_entry.materialized_capture_member_count == 2u &&
+               !gpu_entry.has_first_missing_required_capture_member_index &&
+               gpu_entry.capture_evidence_incomplete_reason ==
+                   CaptureEvidenceIncompleteReason::None &&
+               gpu_entry.evidence_complete &&
+               gpu_entry.evidence_accepted &&
+               gpu_entry.has_capture_ready_elapsed_ns &&
+               gpu_entry.has_materialization_elapsed_ns &&
+               gpu_entry.has_total_elapsed_ns &&
+               gpu_entry.materialization_elapsed_ns == 55'000'000 &&
+               gpu_entry.total_elapsed_ns ==
+                   gpu_entry.capture_ready_elapsed_ns + 55'000'000 &&
+               gpu_entry.observed_image_member_index == 1;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring gpu candidate did not wait for the full required bundle or did not let the slowest member dominate");
+  }
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceId, kCaptureIdC) != TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar trigger_capture failed");
+  }
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.evaluator_active &&
+               report.current_candidate_index == 2 &&
+               plan_equals(report.requested,
+                           CoreProductionPostureShape::GpuPrimaryWithCpuSidecar);
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring did not realize active sidecar capture candidate");
+  }
+  if (!provider.emit_pending_capture(kCaptureIdC)) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar pending capture publish failed");
+  }
+  if (!wait_until([&]() {
+        const auto result = rt.get_capture_result(kCaptureIdC, kDeviceId);
+        return result &&
+               result->image_member_count() == 2 &&
+               result->image_member_at(0) != nullptr &&
+               result->image_member_at(1) != nullptr;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar capture result missing required members");
+  }
+
+  const SharedCaptureResultData sidecar_capture_result =
+      rt.get_capture_result(kCaptureIdC, kDeviceId);
+  if (!sidecar_capture_result ||
+      sidecar_capture_result->acquisition_session_id == 0) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar result missing a real acquisition session");
+  }
+  const uint64_t sidecar_session_id =
+      sidecar_capture_result->acquisition_session_id;
+  const auto* sidecar_default_member = sidecar_capture_result->image_member_at(0);
+  const auto* sidecar_bracket_member = sidecar_capture_result->image_member_at(1);
+  if (!sidecar_default_member || !sidecar_bracket_member) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar member lookup failed");
+  }
+  if (!sidecar_default_member->access_posture.has_retained_cpu_payload ||
+      !sidecar_bracket_member->access_posture.has_retained_cpu_payload) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar members missing retained CPU sidecar truth");
+  }
+
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      kCaptureIdC,
+      sidecar_session_id,
+      sidecar_default_member->access_posture.posture_id,
+      sidecar_default_member->retained_access_truth.to_image,
+      true,
+      70'000'000,
+      true,
+      70'000'000,
+      0u);
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               report.evaluator_active &&
+               report.current_candidate_index == 2 &&
+               report_entry_for_posture(
+                   report,
+                   CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+                   sidecar_entry) &&
+               sidecar_entry.required_capture_member_count == 2u &&
+               sidecar_entry.observed_capture_member_count == 1u &&
+               sidecar_entry.materialized_capture_member_count == 1u &&
+               sidecar_entry.has_first_missing_required_capture_member_index &&
+               sidecar_entry.first_missing_required_capture_member_index == 1u &&
+               sidecar_entry.capture_evidence_incomplete_reason ==
+                   CaptureEvidenceIncompleteReason::AwaitingRequiredMemberMaterialization &&
+               sidecar_entry.observation_seen &&
+               sidecar_entry.has_materialization_elapsed_ns &&
+               sidecar_entry.has_capture_ready_elapsed_ns &&
+               !sidecar_entry.has_total_elapsed_ns &&
+               !sidecar_entry.evidence_complete &&
+               !sidecar_entry.evidence_accepted;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar member-0-only evidence advanced or completed the candidate");
+  }
+
+  rt.report_capture_retained_to_image_observation(
+      kDeviceId,
+      kCaptureIdC,
+      sidecar_session_id,
+      sidecar_bracket_member->access_posture.posture_id,
+      sidecar_bracket_member->retained_access_truth.to_image,
+      true,
+      90'000'000,
+      true,
+      90'000'000,
+      1u);
+  if (!wait_until([&]() {
+        CoreBackingPlanEvaluationReport report{};
+        CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
+        return find_capture_report(rt, kDeviceId, report) &&
+               !report.evaluator_active &&
+               report.decision_from_evaluation &&
+               report_entry_for_posture(
+                   report,
+                   CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
+                   sidecar_entry) &&
+               sidecar_entry.required_capture_member_count == 2u &&
+               sidecar_entry.observed_capture_member_count == 2u &&
+               sidecar_entry.materialized_capture_member_count == 2u &&
+               !sidecar_entry.has_first_missing_required_capture_member_index &&
+               sidecar_entry.capture_evidence_incomplete_reason ==
+                   CaptureEvidenceIncompleteReason::None &&
+               sidecar_entry.evidence_complete &&
+               sidecar_entry.evidence_accepted &&
+               sidecar_entry.has_capture_ready_elapsed_ns &&
+               sidecar_entry.has_materialization_elapsed_ns &&
+               sidecar_entry.has_total_elapsed_ns &&
+               sidecar_entry.materialization_elapsed_ns == 90'000'000 &&
+               sidecar_entry.total_elapsed_ns ==
+                   sidecar_entry.capture_ready_elapsed_ns + 90'000'000 &&
+               sidecar_entry.observed_image_member_index == 1;
+      })) {
+    return fail_with_cleanup(
+        "FAIL core capture bracket whole-result scoring sidecar candidate did not wait for the full required bundle or did not let the slowest member dominate");
   }
 
   (void)provider.shutdown();

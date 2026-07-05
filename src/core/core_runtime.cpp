@@ -3417,6 +3417,11 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
     return;
   }
 
+  if (provisional_to_image != ResultCapability::UNSUPPORTED &&
+      !evidence.capture_evidence_accepted) {
+    return;
+  }
+
   CoreRetainedProductionPlan chosen{};
   const MeasuredPlanEvidence* chosen_evidence = nullptr;
   for (uint8_t i = 0; i < state.candidate_count; ++i) {
