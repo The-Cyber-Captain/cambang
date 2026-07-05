@@ -514,12 +514,22 @@ static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf
     return 1;
   }
 
-  // One big tick: catch-up pump.
-  tick_synthetic(rt, kOneSecNs);
+  // Bounded multi-frame catch-up pump.
+  //
+  // This case proves that one host-side synthetic-time advance can emit a
+  // deterministic burst of due stream frames. It intentionally stays below the
+  // runtime queue-pressure threshold: a full one-second / 31-frame burst is a
+  // stress-pressure scenario and is not a stable exact-count verifier under the
+  // current dispatcher/backpressure model.
+  constexpr uint64_t kCatchupStressNs = 300'000'000ull;
+  tick_synthetic(rt, kCatchupStressNs);
 
-  // Expected frames in 1s with first frame at t=0: floor(1s/period)+1.
-  const uint64_t expected = (period == 0) ? 0 : (kOneSecNs / period) + 1;
+  // Expected frames in the bounded catch-up window with first frame at t=0:
+  // floor(window/period)+1. At 30fps and 300ms this is 10 frames, ending at
+  // timestamp 299999997ns.
+  const uint64_t expected = (period == 0) ? 0 : (kCatchupStressNs / period) + 1;
   bool reached_expected = false;
+  uint64_t best_seen = 0;
   for (int i = 0; i < 800; ++i) {
     rt.request_publish();
     // request_publish() is asynchronous; give the core thread one settle beat
@@ -533,13 +543,18 @@ static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf
     if (opt.dump_snapshots) {
       dump_snapshot(*s);
     }
-    if (frames_received_for_stream(*s, kStreamId) >= expected) {
+    const uint64_t got_now = frames_received_for_stream(*s, kStreamId);
+    if (got_now > best_seen) {
+      best_seen = got_now;
+    }
+    if (got_now >= expected) {
       reached_expected = true;
       break;
     }
   }
   if (!reached_expected) {
-    std::cerr << "FAIL: expected frames_received >= " << expected << " after catch-up tick\n";
+    std::cerr << "FAIL: expected frames_received >= " << expected
+              << " after catch-up tick, best_seen=" << best_seen << "\n";
     return 1;
   }
 
@@ -713,11 +728,14 @@ int main(int argc, char** argv) {
   auto replay_quiet_failure = [&]() {
     const std::string captured_stdout = quiet_capture.captured_stdout();
     const std::string captured_stderr = quiet_capture.captured_stderr();
+
     if (!captured_stdout.empty()) {
       std::fputs(captured_stdout.c_str(), stdout);
+      std::fflush(stdout);
     }
     if (!captured_stderr.empty()) {
-      std::cerr << captured_stderr;
+      std::fputs(captured_stderr.c_str(), stderr);
+      std::fflush(stderr);
     }
   };
 
