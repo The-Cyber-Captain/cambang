@@ -984,6 +984,9 @@ public:
           return false;
         }
         stub->emit_test_frames(stream_id, 1);
+#if defined(CAMBANG_INTERNAL_SMOKE)
+        stub->flush_callbacks_for_smoke();
+#endif
         break;
       }
     }
@@ -992,8 +995,15 @@ public:
     if (!wait_for_core_publish_count(before + 1, error, 500, 5)) {
       return false;
     }
-    return wait_for_core_snapshot([&](const CamBANGStateSnapshot& s) {
-      const auto* stream = find_stream(s, stream_id);
+    return wait_until([&]() {
+      // Keep prompting the observation boundary while waiting for the
+      // post-stimulus frame count to become snapshot-visible.
+      runtime_.request_publish();
+      auto snap = snapshot_buffer_.snapshot_copy();
+      if (!snap) {
+        return false;
+      }
+      const auto* stream = find_stream(*snap, stream_id);
       return stream &&
              stream->frames_received > baseline_frames;
     }, error, 500, 5, "timed out waiting for frame publish convergence");

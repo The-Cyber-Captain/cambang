@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,7 +43,7 @@ public:
     bool has_failure_error_code = false;
   };
 
-  void clear() noexcept { cohorts_.clear(); }
+  void clear() noexcept;
 
   bool insert(CohortRecord record);
   bool mark_failed(uint64_t capture_id,
@@ -49,10 +51,10 @@ public:
                    uint32_t failure_error_code,
                    CohortFailurePhase phase) noexcept;
   bool contains(uint64_t capture_id) const noexcept;
-  const CohortRecord* find(uint64_t capture_id) const noexcept;
-  const std::map<uint64_t, CohortRecord>& all() const noexcept { return cohorts_; }
+  std::optional<CohortRecord> find(uint64_t capture_id) const noexcept;
 
 private:
+  mutable std::mutex mutex_;
   std::map<uint64_t, CohortRecord> cohorts_;
 };
 

@@ -1,10 +1,12 @@
 // Deterministic provider compliance verifier: provider contract only.
 // This tool intentionally uses provider callbacks, retained snapshots,
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
+#include <cstdio>
 #include <cstdint>
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <utility>
@@ -12,6 +14,10 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#endif
 
 #include "core/core_runtime.h"
 #include "imaging/broker/provider_broker.h"
@@ -30,6 +36,13 @@ namespace {
 struct Options {
   std::string external_scenario_file;
   std::string only_check;
+  bool verbose = false;
+};
+
+enum class ParseOptsResult {
+  Ok,
+  Help,
+  Error,
 };
 
 constexpr int kMaxIters = 500;
@@ -43,21 +56,134 @@ constexpr uint64_t kClusteredDeviceId = 121;
 constexpr uint64_t kClusteredRootId = 12201;
 constexpr uint64_t kClusteredStreamId = 122;
 
+bool g_verbose = false;
+
 bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
 }
 
+class QuietOutputCapture final {
+public:
+  QuietOutputCapture() = default;
+  QuietOutputCapture(const QuietOutputCapture&) = delete;
+  QuietOutputCapture& operator=(const QuietOutputCapture&) = delete;
+
+  bool begin() {
+#if !defined(_WIN32)
+    return false;
+#else
+    std::fflush(stdout);
+    std::fflush(stderr);
+    saved_stdout_fd_ = _dup(_fileno(stdout));
+    saved_stderr_fd_ = _dup(_fileno(stderr));
+    if (saved_stdout_fd_ < 0 || saved_stderr_fd_ < 0) {
+      restore_saved_fds_();
+      return false;
+    }
+    stdout_file_.reset(std::tmpfile());
+    stderr_file_.reset(std::tmpfile());
+    if (!stdout_file_ || !stderr_file_) {
+      end();
+      return false;
+    }
+    if (_dup2(_fileno(stdout_file_.get()), _fileno(stdout)) != 0 ||
+        _dup2(_fileno(stderr_file_.get()), _fileno(stderr)) != 0) {
+      end();
+      return false;
+    }
+    active_ = true;
+    return true;
+#endif
+  }
+
+  void end() {
+    if (!active_) {
+      restore_saved_fds_();
+      stdout_file_.reset();
+      stderr_file_.reset();
+      return;
+    }
+    std::fflush(stdout);
+    std::fflush(stderr);
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      (void)_dup2(saved_stdout_fd_, _fileno(stdout));
+    }
+    if (saved_stderr_fd_ >= 0) {
+      (void)_dup2(saved_stderr_fd_, _fileno(stderr));
+    }
+#endif
+    restore_saved_fds_();
+    active_ = false;
+  }
+
+  std::string captured_stdout() const { return read_file_(stdout_file_.get()); }
+  std::string captured_stderr() const { return read_file_(stderr_file_.get()); }
+
+  ~QuietOutputCapture() {
+    end();
+  }
+
+private:
+  struct FileCloser {
+    void operator()(FILE* f) const noexcept {
+      if (f) {
+        std::fclose(f);
+      }
+    }
+  };
+
+  static std::string read_file_(FILE* f) {
+    if (!f) {
+      return {};
+    }
+    std::fflush(f);
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+      return {};
+    }
+    const long size = std::ftell(f);
+    if (size <= 0) {
+      std::rewind(f);
+      return {};
+    }
+    std::string out(static_cast<size_t>(size), '\0');
+    std::rewind(f);
+    const size_t read = std::fread(out.data(), 1, out.size(), f);
+    out.resize(read);
+    return out;
+  }
+
+  void restore_saved_fds_() noexcept {
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      _close(saved_stdout_fd_);
+      saved_stdout_fd_ = -1;
+    }
+    if (saved_stderr_fd_ >= 0) {
+      _close(saved_stderr_fd_);
+      saved_stderr_fd_ = -1;
+    }
+#endif
+  }
+
+  bool active_ = false;
+  int saved_stdout_fd_ = -1;
+  int saved_stderr_fd_ = -1;
+  std::unique_ptr<FILE, FileCloser> stdout_file_{};
+  std::unique_ptr<FILE, FileCloser> stderr_file_{};
+};
+
 void usage(const char* argv0) {
   std::cerr << "Usage: " << argv0
-            << " [--external_scenario_file=<path>] [--only_check=<name>]\n";
+            << " [--external_scenario_file=<path>] [--only_check=<name>] [--verbose]\n";
 }
 
-bool parse_opts(int argc, char** argv, Options& opt) {
+ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--help" || a == "-h") {
       usage(argv[0]);
-      return false;
+      return ParseOptsResult::Help;
     }
     if (starts_with(a, "--external_scenario_file=")) {
       opt.external_scenario_file = a.substr(std::string("--external_scenario_file=").size());
@@ -67,12 +193,93 @@ bool parse_opts(int argc, char** argv, Options& opt) {
       opt.only_check = a.substr(std::string("--only_check=").size());
       continue;
     }
+    if (a == "--verbose") {
+      opt.verbose = true;
+      continue;
+    }
     std::cerr << "Unknown arg: " << a << "\n";
     usage(argv[0]);
-    return false;
+    return ParseOptsResult::Error;
   }
-  return true;
+  return ParseOptsResult::Ok;
 }
+
+class CheckReporter final {
+public:
+  explicit CheckReporter(bool verbose) : verbose_(verbose) {}
+
+  bool run_bool_check(const char* name, const std::function<bool()>& fn) {
+    if (verbose_) {
+      std::cout << "[ RUN      ] " << name << "\n";
+    }
+    ++run_count_;
+    QuietOutputCapture quiet_capture;
+    const bool capturing = !verbose_ && quiet_capture.begin();
+    const bool ok = fn();
+    if (capturing) {
+      quiet_capture.end();
+    }
+    if (ok) {
+      ++ok_count_;
+      if (verbose_) {
+        std::cout << "[       OK ] " << name << "\n";
+      }
+    } else {
+      ++failed_count_;
+      if (capturing) {
+        const std::string captured_stdout = quiet_capture.captured_stdout();
+        const std::string captured_stderr = quiet_capture.captured_stderr();
+        if (!captured_stdout.empty()) {
+          std::cout << captured_stdout;
+        }
+        if (!captured_stderr.empty()) {
+          std::cerr << captured_stderr;
+        }
+      }
+      std::cout << "[  FAILED  ] " << name << " rc=1\n";
+    }
+    return ok;
+  }
+
+  void print_summary() const {
+    std::fprintf(stdout,
+                 "[ SUMMARY  ] run=%d ok=%d failed=%d\n",
+                 run_count_,
+                 ok_count_,
+                 failed_count_);
+    std::fflush(stdout);
+  }
+
+  void print_pass_line(const char* tool_name) const {
+    std::fprintf(stdout,
+                 "PASS %s run=%d ok=%d failed=%d\n",
+                 tool_name,
+                 run_count_,
+                 ok_count_,
+                 failed_count_);
+    std::fflush(stdout);
+  }
+
+  void print_fail_line(const char* tool_name, const char* failed_check, int rc) const {
+    std::fprintf(stdout,
+                 "FAIL %s failed_check=%s rc=%d run=%d ok=%d failed=%d\n",
+                 tool_name,
+                 failed_check,
+                 rc,
+                 run_count_,
+                 ok_count_,
+                 failed_count_);
+    std::fflush(stdout);
+  }
+
+  bool verbose() const noexcept { return verbose_; }
+
+private:
+  bool verbose_ = false;
+  int run_count_ = 0;
+  int ok_count_ = 0;
+  int failed_count_ = 0;
+};
 
 struct EventRec {
   std::string tag;
@@ -1625,7 +1832,6 @@ bool run_external_scenario_file_execution_check(const std::string& path) {
 
 bool run_synthetic_primitive_lifecycle_foundation_check() {
   VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
-  harness.set_callback_diagnostics_enabled(true);
 
   std::string error;
   if (!harness.start_runtime(error)) {
@@ -1640,6 +1846,7 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
       !harness.destroy_stream_id(kLifecycleStreamId, error) ||
       !harness.close_device_id(kLifecycleDeviceId, error)) {
     std::cerr << "FAIL primitive lifecycle action failed: " << error << "\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1654,6 +1861,7 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
           kSleepMs,
           "timed out waiting for primitive lifecycle final absence")) {
     std::cerr << "FAIL primitive lifecycle final truth failed: " << error << "\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1667,15 +1875,18 @@ bool run_synthetic_primitive_lifecycle_foundation_check() {
 
   if (opened < 0 || created < 0 || started < 0 || stopped < 0 || destroyed < 0 || closed < 0) {
     std::cerr << "FAIL primitive lifecycle missing callback evidence\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
   if (!(opened < created && created < started && started < stopped && stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL primitive lifecycle callback order mismatch\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
 
+  harness.set_callback_diagnostics_enabled(false);
   harness.stop_runtime();
   return true;
 }
@@ -1771,7 +1982,6 @@ bool run_clustered_strict_branch_check() {
 
 bool run_clustered_completion_gated_branch_check() {
   VerifyCaseHarness harness(VerifyCaseProviderKind::Synthetic);
-  harness.set_callback_diagnostics_enabled(true);
   std::string error;
   if (!harness.start_runtime(error)) {
     std::cerr << "FAIL clustered gated harness start: " << error << "\n";
@@ -1780,6 +1990,7 @@ bool run_clustered_completion_gated_branch_check() {
   auto* synthetic = dynamic_cast<SyntheticProvider*>(harness.runtime().attached_provider());
   if (!synthetic) {
     std::cerr << "FAIL clustered gated provider cast failed\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1793,6 +2004,7 @@ bool run_clustered_completion_gated_branch_check() {
       !synthetic->set_timeline_scenario_for_host(build_clustered_destructive_scenario(period_ns)).ok() ||
       !synthetic->start_timeline_scenario_for_host().ok()) {
     std::cerr << "FAIL clustered gated setup failed\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1802,6 +2014,7 @@ bool run_clustered_completion_gated_branch_check() {
       std::find(dispatched.begin(), dispatched.end(), SyntheticEventType::StartStream) - dispatched.begin());
   if (start_dispatch >= static_cast<int>(dispatched.size())) {
     std::cerr << "FAIL clustered gated precondition dispatch evidence missing\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1828,11 +2041,13 @@ bool run_clustered_completion_gated_branch_check() {
               << ", created=" << created
               << ", started=" << started << ")\n";
     std::cerr << "FAIL clustered gated startup precondition not realized\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
   if (!(opened < created && created < started)) {
     std::cerr << "FAIL clustered gated startup callback order mismatch\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1890,20 +2105,24 @@ bool run_clustered_completion_gated_branch_check() {
   };
 
   if (!wait_for_stage("stream_stopped", kClusteredStreamId, "stream_stopped", stopped)) {
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
   if (!wait_for_stage("stream_destroyed", kClusteredStreamId, "stream_destroyed", destroyed)) {
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
   if (!wait_for_stage("device_closed", kClusteredDeviceId, "device_closed", closed)) {
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
 
   if (!(stopped < destroyed && destroyed < closed)) {
     std::cerr << "FAIL clustered gated callback order mismatch\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
@@ -1918,10 +2137,12 @@ bool run_clustered_completion_gated_branch_check() {
       destroy_dispatch >= static_cast<int>(dispatched.size()) ||
       close_dispatch >= static_cast<int>(dispatched.size())) {
     std::cerr << "FAIL clustered gated clustered-boundary dispatch evidence missing\n";
+    harness.set_callback_diagnostics_enabled(false);
     harness.stop_runtime();
     return false;
   }
 
+  harness.set_callback_diagnostics_enabled(false);
   harness.stop_runtime();
   return true;
 }
@@ -6989,9 +7210,17 @@ bool run_core_capture_observation_after_device_close_check() {
 
 int main(int argc, char** argv) {
   Options opt;
-  if (!parse_opts(argc, argv, opt)) {
+  const ParseOptsResult parse_result = parse_opts(argc, argv, opt);
+  if (parse_result == ParseOptsResult::Help) {
+    return 0;
+  }
+  if (parse_result != ParseOptsResult::Ok) {
+    std::fprintf(stdout, "FAIL provider_compliance_verify reason=invalid_arguments\n");
+    std::fflush(stdout);
     return 2;
   }
+  g_verbose = opt.verbose;
+  CheckReporter reporter(opt.verbose);
 
   using CheckFn = std::function<bool()>;
   const std::vector<std::pair<const char*, CheckFn>> checks = {
@@ -7033,34 +7262,79 @@ int main(int argc, char** argv) {
     if (opt.only_check == "run_external_scenario_file_execution_check") {
       if (opt.external_scenario_file.empty()) {
         std::cerr << "FAIL run_external_scenario_file_execution_check requires --external_scenario_file=<path>\n";
+        std::fprintf(stdout, "FAIL provider_compliance_verify reason=missing_external_scenario_file\n");
+        std::fflush(stdout);
         return 1;
       }
-      if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
-      std::cout << "PASS provider_compliance_verify\n";
+      if (!reporter.run_bool_check(
+              "run_external_scenario_file_execution_check",
+              [&] { return run_external_scenario_file_execution_check(opt.external_scenario_file); })) {
+        if (reporter.verbose()) {
+          reporter.print_summary();
+        }
+        reporter.print_fail_line("provider_compliance_verify",
+                                 "run_external_scenario_file_execution_check",
+                                 1);
+        return 1;
+      }
+      if (reporter.verbose()) {
+        reporter.print_summary();
+      }
+      reporter.print_pass_line("provider_compliance_verify");
       return 0;
     }
     for (const auto& check : checks) {
       if (opt.only_check == check.first) {
-        if (!check.second()) return 1;
-        std::cout << "PASS provider_compliance_verify\n";
+        if (!reporter.run_bool_check(check.first, check.second)) {
+          if (reporter.verbose()) {
+            reporter.print_summary();
+          }
+          reporter.print_fail_line("provider_compliance_verify", check.first, 1);
+          return 1;
+        }
+        if (reporter.verbose()) {
+          reporter.print_summary();
+        }
+        reporter.print_pass_line("provider_compliance_verify");
         return 0;
       }
     }
     std::cerr << "Unknown --only_check value: " << opt.only_check << "\nAvailable check names:\n";
     for (const auto& check : checks) {
-      std::cerr << "  " << check.first << "\n";
+    std::cerr << "  " << check.first << "\n";
     }
     std::cerr << "  run_external_scenario_file_execution_check\n";
+    std::fprintf(stdout, "FAIL provider_compliance_verify reason=unknown_only_check\n");
+    std::fflush(stdout);
     return 1;
   }
 
   for (const auto& check : checks) {
-    if (!check.second()) return 1;
+    if (!reporter.run_bool_check(check.first, check.second)) {
+      if (reporter.verbose()) {
+        reporter.print_summary();
+      }
+      reporter.print_fail_line("provider_compliance_verify", check.first, 1);
+      return 1;
+    }
   }
   if (!opt.external_scenario_file.empty()) {
-    if (!run_external_scenario_file_execution_check(opt.external_scenario_file)) return 1;
+    if (!reporter.run_bool_check(
+            "run_external_scenario_file_execution_check",
+            [&] { return run_external_scenario_file_execution_check(opt.external_scenario_file); })) {
+      if (reporter.verbose()) {
+        reporter.print_summary();
+      }
+      reporter.print_fail_line("provider_compliance_verify",
+                               "run_external_scenario_file_execution_check",
+                               1);
+      return 1;
+    }
   }
 
-  std::cout << "PASS provider_compliance_verify\n";
+  if (reporter.verbose()) {
+    reporter.print_summary();
+  }
+  reporter.print_pass_line("provider_compliance_verify");
   return 0;
 }

@@ -25,14 +25,20 @@ Non-Goals
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#endif
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "core_spine_smoke: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
@@ -56,16 +62,216 @@ constexpr uint64_t kStreamId = 1;
 
 struct Options {
   bool stress = false;
+  bool verbose = false;
   int loops = 1;           // default non-stress
   int jitter_ms = 0;       // 0 = deterministic/no sleep jitter
   uint32_t seed = 1;       // only used if jitter_ms > 0
 };
 
+enum class ParseOptsResult {
+  Ok,
+  Help,
+  Error,
+};
+
+class QuietOutputCapture final {
+public:
+  QuietOutputCapture() = default;
+  QuietOutputCapture(const QuietOutputCapture&) = delete;
+  QuietOutputCapture& operator=(const QuietOutputCapture&) = delete;
+
+  bool begin() {
+#if !defined(_WIN32)
+    return false;
+#else
+    std::fflush(stdout);
+    std::fflush(stderr);
+    saved_stdout_fd_ = _dup(_fileno(stdout));
+    saved_stderr_fd_ = _dup(_fileno(stderr));
+    if (saved_stdout_fd_ < 0 || saved_stderr_fd_ < 0) {
+      restore_saved_fds_();
+      return false;
+    }
+    stdout_file_.reset(std::tmpfile());
+    stderr_file_.reset(std::tmpfile());
+    if (!stdout_file_ || !stderr_file_) {
+      end();
+      return false;
+    }
+    if (_dup2(_fileno(stdout_file_.get()), _fileno(stdout)) != 0 ||
+        _dup2(_fileno(stderr_file_.get()), _fileno(stderr)) != 0) {
+      end();
+      return false;
+    }
+    active_ = true;
+    return true;
+#endif
+  }
+
+  void end() {
+    if (!active_) {
+      restore_saved_fds_();
+      stdout_file_.reset();
+      stderr_file_.reset();
+      return;
+    }
+    std::fflush(stdout);
+    std::fflush(stderr);
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      (void)_dup2(saved_stdout_fd_, _fileno(stdout));
+    }
+    if (saved_stderr_fd_ >= 0) {
+      (void)_dup2(saved_stderr_fd_, _fileno(stderr));
+    }
+#endif
+    restore_saved_fds_();
+    active_ = false;
+  }
+
+  std::string captured_stdout() const { return read_file_(stdout_file_.get()); }
+  std::string captured_stderr() const { return read_file_(stderr_file_.get()); }
+
+  ~QuietOutputCapture() {
+    end();
+  }
+
+private:
+  struct FileCloser {
+    void operator()(FILE* f) const noexcept {
+      if (f) {
+        std::fclose(f);
+      }
+    }
+  };
+
+  static std::string read_file_(FILE* f) {
+    if (!f) {
+      return {};
+    }
+    std::fflush(f);
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+      return {};
+    }
+    const long size = std::ftell(f);
+    if (size <= 0) {
+      std::rewind(f);
+      return {};
+    }
+    std::string out(static_cast<size_t>(size), '\0');
+    std::rewind(f);
+    const size_t read = std::fread(out.data(), 1, out.size(), f);
+    out.resize(read);
+    return out;
+  }
+
+  void restore_saved_fds_() noexcept {
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      _close(saved_stdout_fd_);
+      saved_stdout_fd_ = -1;
+    }
+    if (saved_stderr_fd_ >= 0) {
+      _close(saved_stderr_fd_);
+      saved_stderr_fd_ = -1;
+    }
+#endif
+  }
+
+  bool active_ = false;
+  int saved_stdout_fd_ = -1;
+  int saved_stderr_fd_ = -1;
+  std::unique_ptr<FILE, FileCloser> stdout_file_{};
+  std::unique_ptr<FILE, FileCloser> stderr_file_{};
+};
+
+class CheckReporter final {
+public:
+  explicit CheckReporter(bool verbose) : verbose_(verbose) {}
+
+  template <typename Fn>
+  int run(const char* name, Fn&& fn) {
+    if (verbose_) {
+      std::cout << "[ RUN      ] " << name << "\n";
+    }
+    ++run_count_;
+    QuietOutputCapture quiet_capture;
+    const bool capturing = !verbose_ && quiet_capture.begin();
+    const int rc = fn();
+    if (capturing) {
+      quiet_capture.end();
+    }
+    if (rc == 0) {
+      ++ok_count_;
+      if (verbose_) {
+        std::cout << "[       OK ] " << name << "\n";
+      }
+    } else {
+      ++failed_count_;
+      if (capturing) {
+        const std::string captured_stdout = quiet_capture.captured_stdout();
+        const std::string captured_stderr = quiet_capture.captured_stderr();
+        if (!captured_stdout.empty()) {
+          std::cout << captured_stdout;
+        }
+        if (!captured_stderr.empty()) {
+          std::cerr << captured_stderr;
+        }
+      }
+      std::cout << "[  FAILED  ] " << name << " rc=" << rc << "\n";
+    }
+    return rc;
+  }
+
+  void print_summary() const {
+    std::fprintf(stdout,
+                 "[ SUMMARY  ] run=%d ok=%d failed=%d\n",
+                 run_count_,
+                 ok_count_,
+                 failed_count_);
+    std::fflush(stdout);
+  }
+
+  void print_pass_line(const char* tool_name) const {
+    std::fprintf(stdout,
+                 "PASS %s run=%d ok=%d failed=%d\n",
+                 tool_name,
+                 run_count_,
+                 ok_count_,
+                 failed_count_);
+    std::fflush(stdout);
+  }
+
+  void print_fail_line(const char* tool_name, const char* failed_check, int rc) const {
+    std::fprintf(stdout,
+                 "FAIL %s failed_check=%s rc=%d run=%d ok=%d failed=%d\n",
+                 tool_name,
+                 failed_check,
+                 rc,
+                 run_count_,
+                 ok_count_,
+                 failed_count_);
+    std::fflush(stdout);
+  }
+
+  bool verbose() const noexcept { return verbose_; }
+  int run_count() const noexcept { return run_count_; }
+  int ok_count() const noexcept { return ok_count_; }
+  int failed_count() const noexcept { return failed_count_; }
+
+private:
+  bool verbose_ = false;
+  int run_count_ = 0;
+  int ok_count_ = 0;
+  int failed_count_ = 0;
+};
+
 static void usage(const char* argv0) {
   std::cerr
-      << "Usage: " << argv0 << " [--stress] [--loops=N] [--jitter_ms=K] [--seed=S]\n"
+      << "Usage: " << argv0 << " [--stress] [--verbose] [--loops=N] [--jitter_ms=K] [--seed=S]\n"
       << "Default: run once (smoke).\n"
       << "  --stress        Enable stress loop (default loops=50).\n"
+      << "  --verbose       Print per-check [RUN]/[OK] reporting.\n"
       << "  --loops=N       Number of stress iterations.\n"
       << "  --jitter_ms=K   Max jitter sleep per step (0 disables).\n"
       << "  --seed=S        RNG seed for jitter (default 1).\n";
@@ -99,22 +305,26 @@ static bool parse_u32(const std::string& s, uint32_t& out) {
   }
 }
 
-static bool parse_opts(int argc, char** argv, Options& opt) {
+static ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--help" || a == "-h") {
       usage(argv[0]);
-      return false;
+      return ParseOptsResult::Help;
     }
     if (a == "--stress") {
       opt.stress = true;
+      continue;
+    }
+    if (a == "--verbose") {
+      opt.verbose = true;
       continue;
     }
     if (starts_with(a, "--loops=")) {
       int v = 0;
       if (!parse_int(a.substr(8), v) || v <= 0) {
         std::cerr << "Invalid --loops\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       opt.loops = v;
       continue;
@@ -123,7 +333,7 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       int v = 0;
       if (!parse_int(a.substr(12), v) || v < 0) {
         std::cerr << "Invalid --jitter_ms\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       opt.jitter_ms = v;
       continue;
@@ -132,20 +342,20 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       uint32_t v = 0;
       if (!parse_u32(a.substr(7), v)) {
         std::cerr << "Invalid --seed\n";
-        return false;
+        return ParseOptsResult::Error;
       }
       opt.seed = v;
       continue;
     }
     std::cerr << "Unknown arg: " << a << "\n";
     usage(argv[0]);
-    return false;
+    return ParseOptsResult::Error;
   }
 
   if (opt.stress && opt.loops == 1) {
     opt.loops = 50; // default stress loops
   }
-  return true;
+  return ParseOptsResult::Ok;
 }
 
 static void maybe_jitter(const Options& opt, std::mt19937& rng) {
@@ -1683,6 +1893,32 @@ static int test_still_capture_profile_version_idempotency_smoke(StateSnapshotBuf
     rt.stop();
     return 1;
   }
+  // setup_one_stream() proves core/provider convergence, but not that the
+  // snapshot buffer has already observed the fully realized stream/capture
+  // topology. Force and wait for a publish that includes the existing
+  // device/stream/acquisition-session shape before taking the topology baseline
+  // used for still-profile idempotency checks.
+  rt.request_publish();
+  const auto topology_baseline_ready = wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& snap) {
+    const bool has_device = std::any_of(snap.devices.begin(), snap.devices.end(), [](const DeviceState& d) {
+      return d.instance_id == kDeviceInstanceId;
+    });
+    const bool has_stream = std::any_of(snap.streams.begin(), snap.streams.end(), [](const StreamState& s) {
+      return s.stream_id == kStreamId && s.device_instance_id == kDeviceInstanceId;
+    });
+    const bool has_acquisition_session = std::any_of(
+        snap.acquisition_sessions.begin(),
+        snap.acquisition_sessions.end(),
+        [](const AcquisitionSessionState& a) {
+          return a.device_instance_id == kDeviceInstanceId;
+        });
+    return has_device && has_stream && has_acquisition_session;
+  });
+  if (!topology_baseline_ready) {
+    std::cerr << "Expected settled snapshot topology before still profile/bundle topology_version check\n";
+    rt.stop();
+    return 1;
+  }
   auto snap_before_profile = get_last_snapshot(buf);
   const uint64_t topo_before_profile = snap_before_profile ? snap_before_profile->topology_version : 0;
 
@@ -2067,6 +2303,9 @@ static int test_rig_bundle_submission_smoke() {
 }
 
 static int test_cohort_aware_capture_result_set_smoke() {
+  constexpr uint64_t kSecondDeviceInstanceId = 2;
+  constexpr uint64_t kSecondRootId = 2;
+
   CoreRuntime rt;
   if (!rt.start()) return 1;
   StubProvider prov;
@@ -2093,16 +2332,54 @@ static int test_cohort_aware_capture_result_set_smoke() {
     rt.provider_callbacks()->on_capture_completed(capture_id, device_id);
   };
 
-  // No cohort path: accept-all assembly-successful candidates.
-  emit_capture(9201, 100, 1);
-  emit_capture(9201, 101, 2);
-  if (!wait_until([&]() { return rt.get_capture_result_set(9201).size() == 2; }, 400, 5)) {
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+
+  const auto retain_identity = rt.retain_device_identity(kSecondDeviceInstanceId, eps[0].hardware_id);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Cohort result-set smoke: failed to retain second device identity\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_open_device(eps[0].hardware_id, kSecondDeviceInstanceId, kSecondRootId) !=
+      TryOpenDeviceStatus::OK) {
+    std::cerr << "Cohort result-set smoke: failed to open second device for non-cohort control case\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Cohort result-set smoke: second device open did not converge\n";
     rt.stop();
     return 1;
   }
 
-  std::vector<CameraEndpoint> eps;
-  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) { rt.stop(); return 1; }
+  CaptureRequest second_capture_req{};
+  if (!wait_until([&]() { return rt.materialize_capture_request(kSecondDeviceInstanceId, second_capture_req); }, 200, 1)) {
+    std::cerr << "Cohort result-set smoke: second device capture request did not materialize\n";
+    rt.stop();
+    return 1;
+  }
+
+  // No cohort path: accept-all assembly-successful candidates.
+  emit_capture(9201, kDeviceInstanceId, 1);
+  emit_capture(9201, kSecondDeviceInstanceId, 2);
+  if (!wait_until([&]() { return rt.get_capture_result_set(9201).size() == 2; }, 400, 5)) {
+    std::cerr << "Cohort result-set smoke: non-cohort capture_id=9201 never reached size 2\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (rt.try_close_device(kSecondDeviceInstanceId) != TryCloseDeviceStatus::OK) {
+    std::cerr << "Cohort result-set smoke: failed to close second device before cohort phase\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Cohort result-set smoke: second device close did not converge\n";
+    rt.stop();
+    return 1;
+  }
+
   if (!rt.smoke_set_rig_member_hardware_ids(8201, {eps[0].hardware_id})) { rt.stop(); return 1; }
   const auto preflight = wait_for_rig_preflight_ok(rt, 8201);
   if (!preflight.ok) {
@@ -2111,21 +2388,31 @@ static int test_cohort_aware_capture_result_set_smoke() {
     return 1;
   }
   const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(8201, 9202, preflight);
-  if (!admitted.ok) { rt.stop(); return 1; }
+  if (!admitted.ok) {
+    std::cerr << "Cohort result-set smoke: cohort admission failed for capture_id=9202\n";
+    rt.stop();
+    return 1;
+  }
 
   // Cohort OPEN but incomplete => empty.
-  if (!rt.get_capture_result_set(9202).empty()) { rt.stop(); return 1; }
+  if (!rt.get_capture_result_set(9202).empty()) {
+    std::cerr << "Cohort result-set smoke: open incomplete cohort unexpectedly exposed results\n";
+    rt.stop();
+    return 1;
+  }
 
   // Emit expected participant + extra successful non-expected participant.
   emit_capture(9202, admitted.participants[0].request.device_instance_id, 3);
   emit_capture(9202, 4242, 4);
   if (!wait_until([&]() { return rt.get_capture_result_set(9202).size() == 1; }, 400, 5)) {
+    std::cerr << "Cohort result-set smoke: admitted one-member cohort never converged to size 1\n";
     rt.stop();
     return 1;
   }
   auto cohort_set = rt.get_capture_result_set(9202);
   if (cohort_set.size() != 1 ||
       cohort_set[0]->device_instance_id != admitted.participants[0].request.device_instance_id) {
+    std::cerr << "Cohort result-set smoke: converged cohort result-set did not match admitted participant device\n";
     rt.stop();
     return 1;
   }
@@ -2137,7 +2424,11 @@ static int test_cohort_aware_capture_result_set_smoke() {
   auto bad = admitted_fail;
   bad.participants[0].request.device_instance_id = 999999;
   (void)rt.smoke_submit_admitted_rig_bundle(bad);
-  if (!rt.get_capture_result_set(9203).empty()) { rt.stop(); return 1; }
+  if (!rt.get_capture_result_set(9203).empty()) {
+    std::cerr << "Cohort result-set smoke: failed cohort unexpectedly exposed results\n";
+    rt.stop();
+    return 1;
+  }
 
   rt.stop();
   return 0;
@@ -2378,50 +2669,205 @@ static int stress_iteration(const Options& opt, std::mt19937& rng, int iter_inde
 } // namespace
 int main(int argc, char** argv) {
   Options opt;
-  if (!parse_opts(argc, argv, opt)) {
+  const ParseOptsResult parse_result = parse_opts(argc, argv, opt);
+  if (parse_result == ParseOptsResult::Help) {
+    return 0;
+  }
+  if (parse_result != ParseOptsResult::Ok) {
+    std::fprintf(stdout, "FAIL core_spine_smoke reason=invalid_arguments\n");
+    std::fflush(stdout);
     return 2;
   }
+  CheckReporter reporter(opt.verbose);
 
-  std::cout << "[smoke] compiled provider: " << compiled_provider_name() << "\n";
+  if (reporter.verbose()) {
+    std::cout << "[smoke] compiled provider: " << compiled_provider_name() << "\n";
+  }
 
   // Default behaviour: run once, same structure/output as original.
   if (!opt.stress) {
-    if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
-    if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
-    if (int r = test_publish_gating_before_start()) return r;
-    if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
-    if (int r = test_provider_open_close_refusal_visibility()) return r;
-    if (int r = test_stream_registry_non_ok_stop_ack_does_not_clobber_restart()) return r;
+    if (int r = reporter.run("test_provider_callback_ingress_null_core_thread_drop_accounting",
+                             [] { return test_provider_callback_ingress_null_core_thread_drop_accounting(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_callback_ingress_null_core_thread_drop_accounting",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_callback_ingress_null_sink_frame_release_balances_telemetry",
+                             [] { return test_provider_callback_ingress_null_sink_frame_release_balances_telemetry(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_provider_callback_ingress_null_sink_frame_release_balances_telemetry",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_publish_gating_before_start",
+                             [] { return test_publish_gating_before_start(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_publish_gating_before_start", r);
+      return r;
+    }
+    if (int r = reporter.run("test_display_demand_async_release_closed_accounting_before_start",
+                             [] { return test_display_demand_async_release_closed_accounting_before_start(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_display_demand_async_release_closed_accounting_before_start",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_provider_open_close_refusal_visibility",
+                             [] { return test_provider_open_close_refusal_visibility(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_provider_open_close_refusal_visibility", r);
+      return r;
+    }
+    if (int r = reporter.run("test_stream_registry_non_ok_stop_ack_does_not_clobber_restart",
+                             [] { return test_stream_registry_non_ok_stop_ack_does_not_clobber_restart(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_stream_registry_non_ok_stop_ack_does_not_clobber_restart",
+                               r);
+      return r;
+    }
 
     CoreRuntime rt;
     StateSnapshotBuffer buf;
     rt.set_snapshot_publisher(&buf);
 
     // Providerless baseline (default smoke mode).
-    if (int r = test_baseline_publish_without_provider(rt, buf)) return r;
+    if (int r = reporter.run("test_baseline_publish_without_provider",
+                             [&] { return test_baseline_publish_without_provider(rt, buf); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_baseline_publish_without_provider", r);
+      return r;
+    }
 
 #if defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
     // Stub-provider integration tests (opt-in).
     StubProvider prov;
-    if (int r = test_baseline_live_one_frame_and_snapshot(rt, buf, prov)) return r;
-    if (int r = test_destroy_never_started_stream_smoke()) { rt.stop(); return r; }
-    if (int r = test_strict_destroy_rejects_started_stream_smoke()) { rt.stop(); return r; }
-    if (int r = test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke()) { rt.stop(); return r; }
-    if (int r = test_overload_queuefull_release_accounting(rt, prov)) return r;
-    if (int r = test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov)) return r;
-    if (int r = test_shutdown_choreography(rt, prov)) return r;
-    if (int r = test_device_capture_request_materialization_smoke()) return r;
-    if (int r = test_open_device_snapshot_retains_default_capture_profile_smoke()) return r;
-    if (int r = test_still_capture_profile_version_idempotency_smoke(buf)) return r;
-    if (int r = test_rig_preflight_materialization_smoke()) return r;
-    if (int r = test_rig_cohort_admission_from_preflight_smoke()) return r;
-    if (int r = test_rig_bundle_submission_smoke()) return r;
-    if (int r = test_cohort_aware_capture_result_set_smoke()) return r;
-    if (int r = test_rig_orchestration_helper_smoke()) return r;
-    if (int r = test_server_facing_rig_orchestration_adapter_smoke()) return r;
+    if (int r = reporter.run("test_baseline_live_one_frame_and_snapshot",
+                             [&] { return test_baseline_live_one_frame_and_snapshot(rt, buf, prov); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_baseline_live_one_frame_and_snapshot", r);
+      return r;
+    }
+    if (int r = reporter.run("test_destroy_never_started_stream_smoke",
+                             [&] {
+                               const int rc = test_destroy_never_started_stream_smoke();
+                               if (rc != 0) rt.stop();
+                               return rc;
+                             })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_destroy_never_started_stream_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_strict_destroy_rejects_started_stream_smoke",
+                             [&] {
+                               const int rc = test_strict_destroy_rejects_started_stream_smoke();
+                               if (rc != 0) rt.stop();
+                               return rc;
+                             })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_strict_destroy_rejects_started_stream_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke",
+                             [&] {
+                               const int rc = test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke();
+                               if (rc != 0) rt.stop();
+                               return rc;
+                             })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_stream_start_stop_idempotency_survives_delayed_provider_facts_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_overload_queuefull_release_accounting",
+                             [&] { return test_overload_queuefull_release_accounting(rt, prov); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_overload_queuefull_release_accounting", r);
+      return r;
+    }
+    if (int r = reporter.run("test_non_frame_provider_fact_survives_ordinary_queue_full",
+                             [&] { return test_non_frame_provider_fact_survives_ordinary_queue_full(rt, prov); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_non_frame_provider_fact_survives_ordinary_queue_full",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_shutdown_choreography",
+                             [&] { return test_shutdown_choreography(rt, prov); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_shutdown_choreography", r);
+      return r;
+    }
+    if (int r = reporter.run("test_device_capture_request_materialization_smoke",
+                             [] { return test_device_capture_request_materialization_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_device_capture_request_materialization_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_open_device_snapshot_retains_default_capture_profile_smoke",
+                             [] { return test_open_device_snapshot_retains_default_capture_profile_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_open_device_snapshot_retains_default_capture_profile_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_still_capture_profile_version_idempotency_smoke",
+                             [&] { return test_still_capture_profile_version_idempotency_smoke(buf); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_still_capture_profile_version_idempotency_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_preflight_materialization_smoke",
+                             [] { return test_rig_preflight_materialization_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_rig_preflight_materialization_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_cohort_admission_from_preflight_smoke",
+                             [] { return test_rig_cohort_admission_from_preflight_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_rig_cohort_admission_from_preflight_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_bundle_submission_smoke",
+                             [] { return test_rig_bundle_submission_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_rig_bundle_submission_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_cohort_aware_capture_result_set_smoke",
+                             [] { return test_cohort_aware_capture_result_set_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_cohort_aware_capture_result_set_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_orchestration_helper_smoke",
+                             [] { return test_rig_orchestration_helper_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_rig_orchestration_helper_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_server_facing_rig_orchestration_adapter_smoke",
+                             [] { return test_server_facing_rig_orchestration_adapter_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_server_facing_rig_orchestration_adapter_smoke",
+                               r);
+      return r;
+    }
 #endif
 
-    std::cout << "OK: core spine smoke passed\n";
+    if (reporter.verbose()) {
+      if (reporter.verbose()) reporter.print_summary();
+    }
+    reporter.print_pass_line("core_spine_smoke");
     return 0;
   }
 
@@ -2429,27 +2875,73 @@ int main(int argc, char** argv) {
   std::mt19937 rng(opt.seed);
 
   // Still do the pre-start gating check once.
-  if (int r = test_provider_callback_ingress_null_core_thread_drop_accounting()) return r;
-  if (int r = test_provider_callback_ingress_null_sink_frame_release_balances_telemetry()) return r;
-  if (int r = test_publish_gating_before_start()) return r;
-  if (int r = test_display_demand_async_release_closed_accounting_before_start()) return r;
+  if (int r = reporter.run("test_provider_callback_ingress_null_core_thread_drop_accounting",
+                           [] { return test_provider_callback_ingress_null_core_thread_drop_accounting(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_callback_ingress_null_core_thread_drop_accounting",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_provider_callback_ingress_null_sink_frame_release_balances_telemetry",
+                           [] { return test_provider_callback_ingress_null_sink_frame_release_balances_telemetry(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_provider_callback_ingress_null_sink_frame_release_balances_telemetry",
+                             r);
+    return r;
+  }
+  if (int r = reporter.run("test_publish_gating_before_start",
+                           [] { return test_publish_gating_before_start(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke", "test_publish_gating_before_start", r);
+    return r;
+  }
+  if (int r = reporter.run("test_display_demand_async_release_closed_accounting_before_start",
+                           [] { return test_display_demand_async_release_closed_accounting_before_start(); })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke",
+                             "test_display_demand_async_release_closed_accounting_before_start",
+                             r);
+    return r;
+  }
 
   const int progress_interval = 25;
 
 #if !defined(CAMBANG_SMOKE_WITH_STUB_PROVIDER)
   std::cerr << "Stress mode requires CAMBANG_SMOKE_WITH_STUB_PROVIDER; build core_spine_smoke through the repo SCons maintainer_tools alias.\n";
+  std::fprintf(stdout, "FAIL core_spine_smoke reason=stress_requires_stub_provider\n");
+  std::fflush(stdout);
   return 2;
 #else
-  for (int i = 1; i <= opt.loops; ++i) {
-    const int r = stress_iteration(opt, rng, i);
-    if (r != 0) return r;
+  if (int r = reporter.run("stress_iteration_loop",
+                           [&] {
+                             for (int i = 1; i <= opt.loops; ++i) {
+                               const int rc = stress_iteration(opt, rng, i);
+                               if (rc != 0) return rc;
 
-    if ((i % progress_interval) == 0 || i == opt.loops) {
-      std::cout << "[stress] iteration " << i << "/" << opt.loops << " OK\n";
-    }
+                               if (reporter.verbose() &&
+                                   ((i % progress_interval) == 0 || i == opt.loops)) {
+                                 std::cout << "[stress] iteration " << i << "/" << opt.loops << " OK\n";
+                               }
+                             }
+                             return 0;
+                           })) {
+    if (reporter.verbose()) reporter.print_summary();
+    reporter.print_fail_line("core_spine_smoke", "stress_iteration_loop", r);
+    return r;
   }
 
-  std::cout << "OK: core spine smoke stress passed (loops=" << opt.loops << ")\n";
+  if (reporter.verbose()) {
+    if (reporter.verbose()) reporter.print_summary();
+  }
+  std::fprintf(stdout,
+               "PASS core_spine_smoke stress loops=%d run=%d ok=%d failed=%d\n",
+               opt.loops,
+               reporter.run_count(),
+               reporter.ok_count(),
+               reporter.failed_count());
+  std::fflush(stdout);
   return 0;
 #endif
 }

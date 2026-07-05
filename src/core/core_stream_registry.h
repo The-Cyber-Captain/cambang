@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <set>
 #include <map>
 
 #include "core/core_frame_sink.h"
@@ -118,6 +119,7 @@ private:
   uint64_t allocate_access_posture_epoch() noexcept;
 
   std::map<uint64_t, StreamRecord> streams_; // key: stream_id
+  std::set<uint64_t> destroyed_stream_tombstones_;
   uint64_t next_access_posture_epoch_ = 1;
 };
 

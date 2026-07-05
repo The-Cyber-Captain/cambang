@@ -353,7 +353,7 @@ static int test_visibility_diagnostics_snapshot_truth() {
 
 static int test_capture_cohort_registry_basics() {
   CoreCaptureCohortRegistry cohorts;
-  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+  if (cohorts.contains(77) || cohorts.find(77).has_value()) {
     std::cerr << "FAIL: fresh cohort registry unexpectedly non-empty\n";
     return 1;
   }
@@ -366,7 +366,7 @@ static int test_capture_cohort_registry_basics() {
     std::cerr << "FAIL: cohort insert rejected valid record\n";
     return 1;
   }
-  const auto* found = cohorts.find(77);
+  auto found = cohorts.find(77);
   if (!found || found->state != CoreCaptureCohortRegistry::CohortState::OPEN ||
       found->failure_phase != CoreCaptureCohortRegistry::CohortFailurePhase::NONE ||
       found->failed_device_instance_id != 0 || found->has_failure_error_code) {
@@ -406,7 +406,7 @@ static int test_capture_cohort_registry_basics() {
     return 1;
   }
   cohorts.clear();
-  if (cohorts.contains(77) || cohorts.find(77) != nullptr) {
+  if (cohorts.contains(77) || cohorts.find(77).has_value()) {
     std::cerr << "FAIL: clear() did not remove cohort\n";
     return 1;
   }

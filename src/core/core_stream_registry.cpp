@@ -54,6 +54,7 @@ bool CoreStreamRegistry::declare_stream_effective(
     const StreamRequest& effective,
     CoreRetainedProductionPlan steady_retained_plan) {
   if (effective.stream_id == 0) return false;
+  destroyed_stream_tombstones_.erase(effective.stream_id);
   auto& rec = streams_[effective.stream_id];
   rec.stream_id = effective.stream_id;
   rec.device_instance_id = effective.device_instance_id;
@@ -70,7 +71,26 @@ bool CoreStreamRegistry::declare_stream_effective(
 }
 
 bool CoreStreamRegistry::on_stream_created(uint64_t stream_id) {
-  auto& rec = streams_[stream_id];
+  if (stream_id == 0) {
+    return false;
+  }
+  auto it = streams_.find(stream_id);
+  if (it == streams_.end()) {
+    if (destroyed_stream_tombstones_.count(stream_id) > 0) {
+      // Ignore delayed provider-created facts for a stream the core has already
+      // destroyed. A later real reuse of the same stream_id clears the tombstone
+      // via declare_stream_effective().
+      return false;
+    }
+    it = streams_.emplace(stream_id, StreamRecord{}).first;
+  }
+  auto& rec = it->second;
+  if (rec.created) {
+    // Provider-created facts can arrive after later start/stop transitions for
+    // an already-known stream. Treat them as idempotent presence confirmation;
+    // do not reset lifecycle counters or stop-origin truth.
+    return true;
+  }
   rec.stream_id = stream_id;
   rec.created = true;
   rec.last_stop_origin = StopOrigin::None;
@@ -86,6 +106,7 @@ bool CoreStreamRegistry::on_stream_created(uint64_t stream_id) {
 }
 
 bool CoreStreamRegistry::on_stream_destroyed(uint64_t stream_id) {
+  destroyed_stream_tombstones_.insert(stream_id);
   return streams_.erase(stream_id) > 0;
 }
 
@@ -243,6 +264,7 @@ bool CoreStreamRegistry::clear_steady_retained_plan(uint64_t stream_id) {
 }
 
 bool CoreStreamRegistry::forget_stream(uint64_t stream_id) {
+  destroyed_stream_tombstones_.insert(stream_id);
   return streams_.erase(stream_id) != 0;
 }
 

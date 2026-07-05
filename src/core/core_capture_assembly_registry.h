@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 
 namespace cambang {
@@ -37,6 +38,7 @@ public:
 #endif
 
 private:
+  mutable std::mutex mutex_;
   std::map<uint64_t, std::map<uint64_t, DeviceCaptureAssembly>> assemblies_by_capture_id_;
 };
 

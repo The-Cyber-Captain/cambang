@@ -747,7 +747,7 @@ ProviderFactSummary summarize_provider_fact(const ProviderToCoreCommand& cmd,
       out.capture_id = p.capture_id;
       out.device_instance_id = p.device_instance_id;
       out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
-      if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.capture_id)) {
+      if (const auto cohort = capture_cohorts.find(p.capture_id)) {
         out.rig_id = cohort->rig_id;
       }
       break;
@@ -757,7 +757,7 @@ ProviderFactSummary summarize_provider_fact(const ProviderToCoreCommand& cmd,
       out.capture_id = p.capture_id;
       out.device_instance_id = p.device_instance_id;
       out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
-      if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.capture_id)) {
+      if (const auto cohort = capture_cohorts.find(p.capture_id)) {
         out.rig_id = cohort->rig_id;
       }
       break;
@@ -767,7 +767,7 @@ ProviderFactSummary summarize_provider_fact(const ProviderToCoreCommand& cmd,
       out.capture_id = p.capture_id;
       out.device_instance_id = p.device_instance_id;
       out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
-      if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.capture_id)) {
+      if (const auto cohort = capture_cohorts.find(p.capture_id)) {
         out.rig_id = cohort->rig_id;
       }
       break;
@@ -781,7 +781,7 @@ ProviderFactSummary summarize_provider_fact(const ProviderToCoreCommand& cmd,
       out.image_member_index = p.frame.capture_image.image_member_index;
       if (p.frame.capture_id != 0) {
         out.fact_class = provider_capture_fact_class(p.frame.capture_id, capture_cohorts);
-        if (const CoreCaptureCohortRegistry::CohortRecord* cohort = capture_cohorts.find(p.frame.capture_id)) {
+        if (const auto cohort = capture_cohorts.find(p.frame.capture_id)) {
           out.rig_id = cohort->rig_id;
         }
       } else if (p.frame.stream_id != 0) {
@@ -3883,7 +3883,7 @@ size_t CoreRuntime::suppress_queued_repeating_stream_frames_for_capture_() {
 }
 
 std::vector<SharedCaptureResultData> CoreRuntime::get_capture_result_set(uint64_t capture_id) const {
-  if (const auto* cohort = capture_cohort_registry_.find(capture_id); cohort != nullptr) {
+  if (const auto cohort = capture_cohort_registry_.find(capture_id)) {
     if (cohort->state == CoreCaptureCohortRegistry::CohortState::FAILED) {
       return {};
     }

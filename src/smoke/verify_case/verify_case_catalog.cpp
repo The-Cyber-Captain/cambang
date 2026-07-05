@@ -31,6 +31,11 @@ bool check_step(int index, const SnapshotExpectation& exp, const ObservedSnapsho
 bool expect_step(int index, const SnapshotExpectation& exp, const ObservedSnapshot& observed);
 bool fail_step(int index, const std::string& message);
 
+bool provider_realizes_stream_acquisition_session(VerifyCaseProviderKind provider_kind) {
+  return provider_kind == VerifyCaseProviderKind::Synthetic ||
+         provider_kind == VerifyCaseProviderKind::Stub;
+}
+
 bool wait_for_settled_stream_create(VerifyCaseHarness& h,
                                     VerifyCaseProviderKind provider_kind,
                                     std::string& error) {
@@ -39,7 +44,7 @@ bool wait_for_settled_stream_create(VerifyCaseHarness& h,
         if (!VerifyCaseHarness::has_stream(s, VerifyCaseHarness::kStreamId)) {
           return false;
         }
-        if (provider_kind == VerifyCaseProviderKind::Synthetic) {
+        if (provider_realizes_stream_acquisition_session(provider_kind)) {
           return !s.acquisition_sessions.empty();
         }
         return true;
@@ -53,14 +58,14 @@ bool wait_for_settled_stream_create(VerifyCaseHarness& h,
 bool check_monotonic_stream_create_step(int index,
                                         VerifyCaseProviderKind provider_kind,
                                         const ObservedSnapshot& observed) {
+  const bool expect_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   if (!expect_step(index,
                    SnapshotExpectation{}
                        .device_count(1)
                        .stream_count(1)
-                       .acquisition_session_count(
-                           provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                       .expect_acquisition_session(
-                           provider_kind == VerifyCaseProviderKind::Synthetic),
+                       .acquisition_session_count(expect_acquisition_session ? 1 : 0)
+                       .expect_acquisition_session(expect_acquisition_session),
                    observed)) {
     return false;
   }
@@ -1957,6 +1962,8 @@ int restart_nil_before_baseline(VerifyCaseProviderKind provider_kind) {
 
 int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -2025,8 +2032,14 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
                                       h.observed(),
                                       create_version + 1,
                                       create_topology_version,
-                                      provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
-                                      provider_kind == VerifyCaseProviderKind::Synthetic)) {
+                                      expect_stream_acquisition_session ? 1 : 0,
+                                      expect_stream_acquisition_session)) {
+    return 1;
+  }
+
+  if (provider_kind == VerifyCaseProviderKind::Stub &&
+      !h.wait_for_stream_quiescence(VerifyCaseHarness::kStreamId, error)) {
+    cli::error("FAIL: ", error);
     return 1;
   }
 
@@ -2039,8 +2052,8 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
                                       h.observed(),
                                       create_version + 2,
                                       create_topology_version,
-                                      provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
-                                      provider_kind == VerifyCaseProviderKind::Synthetic)) {
+                                      expect_stream_acquisition_session ? 1 : 0,
+                                      expect_stream_acquisition_session)) {
     return 1;
   }
 
@@ -2053,8 +2066,8 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
                                       h.observed(),
                                       create_version + 3,
                                       create_topology_version,
-                                      provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
-                                      provider_kind == VerifyCaseProviderKind::Synthetic)) {
+                                      expect_stream_acquisition_session ? 1 : 0,
+                                      expect_stream_acquisition_session)) {
     return 1;
   }
 
@@ -2064,6 +2077,8 @@ int stream_lifecycle_versions(VerifyCaseProviderKind provider_kind) {
 
 int topology_change_versions(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error)) {
     cli::error("FAIL: ", error);
@@ -2112,8 +2127,8 @@ int topology_change_versions(VerifyCaseProviderKind provider_kind) {
                                 h.observed(),
                                 1,
                                 1,
-                                provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0,
-                                provider_kind == VerifyCaseProviderKind::Synthetic,
+                                expect_stream_acquisition_session ? 1 : 0,
+                                expect_stream_acquisition_session,
                                 2,
                                 2)) {
     return 1;
@@ -2656,6 +2671,8 @@ int device_disconnect(VerifyCaseProviderKind provider_kind) {
 
 int close_while_streaming(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -2681,8 +2698,8 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2699,8 +2716,8 @@ int close_while_streaming(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2889,6 +2906,8 @@ int provider_error_mid_stream(VerifyCaseProviderKind provider_kind) {
 
 int redundant_stop(VerifyCaseProviderKind provider_kind) {
   VerifyCaseHarness h(provider_kind);
+  const bool expect_stream_acquisition_session =
+      provider_realizes_stream_acquisition_session(provider_kind);
   std::string error;
   if (!h.start_runtime(error) ||
       !h.wait_for_core_snapshot([](const CamBANGStateSnapshot&) { return true; }, error)) {
@@ -2914,8 +2933,8 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2932,8 +2951,8 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;
@@ -2950,8 +2969,8 @@ int redundant_stop(VerifyCaseProviderKind provider_kind) {
                       .topology_version(1)
                       .device_count(1)
                       .stream_count(1)
-                      .acquisition_session_count(provider_kind == VerifyCaseProviderKind::Synthetic ? 1 : 0)
-                      .expect_acquisition_session(provider_kind == VerifyCaseProviderKind::Synthetic)
+                      .acquisition_session_count(expect_stream_acquisition_session ? 1 : 0)
+                      .expect_acquisition_session(expect_stream_acquisition_session)
                       ,
                   h.observed())) {
     return 1;

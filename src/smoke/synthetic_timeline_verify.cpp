@@ -27,12 +27,17 @@ Non-Goals
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <future>
 #include <iostream>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#endif
 
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "synthetic_timeline_verify: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
@@ -59,6 +64,123 @@ struct Options {
   bool dump_snapshots = false;
 };
 
+enum class ParseOptsResult {
+  Ok,
+  Help,
+  Error,
+};
+
+class QuietOutputCapture final {
+public:
+  QuietOutputCapture() = default;
+  QuietOutputCapture(const QuietOutputCapture&) = delete;
+  QuietOutputCapture& operator=(const QuietOutputCapture&) = delete;
+
+  bool begin() {
+#if !defined(_WIN32)
+    return false;
+#else
+    std::fflush(stdout);
+    std::fflush(stderr);
+    saved_stdout_fd_ = _dup(_fileno(stdout));
+    saved_stderr_fd_ = _dup(_fileno(stderr));
+    if (saved_stdout_fd_ < 0 || saved_stderr_fd_ < 0) {
+      restore_saved_fds_();
+      return false;
+    }
+    stdout_file_.reset(std::tmpfile());
+    stderr_file_.reset(std::tmpfile());
+    if (!stdout_file_ || !stderr_file_) {
+      end();
+      return false;
+    }
+    if (_dup2(_fileno(stdout_file_.get()), _fileno(stdout)) != 0 ||
+        _dup2(_fileno(stderr_file_.get()), _fileno(stderr)) != 0) {
+      end();
+      return false;
+    }
+    active_ = true;
+    return true;
+#endif
+  }
+
+  void end() {
+    if (!active_) {
+      restore_saved_fds_();
+      stdout_file_.reset();
+      stderr_file_.reset();
+      return;
+    }
+    std::fflush(stdout);
+    std::fflush(stderr);
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      (void)_dup2(saved_stdout_fd_, _fileno(stdout));
+    }
+    if (saved_stderr_fd_ >= 0) {
+      (void)_dup2(saved_stderr_fd_, _fileno(stderr));
+    }
+#endif
+    restore_saved_fds_();
+    active_ = false;
+  }
+
+  std::string captured_stdout() const { return read_file_(stdout_file_.get()); }
+  std::string captured_stderr() const { return read_file_(stderr_file_.get()); }
+
+  ~QuietOutputCapture() {
+    end();
+  }
+
+private:
+  struct FileCloser {
+    void operator()(FILE* f) const noexcept {
+      if (f) {
+        std::fclose(f);
+      }
+    }
+  };
+
+  static std::string read_file_(FILE* f) {
+    if (!f) {
+      return {};
+    }
+    std::fflush(f);
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+      return {};
+    }
+    const long size = std::ftell(f);
+    if (size <= 0) {
+      std::rewind(f);
+      return {};
+    }
+    std::string out(static_cast<size_t>(size), '\0');
+    std::rewind(f);
+    const size_t read = std::fread(out.data(), 1, out.size(), f);
+    out.resize(read);
+    return out;
+  }
+
+  void restore_saved_fds_() noexcept {
+#if defined(_WIN32)
+    if (saved_stdout_fd_ >= 0) {
+      _close(saved_stdout_fd_);
+      saved_stdout_fd_ = -1;
+    }
+    if (saved_stderr_fd_ >= 0) {
+      _close(saved_stderr_fd_);
+      saved_stderr_fd_ = -1;
+    }
+#endif
+  }
+
+  bool active_ = false;
+  int saved_stdout_fd_ = -1;
+  int saved_stderr_fd_ = -1;
+  std::unique_ptr<FILE, FileCloser> stdout_file_{};
+  std::unique_ptr<FILE, FileCloser> stderr_file_{};
+};
+
 static void usage(const char* argv0) {
   std::cerr
       << "Usage: " << argv0 << " [--verify_case=<name>] [--dump_snapshots]\n"
@@ -67,21 +189,19 @@ static void usage(const char* argv0) {
       << "  invalid_sequence\n"
       << "  catchup_stress_uncapped\n"
       << "  one_active_stream_admission\n"
-      << "  staged_endpoint_span_inference\n"
-      << "Compatibility: --scenario=<name> is accepted as a legacy alias.\n"
-      << "Legacy verification-case alias accepted: catchup_stress -> catchup_stress_uncapped\n";
+      << "  staged_endpoint_span_inference\n";
 }
 
 static bool starts_with(const std::string& s, const std::string& prefix) {
   return s.rfind(prefix, 0) == 0;
 }
 
-static bool parse_opts(int argc, char** argv, Options& opt) {
+static ParseOptsResult parse_opts(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--help" || a == "-h") {
       usage(argv[0]);
-      return false;
+      return ParseOptsResult::Help;
     }
     if (a == "--dump_snapshots") {
       opt.dump_snapshots = true;
@@ -91,18 +211,19 @@ static bool parse_opts(int argc, char** argv, Options& opt) {
       opt.verify_case = a.substr(std::string("--verify_case=").size());
       continue;
     }
-    if (starts_with(a, "--scenario=")) {
-      opt.verify_case = a.substr(std::string("--scenario=").size());
-      continue;
-    }
     std::cerr << "Unknown arg: " << a << "\n";
     usage(argv[0]);
-    return false;
+    return ParseOptsResult::Error;
   }
-  if (opt.verify_case == "catchup_stress") {
-    opt.verify_case = "catchup_stress_uncapped";
-  }
-  return true;
+  return ParseOptsResult::Ok;
+}
+
+static bool is_known_verify_case(const std::string& verify_case) {
+  return verify_case == "basic_lifecycle" ||
+         verify_case == "invalid_sequence" ||
+         verify_case == "catchup_stress_uncapped" ||
+         verify_case == "one_active_stream_admission" ||
+         verify_case == "staged_endpoint_span_inference";
 }
 
 static bool catchup_uncapped_case_is_hermetic() {
@@ -364,7 +485,7 @@ static int run_invalid_sequence(CoreRuntime& rt, StateSnapshotBuffer& buf, const
   return 0;
 }
 
-static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
+static int run_catchup_stress_uncapped(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
   {
     const auto cs = rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
     if (cs != TryCreateStreamStatus::OK) {
@@ -395,17 +516,29 @@ static int run_catchup_stress(CoreRuntime& rt, StateSnapshotBuffer& buf, const O
 
   // One big tick: catch-up pump.
   tick_synthetic(rt, kOneSecNs);
-  rt.request_publish();
 
   // Expected frames in 1s with first frame at t=0: floor(1s/period)+1.
   const uint64_t expected = (period == 0) ? 0 : (kOneSecNs / period) + 1;
-  if (!wait_until([&]() {
-        rt.request_publish();
-        auto s = snapshot_copy(buf);
-        if (!s) return false;
-        if (opt.dump_snapshots) dump_snapshot(*s);
-        return frames_received_for_stream(*s, kStreamId) >= expected;
-      }, 800, 2)) {
+  bool reached_expected = false;
+  for (int i = 0; i < 800; ++i) {
+    rt.request_publish();
+    // request_publish() is asynchronous; give the core thread one settle beat
+    // before reading the next snapshot so the exact-count verifier does not
+    // race partial post-catchup publications.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    auto s = snapshot_copy(buf);
+    if (!s) {
+      continue;
+    }
+    if (opt.dump_snapshots) {
+      dump_snapshot(*s);
+    }
+    if (frames_received_for_stream(*s, kStreamId) >= expected) {
+      reached_expected = true;
+      break;
+    }
+  }
+  if (!reached_expected) {
     std::cerr << "FAIL: expected frames_received >= " << expected << " after catch-up tick\n";
     return 1;
   }
@@ -538,32 +671,81 @@ static int run_staged_endpoint_span_inference_regression(SyntheticProvider& prov
 
 int main(int argc, char** argv) {
   Options opt;
-  if (!parse_opts(argc, argv, opt)) {
+  const ParseOptsResult parse_result = parse_opts(argc, argv, opt);
+  if (parse_result == ParseOptsResult::Help) {
+    return 0;
+  }
+  if (parse_result != ParseOptsResult::Ok) {
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=invalid_arguments)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
   if (opt.verify_case == "catchup_stress_uncapped" &&
       !catchup_uncapped_case_is_hermetic()) {
     std::cerr << "FAIL: verify_case=catchup_stress_uncapped requires "
                  "CAMBANG_DEV_SYNTH_CATCHUP_CAP to be unset\n";
-    std::cout << "FAIL: synthetic_timeline_verify failed (verify_case="
-              << opt.verify_case
-              << ", reason=catchup_cap_env_set)\n";
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=catchup_cap_env_set)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 1;
   }
+  if (!is_known_verify_case(opt.verify_case)) {
+    std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
+    usage(argv[0]);
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=unknown_verify_case)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
+    return 2;
+  }
+
+  QuietOutputCapture quiet_capture;
+  bool capture_active = !opt.dump_snapshots && quiet_capture.begin();
+  auto restore_quiet_capture = [&]() {
+    if (capture_active) {
+      quiet_capture.end();
+      capture_active = false;
+    }
+  };
+  auto replay_quiet_failure = [&]() {
+    const std::string captured_stdout = quiet_capture.captured_stdout();
+    const std::string captured_stderr = quiet_capture.captured_stderr();
+    if (!captured_stdout.empty()) {
+      std::fputs(captured_stdout.c_str(), stdout);
+    }
+    if (!captured_stderr.empty()) {
+      std::cerr << captured_stderr;
+    }
+  };
 
   CoreRuntime rt;
   StateSnapshotBuffer buf;
   rt.set_snapshot_publisher(&buf);
 
   if (!rt.start()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: core runtime did not start\n";
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=core_runtime_start_failed)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
   if (!wait_until([&]() {
         return rt.state_copy() == CoreRuntimeState::LIVE;
       }, 200, 1)) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: core runtime did not become LIVE before verifier setup\n";
     rt.stop();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=core_runtime_not_live)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -582,8 +764,14 @@ int main(int argc, char** argv) {
 
   SyntheticProvider prov(cfg);
   if (!prov.initialize(rt.provider_callbacks()).ok()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: synthetic provider initialize failed\n";
     rt.stop();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=synthetic_provider_initialize_failed)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -596,20 +784,38 @@ int main(int argc, char** argv) {
   // Open the first endpoint deterministically.
   std::vector<CameraEndpoint> eps;
   if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: enumerate_endpoints failed\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=enumerate_endpoints_failed)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
   const auto retain_identity = rt.retain_device_identity(kDeviceInstanceId, eps[0].hardware_id);
   if (retain_identity != CoreThread::PostResult::Enqueued) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: retain_device_identity admission failed: "
               << static_cast<int>(retain_identity) << "\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=retain_device_identity_failed)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
   if (!prov.open_device(eps[0].hardware_id, kDeviceInstanceId, kRootId).ok()) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: open_device failed\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=open_device_failed)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -619,8 +825,14 @@ int main(int argc, char** argv) {
 
   const uint64_t period = fps_period_ns(cfg.nominal.fps_num, cfg.nominal.fps_den);
   if (period == 0) {
+    restore_quiet_capture();
+    replay_quiet_failure();
     std::cerr << "FAIL: invalid fps period\n";
     stop_attached_runtime();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=invalid_fps_period)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
     return 2;
   }
 
@@ -631,16 +843,11 @@ int main(int argc, char** argv) {
   } else if (opt.verify_case == "invalid_sequence") {
     r = run_invalid_sequence(rt, buf, opt);
   } else if (opt.verify_case == "catchup_stress_uncapped") {
-    r = run_catchup_stress(rt, buf, opt, period);
+    r = run_catchup_stress_uncapped(rt, buf, opt, period);
   } else if (opt.verify_case == "one_active_stream_admission") {
     r = run_one_active_stream_admission(rt, buf, opt);
   } else if (opt.verify_case == "staged_endpoint_span_inference") {
     r = run_staged_endpoint_span_inference_regression(prov);
-  } else {
-    std::cerr << "Unknown verification case: " << opt.verify_case << "\n";
-    usage(argv[0]);
-    r = 2;
-    failure_reason = "unknown_verify_case";
   }
   if (r != 0 && failure_reason.empty()) {
     failure_reason = "case_returned_nonzero";
@@ -648,12 +855,20 @@ int main(int argc, char** argv) {
 
   // CoreRuntime owns attached-provider shutdown while the core thread is live.
   stop_attached_runtime();
+  restore_quiet_capture();
 
   if (r == 0) {
-    std::cout << "OK: synthetic_timeline_verify passed (verify_case=" << opt.verify_case << ")\n";
+    std::fprintf(stdout,
+                 "OK: synthetic_timeline_verify passed (verify_case=%s)\n",
+                 opt.verify_case.c_str());
+    std::fflush(stdout);
   } else {
-    std::cout << "FAIL: synthetic_timeline_verify failed (verify_case="
-              << opt.verify_case << ", reason=" << failure_reason << ")\n";
+    replay_quiet_failure();
+    std::fprintf(stdout,
+                 "FAIL: synthetic_timeline_verify failed (verify_case=%s, reason=%s)\n",
+                 opt.verify_case.c_str(),
+                 failure_reason.c_str());
+    std::fflush(stdout);
   }
   return r;
 }
