@@ -93,14 +93,7 @@ uint64_t capture_latency_trace_now_ns() {
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[1024];
-  va_list args;
-  va_start(args, format);
-  std::vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  capture_latency_trace_diagnostics::print_line(buffer);
-}
+#define capture_latency_trace_printf(...) ((void)0)
 
 struct CaptureLatencyDueFrameStats {
   uint64_t frames = 0;
@@ -110,64 +103,6 @@ struct CaptureLatencyDueFrameStats {
 };
 
 thread_local CaptureLatencyDueFrameStats g_capture_latency_due_frame_stats;
-
-constexpr uint64_t kCaptureLatencyAdvanceLogThresholdUs = 5000;
-constexpr uint64_t kCaptureLatencyAdvanceSummaryEvery = 64;
-
-struct CaptureLatencyAdvanceSuppressionStats {
-  uint64_t calls = 0;
-  uint64_t frames = 0;
-  uint64_t total_ns = 0;
-  uint64_t max_ns = 0;
-  uint64_t emit_one_total_ns = 0;
-  uint64_t emit_one_max_ns = 0;
-  uint64_t flush_total_ns = 0;
-  uint64_t state_lock_wait_total_ns = 0;
-  uint64_t state_lock_hold_total_ns = 0;
-};
-
-thread_local CaptureLatencyAdvanceSuppressionStats g_capture_latency_suppressed_advance_stats;
-
-void capture_latency_trace_note_suppressed_advance(uint64_t frames,
-                                                   uint64_t total_ns,
-                                                   uint64_t emit_one_total_ns,
-                                                   uint64_t emit_one_max_ns,
-                                                   uint64_t flush_ns,
-                                                   uint64_t state_lock_wait_ns,
-                                                   uint64_t state_lock_hold_ns) {
-  auto& stats = g_capture_latency_suppressed_advance_stats;
-  ++stats.calls;
-  stats.frames += frames;
-  stats.total_ns += total_ns;
-  stats.max_ns = std::max(stats.max_ns, total_ns);
-  stats.emit_one_total_ns += emit_one_total_ns;
-  stats.emit_one_max_ns = std::max(stats.emit_one_max_ns, emit_one_max_ns);
-  stats.flush_total_ns += flush_ns;
-  stats.state_lock_wait_total_ns += state_lock_wait_ns;
-  stats.state_lock_hold_total_ns += state_lock_hold_ns;
-}
-
-void capture_latency_trace_flush_suppressed_advance_summary(const char* reason) {
-  auto& stats = g_capture_latency_suppressed_advance_stats;
-  if (stats.calls == 0) {
-    return;
-  }
-  capture_latency_trace_printf(
-      "synthetic_advance_summary reason=%s suppressed_calls=%llu suppressed_frames=%llu total_us=%llu max_us=%llu emit_one_total_us=%llu emit_one_max_us=%llu flush_us=%llu state_lock_wait_us=%llu state_lock_hold_us=%llu capture_inflight=%u active_capture_count=%u",
-      reason,
-      static_cast<unsigned long long>(stats.calls),
-      static_cast<unsigned long long>(stats.frames),
-      static_cast<unsigned long long>(stats.total_ns / 1000ull),
-      static_cast<unsigned long long>(stats.max_ns / 1000ull),
-      static_cast<unsigned long long>(stats.emit_one_total_ns / 1000ull),
-      static_cast<unsigned long long>(stats.emit_one_max_ns / 1000ull),
-      static_cast<unsigned long long>(stats.flush_total_ns / 1000ull),
-      static_cast<unsigned long long>(stats.state_lock_wait_total_ns / 1000ull),
-      static_cast<unsigned long long>(stats.state_lock_hold_total_ns / 1000ull),
-      capture_latency_trace_diagnostics::capture_inflight(),
-      capture_latency_trace_diagnostics::active_capture_count());
-  stats = CaptureLatencyAdvanceSuppressionStats{};
-}
 
 void capture_latency_trace_emit_or_suppress_advance(uint64_t dt_ns,
                                                     uint64_t state_lock_wait_ns,
@@ -179,32 +114,16 @@ void capture_latency_trace_emit_or_suppress_advance(uint64_t dt_ns,
                                                     uint64_t flush_ns,
                                                     uint64_t total_ns,
                                                     uint32_t paused) {
-  const uint32_t active_capture_count = capture_latency_trace_diagnostics::active_capture_count();
-  const bool near_capture = active_capture_count != 0;
-  const bool interesting = near_capture || total_ns / 1000ull >= kCaptureLatencyAdvanceLogThresholdUs;
-  if (!interesting) {
-    capture_latency_trace_note_suppressed_advance(
-        frames, total_ns, emit_one_total_ns, emit_one_max_ns, flush_ns, state_lock_wait_ns, state_lock_hold_ns);
-    if (g_capture_latency_suppressed_advance_stats.calls >= kCaptureLatencyAdvanceSummaryEvery) {
-      capture_latency_trace_flush_suppressed_advance_summary("periodic");
-    }
-    return;
-  }
-  capture_latency_trace_flush_suppressed_advance_summary("before_interesting");
-  capture_latency_trace_printf(
-      "synthetic_advance dt_ns=%llu state_lock_wait_us=%llu state_lock_hold_us=%llu emit_due_us=%llu frames=%llu emit_one_total_us=%llu emit_one_max_us=%llu flush_us=%llu total_us=%llu paused=%u capture_inflight=%u active_capture_count=%u",
-      static_cast<unsigned long long>(dt_ns),
-      static_cast<unsigned long long>(state_lock_wait_ns / 1000ull),
-      static_cast<unsigned long long>(state_lock_hold_ns / 1000ull),
-      static_cast<unsigned long long>(emit_due_ns / 1000ull),
-      static_cast<unsigned long long>(frames),
-      static_cast<unsigned long long>(emit_one_total_ns / 1000ull),
-      static_cast<unsigned long long>(emit_one_max_ns / 1000ull),
-      static_cast<unsigned long long>(flush_ns / 1000ull),
-      static_cast<unsigned long long>(total_ns / 1000ull),
-      paused,
-      near_capture ? 1u : 0u,
-      active_capture_count);
+  (void)dt_ns;
+  (void)state_lock_wait_ns;
+  (void)state_lock_hold_ns;
+  (void)emit_due_ns;
+  (void)frames;
+  (void)emit_one_total_ns;
+  (void)emit_one_max_ns;
+  (void)flush_ns;
+  (void)total_ns;
+  (void)paused;
 }
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
@@ -1499,26 +1418,14 @@ ProviderResult SyntheticProvider::trigger_capture(const CaptureRequest& req) {
 }
 
 ProviderResult SyntheticProvider::trigger_capture_submission(const CaptureSubmission& submission) {
-  const uint64_t admission_begin_ns = capture_latency_trace_now_ns();
   CaptureSubmissionJob job{};
   ProviderResult admission_result = ProviderResult::failure(ProviderError::ERR_PROVIDER_FAILED);
   CaptureAdmissionFailureInfo failure_info{};
-  uint64_t capture_lock_wait_ns = 0;
-  uint64_t provider_lock_wait_ns = 0;
-  uint64_t validation_ns = 0;
   {
-    const uint64_t capture_lock_wait_begin_ns = capture_latency_trace_now_ns();
     std::unique_lock<std::mutex> capture_lock(capture_mutex_);
-    const uint64_t capture_lock_acquired_ns = capture_latency_trace_now_ns();
-    capture_lock_wait_ns = capture_lock_acquired_ns - capture_lock_wait_begin_ns;
-    const uint64_t provider_lock_wait_begin_ns = capture_latency_trace_now_ns();
     std::unique_lock<std::mutex> state_lock(provider_state_mutex_);
-    const uint64_t provider_lock_acquired_ns = capture_latency_trace_now_ns();
-    provider_lock_wait_ns = provider_lock_acquired_ns - provider_lock_wait_begin_ns;
-    const uint64_t validation_begin_ns = capture_latency_trace_now_ns();
     admission_result =
         validate_and_admit_capture_submission_locked_(submission, job, &failure_info);
-    validation_ns = capture_latency_trace_now_ns() - validation_begin_ns;
     if (!admission_result.ok()) {
       capture_latency_trace_printf(
           "synthetic_admission capture_id=%llu rig_id=%llu origin=%u devices=%llu capture_lock_wait_us=%llu provider_lock_wait_us=%llu validation_us=%llu thread_create_us=0 thread_store_us=0 total_us=%llu ok=0 code=%u reason=%s failure_device_id=%llu device_present=%u device_open=%u acquisition_session_id=%llu session_stream_refs=%u session_capture_refs=%u session_priming_refs=%u",
@@ -1779,7 +1686,6 @@ bool SyntheticProvider::should_stop_capture_job_(uint64_t generation) const noex
 void SyntheticProvider::start_capture_thread_(const CaptureSubmissionJob& job) {
   const uint64_t construct_begin_ns = capture_latency_trace_now_ns();
   std::thread worker([this, job, construct_begin_ns]() mutable {
-    const uint64_t first_instruction_ns = capture_latency_trace_now_ns();
     capture_latency_trace_printf(
         "synthetic_submission_thread_start capture_id=%llu rig_id=%llu origin=%u devices=%llu wake_delay_us=%llu",
         static_cast<unsigned long long>(job.capture_id),
@@ -1789,11 +1695,8 @@ void SyntheticProvider::start_capture_thread_(const CaptureSubmissionJob& job) {
         static_cast<unsigned long long>((first_instruction_ns - construct_begin_ns) / 1000ull));
     run_capture_submission_(std::move(job));
   });
-  const uint64_t construct_end_ns = capture_latency_trace_now_ns();
-  const uint64_t store_begin_ns = capture_latency_trace_now_ns();
   std::lock_guard<std::mutex> capture_lock(capture_mutex_);
   capture_threads_.push_back(std::move(worker));
-  const uint64_t store_end_ns = capture_latency_trace_now_ns();
   capture_latency_trace_printf(
       "synthetic_submission_thread_create capture_id=%llu rig_id=%llu origin=%u devices=%llu thread_construct_us=%llu thread_store_us=%llu",
       static_cast<unsigned long long>(job.capture_id),
@@ -1805,7 +1708,6 @@ void SyntheticProvider::start_capture_thread_(const CaptureSubmissionJob& job) {
 }
 
 void SyntheticProvider::run_capture_submission_(CaptureSubmissionJob job) {
-  const uint64_t submission_begin_ns = capture_latency_trace_now_ns();
   if (should_stop_capture_job_(job.generation)) {
     for (const DeviceCaptureJob& device_job : job.device_jobs) {
       finish_device_capture_job_(device_job, job.generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
@@ -1822,12 +1724,10 @@ void SyntheticProvider::run_capture_submission_(CaptureSubmissionJob job) {
 
   std::vector<std::thread> device_threads;
   device_threads.reserve(job.device_jobs.size());
-  uint64_t device_thread_create_total_ns = 0;
   try {
     for (const DeviceCaptureJob& device_job : job.device_jobs) {
       const uint64_t device_construct_begin_ns = capture_latency_trace_now_ns();
       device_threads.emplace_back([this, device_job, generation = job.generation, device_construct_begin_ns]() mutable {
-        const uint64_t first_instruction_ns = capture_latency_trace_now_ns();
         capture_latency_trace_printf(
             "synthetic_device_thread_start capture_id=%llu device_id=%llu rig_id=%llu members=%llu wake_delay_us=%llu",
             static_cast<unsigned long long>(device_job.request.capture_id),
@@ -1837,21 +1737,17 @@ void SyntheticProvider::run_capture_submission_(CaptureSubmissionJob job) {
             static_cast<unsigned long long>((first_instruction_ns - device_construct_begin_ns) / 1000ull));
         run_device_capture_job_(std::move(device_job), generation);
       });
-      const uint64_t device_construct_end_ns = capture_latency_trace_now_ns();
-      device_thread_create_total_ns += device_construct_end_ns - device_construct_begin_ns;
     }
   } catch (const std::exception&) {
     for (const DeviceCaptureJob& device_job : job.device_jobs) {
       finish_device_capture_job_(device_job, job.generation, CaptureTerminalKind::Failed, ProviderError::ERR_PROVIDER_FAILED);
     }
   }
-  const uint64_t join_begin_ns = capture_latency_trace_now_ns();
   for (std::thread& device_thread : device_threads) {
     if (device_thread.joinable()) {
       device_thread.join();
     }
   }
-  const uint64_t join_end_ns = capture_latency_trace_now_ns();
   capture_latency_trace_printf(
       "synthetic_submission_done capture_id=%llu rig_id=%llu origin=%u devices=%llu device_thread_create_us=%llu join_us=%llu total_us=%llu stopped=0",
       static_cast<unsigned long long>(job.capture_id),
@@ -1864,7 +1760,6 @@ void SyntheticProvider::run_capture_submission_(CaptureSubmissionJob job) {
 }
 
 void SyntheticProvider::run_device_capture_job_(DeviceCaptureJob job, uint64_t generation) {
-  const uint64_t device_job_begin_ns = capture_latency_trace_now_ns();
   if (should_stop_capture_job_(generation)) {
     finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
     capture_latency_trace_printf(
@@ -1902,15 +1797,21 @@ void SyntheticProvider::run_device_capture_job_(DeviceCaptureJob job, uint64_t g
 bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob& job, uint64_t generation) {
   const uint64_t production_begin_ns = capture_latency_trace_now_ns();
   uint64_t staging_alloc_ns = 0;
+  uint64_t before_first_member_ns = 0;
+  uint64_t member_iteration_gap_ns = 0;
   uint64_t spec_setup_ns = 0;
   uint64_t timestamp_lock_wait_ns = 0;
   uint64_t base_render_ns = 0;
   uint64_t member_alloc_ns = 0;
   uint64_t member_copy_ns = 0;
   uint64_t member_ev_bgra_ns = 0;
+  uint64_t capture_gpu_backing_retain_ns = 0;
+  uint64_t member_frame_assembly_ns = 0;
   uint64_t member_post_ns = 0;
   const CaptureRequest& req = job.request;
-  const bool first_capture_after_start = capture_latency_trace_first_capture_after_start_.exchange(false, std::memory_order_relaxed);
+  const bool first_capture_after_start =
+      capture_latency_trace_first_capture_after_start_.exchange(
+          false, std::memory_order_relaxed);
   if (should_stop_capture_job_(generation)) {
     return false;
   }
@@ -1956,13 +1857,73 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     return false;
   }
 
+  const ProducerBackingCapabilities capture_truth =
+      capture_parent_context_backing_capabilities_locked_(
+          req.device_instance_id, req);
+  SyntheticProducerOutputFormMode output_form_mode =
+      resolve_producer_output_form_mode_(capture_truth);
+  if (req.requested_retained_plan.valid) {
+    output_form_mode = req.requested_retained_plan.primary_cpu()
+        ? SyntheticProducerOutputFormMode::CpuOnly
+        : (req.requested_retained_plan.retain_cpu_sidecar()
+            ? SyntheticProducerOutputFormMode::CpuAndGpu
+            : SyntheticProducerOutputFormMode::GpuOnly);
+  }
+  auto* ready_stage_metrics = &triage_capture_ready_stage_cpu_primary_;
+  if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
+    ready_stage_metrics =
+        &triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_;
+  } else if (output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu ||
+             output_form_mode == SyntheticProducerOutputFormMode::Auto) {
+    ready_stage_metrics =
+        &triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_;
+  }
+
+  const uint64_t provider_post_capture_started_steady_ns =
+      capture_latency_trace_now_ns();
   strand_.post_capture_started(req.capture_id, req.device_instance_id);
+  {
+    std::lock_guard<std::mutex> triage_lock(
+        triage_capture_ready_metrics_mutex_);
+    ++ready_stage_metrics->calls;
+    ready_stage_metrics->pre_capture_started_total_ns +=
+        staging_alloc_ns + spec_setup_ns + timestamp_lock_wait_ns +
+        base_render_ns;
+    CaptureReadyTimingRecord& timing_record =
+        capture_ready_timing_record_(req.capture_id, req.device_instance_id);
+    timing_record.capture_id = req.capture_id;
+    timing_record.device_instance_id = req.device_instance_id;
+    timing_record.acquisition_session_id = job.acquisition_session_id;
+    timing_record.primary_cpu =
+        output_form_mode == SyntheticProducerOutputFormMode::CpuOnly;
+    timing_record.retain_cpu_sidecar =
+        output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu ||
+        output_form_mode == SyntheticProducerOutputFormMode::Auto;
+    timing_record.has_provider_post_capture_started_steady_ns = true;
+    timing_record.provider_post_capture_started_steady_ns =
+        provider_post_capture_started_steady_ns;
+    timing_record.provider_pre_capture_started_total_ns =
+        staging_alloc_ns + spec_setup_ns + timestamp_lock_wait_ns +
+        base_render_ns;
+  }
   const auto& members = req.still_image_bundle.members;
+  uint64_t last_member_post_end_ns = provider_post_capture_started_steady_ns;
   uint32_t default_base_reused = 0;
   for (size_t i = 0; i < members.size(); ++i) {
+    const uint64_t member_span_begin_ns = capture_latency_trace_now_ns();
+    if (i == 0) {
+      before_first_member_ns +=
+          member_span_begin_ns - provider_post_capture_started_steady_ns;
+    } else if (member_span_begin_ns >= last_member_post_end_ns) {
+      member_iteration_gap_ns += member_span_begin_ns - last_member_post_end_ns;
+    }
     if (should_stop_capture_job_(generation)) {
       return false;
     }
+    uint64_t member_cpu_prep_ns = 0;
+    uint64_t member_gpu_retain_ns = 0;
+    uint64_t member_frame_assembly_sample_ns = 0;
+    uint64_t member_post_sample_ns = 0;
     const auto& member = members[i];
     const bool can_reuse_base_for_default =
         i == 0 &&
@@ -1970,16 +1931,22 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
         job.format_fourcc == FOURCC_RGBA;
     std::shared_ptr<std::vector<std::uint8_t>> bytes;
     if (can_reuse_base_for_default) {
+      ++default_base_reused;
       bytes = base_bytes;
-      default_base_reused = 1;
     } else {
       const uint64_t member_alloc_begin_ns = capture_latency_trace_now_ns();
       bytes = std::make_shared<std::vector<std::uint8_t>>();
       bytes->resize(job.frame_size_bytes);
-      member_alloc_ns += capture_latency_trace_now_ns() - member_alloc_begin_ns;
+      const uint64_t member_alloc_sample_ns =
+          capture_latency_trace_now_ns() - member_alloc_begin_ns;
+      member_alloc_ns += member_alloc_sample_ns;
+      member_cpu_prep_ns += member_alloc_sample_ns;
       const uint64_t member_copy_begin_ns = capture_latency_trace_now_ns();
       std::memcpy(bytes->data(), base_bytes->data(), job.frame_size_bytes);
-      member_copy_ns += capture_latency_trace_now_ns() - member_copy_begin_ns;
+      const uint64_t member_copy_sample_ns =
+          capture_latency_trace_now_ns() - member_copy_begin_ns;
+      member_copy_ns += member_copy_sample_ns;
+      member_cpu_prep_ns += member_copy_sample_ns;
     }
     const uint64_t member_ev_bgra_begin_ns = capture_latency_trace_now_ns();
     if (member.intended_exposure_compensation_milli_ev != 0) {
@@ -1999,7 +1966,10 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
         std::swap((*bytes)[bi], (*bytes)[bi + 2]);
       }
     }
-    member_ev_bgra_ns += capture_latency_trace_now_ns() - member_ev_bgra_begin_ns;
+    const uint64_t member_ev_bgra_sample_ns =
+        capture_latency_trace_now_ns() - member_ev_bgra_begin_ns;
+    member_ev_bgra_ns += member_ev_bgra_sample_ns;
+    member_cpu_prep_ns += member_ev_bgra_sample_ns;
 
     FrameView fv{};
     fv.device_instance_id = req.device_instance_id;
@@ -2037,23 +2007,40 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
         fv.capture_image.realized_exposure_compensation_milli_ev = fv.capture_image.applied_exposure_compensation_milli_ev;
       }
     }
-    const ProducerBackingCapabilities capture_truth =
-        capture_parent_context_backing_capabilities_locked_(
-            req.device_instance_id, req);
-    SyntheticProducerOutputFormMode output_form_mode = resolve_producer_output_form_mode_(capture_truth);
-    if (req.requested_retained_plan.valid) {
-      output_form_mode = req.requested_retained_plan.primary_cpu()
-          ? SyntheticProducerOutputFormMode::CpuOnly
-          : (req.requested_retained_plan.retain_cpu_sidecar()
-              ? SyntheticProducerOutputFormMode::CpuAndGpu
-              : SyntheticProducerOutputFormMode::GpuOnly);
-    }
     const bool retain_cpu_payload = output_form_mode != SyntheticProducerOutputFormMode::GpuOnly;
     std::shared_ptr<void> gpu_backing{};
     if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly ||
         output_form_mode == SyntheticProducerOutputFormMode::CpuAndGpu) {
+      auto* posture_metrics = &triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_;
+      if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
+        posture_metrics = &triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_;
+      }
+      const uint64_t gpu_backing_retain_begin_ns = capture_latency_trace_now_ns();
       gpu_backing = synthetic_gpu_backing_retain_primary_gpu_backing_rgba8(
           bytes->data(), req.width, req.height, job.stride_bytes);
+      const uint64_t gpu_backing_retain_sample_ns =
+          capture_latency_trace_now_ns() - gpu_backing_retain_begin_ns;
+      capture_gpu_backing_retain_ns += gpu_backing_retain_sample_ns;
+      member_gpu_retain_ns += gpu_backing_retain_sample_ns;
+      record_timing_sample(
+          gpu_backing_retain_sample_ns,
+          triage_capture_gpu_backing_retain_calls_,
+          triage_capture_gpu_backing_retain_total_ns_,
+          triage_capture_gpu_backing_retain_max_ns_);
+      ++posture_metrics->calls;
+      posture_metrics->total_ns += gpu_backing_retain_sample_ns;
+      posture_metrics->max_ns =
+          std::max(posture_metrics->max_ns, gpu_backing_retain_sample_ns);
+      if (!posture_metrics->has_first_call) {
+        posture_metrics->has_first_call = true;
+        posture_metrics->first_call_ns = gpu_backing_retain_sample_ns;
+      } else {
+        ++posture_metrics->later_calls;
+        posture_metrics->later_total_ns += gpu_backing_retain_sample_ns;
+        posture_metrics->later_max_ns =
+            std::max(posture_metrics->later_max_ns,
+                     gpu_backing_retain_sample_ns);
+      }
       if (!gpu_backing) {
         return false;
       }
@@ -2074,6 +2061,8 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     } else {
       fv.primary_backing_kind = ProducerBackingKind::CPU;
     }
+    const uint64_t member_frame_assembly_begin_ns =
+        capture_latency_trace_now_ns();
     fv.retain_cpu_sidecar = retain_cpu_payload;
     fv.requested_retained_plan = req.requested_retained_plan;
     if (retain_cpu_payload) {
@@ -2086,12 +2075,123 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     lease->bytes = bytes;
     fv.release = &SyntheticProvider::release_frame_;
     fv.release_user = lease;
+    member_frame_assembly_sample_ns =
+        capture_latency_trace_now_ns() - member_frame_assembly_begin_ns;
+    member_frame_assembly_ns += member_frame_assembly_sample_ns;
     const uint64_t member_post_begin_ns = capture_latency_trace_now_ns();
     strand_.post_frame(fv);
-    member_post_ns += capture_latency_trace_now_ns() - member_post_begin_ns;
+    const uint64_t member_post_end_ns = capture_latency_trace_now_ns();
+    member_post_sample_ns = member_post_end_ns - member_post_begin_ns;
+    member_post_ns += member_post_sample_ns;
+    last_member_post_end_ns = member_post_end_ns;
+    const uint64_t member_span_total_ns =
+        member_post_end_ns - member_span_begin_ns;
+    const uint64_t member_measured_total_ns =
+        member_cpu_prep_ns + member_gpu_retain_ns +
+        member_frame_assembly_sample_ns + member_post_sample_ns;
+    if (member_span_total_ns >= member_measured_total_ns) {
+      member_iteration_gap_ns +=
+          member_span_total_ns - member_measured_total_ns;
+    }
+  }
+  const uint64_t production_return_ns = capture_latency_trace_now_ns();
+  {
+    std::lock_guard<std::mutex> triage_lock(
+        triage_capture_ready_metrics_mutex_);
+    const uint64_t post_return_timing_record_lock_acquired_ns =
+        capture_latency_trace_now_ns();
+    CaptureReadyTimingRecord& timing_record =
+        capture_ready_timing_record_(req.capture_id, req.device_instance_id);
+    timing_record.provider_post_capture_started_before_first_member_total_ns =
+        before_first_member_ns;
+    timing_record.provider_post_capture_started_member_iteration_gap_total_ns =
+        member_iteration_gap_ns;
+    timing_record.has_provider_last_frame_posted_steady_ns = !members.empty();
+    timing_record.provider_last_frame_posted_steady_ns = last_member_post_end_ns;
+    ready_stage_metrics->post_capture_started_before_first_member_total_ns +=
+        before_first_member_ns;
+    ready_stage_metrics->post_capture_started_member_iteration_gap_total_ns +=
+        member_iteration_gap_ns;
+    ready_stage_metrics->post_capture_started_cpu_prep_total_ns +=
+        member_alloc_ns + member_copy_ns + member_ev_bgra_ns;
+    ready_stage_metrics->post_capture_started_gpu_retain_total_ns +=
+        capture_gpu_backing_retain_ns;
+    ready_stage_metrics->post_capture_started_frame_assembly_total_ns +=
+        member_frame_assembly_ns;
+    ready_stage_metrics->post_capture_started_post_frame_total_ns +=
+        member_post_ns;
+    ready_stage_metrics->capture_ready_provider_window_total_ns +=
+        before_first_member_ns + member_iteration_gap_ns +
+        member_alloc_ns + member_copy_ns + member_ev_bgra_ns +
+        member_frame_assembly_ns + capture_gpu_backing_retain_ns +
+        member_post_ns;
+    timing_record.provider_post_capture_started_cpu_prep_total_ns =
+        member_alloc_ns + member_copy_ns + member_ev_bgra_ns;
+    timing_record.provider_post_capture_started_gpu_retain_total_ns =
+        capture_gpu_backing_retain_ns;
+    timing_record.provider_post_capture_started_frame_assembly_total_ns =
+        member_frame_assembly_ns;
+    timing_record.provider_post_capture_started_post_frame_total_ns =
+        member_post_ns;
+    timing_record.provider_capture_ready_provider_window_total_ns =
+        before_first_member_ns + member_iteration_gap_ns +
+        member_alloc_ns + member_copy_ns + member_ev_bgra_ns +
+        member_frame_assembly_ns + capture_gpu_backing_retain_ns +
+        member_post_ns;
+    timing_record.has_provider_capture_generation_return_steady_ns = true;
+    timing_record.provider_capture_generation_return_steady_ns =
+        production_return_ns;
+    timing_record
+        .has_provider_capture_generation_timing_record_lock_acquired_steady_ns =
+        true;
+    timing_record
+        .provider_capture_generation_timing_record_lock_acquired_steady_ns =
+        post_return_timing_record_lock_acquired_ns;
+    if (timing_record.has_provider_last_frame_posted_steady_ns &&
+        production_return_ns >=
+            timing_record.provider_last_frame_posted_steady_ns) {
+      const uint64_t generation_tail_ns =
+          production_return_ns -
+          timing_record.provider_last_frame_posted_steady_ns;
+      timing_record
+          .provider_post_capture_started_after_last_frame_generation_tail_total_ns =
+          generation_tail_ns;
+      ready_stage_metrics
+          ->post_capture_started_after_last_frame_generation_tail_total_ns +=
+          generation_tail_ns;
+    }
+    timing_record.has_provider_capture_generation_post_timing_record_steady_ns =
+        true;
+    timing_record.provider_capture_generation_post_timing_record_steady_ns =
+        capture_latency_trace_now_ns();
+    timing_record.provider_base_bytes_use_count_after_timing_record =
+        static_cast<uint64_t>(base_bytes.use_count());
+  }
+  if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
+    const InFlightCaptureKey key{req.capture_id, req.device_instance_id};
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    auto it = in_flight_captures_.find(key);
+    if (it != in_flight_captures_.end() && it->second.generation == generation) {
+      it->second.deferred_cpu_staging_bytes = base_bytes;
+    }
+  }
+  (void)production_begin_ns;
+  (void)first_capture_after_start;
+  (void)default_base_reused;
+  const uint64_t pre_return_ns = capture_latency_trace_now_ns();
+  {
+    std::lock_guard<std::mutex> triage_lock(
+        triage_capture_ready_metrics_mutex_);
+    CaptureReadyTimingRecord& timing_record =
+        capture_ready_timing_record_(req.capture_id, req.device_instance_id);
+    timing_record.has_provider_capture_generation_pre_return_steady_ns = true;
+    timing_record.provider_capture_generation_pre_return_steady_ns =
+        pre_return_ns;
+    timing_record.provider_base_bytes_use_count_pre_return =
+        static_cast<uint64_t>(base_bytes.use_count());
   }
   capture_latency_trace_printf(
-      "synthetic_capture_production capture_id=%llu device_id=%llu rig_id=%llu first_capture_after_start=%u members=%llu frame_bytes=%llu staging_alloc_kind=fresh_vector staging_alloc_us=%llu spec_setup_us=%llu timestamp_lock_wait_us=%llu base_render_us=%llu member_alloc_kind=fresh_vector member_alloc_us=%llu member_copy_us=%llu member_ev_bgra_us=%llu member_post_us=%llu default_base_reused=%u total_us=%llu",
+      "synthetic_capture_production capture_id=%llu device_id=%llu rig_id=%llu first_capture_after_start=%u members=%llu frame_bytes=%llu staging_alloc_kind=fresh_vector staging_alloc_us=%llu spec_setup_us=%llu timestamp_lock_wait_us=%llu base_render_us=%llu member_alloc_kind=fresh_vector member_alloc_us=%llu member_copy_us=%llu member_ev_bgra_us=%llu capture_gpu_backing_retain_us=%llu member_post_us=%llu default_base_reused=%u total_us=%llu",
       static_cast<unsigned long long>(req.capture_id),
       static_cast<unsigned long long>(req.device_instance_id),
       static_cast<unsigned long long>(req.rig_id),
@@ -2105,6 +2205,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
       static_cast<unsigned long long>(member_alloc_ns / 1000ull),
       static_cast<unsigned long long>(member_copy_ns / 1000ull),
       static_cast<unsigned long long>(member_ev_bgra_ns / 1000ull),
+      static_cast<unsigned long long>(capture_gpu_backing_retain_ns / 1000ull),
       static_cast<unsigned long long>(member_post_ns / 1000ull),
       default_base_reused,
       static_cast<unsigned long long>((capture_latency_trace_now_ns() - production_begin_ns) / 1000ull));
@@ -2120,8 +2221,27 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
   uint64_t session_release_ns = 0;
   bool should_post_terminal = false;
   bool should_release = false;
+  uint64_t capture_lock_acquired_ns = finish_begin_ns;
+  uint64_t capture_lock_wait_begin_ns = finish_begin_ns;
+  uint64_t state_wait_begin_ns = 0;
+  uint64_t state_lock_released_ns = 0;
+  std::shared_ptr<std::vector<std::uint8_t>> deferred_cpu_staging_bytes{};
+  auto* ready_stage_metrics = &triage_capture_ready_stage_cpu_primary_;
+  if (job.request.requested_retained_plan.valid) {
+    if (job.request.requested_retained_plan.primary_cpu()) {
+      ready_stage_metrics = &triage_capture_ready_stage_cpu_primary_;
+    } else if (job.request.requested_retained_plan.retain_cpu_sidecar()) {
+      ready_stage_metrics =
+          &triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_;
+    } else {
+      ready_stage_metrics =
+          &triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_;
+    }
+  }
   {
+    capture_lock_wait_begin_ns = capture_latency_trace_now_ns();
     std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    capture_lock_acquired_ns = capture_latency_trace_now_ns();
     const InFlightCaptureKey key{job.request.capture_id, job.request.device_instance_id};
     auto it = in_flight_captures_.find(key);
     if (it == in_flight_captures_.end()) {
@@ -2140,7 +2260,10 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
       in_flight.release_done = true;
       should_release = true;
     }
+    deferred_cpu_staging_bytes =
+        std::move(in_flight.deferred_cpu_staging_bytes);
     {
+      state_wait_begin_ns = capture_latency_trace_now_ns();
       std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
       auto pause_it = capture_pause_depth_by_device_.find(job.request.device_instance_id);
       if (pause_it != capture_pause_depth_by_device_.end()) {
@@ -2150,26 +2273,248 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
           capture_pause_depth_by_device_.erase(pause_it);
         }
       }
+      state_lock_released_ns = capture_latency_trace_now_ns();
     }
     in_flight_captures_.erase(it);
   }
 
   if (should_post_terminal) {
     const uint64_t terminal_post_begin_ns = capture_latency_trace_now_ns();
+    {
+      std::lock_guard<std::mutex> triage_lock(
+          triage_capture_ready_metrics_mutex_);
+      CaptureReadyTimingRecord& timing_record =
+          capture_ready_timing_record_(
+              job.request.capture_id, job.request.device_instance_id);
+      timing_record.capture_id = job.request.capture_id;
+      timing_record.device_instance_id = job.request.device_instance_id;
+      timing_record.acquisition_session_id = job.acquisition_session_id;
+      if (timing_record.has_provider_last_frame_posted_steady_ns &&
+          terminal_post_begin_ns >=
+              timing_record.provider_last_frame_posted_steady_ns) {
+        const uint64_t after_last_frame_before_terminal_ns =
+            terminal_post_begin_ns -
+            timing_record.provider_last_frame_posted_steady_ns;
+        uint64_t generation_tail_ns = 0;
+        if (timing_record.has_provider_capture_generation_return_steady_ns &&
+            timing_record.provider_capture_generation_return_steady_ns >=
+                timing_record.provider_last_frame_posted_steady_ns) {
+          generation_tail_ns =
+              timing_record.provider_capture_generation_return_steady_ns -
+              timing_record.provider_last_frame_posted_steady_ns;
+        }
+        uint64_t return_to_capture_lock_ns = 0;
+        if (timing_record.has_provider_capture_generation_return_steady_ns &&
+            capture_lock_acquired_ns >=
+                timing_record.provider_capture_generation_return_steady_ns) {
+          return_to_capture_lock_ns =
+              capture_lock_acquired_ns -
+              timing_record.provider_capture_generation_return_steady_ns;
+        }
+        uint64_t return_to_finish_begin_ns = 0;
+        if (timing_record.has_provider_capture_generation_return_steady_ns &&
+            finish_begin_ns >=
+                timing_record.provider_capture_generation_return_steady_ns) {
+          return_to_finish_begin_ns =
+              finish_begin_ns -
+              timing_record.provider_capture_generation_return_steady_ns;
+        }
+        uint64_t post_return_timing_record_lock_wait_ns = 0;
+        if (timing_record.has_provider_capture_generation_return_steady_ns &&
+            timing_record
+                .has_provider_capture_generation_timing_record_lock_acquired_steady_ns &&
+            timing_record
+                .provider_capture_generation_timing_record_lock_acquired_steady_ns >=
+                timing_record.provider_capture_generation_return_steady_ns) {
+          post_return_timing_record_lock_wait_ns =
+              timing_record
+                  .provider_capture_generation_timing_record_lock_acquired_steady_ns -
+              timing_record.provider_capture_generation_return_steady_ns;
+        }
+        uint64_t post_return_timing_record_update_ns = 0;
+        if (timing_record.has_provider_capture_generation_timing_record_lock_acquired_steady_ns &&
+            timing_record.has_provider_capture_generation_post_timing_record_steady_ns &&
+            timing_record.provider_capture_generation_post_timing_record_steady_ns >=
+                timing_record
+                    .provider_capture_generation_timing_record_lock_acquired_steady_ns) {
+          post_return_timing_record_update_ns =
+              timing_record.provider_capture_generation_post_timing_record_steady_ns -
+              timing_record
+                  .provider_capture_generation_timing_record_lock_acquired_steady_ns;
+        }
+        uint64_t post_return_after_timing_record_to_finish_begin_ns = 0;
+        if (timing_record.has_provider_capture_generation_post_timing_record_steady_ns &&
+            finish_begin_ns >=
+                timing_record.provider_capture_generation_post_timing_record_steady_ns) {
+          post_return_after_timing_record_to_finish_begin_ns =
+              finish_begin_ns -
+              timing_record.provider_capture_generation_post_timing_record_steady_ns;
+        }
+        uint64_t post_return_after_timing_record_to_pre_return_ns = 0;
+        if (timing_record.has_provider_capture_generation_post_timing_record_steady_ns &&
+            timing_record.has_provider_capture_generation_pre_return_steady_ns &&
+            timing_record.provider_capture_generation_pre_return_steady_ns >=
+                timing_record.provider_capture_generation_post_timing_record_steady_ns) {
+          post_return_after_timing_record_to_pre_return_ns =
+              timing_record.provider_capture_generation_pre_return_steady_ns -
+              timing_record.provider_capture_generation_post_timing_record_steady_ns;
+        }
+        uint64_t pre_return_to_finish_begin_ns = 0;
+        if (timing_record.has_provider_capture_generation_pre_return_steady_ns &&
+            finish_begin_ns >=
+                timing_record.provider_capture_generation_pre_return_steady_ns) {
+          pre_return_to_finish_begin_ns =
+              finish_begin_ns -
+              timing_record.provider_capture_generation_pre_return_steady_ns;
+        }
+        uint64_t finish_begin_to_capture_lock_wait_begin_ns = 0;
+        if (capture_lock_wait_begin_ns >= finish_begin_ns) {
+          finish_begin_to_capture_lock_wait_begin_ns =
+              capture_lock_wait_begin_ns - finish_begin_ns;
+        }
+        uint64_t capture_lock_wait_ns = 0;
+        if (capture_lock_acquired_ns >= capture_lock_wait_begin_ns) {
+          capture_lock_wait_ns =
+              capture_lock_acquired_ns - capture_lock_wait_begin_ns;
+        }
+        uint64_t finish_provider_state_total_ns = 0;
+        if (state_lock_released_ns >= state_wait_begin_ns) {
+          finish_provider_state_total_ns =
+              state_lock_released_ns - state_wait_begin_ns;
+        }
+        uint64_t finish_non_state_total_ns = 0;
+        if (terminal_post_begin_ns >= capture_lock_acquired_ns) {
+          const uint64_t capture_locked_to_terminal_ns =
+              terminal_post_begin_ns - capture_lock_acquired_ns;
+          if (capture_locked_to_terminal_ns >=
+              finish_provider_state_total_ns) {
+            finish_non_state_total_ns =
+                capture_locked_to_terminal_ns -
+                finish_provider_state_total_ns;
+          }
+        }
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_before_terminal_total_ns +=
+            after_last_frame_before_terminal_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_return_to_capture_lock_total_ns +=
+            return_to_capture_lock_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_return_to_finish_begin_total_ns +=
+            return_to_finish_begin_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns +=
+            post_return_timing_record_lock_wait_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_post_return_timing_record_update_total_ns +=
+            post_return_timing_record_update_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns +=
+            post_return_after_timing_record_to_finish_begin_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns +=
+            post_return_after_timing_record_to_pre_return_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns +=
+            pre_return_to_finish_begin_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns +=
+            finish_begin_to_capture_lock_wait_begin_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_capture_lock_wait_total_ns +=
+            capture_lock_wait_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_finish_provider_state_total_ns +=
+            finish_provider_state_total_ns;
+        ready_stage_metrics
+            ->post_capture_started_after_last_frame_finish_non_state_total_ns +=
+            finish_non_state_total_ns;
+        ready_stage_metrics->capture_ready_provider_window_total_ns +=
+            after_last_frame_before_terminal_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_before_terminal_total_ns =
+            after_last_frame_before_terminal_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_generation_tail_total_ns =
+            generation_tail_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns =
+            return_to_capture_lock_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns =
+            return_to_finish_begin_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns =
+            post_return_timing_record_lock_wait_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns =
+            post_return_timing_record_update_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns =
+            post_return_after_timing_record_to_finish_begin_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns =
+            post_return_after_timing_record_to_pre_return_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns =
+            pre_return_to_finish_begin_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns =
+            finish_begin_to_capture_lock_wait_begin_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns =
+            capture_lock_wait_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_finish_provider_state_total_ns =
+            finish_provider_state_total_ns;
+        timing_record
+            .provider_post_capture_started_after_last_frame_finish_non_state_total_ns =
+            finish_non_state_total_ns;
+        timing_record.provider_capture_ready_provider_window_total_ns +=
+            after_last_frame_before_terminal_ns;
+      }
+      if (terminal == CaptureTerminalKind::Completed) {
+        timing_record.has_provider_post_capture_completed_steady_ns = true;
+        timing_record.provider_post_capture_completed_steady_ns =
+            terminal_post_begin_ns;
+      }
+    }
     if (terminal == CaptureTerminalKind::Completed) {
-      strand_.post_capture_completed(job.request.capture_id, job.request.device_instance_id);
+      strand_.post_capture_completed(
+          job.request.capture_id, job.request.device_instance_id);
     } else {
-      const ProviderError failure_error = error == ProviderError::OK ? ProviderError::ERR_PROVIDER_FAILED : error;
-      strand_.post_capture_failed(job.request.capture_id, job.request.device_instance_id, failure_error);
+      const ProviderError failure_error =
+          error == ProviderError::OK ? ProviderError::ERR_PROVIDER_FAILED
+                                     : error;
+      strand_.post_capture_failed(job.request.capture_id,
+                                  job.request.device_instance_id,
+                                  failure_error);
     }
     terminal_post_ns = capture_latency_trace_now_ns() - terminal_post_begin_ns;
+    {
+      std::lock_guard<std::mutex> triage_lock(
+          triage_capture_ready_metrics_mutex_);
+      ready_stage_metrics->capture_terminal_post_total_ns += terminal_post_ns;
+      ready_stage_metrics->capture_ready_provider_window_total_ns +=
+          terminal_post_ns;
+      CaptureReadyTimingRecord& timing_record =
+          capture_ready_timing_record_(
+              job.request.capture_id, job.request.device_instance_id);
+      timing_record.provider_capture_terminal_post_total_ns =
+          terminal_post_ns;
+      timing_record.provider_capture_ready_provider_window_total_ns +=
+          terminal_post_ns;
+    }
   }
   if (should_release) {
-    const uint64_t release_begin_ns = capture_latency_trace_now_ns();
+    const uint64_t session_release_begin_ns = capture_latency_trace_now_ns();
     std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
     release_native_acquisition_session_for_capture_(job.request.device_instance_id);
-    session_release_ns = capture_latency_trace_now_ns() - release_begin_ns;
+    session_release_ns =
+        capture_latency_trace_now_ns() - session_release_begin_ns;
   }
+  (void)finish_begin_ns;
+  (void)session_release_ns;
   capture_latency_trace_diagnostics::note_capture_finished();
   capture_latency_trace_printf(
       "synthetic_terminal_cleanup capture_id=%llu device_id=%llu terminal=%u post_us=%llu release_us=%llu total_us=%llu capture_inflight=%u active_capture_count=%u",
@@ -2186,6 +2531,35 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
 void SyntheticProvider::join_finished_capture_threads_() {
   // std::thread does not expose non-blocking completion detection. Keep this
   // hook for future executor maintenance; shutdown performs the deterministic join.
+}
+
+SyntheticProvider::CaptureReadyTimingRecord&
+SyntheticProvider::capture_ready_timing_record_(uint64_t capture_id,
+                                                uint64_t device_instance_id) {
+  const CaptureReadyTimingKey key{capture_id, device_instance_id};
+  auto it = triage_capture_ready_timing_records_.find(key);
+  if (it != triage_capture_ready_timing_records_.end()) {
+    return it->second;
+  }
+
+  CaptureReadyTimingRecord record{};
+  record.capture_id = capture_id;
+  record.device_instance_id = device_instance_id;
+  auto [inserted_it, inserted] =
+      triage_capture_ready_timing_records_.emplace(key, std::move(record));
+  if (inserted) {
+    triage_capture_ready_timing_order_.push_back(key);
+    constexpr size_t kMaxRecentCaptureReadyTimingRecords = 256;
+    if (triage_capture_ready_timing_order_.size() >
+        kMaxRecentCaptureReadyTimingRecords) {
+      const CaptureReadyTimingKey oldest =
+          triage_capture_ready_timing_order_.front();
+      triage_capture_ready_timing_order_.erase(
+          triage_capture_ready_timing_order_.begin());
+      triage_capture_ready_timing_records_.erase(oldest);
+    }
+  }
+  return inserted_it->second;
 }
 
 void SyntheticProvider::drain_paused_capture_descendants_for_host_() {
@@ -3150,6 +3524,7 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
   synthetic_triage_printf(
       "[CamBANG][SyntheticGpuMetrics] gpu_update_attempts=%llu gpu_update_failures=%llu gpu_update_retries=%llu "
       "gpu_update_demand_skipped=%llu "
+      "capture_gpu_backing_retain_calls=%llu capture_gpu_backing_retain_total_ms=%.3f capture_gpu_backing_retain_max_ms=%.3f "
       "gpu_backing_recreates=%llu gpu_backing_releases=%llu "
       "gpu_ensure_backing_calls=%llu gpu_ensure_backing_total_ms=%.3f gpu_ensure_backing_max_ms=%.3f "
       "gpu_update_total_calls=%llu gpu_update_total_total_ms=%.3f gpu_update_total_max_ms=%.3f "
@@ -3160,6 +3535,9 @@ void SyntheticProvider::emit_triage_trace_if_due_() {
       static_cast<unsigned long long>(triage_gpu_update_failures_total_),
       static_cast<unsigned long long>(triage_gpu_update_retries_total_),
       static_cast<unsigned long long>(triage_gpu_update_demand_skipped_total_),
+      static_cast<unsigned long long>(triage_capture_gpu_backing_retain_calls_),
+      ns_to_ms(triage_capture_gpu_backing_retain_total_ns_),
+      ns_to_ms(triage_capture_gpu_backing_retain_max_ns_),
       static_cast<unsigned long long>(triage_gpu_backing_recreate_total_),
       static_cast<unsigned long long>(triage_gpu_backing_release_total_),
       static_cast<unsigned long long>(triage_gpu_ensure_backing_calls_total_),
@@ -3253,6 +3631,7 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   out.total_emitted_frames = triage_frames_emitted_total_;
   out.gpu_update_attempts = triage_gpu_update_attempts_total_;
   out.gpu_update_demand_skipped = triage_gpu_update_demand_skipped_total_;
+  out.capture_gpu_backing_retain_calls = triage_capture_gpu_backing_retain_calls_;
   const bool has_gpu_subbucket_stats = synthetic_gpu_backing_peek_update_timing_stats(
       gpu_upload_copy_calls,
       gpu_upload_copy_total_ns,
@@ -3266,6 +3645,10 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   (void)gpu_texture_update_skipped;
   out.gpu_texture_update_calls = has_gpu_subbucket_stats ? gpu_texture_update_calls : 0;
   out.frame_copy_calls = triage_frame_copy_calls_;
+  out.capture_gpu_backing_retain_total_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_total_ns_);
+  out.capture_gpu_backing_retain_max_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_max_ns_);
   out.frame_render_total_ms = ns_to_ms(triage_frame_render_total_ns_);
   out.pattern_overlay_total_ms = ns_to_ms(pattern_overlay_total_ns);
   out.pattern_base_copy_total_ms = ns_to_ms(pattern_base_copy_total_ns);
@@ -3274,6 +3657,392 @@ SyntheticMetricsSnapshot SyntheticProvider::get_metrics_snapshot_for_host() cons
   out.gpu_texture_update_total_ms = ns_to_ms(has_gpu_subbucket_stats ? gpu_texture_update_total_ns : 0);
   out.catchup_ticks_capped = triage_catchup_ticks_capped_total_;
   out.catchup_frames_dropped = triage_catchup_frames_dropped_total_;
+  out.capture_gpu_backing_retain_cpu_primary =
+      SyntheticCaptureGpuBackingRetainPostureMetricsSnapshot{};
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.calls =
+      triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.calls;
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.total_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.total_ns);
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.max_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.max_ns);
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.has_first_call =
+      triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.has_first_call;
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.first_call_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.first_call_ns);
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.later_calls =
+      triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.later_calls;
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.later_total_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.later_total_ns);
+  out.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar.later_max_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_.later_max_ns);
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.calls =
+      triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.calls;
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.total_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.total_ns);
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.max_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.max_ns);
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.has_first_call =
+      triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.has_first_call;
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.first_call_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.first_call_ns);
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.later_calls =
+      triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.later_calls;
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.later_total_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.later_total_ns);
+  out.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar.later_max_ms =
+      ns_to_ms(triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_.later_max_ns);
+  {
+    std::lock_guard<std::mutex> triage_lock(
+        triage_capture_ready_metrics_mutex_);
+    out.capture_ready_stage_cpu_primary.calls =
+        triage_capture_ready_stage_cpu_primary_.calls;
+    out.capture_ready_stage_cpu_primary.pre_capture_started_total_ms =
+        ns_to_ms(
+            triage_capture_ready_stage_cpu_primary_.pre_capture_started_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_before_first_member_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_before_first_member_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_member_iteration_gap_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_member_iteration_gap_total_ns);
+    out.capture_ready_stage_cpu_primary.post_capture_started_cpu_prep_total_ms =
+        ns_to_ms(
+            triage_capture_ready_stage_cpu_primary_.post_capture_started_cpu_prep_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_gpu_retain_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_gpu_retain_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_frame_assembly_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_frame_assembly_total_ns);
+    out.capture_ready_stage_cpu_primary.post_capture_started_post_frame_total_ms =
+        ns_to_ms(
+            triage_capture_ready_stage_cpu_primary_.post_capture_started_post_frame_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_before_terminal_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_before_terminal_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_generation_tail_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_generation_tail_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_return_to_capture_lock_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_return_to_capture_lock_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_return_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_return_to_finish_begin_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_post_return_timing_record_update_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_post_return_timing_record_update_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_capture_lock_wait_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_capture_lock_wait_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_finish_provider_state_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_finish_provider_state_total_ns);
+    out.capture_ready_stage_cpu_primary
+        .post_capture_started_after_last_frame_finish_non_state_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .post_capture_started_after_last_frame_finish_non_state_total_ns);
+    out.capture_ready_stage_cpu_primary.capture_terminal_post_total_ms =
+        ns_to_ms(
+            triage_capture_ready_stage_cpu_primary_.capture_terminal_post_total_ns);
+    out.capture_ready_stage_cpu_primary.capture_ready_provider_window_total_ms =
+        ns_to_ms(triage_capture_ready_stage_cpu_primary_
+                     .capture_ready_provider_window_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar.calls =
+        triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_.calls;
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar.pre_capture_started_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .pre_capture_started_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_before_first_member_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_before_first_member_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_member_iteration_gap_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_member_iteration_gap_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_cpu_prep_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_cpu_prep_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_gpu_retain_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_gpu_retain_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_frame_assembly_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_frame_assembly_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_post_frame_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_post_frame_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_before_terminal_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_before_terminal_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_generation_tail_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_generation_tail_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_return_to_capture_lock_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_return_to_capture_lock_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_return_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_return_to_finish_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_timing_record_update_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_timing_record_update_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_capture_lock_wait_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_capture_lock_wait_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_finish_provider_state_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_finish_provider_state_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .post_capture_started_after_last_frame_finish_non_state_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .post_capture_started_after_last_frame_finish_non_state_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar.capture_terminal_post_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .capture_terminal_post_total_ns);
+    out.capture_ready_stage_gpu_primary_no_cpu_sidecar
+        .capture_ready_provider_window_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_
+                     .capture_ready_provider_window_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar.calls =
+        triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_.calls;
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .pre_capture_started_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .pre_capture_started_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_before_first_member_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_before_first_member_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_member_iteration_gap_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_member_iteration_gap_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_cpu_prep_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_cpu_prep_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_gpu_retain_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_gpu_retain_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_frame_assembly_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_frame_assembly_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_post_frame_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_post_frame_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_before_terminal_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_before_terminal_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_generation_tail_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_generation_tail_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_return_to_capture_lock_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_return_to_capture_lock_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_return_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_return_to_finish_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_timing_record_update_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_timing_record_update_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_capture_lock_wait_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_capture_lock_wait_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_finish_provider_state_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_finish_provider_state_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .post_capture_started_after_last_frame_finish_non_state_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .post_capture_started_after_last_frame_finish_non_state_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar.capture_terminal_post_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .capture_terminal_post_total_ns);
+    out.capture_ready_stage_gpu_primary_with_cpu_sidecar
+        .capture_ready_provider_window_total_ms =
+        ns_to_ms(triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_
+                     .capture_ready_provider_window_total_ns);
+    out.capture_ready_timing_records.clear();
+    out.capture_ready_timing_records.reserve(
+        triage_capture_ready_timing_records_.size());
+    for (const CaptureReadyTimingKey& key : triage_capture_ready_timing_order_) {
+      const auto it = triage_capture_ready_timing_records_.find(key);
+      if (it == triage_capture_ready_timing_records_.end()) {
+        continue;
+      }
+      const CaptureReadyTimingRecord& record = it->second;
+      SyntheticCaptureReadyTimingRecordSnapshot snap_record{};
+      snap_record.capture_id = record.capture_id;
+      snap_record.device_instance_id = record.device_instance_id;
+      snap_record.acquisition_session_id = record.acquisition_session_id;
+      snap_record.primary_cpu = record.primary_cpu;
+      snap_record.retain_cpu_sidecar = record.retain_cpu_sidecar;
+      snap_record.has_provider_post_capture_started_steady_ns =
+          record.has_provider_post_capture_started_steady_ns;
+      snap_record.provider_post_capture_started_steady_ns =
+          record.provider_post_capture_started_steady_ns;
+      snap_record.has_provider_post_capture_completed_steady_ns =
+          record.has_provider_post_capture_completed_steady_ns;
+      snap_record.provider_post_capture_completed_steady_ns =
+          record.provider_post_capture_completed_steady_ns;
+      snap_record.provider_pre_capture_started_total_ns =
+          record.provider_pre_capture_started_total_ns;
+      snap_record.provider_post_capture_started_before_first_member_total_ns =
+          record.provider_post_capture_started_before_first_member_total_ns;
+      snap_record.provider_post_capture_started_member_iteration_gap_total_ns =
+          record.provider_post_capture_started_member_iteration_gap_total_ns;
+      snap_record.provider_post_capture_started_cpu_prep_total_ns =
+          record.provider_post_capture_started_cpu_prep_total_ns;
+      snap_record.provider_post_capture_started_gpu_retain_total_ns =
+          record.provider_post_capture_started_gpu_retain_total_ns;
+      snap_record.provider_post_capture_started_frame_assembly_total_ns =
+          record.provider_post_capture_started_frame_assembly_total_ns;
+      snap_record.provider_post_capture_started_post_frame_total_ns =
+          record.provider_post_capture_started_post_frame_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_before_terminal_total_ns =
+          record.provider_post_capture_started_after_last_frame_before_terminal_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_generation_tail_total_ns =
+          record.provider_post_capture_started_after_last_frame_generation_tail_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns =
+          record.provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns =
+          record.provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns =
+          record.provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns =
+          record.provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns =
+          record.provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns =
+          record.provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns =
+          record.provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns;
+      snap_record.provider_base_bytes_use_count_after_timing_record =
+          record.provider_base_bytes_use_count_after_timing_record;
+      snap_record.provider_base_bytes_use_count_pre_return =
+          record.provider_base_bytes_use_count_pre_return;
+      snap_record
+          .provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns =
+          record.provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns =
+          record.provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_finish_provider_state_total_ns =
+          record.provider_post_capture_started_after_last_frame_finish_provider_state_total_ns;
+      snap_record
+          .provider_post_capture_started_after_last_frame_finish_non_state_total_ns =
+          record.provider_post_capture_started_after_last_frame_finish_non_state_total_ns;
+      snap_record.provider_capture_terminal_post_total_ns =
+          record.provider_capture_terminal_post_total_ns;
+      snap_record.provider_capture_ready_provider_window_total_ns =
+          record.provider_capture_ready_provider_window_total_ns;
+      out.capture_ready_timing_records.push_back(snap_record);
+    }
+  }
   return out;
 }
 

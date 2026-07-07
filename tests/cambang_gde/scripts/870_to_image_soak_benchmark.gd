@@ -2713,11 +2713,11 @@ func _backing_plan_acquisition_session_reports_summary(synthetic_metrics: Varian
 		var report: Dictionary = report_v
 		if str(report.get("parent_kind", "")) != "acquisition_session":
 			continue
-		summarized.append(_backing_plan_acquisition_session_report_summary(report))
+		summarized.append(_backing_plan_acquisition_session_report_summary(report, synthetic_metrics))
 	return summarized
 
 
-func _backing_plan_acquisition_session_report_summary(report: Dictionary) -> Dictionary:
+func _backing_plan_acquisition_session_report_summary(report: Dictionary, synthetic_metrics: Variant) -> Dictionary:
 	var summary := {
 		"parent_id": int(report.get("parent_id", 0)),
 		"acquisition_session_id": int(report.get("acquisition_session_id", 0)),
@@ -2734,7 +2734,7 @@ func _backing_plan_acquisition_session_report_summary(report: Dictionary) -> Dic
 		"current_candidate_index": int(report.get("current_candidate_index", -1)),
 		"candidate_sequence": report.get("candidate_sequence", []),
 	}
-	var candidate_evidence := _backing_plan_candidate_evidence_summary_entries(report)
+	var candidate_evidence := _backing_plan_candidate_evidence_summary_entries(report, synthetic_metrics)
 	summary["candidate_evidence"] = candidate_evidence
 	summary["current_candidate_evidence"] = _backing_plan_current_candidate_evidence_summary(report, candidate_evidence)
 	return summary
@@ -2999,7 +2999,7 @@ func _cpu_display_refresh_observation_summary(synthetic_metrics: Variant) -> Dic
 	}
 
 
-func _backing_plan_candidate_evidence_summary_entries(report: Dictionary) -> Array:
+func _backing_plan_candidate_evidence_summary_entries(report: Dictionary, synthetic_metrics: Variant) -> Array:
 	var entries: Array = []
 	var entries_v = report.get("candidate_evidence", [])
 	if typeof(entries_v) != TYPE_ARRAY:
@@ -3008,14 +3008,16 @@ func _backing_plan_candidate_evidence_summary_entries(report: Dictionary) -> Arr
 		if typeof(entry_v) != TYPE_DICTIONARY:
 			continue
 		var entry: Dictionary = entry_v
-		entries.append(_backing_plan_candidate_evidence_summary(entry))
+		entries.append(_backing_plan_candidate_evidence_summary(entry, synthetic_metrics))
 	return entries
 
 
-func _backing_plan_candidate_evidence_summary(entry: Dictionary) -> Dictionary:
+func _backing_plan_candidate_evidence_summary(entry: Dictionary, synthetic_metrics: Variant) -> Dictionary:
 	var observed_capture_id := int(entry.get("observed_capture_id", 0))
+	var candidate_v: Variant = entry.get("candidate", {})
+	var candidate: Dictionary = candidate_v if typeof(candidate_v) == TYPE_DICTIONARY else {}
 	return {
-		"candidate": entry.get("candidate", {}),
+		"candidate": candidate,
 		"observed_capture_id": observed_capture_id,
 		"observed_acquisition_session_id": int(entry.get("observed_acquisition_session_id", 0)),
 		"required_capture_member_count": int(entry.get("required_capture_member_count", 0)),
@@ -3025,13 +3027,17 @@ func _backing_plan_candidate_evidence_summary(entry: Dictionary) -> Dictionary:
 		"first_missing_required_capture_member_index": int(entry.get("first_missing_required_capture_member_index", 0)),
 		"capture_evidence_incomplete_reason": str(entry.get("capture_evidence_incomplete_reason", "")),
 		"has_capture_ready_elapsed_ns": bool(entry.get("has_capture_ready_elapsed_ns", false)),
+		"capture_ready_elapsed_ns": int(entry.get("capture_ready_elapsed_ns", 0)),
 		"has_materialization_elapsed_ns": bool(entry.get("has_materialization_elapsed_ns", false)),
+		"materialization_elapsed_ns": int(entry.get("materialization_elapsed_ns", 0)),
 		"has_total_elapsed_ns": bool(entry.get("has_total_elapsed_ns", false)),
+		"total_elapsed_ns": int(entry.get("total_elapsed_ns", 0)),
 		"evidence_complete": bool(entry.get("evidence_complete", false)),
 		"evidence_accepted": bool(entry.get("evidence_accepted", false)),
 		"observed_posture": str(entry.get("observed_posture", "")),
 		"observed_payload_kind": str(entry.get("observed_payload_kind", "")),
 		"provisional_to_image": str(entry.get("provisional_to_image", "")),
+		"capture_ready_timing_attribution": entry.get("capture_ready_timing_attribution", {}),
 		"observed_source": _capture_source_provenance_summary(observed_capture_id),
 	}
 

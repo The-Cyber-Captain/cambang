@@ -1643,6 +1643,7 @@ function Invoke-AndroidRun {
     $sawHarnessVerdict = $false
     $lastHarnessVerdict = $null
     $timedOut = $false
+    $appStillRunningAtShutdown = $false
     $processExitCode = $null
     $logcatText = ""
     $projectRestored = $false
@@ -1871,8 +1872,21 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
             }
 
             if ($sawAppRunning -and -not $isRunning) {
-                for ($drainIndex = 0; $drainIndex -lt 4; $drainIndex++) {
-                    Start-Sleep -Milliseconds 750
+                $confirmedStopped = $true
+                for ($stopCheckIndex = 0; $stopCheckIndex -lt 2; $stopCheckIndex++) {
+                    Start-Sleep -Milliseconds 500
+                    $androidPid = Get-AndroidAppPid `
+                        -AdbPath $AdbPath `
+                        -DeviceSerial $DeviceSerial `
+                        -PackageName $androidPackageName `
+                        -ProjectFullPath $ProjectFullPath
+                    if (-not [string]::IsNullOrWhiteSpace($androidPid)) {
+                        $isRunning = $true
+                        $sawAppRunning = $true
+                        $confirmedStopped = $false
+                        break
+                    }
+
                     $logcatText = Write-AndroidLogcatSnapshot `
                         -AdbPath $AdbPath `
                         -DeviceSerial $DeviceSerial `
@@ -1883,9 +1897,31 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
                     if ($null -ne $latestHarnessVerdict) {
                         $lastHarnessVerdict = $latestHarnessVerdict
                         $sawHarnessVerdict = $true
+                        break
                     }
                 }
-                break
+
+                if ($sawHarnessVerdict) {
+                    break
+                }
+
+                if ($confirmedStopped -and -not $isRunning) {
+                    for ($drainIndex = 0; $drainIndex -lt 4; $drainIndex++) {
+                        Start-Sleep -Milliseconds 750
+                        $logcatText = Write-AndroidLogcatSnapshot `
+                            -AdbPath $AdbPath `
+                            -DeviceSerial $DeviceSerial `
+                            -ProjectFullPath $ProjectFullPath `
+                            -DeviceLogcatPath $deviceLogcatPath
+
+                        $latestHarnessVerdict = Get-LastHarnessVerdict -Text $logcatText
+                        if ($null -ne $latestHarnessVerdict) {
+                            $lastHarnessVerdict = $latestHarnessVerdict
+                            $sawHarnessVerdict = $true
+                        }
+                    }
+                    break
+                }
             }
 
             if ($null -ne $deadlineUtc -and (Get-Date).ToUniversalTime() -ge $deadlineUtc) {
@@ -1905,6 +1941,20 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
             }
 
             if (-not [string]::IsNullOrWhiteSpace($androidPackageForStop)) {
+                $currentAndroidPid = Get-AndroidAppPid `
+                    -AdbPath $AdbPath `
+                    -DeviceSerial $DeviceSerial `
+                    -PackageName $androidPackageForStop `
+                    -ProjectFullPath $ProjectFullPath
+                $appStillRunningAtShutdown =
+                    -not [string]::IsNullOrWhiteSpace($currentAndroidPid)
+                if ($appStillRunningAtShutdown -and -not $sawHarnessVerdict -and
+                    -not $timedOut -and $ObservationTimeoutSec -gt 0) {
+                    $timedOut = $true
+                }
+            }
+
+            if ($appStillRunningAtShutdown) {
                 Invoke-CapturedProcess `
                     -FilePath $AdbPath `
                     -Arguments @("-s", $DeviceSerial, "shell", "am", "force-stop", $androidPackageForStop) `
@@ -1950,6 +2000,7 @@ patched_project_renderer_rendering_method_mobile=$patchedProjectRenderingMethodM
         SawHarnessVerdict = $sawHarnessVerdict
         HarnessVerdict = $lastHarnessVerdict
         SawAppRunning = $sawAppRunning
+        AppStillRunningAtShutdown = $appStillRunningAtShutdown
         AndroidPackage = $androidPackageName
         AndroidActivity = $androidActivityName
         AndroidPid = $androidPid

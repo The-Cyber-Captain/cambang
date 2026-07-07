@@ -3,8 +3,6 @@
 #include "core/resource_aggregate_telemetry.h"
 
 #include <chrono>
-#include <cstdarg>
-#include <cstdio>
 #include <variant>
 
 namespace cambang {
@@ -26,16 +24,6 @@ uint64_t capture_latency_trace_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-
-void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[1024];
-  va_list args;
-  va_start(args, format);
-  std::vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  capture_latency_trace_diagnostics::print_line(buffer);
-}
-// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
 uint64_t frame_ts_to_core_ns(const CaptureTimestamp& ts) {
   if (ts.tick_ns == 0) {
@@ -253,14 +241,19 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
                                                                 capture_format,
                                                                 capture_profile_version,
                                                                 capture_still_image_bundle);
+      if (capture_lifecycle_ingress_sink_) {
+        const uint64_t acquisition_session_id =
+            acquisition_sessions_->resolve_session_id_for_capture(
+                p.device_instance_id, p.capture_id, 0);
+        capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
+            CoreCaptureLifecycleIngressEvent::Kind::Started,
+            p.capture_id,
+            p.device_instance_id,
+            acquisition_session_id,
+            dispatch_begin_ns});
+      }
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
-    capture_latency_trace_printf(
-        "core_dispatch_capture_started capture_id=%llu device_id=%llu total_us=%llu state_changed=%u",
-        static_cast<unsigned long long>(p.capture_id),
-        static_cast<unsigned long long>(p.device_instance_id),
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull),
-        state_changed ? 1u : 0u);
     break;
   }
 
@@ -270,20 +263,25 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     const auto& p = std::get<CmdProviderCaptureCompleted>(cmd.payload);
     bool state_changed = false;
     if (acquisition_sessions_) {
+      const uint64_t acquisition_session_id =
+          acquisition_sessions_->resolve_session_id_for_capture(
+              p.device_instance_id, p.capture_id, 0);
       const uint64_t completed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_completed(
           p.device_instance_id, p.capture_id, completed_ns);
+      if (capture_lifecycle_ingress_sink_) {
+        capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
+            CoreCaptureLifecycleIngressEvent::Kind::Completed,
+            p.capture_id,
+            p.device_instance_id,
+            acquisition_session_id,
+            dispatch_begin_ns});
+      }
     }
     if (capture_assembly_registry_) {
       capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
-    capture_latency_trace_printf(
-        "core_dispatch_capture_completed capture_id=%llu device_id=%llu total_us=%llu state_changed=%u",
-        static_cast<unsigned long long>(p.capture_id),
-        static_cast<unsigned long long>(p.device_instance_id),
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull),
-        state_changed ? 1u : 0u);
     break;
   }
 
@@ -293,30 +291,32 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
     const auto& p = std::get<CmdProviderCaptureFailed>(cmd.payload);
     bool state_changed = false;
     if (acquisition_sessions_) {
+      const uint64_t acquisition_session_id =
+          acquisition_sessions_->resolve_session_id_for_capture(
+              p.device_instance_id, p.capture_id, 0);
       const uint64_t failed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_failed(
           p.device_instance_id, p.capture_id, p.error_code, failed_ns);
+      if (capture_lifecycle_ingress_sink_) {
+        capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
+            CoreCaptureLifecycleIngressEvent::Kind::Failed,
+            p.capture_id,
+            p.device_instance_id,
+            acquisition_session_id,
+            dispatch_begin_ns});
+      }
     }
     if (capture_assembly_registry_) {
       capture_assembly_registry_->mark_capture_failed(p.capture_id, p.device_instance_id, p.error_code);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
-    capture_latency_trace_printf(
-        "core_dispatch_capture_failed capture_id=%llu device_id=%llu error=%u total_us=%llu state_changed=%u",
-        static_cast<unsigned long long>(p.capture_id),
-        static_cast<unsigned long long>(p.device_instance_id),
-        static_cast<unsigned>(p.error_code),
-        static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull),
-        state_changed ? 1u : 0u);
     break;
   }
 
   case ProviderToCoreCommandType::PROVIDER_FRAME: {
-    const uint64_t dispatch_begin_ns = capture_latency_trace_now_ns();
     uint64_t result_retention_ns = 0;
     auto& p = std::get<CmdProviderFrame>(cmd.payload);
     const uint64_t trace_capture_id = p.frame.capture_id;
-    const uint64_t trace_device_id = p.frame.device_instance_id;
 
     stats_.commands_handled++;
     stats_.frames_received++;
@@ -475,15 +475,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       }
     }
     if (trace_capture_id != 0) {
-      capture_latency_trace_printf(
-          "core_dispatch_capture_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u retained=%u retention_us=%llu total_us=%llu",
-          static_cast<unsigned long long>(trace_capture_id),
-          static_cast<unsigned long long>(trace_device_id),
-          static_cast<unsigned long long>(asid),
-          static_cast<unsigned>(frame_member_index),
-          retained_for_result ? 1u : 0u,
-          static_cast<unsigned long long>(result_retention_ns / 1000ull),
-          static_cast<unsigned long long>((capture_latency_trace_now_ns() - dispatch_begin_ns) / 1000ull));
+      (void)result_retention_ns;
     }
     break;
   }

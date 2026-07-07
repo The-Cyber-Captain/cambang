@@ -565,14 +565,7 @@ uint64_t capture_latency_trace_now_ns() {
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[2048];
-  va_list args;
-  va_start(args, format);
-  std::vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  capture_latency_trace_diagnostics::print_line(buffer);
-}
+#define capture_latency_trace_printf(...) ((void)0)
 // END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
 
@@ -1329,6 +1322,10 @@ CoreRuntime::CoreRuntime()
       }) {
   dispatcher_.set_result_store(&result_store_);
   dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
+  dispatcher_.set_capture_lifecycle_ingress_sink(
+      [this](const CoreCaptureLifecycleIngressEvent& event) {
+        note_capture_lifecycle_ingress_(event);
+      });
 }
 
 CoreRuntime::~CoreRuntime() {
@@ -3507,6 +3504,26 @@ CoreRuntime::backing_plan_evaluation_reports() const {
   return completed.get();
 }
 
+std::vector<CoreCaptureLifecycleTimingReport>
+CoreRuntime::recent_capture_lifecycle_timing_reports() const {
+  if (core_thread_.is_core_thread()) {
+    return recent_capture_lifecycle_timing_reports_on_core_thread_();
+  }
+
+  auto completion = std::make_shared<
+      std::promise<std::vector<CoreCaptureLifecycleTimingReport>>>();
+  std::future<std::vector<CoreCaptureLifecycleTimingReport>> completed =
+      completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, completion]() {
+    completion->set_value(recent_capture_lifecycle_timing_reports_on_core_thread_());
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return {};
+  }
+  return completed.get();
+}
+
 std::vector<CoreBackingPlanEvaluationReport>
 CoreRuntime::backing_plan_evaluation_reports_on_core_thread_() const {
   assert(core_thread_.is_core_thread());
@@ -3764,6 +3781,72 @@ CoreRuntime::backing_plan_evaluation_reports_on_core_thread_() const {
   }
 
   return out;
+}
+
+std::vector<CoreCaptureLifecycleTimingReport>
+CoreRuntime::recent_capture_lifecycle_timing_reports_on_core_thread_() const {
+  assert(core_thread_.is_core_thread());
+  std::vector<CoreCaptureLifecycleTimingReport> out;
+  out.reserve(recent_capture_lifecycle_timing_order_.size());
+  for (const auto& key : recent_capture_lifecycle_timing_order_) {
+    const auto it = recent_capture_lifecycle_timing_reports_.find(key);
+    if (it == recent_capture_lifecycle_timing_reports_.end()) {
+      continue;
+    }
+    out.push_back(it->second);
+  }
+  return out;
+}
+
+void CoreRuntime::note_capture_lifecycle_ingress_(
+    const CoreCaptureLifecycleIngressEvent& event) {
+  assert(core_thread_.is_core_thread());
+  const std::pair<uint64_t, uint64_t> key{
+      event.capture_id, event.device_instance_id};
+  auto it = recent_capture_lifecycle_timing_reports_.find(key);
+  if (it == recent_capture_lifecycle_timing_reports_.end()) {
+    CoreCaptureLifecycleTimingReport report{};
+    report.capture_id = event.capture_id;
+    report.device_instance_id = event.device_instance_id;
+    it = recent_capture_lifecycle_timing_reports_
+             .emplace(key, std::move(report))
+             .first;
+    recent_capture_lifecycle_timing_order_.push_back(key);
+    constexpr size_t kMaxRecentCaptureLifecycleTimingReports = 256;
+    if (recent_capture_lifecycle_timing_order_.size() >
+        kMaxRecentCaptureLifecycleTimingReports) {
+      const std::pair<uint64_t, uint64_t> oldest =
+          recent_capture_lifecycle_timing_order_.front();
+      recent_capture_lifecycle_timing_order_.erase(
+          recent_capture_lifecycle_timing_order_.begin());
+      recent_capture_lifecycle_timing_reports_.erase(oldest);
+      it = recent_capture_lifecycle_timing_reports_.find(key);
+      if (it == recent_capture_lifecycle_timing_reports_.end()) {
+        return;
+      }
+    }
+  }
+
+  CoreCaptureLifecycleTimingReport& report = it->second;
+  report.capture_id = event.capture_id;
+  report.device_instance_id = event.device_instance_id;
+  if (event.acquisition_session_id != 0) {
+    report.acquisition_session_id = event.acquisition_session_id;
+  }
+  switch (event.kind) {
+    case CoreCaptureLifecycleIngressEvent::Kind::Started:
+      report.has_capture_started_ingested_steady_ns = true;
+      report.capture_started_ingested_steady_ns = event.ingest_steady_ns;
+      break;
+    case CoreCaptureLifecycleIngressEvent::Kind::Completed:
+      report.has_capture_completed_ingested_steady_ns = true;
+      report.capture_completed_ingested_steady_ns = event.ingest_steady_ns;
+      break;
+    case CoreCaptureLifecycleIngressEvent::Kind::Failed:
+      report.has_capture_failed_ingested_steady_ns = true;
+      report.capture_failed_ingested_steady_ns = event.ingest_steady_ns;
+      break;
+  }
 }
 
 void CoreRuntime::begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id) {

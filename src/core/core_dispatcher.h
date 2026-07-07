@@ -30,6 +30,20 @@ struct CoreDispatchStats final {
   uint64_t frames_unknown_stream = 0;
 };
 
+struct CoreCaptureLifecycleIngressEvent final {
+  enum class Kind : uint8_t {
+    Started = 0,
+    Completed = 1,
+    Failed = 2,
+  };
+
+  Kind kind = Kind::Started;
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint64_t acquisition_session_id = 0;
+  uint64_t ingest_steady_ns = 0;
+};
+
 // CoreDispatcher is the core-thread-only consumer of ProviderToCoreCommand.
 //
 // For this build slice, there is no downstream frame consumer yet.
@@ -81,6 +95,10 @@ public:
   void set_capture_assembly_registry(CoreCaptureAssemblyRegistry* capture_assembly_registry) noexcept {
     capture_assembly_registry_ = capture_assembly_registry;
   }
+  void set_capture_lifecycle_ingress_sink(
+      std::function<void(const CoreCaptureLifecycleIngressEvent&)> sink) {
+    capture_lifecycle_ingress_sink_ = std::move(sink);
+  }
 
 private:
   CoreStreamRegistry* streams_ = nullptr; // non-owning; core-thread-only
@@ -95,6 +113,8 @@ private:
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
   CoreCaptureAssemblyRegistry* capture_assembly_registry_ = nullptr; // non-owning; core-thread-only
+  std::function<void(const CoreCaptureLifecycleIngressEvent&)>
+      capture_lifecycle_ingress_sink_{};
   CoreDispatchStats stats_{};
 };
 

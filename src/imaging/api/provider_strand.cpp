@@ -2,9 +2,6 @@
 
 #include <cassert>
 #include <chrono>
-#include <cstdarg>
-#include <cstdio>
-
 namespace cambang {
 
 namespace capture_latency_trace_diagnostics {
@@ -25,16 +22,6 @@ uint64_t capture_latency_trace_now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-
-void capture_latency_trace_printf(const char* format, ...) {
-  char buffer[1024];
-  va_list args;
-  va_start(args, format);
-  std::vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  capture_latency_trace_diagnostics::print_line(buffer);
-}
-// END TEMPORARY CAPTURE LATENCY DIAGNOSTICS
 
 } // namespace
 
@@ -187,51 +174,13 @@ void CBProviderStrand::deliver_(Event& ev) {
         } else if constexpr (std::is_same_v<T, EvStreamStopped>) {
           callbacks_->on_stream_stopped(e.id, e.err);
         } else if constexpr (std::is_same_v<T, EvCaptureStarted>) {
-          const uint64_t deliver_begin_ns = capture_latency_trace_now_ns();
           callbacks_->on_capture_started(e.id, e.device_instance_id);
-          const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
-          capture_latency_trace_printf(
-              "strand_deliver_capture_started capture_id=%llu device_id=%llu fact_type=started queue_delay_us=%llu callback_us=%llu",
-              static_cast<unsigned long long>(e.id),
-              static_cast<unsigned long long>(e.device_instance_id),
-              static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
-              static_cast<unsigned long long>((deliver_end_ns - deliver_begin_ns) / 1000ull));
         } else if constexpr (std::is_same_v<T, EvCaptureCompleted>) {
-          const uint64_t deliver_begin_ns = capture_latency_trace_now_ns();
           callbacks_->on_capture_completed(e.id, e.device_instance_id);
-          const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
-          capture_latency_trace_printf(
-              "strand_deliver_capture_completed capture_id=%llu device_id=%llu fact_type=completed queue_delay_us=%llu callback_us=%llu",
-              static_cast<unsigned long long>(e.id),
-              static_cast<unsigned long long>(e.device_instance_id),
-              static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
-              static_cast<unsigned long long>((deliver_end_ns - deliver_begin_ns) / 1000ull));
         } else if constexpr (std::is_same_v<T, EvCaptureFailed>) {
-          const uint64_t deliver_begin_ns = capture_latency_trace_now_ns();
           callbacks_->on_capture_failed(e.id, e.device_instance_id, e.err);
-          const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
-          capture_latency_trace_printf(
-              "strand_deliver_capture_failed capture_id=%llu device_id=%llu fact_type=failed queue_delay_us=%llu callback_us=%llu err=%u",
-              static_cast<unsigned long long>(e.id),
-              static_cast<unsigned long long>(e.device_instance_id),
-              static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
-              static_cast<unsigned long long>((deliver_end_ns - deliver_begin_ns) / 1000ull),
-              static_cast<unsigned>(e.err));
         } else if constexpr (std::is_same_v<T, EvFrame>) {
-          const uint64_t deliver_begin_ns = capture_latency_trace_now_ns();
           callbacks_->on_frame(e.frame);
-          const uint64_t deliver_end_ns = capture_latency_trace_now_ns();
-          if (e.frame.capture_id != 0) {
-            capture_latency_trace_printf(
-                "strand_deliver_capture_frame capture_id=%llu device_id=%llu acquisition_session_id=%llu member=%u fact_type=frame queue_delay_us=%llu callback_us=%llu bytes=%llu",
-                static_cast<unsigned long long>(e.frame.capture_id),
-                static_cast<unsigned long long>(e.frame.device_instance_id),
-                static_cast<unsigned long long>(e.frame.acquisition_session_id),
-                static_cast<unsigned>(e.frame.capture_image.image_member_index),
-                static_cast<unsigned long long>((deliver_begin_ns - e.queued_ns) / 1000ull),
-                static_cast<unsigned long long>((deliver_end_ns - deliver_begin_ns) / 1000ull),
-                static_cast<unsigned long long>(e.frame.size_bytes));
-          }
         } else if constexpr (std::is_same_v<T, EvDeviceError>) {
           callbacks_->on_device_error(e.id, e.err);
         } else if constexpr (std::is_same_v<T, EvStreamError>) {

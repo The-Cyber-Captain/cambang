@@ -105,6 +105,353 @@ static godot::Dictionary live_retained_calibration_metrics_snapshot() {
   return d;
 }
 
+static godot::Dictionary synthetic_capture_gpu_backing_retain_posture_metrics_to_dictionary(
+    const SyntheticCaptureGpuBackingRetainPostureMetricsSnapshot& metrics) {
+  godot::Dictionary d;
+  d["calls"] = static_cast<uint64_t>(metrics.calls);
+  d["total_ms"] = metrics.total_ms;
+  d["max_ms"] = metrics.max_ms;
+  d["has_first_call"] = metrics.has_first_call;
+  d["first_call_ms"] = metrics.first_call_ms;
+  d["later_calls"] = static_cast<uint64_t>(metrics.later_calls);
+  d["later_total_ms"] = metrics.later_total_ms;
+  d["later_max_ms"] = metrics.later_max_ms;
+  return d;
+}
+
+static godot::Dictionary synthetic_capture_ready_stage_posture_metrics_to_dictionary(
+    const SyntheticCaptureReadyStagePostureMetricsSnapshot& metrics) {
+  godot::Dictionary d;
+  d["calls"] = static_cast<uint64_t>(metrics.calls);
+  d["pre_capture_started_total_ms"] =
+      metrics.pre_capture_started_total_ms;
+  d["post_capture_started_before_first_member_total_ms"] =
+      metrics.post_capture_started_before_first_member_total_ms;
+  d["post_capture_started_member_iteration_gap_total_ms"] =
+      metrics.post_capture_started_member_iteration_gap_total_ms;
+  d["post_capture_started_cpu_prep_total_ms"] =
+      metrics.post_capture_started_cpu_prep_total_ms;
+  d["post_capture_started_gpu_retain_total_ms"] =
+      metrics.post_capture_started_gpu_retain_total_ms;
+  d["post_capture_started_frame_assembly_total_ms"] =
+      metrics.post_capture_started_frame_assembly_total_ms;
+  d["post_capture_started_post_frame_total_ms"] =
+      metrics.post_capture_started_post_frame_total_ms;
+  d["post_capture_started_after_last_frame_before_terminal_total_ms"] =
+      metrics.post_capture_started_after_last_frame_before_terminal_total_ms;
+  d["post_capture_started_after_last_frame_generation_tail_total_ms"] =
+      metrics.post_capture_started_after_last_frame_generation_tail_total_ms;
+  d["post_capture_started_after_last_frame_return_to_capture_lock_total_ms"] =
+      metrics.post_capture_started_after_last_frame_return_to_capture_lock_total_ms;
+  d["post_capture_started_after_last_frame_return_to_finish_begin_total_ms"] =
+      metrics.post_capture_started_after_last_frame_return_to_finish_begin_total_ms;
+  d["post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ms"] =
+      metrics.post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ms;
+  d["post_capture_started_after_last_frame_post_return_timing_record_update_total_ms"] =
+      metrics.post_capture_started_after_last_frame_post_return_timing_record_update_total_ms;
+  d["post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ms"] =
+      metrics.post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ms;
+  d["post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ms"] =
+      metrics.post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ms;
+  d["post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ms"] =
+      metrics.post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ms;
+  d["post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ms"] =
+      metrics.post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ms;
+  d["post_capture_started_after_last_frame_capture_lock_wait_total_ms"] =
+      metrics.post_capture_started_after_last_frame_capture_lock_wait_total_ms;
+  d["post_capture_started_after_last_frame_finish_provider_state_total_ms"] =
+      metrics.post_capture_started_after_last_frame_finish_provider_state_total_ms;
+  d["post_capture_started_after_last_frame_finish_non_state_total_ms"] =
+      metrics.post_capture_started_after_last_frame_finish_non_state_total_ms;
+  d["capture_terminal_post_total_ms"] =
+      metrics.capture_terminal_post_total_ms;
+  d["capture_ready_provider_window_total_ms"] =
+      metrics.capture_ready_provider_window_total_ms;
+  return d;
+}
+
+static godot::String synthetic_capture_ready_timing_posture_name(
+    const SyntheticCaptureReadyTimingRecordSnapshot& record) {
+  if (record.primary_cpu) {
+    return "CPU-primary";
+  }
+  return record.retain_cpu_sidecar
+      ? godot::String("GPU-primary, with CPU sidecar")
+      : godot::String("GPU-primary, no CPU sidecar");
+}
+
+static godot::String core_production_posture_name(
+    CoreProductionPostureShape posture);
+
+static godot::Dictionary build_capture_ready_timing_attribution_dictionary(
+    const CoreBackingPlanCandidateEvidenceReport& evidence,
+    uint64_t report_device_instance_id,
+    const std::vector<SyntheticCaptureReadyTimingRecordSnapshot>&
+        provider_timing_records,
+    const std::vector<CoreCaptureLifecycleTimingReport>&
+        core_timing_records) {
+  godot::Dictionary d;
+  if (evidence.observed_capture_id == 0) {
+    return d;
+  }
+
+  const SyntheticCaptureReadyTimingRecordSnapshot* provider_record = nullptr;
+  for (const SyntheticCaptureReadyTimingRecordSnapshot& record :
+       provider_timing_records) {
+    if (record.capture_id != evidence.observed_capture_id) {
+      continue;
+    }
+    if (report_device_instance_id != 0 &&
+        record.device_instance_id != report_device_instance_id) {
+      continue;
+    }
+    if (evidence.observed_acquisition_session_id != 0 &&
+        record.acquisition_session_id != 0 &&
+        record.acquisition_session_id !=
+            evidence.observed_acquisition_session_id) {
+      continue;
+    }
+    provider_record = &record;
+    break;
+  }
+
+  const CoreCaptureLifecycleTimingReport* core_record = nullptr;
+  for (const CoreCaptureLifecycleTimingReport& record : core_timing_records) {
+    if (record.capture_id != evidence.observed_capture_id) {
+      continue;
+    }
+    if (report_device_instance_id != 0 &&
+        record.device_instance_id != report_device_instance_id) {
+      continue;
+    }
+    if (evidence.observed_acquisition_session_id != 0 &&
+        record.acquisition_session_id != 0 &&
+        record.acquisition_session_id !=
+            evidence.observed_acquisition_session_id) {
+      continue;
+    }
+    core_record = &record;
+    break;
+  }
+
+  d["capture_id"] = static_cast<uint64_t>(evidence.observed_capture_id);
+  d["device_instance_id"] = static_cast<uint64_t>(report_device_instance_id);
+  d["observed_acquisition_session_id"] =
+      static_cast<uint64_t>(evidence.observed_acquisition_session_id);
+  d["candidate_posture"] = core_production_posture_name(evidence.candidate.posture);
+  d["provider_record_found"] = provider_record != nullptr;
+  d["core_record_found"] = core_record != nullptr;
+
+  if (provider_record != nullptr) {
+    const godot::String provider_posture =
+        synthetic_capture_ready_timing_posture_name(*provider_record);
+    d["provider_output_posture"] = provider_posture;
+    d["provider_output_posture_matches_candidate"] =
+        provider_posture == core_production_posture_name(evidence.candidate.posture);
+    d["provider_post_capture_started_steady_ns"] =
+        provider_record->has_provider_post_capture_started_steady_ns
+            ? static_cast<uint64_t>(
+                  provider_record->provider_post_capture_started_steady_ns)
+            : static_cast<uint64_t>(0);
+    d["has_provider_post_capture_started_steady_ns"] =
+        provider_record->has_provider_post_capture_started_steady_ns;
+    d["provider_post_capture_completed_steady_ns"] =
+        provider_record->has_provider_post_capture_completed_steady_ns
+            ? static_cast<uint64_t>(
+                  provider_record->provider_post_capture_completed_steady_ns)
+            : static_cast<uint64_t>(0);
+    d["has_provider_post_capture_completed_steady_ns"] =
+        provider_record->has_provider_post_capture_completed_steady_ns;
+    d["provider_pre_capture_started_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_pre_capture_started_total_ns);
+    d["provider_post_capture_started_before_first_member_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_before_first_member_total_ns);
+    d["provider_post_capture_started_member_iteration_gap_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_member_iteration_gap_total_ns);
+    d["provider_post_capture_started_cpu_prep_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_post_capture_started_cpu_prep_total_ns);
+    d["provider_post_capture_started_gpu_retain_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_post_capture_started_gpu_retain_total_ns);
+    d["provider_post_capture_started_frame_assembly_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_post_capture_started_frame_assembly_total_ns);
+    d["provider_post_capture_started_post_frame_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_post_capture_started_post_frame_total_ns);
+    d["provider_post_capture_started_after_last_frame_before_terminal_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_before_terminal_total_ns);
+    d["provider_post_capture_started_after_last_frame_generation_tail_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_generation_tail_total_ns);
+    d["provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns);
+    d["provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns);
+    d["provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns);
+    d["provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns);
+    d["provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns);
+    d["provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns);
+    d["provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns);
+    d["provider_base_bytes_use_count_after_timing_record"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_base_bytes_use_count_after_timing_record);
+    d["provider_base_bytes_use_count_pre_return"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_base_bytes_use_count_pre_return);
+    d["provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns);
+    d["provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns);
+    d["provider_post_capture_started_after_last_frame_finish_provider_state_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_finish_provider_state_total_ns);
+    d["provider_post_capture_started_after_last_frame_finish_non_state_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record
+                ->provider_post_capture_started_after_last_frame_finish_non_state_total_ns);
+    d["provider_capture_terminal_post_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_capture_terminal_post_total_ns);
+    d["provider_capture_ready_provider_window_total_ns"] =
+        static_cast<uint64_t>(
+            provider_record->provider_capture_ready_provider_window_total_ns);
+  }
+
+  if (core_record != nullptr) {
+    d["core_capture_started_ingested_steady_ns"] =
+        core_record->has_capture_started_ingested_steady_ns
+            ? static_cast<uint64_t>(
+                  core_record->capture_started_ingested_steady_ns)
+            : static_cast<uint64_t>(0);
+    d["has_core_capture_started_ingested_steady_ns"] =
+        core_record->has_capture_started_ingested_steady_ns;
+    d["core_capture_completed_ingested_steady_ns"] =
+        core_record->has_capture_completed_ingested_steady_ns
+            ? static_cast<uint64_t>(
+                  core_record->capture_completed_ingested_steady_ns)
+            : static_cast<uint64_t>(0);
+    d["has_core_capture_completed_ingested_steady_ns"] =
+        core_record->has_capture_completed_ingested_steady_ns;
+  }
+
+  if (provider_record != nullptr &&
+      provider_record->has_provider_post_capture_started_steady_ns &&
+      core_record != nullptr &&
+      core_record->has_capture_started_ingested_steady_ns &&
+      core_record->capture_started_ingested_steady_ns >=
+          provider_record->provider_post_capture_started_steady_ns) {
+    d["has_provider_to_core_capture_started_ingest_delay_ns"] = true;
+    d["provider_to_core_capture_started_ingest_delay_ns"] =
+        static_cast<uint64_t>(
+            core_record->capture_started_ingested_steady_ns -
+            provider_record->provider_post_capture_started_steady_ns);
+  } else {
+    d["has_provider_to_core_capture_started_ingest_delay_ns"] = false;
+    d["provider_to_core_capture_started_ingest_delay_ns"] =
+        static_cast<uint64_t>(0);
+  }
+
+  if (provider_record != nullptr &&
+      provider_record->has_provider_post_capture_completed_steady_ns &&
+      core_record != nullptr &&
+      core_record->has_capture_completed_ingested_steady_ns &&
+      core_record->capture_completed_ingested_steady_ns >=
+          provider_record->provider_post_capture_completed_steady_ns) {
+    d["has_provider_to_core_capture_completed_ingest_delay_ns"] = true;
+    d["provider_to_core_capture_completed_ingest_delay_ns"] =
+        static_cast<uint64_t>(
+            core_record->capture_completed_ingested_steady_ns -
+            provider_record->provider_post_capture_completed_steady_ns);
+  } else {
+    d["has_provider_to_core_capture_completed_ingest_delay_ns"] = false;
+    d["provider_to_core_capture_completed_ingest_delay_ns"] =
+        static_cast<uint64_t>(0);
+  }
+
+  if (provider_record != nullptr && evidence.has_capture_ready_elapsed_ns &&
+      evidence.capture_ready_elapsed_ns >=
+          provider_record->provider_capture_ready_provider_window_total_ns) {
+    d["has_capture_ready_minus_provider_window_ns"] = true;
+    d["capture_ready_minus_provider_window_ns"] =
+        static_cast<uint64_t>(
+            evidence.capture_ready_elapsed_ns -
+            provider_record->provider_capture_ready_provider_window_total_ns);
+  } else {
+    d["has_capture_ready_minus_provider_window_ns"] = false;
+    d["capture_ready_minus_provider_window_ns"] = static_cast<uint64_t>(0);
+  }
+
+  if (provider_record != nullptr &&
+      provider_record->has_provider_post_capture_started_steady_ns &&
+      provider_record->has_provider_post_capture_completed_steady_ns &&
+      provider_record->provider_post_capture_completed_steady_ns >=
+          provider_record->provider_post_capture_started_steady_ns) {
+    const uint64_t provider_started_to_completed_elapsed_ns =
+        provider_record->provider_post_capture_completed_steady_ns -
+        provider_record->provider_post_capture_started_steady_ns;
+    d["has_provider_post_capture_started_to_completed_elapsed_ns"] = true;
+    d["provider_post_capture_started_to_completed_elapsed_ns"] =
+        static_cast<uint64_t>(provider_started_to_completed_elapsed_ns);
+    if (provider_started_to_completed_elapsed_ns >=
+        provider_record->provider_capture_ready_provider_window_total_ns) {
+      d["has_provider_post_capture_started_unmeasured_total_ns"] = true;
+      d["provider_post_capture_started_unmeasured_total_ns"] =
+          static_cast<uint64_t>(
+              provider_started_to_completed_elapsed_ns -
+              provider_record->provider_capture_ready_provider_window_total_ns);
+    } else {
+      d["has_provider_post_capture_started_unmeasured_total_ns"] = false;
+      d["provider_post_capture_started_unmeasured_total_ns"] =
+          static_cast<uint64_t>(0);
+    }
+  } else {
+    d["has_provider_post_capture_started_to_completed_elapsed_ns"] = false;
+    d["provider_post_capture_started_to_completed_elapsed_ns"] =
+        static_cast<uint64_t>(0);
+    d["has_provider_post_capture_started_unmeasured_total_ns"] = false;
+    d["provider_post_capture_started_unmeasured_total_ns"] =
+        static_cast<uint64_t>(0);
+  }
+
+  return d;
+}
+
 static const char* mode_to_cstr(RuntimeMode m) noexcept {
   switch (m) {
     case RuntimeMode::platform_backed: return "platform_backed";
@@ -225,7 +572,12 @@ static godot::String capture_evidence_incomplete_reason_name(
 }
 
 static godot::Dictionary backing_plan_candidate_evidence_to_dictionary(
-    const CoreBackingPlanCandidateEvidenceReport& evidence) {
+    const CoreBackingPlanCandidateEvidenceReport& evidence,
+    uint64_t report_device_instance_id,
+    const std::vector<SyntheticCaptureReadyTimingRecordSnapshot>&
+        provider_timing_records,
+    const std::vector<CoreCaptureLifecycleTimingReport>&
+        core_timing_records) {
   godot::Dictionary d;
   d["candidate"] = core_retained_plan_to_dictionary(evidence.candidate);
   d["observation_seen"] = evidence.observation_seen;
@@ -284,11 +636,21 @@ static godot::Dictionary backing_plan_candidate_evidence_to_dictionary(
       evidence.observed_gpu_materialization_available;
   d["observed_gpu_materialization_requires_readback"] =
       evidence.observed_gpu_materialization_requires_readback;
+  d["capture_ready_timing_attribution"] =
+      build_capture_ready_timing_attribution_dictionary(
+          evidence,
+          report_device_instance_id,
+          provider_timing_records,
+          core_timing_records);
   return d;
 }
 
 static godot::Dictionary backing_plan_evaluation_report_to_dictionary(
-    const CoreBackingPlanEvaluationReport& report) {
+    const CoreBackingPlanEvaluationReport& report,
+    const std::vector<SyntheticCaptureReadyTimingRecordSnapshot>&
+        provider_timing_records,
+    const std::vector<CoreCaptureLifecycleTimingReport>&
+        core_timing_records) {
   godot::Dictionary d;
   d["parent_kind"] = backing_plan_evaluation_parent_kind_name(report.parent_kind);
   d["primary_function"] =
@@ -317,7 +679,11 @@ static godot::Dictionary backing_plan_evaluation_report_to_dictionary(
   for (const CoreBackingPlanCandidateEvidenceReport& evidence :
        report.candidate_evidence) {
     candidate_evidence.append(
-        backing_plan_candidate_evidence_to_dictionary(evidence));
+        backing_plan_candidate_evidence_to_dictionary(
+            evidence,
+            report.device_instance_id,
+            provider_timing_records,
+            core_timing_records));
   }
   d["candidate_evidence"] = candidate_evidence;
   d["decision_from_evaluation"] = report.decision_from_evaluation;
@@ -2843,8 +3209,38 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d["total_emitted_frames"] = static_cast<uint64_t>(snap.total_emitted_frames);
   d["gpu_update_attempts"] = static_cast<uint64_t>(snap.gpu_update_attempts);
   d["gpu_update_demand_skipped"] = static_cast<uint64_t>(snap.gpu_update_demand_skipped);
+  d["capture_gpu_backing_retain_calls"] =
+      static_cast<uint64_t>(snap.capture_gpu_backing_retain_calls);
   d["gpu_texture_update_calls"] = static_cast<uint64_t>(snap.gpu_texture_update_calls);
   d["frame_copy_calls"] = static_cast<uint64_t>(snap.frame_copy_calls);
+  d["capture_gpu_backing_retain_total_ms"] =
+      snap.capture_gpu_backing_retain_total_ms;
+  d["capture_gpu_backing_retain_max_ms"] =
+      snap.capture_gpu_backing_retain_max_ms;
+  godot::Dictionary capture_gpu_backing_retain_by_posture;
+  capture_gpu_backing_retain_by_posture["CPU-primary"] =
+      synthetic_capture_gpu_backing_retain_posture_metrics_to_dictionary(
+          snap.capture_gpu_backing_retain_cpu_primary);
+  capture_gpu_backing_retain_by_posture["GPU-primary, no CPU sidecar"] =
+      synthetic_capture_gpu_backing_retain_posture_metrics_to_dictionary(
+          snap.capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar);
+  capture_gpu_backing_retain_by_posture["GPU-primary, with CPU sidecar"] =
+      synthetic_capture_gpu_backing_retain_posture_metrics_to_dictionary(
+          snap.capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar);
+  d["capture_gpu_backing_retain_by_posture"] =
+      capture_gpu_backing_retain_by_posture;
+  godot::Dictionary capture_ready_stage_by_posture;
+  capture_ready_stage_by_posture["CPU-primary"] =
+      synthetic_capture_ready_stage_posture_metrics_to_dictionary(
+          snap.capture_ready_stage_cpu_primary);
+  capture_ready_stage_by_posture["GPU-primary, no CPU sidecar"] =
+      synthetic_capture_ready_stage_posture_metrics_to_dictionary(
+          snap.capture_ready_stage_gpu_primary_no_cpu_sidecar);
+  capture_ready_stage_by_posture["GPU-primary, with CPU sidecar"] =
+      synthetic_capture_ready_stage_posture_metrics_to_dictionary(
+          snap.capture_ready_stage_gpu_primary_with_cpu_sidecar);
+  d["capture_ready_stage_by_posture"] =
+      capture_ready_stage_by_posture;
   d["frame_render_total_ms"] = snap.frame_render_total_ms;
   d["pattern_overlay_total_ms"] = snap.pattern_overlay_total_ms;
   d["pattern_base_copy_total_ms"] = snap.pattern_base_copy_total_ms;
@@ -2871,10 +3267,16 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d.set(
       godot::Variant(godot::String("result_access_timing_evidence")),
       godot::Variant(result_access_cost_evidence::snapshot()));
+  const std::vector<CoreCaptureLifecycleTimingReport>
+      recent_capture_lifecycle_timing =
+          runtime_.recent_capture_lifecycle_timing_reports();
   godot::Array evaluation_reports;
   for (const CoreBackingPlanEvaluationReport& report :
        runtime_.backing_plan_evaluation_reports()) {
-    evaluation_reports.append(backing_plan_evaluation_report_to_dictionary(report));
+    evaluation_reports.append(backing_plan_evaluation_report_to_dictionary(
+        report,
+        snap.capture_ready_timing_records,
+        recent_capture_lifecycle_timing));
   }
   d.set(
       godot::Variant(godot::String("backing_plan_evaluation_reports")),

@@ -130,6 +130,18 @@ struct CoreBackingPlanEvaluationReport {
       BackingPlanEvaluationCompletionReason::None;
 };
 
+struct CoreCaptureLifecycleTimingReport {
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint64_t acquisition_session_id = 0;
+  bool has_capture_started_ingested_steady_ns = false;
+  uint64_t capture_started_ingested_steady_ns = 0;
+  bool has_capture_completed_ingested_steady_ns = false;
+  uint64_t capture_completed_ingested_steady_ns = 0;
+  bool has_capture_failed_ingested_steady_ns = false;
+  uint64_t capture_failed_ingested_steady_ns = 0;
+};
+
 enum class TrySetStreamPictureStatus : uint8_t {
   OK = 0,
   NotSupported = 1,
@@ -469,6 +481,8 @@ enum class TryCloseDeviceStatus : uint8_t {
 #endif
 
   std::vector<CoreBackingPlanEvaluationReport> backing_plan_evaluation_reports() const;
+  std::vector<CoreCaptureLifecycleTimingReport>
+  recent_capture_lifecycle_timing_reports() const;
 
   // Narrow internal backing-plan evaluation handoff. Godot-side retained-result
   // calibration reports structural/support truth plus measured public-operation
@@ -916,6 +930,10 @@ private:
       const MeasuredPlanEvidence& evidence) noexcept;
   std::vector<CoreBackingPlanEvaluationReport>
   backing_plan_evaluation_reports_on_core_thread_() const;
+  std::vector<CoreCaptureLifecycleTimingReport>
+  recent_capture_lifecycle_timing_reports_on_core_thread_() const;
+  void note_capture_lifecycle_ingress_(
+      const CoreCaptureLifecycleIngressEvent& event);
   static RetainedPlanDecisionProvenance build_decision_provenance_(
       const RetainedPlanEvaluatorState& state,
       CoreRetainedProductionPlan selected) noexcept;
@@ -968,6 +986,10 @@ private:
   };
   std::map<uint64_t, std::map<uint64_t, CaptureStreamPreemptionRecord>> capture_stream_preemptions_by_device_;
   std::deque<PendingCaptureObservation> pending_capture_observations_;
+  std::map<std::pair<uint64_t, uint64_t>, CoreCaptureLifecycleTimingReport>
+      recent_capture_lifecycle_timing_reports_;
+  std::vector<std::pair<uint64_t, uint64_t>>
+      recent_capture_lifecycle_timing_order_;
   std::deque<CoreThread::Task> requests_;
 
   enum class ShutdownPhase : uint8_t {

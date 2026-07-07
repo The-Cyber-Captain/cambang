@@ -1,78 +1,107 @@
 # Current Tranche
 
-This file records the current CamBANG workstream, recent committed outcomes that affect near-term work, and the next intended development direction.
-
-Durable project rules belong in `AGENTS.md`, `docs/dev/agent_context.md`, or the relevant architecture/dev document.
+Volatile handoff for the active CamBANG workstream. Durable rules remain in `AGENTS.md`, `docs/dev/agent_context.md`, and canonical architecture/dev docs.
 
 ## Active workstream
 
-No small cleanup tranche is currently open.
+### Scene 870 provider-side no-sidecar readiness residual
 
-The recent cleanup sequence is ready to close. The next substantial direction is platform-backed provider implementation readiness, likely best handled as a fresh independent session/workstream rather than continued in this cleanup context.
+Goal: explain the remaining Android Mobile `GPU-primary, no CPU sidecar` capture-readiness penalty in Scene 870 without changing runtime behaviour.
 
-## Recently closed
+Current evidence:
 
-### Capture getter-side calibration fallback cleanup
+- Multi-viable bracketed capture evidence is green: required/materialized/observed/returned member counts complete for the required 5-member result.
+- `live_cpu_display_refresh_observed` remains expected only in CPU-backed display cells. Treat it in Mobile `cpu_gpu`, `runtime_default`, or `gpu_only` as a regression.
+- Capture-side Backing Plan evaluation correctly scores whole-result readiness plus required-member materialization, not later `to_image_member()` timing alone.
+- `capture_ready_elapsed_ns` means acquisition-session `capture_started -> capture_completed` lifecycle/readiness timing. Do not redefine it unless a narrow, source-obvious correctness bug is found and explicitly justified.
+- GPU retain/create timing is material and explains `GPU-primary, with CPU sidecar` readiness loss well.
+- GPU retain/create, first retain-call cost, provider-to-core ingress delay, and removed trace-formatting overhead do **not** explain the remaining Android `GPU-primary, no CPU sidecar` residual.
+- Post-cleanup evidence shows `capture_ready_elapsed_ns` closely matches provider-side `post_capture_started -> post_capture_completed` wall time.
+- The remaining residual appears to be unmeasured provider-side wall time inside `post_capture_started -> post_capture_completed`, outside current named stage buckets.
 
-Outcome:
+Current named stage buckets:
 
-* Removed broad capture calibration/reporting side effects from ordinary capture-result getter paths.
-* Capture result retrieval no longer acts as a calibration heartbeat.
-* Explicit `to_image_member(index)` access remains instrumented and reports observed member access back into Core through a narrow internal server path.
-* Scene 568 now exercises the explicit capture member access seam rather than relying on legacy getter-side calibration.
-* No public Godot API, scoring constants, parent-scoped evaluation semantics, or result retrieval semantics changed.
+- `pre_capture_started_total_ms`
+- `post_capture_started_cpu_prep_total_ms`
+- `post_capture_started_gpu_retain_total_ms`
+- `post_capture_started_post_frame_total_ms`
+- `capture_terminal_post_total_ms`
+- `capture_ready_provider_window_total_ms`
 
-Final validation was run only after stray debug prints were removed and the real GDE DLL was rebuilt.
+## Immediate task
 
-Reported final validation:
+Perform one narrow attribution pass. Do **not** optimise.
 
-* `provider_compliance_verify` passed.
-* `core_result_path_smoke` passed.
-* `synthetic_only_provider_support_verify` passed.
-* Windows unsandboxed Scene 568 Mobile/runtime_default passed.
-* Windows unsandboxed Scene 68 passed.
-* Windows unsandboxed Scene 70 passed.
+Start with source inspection. If a narrow missing region is confirmed, add only compact maintainer-only diagnostics through existing synthetic metrics / Scene 870 summary surfaces.
 
-Not run:
+Answer:
 
-* Android Godot validation.
-* Final matrix/soak rerun.
+- What provider-side work or wait inside `post_capture_started -> post_capture_completed` is not covered by the current stage buckets?
+- Is the gap caused by sleeps/simulated latency, worker scheduling/joining, lock waits, queue/post waits, per-member gaps between timed regions, or posture-specific branches?
+- Are current stage bucket definitions missing real work between measured blocks?
 
-### Timing/evidence semantics clarification
+Primary source regions:
 
-Outcome:
+- `src/imaging/synthetic/provider.cpp` / `.h` — primary focus: capture production interval, per-member gaps, worker/device job boundaries, joins, locks, frame posting, capture started/completed posting.
+- `src/godot/cambang_server.cpp` — synthetic metrics export, only if new metrics are added.
+- `tests/cambang_gde/scripts/870_to_image_soak_benchmark.gd` — Scene 870 summary attachment, only if new fields are exported.
+- `src/core/core_runtime.cpp` and acquisition-session registry files only if source evidence shows provider-side attribution is insufficient.
 
-* Clarified maintainer documentation for the current timing/evidence fields.
-* No runtime behaviour, public API, scoring constants, or measurement machinery changed.
-* Score tuning remains deferred.
+Preferred shape:
 
-### Bracket whole-result scoring
+- compact per-posture or per-candidate totals, not broad timeline dumps;
+- preserve existing GPU retain and ready-stage metrics;
+- maintainer-only diagnostics only;
+- no public Godot API or snapshot schema changes;
+- no runtime optimisation in this task.
 
-Outcome:
+## Guardrails
 
-* Capture-side scoring now uses readiness once plus conservative required-member materialization.
-* Required members are derived from the applied still-image bundle/profile.
-* Single-member capture remains the member-0 degenerate case.
-* No fixed three-member assumption was introduced.
+Do not:
 
-## Near-term guardrails
+- change Backing Plan chooser policy;
+- treat `to_image_member()` timing alone as the AcquisitionSession score;
+- fabricate lazy GPU backing truth;
+- add or change public Godot API;
+- add persistent environment knobs;
+- move Godot/RD ownership into Core or provider API;
+- add Android-only/Core platform conditionals;
+- weaken Scene 870, Scene 568, smoke tools, or expected-negative checks;
+- reduce Scene 870 load to make numbers look good;
+- optimise GPU retain/create, add texture pooling, add warmup/settle policy, or change worker/executor shape in this diagnostic task.
 
-Do not reopen the following without new source evidence:
+Report source/doc mismatches instead of silently choosing one.
 
-* parent ownership and migration semantics;
-* retained-result calibration lifecycle;
-* bracket whole-result scoring aggregation;
-* capture getter-side fallback removal;
-* explicit `to_image_member(index)` capture observation reporting;
-* Scene 568 terminal rollover semantics;
-* Scene 568 Compatibility `gpu_only` expected-negative classification;
-* `topology_change_versions` settled-snapshot wait.
+## Acceptance / validation
+
+A satisfactory result provides:
+
+- a source-grounded explanation of the remaining no-sidecar residual, or a bounded statement of what remains unknown;
+- Scene 870 output separating readiness, GPU retain/create, materialization, named provider-side stages, and remaining unmeasured provider-side wall time;
+- green required-member evidence in multi-viable bracket cells;
+- no `live_cpu_display_refresh_observed` in Mobile mixed/GPU cells;
+- no runtime behaviour, chooser policy, public API, Scene 870 load, or retained backing truth change.
+
+Minimum validation after code changes:
+
+- build touched target(s);
+- `provider_compliance_verify`;
+- `core_result_path_smoke`;
+- `synthetic_only_provider_support_verify`;
+- Scene 568 if Backing Plan evaluator evidence/reporting is touched;
+- targeted Scene 870 before any full matrix:
+  - Android Mobile `runtime_default`
+  - Android Mobile `cpu_gpu`
+  - Android Mobile `gpu_only`
+  - Windows Mobile counterparts if practical
+
+If Android/Godot validation is not run, say so explicitly.
 
 ## Deferred
 
-Not part of any currently open cleanup tranche:
-
-* score tuning;
-* platform-backed provider implementation readiness;
-* Scene 70 latency investigation only if reproducible after a clean system state;
-* optional Godot-side N-member whole-result scoring proof, only if later judged worth the extra scene/harness work.
+- chooser redesign;
+- public API changes;
+- platform-backed provider work;
+- broad GPU display architecture redesign;
+- Scene 870 load-model redesign;
+- runtime optimisation, texture pooling, warmup policy, or Synthetic worker/executor changes before the residual is attributed.

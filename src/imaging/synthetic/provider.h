@@ -24,13 +24,89 @@
 namespace cambang {
 
 
+struct SyntheticCaptureGpuBackingRetainPostureMetricsSnapshot {
+  uint64_t calls = 0;
+  double total_ms = 0.0;
+  double max_ms = 0.0;
+  bool has_first_call = false;
+  double first_call_ms = 0.0;
+  uint64_t later_calls = 0;
+  double later_total_ms = 0.0;
+  double later_max_ms = 0.0;
+};
+
+struct SyntheticCaptureReadyStagePostureMetricsSnapshot {
+  uint64_t calls = 0;
+  double pre_capture_started_total_ms = 0.0;
+  double post_capture_started_before_first_member_total_ms = 0.0;
+  double post_capture_started_member_iteration_gap_total_ms = 0.0;
+  double post_capture_started_cpu_prep_total_ms = 0.0;
+  double post_capture_started_gpu_retain_total_ms = 0.0;
+  double post_capture_started_frame_assembly_total_ms = 0.0;
+  double post_capture_started_post_frame_total_ms = 0.0;
+  double post_capture_started_after_last_frame_before_terminal_total_ms = 0.0;
+  double post_capture_started_after_last_frame_generation_tail_total_ms = 0.0;
+  double post_capture_started_after_last_frame_return_to_capture_lock_total_ms = 0.0;
+  double post_capture_started_after_last_frame_return_to_finish_begin_total_ms = 0.0;
+  double post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ms = 0.0;
+  double post_capture_started_after_last_frame_post_return_timing_record_update_total_ms = 0.0;
+  double post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ms = 0.0;
+  double post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ms = 0.0;
+  double post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ms = 0.0;
+  double post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ms = 0.0;
+  double post_capture_started_after_last_frame_capture_lock_wait_total_ms = 0.0;
+  double post_capture_started_after_last_frame_finish_provider_state_total_ms = 0.0;
+  double post_capture_started_after_last_frame_finish_non_state_total_ms = 0.0;
+  double capture_terminal_post_total_ms = 0.0;
+  double capture_ready_provider_window_total_ms = 0.0;
+};
+
+struct SyntheticCaptureReadyTimingRecordSnapshot {
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint64_t acquisition_session_id = 0;
+  bool primary_cpu = true;
+  bool retain_cpu_sidecar = false;
+  bool has_provider_post_capture_started_steady_ns = false;
+  uint64_t provider_post_capture_started_steady_ns = 0;
+  bool has_provider_post_capture_completed_steady_ns = false;
+  uint64_t provider_post_capture_completed_steady_ns = 0;
+  uint64_t provider_pre_capture_started_total_ns = 0;
+  uint64_t provider_post_capture_started_before_first_member_total_ns = 0;
+  uint64_t provider_post_capture_started_member_iteration_gap_total_ns = 0;
+  uint64_t provider_post_capture_started_cpu_prep_total_ns = 0;
+  uint64_t provider_post_capture_started_gpu_retain_total_ns = 0;
+  uint64_t provider_post_capture_started_frame_assembly_total_ns = 0;
+  uint64_t provider_post_capture_started_post_frame_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_before_terminal_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_generation_tail_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns = 0;
+  uint64_t provider_base_bytes_use_count_after_timing_record = 0;
+  uint64_t provider_base_bytes_use_count_pre_return = 0;
+  uint64_t provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_finish_provider_state_total_ns = 0;
+  uint64_t provider_post_capture_started_after_last_frame_finish_non_state_total_ns = 0;
+  uint64_t provider_capture_terminal_post_total_ns = 0;
+  uint64_t provider_capture_ready_provider_window_total_ns = 0;
+};
+
 struct SyntheticMetricsSnapshot {
   uint64_t current_virtual_timeline_ns = 0;
   uint64_t total_emitted_frames = 0;
   uint64_t gpu_update_attempts = 0;
   uint64_t gpu_update_demand_skipped = 0;
+  uint64_t capture_gpu_backing_retain_calls = 0;
   uint64_t gpu_texture_update_calls = 0;
   uint64_t frame_copy_calls = 0;
+  double capture_gpu_backing_retain_total_ms = 0.0;
+  double capture_gpu_backing_retain_max_ms = 0.0;
   double frame_render_total_ms = 0.0;
   double pattern_overlay_total_ms = 0.0;
   double pattern_base_copy_total_ms = 0.0;
@@ -39,6 +115,20 @@ struct SyntheticMetricsSnapshot {
   double gpu_texture_update_total_ms = 0.0;
   uint64_t catchup_ticks_capped = 0;
   uint64_t catchup_frames_dropped = 0;
+  SyntheticCaptureGpuBackingRetainPostureMetricsSnapshot
+      capture_gpu_backing_retain_cpu_primary{};
+  SyntheticCaptureGpuBackingRetainPostureMetricsSnapshot
+      capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar{};
+  SyntheticCaptureGpuBackingRetainPostureMetricsSnapshot
+      capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar{};
+  SyntheticCaptureReadyStagePostureMetricsSnapshot
+      capture_ready_stage_cpu_primary{};
+  SyntheticCaptureReadyStagePostureMetricsSnapshot
+      capture_ready_stage_gpu_primary_no_cpu_sidecar{};
+  SyntheticCaptureReadyStagePostureMetricsSnapshot
+      capture_ready_stage_gpu_primary_with_cpu_sidecar{};
+  std::vector<SyntheticCaptureReadyTimingRecordSnapshot>
+      capture_ready_timing_records;
 };
 
 struct SyntheticStagedRigTopology {
@@ -153,6 +243,106 @@ public:
   std::vector<SyntheticStagedRigTopology> get_staged_rig_topology_for_host() const;
 
 private:
+  struct CaptureGpuBackingRetainPostureMetrics {
+    uint64_t calls = 0;
+    uint64_t total_ns = 0;
+    uint64_t max_ns = 0;
+    bool has_first_call = false;
+    uint64_t first_call_ns = 0;
+    uint64_t later_calls = 0;
+    uint64_t later_total_ns = 0;
+    uint64_t later_max_ns = 0;
+  };
+
+  struct CaptureReadyStagePostureMetrics {
+    uint64_t calls = 0;
+    uint64_t pre_capture_started_total_ns = 0;
+    uint64_t post_capture_started_before_first_member_total_ns = 0;
+    uint64_t post_capture_started_member_iteration_gap_total_ns = 0;
+    uint64_t post_capture_started_cpu_prep_total_ns = 0;
+    uint64_t post_capture_started_gpu_retain_total_ns = 0;
+    uint64_t post_capture_started_frame_assembly_total_ns = 0;
+    uint64_t post_capture_started_post_frame_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_before_terminal_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_generation_tail_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_return_to_capture_lock_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_return_to_finish_begin_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_post_return_timing_record_update_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_capture_lock_wait_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_finish_provider_state_total_ns = 0;
+    uint64_t post_capture_started_after_last_frame_finish_non_state_total_ns = 0;
+    uint64_t capture_terminal_post_total_ns = 0;
+    uint64_t capture_ready_provider_window_total_ns = 0;
+  };
+
+  struct CaptureReadyTimingKey {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+
+    bool operator<(const CaptureReadyTimingKey& other) const noexcept {
+      if (capture_id != other.capture_id) {
+        return capture_id < other.capture_id;
+      }
+      return device_instance_id < other.device_instance_id;
+    }
+
+    bool operator==(const CaptureReadyTimingKey& other) const noexcept {
+      return capture_id == other.capture_id &&
+             device_instance_id == other.device_instance_id;
+    }
+  };
+
+  struct CaptureReadyTimingRecord {
+    uint64_t capture_id = 0;
+    uint64_t device_instance_id = 0;
+    uint64_t acquisition_session_id = 0;
+    bool primary_cpu = true;
+    bool retain_cpu_sidecar = false;
+    bool has_provider_post_capture_started_steady_ns = false;
+    uint64_t provider_post_capture_started_steady_ns = 0;
+    bool has_provider_post_capture_completed_steady_ns = false;
+    uint64_t provider_post_capture_completed_steady_ns = 0;
+    uint64_t provider_pre_capture_started_total_ns = 0;
+    uint64_t provider_post_capture_started_before_first_member_total_ns = 0;
+    uint64_t provider_post_capture_started_member_iteration_gap_total_ns = 0;
+    uint64_t provider_post_capture_started_cpu_prep_total_ns = 0;
+    uint64_t provider_post_capture_started_gpu_retain_total_ns = 0;
+    uint64_t provider_post_capture_started_frame_assembly_total_ns = 0;
+    uint64_t provider_post_capture_started_post_frame_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_before_terminal_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_generation_tail_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_return_to_capture_lock_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_return_to_finish_begin_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_post_return_timing_record_lock_wait_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_post_return_timing_record_update_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_finish_begin_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_post_return_after_timing_record_to_pre_return_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_pre_return_to_finish_begin_total_ns = 0;
+    uint64_t provider_base_bytes_use_count_after_timing_record = 0;
+    uint64_t provider_base_bytes_use_count_pre_return = 0;
+    uint64_t provider_post_capture_started_after_last_frame_finish_begin_to_capture_lock_wait_begin_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_capture_lock_wait_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_finish_provider_state_total_ns = 0;
+    uint64_t provider_post_capture_started_after_last_frame_finish_non_state_total_ns = 0;
+    uint64_t provider_capture_terminal_post_total_ns = 0;
+    uint64_t provider_capture_ready_provider_window_total_ns = 0;
+    bool has_provider_last_frame_posted_steady_ns = false;
+    uint64_t provider_last_frame_posted_steady_ns = 0;
+    bool has_provider_capture_generation_return_steady_ns = false;
+    uint64_t provider_capture_generation_return_steady_ns = 0;
+    bool has_provider_capture_generation_timing_record_lock_acquired_steady_ns = false;
+    uint64_t provider_capture_generation_timing_record_lock_acquired_steady_ns = 0;
+    bool has_provider_capture_generation_post_timing_record_steady_ns = false;
+    uint64_t provider_capture_generation_post_timing_record_steady_ns = 0;
+    bool has_provider_capture_generation_pre_return_steady_ns = false;
+    uint64_t provider_capture_generation_pre_return_steady_ns = 0;
+  };
+
   static constexpr uint64_t kBackingPlanEvaluationSettleDelayNs = 20'000'000ull;
 
   CBProviderStrand strand_;
@@ -200,6 +390,9 @@ private:
   bool choose_stream_gpu_preference_(ProducerBackingCapabilities capabilities) const noexcept;
   SyntheticProducerOutputFormMode resolve_producer_output_form_mode_(
       ProducerBackingCapabilities capabilities) const noexcept;
+  CaptureReadyTimingRecord& capture_ready_timing_record_(
+      uint64_t capture_id,
+      uint64_t device_instance_id);
 
   struct DeviceState {
     std::string hardware_id;
@@ -322,6 +515,7 @@ private:
     uint64_t generation = 0;
     bool terminal_posted = false;
     bool release_done = false;
+    std::shared_ptr<std::vector<std::uint8_t>> deferred_cpu_staging_bytes;
   };
 
   struct InFlightCaptureKey {
@@ -418,6 +612,24 @@ private:
   uint64_t triage_gpu_update_demand_skipped_total_ = 0;
   uint64_t triage_gpu_update_failures_total_ = 0;
   uint64_t triage_gpu_update_retries_total_ = 0;
+  uint64_t triage_capture_gpu_backing_retain_calls_ = 0;
+  uint64_t triage_capture_gpu_backing_retain_total_ns_ = 0;
+  uint64_t triage_capture_gpu_backing_retain_max_ns_ = 0;
+  CaptureGpuBackingRetainPostureMetrics
+      triage_capture_gpu_backing_retain_cpu_primary_{};
+  CaptureGpuBackingRetainPostureMetrics
+      triage_capture_gpu_backing_retain_gpu_primary_no_cpu_sidecar_{};
+  CaptureGpuBackingRetainPostureMetrics
+      triage_capture_gpu_backing_retain_gpu_primary_with_cpu_sidecar_{};
+  CaptureReadyStagePostureMetrics triage_capture_ready_stage_cpu_primary_{};
+  CaptureReadyStagePostureMetrics
+      triage_capture_ready_stage_gpu_primary_no_cpu_sidecar_{};
+  CaptureReadyStagePostureMetrics
+      triage_capture_ready_stage_gpu_primary_with_cpu_sidecar_{};
+  mutable std::mutex triage_capture_ready_metrics_mutex_;
+  std::map<CaptureReadyTimingKey, CaptureReadyTimingRecord>
+      triage_capture_ready_timing_records_;
+  std::vector<CaptureReadyTimingKey> triage_capture_ready_timing_order_;
   uint64_t triage_gpu_backing_recreate_total_ = 0;
   uint64_t triage_gpu_backing_release_total_ = 0;
   uint64_t triage_gpu_ensure_backing_calls_total_ = 0;
