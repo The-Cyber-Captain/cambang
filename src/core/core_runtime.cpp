@@ -1714,8 +1714,10 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
         state.device_instance_id != device_instance_id) {
       continue;
     }
-    if (const auto* session = acquisition_sessions_.find(key.id);
-        session == nullptr || session->phase != CBLifecyclePhase::LIVE) {
+    const auto* session = acquisition_sessions_.find(key.id);
+    const bool session_live =
+        session != nullptr && session->phase == CBLifecyclePhase::LIVE;
+    if (!session_live && state.orphan_retire_after_ns == 0) {
       continue;
     }
     ++preserved_session_evaluator_count;
@@ -1726,14 +1728,19 @@ CoreRuntime::resolve_capture_retained_plan_parent_(
         decision.device_instance_id != device_instance_id) {
       continue;
     }
-    if (const auto* session = acquisition_sessions_.find(key.id);
-        session == nullptr || session->phase != CBLifecyclePhase::LIVE) {
+    const auto* session = acquisition_sessions_.find(key.id);
+    const bool session_live =
+        session != nullptr && session->phase == CBLifecyclePhase::LIVE;
+    if (!session_live && decision.orphan_retire_after_ns == 0) {
       continue;
     }
     ++preserved_session_decision_count;
     consider_preserved_session(key.id);
   }
-  if (!preserved_session_ambiguous && preserved_session_id != 0) {
+  const bool has_live_session_successor = live_session_count != 0;
+  if (!has_live_session_successor &&
+      !preserved_session_ambiguous &&
+      preserved_session_id != 0) {
     resolved.key.kind = CaptureRetainedPlanParentKey::Kind::AcquisitionSession;
     resolved.key.id = preserved_session_id;
     resolved.acquisition_session_id = preserved_session_id;
@@ -1912,8 +1919,20 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
                     CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
                 key.id != parent.key.id);
       };
+  const uint64_t now_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - epoch_)
+          .count());
+  const bool has_live_session_successor =
+      acquisition_sessions_.resolve_live_session_id_for_device(
+          device_instance_id) != 0;
+  const bool preserve_retired_real_session_parent_as_orphan =
+      parent.key.kind == CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+      !device_has_any_stream_(device_instance_id) &&
+      !has_live_session_successor;
   bool changed = false;
   bool restart_from_seed = false;
+  bool preserved_orphan_session_parent = false;
   if (parent.acquisition_session_id != 0) {
     changed =
         acquisition_sessions_.set_backing_capabilities(
@@ -1990,6 +2009,17 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       ++it;
       continue;
     }
+    if (preserve_retired_real_session_parent_as_orphan &&
+        retired_real_session_parent(it->first)) {
+      if (it->second.orphan_retire_after_ns == 0) {
+        it->second.orphan_retire_after_ns =
+            now_ns + kCaptureRetainedPlanOrphanRetentionWindowNs;
+        changed = true;
+      }
+      preserved_orphan_session_parent = true;
+      ++it;
+      continue;
+    }
     if (retired_real_session_parent(it->first) && it->second.active) {
       restart_from_seed = true;
     }
@@ -2032,6 +2062,17 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
       ++it;
       continue;
     }
+    if (preserve_retired_real_session_parent_as_orphan &&
+        retired_real_session_parent(it->first)) {
+      if (it->second.orphan_retire_after_ns == 0) {
+        it->second.orphan_retire_after_ns =
+            now_ns + kCaptureRetainedPlanOrphanRetentionWindowNs;
+        changed = true;
+      }
+      preserved_orphan_session_parent = true;
+      ++it;
+      continue;
+    }
     if (current_eval_it == capture_retained_plan_evaluators_.end() &&
         current_decision_it == capture_retained_plan_decisions_.end() &&
         it->first.kind ==
@@ -2065,11 +2106,12 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
     restart_from_seed = true;
   }
 
-  if (restart_from_seed &&
+  if (!preserved_orphan_session_parent &&
+      restart_from_seed &&
       (parent.key.kind ==
            CaptureRetainedPlanParentKey::Kind::AcquisitionSession ||
        parent.key.kind ==
-           CaptureRetainedPlanParentKey::Kind::CapturePriming)) {
+            CaptureRetainedPlanParentKey::Kind::CapturePriming)) {
     return refresh_capture_retained_plan_state_(
                device_instance_id,
                /*requested_bump_access_posture_epoch=*/false) ||
@@ -3468,7 +3510,7 @@ void CoreRuntime::handle_capture_retained_to_image_observation_(
       state.capture_priming_seed_signature, chosen);
   RetainedPlanDecisionProvenance provenance =
       build_decision_provenance_(state, chosen);
-  if (rec == nullptr && !session_still_live) {
+  if (!session_still_live) {
     provenance.orphan_retire_after_ns =
         now_ns + kCaptureRetainedPlanOrphanRetentionWindowNs;
   } else {

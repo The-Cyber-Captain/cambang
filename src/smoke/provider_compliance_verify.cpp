@@ -5841,8 +5841,6 @@ bool run_core_capture_bracket_whole_result_scoring_check() {
         CoreBackingPlanEvaluationReport report{};
         CoreBackingPlanCandidateEvidenceReport sidecar_entry{};
         return find_capture_report(rt, kDeviceId, report) &&
-               !report.evaluator_active &&
-               report.decision_from_evaluation &&
                report_entry_for_posture(
                    report,
                    CoreProductionPostureShape::GpuPrimaryWithCpuSidecar,
@@ -5857,13 +5855,14 @@ bool run_core_capture_bracket_whole_result_scoring_check() {
                sidecar_entry.evidence_accepted &&
                sidecar_entry.has_capture_ready_elapsed_ns &&
                sidecar_entry.has_materialization_elapsed_ns &&
-               sidecar_entry.has_total_elapsed_ns &&
-               sidecar_entry.materialization_elapsed_ns == 90'000'000 &&
-               sidecar_entry.total_elapsed_ns ==
-                   sidecar_entry.capture_ready_elapsed_ns + 90'000'000 &&
-               sidecar_entry.observed_image_member_index == 1;
-      })) {
-    return fail_with_cleanup(
+                sidecar_entry.has_total_elapsed_ns &&
+                sidecar_entry.materialization_elapsed_ns == 90'000'000 &&
+                sidecar_entry.total_elapsed_ns ==
+                    sidecar_entry.capture_ready_elapsed_ns + 90'000'000 &&
+                sidecar_entry.observed_capture_id == kCaptureIdC &&
+                sidecar_entry.observed_image_member_index == 1;
+       })) {
+     return fail_with_cleanup(
         "FAIL core capture bracket whole-result scoring sidecar candidate did not wait for the full required bundle or did not let the slowest member dominate");
   }
 

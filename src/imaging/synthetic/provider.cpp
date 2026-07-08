@@ -1,9 +1,11 @@
 #include "imaging/synthetic/provider.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdarg>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <cstring>
 #include <cstdlib>
@@ -144,6 +146,69 @@ void record_timing_sample(uint64_t sample_ns, uint64_t& calls, uint64_t& total_n
   ++calls;
   total_ns += sample_ns;
   max_ns = std::max(max_ns, sample_ns);
+}
+
+void copy_rgba8_with_optional_adjustments(
+    uint8_t* dst,
+    uint32_t dst_stride_bytes,
+    const uint8_t* src,
+    uint32_t src_stride_bytes,
+    uint32_t width,
+    uint32_t height,
+    bool dst_bgra,
+    int32_t applied_exposure_compensation_milli_ev) noexcept {
+  // SyntheticProvider owns synthetic still-image generation, including
+  // bracket-member exposure-variant synthesis from a deterministic CPU base
+  // frame. Platform-backed providers are not expected to recreate that model:
+  // they adapt backend-produced frames into CamBANG truth instead.
+  //
+  // The optional BGRA write path is different in kind. CamBANG's provider
+  // contract allows packed RGBA/BGRA delivery, so platform-backed providers
+  // may still need format mapping to satisfy the negotiated FourCC. What is
+  // synthetic-specific here is fusing that mapping into synthetic frame
+  // generation, not the existence of RGBA/BGRA adaptation in general.
+  std::array<uint8_t, 256> lut{};
+  const uint8_t* lut_ptr = nullptr;
+  if (applied_exposure_compensation_milli_ev != 0) {
+    const double gain = std::pow(
+        2.0,
+        static_cast<double>(applied_exposure_compensation_milli_ev) / 1000.0);
+    for (size_t i = 0; i < lut.size(); ++i) {
+      const double adjusted = static_cast<double>(i) * gain;
+      lut[i] = static_cast<uint8_t>(std::clamp(adjusted, 0.0, 255.0));
+    }
+    lut_ptr = lut.data();
+  }
+
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t* src_row =
+        src + static_cast<size_t>(y) * static_cast<size_t>(src_stride_bytes);
+    uint8_t* dst_row =
+        dst + static_cast<size_t>(y) * static_cast<size_t>(dst_stride_bytes);
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t* src_px = src_row + static_cast<size_t>(x) * 4u;
+      uint8_t* dst_px = dst_row + static_cast<size_t>(x) * 4u;
+      uint8_t r = src_px[0];
+      uint8_t g = src_px[1];
+      uint8_t b = src_px[2];
+      const uint8_t a = src_px[3];
+      if (lut_ptr != nullptr) {
+        r = lut_ptr[r];
+        g = lut_ptr[g];
+        b = lut_ptr[b];
+      }
+      if (dst_bgra) {
+        dst_px[0] = b;
+        dst_px[1] = g;
+        dst_px[2] = r;
+      } else {
+        dst_px[0] = r;
+        dst_px[1] = g;
+        dst_px[2] = b;
+      }
+      dst_px[3] = a;
+    }
+  }
 }
 
 } // namespace
@@ -1773,15 +1838,29 @@ void SyntheticProvider::run_device_capture_job_(DeviceCaptureJob job, uint64_t g
   }
 
   bool ok = false;
+  std::shared_ptr<std::vector<std::uint8_t>> deferred_cpu_staging_bytes{};
   try {
-    ok = generate_device_capture_payloads_(job, generation);
+    ok = generate_device_capture_payloads_(
+        job, generation, &deferred_cpu_staging_bytes);
     if (ok) {
-      finish_device_capture_job_(job, generation, CaptureTerminalKind::Completed, ProviderError::OK);
+      finish_device_capture_job_(job,
+                                 generation,
+                                 CaptureTerminalKind::Completed,
+                                 ProviderError::OK,
+                                 std::move(deferred_cpu_staging_bytes));
     } else {
-      finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_SHUTTING_DOWN);
+      finish_device_capture_job_(job,
+                                 generation,
+                                 CaptureTerminalKind::Failed,
+                                 ProviderError::ERR_SHUTTING_DOWN,
+                                 std::move(deferred_cpu_staging_bytes));
     }
   } catch (const std::exception&) {
-    finish_device_capture_job_(job, generation, CaptureTerminalKind::Failed, ProviderError::ERR_PROVIDER_FAILED);
+    finish_device_capture_job_(job,
+                               generation,
+                               CaptureTerminalKind::Failed,
+                               ProviderError::ERR_PROVIDER_FAILED,
+                               std::move(deferred_cpu_staging_bytes));
     ok = false;
   }
   capture_latency_trace_printf(
@@ -1794,7 +1873,10 @@ void SyntheticProvider::run_device_capture_job_(DeviceCaptureJob job, uint64_t g
       ok ? 1u : 0u);
 }
 
-bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob& job, uint64_t generation) {
+bool SyntheticProvider::generate_device_capture_payloads_(
+    const DeviceCaptureJob& job,
+    uint64_t generation,
+    std::shared_ptr<std::vector<std::uint8_t>>* deferred_cpu_staging_bytes) {
   const uint64_t production_begin_ns = capture_latency_trace_now_ns();
   uint64_t staging_alloc_ns = 0;
   uint64_t before_first_member_ns = 0;
@@ -1941,35 +2023,38 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
           capture_latency_trace_now_ns() - member_alloc_begin_ns;
       member_alloc_ns += member_alloc_sample_ns;
       member_cpu_prep_ns += member_alloc_sample_ns;
-      const uint64_t member_copy_begin_ns = capture_latency_trace_now_ns();
-      std::memcpy(bytes->data(), base_bytes->data(), job.frame_size_bytes);
-      const uint64_t member_copy_sample_ns =
-          capture_latency_trace_now_ns() - member_copy_begin_ns;
-      member_copy_ns += member_copy_sample_ns;
-      member_cpu_prep_ns += member_copy_sample_ns;
-    }
-    const uint64_t member_ev_bgra_begin_ns = capture_latency_trace_now_ns();
-    if (member.intended_exposure_compensation_milli_ev != 0) {
-      PatternRenderOptions render_options{};
-      render_options.applied_exposure_compensation_milli_ev = member.intended_exposure_compensation_milli_ev;
-      PatternRenderTarget member_dst{};
-      member_dst.data = bytes->data();
-      member_dst.size_bytes = bytes->size();
-      member_dst.width = req.width;
-      member_dst.height = req.height;
-      member_dst.stride_bytes = job.stride_bytes;
-      member_dst.format = PatternSpec::PackedFormat::RGBA8;
-      renderer.apply_render_options_in_place(member_dst, render_options);
-    }
-    if (job.format_fourcc == FOURCC_BGRA) {
-      for (size_t bi = 0; bi + 3 < bytes->size(); bi += 4) {
-        std::swap((*bytes)[bi], (*bytes)[bi + 2]);
+      const bool needs_exposure_adjustment =
+          member.intended_exposure_compensation_milli_ev != 0;
+      const bool needs_bgra_swizzle = job.format_fourcc == FOURCC_BGRA;
+      if (!needs_exposure_adjustment && !needs_bgra_swizzle) {
+        const uint64_t member_copy_begin_ns = capture_latency_trace_now_ns();
+        std::memcpy(bytes->data(), base_bytes->data(), job.frame_size_bytes);
+        const uint64_t member_copy_sample_ns =
+            capture_latency_trace_now_ns() - member_copy_begin_ns;
+        member_copy_ns += member_copy_sample_ns;
+        member_cpu_prep_ns += member_copy_sample_ns;
+      } else {
+        // Synthetic still generation can fold exposure-variant synthesis and
+        // optional FourCC mapping into one pass because this provider owns the
+        // source pixels. That is an implementation detail of SyntheticProvider,
+        // not a rule that platform-backed providers must synthesize frames the
+        // same way.
+        const uint64_t member_adjust_begin_ns = capture_latency_trace_now_ns();
+        copy_rgba8_with_optional_adjustments(
+            bytes->data(),
+            job.stride_bytes,
+            base_bytes->data(),
+            job.stride_bytes,
+            req.width,
+            req.height,
+            needs_bgra_swizzle,
+            member.intended_exposure_compensation_milli_ev);
+        const uint64_t member_adjust_sample_ns =
+            capture_latency_trace_now_ns() - member_adjust_begin_ns;
+        member_ev_bgra_ns += member_adjust_sample_ns;
+        member_cpu_prep_ns += member_adjust_sample_ns;
       }
     }
-    const uint64_t member_ev_bgra_sample_ns =
-        capture_latency_trace_now_ns() - member_ev_bgra_begin_ns;
-    member_ev_bgra_ns += member_ev_bgra_sample_ns;
-    member_cpu_prep_ns += member_ev_bgra_sample_ns;
 
     FrameView fv{};
     fv.device_instance_id = req.device_instance_id;
@@ -2167,13 +2252,9 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
     timing_record.provider_base_bytes_use_count_after_timing_record =
         static_cast<uint64_t>(base_bytes.use_count());
   }
-  if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly) {
-    const InFlightCaptureKey key{req.capture_id, req.device_instance_id};
-    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
-    auto it = in_flight_captures_.find(key);
-    if (it != in_flight_captures_.end() && it->second.generation == generation) {
-      it->second.deferred_cpu_staging_bytes = base_bytes;
-    }
+  if (output_form_mode == SyntheticProducerOutputFormMode::GpuOnly &&
+      deferred_cpu_staging_bytes != nullptr) {
+    *deferred_cpu_staging_bytes = base_bytes;
   }
   (void)production_begin_ns;
   (void)first_capture_after_start;
@@ -2215,7 +2296,9 @@ bool SyntheticProvider::generate_device_capture_payloads_(const DeviceCaptureJob
 void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
                                                    uint64_t generation,
                                                    CaptureTerminalKind terminal,
-                                                   ProviderError error) {
+                                                   ProviderError error,
+                                                   std::shared_ptr<std::vector<std::uint8_t>>
+                                                       deferred_cpu_staging_bytes) {
   const uint64_t finish_begin_ns = capture_latency_trace_now_ns();
   uint64_t terminal_post_ns = 0;
   uint64_t session_release_ns = 0;
@@ -2225,7 +2308,6 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
   uint64_t capture_lock_wait_begin_ns = finish_begin_ns;
   uint64_t state_wait_begin_ns = 0;
   uint64_t state_lock_released_ns = 0;
-  std::shared_ptr<std::vector<std::uint8_t>> deferred_cpu_staging_bytes{};
   auto* ready_stage_metrics = &triage_capture_ready_stage_cpu_primary_;
   if (job.request.requested_retained_plan.valid) {
     if (job.request.requested_retained_plan.primary_cpu()) {
@@ -2260,8 +2342,6 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
       in_flight.release_done = true;
       should_release = true;
     }
-    deferred_cpu_staging_bytes =
-        std::move(in_flight.deferred_cpu_staging_bytes);
     {
       state_wait_begin_ns = capture_latency_trace_now_ns();
       std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
@@ -2513,6 +2593,7 @@ void SyntheticProvider::finish_device_capture_job_(const DeviceCaptureJob& job,
     session_release_ns =
         capture_latency_trace_now_ns() - session_release_begin_ns;
   }
+  (void)deferred_cpu_staging_bytes;
   (void)finish_begin_ns;
   (void)session_release_ns;
   capture_latency_trace_diagnostics::note_capture_finished();

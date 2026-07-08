@@ -4,104 +4,98 @@ Volatile handoff for the active CamBANG workstream. Durable rules remain in `AGE
 
 ## Active workstream
 
-### Scene 870 provider-side no-sidecar readiness residual
+### Scene 870 capture-readiness optimisation investigation
 
-Goal: explain the remaining Android Mobile `GPU-primary, no CPU sidecar` capture-readiness penalty in Scene 870 without changing runtime behaviour.
+Goal: inspect whether Scene 870 capture readiness contains a small, source-obvious, platform-agnostic optimisation opportunity. This is a performance pass after the attribution/evidence correctness issue was resolved.
 
 Current evidence:
 
-- Multi-viable bracketed capture evidence is green: required/materialized/observed/returned member counts complete for the required 5-member result.
-- `live_cpu_display_refresh_observed` remains expected only in CPU-backed display cells. Treat it in Mobile `cpu_gpu`, `runtime_default`, or `gpu_only` as a regression.
-- Capture-side Backing Plan evaluation correctly scores whole-result readiness plus required-member materialization, not later `to_image_member()` timing alone.
-- `capture_ready_elapsed_ns` means acquisition-session `capture_started -> capture_completed` lifecycle/readiness timing. Do not redefine it unless a narrow, source-obvious correctness bug is found and explicitly justified.
-- GPU retain/create timing is material and explains `GPU-primary, with CPU sidecar` readiness loss well.
-- GPU retain/create, first retain-call cost, provider-to-core ingress delay, and removed trace-formatting overhead do **not** explain the remaining Android `GPU-primary, no CPU sidecar` residual.
-- Post-cleanup evidence shows `capture_ready_elapsed_ns` closely matches provider-side `post_capture_started -> post_capture_completed` wall time.
-- The remaining residual appears to be unmeasured provider-side wall time inside `post_capture_started -> post_capture_completed`, outside current named stage buckets.
+* Multi-viable bracketed capture evidence is green: required/materialized/observed/returned member counts complete for the required 5-member result.
+* Capture-side Backing Plan evaluation correctly scores whole-result readiness plus required-member materialization, not later `to_image_member()` timing alone.
+* `to_image()` / `to_image_member()` materialization is comfortably fast and is not the current bottleneck.
+* `live_cpu_display_refresh_observed` remains expected only in CPU-backed display cells. Treat it in Mobile `cpu_gpu`, `runtime_default`, or `gpu_only` as a regression.
+* Android Mobile capture readiness is dominated by provider-side capture production/prep, post-frame terminal tail, and GPU retain/create cost where applicable.
+* GPU-backed candidates may legitimately lose capture scoring despite faster materialization if their readiness total is higher.
 
 Current named stage buckets:
 
-- `pre_capture_started_total_ms`
-- `post_capture_started_cpu_prep_total_ms`
-- `post_capture_started_gpu_retain_total_ms`
-- `post_capture_started_post_frame_total_ms`
-- `capture_terminal_post_total_ms`
-- `capture_ready_provider_window_total_ms`
+* `pre_capture_started_total_ms`
+* `post_capture_started_cpu_prep_total_ms`
+* `post_capture_started_gpu_retain_total_ms`
+* `post_capture_started_post_frame_total_ms`
+* `capture_terminal_post_total_ms`
+* `capture_ready_provider_window_total_ms`
 
 ## Immediate task
 
-Perform one narrow attribution pass. Do **not** optimise.
+Inspect source and determine whether any narrow readiness optimisation is justified.
 
-Start with source inspection. If a narrow missing region is confirmed, add only compact maintainer-only diagnostics through existing synthetic metrics / Scene 870 summary surfaces.
+Primary source region:
+
+* `src/imaging/synthetic/provider.cpp` / `.h`
+
+Secondary regions only if source evidence requires them:
+
+* `src/godot/cambang_server.cpp`
+* `tests/cambang_gde/scripts/870_to_image_soak_benchmark.gd`
+* `src/core/core_runtime.cpp`
+* acquisition-session / result-store files
 
 Answer:
 
-- What provider-side work or wait inside `post_capture_started -> post_capture_completed` is not covered by the current stage buckets?
-- Is the gap caused by sleeps/simulated latency, worker scheduling/joining, lock waits, queue/post waits, per-member gaps between timed regions, or posture-specific branches?
-- Are current stage bucket definitions missing real work between measured blocks?
+* Is bracket capture repeating common prep/render/allocation work per member that can safely be shared?
+* Is there avoidable work between last capture member production and terminal completion?
+* Is GPU retain/create duplicated, serialized unnecessarily, or scoped too broadly?
+* Are waits, locks, queue posts, joins, or timed gaps contributing avoidable readiness delay?
+* Are current timing buckets broad enough to hide a small but source-obvious optimisation?
 
-Primary source regions:
+A code change is acceptable only if it is narrow, source-obvious, platform-agnostic, and preserves truth/evidence semantics.
 
-- `src/imaging/synthetic/provider.cpp` / `.h` — primary focus: capture production interval, per-member gaps, worker/device job boundaries, joins, locks, frame posting, capture started/completed posting.
-- `src/godot/cambang_server.cpp` — synthetic metrics export, only if new metrics are added.
-- `tests/cambang_gde/scripts/870_to_image_soak_benchmark.gd` — Scene 870 summary attachment, only if new fields are exported.
-- `src/core/core_runtime.cpp` and acquisition-session registry files only if source evidence shows provider-side attribution is insufficient.
-
-Preferred shape:
-
-- compact per-posture or per-candidate totals, not broad timeline dumps;
-- preserve existing GPU retain and ready-stage metrics;
-- maintainer-only diagnostics only;
-- no public Godot API or snapshot schema changes;
-- no runtime optimisation in this task.
+If no safe optimisation is found, report the limiting source path and leave behaviour unchanged.
 
 ## Guardrails
 
 Do not:
 
-- change Backing Plan chooser policy;
-- treat `to_image_member()` timing alone as the AcquisitionSession score;
-- fabricate lazy GPU backing truth;
-- add or change public Godot API;
-- add persistent environment knobs;
-- move Godot/RD ownership into Core or provider API;
-- add Android-only/Core platform conditionals;
-- weaken Scene 870, Scene 568, smoke tools, or expected-negative checks;
-- reduce Scene 870 load to make numbers look good;
-- optimise GPU retain/create, add texture pooling, add warmup/settle policy, or change worker/executor shape in this diagnostic task.
+* change Backing Plan chooser policy;
+* treat `to_image_member()` timing alone as the AcquisitionSession score;
+* fabricate lazy GPU backing truth;
+* add or change public Godot API;
+* change snapshot schema;
+* add Android-only, Windows-only, renderer-specific, or platform-specific branches;
+* add persistent environment knobs;
+* move Godot/RD ownership into Core or provider API;
+* weaken Scene 870, Scene 568, smoke tools, or expected-negative checks;
+* reduce Scene 870 load to make numbers look good;
+* broad-refactor SyntheticProvider, worker/executor shape, or GPU display architecture.
 
 Report source/doc mismatches instead of silently choosing one.
 
 ## Acceptance / validation
 
-A satisfactory result provides:
+A satisfactory result provides one of:
 
-- a source-grounded explanation of the remaining no-sidecar residual, or a bounded statement of what remains unknown;
-- Scene 870 output separating readiness, GPU retain/create, materialization, named provider-side stages, and remaining unmeasured provider-side wall time;
-- green required-member evidence in multi-viable bracket cells;
-- no `live_cpu_display_refresh_observed` in Mobile mixed/GPU cells;
-- no runtime behaviour, chooser policy, public API, Scene 870 load, or retained backing truth change.
+* a small safe optimisation with source-grounded explanation; or
+* a source-grounded explanation that no narrow safe optimisation is currently justified.
+
+The result must preserve:
+
+* green required-member evidence in multi-viable bracket cells;
+* no `live_cpu_display_refresh_observed` in Mobile mixed/GPU cells;
+* no runtime truth, retained backing truth, public API, chooser-policy, or Scene 870 load change.
 
 Minimum validation after code changes:
 
-- build touched target(s);
-- `provider_compliance_verify`;
-- `core_result_path_smoke`;
-- `synthetic_only_provider_support_verify`;
-- Scene 568 if Backing Plan evaluator evidence/reporting is touched;
-- targeted Scene 870 before any full matrix:
-  - Android Mobile `runtime_default`
-  - Android Mobile `cpu_gpu`
-  - Android Mobile `gpu_only`
-  - Windows Mobile counterparts if practical
+* build touched target(s);
+* `provider_compliance_verify`;
+* `core_result_path_smoke`;
+* `synthetic_only_provider_support_verify`;
+* Scene 568 if Backing Plan evaluator evidence/reporting is touched;
+* targeted Scene 870:
+
+  * Android Mobile `runtime_default`
+  * Android Mobile `cpu_gpu`
+  * Android Mobile `gpu_only`
+  * Windows Mobile counterparts if practical
 
 If Android/Godot validation is not run, say so explicitly.
-
-## Deferred
-
-- chooser redesign;
-- public API changes;
-- platform-backed provider work;
-- broad GPU display architecture redesign;
-- Scene 870 load-model redesign;
-- runtime optimisation, texture pooling, warmup policy, or Synthetic worker/executor changes before the residual is attributed.

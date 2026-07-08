@@ -145,6 +145,18 @@ A provider owns and implements:
 Providers execute validated Core intent; they do not reinterpret the
 model.
 
+Reference-provider note:
+
+- `SyntheticProvider` may perform synthetic-only frame-generation work such as
+  deterministic exposure-variant synthesis for bracket members. That is part of
+  Synthetic's role as an executable reference/test provider, not a requirement
+  that platform-backed providers fabricate equivalent source frames.
+- Format adaptation is different in kind. Any provider may need to map
+  backend-local pixel memory into CamBANG's negotiated packed pixel contract
+  such as `FOURCC_RGBA` / `FOURCC_BGRA`. The contract requires truthful mapped
+  delivery, but it does not require platform-backed providers to use
+  SyntheticProvider's frame-generation strategy to achieve it.
+
 ---
 
 ## 5. Interface contract

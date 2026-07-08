@@ -515,7 +515,6 @@ private:
     uint64_t generation = 0;
     bool terminal_posted = false;
     bool release_done = false;
-    std::shared_ptr<std::vector<std::uint8_t>> deferred_cpu_staging_bytes;
   };
 
   struct InFlightCaptureKey {
@@ -537,11 +536,16 @@ private:
   bool should_stop_capture_job_(uint64_t generation) const noexcept;
   void run_capture_submission_(CaptureSubmissionJob job);
   void run_device_capture_job_(DeviceCaptureJob job, uint64_t generation);
-  bool generate_device_capture_payloads_(const DeviceCaptureJob& job, uint64_t generation);
+  bool generate_device_capture_payloads_(
+      const DeviceCaptureJob& job,
+      uint64_t generation,
+      std::shared_ptr<std::vector<std::uint8_t>>* deferred_cpu_staging_bytes);
   void finish_device_capture_job_(const DeviceCaptureJob& job,
                                   uint64_t generation,
                                   CaptureTerminalKind terminal,
-                                  ProviderError error);
+                                  ProviderError error,
+                                  std::shared_ptr<std::vector<std::uint8_t>>
+                                      deferred_cpu_staging_bytes = {});
   void start_capture_thread_(const CaptureSubmissionJob& job);
   void join_finished_capture_threads_();
   void stop_and_join_capture_threads_();
