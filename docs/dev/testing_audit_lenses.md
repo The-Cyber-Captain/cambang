@@ -2,30 +2,30 @@
 
 **Status:** Current dev process/audit reference.
 
-This document is a process-discipline aid for test/harness/fixture failure
-triage.
+This document is a process-discipline aid for test, harness, fixture, and suite
+failure triage.
 
 It is subordinate to canonical architecture docs, current source behavior,
-fixture taxonomy docs, schema-mapping docs, and verifier/tool behavior.
-It must not override canonical architecture or verifier source behavior.
+fixture taxonomy docs, schema-mapping docs, and verifier/tool behavior. It must
+not override canonical architecture or verifier source behavior.
 
 Cross-reference anchors:
-- `docs/dev/status_panel_fixture_taxonomy.md` for fixture taxonomy and
-  renderer/NPS fixture classification.
-- `docs/dev/state_snapshot_schema_mapping.md` for schema-vs-semantic
-  validation layering.
-- `docs/dev/maintainer_tools.md` for verifier/tool roles.
-- `docs/naming.md` for scenario / verification case / fixture terminology.
 
-This document defines the **three required lenses** for reviewing,
-maintaining, and evolving the CamBANG test suite.
+* `docs/dev/status_panel_fixture_taxonomy.md` for fixture taxonomy and
+  renderer/NPS fixture classification.
+* `docs/dev/state_snapshot_schema_mapping.md` for schema-vs-semantic validation
+  layering.
+* `docs/dev/maintainer_tools.md` for verifier/tool roles.
+* `docs/naming.md` for scenario / verification case / fixture terminology.
+
+This document defines the required lenses for reviewing, maintaining, and
+evolving the CamBANG test suite.
 
 These lenses are mandatory for any future audit, refactor, or failure
-investigation.\
-They exist to prevent shallow fixes, false positives, and silent
+investigation. They exist to prevent shallow fixes, false positives, and silent
 weakening of tests.
 
-------------------------------------------------------------------------
+---
 
 ## 1) Contract Correctness Lens
 
@@ -33,201 +33,317 @@ weakening of tests.
 
 Every test must be evaluated as a **consumer → provider contract**.
 
-A test is only valid if: - the consumer calls a **valid, supported
-surface** - the provider **actually supplies** everything required on
-the reachable execution path
+A test is valid only if:
 
-------------------------------------------------------------------------
+* the consumer calls a valid, supported surface;
+* the provider, fixture, mock, or harness supplies everything required on the
+  reachable execution path; and
+* the asserted result belongs to the documented contract for that surface.
 
-### Required Method
+### Required method
 
 For any test or harness:
 
-1.  Identify the **consumer**
-2.  Identify the **concrete provider**
-3.  Determine the **reachable execution path**
-4.  Enumerate required contract (methods, signals, constants, data
-    shape)
-5.  Verify provider supplies all of them
+1. Identify the consumer.
+2. Identify the concrete provider, fixture, mock, or harness endpoint.
+3. Determine the reachable execution path.
+4. Enumerate the required contract:
 
-------------------------------------------------------------------------
+  * methods;
+  * signals;
+  * constants;
+  * data shape;
+  * lifecycle state;
+  * expected error behavior.
+5. Verify that the provider, fixture, mock, or harness endpoint supplies all of
+   them on that path.
 
 ### Example
 
-``` gdscript
+```gdscript
 _server.PROVIDER_KIND_PLATFORM_BACKED
 ```
 
--   Consumer: Status panel\
--   Provider: MockServer\
--   Issue: MockServer did NOT define required constants
+* Consumer: status panel
+* Provider: mock server
+* Issue: mock server did not define a required constant
 
-**Conclusion:** Contract mismatch (not runtime bug)
-
-------------------------------------------------------------------------
+**Conclusion:** contract mismatch, not a runtime bug.
 
 ### Rules
 
--   ❌ "method exists" is NOT sufficient\
--   ❌ static grep is NOT sufficient\
--   ✅ must validate **path-sensitive contract**
+* "Method exists" is not sufficient.
+* Static grep is not sufficient.
+* Validate the path-sensitive contract.
+* Keep mock, fixture, and harness contracts intentionally narrow but complete.
+* Do not broaden a fake provider or mock until the test’s consumer contract has
+  been identified.
 
-------------------------------------------------------------------------
+---
 
-## 2) Architectural Alignment Lens
+## 2) Architecture Alignment Lens
 
 ### Definition
 
-Tests must reflect the **current architecture**, not historical
-patterns.
+Tests must reflect the current architecture, not retired scaffolding,
+transitional glue, or accidental historical patterns.
 
-### Current Direction
+### Current direction
 
--   ✅ Server-owned model (`CamBANGServer`)
--   ❌ Dev-node orchestration (legacy)
+CamBANG tests should exercise the architecture through the same authority
+boundaries used by the runtime:
 
-------------------------------------------------------------------------
+* `CamBANGServer` as the Godot-facing singleton boundary;
+* object-level public APIs for normal runtime flows;
+* explicit maintainer APIs only for maintainer verification;
+* provider-owned scenario execution for Synthetic timeline behavior;
+* provider-support truth for build-aware platform availability;
+* snapshot and result objects as observable truth surfaces.
 
-### What to Check
+### What to check
 
--   Uses `CamBANGServer`
--   Avoids retired Godot-side helper patterns
--   Avoids stale helper configuration paths
+For each test, verify that it:
 
-------------------------------------------------------------------------
+* uses the current Godot-facing boundary intentionally;
+* distinguishes public runtime flow from maintainer-only tooling;
+* keeps Synthetic timeline semantics provider-owned;
+* avoids reconstructing runtime meaning in scene glue;
+* respects provider-support truth before asserting platform-backed behavior;
+* avoids source-shaping around removed or abandoned scaffolding;
+* keeps platform-backed expectations build-aware.
 
 ### Classification
 
-  Status     Meaning
-  ---------- ----------------------
-  Aligned    Current architecture
-  Stale      Works but legacy
-  Obsolete   No longer relevant
-
-------------------------------------------------------------------------
+| Status       | Meaning                                                             |
+| ------------ | ------------------------------------------------------------------- |
+| Aligned      | Reflects current architecture and validates a meaningful invariant. |
+| Stale        | Exercises a valid behavior through an old or indirect route.        |
+| Obsolete     | No longer validates a current behavior or contract.                 |
+| Transitional | Temporarily valid while an explicitly tracked migration is active.  |
 
 ### Rules
 
--   ❌ Do not fix bugs inside legacy architecture\
--   ❌ Do not preserve retired helper patterns\
--   ✅ Prefer rewrite or retirement
+* Do not fix bugs inside obsolete architecture.
+* Do not preserve old orchestration patterns merely because tests still pass.
+* Prefer rewrite or retirement when a test depends on a removed concept.
+* Preserve semantic strength when moving a test to a current boundary.
+* Keep build-aware assertions explicit when platform support is optional or not
+  compiled.
 
-------------------------------------------------------------------------
+---
 
 ## 3) Semantic Intent Lens
 
 ### Definition
 
-A test must be validated against **what it is trying to prove**, not
-just whether it passes.
+A test must be validated against **what it is trying to prove**, not merely
+against whether it passes.
 
-------------------------------------------------------------------------
+A passing test is not useful if it no longer proves the intended behavior.
 
-### Required Questions
+### Required questions
 
-1.  What behavior is being tested?\
-2.  Is it still valid and meaningful?\
-3.  If failing: test wrong or system wrong?
-
-------------------------------------------------------------------------
-
-### Critical Rule
-
-> A passing test is worthless if it no longer tests the intended
-> behavior.
-
-------------------------------------------------------------------------
+1. What behavior is being tested?
+2. Why does that behavior matter?
+3. Is the behavior still current?
+4. Is the assertion checking the behavior directly, or only a side effect?
+5. If the test is failing, is the test wrong or is the system wrong?
+6. If the test is passing, could it still be too weak?
 
 ### Example
 
-Old:
+Old assertion intent:
 
-    "panel-local"
+```text
+panel-local
+```
 
-New:
+Current semantic intent:
 
-    "copied from a previously rendered authoritative panel"
+```text
+copied from a previously rendered authoritative panel
+```
 
-**Conclusion:** wording evolved → test must follow semantics
-
-------------------------------------------------------------------------
+**Conclusion:** wording evolved, so the test must follow the current semantic
+meaning rather than preserve old phrasing.
 
 ### Rules
 
--   ❌ Do not weaken assertions\
--   ❌ Do not delete failing checks\
--   ✅ preserve semantic strength
+* Do not weaken assertions merely to obtain a pass.
+* Do not delete failing checks before identifying the behavior they protected.
+* Preserve or increase semantic strength when updating tests.
+* Prefer explicit assertions over incidental log matching.
+* Keep user-facing behavior, snapshot truth, and maintainer diagnostics separate.
 
-------------------------------------------------------------------------
+---
 
-## Failure classification before patching
+## 4) Failure Classification Lens
 
-Before changing source, tests, fixtures, or harnesses, classify the
-failure as one primary class:
+Before changing source, tests, fixtures, or harnesses, classify the failure as
+one primary class.
 
-- fixture schema drift
-- fixture expectation drift
-- stale fixture intent
-- projection / health bug
-- harness bug
-- suite-runner / parser bug
-- renderer-mode mismatch
-- actual production/runtime bug
-- documentation drift
+### Primary failure classes
 
-Rules:
+* fixture schema drift
+* fixture expectation drift
+* stale fixture intent
+* projection / health bug
+* harness bug
+* suite-runner / parser bug
+* renderer-mode mismatch
+* build-support expectation mismatch
+* provider-support expectation mismatch
+* actual production/runtime bug
+* documentation drift
+* generated-output or stale-build-artifact noise
 
-- Do not patch from one observed failure alone.
-- Do not weaken tests merely to match current output.
-- Do not mutate fixtures until green without first classifying intent
-  and failure stage.
-- Prefer read-only audit, then narrow patch, then smallest relevant
-  validation, then broader validation.
-- When renderer-sensitive expectations are involved, check
-  `renderer_profile` and `nps_scope` rather than making one fixture
-  accept all shapes.
+### Rules
 
-------------------------------------------------------------------------
+* Do not patch from one observed failure alone.
+* Do not weaken tests merely to match current output.
+* Do not mutate fixtures until green without first classifying intent and failure
+  stage.
+* Prefer read-only audit, then narrow patch, then smallest relevant validation,
+  then broader validation.
+* When renderer-sensitive expectations are involved, check `renderer_profile`
+  and `nps_scope` rather than making one fixture accept all shapes.
+* When platform support is optional or absent, assert provider-support truth
+  before asserting startup behavior.
+* When an audit grep reports hits, separate maintained source from generated
+  output, logs, archives, and stale build artifacts before drawing conclusions.
 
-## Putting It Together
+---
 
-  Lens           Question
-  -------------- -------------------------
-  Contract       Does interaction match?
-  Architecture   Is test aligned?
-  Semantics      Is behavior meaningful?
+## 5) Suite Runner Lens
 
-------------------------------------------------------------------------
+A suite failure can be caused by the runner rather than by the scene or runtime.
 
-## Audit Flow
+### What to check
 
-1.  Contract\
-2.  Semantics\
-3.  Architecture
+For any scene or script suite failure, confirm:
 
-------------------------------------------------------------------------
+* whether the scene emitted its explicit success marker;
+* whether the scene emitted an explicit failure marker;
+* whether the suite runner terminated the scene early;
+* whether timeout units match the tool’s actual semantics;
+* whether review-log detection is matching expected diagnostic noise;
+* whether the suite parser is reading the intended log stream;
+* whether generated logs from prior runs are being mistaken for current output.
 
-## Anti-Patterns
+### Rules
 
--   Blindly updating tests\
--   Ignoring execution paths\
--   Weakening assertions\
--   Keeping obsolete tests\
--   Fixing symptoms only
+* Treat explicit scene failure markers as stronger evidence than missing success
+  markers.
+* Treat premature runner termination as a harness issue until proven otherwise.
+* Do not infer a runtime regression from a missing OK marker without checking
+  cutoff, timeout, and parser behavior.
+* Expected diagnostic noise must be documented or filtered by the harness; it
+  must not leave unexplained permanent review states.
 
-------------------------------------------------------------------------
+---
 
-## Success Criteria
+## 6) Build and Provider Support Lens
 
--   Contract-valid\
--   Architecturally aligned\
--   Semantically meaningful\
--   Trusted
+Tests that touch startup, provider selection, or platform-backed behavior must be
+build-aware.
 
-------------------------------------------------------------------------
+### Required checks
 
-## Final Note
+Before asserting provider behavior, inspect the provider-support surface exposed
+by the current build.
 
-If a failure feels confusing:
+Tests must distinguish:
 
-> One of the three lenses has not been applied correctly.
+* provider family label;
+* provider compiled support;
+* access/readiness state;
+* explicit unsupported behavior;
+* startup failure after compiled support is present;
+* unsupported mode because no provider implementation is compiled.
+
+### Rules
+
+* A platform family label does not imply an implemented provider.
+* Unsupported/not-compiled platform-backed mode is a valid build truth.
+* Synthetic support must not silently stand in for platform-backed support.
+* A test may require platform-backed support only when it explicitly declares
+  that requirement.
+* Public boundary tests should assert visible failure and clean stopped/NIL state
+  when an unsupported provider mode is requested.
+
+---
+
+## Putting the lenses together
+
+| Lens                   | Question                                            |
+| ---------------------- | --------------------------------------------------- |
+| Contract               | Does the interaction match the reachable contract?  |
+| Architecture           | Is the test aligned with the current system shape?  |
+| Semantics              | Does the test still prove the intended behavior?    |
+| Failure classification | What class of problem is this before patching?      |
+| Suite runner           | Did the test fail, or did the harness mishandle it? |
+| Build/provider support | Is the assertion valid for this compiled build?     |
+
+---
+
+## Audit flow
+
+Use this order for failure triage:
+
+1. Confirm the log belongs to the current run.
+2. Classify the failure surface:
+
+  * scene;
+  * script;
+  * harness;
+  * suite runner;
+  * build;
+  * documentation.
+3. Apply the Contract Correctness Lens.
+4. Apply the Semantic Intent Lens.
+5. Apply the Architecture Alignment Lens.
+6. Apply the Build and Provider Support Lens where startup/provider behavior is
+   involved.
+7. Apply the Suite Runner Lens where markers, review logs, or timeouts are
+   involved.
+8. Patch narrowly.
+9. Run the smallest meaningful validation.
+10. Run the broader suite only after the narrow validation explains the failure.
+
+---
+
+## Anti-patterns
+
+* Blindly updating tests.
+* Ignoring execution paths.
+* Weakening assertions.
+* Keeping obsolete tests.
+* Fixing symptoms only.
+* Treating generated output as maintained source.
+* Treating a build family label as compiled provider support.
+* Treating missing success markers as runtime failures without checking runner
+  cutoff.
+* Allowing unexplained permanent review states.
+* Preserving retired scaffolding patterns in new tests.
+
+---
+
+## Success criteria
+
+A trusted test is:
+
+* contract-valid;
+* architecturally aligned;
+* semantically meaningful;
+* build-aware where relevant;
+* renderer-aware where relevant;
+* clear about harness and suite-runner responsibilities;
+* resistant to false positives from logs, archives, generated output, or stale
+  build artifacts.
+
+---
+
+## Final note
+
+If a failure feels confusing, at least one lens has not been applied carefully
+enough.
