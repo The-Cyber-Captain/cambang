@@ -75,7 +75,7 @@ Expected practice:
 
 - Prefer standard C++ facilities where practical.
 - Localize platform-specific code behind provider or platform seams.
-- Encapsulate compiler, OS, Godot, Media Foundation, Android Camera2, and renderer-specific details.
+- Encapsulate compiler, OS, Godot, platform API, Android Camera2, and renderer-specific details.
 - Avoid relying on undefined, unspecified, or surprising implementation-defined behaviour.
 - Treat compiler extensions as boundary-only tools, not general project style.
 
@@ -83,7 +83,7 @@ Audit red flags:
 
 - Platform-specific APIs leaking into core abstractions.
 - Core code learning provider-specific details.
-- Windows MF development assumptions becoming permanent architecture.
+- One platform-backed implementation's local assumptions becoming permanent architecture.
 - Compiler extensions used outside narrow boundary code.
 
 ## Headers, includes, and source layout
@@ -344,7 +344,7 @@ CamBANG audits should flag:
 
 - temporary checkpoint logs left in source;
 - persistent hidden diagnostic environment variables;
-- dev-node-era hooks without active callers;
+- retired helper-era hooks without active callers;
 - dormant services without documented activation value;
 - code that only exists to support retired test scaffolding.
 
@@ -449,7 +449,7 @@ ProviderBroker* broker_ = nullptr;
 ```cpp
 // Platform API requires paired acquire/release.
 // Wrapped here so callers never manage the raw handle directly.
-class MediaFoundationHandle {
+class PlatformApiHandle {
     ...
 };
 ```

@@ -633,7 +633,7 @@ host-native `maintainer_tools` build family.
 
 ### 13.2 Platform integration validation
 
-Platform providers are validated separately under real platform-backed conditions. The current Windows Media Foundation path is only `windows_mediafoundation(dev accelerator)` validation, not Release Windows provider conformance evidence. Platform validation should ensure:
+Platform providers are validated separately under real platform-backed conditions. Platform validation should ensure:
 - Correct threading integration
 - Correct callback serialization
 - No deadlocks under real API pressure

@@ -95,7 +95,7 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
 - `scenes/67_status_panel_scenario_runtime.tscn`
   - Manual/status-panel runtime observation scene: starts synthetic timeline mode,
     selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
-    `CamBANGStatusPanel` without any `CamBANGDevNode` / `dev_node_path` orchestration.
+    `CamBANGStatusPanel` without extra helper-node orchestration.
 - `scenes/70_result_retrieval_verification.tscn`
   - Verifies Godot-facing object-level result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
   - Authors a three-member still capture profile via `still_image_bundle` (ordered still-event image members), not `image_sequence`.

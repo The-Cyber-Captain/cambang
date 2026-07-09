@@ -31,7 +31,7 @@ Core design priorities:
 * deterministic lifecycle and teardown;
 * thread-safe ownership boundaries;
 * simple user-facing API;
-* provider/platform seams that can support Synthetic, Windows Media Foundation, Android Camera2, and future providers.
+* provider/platform seams that can support Synthetic, Windows WinRT, Android Camera2, and future providers.
 
 Avoid adding concepts, layers, public API names, diagnostics, or abstractions unless they clearly earn their keep.
 
@@ -71,7 +71,7 @@ Provider seams are important.
 
 SyntheticProvider is deterministic and cross-platform. Platform-backed providers should not be constrained by Synthetic-only implementation shortcuts unless the design explicitly justifies it.
 
-Do not assume a SyntheticProvider optimisation represents Windows MF, Android Camera2, or future platform-backed behaviour.
+Do not assume a SyntheticProvider optimisation represents Windows WinRT, Android Camera2, or future platform-backed behaviour.
 
 When working near provider code, preserve the distinction between:
 

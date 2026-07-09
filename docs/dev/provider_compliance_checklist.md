@@ -63,9 +63,9 @@ callers are synchronously blocked. Confirm that:
 - capability and template queries do not perform backend I/O
 - any bounded waits are dev-provider-only or explicitly justified
 
-Windows MF dev accelerator blocking stop / shutdown is retirement / deprioritised
-debt. Future release providers must not treat that implementation shape as a
-template.
+Blocking stop / shutdown in a provisional adapter is retirement /
+deprioritised debt. Future release providers must not treat that
+implementation shape as a template.
 
 ---
 

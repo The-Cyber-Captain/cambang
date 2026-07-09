@@ -13,11 +13,6 @@
 
 // (No broker-level pattern switching; picture is stream-scoped.)
 
-// Platform-backed providers compiled into this artifact.
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-  #include "imaging/platform/windows/provider.h"
-#endif
-
 #if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
   #include "imaging/stub/provider.h"
 #endif
@@ -163,7 +158,7 @@ ProviderBroker::ProviderBroker() = default;
 
 ProviderBroker::~ProviderBroker() {
   // Best-effort: ensure deterministic shutdown when broker is destroyed.
-  // Core should call shutdown(), but dev scaffolding may drop the provider early.
+  // Core should call shutdown(), but destruction should still clean up safely.
   std::lock_guard<std::mutex> lock(active_provider_mutex_);
   if (initialized_ && active_) {
     (void)active_->shutdown();
@@ -275,9 +270,7 @@ ProviderResult ProviderBroker::update_stream_retained_production_plan(
 ProviderResult ProviderBroker::check_mode_supported_in_build(RuntimeMode mode) noexcept {
   switch (mode) {
     case RuntimeMode::platform_backed: {
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-      return ProviderResult::success();
-#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
       return ProviderResult::success();
 #else
       return ProviderResult::failure(ProviderError::ERR_NOT_SUPPORTED);
@@ -306,9 +299,7 @@ ProviderAccessStatus ProviderBroker::check_mode_access_readiness(RuntimeMode mod
 
   switch (mode) {
     case RuntimeMode::platform_backed: {
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-      return WindowsProvider::check_access_readiness();
-#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
       return StubProvider::check_access_readiness();
 #else
       return ProviderAccessStatus::failure(
@@ -499,9 +490,7 @@ ProviderResult ProviderBroker::initialize(IProviderCallbacks* callbacks) {
 
   if (!active_) {
     // Platform-backed selection is compile-time (SCons provider=...).
-#if defined(CAMBANG_PROVIDER_WINDOWS_MF) && CAMBANG_PROVIDER_WINDOWS_MF
-    active_ = std::make_unique<WindowsProvider>();
-#elif defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
+#if defined(CAMBANG_PROVIDER_STUB) && CAMBANG_PROVIDER_STUB
     active_ = std::make_unique<StubProvider>();
 #else
     // No platform-backed provider compiled in.

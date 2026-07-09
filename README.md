@@ -9,7 +9,6 @@ The project is currently in active development. The current repository contains:
 - platform-independent Core runtime and snapshot publication code
 - provider contract definitions under `src/imaging/api/`
 - stub and synthetic providers for deterministic verification
-- a Windows Media Foundation provider path quarantined as `windows_mediafoundation(dev accelerator)`
 - Godot-facing GDExtension bindings under `src/godot/`
 - snapshot schema v1 under `schema/state_snapshot/v1/`
 - Godot StatusPanel harnesses and fixtures under `tests/cambang_gde/`
@@ -26,9 +25,9 @@ Android GDE build therefore remains synthetic-only rather than a platform-backed
 runtime path.
 
 Current provider work should follow the provider contract and architecture docs
-rather than platform-specific assumptions from older drafts. The MF dev
-accelerator is not the Release Windows provider and is not the provider
-foundation to copy.
+rather than platform-specific assumptions from older drafts. Future Windows
+platform-backed work should target the planned `windows_winrt` family rather
+than inferring behavior from synthetic or stub implementation details.
 
 ## Documentation map
 

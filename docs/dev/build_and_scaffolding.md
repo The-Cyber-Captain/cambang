@@ -151,8 +151,7 @@ alias remains most important for selected clean behaviour.
 ### `platform_runtime_validate`
 
 Builds selected platform runtime validation artifacts only. Normal build
-inclusion is controlled by `platform_runtime_validate=yes`. The currently
-implemented runtime validator is the Windows Media Foundation validator.
+inclusion is controlled by `platform_runtime_validate=yes`.
 
 ### `cambang`, `gde_all`, and `build_all`
 
@@ -195,14 +194,13 @@ Declared GDE platforms and provider families:
 
 | Platform | Provider family | Source location | Current normal build support |
 |---|---|---|---|
-| `windows` | `windows_mediafoundation` | `src/imaging/platform/windows` | Implemented dev-accelerator path. |
+| `windows` | `windows_winrt` | `src/imaging/platform/windows` | Not yet implemented. |
 | `android` | `android_camera2` | `src/imaging/platform/android` | Not yet implemented. |
 | `linux` | `linux_v4l2` | `src/imaging/platform/linux` | Not yet implemented. |
 | `macos` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
 | `ios` | `apple_avfoundation` | `src/imaging/platform/apple` | Not yet implemented. |
 | `web` | `web_getusermedia` | `src/imaging/platform/web` | Not yet implemented. |
 
-Windows is currently the only implemented platform-backed GDE provider path.
 For declared platforms whose provider family is not implemented yet, non-clean
 GDE builds are still allowed to produce a synthetic-capable artifact. In those
 artifacts no platform-backed provider sources are compiled, no `CAMBANG_PROVIDER_*`
@@ -400,10 +398,10 @@ tools. It is explicitly enabled with:
 scons platform_runtime_validate=yes platform=windows
 ```
 
-The current implemented validator is Windows Media Foundation runtime validation.
-It is a real-OS/API visibility check and may depend on local hardware, drivers,
-and negotiated formats. It is not a replacement for deterministic provider
-contract verification.
+No platform runtime validator is currently implemented in-tree. Any future
+validator will be a real-OS/API visibility check and may depend on local
+hardware, drivers, and negotiated formats. It is not a replacement for
+deterministic provider contract verification.
 
 ---
 
@@ -439,17 +437,8 @@ For Godot 4.x + `godot-cpp`, the entry signature uses the current
 `GDExtensionInterfaceGetProcAddress` / `GDExtensionInitialization` form. Do not
 use legacy signatures.
 
-`_enter_tree()` / `_exit_tree()` overrides in dev-node scaffolding must be
+`_enter_tree()` / `_exit_tree()` overrides in helper nodes must be
 public if binding code needs to take their method pointers during registration.
-
-### Windows Media Foundation dev accelerator
-
-The Windows platform-backed path is currently a Media Foundation dev accelerator,
-not the final release Windows provider strategy. It remains useful for platform
-visibility and local hardware checks, but release-provider work must still decide
-negotiation policy, conversion policy, callback drain guarantees, teardown
-safety, GPU/native presentation paths, still capture, multi-stream, rig support,
-and release-grade validation criteria.
 
 ### Windows macro collision: `OPAQUE`
 

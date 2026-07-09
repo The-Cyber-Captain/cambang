@@ -63,6 +63,9 @@ func _ready() -> void:
 	if not CamBANGServer.has_method("get_active_provider_config"):
 		_fail("FAIL: CamBANGServer.get_active_provider_config() missing")
 		return
+	if not CamBANGServer.has_method("get_provider_support"):
+		_fail("FAIL: CamBANGServer.get_provider_support() missing")
+		return
 	if not CamBANGServer.has_method("select_builtin_scenario"):
 		_fail("FAIL: CamBANGServer.select_builtin_scenario() missing")
 		return
@@ -156,30 +159,46 @@ func _ready() -> void:
 		_fail("FAIL: start(PLATFORM_BACKED, role, timing_driver) must return ERR_INVALID_PARAMETER")
 		return
 
+	var provider_support = CamBANGServer.get_provider_support()
+	if typeof(provider_support) != TYPE_DICTIONARY:
+		_fail("FAIL: CamBANGServer.get_provider_support() must return Dictionary")
+		return
+	var platform_backed_supported := bool(provider_support.get("platform_backed", false))
 	var platform_start_err := CamBANGServer.start()
-	if platform_start_err != OK:
-		_fail("FAIL: start() default platform-backed failed")
-		return
-	if not CamBANGServer.is_running():
-		_fail("FAIL: start() must set is_running() true")
-		return
-	var platform_cfg = CamBANGServer.get_active_provider_config()
-	if typeof(platform_cfg) != TYPE_DICTIONARY:
-		_fail("FAIL: running platform-backed start must expose Dictionary active config")
-		return
-	if int(platform_cfg.get("provider_kind", -1)) != CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED:
-		_fail("FAIL: platform-backed active config must report provider_kind=PLATFORM_BACKED")
-		return
-	if platform_cfg.get("synthetic_role", "not_null") != null or platform_cfg.get("timing_driver", "not_null") != null or platform_cfg.get("timeline_reconciliation", "not_null") != null:
-		_fail("FAIL: platform-backed active config must report null synthetic fields")
-		return
-	CamBANGServer.stop()
-	if CamBANGServer.is_running():
-		_fail("FAIL: stop() must set is_running() false")
-		return
-	if CamBANGServer.get_active_provider_config() != null:
-		_fail("FAIL: active provider config must be NIL after stop()")
-		return
+	if platform_backed_supported:
+		if platform_start_err != OK:
+			_fail("FAIL: start() default platform-backed failed")
+			return
+		if not CamBANGServer.is_running():
+			_fail("FAIL: start() must set is_running() true")
+			return
+		var platform_cfg = CamBANGServer.get_active_provider_config()
+		if typeof(platform_cfg) != TYPE_DICTIONARY:
+			_fail("FAIL: running platform-backed start must expose Dictionary active config")
+			return
+		if int(platform_cfg.get("provider_kind", -1)) != CamBANGServer.PROVIDER_KIND_PLATFORM_BACKED:
+			_fail("FAIL: platform-backed active config must report provider_kind=PLATFORM_BACKED")
+			return
+		if platform_cfg.get("synthetic_role", "not_null") != null or platform_cfg.get("timing_driver", "not_null") != null or platform_cfg.get("timeline_reconciliation", "not_null") != null:
+			_fail("FAIL: platform-backed active config must report null synthetic fields")
+			return
+		CamBANGServer.stop()
+		if CamBANGServer.is_running():
+			_fail("FAIL: stop() must set is_running() false")
+			return
+		if CamBANGServer.get_active_provider_config() != null:
+			_fail("FAIL: active provider config must be NIL after stop()")
+			return
+	else:
+		if platform_start_err != ERR_UNAVAILABLE:
+			_fail("FAIL: start() default platform-backed must return ERR_UNAVAILABLE when platform-backed is not compiled")
+			return
+		if CamBANGServer.is_running():
+			_fail("FAIL: unsupported platform-backed start must leave server not running")
+			return
+		if CamBANGServer.get_active_provider_config() != null:
+			_fail("FAIL: unsupported platform-backed start must leave active provider config NIL")
+			return
 
 	var synthetic_default_err := CamBANGServer.start(CamBANGServer.PROVIDER_KIND_SYNTHETIC)
 	if synthetic_default_err != OK:

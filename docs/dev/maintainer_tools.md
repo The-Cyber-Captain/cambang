@@ -40,7 +40,6 @@ Maintainer tools fall into three broad categories.
 | `restart_boundary_verify` | Deterministic verification of the CamBANGServer stop/start boundary contract | Verification |
 | `provider_compliance_verify` | Deterministic provider-contract verification using Stub and Synthetic only | Verification |
 | `synthetic_only_provider_support_verify` | Deterministic build-support and access/readiness preflight for synthetic-only maintainer builds | Verification |
-| `windows_mf_runtime_validate` | Nominal opt-in `windows_mediafoundation(dev accelerator)` runtime validation against real hardware | Verification |
 | `pattern_render_bench` | Pattern renderer performance benchmark | Benchmark |
 | Godot boundary verification scenes | Validation of the Godot-facing runtime boundary | Verification |
 
@@ -416,7 +415,7 @@ It deliberately does **not**:
 
 - enumerate physical cameras
 - open platform-backed devices
-- validate real Media Foundation or other platform APIs
+- validate real platform-backed OS APIs
 - exercise hardware-driven asynchronous device callbacks
 
 Those concerns belong to platform validation tools.
@@ -609,46 +608,7 @@ Any failure indicates a regression in Godot-boundary snapshot exposure.
 
 ---
 
-## 8. `windows_mf_runtime_validate`
-
-**Category:** Verification tool (platform-backed)
-
-### Purpose
-
-`windows_mf_runtime_validate` performs a nominal check of the quarantined
-**windows_mediafoundation(dev accelerator)** (`WindowsProvider`) against real
-hardware under asynchronous platform-backed execution.
-
-It exercises:
-
-- device enumeration
-- real device open
-- stream start / stop
-- shutdown behaviour
-
-Passing this tool keeps `platform_runtime_validate=yes` meaningful for the MF dev
-accelerator, but it does **not** prove final Windows release-provider
-completeness or conformance. It does not cover callback-drain, stop/destroy race,
-timeout, negative-stride, repeated lifecycle, or frame-release stress coverage.
-
-### Build and usage
-
-```text
-scons platform_runtime_validate=yes platform=windows
-./out/windows_mf_runtime_validate.exe --real-hardware
-```
-
-Expected high-level behaviour:
-
-1. enumerate camera
-2. open device
-3. negotiate media type
-4. start stream
-5. shut down cleanly
-
----
-
-## 9. Other native tools
+## 8. Other native tools
 
 ### `core_spine_smoke`
 

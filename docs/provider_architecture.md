@@ -56,7 +56,7 @@ provider contract.
 
 Examples include:
 
-- `windows_mediafoundation` (currently quarantined as a dev accelerator)
+- future `windows_winrt`
 - future `android_camera2`
 - future additional platform providers
 
@@ -67,7 +67,7 @@ source of truth for what the contract means.
 
 CamBANG is designed to support platform-backed provider families including:
 
-- `windows_mediafoundation` — Windows / Media Foundation dev accelerator; not the Release Windows provider
+- `windows_winrt` — Windows / WinRT
 - `android_camera2` — Android / Camera2
 - `linux_v4l2` — Linux / Video4Linux2
 - `apple_avfoundation` — macOS / iOS / iPadOS / AVFoundation
@@ -334,8 +334,7 @@ Future platform-backed providers must not:
 - synchronously invoke callbacks that can re-enter `CoreRuntime`,
   `ProviderBroker`, Godot, or wait on public / core completion
 - re-enter `ProviderBroker` while `active_provider_mutex_` may be held
-- copy the blocking `windows_mediafoundation(dev accelerator)` stop / shutdown
-  shape into release providers
+- treat one provider's stop / shutdown shape as a contract template
 
 Backend-specific long work belongs on provider-owned worker / looper threads.
 Completion, errors, and lifecycle truth must be reported back through provider
@@ -582,9 +581,9 @@ Do **not**:
 
 - copy incidental behaviour from a provisional backend adapter and treat
   it as canonical
-- copy the quarantined `windows_mediafoundation(dev accelerator)` teardown,
-  callback ownership, reader synchronization, timeout, or stride-handling
-  patterns into a Release Windows provider
+- copy one backend adapter's teardown, callback ownership,
+  synchronization, timeout, or stride-handling patterns into another
+  provider without an explicit contract reason
 - add provider-side execution-time defaulting
 - normalize invalid lifecycle ordering by silent cleanup
 - special-case Core semantics to fit one backend API
@@ -604,8 +603,9 @@ Core/provider semantics.
 Release-quality providers extend functional coverage; they do not change
 what the provider contract means.
 
-For the future Release Windows provider specifically, do not copy the MF dev
-accelerator unless each unsafe pattern is replaced: no worker detach while
+For the future Release Windows provider specifically, do not copy a
+provisional backend adapter unless each unsafe pattern is replaced: no worker
+detach while
 provider/stream state can still be accessed; no callback lifetime based on raw
 provider/stream pointers unless teardown proves drain; one consistent
 synchronization discipline for camera/reader handles; correct signed/negative

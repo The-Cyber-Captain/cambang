@@ -17,7 +17,7 @@ It does not redefine those canonical documents; it resolves scenario-specific am
 
 This document exists to prevent terminology and authority drift while authored scenario support is introduced.
 
-Historically, dev-node micro-scenarios mixed “scenario” wording with Godot-side procedural triggers. This supplement sets the canonical model for Tranche 1 onward:
+This supplement sets the canonical model for Tranche 1 onward:
 
 - scenario semantics belong to SyntheticProvider timeline execution
 - scenarios are low-level provider/core timeline replay, diagnostics, metrics,
@@ -56,7 +56,8 @@ Authoritative scenario meaning includes:
 - deterministic tie-breaking and scheduling
 - interaction with stream lifecycle and frame emission paths
 
-Godot dev glue (`CamBANGDevNode`-style helpers) is not a semantic authority. It may trigger and observe, but it must not redefine scenario meaning.
+Godot helper nodes are not a semantic authority. They may trigger and observe,
+but they must not redefine scenario meaning.
 
 ---
 
@@ -298,8 +299,9 @@ This tranche explicitly excludes:
 
 Next implementation tranche should:
 
-1. move existing `CamBANGDevNode` micro-scenario behavior behind provider-owned timeline scenarios
+1. move helper-driven scenario behavior behind provider-owned timeline scenarios
 2. keep Godot-side controls at host operations (select/start/stop/pause/resume/advance/observe)
 3. preserve existing snapshot/publication boundary semantics while changing scenario ownership
 
-This enables incremental replacement of dev-node scenario logic without changing core runtime authority or Godot observable contracts.
+This enables incremental cleanup of Godot-side scenario helpers without
+changing core runtime authority or Godot observable contracts.

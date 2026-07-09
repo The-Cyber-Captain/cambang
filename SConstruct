@@ -302,12 +302,9 @@ def _cpp_string_define_value(value: str) -> str:
 
 GDE_PROVIDER_RESOLUTION = {
     "windows": {
-        "family": "windows_mediafoundation",
+        "family": "windows_winrt",
         "location": os.path.join("src", "imaging", "platform", "windows"),
-        "implemented": True,
-        "defines": ["CAMBANG_PROVIDER_WINDOWS_MF=1"],
-        "libs": ["mf", "mfplat", "mfreadwrite", "mfuuid", "ole32", "uuid"],
-        "status": "windows_mediafoundation(dev accelerator)",
+        "implemented": False,
     },
     "android": {
         "family": "android_camera2",
@@ -336,12 +333,7 @@ GDE_PROVIDER_RESOLUTION = {
     },
 }
 
-RUNTIME_VALIDATORS = {
-    "windows": {
-        "name": "windows_mediafoundation_runtime_validator",
-        "target": os.path.join("out", "windows_mf_runtime_validate"),
-    },
-}
+RUNTIME_VALIDATORS = {}
 
 
 vars = Variables()
@@ -634,8 +626,6 @@ def _all_planned_gde_clean_outputs():
 
 def _selected_platform_runtime_validate_clean_outputs(platform):
     outputs = [os.path.join(platform_runtime_validate_obj_root, platform)]
-    if platform == "windows":
-        outputs.append(_program_path("windows_mf_runtime_validate"))
     return outputs
 
 
@@ -931,8 +921,7 @@ else:
 
 # ---------------------------------------------------------------------------
 # Platform-backed runtime validation (alias: platform_runtime_validate)
-# Windows validation currently targets windows_mediafoundation(dev accelerator)
-# only; it is not release-provider conformance evidence.
+# Validators are future-facing and may depend on local OS/hardware state.
 # ---------------------------------------------------------------------------
 if build_platform_runtime_validate:
     validate_env = env.Clone()
@@ -944,21 +933,6 @@ if build_platform_runtime_validate:
     validate_env.VariantDir(platform_runtime_validate_obj_dir, "src", duplicate=0)
 
     runtime_validate_progs = []
-    if gde_platform == "windows":
-        windows_validate_sources = []
-        windows_validate_sources += _glob_cpp(platform_runtime_validate_obj_dir, "core")
-        windows_validate_sources += _glob_cpp(platform_runtime_validate_obj_dir, "core", "snapshot")
-        windows_validate_sources += _glob_cpp(platform_runtime_validate_obj_dir, "imaging", "api")
-        windows_validate_sources += [os.path.join(platform_runtime_validate_obj_dir, "imaging", "broker", "banner_info.cpp")]
-        windows_validate_sources += _glob_cpp(platform_runtime_validate_obj_dir, "imaging", "platform", "windows")
-        windows_validate_sources += _glob_cpp(platform_runtime_validate_obj_dir, "pixels", "pattern")
-        windows_validate_sources += ["src/smoke/windows_mf_runtime_validate.cpp"]
-        windows_validate_sources = _unique_sources(windows_validate_sources)
-        validate_env.Append(LIBS=GDE_PROVIDER_RESOLUTION["windows"]["libs"])
-        runtime_validate_progs.append(validate_env.Program(
-            target=RUNTIME_VALIDATORS["windows"]["target"],
-            source=windows_validate_sources,
-        ))
 
     platform_runtime_validate_alias = Alias("platform_runtime_validate", runtime_validate_progs)
     AlwaysBuild(platform_runtime_validate_alias)

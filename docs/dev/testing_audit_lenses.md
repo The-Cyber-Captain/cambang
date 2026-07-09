@@ -91,8 +91,8 @@ patterns.
 ### What to Check
 
 -   Uses `CamBANGServer`
--   Avoids `CamBANGDevNode` unless justified
--   Avoids `dev_node_path`
+-   Avoids retired Godot-side helper patterns
+-   Avoids stale helper configuration paths
 
 ------------------------------------------------------------------------
 
@@ -109,7 +109,7 @@ patterns.
 ### Rules
 
 -   ❌ Do not fix bugs inside legacy architecture\
--   ❌ Do not preserve dev-node patterns\
+-   ❌ Do not preserve retired helper patterns\
 -   ✅ Prefer rewrite or retirement
 
 ------------------------------------------------------------------------

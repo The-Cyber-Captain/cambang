@@ -404,15 +404,14 @@ The default `godot_cpp=delegated` mode invokes `python -m SCons -C thirdparty/go
 `platform=<...>` selects the GDE target platform, not the maintainer-tool host
 platform.
 
-- `windows` -> `windows_mediafoundation` -> `src/imaging/platform/windows`
+- `windows` -> `windows_winrt` -> `src/imaging/platform/windows`
 - `android` -> `android_camera2` -> `src/imaging/platform/android`
 - `linux` -> `linux_v4l2` -> `src/imaging/platform/linux`
 - `macos` -> `apple_avfoundation` -> `src/imaging/platform/apple`
 - `ios` -> `apple_avfoundation` -> `src/imaging/platform/apple`
 - `web` -> `web_getusermedia` -> `src/imaging/platform/web`
 
-Windows is currently the only implemented platform-backed GDE provider path.
-Other declared GDE platforms may build synthetic-capable artifacts without a
+Declared GDE platforms may build synthetic-capable artifacts without a
 compiled platform-backed provider. In those artifacts platform-backed mode is
 reported as unavailable by compiled capability metadata and must fail visibly at
 runtime; SyntheticProvider remains an alternate runtime mode of the single
