@@ -269,9 +269,9 @@ func _ready():
 
 	
 	stream_00.start()
+	#stream_00_b.start()
 
 	_sample_synthetic_metrics(\"after_start\")
-	#await get_tree().create_timer(10.0).timeout
 	while not stream_00.result_live:
 		await stream_00.result_live_changed
 	var stream_result := stream_00.get_result()
