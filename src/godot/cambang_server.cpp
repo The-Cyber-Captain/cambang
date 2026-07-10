@@ -1259,6 +1259,16 @@ static const char* try_destroy_stream_status_name(TryDestroyStreamStatus s) noex
   return "Unknown";
 }
 
+static const char* try_start_stream_status_name(TryStartStreamStatus s) noexcept {
+  switch (s) {
+    case TryStartStreamStatus::OK: return "OK";
+    case TryStartStreamStatus::Busy: return "Busy";
+    case TryStartStreamStatus::InvalidArgument: return "InvalidArgument";
+    case TryStartStreamStatus::ProviderRejected: return "ProviderRejected";
+  }
+  return "Unknown";
+}
+
 static godot::Error map_try_start_stream_status(TryStartStreamStatus s) noexcept {
   switch (s) {
     case TryStartStreamStatus::OK: return godot::OK;
@@ -1969,7 +1979,20 @@ godot::Error CamBANGServer::start_direct_stream_handle(
   if (device_instance_id == 0) {
     return godot::ERR_INVALID_PARAMETER;
   }
-  return map_try_start_stream_status(runtime_.try_start_stream(stream_id));
+  const TryStartStreamStatus status = runtime_.try_start_stream(stream_id);
+  const godot::Error rc = map_try_start_stream_status(status);
+  if (status == TryStartStreamStatus::Busy) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: start_stream rejected because another stream is already active for device_instance_id=%d; stop the active stream before starting stream_id=%d.",
+        static_cast<int64_t>(device_instance_id),
+        static_cast<int64_t>(stream_id)));
+  } else if (status == TryStartStreamStatus::ProviderRejected) {
+    ERR_PRINT(godot::vformat(
+        "CamBANGServer: start_stream rejected by provider for stream_id=%d; status=%s.",
+        static_cast<int64_t>(stream_id),
+        try_start_stream_status_name(status)));
+  }
+  return rc;
 }
 
 godot::Error CamBANGServer::stop_direct_stream_handle(
