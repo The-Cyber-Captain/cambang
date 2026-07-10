@@ -17,6 +17,9 @@ class CamBANGStream final : public godot::RefCounted {
   GDCLASS(CamBANGStream, godot::RefCounted)
 
 public:
+  static constexpr int INTENT_PREVIEW = 0;
+  static constexpr int INTENT_VIEWFINDER = 1;
+
   CamBANGStream() = default;
 
   void set_identity(CamBANGServer* server,

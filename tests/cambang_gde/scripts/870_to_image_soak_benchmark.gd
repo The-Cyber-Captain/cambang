@@ -29,7 +29,7 @@ const MAX_SLOW_SAMPLES := 12
 const PRINT_DECIMALS := 3
 const STILL_PROFILE_WIDTH := 1280
 const STILL_PROFILE_HEIGHT := 720
-const STILL_PROFILE_FORMAT_RGBA := 1094862674
+#const STILL_PROFILE_FORMAT_RGBA := 1094862674
 const PANEL_SEED_IMAGE_FORMAT := Image.FORMAT_RGBA8
 
 const PHASE_SETUP := "setup"
@@ -1077,13 +1077,13 @@ func _apply_current_bundle_profile() -> void:
 func _make_still_profile_request(members: Array, visible_still_profile: Dictionary) -> Dictionary:
 	var width: int = int(visible_still_profile.get("width", STILL_PROFILE_WIDTH))
 	var height: int = int(visible_still_profile.get("height", STILL_PROFILE_HEIGHT))
-	var format_fourcc: int = int(visible_still_profile.get("format_fourcc", visible_still_profile.get("format", STILL_PROFILE_FORMAT_RGBA)))
+	var format_fourcc: int = int(visible_still_profile.get("format_fourcc", visible_still_profile.get("format", CamBANGServer.PIXEL_FORMAT_RGBA)))
 	if width <= 0:
 		width = STILL_PROFILE_WIDTH
 	if height <= 0:
 		height = STILL_PROFILE_HEIGHT
 	if format_fourcc <= 0:
-		format_fourcc = STILL_PROFILE_FORMAT_RGBA
+		format_fourcc = CamBANGServer.PIXEL_FORMAT_RGBA
 	return {
 		"width": width,
 		"height": height,

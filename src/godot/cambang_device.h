@@ -7,6 +7,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 namespace cambang {
 
@@ -48,7 +49,7 @@ public:
   bool is_endpoint_handle() const { return device_instance_id_ == 0 && !hardware_id_.is_empty(); }
   godot::Error engage();
   godot::Error disengage();
-  godot::Ref<CamBANGStream> create_stream();
+  godot::Ref<CamBANGStream> create_stream(const godot::Variant& definition = godot::Variant());
 
   godot::Error trigger_capture();
   godot::Ref<CamBANGCaptureResult> get_result() const;

@@ -159,6 +159,7 @@ Primary lifecycle controls:
 - `set_warm_policy(...)`
 - `set_still_capture_profile(profile)`
 - `get_instance_id()`
+- `create_stream(definition := {})`
 - `trigger_capture() -> Error`
 - `get_result()`
 
@@ -177,16 +178,29 @@ instance.
 
 Primary controls:
 
-- `start()` / `stop()`
+- `start()` / `stop()` / `destroy()`
 - `get_result()`
 
 Each device supports at most one active repeating stream at a time
 (i.e. a stream with `phase=LIVE` and `mode != STOPPED`).
 
-Streams are created with a `StreamIntent`:
+Streams are created with a creation-time **Stream Definition** supplied to
+`CamBANGDevice.create_stream(definition := {})`. The default/no-argument
+form creates a `PREVIEW` stream using the provider's `StreamTemplate`.
 
-- `PREVIEW`
-- `VIEWFINDER`
+A Stream Definition may contain:
+
+- `intent`: the `StreamIntent` (`PREVIEW` or `VIEWFINDER`)
+- `profile`: the Stream Capture Profile request fields to override from the
+  provider template. `format_fourcc` uses CamBANG FourCC-style pixel format
+  constants such as `CamBANGServer.PIXEL_FORMAT_RGBA` and
+  `CamBANGServer.PIXEL_FORMAT_BGRA`.
+
+`CamBANGStream` controls lifecycle (`start`, `stop`, `destroy`) for an already
+created runtime stream. It is not a mutable builder: the stream intent and
+structural Stream Capture Profile are fixed for that handle. Changing those
+creation-time properties means destroying the stream and creating a new stream
+with a different Stream Definition.
 
 `CamBANGStream` is a public/runtime-visible user-semantic object.
 It must not be conflated with every native/provider stream-like resource
@@ -212,6 +226,13 @@ Typical fields include:
 - Target FPS or FPS range (best-effort)
 - Optional buffering hints
 
+For Godot users, Stream Capture Profile fields are supplied inside a Stream
+Definition's `profile` dictionary at stream creation time. Current Godot keys
+are `width`, `height`, `format_fourcc`, `target_fps`, `target_fps_min`, and
+`target_fps_max`. `target_fps` is a convenience spelling that sets both min and
+max. Omitted profile fields are inherited from the provider `StreamTemplate`
+before the effective stream request reaches the provider.
+
 ### Still Capture Profile
 
 A profile used for triggered still capture (device-triggered or
@@ -223,6 +244,31 @@ rig-triggered). Typical fields include:
 - Optional processing hints
 
 Profiles define capture fidelity and intent, not hardware truth.
+
+### Pixel format constants
+
+Godot-facing profile dictionaries should use named CamBANG pixel-format
+constants for raw pixel-buffer formats rather than hard-coded FourCC integer
+literals.
+
+The public constant family is:
+
+- `CamBANGServer.PIXEL_FORMAT_RGBA`
+- `CamBANGServer.PIXEL_FORMAT_BGRA`
+
+`PIXEL_FORMAT_*` names are reserved for raw pixel-buffer layouts such as packed
+RGBA/BGRA and future raw displayable layouts such as NV12 or I420 if/when they
+are exposed.
+
+These constants are FourCC-style integer values because snapshot/profile schema
+fields store provider-agnostic CamBANG format codes as `uint32`. The public
+constant name should still prefer `PIXEL_FORMAT_*` over `FOURCC_*`, because the
+user-facing meaning is the pixel-buffer layout, not the encoding mechanism.
+
+Do not use `PIXEL_FORMAT_*` for encoded image formats, file/container formats,
+or RAW-domain still outputs. Future encoded or RAW still outputs require their
+own payload/result support and, if exposed publicly, should use a separate
+constant family rather than being added to `PIXEL_FORMAT_*`.
 
 ------------------------------------------------------------------------
 

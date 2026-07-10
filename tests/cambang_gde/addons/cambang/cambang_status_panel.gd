@@ -2866,6 +2866,52 @@ func _append_projection_gaps_row(panel: PanelModel, issues: Array[String]) -> vo
 	_ensure_expandability(panel)
 
 
+func _audit_device_surface_projection(rec: Dictionary, entry: StatusEntryModel, projection_issues: Array[String]) -> void:
+	if entry == null:
+		return
+	if rec.has("phase"):
+		_require_projection_badge(entry, "phase=%s" % _phase_display_label(rec.get("phase", -1)), projection_issues)
+	if rec.has("mode"):
+		_require_projection_badge(entry, "mode=%s" % _device_mode_display_label(rec.get("mode", "UNKNOWN")), projection_issues)
+	if rec.has("engaged"):
+		_require_projection_badge(entry, _device_engaged_badge_label(rec.get("engaged", false)), projection_issues)
+
+
+func _audit_stream_surface_projection(rec: Dictionary, entry: StatusEntryModel, projection_issues: Array[String]) -> void:
+	if entry == null:
+		return
+	if rec.has("phase"):
+		_require_projection_badge(entry, "phase=%s" % _phase_display_label(rec.get("phase", -1)), projection_issues)
+	if rec.has("mode"):
+		_require_projection_badge(entry, "mode=%s" % _stream_mode_display_label(rec.get("mode", "UNKNOWN")), projection_issues)
+	if rec.has("intent"):
+		_require_projection_label(entry, _stream_row_label(int(rec.get("stream_id", 0)), rec.get("intent", "UNKNOWN")), projection_issues)
+	if rec.has("stop_reason"):
+		_require_projection_badge(entry, "stop_reason=%s" % _stream_stop_reason_display_label(rec.get("stop_reason", "NONE")), projection_issues)
+
+
+func _require_projection_badge(entry: StatusEntryModel, expected_label: String, projection_issues: Array[String]) -> void:
+	if expected_label.is_empty():
+		return
+	if _has_badge_label(entry, expected_label):
+		return
+	projection_issues.append(
+		"Projection gap: row %s missing required badge '%s'."
+		% [entry.id, expected_label]
+	)
+
+
+func _require_projection_label(entry: StatusEntryModel, expected_label: String, projection_issues: Array[String]) -> void:
+	if expected_label.is_empty():
+		return
+	if entry != null and entry.label == expected_label:
+		return
+	projection_issues.append(
+		"Projection gap: row %s missing required label '%s'."
+		% [entry.id, expected_label]
+	)
+
+
 func _has_badge_label(entry: StatusEntryModel, label: String) -> bool:
 	for badge in entry.badges:
 		if badge.label == label:
@@ -3508,6 +3554,7 @@ func _clone_counter_models(counters: Array) -> Array[CounterModel]:
 			counter.digits,
 			counter.visibility,
 			{
+				"text_value": counter.text_value,
 				"row_kind": counter.row_kind,
 				"semantic_group": counter.semantic_group,
 				"truth_class": counter.truth_class,
@@ -3970,6 +4017,7 @@ func _build_nil_panel_model(reason: String) -> PanelModel:
 func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: String) -> PanelModel:
 	var panel := PanelModel.new()
 	var issues: Array[String] = []
+	var projection_issues: Array[String] = []
 
 	var server_badges: Array[BadgeModel] = [_badge("success", "snapshot")]
 	var server_counters: Array[CounterModel] = [
@@ -4237,7 +4285,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					[
 						_counter("capture_w", int(still_profile.get("width", 0)), 4),
 						_counter("capture_h", int(still_profile.get("height", 0)), 4),
-						_counter("capture_fmt", int(still_profile.get("format", 0)), 4),
+						_fourcc_counter("capture_fmt", int(still_profile.get("format", 0)), 4),
 						_counter("capture_prof", int(still_profile.get("version", 0)), 2),
 						_counter("bundle", device_bundle_count, 2),
 					],
@@ -4246,6 +4294,8 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			device_info,
 			"device"
 		)
+		device_entry.badges.append(_device_engaged_badge(rec.get("engaged", false)))
+		_audit_device_surface_projection(rec, device_entry, projection_issues)
 		if device_matches.size() == 1:
 			device_entry.materialized_native_id = int(device_matches[0].get("native_id", 0))
 		panel.entries.append(device_entry)
@@ -4322,7 +4372,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 					[
 						_counter("capture_w", int(acquisition_still_profile.get("width", 0)), 4),
 						_counter("capture_h", int(acquisition_still_profile.get("height", 0)), 4),
-						_counter("capture_fmt", int(acquisition_still_profile.get("format", 0)), 4),
+						_fourcc_counter("capture_fmt", int(acquisition_still_profile.get("format", 0)), 4),
 						_counter("capture_prof", int(acquisition_still_profile.get("version", 0)), 2),
 						_counter("bundle", acquisition_bundle_count, 2),
 					],
@@ -4415,7 +4465,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				"stream/%d" % stream_id,
 				parent_entry_id,
 				_depth_for_parent(parent_entry_id),
-				"stream/%d" % stream_id,
+				_stream_row_label(stream_id, rec.get("intent", "UNKNOWN")),
 				false,
 				true,
 				stream_badges,
@@ -4443,6 +4493,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 				stream_info,
 				"stream"
 			)
+			_audit_stream_surface_projection(rec, stream_entry, projection_issues)
 			if stream_matches.size() == 1:
 				stream_entry.materialized_native_id = int(stream_matches[0].get("native_id", 0))
 			panel.entries.append(stream_entry)
@@ -4712,6 +4763,7 @@ func _project_snapshot_to_panel_model(snapshot: Dictionary, provider_mode: Strin
 			issues
 		))
 
+	_append_projection_gaps_row(panel, projection_issues)
 	_ensure_expandability(panel)
 	return panel
 
@@ -5894,7 +5946,7 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	var model := CounterModel.new()
 	model.name = name
 	model.value = value
-	model.text_value = ""
+	model.text_value = str(metadata.get("text_value", ""))
 	model.digits = digits
 	model.visibility = visibility
 	model.row_kind = str(metadata.get("row_kind", ""))
@@ -5904,6 +5956,12 @@ func _counter(name: String, value: int, digits: int, visibility: String = "core"
 	model.source_field = str(metadata.get("source_field", ""))
 	model.provenance_key = str(metadata.get("provenance_key", model.name))
 	return model
+
+
+func _fourcc_counter(name: String, value: int, digits: int, visibility: String = "core", metadata: Dictionary = {}) -> CounterModel:
+	var next_metadata := metadata.duplicate()
+	next_metadata["text_value"] = _format_fourcc_with_raw(value)
+	return _counter(name, value, digits, visibility, next_metadata)
 
 
 func _counters_from_record(
@@ -5931,6 +5989,16 @@ func _counters_from_record(
 		if not rec.has(source_field):
 			continue
 		counters.append(_counter(
+			counter_name,
+			int(rec.get(source_field)),
+			digits,
+			visibility,
+			{
+				"truth_class": "snapshot_backed",
+				"source_field": source_field,
+				"provenance_key": source_field,
+			}
+		) if counter_name != "fmt" else _fourcc_counter(
 			counter_name,
 			int(rec.get(source_field)),
 			digits,
@@ -6203,6 +6271,20 @@ func _stream_mode_display_label(value: Variant) -> String:
 	return "UNKNOWN"
 
 
+func _stream_intent_display_label(value: Variant) -> String:
+	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
+		var canonical := str(value).strip_edges().to_upper()
+		if ["PREVIEW", "VIEWFINDER"].has(canonical):
+			return canonical
+		return "UNKNOWN"
+	return "UNKNOWN"
+
+
+func _stream_row_label(stream_id: int, intent_value: Variant) -> String:
+	# Stream intent is identity/context, so it lives in the row label rather than a badge.
+	return "stream/%d %s" % [stream_id, _stream_intent_display_label(intent_value)]
+
+
 func _stream_stop_reason_display_label(value: Variant) -> String:
 	if typeof(value) == TYPE_STRING or typeof(value) == TYPE_STRING_NAME:
 		var canonical := str(value).strip_edges().to_upper()
@@ -6210,6 +6292,15 @@ func _stream_stop_reason_display_label(value: Variant) -> String:
 			return canonical
 		return "NONE"
 	return "NONE"
+
+
+func _device_engaged_badge_label(value: Variant) -> String:
+	return "engaged" if bool(value) else "not-engaged"
+
+
+func _device_engaged_badge(value: Variant) -> BadgeModel:
+	# engaged is state classification; surface it as a badge rather than bool text.
+	return _badge("info" if bool(value) else "neutral", _device_engaged_badge_label(value))
 
 
 
@@ -6806,7 +6897,22 @@ func _ensure_native_payload_support_group_row(panel: PanelModel, rec: Dictionary
 
 func _format_fourcc_with_raw(value: int) -> String:
 	var raw := int(value)
-	return "%s (%d)" % [_fourcc_to_text(raw), raw]
+	var abbreviated := _pixel_format_token_or_fourcc_text(raw)
+	# Prefer concise panel-facing tokens for known raw pixel-buffer formats.
+	# Unknown values retain explicit FourCC/raw visibility for traceability.
+	if abbreviated == _fourcc_to_text(raw):
+		return "%s (%d)" % [abbreviated, raw]
+	return abbreviated
+
+
+func _pixel_format_token_or_fourcc_text(value: int) -> String:
+	match value:
+		CamBANGServer.PIXEL_FORMAT_RGBA:
+			return "RGBA"
+		CamBANGServer.PIXEL_FORMAT_BGRA:
+			return "BGRA"
+		_:
+			return _fourcc_to_text(value)
 
 
 func _fourcc_to_text(value: int) -> String:

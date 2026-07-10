@@ -66,6 +66,8 @@ void CamBANGStream::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("stop"), &CamBANGStream::stop);
   godot::ClassDB::bind_method(godot::D_METHOD("destroy"), &CamBANGStream::destroy);
   godot::ClassDB::bind_method(godot::D_METHOD("get_result"), &CamBANGStream::get_result);
+  BIND_CONSTANT(INTENT_PREVIEW);
+  BIND_CONSTANT(INTENT_VIEWFINDER);
   ADD_PROPERTY(godot::PropertyInfo(godot::Variant::BOOL, "result_live"), "", "is_result_live");
   ADD_SIGNAL(godot::MethodInfo(
       "result_live_changed",

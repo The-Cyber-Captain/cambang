@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <initializer_list>
 #include <unordered_set>
 #include <vector>
 
@@ -72,6 +73,167 @@ static LiveRetainedCalibrationMetrics g_live_retained_calibration_metrics;
 
 static double ns_to_ms_u64(uint64_t ns) noexcept {
   return static_cast<double>(ns) / 1'000'000.0;
+}
+
+
+static bool parse_stream_intent_definition_value(const godot::Variant& value,
+                                                 StreamIntent& out) noexcept {
+  if (value.get_type() == godot::Variant::INT) {
+    const int64_t i = int64_t(value);
+    if (i == static_cast<int64_t>(StreamIntent::PREVIEW)) {
+      out = StreamIntent::PREVIEW;
+      return true;
+    }
+    if (i == static_cast<int64_t>(StreamIntent::VIEWFINDER)) {
+      out = StreamIntent::VIEWFINDER;
+      return true;
+    }
+    return false;
+  }
+  if (value.get_type() == godot::Variant::STRING ||
+      value.get_type() == godot::Variant::STRING_NAME) {
+    const godot::String token = value;
+    if (token == "PREVIEW" || token == "preview" || token == "Preview") {
+      out = StreamIntent::PREVIEW;
+      return true;
+    }
+    if (token == "VIEWFINDER" || token == "viewfinder" || token == "Viewfinder") {
+      out = StreamIntent::VIEWFINDER;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool parse_stream_definition_u32_field(const godot::Dictionary& dict,
+                                              const char* key,
+                                              uint32_t& out,
+                                              bool require_positive) noexcept {
+  if (!dict.has(key)) {
+    return true;
+  }
+  const godot::Variant value = dict.get(key, godot::Variant());
+  if (value.get_type() != godot::Variant::INT) {
+    return false;
+  }
+  const int64_t i = int64_t(value);
+  if (i < 0 || i > static_cast<int64_t>(UINT32_MAX)) {
+    return false;
+  }
+  if (require_positive && i == 0) {
+    return false;
+  }
+  out = static_cast<uint32_t>(i);
+  return true;
+}
+
+static bool stream_definition_key_is_allowed(const godot::Variant& key,
+                                             std::initializer_list<const char*> allowed) {
+  if (key.get_type() != godot::Variant::STRING &&
+      key.get_type() != godot::Variant::STRING_NAME) {
+    return false;
+  }
+  const godot::String key_s = key;
+  for (const char* allowed_key : allowed) {
+    if (key_s == allowed_key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool stream_definition_has_only_keys(const godot::Dictionary& dict,
+                                            std::initializer_list<const char*> allowed) {
+  const godot::Array keys = dict.keys();
+  for (int i = 0; i < keys.size(); ++i) {
+    if (!stream_definition_key_is_allowed(keys[i], allowed)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool parse_stream_profile_definition(const godot::Variant& value,
+                                            const CaptureProfile& template_profile,
+                                            CaptureProfile& out_profile) noexcept {
+  if (value.get_type() != godot::Variant::DICTIONARY) {
+    return false;
+  }
+  const godot::Dictionary profile = value;
+  if (!stream_definition_has_only_keys(
+          profile,
+          {"width", "height", "format_fourcc", "target_fps", "target_fps_min", "target_fps_max"})) {
+    return false;
+  }
+  out_profile = template_profile;
+  if (!parse_stream_definition_u32_field(profile, "width", out_profile.width, true) ||
+      !parse_stream_definition_u32_field(profile, "height", out_profile.height, true) ||
+      !parse_stream_definition_u32_field(profile, "format_fourcc", out_profile.format_fourcc, true)) {
+    return false;
+  }
+
+  if (profile.has("target_fps")) {
+    if (profile.has("target_fps_min") || profile.has("target_fps_max")) {
+      return false;
+    }
+    uint32_t target_fps = 0;
+    if (!parse_stream_definition_u32_field(profile, "target_fps", target_fps, false)) {
+      return false;
+    }
+    out_profile.target_fps_min = target_fps;
+    out_profile.target_fps_max = target_fps;
+  } else {
+    if (!parse_stream_definition_u32_field(profile, "target_fps_min", out_profile.target_fps_min, false) ||
+        !parse_stream_definition_u32_field(profile, "target_fps_max", out_profile.target_fps_max, false)) {
+      return false;
+    }
+  }
+
+  if (out_profile.width == 0 || out_profile.height == 0 || out_profile.format_fourcc == 0) {
+    return false;
+  }
+  if (out_profile.target_fps_min != 0 && out_profile.target_fps_max != 0 &&
+      out_profile.target_fps_max < out_profile.target_fps_min) {
+    return false;
+  }
+  return true;
+}
+
+static bool parse_stream_definition(const godot::Variant& definition,
+                                    const StreamTemplate& stream_template,
+                                    StreamIntent& out_intent,
+                                    CaptureProfile& out_profile,
+                                    bool& out_has_profile) noexcept {
+  out_intent = StreamIntent::PREVIEW;
+  out_profile = CaptureProfile{};
+  out_has_profile = false;
+
+  if (definition.get_type() == godot::Variant::NIL) {
+    return true;
+  }
+  if (definition.get_type() != godot::Variant::DICTIONARY) {
+    return false;
+  }
+
+  const godot::Dictionary def = definition;
+  if (!stream_definition_has_only_keys(def, {"intent", "profile"})) {
+    return false;
+  }
+
+  if (def.has("intent")) {
+    if (!parse_stream_intent_definition_value(def.get("intent", godot::Variant()), out_intent)) {
+      return false;
+    }
+  }
+
+  if (def.has("profile")) {
+    if (!parse_stream_profile_definition(
+            def.get("profile", godot::Variant()), stream_template.profile, out_profile)) {
+      return false;
+    }
+    out_has_profile = true;
+  }
+  return true;
 }
 
 static godot::Dictionary live_retained_calibration_metrics_snapshot() {
@@ -1708,7 +1870,9 @@ godot::Error CamBANGServer::disengage_endpoint_handle(const godot::String& hardw
   return rc;
 }
 
-godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(const godot::String& hardware_id) {
+godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
+    const godot::String& hardware_id,
+    const godot::Variant& definition) {
   if (hardware_id.is_empty() || !is_public_boundary_ready_() || !provider_) {
     return godot::Ref<CamBANGStream>();
   }
@@ -1721,6 +1885,19 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
     return godot::Ref<CamBANGStream>();
   }
 
+  const StreamTemplate stream_template = provider_->stream_template();
+  StreamIntent stream_intent = StreamIntent::PREVIEW;
+  CaptureProfile stream_profile{};
+  bool has_stream_profile = false;
+  if (!parse_stream_definition(
+          definition,
+          stream_template,
+          stream_intent,
+          stream_profile,
+          has_stream_profile)) {
+    return godot::Ref<CamBANGStream>();
+  }
+
   uint64_t stream_id = next_direct_stream_id_.fetch_add(1, std::memory_order_relaxed);
   if (stream_id == 0) {
     stream_id = next_direct_stream_id_.fetch_add(1, std::memory_order_relaxed);
@@ -1728,8 +1905,8 @@ godot::Ref<CamBANGStream> CamBANGServer::create_stream_for_endpoint_hardware_id(
   const TryCreateStreamStatus cs = runtime_.try_create_stream(
       stream_id,
       state.device_instance_id,
-      StreamIntent::PREVIEW,
-      nullptr,
+      stream_intent,
+      has_stream_profile ? &stream_profile : nullptr,
       nullptr,
       0);
   if (cs != TryCreateStreamStatus::OK) {
@@ -3710,6 +3887,8 @@ void CamBANGServer::_bind_methods() {
   BIND_CONSTANT(TIMING_DRIVER_VIRTUAL_TIME);
   BIND_CONSTANT(TIMELINE_RECONCILIATION_COMPLETION_GATED);
   BIND_CONSTANT(TIMELINE_RECONCILIATION_STRICT);
+  BIND_CONSTANT(PIXEL_FORMAT_RGBA);
+  BIND_CONSTANT(PIXEL_FORMAT_BGRA);
 
   ADD_SIGNAL(godot::MethodInfo(
       "state_published",

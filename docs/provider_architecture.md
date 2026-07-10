@@ -253,6 +253,11 @@ Providers must not add a second hidden layer of defaulting beneath that.
   `CaptureRequest.format_fourcc`, and status-panel `capture_fmt` are the same
   provider-agnostic CamBANG FourCC-style still-result format value at different
   layers.
+- Public Godot constants for currently exposed raw pixel-buffer format values use
+  the `PIXEL_FORMAT_*` naming family, for example
+  `CamBANGServer.PIXEL_FORMAT_RGBA`; this is a Godot-facing name for the same
+  provider-agnostic FourCC-style integer value, not a separate
+  provider/backend format namespace.
 - Current implemented displayable still paths use packed pixel formats such as
   `FOURCC_RGBA` / `FOURCC_BGRA`; encoded JPEG or RAW still outputs require
   matching payload-kind/result support and are not implied by writing those

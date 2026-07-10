@@ -254,8 +254,22 @@ func _ready():
 	while not device_00.live:
 		await device_00.live_changed
 	
-	var stream_00 : CamBANGStream = device_00.create_stream()
+	#var stream_00 : CamBANGStream = device_00.create_stream()
+	var stream_00 : CamBANGStream = device_00.create_stream(({
+	\"intent\": CamBANGStream.INTENT_VIEWFINDER,
+	\"profile\": {
+		\"width\": 1280,
+		\"height\": 720,
+		\"format_fourcc\": CamBANGServer.PIXEL_FORMAT_RGBA,
+		\"target_fps_min\": 30,
+		\"target_fps_max\": 30,
+	}
+}))
+	var stream_00_b : CamBANGStream = device_00.create_stream()
+
+	
 	stream_00.start()
+
 	_sample_synthetic_metrics(\"after_start\")
 	#await get_tree().create_timer(10.0).timeout
 	while not stream_00.result_live:
@@ -266,6 +280,7 @@ func _ready():
 		return
 	_warn_on_suspicious_first_stream_bind(stream_00, stream_result)
 	%StreamDisplayTexture.texture = stream_result.get_display_view()
+
 
 func _process(delta: float) -> void:
 	_metrics_sample_elapsed_s += delta
@@ -289,7 +304,7 @@ func _input(event: InputEvent) -> void:
 	
 "
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_lw56x"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bdgjy"]
 bg_color = Color(0.07, 0.09, 0.12, 0.9)
 corner_radius_top_left = 6
 corner_radius_top_right = 6
@@ -333,7 +348,7 @@ offset_bottom = 40.0
 custom_minimum_size = Vector2(320, 0)
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_styles/panel = SubResource("StyleBoxFlat_lw56x")
+theme_override_styles/panel = SubResource("StyleBoxFlat_bdgjy")
 script = ExtResource("1_bdgjy")
 metadata/_custom_type_script = "uid://djv2vyhmruoh2"
 

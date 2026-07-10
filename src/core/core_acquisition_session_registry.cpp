@@ -349,6 +349,27 @@ uint64_t CoreAcquisitionSessionRegistry::resolve_live_session_id_for_device(
   return resolve_live_session_id_for_device_(device_instance_id);
 }
 
+bool CoreAcquisitionSessionRegistry::has_capture_in_flight_for_device(
+    uint64_t device_instance_id) const noexcept {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  for (const auto& kv : captures_in_flight_) {
+    const uint64_t session_id = kv.second.acquisition_session_id;
+    if (session_id == 0) {
+      continue;
+    }
+    const auto it = sessions_.find(session_id);
+    if (it == sessions_.end()) {
+      continue;
+    }
+    if (it->second.device_instance_id == device_instance_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 uint64_t CoreAcquisitionSessionRegistry::resolve_session_id_for_capture(
     uint64_t device_instance_id,
     uint64_t capture_id,

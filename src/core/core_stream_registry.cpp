@@ -14,6 +14,7 @@ bool same_retained_plan(CoreRetainedProductionPlan a,
 
 void apply_stream_started(CoreStreamRegistry::StreamRecord& rec, uint64_t access_posture_epoch) noexcept {
   rec.started = true;
+  rec.last_error_code = 0;
   rec.last_stop_origin = CoreStreamRegistry::StopOrigin::None;
   rec.stop_requested_by_core = false;
   rec.access_posture_epoch = access_posture_epoch;
@@ -288,6 +289,21 @@ bool CoreStreamRegistry::has_flowing_stream_for_device(uint64_t device_instance_
   for (const auto& [stream_id, rec] : streams_) {
     (void)stream_id;
     if (rec.device_instance_id == device_instance_id && rec.created && rec.started) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CoreStreamRegistry::has_error_stream_for_device(uint64_t device_instance_id) const noexcept {
+  if (device_instance_id == 0) {
+    return false;
+  }
+  for (const auto& [stream_id, rec] : streams_) {
+    (void)stream_id;
+    if (rec.device_instance_id == device_instance_id &&
+        rec.created &&
+        rec.last_error_code != 0) {
       return true;
     }
   }

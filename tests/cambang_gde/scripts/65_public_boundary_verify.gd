@@ -13,7 +13,7 @@ const PHASE_DONE := 5
 const STARTUP_INITIAL_STILL_WIDTH := 320
 const STARTUP_FINAL_STILL_WIDTH := 352
 const STARTUP_STILL_HEIGHT := 240
-const STARTUP_STILL_FORMAT_RGBA := 1094862674
+#const STARTUP_STILL_FORMAT_RGBA := 1094862674
 const STARTUP_INITIAL_WARM_HOLD_MS := 1
 const STARTUP_FINAL_WARM_HOLD_MS := 50 # TODO: rework this test. Warm is now an intent
 # returning OK very quickly, but not publising the new value until core says so.
@@ -347,7 +347,7 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 		var startup_profile_before_engage := {
 			"width": STARTUP_INITIAL_STILL_WIDTH,
 			"height": STARTUP_STILL_HEIGHT,
-			"format_fourcc": STARTUP_STILL_FORMAT_RGBA,
+			"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
 		}
 		var profile_before_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile_before_engage))
 		if profile_before_err != OK:
@@ -360,7 +360,7 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 		var startup_profile_after_engage := {
 			"width": STARTUP_FINAL_STILL_WIDTH,
 			"height": STARTUP_STILL_HEIGHT,
-			"format_fourcc": STARTUP_STILL_FORMAT_RGBA,
+			"format_fourcc": CamBANGServer.PIXEL_FORMAT_RGBA,
 		}
 		var profile_after_err: int = int(endpoint_handle.set_still_capture_profile(startup_profile_after_engage))
 		if profile_after_err != OK:
@@ -484,7 +484,7 @@ func _snapshot_has_startup_endpoint_effects(snapshot: Dictionary) -> bool:
 		if typeof(still_v) != TYPE_DICTIONARY:
 			continue
 		var still: Dictionary = still_v
-		if int(still.get("width", -1)) == STARTUP_FINAL_STILL_WIDTH and int(still.get("height", -1)) == STARTUP_STILL_HEIGHT and int(still.get("format", -1)) == STARTUP_STILL_FORMAT_RGBA:
+		if int(still.get("width", -1)) == STARTUP_FINAL_STILL_WIDTH and int(still.get("height", -1)) == STARTUP_STILL_HEIGHT and int(still.get("format", -1)) == CamBANGServer.PIXEL_FORMAT_RGBA:
 			return true
 	return false
 

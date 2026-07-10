@@ -77,6 +77,7 @@ public:
   const AcquisitionSessionEntry* find(uint64_t acquisition_session_id) const noexcept;
   const std::map<uint64_t, AcquisitionSessionEntry>& all() const noexcept { return sessions_; }
   uint64_t resolve_live_session_id_for_device(uint64_t device_instance_id) const noexcept;
+  bool has_capture_in_flight_for_device(uint64_t device_instance_id) const noexcept;
   uint64_t resolve_session_id_for_capture(uint64_t device_instance_id,
                                           uint64_t capture_id,
                                           uint64_t acquisition_session_id_hint = 0) const noexcept;

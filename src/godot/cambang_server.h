@@ -84,6 +84,10 @@ public:
   static constexpr int TIMELINE_RECONCILIATION_COMPLETION_GATED = 0;
   static constexpr int TIMELINE_RECONCILIATION_STRICT = 1;
 
+  // Public CamBANG FourCC-style pixel format constants for Godot Dictionary profile fields.
+  static constexpr int PIXEL_FORMAT_RGBA = static_cast<int>(FOURCC_RGBA);
+  static constexpr int PIXEL_FORMAT_BGRA = static_cast<int>(FOURCC_BGRA);
+
   // User-facing control of core processing.
   godot::Error start(
       const godot::Variant& provider_kind = godot::Variant(),
@@ -142,7 +146,9 @@ public:
   bool get_endpoint_capture_template_profile(const godot::String& hardware_id, CaptureProfile& out_profile) const;
   godot::Error engage_endpoint_handle(const godot::String& hardware_id, const godot::String& display_name);
   godot::Error disengage_endpoint_handle(const godot::String& hardware_id);
-  godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(const godot::String& hardware_id);
+  godot::Ref<CamBANGStream> create_stream_for_endpoint_hardware_id(
+      const godot::String& hardware_id,
+      const godot::Variant& definition);
   godot::Error destroy_direct_stream_handle(uint64_t stream_id,
                                             const godot::String& hardware_id,
                                             uint64_t device_instance_id);

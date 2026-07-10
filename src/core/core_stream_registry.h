@@ -114,6 +114,7 @@ public:
   // For future snapshot/publisher. Core-thread-only.
   const std::map<uint64_t, StreamRecord>& all() const noexcept { return streams_; }
   bool has_flowing_stream_for_device(uint64_t device_instance_id) const noexcept;
+  bool has_error_stream_for_device(uint64_t device_instance_id) const noexcept;
 
 private:
   uint64_t allocate_access_posture_epoch() noexcept;

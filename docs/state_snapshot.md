@@ -263,6 +263,15 @@ outputs remain a design possibility; they require matching
 Current implemented displayable still paths use packed pixel formats such
 as `FOURCC_RGBA` / `FOURCC_BGRA`.
 
+Godot-facing public APIs should expose these values through named pixel-format
+constants, for example `CamBANGServer.PIXEL_FORMAT_RGBA` and
+`CamBANGServer.PIXEL_FORMAT_BGRA`, rather than requiring users to write raw
+integer literals.
+
+The `PIXEL_FORMAT_*` public constant family denotes raw pixel-buffer layouts.
+It does not denote encoded image formats, file/container formats, or RAW-domain
+still outputs.
+
 ------------------------------------------------------------------------
 
 ## 5. Top-level schema (v1)

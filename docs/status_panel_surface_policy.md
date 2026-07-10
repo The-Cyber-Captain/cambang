@@ -206,6 +206,15 @@ Rules:
 
 Rule: do not encode the same concept across multiple surface types unless it satisfies the reinforcement rule.
 
+Current implementation-aligned examples:
+
+- stream `intent` belongs in the row label / identity surface, not as a badge
+- device `engaged` belongs as a compact state badge, not as `engaged=<bool>` text
+- device/stream/rig operational `mode` belongs as a state badge
+- raw pixel-buffer format counters such as `fmt` / `capture_fmt` may use concise
+  tokenized text (for example `RGBA`, `BGRA`) in the panel while still remaining
+  traceable to the same snapshot numeric format value
+
 ### 5.6 Essential vs optional Tier 3
 
 **Essential (always visible):**

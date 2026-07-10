@@ -178,9 +178,24 @@ CamBANGStateSnapshot SnapshotBuilder::build(const Inputs& in,
 
             // Map minimal state.
             d.phase = rec.open ? CBLifecyclePhase::LIVE : CBLifecyclePhase::CREATED;
-            d.mode = (in.streams && in.streams->has_flowing_stream_for_device(id))
-                         ? CBDeviceMode::STREAMING
-                         : CBDeviceMode::IDLE;
+            const bool capture_in_flight =
+                in.acquisition_sessions &&
+                in.acquisition_sessions->has_capture_in_flight_for_device(id);
+            const bool has_stream_error =
+                in.streams && in.streams->has_error_stream_for_device(id);
+            const bool has_flowing_stream =
+                in.streams && in.streams->has_flowing_stream_for_device(id);
+            if (capture_in_flight) {
+                d.mode = CBDeviceMode::CAPTURING;
+            } else if (rec.last_error_code != 0) {
+                d.mode = CBDeviceMode::ERROR;
+            } else if (has_stream_error) {
+                d.mode = CBDeviceMode::ERROR;
+            } else if (has_flowing_stream) {
+                d.mode = CBDeviceMode::STREAMING;
+            } else {
+                d.mode = CBDeviceMode::IDLE;
+            }
             d.engaged = rec.open;
             d.warm_hold_ms = rec.warm_hold_ms;
             if (rec.warm_deadline_active && rec.warm_deadline_ns > timestamp_ns) {
