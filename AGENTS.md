@@ -4,8 +4,10 @@
 
 Treat the repository source as authoritative.
 
-For broad design or architecture tasks, the user may explicitly ask you to read `docs/dev/agent_context.md`.
-For active tranche handoff tasks, the user may explicitly ask you to read `docs/dev/current_tranche.md`.
+For non-trivial design, architecture, provider-boundary, snapshot, result-truth, or tranche work, read:
+
+* `docs/dev/agent_context.md`
+* `docs/dev/current_tranche.md` when it exists and is relevant to the active workstream
 
 Before changing code:
 

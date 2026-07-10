@@ -279,8 +279,10 @@ compile_commands.json
 Behaviour:
 
 - compile actions are wrapped and recorded for C/C++ translation units
-- the database is written when compile actions run
+- newly captured commands replace entries for the same object output while untouched entries are preserved
+- incremental builds therefore retain a complete database instead of shrinking it to only recompiled sources
 - no-op builds preserve the existing database
+- writes are atomic; an unreadable existing database is preserved rather than replaced by a partial one
 - `COMPDB_PATH=<path>` writes to a custom location
 
 Clean behaviour:

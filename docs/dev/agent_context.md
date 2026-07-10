@@ -1,7 +1,9 @@
 # Agent Context
 
 This document gives repo-specific context for AI coding agents working on CamBANG. It supports the root `AGENTS.md` by recording durable project expectations that are too specific for the root file but too stable to repeat in every prompt.
-For active tranche handoff tasks, `docs/dev/current_tranche.md` may provide additional current workstream context when the user explicitly requests it.
+
+For active tranche work, `docs/dev/current_tranche.md` may provide additional current steering. Keep tranche-specific detail there, not here.
+
 ## Source authority
 
 The checked-out repository is authoritative.
@@ -82,14 +84,18 @@ When working near provider code, preserve the distinction between:
 * advertised capability;
 * actual retained result access.
 
-When discussing retained-result access calibration:
+## Specifications, runtime posture, and result facts
 
-* treat timing evidence as classification input, not decorative reporting;
-* do not assume `to_image()` timing is repeating-stream-specific;
-* tie evidence to the realized retained backing/access path under the current live applied production posture;
-* keep result-access evidence distinct from provider-local generation/staging, snapshot publication, later render-thread draw/UI scheduling, and unrelated GPU upload/update work.
+Keep these surfaces distinct:
 
-### Automatic measurement and classification
+* `CameraSpec` and `ImagingSpec` are retained specification/capability truth.
+* `camera_state` is current runtime posture, including target/applied/constrained/rejected state.
+* result fact groups describe actual image-time facts where available.
+* post-result metadata enrichment or user-side calibration data is not automatically core operational truth.
+
+Cross-camera or imaging-subsystem capability truth belongs to `ImagingSpec`. Per-camera stable characteristics belong to `CameraSpec`.
+
+## Automatic measurement and classification
 
 Backing Plan measurement and retained-result access classification are internal, automatic runtime responsibilities. They must not impose a calibration-management workflow on normal users or GDScript.
 
@@ -150,48 +156,6 @@ Keep documentation:
 Agent-guidance maintenance:
 
 * keep `docs/dev/current_tranche.md` current after accepted or committed tranches;
-* use `current_tranche.md` for volatile active-workstream state, recent committed checkpoints, validation status, and near-term constraints;
+* use `current_tranche.md` for volatile active-workstream state, acceptance criteria, validation expectations, and near-term constraints;
 * use `docs/dev/agent_context.md` only for durable cross-tranche expectations that should persist beyond the current workstream;
 * do not duplicate canonical architecture in either guidance file.
-
-
-## C++ expectations
-
-Prefer clear, boring C++ over cleverness.
-
-General expectations:
-
-* preserve ownership clarity;
-* avoid hidden cross-thread lifetime assumptions;
-* keep error and status propagation explicit;
-* avoid broad refactors mixed into narrow fixes;
-* avoid speculative performance changes without evidence;
-* keep public-facing names simple and internal names precise.
-
-When changing synchronous Core or provider paths, do not assume synchronous work is accidental. Some synchronous boundaries exist to preserve snapshot truth, thread safety, or deterministic sequencing.
-
-## Agent workflow
-
-For audits:
-
-* remain read-only unless explicitly asked to edit;
-* cite files and functions inspected;
-* separate confirmed findings from hypotheses;
-* avoid proposing patches without a concrete issue.
-
-For edits:
-
-* keep scope narrow;
-* inspect before editing;
-* identify expected changed files for non-trivial work;
-* avoid unrelated cleanup;
-* report changed files and rationale;
-* list validation commands;
-* say plainly what was not run.
-
-For Codex/Web agents:
-
-* do not claim local Windows, Godot, hardware, or GPU validation unless actually performed;
-* do not create commits unless explicitly asked;
-* do not add persistent diagnostic knobs for temporary investigation;
-* do not add environment variables as convenience workarounds unless explicitly approved.
