@@ -89,6 +89,7 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
     synchronous handler/snapshot consistency, stopped-time camera-concurrency ingest/error mapping,
     NIL-after-stop, and no stale generation leakage.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=65_public_boundary_verify status=<ok|fail|error> exit_code=<n> reason=<token>`
   - Expected pass string: `OK: godot public boundary verify PASS`
 - `scenes/66_public_lifecycle_verify.tscn`
   - Self-terminating suite verifier for Godot public lifecycle semantics.
@@ -265,7 +266,7 @@ Notes:
 - For bounded-observation verifiers (`61`, `62`), either omit `--quit-after` or set a generously
   large value such as `--quit-after 1000`.
 - `60_restart_boundary_abuse`, `61_tick_bounded_coalescing_abuse`, `62_snapshot_polling_immutability_abuse`,
-  `63_snapshot_observer_minimal`, `65_public_boundary_verify`, `66_public_lifecycle_verify`, and
+  `63_snapshot_observer_minimal`, `66_public_lifecycle_verify`, and
   `70_result_retrieval_verification` are older/non-protocol scenes unless separately migrated.
   Their terminal `OK: ... PASS` / `FAIL: ...` lines are useful for direct Godot/manual checks,
   but they are not `run_godot.ps1` classification verdicts.

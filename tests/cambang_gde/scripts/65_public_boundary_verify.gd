@@ -1,5 +1,6 @@
 extends Node
 
+const SCENE_LABEL := "65_public_boundary_verify"
 const TIMEOUT_MS := 5000
 const STARTUP_REALIZATION_SCENARIO := "stream_inspection_live"
 
@@ -22,6 +23,7 @@ const CAMERA_CONCURRENCY_UNSUPPORTED_JSON := "{\"schema_version\":1,\"generator\
 
 var _done := false
 var _quit_requested := false
+var _terminal_verdict_emitted := false
 var _phase := PHASE_WAIT_FIRST_BASELINE
 var _timer: Timer
 var _first_gen := -1
@@ -546,7 +548,7 @@ func _on_timeout() -> void:
 		_diag_latest_snapshot_topology_version,
 		_diag_waiting_for
 	])
-	_fail("FAIL: public boundary verify timed out")
+	_error("FAIL: public boundary verify timed out", "timeout")
 
 
 func _on_state_published(gen: int, version: int, topology_version: int) -> void:
@@ -703,18 +705,43 @@ func _ok(msg: String) -> void:
 	_diag_mark("final_pass_quit_begin", "cleanup and quit success")
 	_done = true
 	_phase = PHASE_DONE
+	_emit_harness_verdict("ok", 0, "pass")
 	print(msg)
 	_cleanup_and_quit(0)
 
 
-func _fail(msg: String) -> void:
+func _fail(msg: String, reason: String = "assertion_failed") -> void:
 	if _done:
 		return
 	_done = true
 	_phase = PHASE_DONE
+	_emit_harness_verdict("fail", 1, reason)
 	push_error(msg)
 	print(msg)
 	_cleanup_and_quit(1)
+
+
+func _error(msg: String, reason: String) -> void:
+	if _done:
+		return
+	_done = true
+	_phase = PHASE_DONE
+	_emit_harness_verdict("error", 1, reason)
+	push_error(msg)
+	print(msg)
+	_cleanup_and_quit(1)
+
+
+func _emit_harness_verdict(status: String, exit_code: int, reason: String) -> void:
+	if _terminal_verdict_emitted:
+		return
+	_terminal_verdict_emitted = true
+	print("[CamBANG][HarnessVerdict] scene=%s status=%s exit_code=%d reason=%s" % [
+		SCENE_LABEL,
+		status,
+		exit_code,
+		reason,
+	])
 
 
 func _cleanup_and_quit(code: int) -> void:

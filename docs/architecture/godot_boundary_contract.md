@@ -31,12 +31,12 @@ CamBANGServer.ingest_camera_concurrency(String json_text) -> Error
 
 This method accepts caller-supplied JSON text only; CamBANG performs no
 filesystem access on the caller's behalf. The accepted format follows the
-supported ADC camera-concurrency schema-version range, and unrelated ADC
-capability fields outside the consumed camera-concurrency projection are
-ignored. Ingestion is stopped-time and transactional: accepted input becomes
-configured truth for the next generation, active-generation ingestion returns
-`ERR_BUSY`, and any parse/validation failure leaves the previously configured
-truth unchanged.
+supported ADC camera-concurrency schema-version range compiled under
+`camera_concurrency::ADC`, and unrelated ADC capability fields outside the
+consumed camera-concurrency projection are ignored. Ingestion is stopped-time
+and transactional: accepted input becomes configured truth for the next
+generation, active-generation ingestion returns `ERR_BUSY`, and any
+parse/validation failure leaves the previously configured truth unchanged.
 
 Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
 that storage after a run, but once the provider is attached and the runtime is

@@ -131,6 +131,34 @@ static std::string make_adc_camera_concurrency_json(
   return oss.str();
 }
 
+static std::string make_realistic_full_adc_camera_concurrency_json() {
+  return
+      "{"
+      "\"schema_version\":1,"
+      "\"generator\":\"Aide-De-Cam \\u2014 \\u2713\","
+      "\"cameras\":["
+      "{\"camera_id\":\"camA\",\"sensor\":{\"max_aperture\":1.8,\"focal_length_mm\":4.25,\"note\":\"caf\\u00e9\"}},"
+      "{\"camera_id\":\"camB\",\"lens\":{\"stabilization_gain\":5.76e-1,\"localized_name\":\"ni\\u00f1o\"}}"
+      "],"
+      "\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"camA\",\"camB\"]]},"
+      "\"ignored_numeric\":6.022e23,"
+      "\"ignored_object\":{\"gamma\":2.2,\"caption\":\"ol\\u00e9\"}"
+      "}";
+}
+
+static std::string make_repeated_json_nesting(std::size_t depth) {
+  std::string out;
+  out.reserve(depth * 2 + 4);
+  for (std::size_t i = 0; i < depth; ++i) {
+    out += '[';
+  }
+  out += '0';
+  for (std::size_t i = 0; i < depth; ++i) {
+    out += ']';
+  }
+  return out;
+}
+
 static std::vector<uint8_t> as_bytes(const std::string& text) {
   return std::vector<uint8_t>(text.begin(), text.end());
 }
@@ -906,6 +934,31 @@ static int test_runtime_camera_concurrency_invalid_input_smoke() {
     return 1;
   }
 
+  const auto realistic_full_adc = rt.ingest_camera_concurrency_json_for_server(
+      make_realistic_full_adc_camera_concurrency_json());
+  if (realistic_full_adc.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      realistic_full_adc.imaging_spec_version <=
+          non_adc_generator.imaging_spec_version) {
+    std::cerr << "FAIL: realistic full ADC document with floats/unicode should be accepted when concurrency projection is valid\n";
+    return 1;
+  }
+
+  const auto unsupported_absent = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json({"camA", "camB"}, false));
+  if (unsupported_absent.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      unsupported_absent.imaging_spec_version <= realistic_full_adc.imaging_spec_version) {
+    std::cerr << "FAIL: supported=false without camera_id_combinations should remain valid authoritative unsupported truth\n";
+    return 1;
+  }
+
+  const auto unsupported_empty = rt.ingest_camera_concurrency_json_for_server(
+      "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"camA\"},{\"camera_id\":\"camB\"}],\"concurrent_camera_support\":{\"supported\":false,\"camera_id_combinations\":[]}}");
+  if (unsupported_empty.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      unsupported_empty.imaging_spec_version <= unsupported_absent.imaging_spec_version) {
+    std::cerr << "FAIL: supported=false with empty camera_id_combinations should be accepted as authoritative unsupported truth\n";
+    return 1;
+  }
+
   struct InvalidCase {
     const char* label;
     std::string json;
@@ -917,7 +970,7 @@ static int test_runtime_camera_concurrency_invalid_input_smoke() {
        CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
       {"non_integral_schema_version",
        "{\"schema_version\":1.5,\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
-       CoreRuntime::IngestCameraConcurrencyStatus::ParseError},
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
       {"unsupported_version",
        "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
        CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
@@ -935,6 +988,9 @@ static int test_runtime_camera_concurrency_invalid_input_smoke() {
        CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
       {"contradictory_support_and_combinations",
        make_adc_camera_concurrency_json({"camA", "camB"}, false, {{"camA", "camB"}}, 2),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"unsupported_non_empty_with_unicode",
+       "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"camA\",\"label\":\"caf\\u00e9\"},{\"camera_id\":\"camB\"}],\"concurrent_camera_support\":{\"supported\":false,\"camera_id_combinations\":[[\"camA\",\"camB\"]]}}",
        CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
       {"singleton_combination",
        make_adc_camera_concurrency_json({"camA", "camB"}, true, {{"camA"}}, 2),
@@ -966,6 +1022,77 @@ static int test_runtime_camera_concurrency_invalid_input_smoke() {
       {"invalid_maximum",
        "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"camA\"},{\"camera_id\":\"camB\"}],\"concurrent_camera_support\":{\"supported\":true,\"max_concurrent_cameras\":1,\"camera_id_combinations\":[[\"camA\",\"camB\"]]}}",
        CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"oversized_input",
+       std::string(camera_concurrency::max_supported_input_bytes() + 1, ' '),
+       CoreRuntime::IngestCameraConcurrencyStatus::ParseError},
+      {"excessive_nesting",
+       make_repeated_json_nesting(camera_concurrency::max_supported_nesting_depth() + 1),
+       CoreRuntime::IngestCameraConcurrencyStatus::ParseError},
+      {"oversized_string",
+       "{\"schema_version\":1,\"generator\":\"" +
+           std::string(camera_concurrency::max_supported_string_bytes() + 1, 'x') +
+           "\",\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::ParseError},
+      {"too_many_cameras",
+       []() {
+         std::vector<std::string> camera_ids;
+         camera_ids.reserve(
+             camera_concurrency::max_supported_camera_records() + 1);
+         for (std::size_t i = 0;
+              i < camera_concurrency::max_supported_camera_records() + 1;
+              ++i) {
+           camera_ids.push_back("cam" + std::to_string(i));
+         }
+         return make_adc_camera_concurrency_json(camera_ids, false);
+       }(),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"too_many_combinations",
+       []() {
+         std::vector<std::string> camera_ids;
+         std::vector<std::vector<std::string>> combinations;
+         camera_ids.reserve(
+             camera_concurrency::max_supported_combination_count() + 2);
+         combinations.reserve(
+             camera_concurrency::max_supported_combination_count() + 1);
+         for (std::size_t i = 0;
+              i < camera_concurrency::max_supported_combination_count() + 2;
+              ++i) {
+           camera_ids.push_back("cam" + std::to_string(i));
+         }
+         for (std::size_t i = 0;
+              i < camera_concurrency::max_supported_combination_count() + 1;
+              ++i) {
+           combinations.push_back({camera_ids[i], camera_ids[i + 1]});
+         }
+         return make_adc_camera_concurrency_json(
+             camera_ids,
+             true,
+             combinations,
+             2);
+       }(),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"too_many_members_in_combination",
+       []() {
+         std::vector<std::string> camera_ids;
+         std::vector<std::string> combination;
+         camera_ids.reserve(
+             camera_concurrency::max_supported_combination_members() + 1);
+         combination.reserve(
+             camera_concurrency::max_supported_combination_members() + 1);
+         for (std::size_t i = 0;
+              i < camera_concurrency::max_supported_combination_members() + 1;
+              ++i) {
+           const std::string id = "cam" + std::to_string(i);
+           camera_ids.push_back(id);
+           combination.push_back(id);
+         }
+         return make_adc_camera_concurrency_json(
+             camera_ids,
+             true,
+             {combination},
+             static_cast<uint32_t>(combination.size()));
+       }(),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
   };
 
   for (const auto& c : cases) {
@@ -990,7 +1117,7 @@ static int test_runtime_camera_concurrency_invalid_input_smoke() {
   }
   if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
         return s.gen == 0 && s.version == 0 &&
-               s.imaging_spec_version == non_adc_generator.imaging_spec_version;
+               s.imaging_spec_version == unsupported_empty.imaging_spec_version;
       })) {
     std::cerr << "FAIL: invalid camera concurrency ingests did not preserve prior configured truth transactionally\n";
     rt.stop();

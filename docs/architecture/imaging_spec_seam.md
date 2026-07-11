@@ -73,12 +73,17 @@ Current source-grounded consequences include:
 
 ## Guardrails
 
+The existing public API was preserved without redesign or churn; the sole
+approved public addition in this tranche is
+`CamBANGServer.ingest_camera_concurrency(String)`. Further unrelated public API
+expansion remains out of scope.
+
 This seam lock intentionally does not broaden into:
 
 - result-fact redesign
 - calibration or metadata-enrichment architecture
 - platform-provider implementation detail
-- public Godot API changes
+- further public Godot API changes beyond the approved ingestion method
 
 If a future change needs one of those, it should be proposed explicitly rather
 than smuggled in through `ImagingSpec` terminology.

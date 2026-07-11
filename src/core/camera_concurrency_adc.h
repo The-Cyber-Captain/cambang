@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -36,6 +37,13 @@ struct LoadResult {
   std::string error_message;
   Truth truth{};
 };
+
+std::size_t max_supported_input_bytes() noexcept;
+std::size_t max_supported_nesting_depth() noexcept;
+std::size_t max_supported_string_bytes() noexcept;
+std::size_t max_supported_camera_records() noexcept;
+std::size_t max_supported_combination_count() noexcept;
+std::size_t max_supported_combination_members() noexcept;
 
 LoadResult load_truth_from_adc_json_text(const std::string& text);
 LoadResult load_truth_from_adc_json_payload(SpecPatchView payload);

@@ -3,14 +3,24 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
-#include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
 
 namespace cambang::camera_concurrency {
 namespace {
+
+// Conservative parser bounds for externally supplied JSON text. These are kept
+// local to the camera-concurrency ingestion seam rather than introducing a
+// generic configuration framework.
+constexpr std::size_t kMaxInputBytes = 1u << 20;   // 1 MiB
+constexpr std::size_t kMaxNestingDepth = 64;
+constexpr std::size_t kMaxStringBytes = 64u << 10; // 64 KiB
+constexpr std::size_t kMaxCameraRecords = 1024;
+constexpr std::size_t kMaxCombinationCount = 2048;
+constexpr std::size_t kMaxCombinationMembers = 64;
 
 void set_error(LoadResult& out,
                LoadErrorKind error_kind,
@@ -33,7 +43,7 @@ struct JsonValue {
 
   Type type = Type::Null;
   bool bool_value = false;
-  std::int64_t number_value = 0;
+  std::string number_lexeme{};
   std::string string_value{};
   std::vector<JsonValue> array_value{};
   std::vector<std::pair<std::string, JsonValue>> object_value{};
@@ -44,8 +54,14 @@ public:
   explicit JsonParser(const std::string& text) : text_(text) {}
 
   bool parse(JsonValue& out, std::string* error) {
+    if (text_.size() > kMaxInputBytes) {
+      if (error) {
+        *error = "input exceeds byte limit";
+      }
+      return false;
+    }
     pos_ = 0;
-    if (!parse_value(out, error)) {
+    if (!parse_value(out, error, 0)) {
       return false;
     }
     skip_ws();
@@ -75,7 +91,7 @@ private:
   }
 
   bool match_literal(const char* lit) {
-    size_t i = 0;
+    std::size_t i = 0;
     while (lit[i] != '\0') {
       if (pos_ + i >= text_.size() || text_[pos_ + i] != lit[i]) {
         return false;
@@ -86,7 +102,7 @@ private:
     return true;
   }
 
-  bool parse_value(JsonValue& out, std::string* error) {
+  bool parse_value(JsonValue& out, std::string* error, std::size_t depth) {
     skip_ws();
     if (pos_ >= text_.size()) {
       if (error) {
@@ -97,10 +113,10 @@ private:
 
     const char c = text_[pos_];
     if (c == '{') {
-      return parse_object(out, error);
+      return parse_object(out, error, depth + 1);
     }
     if (c == '[') {
-      return parse_array(out, error);
+      return parse_array(out, error, depth + 1);
     }
     if (c == '"') {
       out.type = JsonValue::Type::String;
@@ -108,7 +124,7 @@ private:
     }
     if (c == '-' || (c >= '0' && c <= '9')) {
       out.type = JsonValue::Type::Number;
-      return parse_integer(out.number_value, error);
+      return parse_number(out.number_lexeme, error);
     }
     if (match_literal("true")) {
       out.type = JsonValue::Type::Bool;
@@ -164,37 +180,12 @@ private:
           case 'r': value.push_back('\r'); break;
           case 't': value.push_back('\t'); break;
           case 'u': {
-            if (pos_ + 4 > text_.size()) {
-              if (error) {
-                *error = "incomplete unicode escape in string";
-              }
+            const std::optional<std::uint32_t> decoded =
+                decode_unicode_escape(error);
+            if (!decoded.has_value()) {
               return false;
             }
-            unsigned int code = 0;
-            for (int i = 0; i < 4; ++i) {
-              const char h = text_[pos_++];
-              code <<= 4;
-              if (h >= '0' && h <= '9') {
-                code |= static_cast<unsigned int>(h - '0');
-              } else if (h >= 'a' && h <= 'f') {
-                code |= static_cast<unsigned int>(h - 'a' + 10);
-              } else if (h >= 'A' && h <= 'F') {
-                code |= static_cast<unsigned int>(h - 'A' + 10);
-              } else {
-                if (error) {
-                  *error = "invalid unicode escape in string";
-                }
-                return false;
-              }
-            }
-            if (code > 0x7F) {
-              if (error) {
-                *error =
-                    "non-ascii unicode escape is not supported in strict parser";
-              }
-              return false;
-            }
-            value.push_back(static_cast<char>(code));
+            append_utf8(*decoded, value);
             break;
           }
           default:
@@ -212,6 +203,12 @@ private:
         }
         value.push_back(c);
       }
+      if (value.size() > kMaxStringBytes) {
+        if (error) {
+          *error = "string exceeds byte limit";
+        }
+        return false;
+      }
     }
 
     if (error) {
@@ -220,12 +217,100 @@ private:
     return false;
   }
 
-  bool parse_integer(std::int64_t& out, std::string* error) {
-    const size_t start = pos_;
-    bool neg = false;
-    if (consume('-')) {
-      neg = true;
+  std::optional<std::uint32_t> decode_unicode_escape(std::string* error) {
+    const std::optional<std::uint32_t> first = parse_hex_escape(error);
+    if (!first.has_value()) {
+      return std::nullopt;
     }
+    std::uint32_t codepoint = *first;
+    if (codepoint >= 0xD800u && codepoint <= 0xDBFFu) {
+      if (pos_ + 6 > text_.size() || text_[pos_] != '\\' ||
+          text_[pos_ + 1] != 'u') {
+        if (error) {
+          *error = "missing low surrogate after high surrogate escape";
+        }
+        return std::nullopt;
+      }
+      pos_ += 2;
+      const std::optional<std::uint32_t> low = parse_hex_escape(error);
+      if (!low.has_value()) {
+        return std::nullopt;
+      }
+      if (*low < 0xDC00u || *low > 0xDFFFu) {
+        if (error) {
+          *error = "invalid low surrogate escape in string";
+        }
+        return std::nullopt;
+      }
+      codepoint = 0x10000u + ((codepoint - 0xD800u) << 10) +
+                  (*low - 0xDC00u);
+    } else if (codepoint >= 0xDC00u && codepoint <= 0xDFFFu) {
+      if (error) {
+        *error = "unexpected low surrogate escape in string";
+      }
+      return std::nullopt;
+    }
+    return codepoint;
+  }
+
+  std::optional<std::uint32_t> parse_hex_escape(std::string* error) {
+    if (pos_ + 4 > text_.size()) {
+      if (error) {
+        *error = "incomplete unicode escape in string";
+      }
+      return std::nullopt;
+    }
+    std::uint32_t code = 0;
+    for (int i = 0; i < 4; ++i) {
+      const char h = text_[pos_++];
+      code <<= 4;
+      if (h >= '0' && h <= '9') {
+        code |= static_cast<std::uint32_t>(h - '0');
+      } else if (h >= 'a' && h <= 'f') {
+        code |= static_cast<std::uint32_t>(h - 'a' + 10);
+      } else if (h >= 'A' && h <= 'F') {
+        code |= static_cast<std::uint32_t>(h - 'A' + 10);
+      } else {
+        if (error) {
+          *error = "invalid unicode escape in string";
+        }
+        return std::nullopt;
+      }
+    }
+    return code;
+  }
+
+  static void append_utf8(std::uint32_t codepoint, std::string& out) {
+    if (codepoint <= 0x7Fu) {
+      out.push_back(static_cast<char>(codepoint));
+      return;
+    }
+    if (codepoint <= 0x7FFu) {
+      out.push_back(static_cast<char>(0xC0u | ((codepoint >> 6) & 0x1Fu)));
+      out.push_back(static_cast<char>(0x80u | (codepoint & 0x3Fu)));
+      return;
+    }
+    if (codepoint <= 0xFFFFu) {
+      out.push_back(static_cast<char>(0xE0u | ((codepoint >> 12) & 0x0Fu)));
+      out.push_back(static_cast<char>(0x80u | ((codepoint >> 6) & 0x3Fu)));
+      out.push_back(static_cast<char>(0x80u | (codepoint & 0x3Fu)));
+      return;
+    }
+    out.push_back(static_cast<char>(0xF0u | ((codepoint >> 18) & 0x07u)));
+    out.push_back(static_cast<char>(0x80u | ((codepoint >> 12) & 0x3Fu)));
+    out.push_back(static_cast<char>(0x80u | ((codepoint >> 6) & 0x3Fu)));
+    out.push_back(static_cast<char>(0x80u | (codepoint & 0x3Fu)));
+  }
+
+  bool parse_number(std::string& out, std::string* error) {
+    const std::size_t start = pos_;
+    if (consume('-') && pos_ >= text_.size()) {
+      if (error) {
+        *error = "invalid number at byte " + std::to_string(start);
+      }
+      return false;
+    }
+
     if (pos_ >= text_.size() ||
         !std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
       if (error) {
@@ -233,44 +318,70 @@ private:
       }
       return false;
     }
-    if (text_[pos_] == '0' && pos_ + 1 < text_.size() &&
-        std::isdigit(static_cast<unsigned char>(text_[pos_ + 1]))) {
-      if (error) {
-        *error = "leading zero is not allowed for numbers";
-      }
-      return false;
-    }
 
-    std::int64_t value = 0;
-    while (pos_ < text_.size() &&
-           std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
-      const int digit = text_[pos_] - '0';
-      if (value >
-          (std::numeric_limits<std::int64_t>::max() - digit) / 10) {
-        if (error) {
-          *error = "integer overflow in number literal";
-        }
-        return false;
-      }
-      value = value * 10 + digit;
+    if (text_[pos_] == '0') {
       ++pos_;
-    }
-
-    if (pos_ < text_.size()) {
-      const char c = text_[pos_];
-      if (c == '.' || c == 'e' || c == 'E') {
+      if (pos_ < text_.size() &&
+          std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
         if (error) {
-          *error = "non-integer numbers are not supported in strict parser";
+          *error = "leading zero is not allowed for numbers";
         }
         return false;
       }
+    } else {
+      while (pos_ < text_.size() &&
+             std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
+        ++pos_;
+      }
     }
 
-    out = neg ? -value : value;
+    if (pos_ < text_.size() && text_[pos_] == '.') {
+      ++pos_;
+      if (pos_ >= text_.size() ||
+          !std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
+        if (error) {
+          *error = "invalid fractional number at byte " +
+                   std::to_string(start);
+        }
+        return false;
+      }
+      while (pos_ < text_.size() &&
+             std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
+        ++pos_;
+      }
+    }
+
+    if (pos_ < text_.size() && (text_[pos_] == 'e' || text_[pos_] == 'E')) {
+      ++pos_;
+      if (pos_ < text_.size() &&
+          (text_[pos_] == '+' || text_[pos_] == '-')) {
+        ++pos_;
+      }
+      if (pos_ >= text_.size() ||
+          !std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
+        if (error) {
+          *error = "invalid exponent number at byte " +
+                   std::to_string(start);
+        }
+        return false;
+      }
+      while (pos_ < text_.size() &&
+             std::isdigit(static_cast<unsigned char>(text_[pos_]))) {
+        ++pos_;
+      }
+    }
+
+    out.assign(text_.data() + start, pos_ - start);
     return true;
   }
 
-  bool parse_array(JsonValue& out, std::string* error) {
+  bool parse_array(JsonValue& out, std::string* error, std::size_t depth) {
+    if (depth > kMaxNestingDepth) {
+      if (error) {
+        *error = "json nesting exceeds depth limit";
+      }
+      return false;
+    }
     if (!consume('[')) {
       if (error) {
         *error = "expected '[' at byte " + std::to_string(pos_);
@@ -288,7 +399,7 @@ private:
 
     for (;;) {
       JsonValue element{};
-      if (!parse_value(element, error)) {
+      if (!parse_value(element, error, depth)) {
         return false;
       }
       out.array_value.push_back(std::move(element));
@@ -307,7 +418,13 @@ private:
     }
   }
 
-  bool parse_object(JsonValue& out, std::string* error) {
+  bool parse_object(JsonValue& out, std::string* error, std::size_t depth) {
+    if (depth > kMaxNestingDepth) {
+      if (error) {
+        *error = "json nesting exceeds depth limit";
+      }
+      return false;
+    }
     if (!consume('{')) {
       if (error) {
         *error = "expected '{' at byte " + std::to_string(pos_);
@@ -344,7 +461,7 @@ private:
         return false;
       }
       JsonValue value{};
-      if (!parse_value(value, error)) {
+      if (!parse_value(value, error, depth)) {
         return false;
       }
       out.object_value.emplace_back(std::move(key), std::move(value));
@@ -364,7 +481,7 @@ private:
   }
 
   const std::string& text_;
-  size_t pos_ = 0;
+  std::size_t pos_ = 0;
 };
 
 const JsonValue* find_field(const JsonValue& obj, const char* name) {
@@ -395,17 +512,36 @@ bool parse_u32(const JsonValue& value,
                const std::string& field,
                std::uint32_t& out_value,
                LoadResult& out) {
-  if (value.type != JsonValue::Type::Number ||
-      value.number_value < 0 ||
-      value.number_value >
-          static_cast<std::int64_t>(
-              std::numeric_limits<std::uint32_t>::max())) {
+  if (value.type != JsonValue::Type::Number || value.number_lexeme.empty()) {
     set_error(out,
               LoadErrorKind::Validation,
               "field '" + field + "' must be uint32 integer");
     return false;
   }
-  out_value = static_cast<std::uint32_t>(value.number_value);
+  if (value.number_lexeme.find_first_of(".eE-") != std::string::npos) {
+    set_error(out,
+              LoadErrorKind::Validation,
+              "field '" + field + "' must be uint32 integer");
+    return false;
+  }
+
+  std::uint64_t parsed = 0;
+  for (const char c : value.number_lexeme) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      set_error(out,
+                LoadErrorKind::Validation,
+                "field '" + field + "' must be uint32 integer");
+      return false;
+    }
+    parsed = parsed * 10u + static_cast<std::uint64_t>(c - '0');
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+      set_error(out,
+                LoadErrorKind::Validation,
+                "field '" + field + "' must be uint32 integer");
+      return false;
+    }
+  }
+  out_value = static_cast<std::uint32_t>(parsed);
   return true;
 }
 
@@ -437,10 +573,16 @@ std::vector<std::string> normalize_combination(
               "field '" + field + "' must be array");
     return normalized;
   }
+  if (combination_value.array_value.size() > kMaxCombinationMembers) {
+    set_error(out,
+              LoadErrorKind::Validation,
+              "field '" + field + "' exceeds supported member limit");
+    return normalized;
+  }
 
   normalized.reserve(combination_value.array_value.size());
   std::unordered_set<std::string> seen_members;
-  for (size_t i = 0; i < combination_value.array_value.size(); ++i) {
+  for (std::size_t i = 0; i < combination_value.array_value.size(); ++i) {
     const JsonValue& member = combination_value.array_value[i];
     std::string camera_id;
     if (!parse_non_empty_string(
@@ -478,6 +620,13 @@ std::vector<std::string> normalize_combination(
 }
 
 } // namespace
+
+std::size_t max_supported_input_bytes() noexcept { return kMaxInputBytes; }
+std::size_t max_supported_nesting_depth() noexcept { return kMaxNestingDepth; }
+std::size_t max_supported_string_bytes() noexcept { return kMaxStringBytes; }
+std::size_t max_supported_camera_records() noexcept { return kMaxCameraRecords; }
+std::size_t max_supported_combination_count() noexcept { return kMaxCombinationCount; }
+std::size_t max_supported_combination_members() noexcept { return kMaxCombinationMembers; }
 
 LoadResult load_truth_from_adc_json_text(const std::string& text) {
   LoadResult out{};
@@ -528,10 +677,14 @@ LoadResult load_truth_from_adc_json_text(const std::string& text) {
     set_error(out, LoadErrorKind::Validation, "field 'cameras' must not be empty");
     return out;
   }
+  if (cameras_value->array_value.size() > kMaxCameraRecords) {
+    set_error(out, LoadErrorKind::Validation, "field 'cameras' exceeds supported count limit");
+    return out;
+  }
 
   std::unordered_set<std::string> known_camera_ids;
   known_camera_ids.reserve(cameras_value->array_value.size());
-  for (size_t i = 0; i < cameras_value->array_value.size(); ++i) {
+  for (std::size_t i = 0; i < cameras_value->array_value.size(); ++i) {
     const JsonValue& camera = cameras_value->array_value[i];
     if (camera.type != JsonValue::Type::Object) {
       set_error(out,
@@ -619,10 +772,18 @@ LoadResult load_truth_from_adc_json_text(const std::string& text) {
       find_field(*support_value, "camera_id_combinations");
   if (!supported) {
     if (combinations_value != nullptr) {
-      set_error(out,
-                LoadErrorKind::Validation,
-                "concurrent_camera_support.supported=false contradicts camera_id_combinations");
-      return out;
+      if (combinations_value->type != JsonValue::Type::Array) {
+        set_error(out,
+                  LoadErrorKind::Validation,
+                  "field 'concurrent_camera_support.camera_id_combinations' has wrong type");
+        return out;
+      }
+      if (!combinations_value->array_value.empty()) {
+        set_error(out,
+                  LoadErrorKind::Validation,
+                  "concurrent_camera_support.supported=false contradicts camera_id_combinations");
+        return out;
+      }
     }
     out.ok = true;
     out.truth.kind = TruthKind::Unsupported;
@@ -642,11 +803,17 @@ LoadResult load_truth_from_adc_json_text(const std::string& text) {
               "field 'concurrent_camera_support.camera_id_combinations' must not be empty");
     return out;
   }
+  if (combinations_value->array_value.size() > kMaxCombinationCount) {
+    set_error(out,
+              LoadErrorKind::Validation,
+              "field 'concurrent_camera_support.camera_id_combinations' exceeds supported count limit");
+    return out;
+  }
 
   std::unordered_set<std::string> seen_normalized_combinations;
   std::vector<std::vector<std::string>> normalized_combinations;
   normalized_combinations.reserve(combinations_value->array_value.size());
-  for (size_t i = 0; i < combinations_value->array_value.size(); ++i) {
+  for (std::size_t i = 0; i < combinations_value->array_value.size(); ++i) {
     std::vector<std::string> normalized = normalize_combination(
         combinations_value->array_value[i],
         known_camera_ids,
@@ -664,7 +831,7 @@ LoadResult load_truth_from_adc_json_text(const std::string& text) {
       return out;
     }
     std::string combination_key;
-    for (size_t j = 0; j < normalized.size(); ++j) {
+    for (std::size_t j = 0; j < normalized.size(); ++j) {
       if (j != 0) {
         combination_key.push_back('\n');
       }
@@ -693,8 +860,9 @@ LoadResult load_truth_from_adc_json_payload(SpecPatchView payload) {
     return out;
   }
   const auto* chars = static_cast<const char*>(payload.data);
-  const std::string text =
-      payload.size_bytes == 0 ? std::string{} : std::string(chars, chars + payload.size_bytes);
+  const std::string text = payload.size_bytes == 0
+                               ? std::string{}
+                               : std::string(chars, chars + payload.size_bytes);
   return load_truth_from_adc_json_text(text);
 }
 
