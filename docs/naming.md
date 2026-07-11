@@ -289,6 +289,13 @@ Global imaging subsystem constraints/capabilities that apply across
 cameras (for example: concurrency/combination rules). `ImagingSpec` is
 not per-camera.
 
+`ImagingSpec` is the retained cross-camera / imaging-subsystem capability seam
+used for current operational truth that Core may need for admission and
+validation. It is not a result-fact surface, a runtime-posture surface, or a
+general metadata/calibration enrichment bucket.
+
+See `docs/architecture/imaging_spec_seam.md`.
+
 ### `RigConfig`
 
 User intent for a particular rig (membership, sync policy, capture

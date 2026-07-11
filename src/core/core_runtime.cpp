@@ -39,6 +39,204 @@ constexpr uint64_t kCaptureObservationRetryDelayNs = 1'000'000ull;
 constexpr uint64_t kCaptureRetainedPlanOrphanRetentionWindowNs =
     5ull * 1000ull * 1000ull * 1000ull;
 
+bool is_valid_spec_patch_view(SpecPatchView patch) noexcept {
+  return patch.size_bytes == 0 || patch.data != nullptr;
+}
+
+std::vector<uint8_t> copy_spec_patch_payload(SpecPatchView patch) {
+  std::vector<uint8_t> out;
+  if (patch.size_bytes == 0) {
+    return out;
+  }
+  const auto* bytes = static_cast<const uint8_t*>(patch.data);
+  out.assign(bytes, bytes + patch.size_bytes);
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult make_rig_orchestration_result_base(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  CoreRuntime::RigTriggerOrchestrationResult out{};
+  out.rig_id = rig_id;
+  out.capture_id = capture_id;
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult make_rig_orchestration_preflight_failure(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    CoreRuntime::RigPreflightFailure failure) {
+  CoreRuntime::RigTriggerOrchestrationResult out =
+      make_rig_orchestration_result_base(rig_id, capture_id);
+  out.failure = CoreRuntime::RigOrchestrationFailure::PreflightFailed;
+  out.preflight_failure = failure;
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult make_rig_orchestration_invalid_capture_id(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  CoreRuntime::RigTriggerOrchestrationResult out =
+      make_rig_orchestration_result_base(rig_id, capture_id);
+  out.failure = CoreRuntime::RigOrchestrationFailure::InvalidCaptureId;
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult make_rig_orchestration_admission_failure(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    CoreRuntime::RigCohortAdmissionFailure failure) {
+  CoreRuntime::RigTriggerOrchestrationResult out =
+      make_rig_orchestration_result_base(rig_id, capture_id);
+  out.failure = CoreRuntime::RigOrchestrationFailure::AdmissionFailed;
+  out.admission_failure = failure;
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult make_rig_orchestration_submission_failure(
+    const CoreRuntime::RigSubmissionResult& submitted) {
+  CoreRuntime::RigTriggerOrchestrationResult out =
+      make_rig_orchestration_result_base(submitted.rig_id, submitted.capture_id);
+  out.failure = CoreRuntime::RigOrchestrationFailure::SubmissionFailed;
+  out.submission_failure = submitted.failure;
+  out.submitted_count = submitted.submitted_count;
+  out.failed_index = submitted.failed_index;
+  out.failed_device_instance_id = submitted.failed_device_instance_id;
+  out.provider_error_code = submitted.provider_error_code;
+  return out;
+}
+
+CoreRuntime::RigTriggerOrchestrationResult make_rig_orchestration_success(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    size_t submitted_count) {
+  CoreRuntime::RigTriggerOrchestrationResult out =
+      make_rig_orchestration_result_base(rig_id, capture_id);
+  out.ok = true;
+  out.failure = CoreRuntime::RigOrchestrationFailure::None;
+  out.submitted_count = submitted_count;
+  return out;
+}
+
+CoreRuntime::RigPreflightResult make_rig_preflight_result_base(
+    uint64_t rig_id) {
+  CoreRuntime::RigPreflightResult out{};
+  out.rig_id = rig_id;
+  return out;
+}
+
+CoreRuntime::RigPreflightResult make_rig_preflight_failure(
+    uint64_t rig_id,
+    CoreRuntime::RigPreflightFailure failure,
+    size_t failure_member_index = 0,
+    std::string failure_hardware_id = {},
+    uint64_t failure_device_instance_id = 0) {
+  CoreRuntime::RigPreflightResult out = make_rig_preflight_result_base(rig_id);
+  out.failure = failure;
+  out.failure_member_index = failure_member_index;
+  out.failure_hardware_id = std::move(failure_hardware_id);
+  out.failure_device_instance_id = failure_device_instance_id;
+  return out;
+}
+
+CoreRuntime::RigPreflightResult make_rig_preflight_success(
+    uint64_t rig_id,
+    std::vector<CoreRuntime::RigPreflightParticipant> participants) {
+  CoreRuntime::RigPreflightResult out = make_rig_preflight_result_base(rig_id);
+  out.ok = true;
+  out.failure = CoreRuntime::RigPreflightFailure::None;
+  out.participants = std::move(participants);
+  return out;
+}
+
+CoreRuntime::RigAdmittedRequestBundle make_rig_admitted_result_base(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  CoreRuntime::RigAdmittedRequestBundle out{};
+  out.rig_id = rig_id;
+  out.capture_id = capture_id;
+  return out;
+}
+
+CoreRuntime::RigAdmittedRequestBundle make_rig_admitted_failure(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    CoreRuntime::RigCohortAdmissionFailure failure) {
+  CoreRuntime::RigAdmittedRequestBundle out =
+      make_rig_admitted_result_base(rig_id, capture_id);
+  out.failure = failure;
+  return out;
+}
+
+CoreRuntime::RigAdmittedRequestBundle make_rig_admitted_success(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    std::vector<CoreRuntime::RigAdmittedParticipantRequest> participants) {
+  CoreRuntime::RigAdmittedRequestBundle out =
+      make_rig_admitted_result_base(rig_id, capture_id);
+  out.ok = true;
+  out.failure = CoreRuntime::RigCohortAdmissionFailure::None;
+  out.participants = std::move(participants);
+  return out;
+}
+
+CoreRuntime::RigSubmissionResult make_rig_submission_result_base(
+    uint64_t rig_id,
+    uint64_t capture_id) {
+  CoreRuntime::RigSubmissionResult out{};
+  out.rig_id = rig_id;
+  out.capture_id = capture_id;
+  return out;
+}
+
+CoreRuntime::RigSubmissionResult make_rig_submission_failure(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    CoreRuntime::RigSubmissionFailure failure) {
+  CoreRuntime::RigSubmissionResult out =
+      make_rig_submission_result_base(rig_id, capture_id);
+  out.failure = failure;
+  return out;
+}
+
+CoreRuntime::RigSubmissionResult make_rig_submission_trigger_failed(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    size_t failed_index,
+    uint64_t failed_device_instance_id,
+    uint32_t provider_error_code) {
+  CoreRuntime::RigSubmissionResult out =
+      make_rig_submission_failure(
+          rig_id, capture_id, CoreRuntime::RigSubmissionFailure::TriggerFailed);
+  out.failed_index = failed_index;
+  out.failed_device_instance_id = failed_device_instance_id;
+  out.provider_error_code = provider_error_code;
+  return out;
+}
+
+CoreRuntime::RigSubmissionResult make_rig_submission_provider_unavailable(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    uint32_t provider_error_code) {
+  CoreRuntime::RigSubmissionResult out =
+      make_rig_submission_failure(
+          rig_id, capture_id, CoreRuntime::RigSubmissionFailure::ProviderUnavailable);
+  out.provider_error_code = provider_error_code;
+  return out;
+}
+
+CoreRuntime::RigSubmissionResult make_rig_submission_success(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    size_t submitted_count) {
+  CoreRuntime::RigSubmissionResult out =
+      make_rig_submission_result_base(rig_id, capture_id);
+  out.ok = true;
+  out.failure = CoreRuntime::RigSubmissionFailure::None;
+  out.submitted_count = submitted_count;
+  return out;
+}
+
 CoreRetainedProductionPlan make_retained_plan(
     CoreProductionPostureShape posture) noexcept {
   CoreRetainedProductionPlan plan{};
@@ -3566,6 +3764,36 @@ CoreRuntime::recent_capture_lifecycle_timing_reports() const {
   return completed.get();
 }
 
+#if defined(CAMBANG_INTERNAL_SMOKE)
+std::optional<CoreRuntime::ImagingSpecRetainedStateForSmoke>
+CoreRuntime::imaging_spec_retained_state_for_smoke() const {
+  if (core_thread_.is_core_thread()) {
+    ImagingSpecRetainedStateForSmoke out{};
+    out.imaging_spec_version = spec_state_.imaging_spec_version();
+    out.retention_kind = spec_state_.imaging_spec_retention_kind();
+    out.payload = spec_state_.imaging_spec_payload_copy();
+    return out;
+  }
+
+  auto completion =
+      std::make_shared<std::promise<std::optional<ImagingSpecRetainedStateForSmoke>>>();
+  std::future<std::optional<ImagingSpecRetainedStateForSmoke>> completed =
+      completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, completion]() {
+    ImagingSpecRetainedStateForSmoke out{};
+    out.imaging_spec_version = spec_state_.imaging_spec_version();
+    out.retention_kind = spec_state_.imaging_spec_retention_kind();
+    out.payload = spec_state_.imaging_spec_payload_copy();
+    completion->set_value(std::move(out));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return std::nullopt;
+  }
+  return completed.get();
+}
+#endif
+
 std::vector<CoreBackingPlanEvaluationReport>
 CoreRuntime::backing_plan_evaluation_reports_on_core_thread_() const {
   assert(core_thread_.is_core_thread());
@@ -4885,6 +5113,44 @@ CoreThread::PostResult CoreRuntime::retain_imaging_spec_version(uint64_t imaging
   });
 }
 
+CoreThread::PostResult CoreRuntime::retain_imaging_spec_replace(
+    uint64_t imaging_spec_version,
+    SpecPatchView effective_spec) {
+  if (!is_valid_spec_patch_view(effective_spec)) {
+    return CoreThread::PostResult::Closed;
+  }
+  std::vector<uint8_t> owned_payload = copy_spec_patch_payload(effective_spec);
+
+  return try_post([this, imaging_spec_version, owned_payload = std::move(owned_payload)]() {
+    const SpecPatchView retained_payload{
+        owned_payload.empty() ? nullptr : owned_payload.data(),
+        owned_payload.size()};
+    if (!spec_state_.retain_imaging_spec_replace(imaging_spec_version, retained_payload)) {
+      return;
+    }
+    request_publish_from_core_unchecked();
+  });
+}
+
+CoreThread::PostResult CoreRuntime::retain_imaging_spec_patch(
+    uint64_t imaging_spec_version,
+    SpecPatchView effective_spec) {
+  if (!is_valid_spec_patch_view(effective_spec)) {
+    return CoreThread::PostResult::Closed;
+  }
+  std::vector<uint8_t> owned_payload = copy_spec_patch_payload(effective_spec);
+
+  return try_post([this, imaging_spec_version, owned_payload = std::move(owned_payload)]() {
+    const SpecPatchView retained_payload{
+        owned_payload.empty() ? nullptr : owned_payload.data(),
+        owned_payload.size()};
+    if (!spec_state_.retain_imaging_spec_patch(imaging_spec_version, retained_payload)) {
+      return;
+    }
+    request_publish_from_core_unchecked();
+  });
+}
+
 CoreThread::PostResult CoreRuntime::try_post(CoreThread::Task task) {
   const CoreRuntimeState st = state_.load(std::memory_order_acquire);
   if (st != CoreRuntimeState::LIVE) {
@@ -5783,24 +6049,20 @@ TryTriggerDeviceCaptureStatus CoreRuntime::try_trigger_device_capture_with_captu
 CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_materialize_(uint64_t rig_id) const {
   assert(core_thread_.is_core_thread());
 
-  RigPreflightResult out{};
-  out.rig_id = rig_id;
   if (rig_id == 0) {
-    out.failure = RigPreflightFailure::RigNotFound;
-    return out;
+    return make_rig_preflight_failure(rig_id, RigPreflightFailure::RigNotFound);
   }
 
   const auto* rig = rigs_.find(rig_id);
   if (!rig) {
-    out.failure = RigPreflightFailure::RigNotFound;
-    return out;
+    return make_rig_preflight_failure(rig_id, RigPreflightFailure::RigNotFound);
   }
   if (rig->member_hardware_ids.empty()) {
-    out.failure = RigPreflightFailure::EmptyMembership;
-    return out;
+    return make_rig_preflight_failure(rig_id, RigPreflightFailure::EmptyMembership);
   }
 
-  out.participants.reserve(rig->member_hardware_ids.size());
+  std::vector<RigPreflightParticipant> participants;
+  participants.reserve(rig->member_hardware_ids.size());
   std::map<uint64_t, bool> seen_devices;
 
   for (size_t i = 0; i < rig->member_hardware_ids.size(); ++i) {
@@ -5815,78 +6077,75 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
     }
 
     if (matches == 0) {
-      out.failure = RigPreflightFailure::HardwareIdUnresolved;
-      out.failure_member_index = i;
-      out.failure_hardware_id = hardware_id;
-      return out;
+      return make_rig_preflight_failure(
+          rig_id, RigPreflightFailure::HardwareIdUnresolved, i, hardware_id);
     }
     if (matches > 1) {
-      out.failure = RigPreflightFailure::HardwareIdAmbiguous;
-      out.failure_member_index = i;
-      out.failure_hardware_id = hardware_id;
-      return out;
+      return make_rig_preflight_failure(
+          rig_id, RigPreflightFailure::HardwareIdAmbiguous, i, hardware_id);
     }
     if (seen_devices.find(resolved_device_id) != seen_devices.end()) {
-      out.failure = RigPreflightFailure::DuplicateResolvedDevice;
-      out.failure_member_index = i;
-      out.failure_hardware_id = hardware_id;
-      out.failure_device_instance_id = resolved_device_id;
-      return out;
+      return make_rig_preflight_failure(
+          rig_id,
+          RigPreflightFailure::DuplicateResolvedDevice,
+          i,
+          hardware_id,
+          resolved_device_id);
     }
     seen_devices.emplace(resolved_device_id, true);
 
     CaptureRequest req{};
     if (!materialize_capture_request_(resolved_device_id, req)) {
-      out.failure = RigPreflightFailure::MaterializeFailed;
-      out.failure_member_index = i;
-      out.failure_hardware_id = hardware_id;
-      out.failure_device_instance_id = resolved_device_id;
-      return out;
+      return make_rig_preflight_failure(
+          rig_id,
+          RigPreflightFailure::MaterializeFailed,
+          i,
+          hardware_id,
+          resolved_device_id);
     }
 
     RigPreflightParticipant participant{};
     participant.hardware_id = hardware_id;
     participant.device_instance_id = resolved_device_id;
     participant.request = req;
-    out.participants.push_back(std::move(participant));
+    participants.push_back(std::move(participant));
   }
 
-  out.ok = true;
-  out.failure = RigPreflightFailure::None;
-  return out;
+  return make_rig_preflight_success(rig_id, std::move(participants));
 }
 
 CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflight_(
     uint64_t rig_id,
     uint64_t capture_id,
     const RigPreflightResult& preflight) {
-  RigAdmittedRequestBundle out{};
-  out.capture_id = capture_id;
-  out.rig_id = rig_id;
-
   if (capture_id == 0 || rig_id == 0) {
-    out.failure = RigCohortAdmissionFailure::InvalidCaptureId;
-    return out;
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::InvalidCaptureId);
   }
   if (!preflight.ok || preflight.failure != RigPreflightFailure::None || preflight.rig_id != rig_id) {
-    out.failure = RigCohortAdmissionFailure::PreflightFailed;
-    return out;
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
   }
   if (preflight.participants.empty()) {
-    out.failure = RigCohortAdmissionFailure::EmptyParticipants;
-    return out;
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::EmptyParticipants);
+  }
+  if (imaging_spec_disallows_grouped_multi_device_rig_capture_(
+          preflight.participants.size())) {
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::ImagingSpecRejected);
   }
 
   CoreCaptureCohortRegistry::CohortRecord cohort{};
   cohort.capture_id = capture_id;
   cohort.rig_id = rig_id;
   cohort.expected_participants.reserve(preflight.participants.size());
-  out.participants.reserve(preflight.participants.size());
+  std::vector<RigAdmittedParticipantRequest> participants;
+  participants.reserve(preflight.participants.size());
   for (const auto& p : preflight.participants) {
     if (p.device_instance_id == 0) {
-      out.failure = RigCohortAdmissionFailure::PreflightFailed;
-      out.participants.clear();
-      return out;
+      return make_rig_admitted_failure(
+          rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
     }
     cohort.expected_participants.push_back({p.device_instance_id, p.hardware_id});
     RigAdmittedParticipantRequest ap{};
@@ -5895,34 +6154,39 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
     ap.request.capture_id = capture_id;
     ap.request.rig_id = rig_id;
     ap.request.device_instance_id = p.device_instance_id;
-    out.participants.push_back(std::move(ap));
+    participants.push_back(std::move(ap));
   }
 
   if (!capture_cohort_registry_.insert(std::move(cohort))) {
-    out.failure = RigCohortAdmissionFailure::DuplicateCaptureId;
-    out.participants.clear();
-    return out;
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::DuplicateCaptureId);
   }
 
-  out.ok = true;
-  out.failure = RigCohortAdmissionFailure::None;
-  return out;
+  return make_rig_admitted_success(
+      rig_id, capture_id, std::move(participants));
+}
+
+bool CoreRuntime::imaging_spec_disallows_grouped_multi_device_rig_capture_(
+    size_t participant_count) const noexcept {
+  if (participant_count <= 1) {
+    return false;
+  }
+
+  const CoreSpecState::ImagingSpecInterpretation imaging_spec =
+      spec_state_.interpret_imaging_spec();
+  return imaging_spec.allows_multi_device_rig_capture.has_value() &&
+         !*imaging_spec.allows_multi_device_rig_capture;
 }
 
 CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
     const RigAdmittedRequestBundle& bundle) {
-  RigSubmissionResult out{};
-  out.capture_id = bundle.capture_id;
-  out.rig_id = bundle.rig_id;
-
   if (!bundle.ok || bundle.capture_id == 0 || bundle.rig_id == 0 || bundle.participants.empty()) {
-    out.failure = RigSubmissionFailure::InvalidBundle;
-    return out;
+    return make_rig_submission_failure(
+        bundle.rig_id, bundle.capture_id, RigSubmissionFailure::InvalidBundle);
   }
 
   ICameraProvider* prov = provider_.load(std::memory_order_acquire);
   if (!prov) {
-    out.failure = RigSubmissionFailure::ProviderUnavailable;
     for (const auto& participant : bundle.participants) {
       capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
                                                      participant.request.device_instance_id,
@@ -5932,8 +6196,10 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
                                                0,
                                                static_cast<uint32_t>(ProviderError::ERR_BAD_STATE),
                                                CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
-    out.provider_error_code = static_cast<uint32_t>(ProviderError::ERR_BAD_STATE);
-    return out;
+    return make_rig_submission_provider_unavailable(
+        bundle.rig_id,
+        bundle.capture_id,
+        static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
   }
 
   CaptureSubmission submission{};
@@ -5947,10 +6213,6 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
     if (!is_valid_capture_still_image_bundle(
             participant.request.still_image_bundle,
             prov->supports_multi_image_still_sequence())) {
-      out.failure = RigSubmissionFailure::TriggerFailed;
-      out.failed_index = i;
-      out.failed_device_instance_id = participant.request.device_instance_id;
-      out.provider_error_code = static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT);
       capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
                                                      participant.request.device_instance_id,
                                                      static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
@@ -5958,36 +6220,72 @@ CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
                                                  participant.request.device_instance_id,
                                                  static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT),
                                                  CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
-      return out;
+      return make_rig_submission_trigger_failed(
+          bundle.rig_id,
+          bundle.capture_id,
+          i,
+          participant.request.device_instance_id,
+          static_cast<uint32_t>(ProviderError::ERR_INVALID_ARGUMENT));
     }
     submission.device_requests.push_back(participant.request);
   }
 
   const ProviderResult pr = prov->trigger_capture_submission(submission);
   if (!pr.ok()) {
-    out.failure = RigSubmissionFailure::TriggerFailed;
-    out.failed_index = 0;
-    out.failed_device_instance_id = submission.device_requests.empty() ? 0 : submission.device_requests.front().device_instance_id;
-    out.provider_error_code = static_cast<uint32_t>(pr.code);
+    const uint64_t failed_device_instance_id =
+        submission.device_requests.empty() ? 0 : submission.device_requests.front().device_instance_id;
     for (const auto& participant : bundle.participants) {
       capture_assembly_registry_.mark_capture_failed(bundle.capture_id,
                                                      participant.request.device_instance_id,
                                                      static_cast<uint32_t>(pr.code));
     }
     (void)capture_cohort_registry_.mark_failed(bundle.capture_id,
-                                               out.failed_device_instance_id,
+                                               failed_device_instance_id,
                                                static_cast<uint32_t>(pr.code),
                                                CoreCaptureCohortRegistry::CohortFailurePhase::SUBMISSION);
-    return out;
+    return make_rig_submission_trigger_failed(
+        bundle.rig_id,
+        bundle.capture_id,
+        0,
+        failed_device_instance_id,
+        static_cast<uint32_t>(pr.code));
   }
 
   begin_capture_stream_preemption_for_bundle_(bundle);
   (void)suppress_queued_repeating_stream_frames_for_capture_();
 
-  out.submitted_count = bundle.participants.size();
-  out.ok = true;
-  out.failure = RigSubmissionFailure::None;
-  return out;
+  return make_rig_submission_success(
+      bundle.rig_id, bundle.capture_id, bundle.participants.size());
+}
+
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_from_preflight_(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    const RigPreflightResult& preflight) {
+  assert(core_thread_.is_core_thread());
+
+  if (!preflight.ok) {
+    return make_rig_orchestration_preflight_failure(
+        rig_id, capture_id, preflight.failure);
+  }
+
+  if (capture_id == 0) {
+    return make_rig_orchestration_invalid_capture_id(rig_id, capture_id);
+  }
+
+  const RigAdmittedRequestBundle admitted = admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
+  if (!admitted.ok) {
+    return make_rig_orchestration_admission_failure(
+        rig_id, capture_id, admitted.failure);
+  }
+
+  const RigSubmissionResult submitted = submit_admitted_rig_bundle_(admitted);
+  if (!submitted.ok) {
+    return make_rig_orchestration_submission_failure(submitted);
+  }
+
+  return make_rig_orchestration_success(
+      rig_id, capture_id, submitted.submitted_count);
 }
 
 CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_with_capture_id_(
@@ -5995,44 +6293,8 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
     uint64_t capture_id) {
   assert(core_thread_.is_core_thread());
 
-  RigTriggerOrchestrationResult out{};
-  out.rig_id = rig_id;
-  out.capture_id = capture_id;
-
   const RigPreflightResult preflight = preflight_rig_participants_materialize_(rig_id);
-  if (!preflight.ok) {
-    out.failure = RigOrchestrationFailure::PreflightFailed;
-    out.preflight_failure = preflight.failure;
-    return out;
-  }
-
-  if (capture_id == 0) {
-    out.failure = RigOrchestrationFailure::InvalidCaptureId;
-    return out;
-  }
-
-  const RigAdmittedRequestBundle admitted = admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight);
-  if (!admitted.ok) {
-    out.failure = RigOrchestrationFailure::AdmissionFailed;
-    out.admission_failure = admitted.failure;
-    return out;
-  }
-
-  const RigSubmissionResult submitted = submit_admitted_rig_bundle_(admitted);
-  if (!submitted.ok) {
-    out.failure = RigOrchestrationFailure::SubmissionFailed;
-    out.submission_failure = submitted.failure;
-    out.submitted_count = submitted.submitted_count;
-    out.failed_index = submitted.failed_index;
-    out.failed_device_instance_id = submitted.failed_device_instance_id;
-    out.provider_error_code = submitted.provider_error_code;
-    return out;
-  }
-
-  out.ok = true;
-  out.failure = RigOrchestrationFailure::None;
-  out.submitted_count = submitted.submitted_count;
-  return out;
+  return orchestrate_rig_capture_from_preflight_(rig_id, capture_id, preflight);
 }
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
@@ -6048,10 +6310,7 @@ CoreRuntime::RigPreflightResult CoreRuntime::preflight_rig_participants_material
     completion->set_value(preflight_rig_participants_materialize_(rig_id));
   });
   if (pr != CoreThread::PostResult::Enqueued) {
-    RigPreflightResult out{};
-    out.rig_id = rig_id;
-    out.failure = RigPreflightFailure::RigNotFound;
-    return out;
+    return make_rig_preflight_failure(rig_id, RigPreflightFailure::RigNotFound);
   }
   return completed.get();
 }
@@ -6098,19 +6357,38 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::smoke_admit_rig_cohort_from_p
     completion->set_value(admit_rig_cohort_from_preflight_(rig_id, capture_id, preflight));
   });
   if (pr != CoreThread::PostResult::Enqueued) {
-    RigAdmittedRequestBundle out{};
-    out.rig_id = rig_id;
-    out.capture_id = capture_id;
-    out.failure = RigCohortAdmissionFailure::PreflightFailed;
-    return out;
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
   }
 
   if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    RigAdmittedRequestBundle out{};
-    out.rig_id = rig_id;
-    out.capture_id = capture_id;
-    out.failure = RigCohortAdmissionFailure::PreflightFailed;
-    return out;
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
+  }
+  return completed.get();
+}
+
+CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::smoke_orchestrate_rig_capture_from_preflight(
+    uint64_t rig_id,
+    uint64_t capture_id,
+    const RigPreflightResult& preflight) {
+  if (core_thread_.is_core_thread()) {
+    return orchestrate_rig_capture_from_preflight_(rig_id, capture_id, preflight);
+  }
+
+  auto completion = std::make_shared<std::promise<RigTriggerOrchestrationResult>>();
+  std::future<RigTriggerOrchestrationResult> completed = completion->get_future();
+  const CoreThread::PostResult pr = try_post([this, rig_id, capture_id, preflight, completion]() {
+    completion->set_value(orchestrate_rig_capture_from_preflight_(rig_id, capture_id, preflight));
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return make_rig_orchestration_preflight_failure(
+        rig_id, capture_id, RigPreflightFailure::RigNotFound);
+  }
+
+  if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return make_rig_orchestration_preflight_failure(
+        rig_id, capture_id, RigPreflightFailure::RigNotFound);
   }
   return completed.get();
 }
@@ -6127,19 +6405,17 @@ CoreRuntime::RigSubmissionResult CoreRuntime::smoke_submit_admitted_rig_bundle(
     completion->set_value(submit_admitted_rig_bundle_(bundle));
   });
   if (pr != CoreThread::PostResult::Enqueued) {
-    RigSubmissionResult out{};
-    out.capture_id = bundle.capture_id;
-    out.rig_id = bundle.rig_id;
-    out.failure = RigSubmissionFailure::ProviderUnavailable;
-    return out;
+    return make_rig_submission_provider_unavailable(
+        bundle.rig_id,
+        bundle.capture_id,
+        static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
   }
 
   if (completed.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-    RigSubmissionResult out{};
-    out.capture_id = bundle.capture_id;
-    out.rig_id = bundle.rig_id;
-    out.failure = RigSubmissionFailure::ProviderUnavailable;
-    return out;
+    return make_rig_submission_provider_unavailable(
+        bundle.rig_id,
+        bundle.capture_id,
+        static_cast<uint32_t>(ProviderError::ERR_BAD_STATE));
   }
   return completed.get();
 }
@@ -6216,12 +6492,11 @@ CoreRuntime::RigTriggerOrchestrationResult CoreRuntime::orchestrate_rig_capture_
         static_cast<unsigned long long>(rig_id),
         static_cast<unsigned long long>((post_end_ns - post_begin_ns) / 1000ull),
         static_cast<unsigned>(pr));
-    RigTriggerOrchestrationResult out{};
-    out.rig_id = rig_id;
-    out.capture_id = capture_id;
-    out.failure = RigOrchestrationFailure::SubmissionFailed;
-    out.submission_failure = RigSubmissionFailure::ProviderUnavailable;
-    return out;
+    return make_rig_orchestration_submission_failure(
+        make_rig_submission_provider_unavailable(
+            rig_id,
+            capture_id,
+            static_cast<uint32_t>(ProviderError::ERR_BAD_STATE)));
   }
 
   RigTriggerOrchestrationResult result = completed.get();

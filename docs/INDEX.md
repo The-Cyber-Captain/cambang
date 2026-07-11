@@ -75,6 +75,7 @@ redefine canonical rules.
 | publication_model.md | Describes tick-bounded publication and Godot-visible snapshot behaviour. |
 | publication_counter_examples.md | Provides worked examples illustrating `version` and `topology_version`. |
 | frame_sinks.md | Describes frame sink types and responsibilities. |
+| imaging_spec_seam.md | Locks `ImagingSpec` as the retained cross-camera / imaging-subsystem capability seam used for Core admission and validation truth. |
 | pixel_payload_and_result_contract.md | Defines the multi-representation payload/result contract for release-facing stream and capture paths. |
 | synthetic_timeline_scenarios.md | Fixes scenario terminology and ownership boundaries for SyntheticProvider timeline work. |
 | synthetic_picture_appearance_in_scenarios.md | Defines scenario-authored synthetic appearance/state boundaries for timeline replay. |

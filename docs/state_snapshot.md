@@ -357,6 +357,10 @@ In particular:
 These fields report the specification version that Core currently
 retains as the **effective runtime specification**.
 
+For `imaging_spec_version`, that retained truth corresponds to the effective
+cross-camera / imaging-subsystem capability seam used by Core where current
+admission or validation depends on subsystem-wide operational truth.
+
 They do **not** represent:
 
 - the most recently requested specification version

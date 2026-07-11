@@ -126,6 +126,7 @@ Core owns and decides:
 - arbitration and preemption
 - warm timing (`warm_hold_ms`) and teardown scheduling
 - validation and normalization of capture / picture configuration
+- retention of effective `CameraSpec` / `ImagingSpec` runtime truth
 - provider-type defaulting via `StreamTemplate`
 - `CoreNativeObjectRegistry` and destroyed-record retention
 - `SnapshotBuilder`, `IStateSnapshotPublisher`, and snapshot publication
@@ -180,6 +181,16 @@ A provider must support, where applicable:
 
 Core validates and materializes effective request state before calling a
 provider.
+
+For retained specification truth, the split remains explicit:
+
+- `CameraSpec` is the per-camera capability seam
+- `ImagingSpec` is the cross-camera / imaging-subsystem capability seam Core
+  may use for current admission and validation truth
+
+Providers may receive validated imaging-spec patch/version application through
+the internal provider boundary, but they do not redefine what `ImagingSpec`
+means.
 
 A provider may reject a request only when:
 

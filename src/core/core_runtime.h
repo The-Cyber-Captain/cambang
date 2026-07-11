@@ -351,7 +351,8 @@ enum class TryCloseDeviceStatus : uint8_t {
     InvalidCaptureId = 1,
     PreflightFailed = 2,
     EmptyParticipants = 3,
-    DuplicateCaptureId = 4,
+    ImagingSpecRejected = 4,
+    DuplicateCaptureId = 5,
   };
 
   struct RigAdmittedParticipantRequest {
@@ -414,10 +415,23 @@ enum class TryCloseDeviceStatus : uint8_t {
       uint64_t rig_id,
       uint64_t capture_id,
       const RigPreflightResult& preflight);
+  RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_from_preflight(
+      uint64_t rig_id,
+      uint64_t capture_id,
+      const RigPreflightResult& preflight);
   RigSubmissionResult smoke_submit_admitted_rig_bundle(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult smoke_orchestrate_rig_capture_with_capture_id(
       uint64_t rig_id,
       uint64_t capture_id);
+
+  struct ImagingSpecRetainedStateForSmoke {
+    uint64_t imaging_spec_version = 0;
+    CoreSpecState::ImagingSpecRetentionKind retention_kind =
+        CoreSpecState::ImagingSpecRetentionKind::None;
+    std::vector<uint8_t> payload{};
+  };
+
+  std::optional<ImagingSpecRetainedStateForSmoke> imaging_spec_retained_state_for_smoke() const;
 
 #endif
 
@@ -577,7 +591,13 @@ enum class TryCloseDeviceStatus : uint8_t {
                                                                   uint32_t height,
                                                                   uint32_t format,
                                                                   uint64_t capture_profile_version);
+  // The retained imaging-spec payload is opaque to Core. Callers using the
+  // patch path must therefore pass the effective post-apply retained payload.
   [[nodiscard]] CoreThread::PostResult retain_imaging_spec_version(uint64_t imaging_spec_version);
+  [[nodiscard]] CoreThread::PostResult retain_imaging_spec_replace(uint64_t imaging_spec_version,
+                                                                   SpecPatchView effective_spec);
+  [[nodiscard]] CoreThread::PostResult retain_imaging_spec_patch(uint64_t imaging_spec_version,
+                                                                 SpecPatchView effective_spec);
 
   // Internal dev visibility: allow the Godot main thread to echo a core-thread
   // banner line via UtilityFunctions::print for environments where stdout isn't
@@ -619,6 +639,12 @@ private:
       uint64_t rig_id,
       uint64_t capture_id,
       const RigPreflightResult& preflight);
+  RigTriggerOrchestrationResult orchestrate_rig_capture_from_preflight_(
+      uint64_t rig_id,
+      uint64_t capture_id,
+      const RigPreflightResult& preflight);
+  bool imaging_spec_disallows_grouped_multi_device_rig_capture_(
+      size_t participant_count) const noexcept;
   RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,

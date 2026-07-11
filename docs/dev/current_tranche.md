@@ -2,40 +2,53 @@
 
 ## Active task
 
-Docs-first lock of the `ImagingSpec` seam.
+Confirm the grouped-rig preflight/admission/submission/orchestration shaping line is complete, and remove only any remaining tiny local inconsistency inside that immediate cluster if one truly remains.
 
 ## Goal
 
-Produce the minimum documentation updates needed to define `ImagingSpec` as the cross-camera / imaging-subsystem capability seam used for current operational truth that Core may need for admission and validation.
+Keep the accepted authoritative `ImagingSpec` gate, shared grouped-rig orchestration helper, centralized orchestration failure mapping, and constructor-based shaping across preflight, admission, submission, and orchestration exactly as they now exist, and perform one final narrow completion pass over that full grouped-rig cluster.
 
 ## Expected work
 
-Primary deliverable:
+* keep cohort admission as the authoritative grouped-rig `ImagingSpec` gate
+* keep the shared grouped-rig orchestration helper as the single orchestration path
+* keep centralized orchestration failure mapping as the top-level truth surface
+* keep constructor-based shaping across grouped-rig preflight, admission, submission, and orchestration
+* inspect that immediate grouped-rig cluster for any remaining tiny local inconsistency or avoidable duplication
+* make only minimal source-grounded touch-ups if something real remains
+* otherwise leave code unchanged and report the grouped-rig shaping line complete
+* add or adjust focused verification only if needed
 
-* one new architecture note for the `ImagingSpec` seam
+Likely touched areas:
 
-Only minimal consistency edits elsewhere if required.
+* `src/core/` grouped-rig preflight / admission / submission / orchestration helpers
+* focused maintainer verification where needed
 
-Likely touched docs:
-
-* new `docs/architecture/` note
-* `docs/naming.md`
-* `docs/provider_architecture.md`
-* `docs/state_snapshot.md`
+Only minimal documentation touch-up if source-grounded and necessary.
 
 ## Guardrails
 
 Do not:
 
-* change code
 * change public Godot API
-* broaden the task into result-fact redesign
-* broaden the task into general metadata/calibration enrichment
-* broaden the task into platform-provider implementation
+* implement platform providers
+* broaden into a general `ImagingSpec` schema system
+* add unrelated new `ImagingSpec` consumers
+* move the authoritative `ImagingSpec` gate away from cohort admission
+* reintroduce duplicate later-stage `ImagingSpec` enforcement
+* broaden into result-fact redesign
+* broaden into calibration/metadata enrichment
+* broaden into large admission-policy redesign
 * turn this file into a changelog, history note, or future-work list
 
 Keep the change narrow, source-grounded, and reviewable.
 
 ## Done means
 
-This tranche is complete when the docs clearly lock the `ImagingSpec` seam and the touched wording is internally consistent.
+This tranche is complete when:
+
+* grouped-rig preflight, admission, submission, and orchestration all use the same consistent constructor-based shaping pattern
+* no remaining real tiny local inconsistency or avoidable duplication remains in that immediate grouped-rig cluster
+* grouped-rig behavior remains unchanged
+* focused verification still proves deterministic failure propagation
+* no public API changes are introduced

@@ -25,6 +25,7 @@ Non-Goals
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cstdio>
 #include <cstdint>
 #include <functional>
@@ -443,6 +444,178 @@ static bool wait_for_snapshot_pred(
     auto s = buf.snapshot_copy();
     return s && pred(*s);
   });
+}
+
+static int test_core_spec_state_imaging_spec_retention_smoke() {
+  CoreSpecState spec_state;
+  spec_state.reset_for_generation(0);
+  if (spec_state.imaging_spec_version() != 0 ||
+      spec_state.has_imaging_spec_payload() ||
+      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::None) {
+    std::cerr << "FAIL: initial imaging spec retained state unexpected\n";
+    return 1;
+  }
+
+  const uint8_t replace_bytes[] = {1u, 3u, 5u, 7u};
+  if (!spec_state.retain_imaging_spec_replace(41, SpecPatchView{replace_bytes, sizeof(replace_bytes)})) {
+    std::cerr << "FAIL: imaging spec replace retention rejected valid payload\n";
+    return 1;
+  }
+  const std::vector<uint8_t> replace_view = spec_state.imaging_spec_payload_copy();
+  if (spec_state.imaging_spec_version() != 41 ||
+      !spec_state.has_imaging_spec_payload() ||
+      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::Replace ||
+      replace_view.size() != sizeof(replace_bytes) ||
+      std::memcmp(replace_view.data(), replace_bytes, sizeof(replace_bytes)) != 0) {
+    std::cerr << "FAIL: imaging spec replace retention produced unexpected retained truth\n";
+    return 1;
+  }
+
+  const uint8_t patch_bytes[] = {9u, 4u, 2u};
+  if (!spec_state.retain_imaging_spec_patch(42, SpecPatchView{patch_bytes, sizeof(patch_bytes)})) {
+    std::cerr << "FAIL: imaging spec patch retention rejected valid payload\n";
+    return 1;
+  }
+  const std::vector<uint8_t> patch_view = spec_state.imaging_spec_payload_copy();
+  if (spec_state.imaging_spec_version() != 42 ||
+      !spec_state.has_imaging_spec_payload() ||
+      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::Patch ||
+      patch_view.size() != sizeof(patch_bytes) ||
+      std::memcmp(patch_view.data(), patch_bytes, sizeof(patch_bytes)) != 0) {
+    std::cerr << "FAIL: imaging spec patch retention produced unexpected retained truth\n";
+    return 1;
+  }
+
+  if (spec_state.retain_imaging_spec_patch(43, SpecPatchView{nullptr, 2})) {
+    std::cerr << "FAIL: imaging spec retention accepted invalid payload view\n";
+    return 1;
+  }
+  if (spec_state.imaging_spec_version() != 42 ||
+      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::Patch) {
+    std::cerr << "FAIL: invalid imaging spec retention mutated prior retained truth\n";
+    return 1;
+  }
+
+  spec_state.set_imaging_spec_version(44);
+  if (spec_state.imaging_spec_version() != 44 ||
+      spec_state.has_imaging_spec_payload() ||
+      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::None) {
+    std::cerr << "FAIL: imaging spec version-only retention did not clear opaque retained payload\n";
+    return 1;
+  }
+
+  return 0;
+}
+
+static int test_runtime_imaging_spec_retention_publish_smoke() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start failed for imaging spec retention smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_gen(buf, 0)) {
+    std::cerr << "FAIL: baseline snapshot not published for imaging spec retention smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  uint8_t replace_bytes[] = {8u, 6u, 7u, 5u, 3u, 0u, 9u};
+  const std::vector<uint8_t> expected_replace_payload(
+      std::begin(replace_bytes), std::end(replace_bytes));
+  const auto replace_result =
+      rt.retain_imaging_spec_replace(91, SpecPatchView{replace_bytes, sizeof(replace_bytes)});
+  if (replace_result != CoreThread::PostResult::Enqueued) {
+    std::cerr << "FAIL: imaging spec replace retention admission failed result="
+              << static_cast<int>(replace_result) << "\n";
+    rt.stop();
+    return 1;
+  }
+  std::fill(std::begin(replace_bytes), std::end(replace_bytes), 0u);
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& s) {
+        return s.gen == 0 && s.imaging_spec_version == 91 && s.version >= 1;
+      })) {
+    std::cerr << "FAIL: snapshot did not reflect retained imaging spec replace version\n";
+    rt.stop();
+    return 1;
+  }
+  const auto retained_replace = rt.imaging_spec_retained_state_for_smoke();
+  if (!retained_replace.has_value() ||
+      retained_replace->imaging_spec_version != 91 ||
+      retained_replace->retention_kind != CoreSpecState::ImagingSpecRetentionKind::Replace ||
+      retained_replace->payload != expected_replace_payload) {
+    std::cerr << "FAIL: runtime imaging spec replace retention did not preserve async payload bytes\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto invalid_patch_result =
+      rt.retain_imaging_spec_patch(92, SpecPatchView{nullptr, 1});
+  if (invalid_patch_result != CoreThread::PostResult::Closed) {
+    std::cerr << "FAIL: invalid imaging spec patch admission result="
+              << static_cast<int>(invalid_patch_result) << " expected Closed\n";
+    rt.stop();
+    return 1;
+  }
+
+  uint8_t patch_bytes[] = {4u, 2u, 4u, 2u};
+  const std::vector<uint8_t> expected_patch_payload(
+      std::begin(patch_bytes), std::end(patch_bytes));
+  const auto patch_result =
+      rt.retain_imaging_spec_patch(92, SpecPatchView{patch_bytes, sizeof(patch_bytes)});
+  if (patch_result != CoreThread::PostResult::Enqueued) {
+    std::cerr << "FAIL: imaging spec patch retention admission failed result="
+              << static_cast<int>(patch_result) << "\n";
+    rt.stop();
+    return 1;
+  }
+  std::fill(std::begin(patch_bytes), std::end(patch_bytes), 0u);
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& s) {
+        return s.gen == 0 && s.imaging_spec_version == 92 && s.version >= 2;
+      })) {
+    std::cerr << "FAIL: snapshot did not reflect retained imaging spec patch version\n";
+    rt.stop();
+    return 1;
+  }
+  const auto retained_patch = rt.imaging_spec_retained_state_for_smoke();
+  if (!retained_patch.has_value() ||
+      retained_patch->imaging_spec_version != 92 ||
+      retained_patch->retention_kind != CoreSpecState::ImagingSpecRetentionKind::Patch ||
+      retained_patch->payload != expected_patch_payload) {
+    std::cerr << "FAIL: runtime imaging spec patch retention did not preserve async payload bytes\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto version_only_result = rt.retain_imaging_spec_version(93);
+  if (version_only_result != CoreThread::PostResult::Enqueued) {
+    std::cerr << "FAIL: imaging spec version-only retention admission failed result="
+              << static_cast<int>(version_only_result) << "\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [](const CamBANGStateSnapshot& s) {
+        return s.gen == 0 && s.imaging_spec_version == 93 && s.version >= 3;
+      })) {
+    std::cerr << "FAIL: snapshot did not reflect version-only imaging spec retention\n";
+    rt.stop();
+    return 1;
+  }
+  const auto retained_version_only = rt.imaging_spec_retained_state_for_smoke();
+  if (!retained_version_only.has_value() ||
+      retained_version_only->imaging_spec_version != 93 ||
+      retained_version_only->retention_kind != CoreSpecState::ImagingSpecRetentionKind::None ||
+      !retained_version_only->payload.empty()) {
+    std::cerr << "FAIL: version-only imaging spec retention left stale retained payload state\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
 }
 
 
@@ -1685,9 +1858,9 @@ static int test_rig_preflight_materialization_smoke() {
     if (members.size() != 1 ||
         members[0].image_member_index != 0 ||
         members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
-      std::cerr << "Expected rig preflight materialized request with one default-metered image member\n";
-      rt.stop();
-      return 1;
+        std::cerr << "Expected rig preflight materialized request with one default-metered image member\n";
+        rt.stop();
+        return 1;
     }
   }
 
@@ -1734,6 +1907,30 @@ static int test_device_capture_request_materialization_smoke() {
       req.still_image_bundle.members[0].image_member_index != 0 ||
       req.still_image_bundle.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
     std::cerr << "Expected device materialized request with one default-metered image member\n";
+    rt.stop();
+    return 1;
+  }
+
+  const uint32_t legacy_wrong_consumer_payload = 0;
+  const auto retain_imaging_spec = rt.retain_imaging_spec_replace(
+      12001,
+      SpecPatchView{&legacy_wrong_consumer_payload, sizeof(legacy_wrong_consumer_payload)});
+  if (retain_imaging_spec != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Expected retained imaging spec replace admission for device materialization smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest retained_req{};
+  if (!rt.materialize_capture_request(kDeviceInstanceId, retained_req)) {
+    std::cerr << "Legacy wrong imaging-spec consumer should not reject device capture request materialization\n";
+    rt.stop();
+    return 1;
+  }
+  if (retained_req.still_image_bundle.members.size() != 1 ||
+      retained_req.still_image_bundle.members[0].image_member_index != 0 ||
+      retained_req.still_image_bundle.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
+    std::cerr << "Legacy wrong imaging-spec consumer removal changed default still_image_bundle materialization\n";
     rt.stop();
     return 1;
   }
@@ -2183,6 +2380,222 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
   return 0;
 }
 
+static int test_rig_cohort_admission_imaging_spec_constraint_smoke() {
+  constexpr uint64_t kSecondDeviceInstanceId = 2;
+  constexpr uint64_t kSecondRootId = 2;
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig cohort imaging-spec admit smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig cohort imaging-spec admit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig cohort imaging-spec admit smoke)\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto retain_identity =
+      rt.retain_device_identity(kSecondDeviceInstanceId, eps[0].hardware_id);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Failed to retain second device identity for rig cohort imaging-spec admit smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_open_device(eps[0].hardware_id, kSecondDeviceInstanceId, kSecondRootId) !=
+      TryOpenDeviceStatus::OK) {
+    std::cerr << "Failed to open second device for rig cohort imaging-spec admit smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Second device open did not converge for rig cohort imaging-spec admit smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest first_request{};
+  CaptureRequest second_request{};
+  if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, first_request); }, 200, 1) ||
+      !wait_until([&]() { return rt.materialize_capture_request(kSecondDeviceInstanceId, second_request); }, 200, 1)) {
+    std::cerr << "Failed to materialize two-device capture requests for rig cohort imaging-spec admit smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreRuntime::RigPreflightResult preflight{};
+  preflight.ok = true;
+  preflight.failure = CoreRuntime::RigPreflightFailure::None;
+  preflight.rig_id = 8002;
+  preflight.participants.push_back({eps[0].hardware_id, kDeviceInstanceId, first_request});
+  preflight.participants.push_back({eps[0].hardware_id, kSecondDeviceInstanceId, second_request});
+
+  const auto baseline = rt.smoke_admit_rig_cohort_from_preflight(8002, 9003, preflight);
+  if (!baseline.ok ||
+      baseline.failure != CoreRuntime::RigCohortAdmissionFailure::None ||
+      baseline.participants.size() != 2) {
+    std::cerr << "Expected baseline two-device cohort admission before imaging-spec constraint\n";
+    rt.stop();
+    return 1;
+  }
+
+  const uint8_t disallow_multi_device_rig_capture = 0;
+  const auto retain_imaging_spec = rt.retain_imaging_spec_replace(
+      12005,
+      SpecPatchView{&disallow_multi_device_rig_capture, sizeof(disallow_multi_device_rig_capture)});
+  if (retain_imaging_spec != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Expected retained imaging spec replace admission for rig cohort imaging-spec admit smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto constrained = rt.smoke_admit_rig_cohort_from_preflight(8002, 9004, preflight);
+  if (constrained.ok ||
+      constrained.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected) {
+    std::cerr << "Expected ImagingSpecRejected when retained imaging spec rejects grouped cohort admission\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_rig_orchestration_imaging_spec_admission_propagation_smoke() {
+  constexpr uint64_t kSecondDeviceInstanceId = 2;
+  constexpr uint64_t kSecondRootId = 2;
+  constexpr uint64_t kRigId = 8402;
+  constexpr uint64_t kFirstCaptureId = 9401;
+  constexpr uint64_t kSecondCaptureId = 9402;
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig orchestration imaging-spec propagation smoke)\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov)) {
+    std::cerr << "Stub provider setup failed (rig orchestration imaging-spec propagation smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  rt.attach_provider(&prov);
+
+  std::vector<CameraEndpoint> eps;
+  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
+    std::cerr << "Failed to enumerate endpoints (rig orchestration imaging-spec propagation smoke)\n";
+    rt.stop();
+    return 1;
+  }
+  const std::string live_hw = eps[0].hardware_id;
+
+  const auto retain_identity =
+      rt.retain_device_identity(kSecondDeviceInstanceId, live_hw);
+  if (retain_identity != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Failed to retain second device identity for rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_open_device(live_hw, kSecondDeviceInstanceId, kSecondRootId) !=
+      TryOpenDeviceStatus::OK) {
+    std::cerr << "Failed to open second device for rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Second device open did not converge for rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  CaptureRequest first_request{};
+  CaptureRequest second_request{};
+  if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, first_request); }, 200, 1) ||
+      !wait_until([&]() { return rt.materialize_capture_request(kSecondDeviceInstanceId, second_request); }, 200, 1)) {
+    std::cerr << "Failed to materialize two-device capture requests for rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  CoreRuntime::RigPreflightResult preflight{};
+  preflight.ok = true;
+  preflight.failure = CoreRuntime::RigPreflightFailure::None;
+  preflight.rig_id = kRigId;
+  preflight.participants.push_back({live_hw, kDeviceInstanceId, first_request});
+  preflight.participants.push_back({live_hw, kSecondDeviceInstanceId, second_request});
+
+  const uint8_t disallow_multi_device_rig_capture = 0;
+  const auto retain_imaging_spec = rt.retain_imaging_spec_replace(
+      12006,
+      SpecPatchView{&disallow_multi_device_rig_capture, sizeof(disallow_multi_device_rig_capture)});
+  if (retain_imaging_spec != CoreThread::PostResult::Enqueued) {
+    std::cerr << "Expected retained imaging spec replace admission for rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto has_capture_lifecycle_report = [&](uint64_t capture_id) {
+    const auto reports = rt.recent_capture_lifecycle_timing_reports();
+    return std::any_of(reports.begin(), reports.end(), [capture_id](const CoreCaptureLifecycleTimingReport& report) {
+      return report.capture_id == capture_id;
+    });
+  };
+
+  const auto first_fail =
+      rt.smoke_orchestrate_rig_capture_from_preflight(kRigId, kFirstCaptureId, preflight);
+  if (first_fail.ok ||
+      first_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
+      first_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected ||
+      first_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
+      first_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None ||
+      first_fail.submitted_count != 0 ||
+      first_fail.provider_error_code != 0) {
+    std::cerr << "Expected rig orchestration helper to surface ImagingSpecRejected as admission failure\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto second_fail =
+      rt.smoke_orchestrate_rig_capture_from_preflight(kRigId, kSecondCaptureId, preflight);
+  if (second_fail.ok ||
+      second_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
+      second_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected ||
+      second_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
+      second_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None ||
+      second_fail.submitted_count != 0 ||
+      second_fail.provider_error_code != 0) {
+    std::cerr << "Expected repeated rig orchestration helper rejection to stay deterministic\n";
+    rt.stop();
+    return 1;
+  }
+
+  if (!converge_stub_provider_core(rt, prov)) {
+    std::cerr << "Failed to drain provider/core work after rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (has_capture_lifecycle_report(kFirstCaptureId) ||
+      has_capture_lifecycle_report(kSecondCaptureId) ||
+      !rt.get_capture_result_set(kFirstCaptureId).empty() ||
+      !rt.get_capture_result_set(kSecondCaptureId).empty()) {
+    std::cerr << "Admission rejection must not reach provider capture submission in rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_rig_bundle_submission_smoke() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -2519,7 +2932,11 @@ static int test_rig_orchestration_helper_smoke() {
 
   // Preflight failure: missing rig, no cohort/provider submit.
   const auto preflight_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(9901, 9301);
-  if (preflight_fail.ok || preflight_fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
+  if (preflight_fail.ok ||
+      preflight_fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed ||
+      preflight_fail.preflight_failure != CoreRuntime::RigPreflightFailure::RigNotFound ||
+      preflight_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::None ||
+      preflight_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None) {
     rt.stop();
     return 1;
   }
@@ -2534,7 +2951,11 @@ static int test_rig_orchestration_helper_smoke() {
 
   // Invalid capture_id.
   const auto bad_capture_id = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 0);
-  if (bad_capture_id.ok || bad_capture_id.failure != CoreRuntime::RigOrchestrationFailure::InvalidCaptureId) {
+  if (bad_capture_id.ok ||
+      bad_capture_id.failure != CoreRuntime::RigOrchestrationFailure::InvalidCaptureId ||
+      bad_capture_id.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
+      bad_capture_id.admission_failure != CoreRuntime::RigCohortAdmissionFailure::None ||
+      bad_capture_id.submission_failure != CoreRuntime::RigSubmissionFailure::None) {
     rt.stop();
     return 1;
   }
@@ -2546,7 +2967,11 @@ static int test_rig_orchestration_helper_smoke() {
     return 1;
   }
   const auto admission_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(8301, 9302);
-  if (admission_fail.ok || admission_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed) {
+  if (admission_fail.ok ||
+      admission_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
+      admission_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
+      admission_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId ||
+      admission_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None) {
     rt.stop();
     return 1;
   }
@@ -2570,7 +2995,11 @@ static int test_rig_orchestration_helper_smoke() {
   // Orchestration-level submission failure case.
   if (!rt.smoke_set_rig_member_hardware_ids(8303, {"missing:hw"})) { rt.stop(); return 1; }
   const auto orchestration_fail = rt.smoke_orchestrate_rig_capture_with_capture_id(8303, 9304);
-  if (orchestration_fail.ok || orchestration_fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed) {
+  if (orchestration_fail.ok ||
+      orchestration_fail.failure != CoreRuntime::RigOrchestrationFailure::PreflightFailed ||
+      orchestration_fail.preflight_failure != CoreRuntime::RigPreflightFailure::HardwareIdUnresolved ||
+      orchestration_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::None ||
+      orchestration_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None) {
     rt.stop();
     return 1;
   }
@@ -2686,6 +3115,22 @@ int main(int argc, char** argv) {
 
   // Default behaviour: run once, same structure/output as original.
   if (!opt.stress) {
+    if (int r = reporter.run("test_core_spec_state_imaging_spec_retention_smoke",
+                             [] { return test_core_spec_state_imaging_spec_retention_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_core_spec_state_imaging_spec_retention_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_runtime_imaging_spec_retention_publish_smoke",
+                             [] { return test_runtime_imaging_spec_retention_publish_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_runtime_imaging_spec_retention_publish_smoke",
+                               r);
+      return r;
+    }
     if (int r = reporter.run("test_provider_callback_ingress_null_core_thread_drop_accounting",
                              [] { return test_provider_callback_ingress_null_core_thread_drop_accounting(); })) {
       if (reporter.verbose()) reporter.print_summary();
@@ -2834,6 +3279,22 @@ int main(int argc, char** argv) {
                              [] { return test_rig_cohort_admission_from_preflight_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_rig_cohort_admission_from_preflight_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_cohort_admission_imaging_spec_constraint_smoke",
+                             [] { return test_rig_cohort_admission_imaging_spec_constraint_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_rig_cohort_admission_imaging_spec_constraint_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_rig_orchestration_imaging_spec_admission_propagation_smoke",
+                             [] { return test_rig_orchestration_imaging_spec_admission_propagation_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_rig_orchestration_imaging_spec_admission_propagation_smoke",
+                               r);
       return r;
     }
     if (int r = reporter.run("test_rig_bundle_submission_smoke",
