@@ -2,53 +2,58 @@
 
 ## Active task
 
-Confirm the grouped-rig preflight/admission/submission/orchestration shaping line is complete, and remove only any remaining tiny local inconsistency inside that immediate cluster if one truly remains.
+Implement the external camera-concurrency truth supply path from
+`CamBANGServer.ingest_camera_concurrency(String json_text)` into the existing
+Core-owned `ImagingSpec` grouped-rig admission consumer.
 
 ## Goal
 
-Keep the accepted authoritative `ImagingSpec` gate, shared grouped-rig orchestration helper, centralized orchestration failure mapping, and constructor-based shaping across preflight, admission, submission, and orchestration exactly as they now exist, and perform one final narrow completion pass over that full grouped-rig cluster.
+Accept the Aide-De-Cam (ADC) concurrency projection, validate it
+transactionally, retain normalized allowed camera combinations as effective
+Core truth, and consume that truth at the existing authoritative cohort-admission
+gate.
 
-## Expected work
+The effective concurrency state must distinguish:
 
-* keep cohort admission as the authoritative grouped-rig `ImagingSpec` gate
-* keep the shared grouped-rig orchestration helper as the single orchestration path
-* keep centralized orchestration failure mapping as the top-level truth surface
-* keep constructor-based shaping across grouped-rig preflight, admission, submission, and orchestration
-* inspect that immediate grouped-rig cluster for any remaining tiny local inconsistency or avoidable duplication
-* make only minimal source-grounded touch-ups if something real remains
-* otherwise leave code unchanged and report the grouped-rig shaping line complete
-* add or adjust focused verification only if needed
+* unavailable truth;
+* explicitly unsupported concurrency;
+* supported concurrency with allowed camera-ID combinations.
 
-Likely touched areas:
+A grouped participant set is allowed when it is a subset of at least one
+reported allowed combination. Single-device capture remains unaffected.
 
-* `src/core/` grouped-rig preflight / admission / submission / orchestration helpers
-* focused maintainer verification where needed
+## Required boundaries
 
-Only minimal documentation touch-up if source-grounded and necessary.
+* Public API: `Error CamBANGServer.ingest_camera_concurrency(String json_text)`.
+* Existing public API is otherwise preserved without redesign or churn; the
+  only public addition in this tranche is
+  `CamBANGServer.ingest_camera_concurrency(String json_text)`.
+* The caller obtains the JSON text; add no filesystem/path convenience API.
+* Keep `ImagingSpec` terminology internal.
+* Support ADC schema versions through compiled constants in
+  `cambang::camera_concurrency::ADC`; the current supported range is `1..1`.
+* Treat `generator` as optional provenance, not required producer identity.
+* Apply accepted input transactionally; failed input must preserve prior truth.
+* Effective truth is immutable during an active Core generation.
+* Configured accepted truth may be replaced while stopped and reused across
+  later start/stop generations.
+* Keep cohort admission as the single authoritative grouped-rig gate.
+* Distinguish unavailable truth from an explicit combination rejection.
 
 ## Guardrails
 
-Do not:
+Do not add provider-start parameters, a Java `CameraManager` bridge, generic
+spec mutation/patch APIs, camera-ID heuristics or prefixes, result-fact work,
+calibration work, or unrelated provider architecture.
 
-* change public Godot API
-* implement platform providers
-* broaden into a general `ImagingSpec` schema system
-* add unrelated new `ImagingSpec` consumers
-* move the authoritative `ImagingSpec` gate away from cohort admission
-* reintroduce duplicate later-stage `ImagingSpec` enforcement
-* broaden into result-fact redesign
-* broaden into calibration/metadata enrichment
-* broaden into large admission-policy redesign
-* turn this file into a changelog, history note, or future-work list
-
-Keep the change narrow, source-grounded, and reviewable.
+Consume only the ADC fields needed for camera concurrency. Do not adopt the
+unrelated capability document as a general CamBANG schema.
 
 ## Done means
 
-This tranche is complete when:
-
-* grouped-rig preflight, admission, submission, and orchestration all use the same consistent constructor-based shaping pattern
-* no remaining real tiny local inconsistency or avoidable duplication remains in that immediate grouped-rig cluster
-* grouped-rig behavior remains unchanged
-* focused verification still proves deterministic failure propagation
-* no public API changes are introduced
+The public method is bound and documented; supported ADC input reaches
+Core-owned generation-effective truth; malformed, indeterminate, and unsupported
+input is rejected without mutation; subset-based grouped admission is verified;
+unavailable and explicit rejection remain distinct; accepted truth is immutable
+while running and reusable/reconfigurable between generations; focused and
+relevant broader deterministic verification is green.

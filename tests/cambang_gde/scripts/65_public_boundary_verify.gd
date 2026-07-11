@@ -17,12 +17,15 @@ const STARTUP_STILL_HEIGHT := 240
 const STARTUP_INITIAL_WARM_HOLD_MS := 1
 const STARTUP_FINAL_WARM_HOLD_MS := 50 # TODO: rework this test. Warm is now an intent
 # returning OK very quickly, but not publising the new value until core says so.
+const CAMERA_CONCURRENCY_SUPPORTED_JSON := "{\"schema_version\":1,\"generator\":\"65_public_boundary_verify\",\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"max_concurrent_cameras\":2,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
+const CAMERA_CONCURRENCY_UNSUPPORTED_JSON := "{\"schema_version\":1,\"generator\":\"65_public_boundary_verify\",\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":false}}"
 
 var _done := false
 var _quit_requested := false
 var _phase := PHASE_WAIT_FIRST_BASELINE
 var _timer: Timer
 var _first_gen := -1
+var _expected_imaging_spec_version := -1
 var _startup_hardware_id := ""
 var _diag_last_phase_name := "init"
 var _diag_waiting_for := "scene ready"
@@ -71,6 +74,9 @@ func _ready() -> void:
 		return
 	if not CamBANGServer.has_method("load_external_scenario"):
 		_fail("FAIL: CamBANGServer.load_external_scenario() missing")
+		return
+	if not CamBANGServer.has_method("ingest_camera_concurrency"):
+		_fail("FAIL: CamBANGServer.ingest_camera_concurrency() missing")
 		return
 	if not CamBANGServer.has_method("start_scenario") or not CamBANGServer.has_method("stop_scenario"):
 		_fail("FAIL: CamBANGServer scenario start/stop API missing")
@@ -230,6 +236,8 @@ func _ready() -> void:
 	CamBANGServer.stop()
 
 	_diag_mark("invalid_start_argument_checks_end", "main verification startup")
+	if not _assert_camera_concurrency_public_boundary_while_stopped():
+		return
 
 	print("RUN: godot public boundary verify")
 	_diag_mark("main_verification_begin", "pre-start snapshot NIL check")
@@ -277,6 +285,8 @@ func _ready() -> void:
 		CamBANGServer.TIMELINE_RECONCILIATION_STRICT
 	) != ERR_ALREADY_IN_USE:
 		_fail("FAIL: synthetic strict start re-entry must return ERR_ALREADY_IN_USE while running")
+		return
+	if not _assert_camera_concurrency_public_boundary_while_running("initial start"):
 		return
 
 	var synth_cfg = CamBANGServer.get_active_provider_config()
@@ -416,6 +426,40 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	return true
 
 
+func _assert_camera_concurrency_public_boundary_while_stopped() -> bool:
+	var malformed_err: int = CamBANGServer.ingest_camera_concurrency("{\"schema_version\":1")
+	if malformed_err != ERR_PARSE_ERROR:
+		_fail("FAIL: CamBANGServer.ingest_camera_concurrency() malformed JSON must return ERR_PARSE_ERROR")
+		return false
+	var valid_err: int = CamBANGServer.ingest_camera_concurrency(CAMERA_CONCURRENCY_SUPPORTED_JSON)
+	if valid_err != OK:
+		_fail("FAIL: CamBANGServer.ingest_camera_concurrency() valid stopped-time payload must return OK")
+		return false
+	_expected_imaging_spec_version = -1
+	return true
+
+
+func _assert_camera_concurrency_public_boundary_while_running(context: String) -> bool:
+	var busy_err: int = CamBANGServer.ingest_camera_concurrency(CAMERA_CONCURRENCY_UNSUPPORTED_JSON)
+	if busy_err != ERR_BUSY:
+		_fail("FAIL: " + context + " CamBANGServer.ingest_camera_concurrency() must return ERR_BUSY while running")
+		return false
+	return true
+
+
+func _assert_snapshot_imaging_spec_version(snapshot: Dictionary, context: String) -> bool:
+	var version := int(snapshot.get("imaging_spec_version", 0))
+	if version <= 0:
+		_fail("FAIL: " + context + " snapshot must expose positive imaging_spec_version after stopped-time camera concurrency ingest")
+		return false
+	if _expected_imaging_spec_version == -1:
+		_expected_imaging_spec_version = version
+	elif version != _expected_imaging_spec_version:
+		_fail("FAIL: " + context + " snapshot imaging_spec_version changed without a new stopped-time ingest")
+		return false
+	return true
+
+
 func _assert_post_baseline_public_boundary() -> bool:
 	var endpoints = CamBANGServer.enumerate_devices()
 	if typeof(endpoints) != TYPE_ARRAY or endpoints.size() < 1:
@@ -540,6 +584,8 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				_diag_mark("baseline_rejected", "first publish must be baseline", {"reason": "nonzero version/topology"})
 				_fail("FAIL: first Godot-visible publish of generation must be baseline (version=0, topology_version=0)")
 				return
+			if not _assert_snapshot_imaging_spec_version(d, "first baseline"):
+				return
 			if _snapshot_has_scenario_effects(d):
 				_diag_mark("baseline_rejected", "first baseline must not show pending startup effects", {"reason": "scenario effects visible"})
 				_fail("FAIL: pending startup effects must not be visible in the baseline snapshot")
@@ -556,6 +602,8 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 		PHASE_WAIT_PENDING_EFFECTS:
 			if version == 0:
 				_diag_mark("scenario_playback_start_observed", "nonzero version with scenario effects", {"observed": false, "reason": "version still zero"})
+				return
+			if not _assert_snapshot_imaging_spec_version(d, "first generation pending effects"):
 				return
 			if not _snapshot_has_scenario_effects(d):
 				_diag_mark("scenario_playback_start_observed", "nonzero version with scenario effects", {"observed": false, "reason": "scenario effects absent"})
@@ -585,6 +633,8 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 				_diag_mark("baseline_rejected", "restarted first publish must be baseline", {"reason": "nonzero version/topology"})
 				_fail("FAIL: first publish of restarted generation must be baseline")
 				return
+			if not _assert_snapshot_imaging_spec_version(d, "restarted baseline"):
+				return
 			if _snapshot_has_scenario_effects(d):
 				_diag_mark("baseline_rejected", "restarted baseline must not show pending startup effects", {"reason": "scenario effects visible"})
 				_fail("FAIL: pending startup effects must not be visible in restarted baseline snapshot")
@@ -596,6 +646,8 @@ func _on_state_published(gen: int, version: int, topology_version: int) -> void:
 		PHASE_WAIT_RESTART_PENDING_EFFECTS:
 			if version == 0:
 				_diag_mark("scenario_playback_start_observed", "restart scenario effects", {"observed": false, "reason": "version still zero"})
+				return
+			if not _assert_snapshot_imaging_spec_version(d, "restarted pending effects"):
 				return
 			if _snapshot_has_hardware_id(d, _startup_hardware_id):
 				_fail("FAIL: endpoint startup intent from previous session leaked into restarted generation")

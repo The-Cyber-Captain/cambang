@@ -22,6 +22,22 @@ signal state_published(gen, version, topology_version)
 
 Other Godot-facing APIs may exist for object access, scenario/dev control, provider configuration, or result retrieval. They are outside the scope of this document unless explicitly tied to snapshot visibility, generation boundaries, or tick-bounded publication semantics. New Godot-facing API surface must still be added deliberately and documented at the appropriate boundary; this clarification must not be read as permission for ad-hoc public API growth.
 
+Stopped-time imaging-subsystem truth ingestion is a narrow public-boundary
+exception:
+
+```
+CamBANGServer.ingest_camera_concurrency(String json_text) -> Error
+```
+
+This method accepts caller-supplied JSON text only; CamBANG performs no
+filesystem access on the caller's behalf. The accepted format follows the
+supported ADC camera-concurrency schema-version range, and unrelated ADC
+capability fields outside the consumed camera-concurrency projection are
+ignored. Ingestion is stopped-time and transactional: accepted input becomes
+configured truth for the next generation, active-generation ingestion returns
+`ERR_BUSY`, and any parse/validation failure leaves the previously configured
+truth unchanged.
+
 Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
 that storage after a run, but once the provider is attached and the runtime is
 running, attached-provider shutdown belongs to `CoreRuntime::stop()`. Godot must

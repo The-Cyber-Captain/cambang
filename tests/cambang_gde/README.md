@@ -87,7 +87,8 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
   - Expected pass string: `OK: godot snapshot observer minimal PASS`
 - `scenes/65_public_boundary_verify.tscn`
   - Verifies Godot public-boundary semantics: NIL-before-baseline, baseline-first publish,
-    synchronous handler/snapshot consistency, NIL-after-stop, and no stale generation leakage.
+    synchronous handler/snapshot consistency, stopped-time camera-concurrency ingest/error mapping,
+    NIL-after-stop, and no stale generation leakage.
   - Expected pass string: `OK: godot public boundary verify PASS`
 - `scenes/66_public_lifecycle_verify.tscn`
   - Self-terminating suite verifier for Godot public lifecycle semantics.

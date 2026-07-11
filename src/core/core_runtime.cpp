@@ -2,6 +2,8 @@
 
 #include "core/core_runtime.h"
 
+#include "core/camera_concurrency_adc.h"
+
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -4389,7 +4391,24 @@ void CoreRuntime::on_core_start() {
   result_store_.clear();
   global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
-  spec_state_.reset_for_generation(0);
+  uint64_t configured_imaging_spec_version = 0;
+  std::vector<uint8_t> configured_imaging_spec_payload{};
+  {
+    const std::lock_guard<std::mutex> lock(configured_imaging_spec_mutex_);
+    configured_imaging_spec_version = configured_imaging_spec_version_;
+    configured_imaging_spec_payload = configured_imaging_spec_payload_;
+  }
+  spec_state_.reset_for_generation(configured_imaging_spec_version);
+  if (!configured_imaging_spec_payload.empty()) {
+    const SpecPatchView configured_payload{
+        configured_imaging_spec_payload.data(),
+        configured_imaging_spec_payload.size()};
+    const bool retained = spec_state_.retain_imaging_spec_replace(
+        configured_imaging_spec_version,
+        configured_payload);
+    assert(retained);
+    (void)retained;
+  }
   stream_retained_plan_evaluators_.clear();
   capture_retained_plan_evaluators_.clear();
   stream_retained_plan_decisions_.clear();
@@ -6130,10 +6149,11 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
     return make_rig_admitted_failure(
         rig_id, capture_id, RigCohortAdmissionFailure::EmptyParticipants);
   }
-  if (imaging_spec_disallows_grouped_multi_device_rig_capture_(
-          preflight.participants.size())) {
+  const RigCohortAdmissionFailure imaging_spec_failure =
+      grouped_rig_imaging_spec_admission_failure_(preflight);
+  if (imaging_spec_failure != RigCohortAdmissionFailure::None) {
     return make_rig_admitted_failure(
-        rig_id, capture_id, RigCohortAdmissionFailure::ImagingSpecRejected);
+        rig_id, capture_id, imaging_spec_failure);
   }
 
   CoreCaptureCohortRegistry::CohortRecord cohort{};
@@ -6166,16 +6186,35 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
       rig_id, capture_id, std::move(participants));
 }
 
-bool CoreRuntime::imaging_spec_disallows_grouped_multi_device_rig_capture_(
-    size_t participant_count) const noexcept {
-  if (participant_count <= 1) {
-    return false;
+CoreRuntime::RigCohortAdmissionFailure
+CoreRuntime::grouped_rig_imaging_spec_admission_failure_(
+    const RigPreflightResult& preflight) const noexcept {
+  if (preflight.participants.size() <= 1) {
+    return RigCohortAdmissionFailure::None;
   }
 
   const CoreSpecState::ImagingSpecInterpretation imaging_spec =
       spec_state_.interpret_imaging_spec();
-  return imaging_spec.allows_multi_device_rig_capture.has_value() &&
-         !*imaging_spec.allows_multi_device_rig_capture;
+  switch (imaging_spec.camera_concurrency.kind) {
+    case camera_concurrency::TruthKind::Unavailable:
+      return RigCohortAdmissionFailure::ImagingSpecUnavailable;
+    case camera_concurrency::TruthKind::Unsupported:
+      return RigCohortAdmissionFailure::ImagingSpecRejected;
+    case camera_concurrency::TruthKind::Supported:
+      break;
+  }
+
+  std::vector<std::string> requested_camera_ids;
+  requested_camera_ids.reserve(preflight.participants.size());
+  for (const auto& participant : preflight.participants) {
+    requested_camera_ids.push_back(participant.hardware_id);
+  }
+  if (camera_concurrency::requested_camera_id_set_is_allowed(
+          imaging_spec.camera_concurrency,
+          requested_camera_ids)) {
+    return RigCohortAdmissionFailure::None;
+  }
+  return RigCohortAdmissionFailure::ImagingSpecRejected;
 }
 
 CoreRuntime::RigSubmissionResult CoreRuntime::submit_admitted_rig_bundle_(
@@ -6524,6 +6563,41 @@ bool CoreRuntime::retain_rig_member_hardware_ids(
     request_publish_from_core_unchecked();
   });
   return pr == CoreThread::PostResult::Enqueued;
+}
+
+CoreRuntime::IngestCameraConcurrencyResult
+CoreRuntime::ingest_camera_concurrency_json_for_server(
+    const std::string& json_text) {
+  const CoreRuntimeState state = state_.load(std::memory_order_acquire);
+  if (state == CoreRuntimeState::LIVE ||
+      state == CoreRuntimeState::TEARING_DOWN) {
+    IngestCameraConcurrencyResult out{};
+    out.status = IngestCameraConcurrencyStatus::Busy;
+    return out;
+  }
+
+  const camera_concurrency::LoadResult load =
+      camera_concurrency::load_truth_from_adc_json_text(json_text);
+  if (!load.ok) {
+    IngestCameraConcurrencyResult out{};
+    out.status = load.error_kind == camera_concurrency::LoadErrorKind::Parse
+                     ? IngestCameraConcurrencyStatus::ParseError
+                     : IngestCameraConcurrencyStatus::Invalid;
+    out.error_message = load.error_message;
+    return out;
+  }
+
+  IngestCameraConcurrencyResult out{};
+  out.status = IngestCameraConcurrencyStatus::Ok;
+  {
+    const std::lock_guard<std::mutex> lock(configured_imaging_spec_mutex_);
+    configured_imaging_spec_version_ = next_configured_imaging_spec_version_++;
+    configured_imaging_spec_payload_.assign(
+        reinterpret_cast<const uint8_t*>(json_text.data()),
+        reinterpret_cast<const uint8_t*>(json_text.data()) + json_text.size());
+    out.imaging_spec_version = configured_imaging_spec_version_;
+  }
+  return out;
 }
 
 

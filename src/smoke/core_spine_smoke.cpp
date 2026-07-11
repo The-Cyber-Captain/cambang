@@ -32,7 +32,9 @@ Non-Goals
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -44,6 +46,7 @@ Non-Goals
 #if !defined(CAMBANG_INTERNAL_SMOKE)
   #error "core_spine_smoke: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
+#include "core/camera_concurrency_adc.h"
 #include "core/core_runtime.h"
 #include "core/provider_callback_ingress.h"
 #include "core/resource_aggregate_telemetry.h"
@@ -60,6 +63,94 @@ namespace {
 constexpr uint64_t kDeviceInstanceId = 1;
 constexpr uint64_t kRootId = 1;
 constexpr uint64_t kStreamId = 1;
+
+static std::string json_quote(const std::string& value) {
+  std::ostringstream oss;
+  oss << '"';
+  for (const char c : value) {
+    switch (c) {
+      case '\\': oss << "\\\\"; break;
+      case '"': oss << "\\\""; break;
+      case '\n': oss << "\\n"; break;
+      case '\r': oss << "\\r"; break;
+      case '\t': oss << "\\t"; break;
+      default: oss << c; break;
+    }
+  }
+  oss << '"';
+  return oss.str();
+}
+
+static std::string make_adc_camera_concurrency_json(
+    const std::vector<std::string>& camera_ids,
+    bool supported,
+    const std::vector<std::vector<std::string>>& combinations = {},
+    std::optional<uint32_t> max_concurrent_cameras = std::nullopt,
+    bool include_generator = true,
+    bool include_query_error = false) {
+  std::ostringstream oss;
+  oss << "{\"schema_version\":"
+      << camera_concurrency::ADC::kMinSupportedSchemaVersion;
+  if (include_generator) {
+    oss << ",\"generator\":\"core_spine_smoke\"";
+  }
+  oss << ",\"cameras\":[";
+  for (size_t i = 0; i < camera_ids.size(); ++i) {
+    if (i != 0) {
+      oss << ',';
+    }
+    oss << "{\"camera_id\":" << json_quote(camera_ids[i]) << '}';
+  }
+  oss << "],\"concurrent_camera_support\":{\"supported\":"
+      << (supported ? "true" : "false");
+  if (max_concurrent_cameras.has_value()) {
+    oss << ",\"max_concurrent_cameras\":"
+        << *max_concurrent_cameras;
+  }
+  if (!combinations.empty()) {
+    oss << ",\"camera_id_combinations\":[";
+    for (size_t i = 0; i < combinations.size(); ++i) {
+      if (i != 0) {
+        oss << ',';
+      }
+      oss << '[';
+      for (size_t j = 0; j < combinations[i].size(); ++j) {
+        if (j != 0) {
+          oss << ',';
+        }
+        oss << json_quote(combinations[i][j]);
+      }
+      oss << ']';
+    }
+    oss << ']';
+  }
+  if (include_query_error) {
+    oss << ",\"error\":\"query failed\"";
+  }
+  oss << "}}";
+  return oss.str();
+}
+
+static std::vector<uint8_t> as_bytes(const std::string& text) {
+  return std::vector<uint8_t>(text.begin(), text.end());
+}
+
+static CoreRuntime::RigPreflightResult make_manual_rig_preflight(
+    uint64_t rig_id,
+    const std::vector<std::string>& hardware_ids) {
+  CoreRuntime::RigPreflightResult preflight{};
+  preflight.ok = true;
+  preflight.failure = CoreRuntime::RigPreflightFailure::None;
+  preflight.rig_id = rig_id;
+  for (size_t i = 0; i < hardware_ids.size(); ++i) {
+    CaptureRequest request{};
+    request.device_instance_id = static_cast<uint64_t>(i + 1);
+    request.still_image_bundle = make_default_metered_still_image_bundle();
+    preflight.participants.push_back(
+        {hardware_ids[i], static_cast<uint64_t>(i + 1), request});
+  }
+  return preflight;
+}
 
 struct Options {
   bool stress = false;
@@ -456,8 +547,13 @@ static int test_core_spec_state_imaging_spec_retention_smoke() {
     return 1;
   }
 
-  const uint8_t replace_bytes[] = {1u, 3u, 5u, 7u};
-  if (!spec_state.retain_imaging_spec_replace(41, SpecPatchView{replace_bytes, sizeof(replace_bytes)})) {
+  const std::string unsupported_json = make_adc_camera_concurrency_json(
+      {"camA", "camB"},
+      false);
+  const std::vector<uint8_t> replace_bytes = as_bytes(unsupported_json);
+  if (!spec_state.retain_imaging_spec_replace(
+          41,
+          SpecPatchView{replace_bytes.data(), replace_bytes.size()})) {
     std::cerr << "FAIL: imaging spec replace retention rejected valid payload\n";
     return 1;
   }
@@ -465,14 +561,22 @@ static int test_core_spec_state_imaging_spec_retention_smoke() {
   if (spec_state.imaging_spec_version() != 41 ||
       !spec_state.has_imaging_spec_payload() ||
       spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::Replace ||
-      replace_view.size() != sizeof(replace_bytes) ||
-      std::memcmp(replace_view.data(), replace_bytes, sizeof(replace_bytes)) != 0) {
+      replace_view != replace_bytes ||
+      spec_state.interpret_imaging_spec().camera_concurrency.kind !=
+          camera_concurrency::TruthKind::Unsupported) {
     std::cerr << "FAIL: imaging spec replace retention produced unexpected retained truth\n";
     return 1;
   }
 
-  const uint8_t patch_bytes[] = {9u, 4u, 2u};
-  if (!spec_state.retain_imaging_spec_patch(42, SpecPatchView{patch_bytes, sizeof(patch_bytes)})) {
+  const std::string patch_json = make_adc_camera_concurrency_json(
+      {"camA", "camB", "camC"},
+      true,
+      {{"camA", "camB", "camC"}, {"camB", "camC"}},
+      3);
+  const std::vector<uint8_t> patch_bytes = as_bytes(patch_json);
+  if (!spec_state.retain_imaging_spec_patch(
+          42,
+          SpecPatchView{patch_bytes.data(), patch_bytes.size()})) {
     std::cerr << "FAIL: imaging spec patch retention rejected valid payload\n";
     return 1;
   }
@@ -480,8 +584,12 @@ static int test_core_spec_state_imaging_spec_retention_smoke() {
   if (spec_state.imaging_spec_version() != 42 ||
       !spec_state.has_imaging_spec_payload() ||
       spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::Patch ||
-      patch_view.size() != sizeof(patch_bytes) ||
-      std::memcmp(patch_view.data(), patch_bytes, sizeof(patch_bytes)) != 0) {
+      patch_view != patch_bytes ||
+      spec_state.interpret_imaging_spec().camera_concurrency.kind !=
+          camera_concurrency::TruthKind::Supported ||
+      spec_state.interpret_imaging_spec()
+              .camera_concurrency
+              .allowed_camera_id_combinations.size() != 2) {
     std::cerr << "FAIL: imaging spec patch retention produced unexpected retained truth\n";
     return 1;
   }
@@ -495,11 +603,26 @@ static int test_core_spec_state_imaging_spec_retention_smoke() {
     std::cerr << "FAIL: invalid imaging spec retention mutated prior retained truth\n";
     return 1;
   }
+  const std::string invalid_json = "{\"schema_version\":1,\"cameras\":[],";
+  if (spec_state.retain_imaging_spec_patch(
+          43,
+          SpecPatchView{invalid_json.data(), invalid_json.size()})) {
+    std::cerr << "FAIL: imaging spec retention accepted malformed ADC json payload\n";
+    return 1;
+  }
+  if (spec_state.imaging_spec_version() != 42 ||
+      spec_state.interpret_imaging_spec().camera_concurrency.kind !=
+          camera_concurrency::TruthKind::Supported) {
+    std::cerr << "FAIL: malformed imaging spec retention mutated prior retained truth\n";
+    return 1;
+  }
 
   spec_state.set_imaging_spec_version(44);
   if (spec_state.imaging_spec_version() != 44 ||
       spec_state.has_imaging_spec_payload() ||
-      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::None) {
+      spec_state.imaging_spec_retention_kind() != CoreSpecState::ImagingSpecRetentionKind::None ||
+      spec_state.interpret_imaging_spec().camera_concurrency.kind !=
+          camera_concurrency::TruthKind::Unavailable) {
     std::cerr << "FAIL: imaging spec version-only retention did not clear opaque retained payload\n";
     return 1;
   }
@@ -523,11 +646,15 @@ static int test_runtime_imaging_spec_retention_publish_smoke() {
     return 1;
   }
 
-  uint8_t replace_bytes[] = {8u, 6u, 7u, 5u, 3u, 0u, 9u};
-  const std::vector<uint8_t> expected_replace_payload(
-      std::begin(replace_bytes), std::end(replace_bytes));
+  const std::string replace_json = make_adc_camera_concurrency_json(
+      {"camA", "camB"},
+      false);
+  std::vector<uint8_t> replace_bytes = as_bytes(replace_json);
+  const std::vector<uint8_t> expected_replace_payload = replace_bytes;
   const auto replace_result =
-      rt.retain_imaging_spec_replace(91, SpecPatchView{replace_bytes, sizeof(replace_bytes)});
+      rt.retain_imaging_spec_replace(
+          91,
+          SpecPatchView{replace_bytes.data(), replace_bytes.size()});
   if (replace_result != CoreThread::PostResult::Enqueued) {
     std::cerr << "FAIL: imaging spec replace retention admission failed result="
               << static_cast<int>(replace_result) << "\n";
@@ -561,11 +688,17 @@ static int test_runtime_imaging_spec_retention_publish_smoke() {
     return 1;
   }
 
-  uint8_t patch_bytes[] = {4u, 2u, 4u, 2u};
-  const std::vector<uint8_t> expected_patch_payload(
-      std::begin(patch_bytes), std::end(patch_bytes));
+  const std::string patch_json = make_adc_camera_concurrency_json(
+      {"camA", "camB", "camC"},
+      true,
+      {{"camA", "camB", "camC"}},
+      3);
+  std::vector<uint8_t> patch_bytes = as_bytes(patch_json);
+  const std::vector<uint8_t> expected_patch_payload = patch_bytes;
   const auto patch_result =
-      rt.retain_imaging_spec_patch(92, SpecPatchView{patch_bytes, sizeof(patch_bytes)});
+      rt.retain_imaging_spec_patch(
+          92,
+          SpecPatchView{patch_bytes.data(), patch_bytes.size()});
   if (patch_result != CoreThread::PostResult::Enqueued) {
     std::cerr << "FAIL: imaging spec patch retention admission failed result="
               << static_cast<int>(patch_result) << "\n";
@@ -610,6 +743,256 @@ static int test_runtime_imaging_spec_retention_publish_smoke() {
       retained_version_only->retention_kind != CoreSpecState::ImagingSpecRetentionKind::None ||
       !retained_version_only->payload.empty()) {
     std::cerr << "FAIL: version-only imaging spec retention left stale retained payload state\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_runtime_camera_concurrency_ingest_lifecycle_smoke() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+
+  const std::string supported_json = make_adc_camera_concurrency_json(
+      {"camA", "camB", "camC", "camD"},
+      true,
+      {{"camA", "camB", "camC"}},
+      3);
+  const std::string unsupported_json = make_adc_camera_concurrency_json(
+      {"camA", "camB", "camC"},
+      false,
+      {},
+      3);
+
+  const auto malformed =
+      rt.ingest_camera_concurrency_json_for_server("{\"schema_version\":1");
+  if (malformed.status != CoreRuntime::IngestCameraConcurrencyStatus::ParseError) {
+    std::cerr << "FAIL: malformed camera concurrency ingestion did not return ParseError\n";
+    return 1;
+  }
+
+  const auto configured_supported =
+      rt.ingest_camera_concurrency_json_for_server(supported_json);
+  if (configured_supported.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      configured_supported.imaging_spec_version == 0) {
+    std::cerr << "FAIL: stopped-time supported camera concurrency ingestion failed\n";
+    return 1;
+  }
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start failed for camera concurrency lifecycle smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return s.gen == 0 && s.version == 0 &&
+               s.imaging_spec_version == configured_supported.imaging_spec_version;
+      })) {
+    std::cerr << "FAIL: first baseline did not reuse stopped-time configured camera concurrency truth\n";
+    rt.stop();
+    return 1;
+  }
+
+  const auto busy_running =
+      rt.ingest_camera_concurrency_json_for_server(unsupported_json);
+  if (busy_running.status != CoreRuntime::IngestCameraConcurrencyStatus::Busy) {
+    std::cerr << "FAIL: running-time camera concurrency ingestion did not preserve active-generation immutability\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  if (!rt.start()) {
+    std::cerr << "FAIL: second runtime start failed for camera concurrency lifecycle smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return s.gen == 1 && s.version == 0 &&
+               s.imaging_spec_version == configured_supported.imaging_spec_version;
+      })) {
+    std::cerr << "FAIL: stopped-time configured camera concurrency truth was not reused on restart\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  const auto invalid_semantic = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json({"camA", "camB"}, true, {{"camA"}}, 3));
+  if (invalid_semantic.status != CoreRuntime::IngestCameraConcurrencyStatus::Invalid) {
+    std::cerr << "FAIL: invalid semantic camera concurrency ingestion did not return Invalid\n";
+    return 1;
+  }
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: third runtime start failed for camera concurrency lifecycle smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return s.gen == 2 && s.version == 0 &&
+               s.imaging_spec_version == configured_supported.imaging_spec_version;
+      })) {
+    std::cerr << "FAIL: failed stopped-time ingestion mutated prior configured camera concurrency truth\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  const auto configured_unsupported =
+      rt.ingest_camera_concurrency_json_for_server(unsupported_json);
+  if (configured_unsupported.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      configured_unsupported.imaging_spec_version <=
+          configured_supported.imaging_spec_version) {
+    std::cerr << "FAIL: stopped-time unsupported camera concurrency ingestion failed to replace configured truth\n";
+    return 1;
+  }
+  if (!rt.start()) {
+    std::cerr << "FAIL: fourth runtime start failed for camera concurrency lifecycle smoke\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return s.gen == 3 && s.version == 0 &&
+               s.imaging_spec_version == configured_unsupported.imaging_spec_version;
+      })) {
+    std::cerr << "FAIL: replaced stopped-time camera concurrency truth was not applied on later start\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
+static int test_runtime_camera_concurrency_invalid_input_smoke() {
+  CoreRuntime rt;
+  StateSnapshotBuffer buf;
+  rt.set_snapshot_publisher(&buf);
+
+  const auto configured = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json(
+          {"camA", "camB", "camC"},
+          true,
+          {{"camA", "camB", "camC"}},
+          3));
+  if (configured.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      configured.imaging_spec_version == 0) {
+    std::cerr << "FAIL: baseline camera concurrency ingestion failed before invalid-input checks\n";
+    return 1;
+  }
+
+  const auto no_generator = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json(
+          {"camA", "camB"},
+          true,
+          {{"camA", "camB"}},
+          2,
+          false));
+  if (no_generator.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      no_generator.imaging_spec_version <= configured.imaging_spec_version) {
+    std::cerr << "FAIL: generator-absent camera concurrency ingestion should be accepted transactionally\n";
+    return 1;
+  }
+
+  const auto non_adc_generator = rt.ingest_camera_concurrency_json_for_server(
+      "{\"schema_version\":1,\"generator\":\"third_party_tool\",\"cameras\":[{\"camera_id\":\"camA\"},{\"camera_id\":\"camB\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"camA\",\"camB\"]]}}");
+  if (non_adc_generator.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      non_adc_generator.imaging_spec_version <= no_generator.imaging_spec_version) {
+    std::cerr << "FAIL: non-ADC generator identity must not affect accepted camera concurrency truth\n";
+    return 1;
+  }
+
+  struct InvalidCase {
+    const char* label;
+    std::string json;
+    CoreRuntime::IngestCameraConcurrencyStatus expected_status;
+  };
+  const std::vector<InvalidCase> cases = {
+      {"missing_schema_version",
+       "{\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"non_integral_schema_version",
+       "{\"schema_version\":1.5,\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::ParseError},
+      {"unsupported_version",
+       "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"bad_generator_type",
+       "{\"schema_version\":1,\"generator\":17,\"cameras\":[{\"camera_id\":\"camA\"}],\"concurrent_camera_support\":{\"supported\":false}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"missing_concurrency_truth",
+       "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"camA\"}]}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"query_error",
+       make_adc_camera_concurrency_json({"camA", "camB"}, true, {{"camA", "camB"}}, 2, true, true),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"supported_without_combinations",
+       "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"camA\"},{\"camera_id\":\"camB\"}],\"concurrent_camera_support\":{\"supported\":true}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"contradictory_support_and_combinations",
+       make_adc_camera_concurrency_json({"camA", "camB"}, false, {{"camA", "camB"}}, 2),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"singleton_combination",
+       make_adc_camera_concurrency_json({"camA", "camB"}, true, {{"camA"}}, 2),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"duplicate_normalized_combinations",
+       make_adc_camera_concurrency_json(
+           {"camA", "camB", "camC"},
+           true,
+           {{"camA", "camB"}, {"camB", "camA"}},
+           2),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"duplicate_members",
+       make_adc_camera_concurrency_json(
+           {"camA", "camB", "camC"},
+           true,
+           {{"camA", "camA"}},
+           2),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"bad_camera_id",
+       "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"\"}],\"concurrent_camera_support\":{\"supported\":false}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"unknown_combo_id",
+       make_adc_camera_concurrency_json(
+           {"camA", "camB"},
+           true,
+           {{"camA", "camC"}},
+           2),
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+      {"invalid_maximum",
+       "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"camA\"},{\"camera_id\":\"camB\"}],\"concurrent_camera_support\":{\"supported\":true,\"max_concurrent_cameras\":1,\"camera_id_combinations\":[[\"camA\",\"camB\"]]}}",
+       CoreRuntime::IngestCameraConcurrencyStatus::Invalid},
+  };
+
+  for (const auto& c : cases) {
+    const auto result = rt.ingest_camera_concurrency_json_for_server(c.json);
+    if (result.status != c.expected_status) {
+      std::cerr << "FAIL: invalid camera concurrency case '" << c.label
+                << "' returned status=" << static_cast<int>(result.status)
+                << " expected=" << static_cast<int>(c.expected_status) << "\n";
+      return 1;
+    }
+    if (result.imaging_spec_version != 0) {
+      std::cerr << "FAIL: invalid camera concurrency case '" << c.label
+                << "' advanced configured imaging_spec_version\n";
+      return 1;
+    }
+  }
+
+  if (!rt.start()) {
+    std::cerr << "FAIL: runtime start failed after invalid camera concurrency checks\n";
+    rt.stop();
+    return 1;
+  }
+  if (!wait_for_snapshot_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return s.gen == 0 && s.version == 0 &&
+               s.imaging_spec_version == non_adc_generator.imaging_spec_version;
+      })) {
+    std::cerr << "FAIL: invalid camera concurrency ingests did not preserve prior configured truth transactionally\n";
     rt.stop();
     return 1;
   }
@@ -1885,6 +2268,12 @@ static int test_rig_preflight_materialization_smoke() {
 
 static int test_device_capture_request_materialization_smoke() {
   CoreRuntime rt;
+  const auto ingest_result = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json({"synthetic:0", "synthetic:1"}, false));
+  if (ingest_result.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok) {
+    std::cerr << "Expected stopped-time camera concurrency ingestion for device materialization smoke\n";
+    return 1;
+  }
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start (device materialization smoke)\n";
     return 1;
@@ -1911,26 +2300,16 @@ static int test_device_capture_request_materialization_smoke() {
     return 1;
   }
 
-  const uint32_t legacy_wrong_consumer_payload = 0;
-  const auto retain_imaging_spec = rt.retain_imaging_spec_replace(
-      12001,
-      SpecPatchView{&legacy_wrong_consumer_payload, sizeof(legacy_wrong_consumer_payload)});
-  if (retain_imaging_spec != CoreThread::PostResult::Enqueued) {
-    std::cerr << "Expected retained imaging spec replace admission for device materialization smoke\n";
-    rt.stop();
-    return 1;
-  }
-
   CaptureRequest retained_req{};
   if (!rt.materialize_capture_request(kDeviceInstanceId, retained_req)) {
-    std::cerr << "Legacy wrong imaging-spec consumer should not reject device capture request materialization\n";
+    std::cerr << "Camera concurrency truth should not reject single-device capture request materialization\n";
     rt.stop();
     return 1;
   }
   if (retained_req.still_image_bundle.members.size() != 1 ||
       retained_req.still_image_bundle.members[0].image_member_index != 0 ||
       retained_req.still_image_bundle.members[0].role != CaptureStillImageMemberRole::DEFAULT_METERED) {
-    std::cerr << "Legacy wrong imaging-spec consumer removal changed default still_image_bundle materialization\n";
+    std::cerr << "Camera concurrency truth changed default single-device still_image_bundle materialization\n";
     rt.stop();
     return 1;
   }
@@ -2381,87 +2760,103 @@ static int test_rig_cohort_admission_from_preflight_smoke() {
 }
 
 static int test_rig_cohort_admission_imaging_spec_constraint_smoke() {
-  constexpr uint64_t kSecondDeviceInstanceId = 2;
-  constexpr uint64_t kSecondRootId = 2;
-
   CoreRuntime rt;
   if (!rt.start()) {
     std::cerr << "CoreRuntime failed to start (rig cohort imaging-spec admit smoke)\n";
     return 1;
   }
-  StubProvider prov;
-  if (!setup_one_stream(rt, prov)) {
-    std::cerr << "Stub provider setup failed (rig cohort imaging-spec admit smoke)\n";
+  if (!wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "CoreRuntime did not reach LIVE before rig cohort imaging-spec admit smoke\n";
     rt.stop();
     return 1;
   }
-  rt.attach_provider(&prov);
-
-  std::vector<CameraEndpoint> eps;
-  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
-    std::cerr << "Failed to enumerate endpoints (rig cohort imaging-spec admit smoke)\n";
-    rt.stop();
-    return 1;
-  }
-
-  const auto retain_identity =
-      rt.retain_device_identity(kSecondDeviceInstanceId, eps[0].hardware_id);
-  if (retain_identity != CoreThread::PostResult::Enqueued) {
-    std::cerr << "Failed to retain second device identity for rig cohort imaging-spec admit smoke\n";
-    rt.stop();
-    return 1;
-  }
-  if (rt.try_open_device(eps[0].hardware_id, kSecondDeviceInstanceId, kSecondRootId) !=
-      TryOpenDeviceStatus::OK) {
-    std::cerr << "Failed to open second device for rig cohort imaging-spec admit smoke\n";
-    rt.stop();
-    return 1;
-  }
-  if (!converge_stub_provider_core(rt, prov)) {
-    std::cerr << "Second device open did not converge for rig cohort imaging-spec admit smoke\n";
+  const auto unavailable = rt.smoke_admit_rig_cohort_from_preflight(
+      8002, 9001, make_manual_rig_preflight(8002, {"camA", "camB"}));
+  if (unavailable.ok ||
+      unavailable.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecUnavailable) {
+    std::cerr << "Expected distinct ImagingSpecUnavailable when no grouped camera concurrency truth is configured\n";
     rt.stop();
     return 1;
   }
 
-  CaptureRequest first_request{};
-  CaptureRequest second_request{};
-  if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, first_request); }, 200, 1) ||
-      !wait_until([&]() { return rt.materialize_capture_request(kSecondDeviceInstanceId, second_request); }, 200, 1)) {
-    std::cerr << "Failed to materialize two-device capture requests for rig cohort imaging-spec admit smoke\n";
+  rt.stop();
+  const auto configured_supported = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json(
+          {"camA", "camB", "camC", "camD"},
+          true,
+          {{"camA", "camB", "camC"}},
+          3));
+  if (configured_supported.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok) {
+    std::cerr << "Expected supported camera concurrency ingestion for rig cohort imaging-spec admit smoke\n";
+    return 1;
+  }
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime restart failed (rig cohort imaging-spec admit smoke)\n";
+    return 1;
+  }
+  if (!wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "CoreRuntime restart did not reach LIVE before supported rig cohort imaging-spec admit smoke\n";
     rt.stop();
     return 1;
   }
 
-  CoreRuntime::RigPreflightResult preflight{};
-  preflight.ok = true;
-  preflight.failure = CoreRuntime::RigPreflightFailure::None;
-  preflight.rig_id = 8002;
-  preflight.participants.push_back({eps[0].hardware_id, kDeviceInstanceId, first_request});
-  preflight.participants.push_back({eps[0].hardware_id, kSecondDeviceInstanceId, second_request});
-
-  const auto baseline = rt.smoke_admit_rig_cohort_from_preflight(8002, 9003, preflight);
-  if (!baseline.ok ||
-      baseline.failure != CoreRuntime::RigCohortAdmissionFailure::None ||
-      baseline.participants.size() != 2) {
-    std::cerr << "Expected baseline two-device cohort admission before imaging-spec constraint\n";
+  const auto subset_allowed = rt.smoke_admit_rig_cohort_from_preflight(
+      8002,
+      9002,
+      make_manual_rig_preflight(8002, {"camA", "camB"}));
+  if (!subset_allowed.ok ||
+      subset_allowed.failure != CoreRuntime::RigCohortAdmissionFailure::None ||
+      subset_allowed.participants.size() != 2) {
+    std::cerr << "Expected two-camera grouped admission to be covered by reported three-camera combination\n";
     rt.stop();
     return 1;
   }
 
-  const uint8_t disallow_multi_device_rig_capture = 0;
-  const auto retain_imaging_spec = rt.retain_imaging_spec_replace(
-      12005,
-      SpecPatchView{&disallow_multi_device_rig_capture, sizeof(disallow_multi_device_rig_capture)});
-  if (retain_imaging_spec != CoreThread::PostResult::Enqueued) {
-    std::cerr << "Expected retained imaging spec replace admission for rig cohort imaging-spec admit smoke\n";
+  const auto larger_rejected = rt.smoke_admit_rig_cohort_from_preflight(
+      8002,
+      9003,
+      make_manual_rig_preflight(8002, {"camA", "camB", "camC", "camD"}));
+  if (larger_rejected.ok ||
+      larger_rejected.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected) {
+    std::cerr << "Expected larger grouped request without covering combination to be rejected\n";
     rt.stop();
     return 1;
   }
 
-  const auto constrained = rt.smoke_admit_rig_cohort_from_preflight(8002, 9004, preflight);
-  if (constrained.ok ||
-      constrained.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected) {
-    std::cerr << "Expected ImagingSpecRejected when retained imaging spec rejects grouped cohort admission\n";
+  const auto unrelated_rejected = rt.smoke_admit_rig_cohort_from_preflight(
+      8002,
+      9004,
+      make_manual_rig_preflight(8002, {"camA", "camD"}));
+  if (unrelated_rejected.ok ||
+      unrelated_rejected.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected) {
+    std::cerr << "Expected unrelated grouped request to be rejected by camera concurrency truth\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  const auto configured_unsupported = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json({"camA", "camB", "camC"}, false, {}, 3));
+  if (configured_unsupported.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok) {
+    std::cerr << "Expected unsupported camera concurrency ingestion for rig cohort imaging-spec admit smoke\n";
+    return 1;
+  }
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime second restart failed (rig cohort imaging-spec admit smoke)\n";
+    return 1;
+  }
+  if (!wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "CoreRuntime second restart did not reach LIVE before unsupported rig cohort imaging-spec admit smoke\n";
+    rt.stop();
+    return 1;
+  }
+  const auto unsupported_rejected = rt.smoke_admit_rig_cohort_from_preflight(
+      8002,
+      9005,
+      make_manual_rig_preflight(8002, {"camA", "camB"}));
+  if (unsupported_rejected.ok ||
+      unsupported_rejected.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected) {
+    std::cerr << "Expected explicit unsupported grouped concurrency truth to reject grouped cohort admission\n";
     rt.stop();
     return 1;
   }
@@ -2471,78 +2866,12 @@ static int test_rig_cohort_admission_imaging_spec_constraint_smoke() {
 }
 
 static int test_rig_orchestration_imaging_spec_admission_propagation_smoke() {
-  constexpr uint64_t kSecondDeviceInstanceId = 2;
-  constexpr uint64_t kSecondRootId = 2;
   constexpr uint64_t kRigId = 8402;
   constexpr uint64_t kFirstCaptureId = 9401;
   constexpr uint64_t kSecondCaptureId = 9402;
+  constexpr uint64_t kThirdCaptureId = 9403;
 
   CoreRuntime rt;
-  if (!rt.start()) {
-    std::cerr << "CoreRuntime failed to start (rig orchestration imaging-spec propagation smoke)\n";
-    return 1;
-  }
-  StubProvider prov;
-  if (!setup_one_stream(rt, prov)) {
-    std::cerr << "Stub provider setup failed (rig orchestration imaging-spec propagation smoke)\n";
-    rt.stop();
-    return 1;
-  }
-  rt.attach_provider(&prov);
-
-  std::vector<CameraEndpoint> eps;
-  if (!prov.enumerate_endpoints(eps).ok() || eps.empty()) {
-    std::cerr << "Failed to enumerate endpoints (rig orchestration imaging-spec propagation smoke)\n";
-    rt.stop();
-    return 1;
-  }
-  const std::string live_hw = eps[0].hardware_id;
-
-  const auto retain_identity =
-      rt.retain_device_identity(kSecondDeviceInstanceId, live_hw);
-  if (retain_identity != CoreThread::PostResult::Enqueued) {
-    std::cerr << "Failed to retain second device identity for rig orchestration imaging-spec propagation smoke\n";
-    rt.stop();
-    return 1;
-  }
-  if (rt.try_open_device(live_hw, kSecondDeviceInstanceId, kSecondRootId) !=
-      TryOpenDeviceStatus::OK) {
-    std::cerr << "Failed to open second device for rig orchestration imaging-spec propagation smoke\n";
-    rt.stop();
-    return 1;
-  }
-  if (!converge_stub_provider_core(rt, prov)) {
-    std::cerr << "Second device open did not converge for rig orchestration imaging-spec propagation smoke\n";
-    rt.stop();
-    return 1;
-  }
-
-  CaptureRequest first_request{};
-  CaptureRequest second_request{};
-  if (!wait_until([&]() { return rt.materialize_capture_request(kDeviceInstanceId, first_request); }, 200, 1) ||
-      !wait_until([&]() { return rt.materialize_capture_request(kSecondDeviceInstanceId, second_request); }, 200, 1)) {
-    std::cerr << "Failed to materialize two-device capture requests for rig orchestration imaging-spec propagation smoke\n";
-    rt.stop();
-    return 1;
-  }
-
-  CoreRuntime::RigPreflightResult preflight{};
-  preflight.ok = true;
-  preflight.failure = CoreRuntime::RigPreflightFailure::None;
-  preflight.rig_id = kRigId;
-  preflight.participants.push_back({live_hw, kDeviceInstanceId, first_request});
-  preflight.participants.push_back({live_hw, kSecondDeviceInstanceId, second_request});
-
-  const uint8_t disallow_multi_device_rig_capture = 0;
-  const auto retain_imaging_spec = rt.retain_imaging_spec_replace(
-      12006,
-      SpecPatchView{&disallow_multi_device_rig_capture, sizeof(disallow_multi_device_rig_capture)});
-  if (retain_imaging_spec != CoreThread::PostResult::Enqueued) {
-    std::cerr << "Expected retained imaging spec replace admission for rig orchestration imaging-spec propagation smoke\n";
-    rt.stop();
-    return 1;
-  }
-
   const auto has_capture_lifecycle_report = [&](uint64_t capture_id) {
     const auto reports = rt.recent_capture_lifecycle_timing_reports();
     return std::any_of(reports.begin(), reports.end(), [capture_id](const CoreCaptureLifecycleTimingReport& report) {
@@ -2550,22 +2879,69 @@ static int test_rig_orchestration_imaging_spec_admission_propagation_smoke() {
     });
   };
 
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime failed to start (rig orchestration imaging-spec propagation smoke)\n";
+    return 1;
+  }
+  if (!wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "CoreRuntime did not reach LIVE before rig orchestration imaging-spec propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+  const CoreRuntime::RigPreflightResult unavailable_preflight =
+      make_manual_rig_preflight(kRigId, {"camA", "camB"});
   const auto first_fail =
-      rt.smoke_orchestrate_rig_capture_from_preflight(kRigId, kFirstCaptureId, preflight);
+      rt.smoke_orchestrate_rig_capture_from_preflight(
+          kRigId,
+          kFirstCaptureId,
+          unavailable_preflight);
   if (first_fail.ok ||
       first_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
-      first_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected ||
+      first_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecUnavailable ||
       first_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
       first_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None ||
       first_fail.submitted_count != 0 ||
       first_fail.provider_error_code != 0) {
-    std::cerr << "Expected rig orchestration helper to surface ImagingSpecRejected as admission failure\n";
+    std::cerr << "Expected rig orchestration helper to surface unavailable grouped concurrency truth distinctly\n";
+    rt.stop();
+    return 1;
+  }
+  if (has_capture_lifecycle_report(kFirstCaptureId) ||
+      !rt.get_capture_result_set(kFirstCaptureId).empty()) {
+    std::cerr << "Unavailable grouped concurrency truth must not reach provider submission\n";
     rt.stop();
     return 1;
   }
 
+  rt.stop();
+  const auto configured_supported = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json(
+          {"camA", "camB", "camC", "camD"},
+          true,
+          {{"camA", "camB", "camC"}},
+          3));
+  if (configured_supported.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok) {
+    std::cerr << "Expected supported camera concurrency ingestion for rig orchestration propagation smoke\n";
+    return 1;
+  }
+  if (!rt.start()) {
+    std::cerr << "CoreRuntime restart failed (rig orchestration imaging-spec propagation smoke)\n";
+    return 1;
+  }
+  if (!wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "CoreRuntime restart did not reach LIVE before rejected rig orchestration propagation smoke\n";
+    rt.stop();
+    return 1;
+  }
+
+  const CoreRuntime::RigPreflightResult rejected_preflight =
+      make_manual_rig_preflight(kRigId, {"camA", "camD"});
+
   const auto second_fail =
-      rt.smoke_orchestrate_rig_capture_from_preflight(kRigId, kSecondCaptureId, preflight);
+      rt.smoke_orchestrate_rig_capture_from_preflight(
+          kRigId,
+          kSecondCaptureId,
+          rejected_preflight);
   if (second_fail.ok ||
       second_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
       second_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected ||
@@ -2577,17 +2953,27 @@ static int test_rig_orchestration_imaging_spec_admission_propagation_smoke() {
     rt.stop();
     return 1;
   }
-
-  if (!converge_stub_provider_core(rt, prov)) {
-    std::cerr << "Failed to drain provider/core work after rig orchestration imaging-spec propagation smoke\n";
+  const auto third_fail =
+      rt.smoke_orchestrate_rig_capture_from_preflight(
+          kRigId,
+          kThirdCaptureId,
+          rejected_preflight);
+  if (third_fail.ok ||
+      third_fail.failure != CoreRuntime::RigOrchestrationFailure::AdmissionFailed ||
+      third_fail.admission_failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected ||
+      third_fail.preflight_failure != CoreRuntime::RigPreflightFailure::None ||
+      third_fail.submission_failure != CoreRuntime::RigSubmissionFailure::None ||
+      third_fail.submitted_count != 0 ||
+      third_fail.provider_error_code != 0) {
+    std::cerr << "Expected repeated grouped concurrency rejection to stay deterministic\n";
     rt.stop();
     return 1;
   }
-  if (has_capture_lifecycle_report(kFirstCaptureId) ||
-      has_capture_lifecycle_report(kSecondCaptureId) ||
-      !rt.get_capture_result_set(kFirstCaptureId).empty() ||
-      !rt.get_capture_result_set(kSecondCaptureId).empty()) {
-    std::cerr << "Admission rejection must not reach provider capture submission in rig orchestration imaging-spec propagation smoke\n";
+  if (has_capture_lifecycle_report(kSecondCaptureId) ||
+      has_capture_lifecycle_report(kThirdCaptureId) ||
+      !rt.get_capture_result_set(kSecondCaptureId).empty() ||
+      !rt.get_capture_result_set(kThirdCaptureId).empty()) {
+    std::cerr << "Rejected grouped concurrency truth must not reach provider capture submission\n";
     rt.stop();
     return 1;
   }
@@ -3128,6 +3514,22 @@ int main(int argc, char** argv) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke",
                                "test_runtime_imaging_spec_retention_publish_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_runtime_camera_concurrency_ingest_lifecycle_smoke",
+                             [] { return test_runtime_camera_concurrency_ingest_lifecycle_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_runtime_camera_concurrency_ingest_lifecycle_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_runtime_camera_concurrency_invalid_input_smoke",
+                             [] { return test_runtime_camera_concurrency_invalid_input_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_runtime_camera_concurrency_invalid_input_smoke",
                                r);
       return r;
     }

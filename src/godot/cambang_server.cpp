@@ -3557,6 +3557,34 @@ godot::Error CamBANGServer::load_external_scenario(const godot::String& json_tex
   return map_provider_result_to_godot_error(pr);
 }
 
+godot::Error CamBANGServer::ingest_camera_concurrency(
+    const godot::String& json_text) {
+  const std::string text_utf8 = json_text.utf8().get_data();
+  const CoreRuntime::IngestCameraConcurrencyResult result =
+      runtime_.ingest_camera_concurrency_json_for_server(text_utf8);
+  switch (result.status) {
+    case CoreRuntime::IngestCameraConcurrencyStatus::Ok:
+      return godot::OK;
+    case CoreRuntime::IngestCameraConcurrencyStatus::Busy:
+      ERR_PRINT(
+          "CamBANGServer: ingest_camera_concurrency rejected because the active runtime generation is immutable.");
+      return godot::ERR_BUSY;
+    case CoreRuntime::IngestCameraConcurrencyStatus::ParseError:
+      ERR_PRINT(godot::vformat(
+          "CamBANGServer: ingest_camera_concurrency parse failed: %s.",
+          result.error_message.c_str()));
+      return godot::ERR_PARSE_ERROR;
+    case CoreRuntime::IngestCameraConcurrencyStatus::Invalid:
+      ERR_PRINT(godot::vformat(
+          "CamBANGServer: ingest_camera_concurrency validation failed: %s.",
+          result.error_message.c_str()));
+      return godot::ERR_INVALID_DATA;
+  }
+
+  ERR_PRINT("CamBANGServer: ingest_camera_concurrency returned unknown status.");
+  return godot::ERR_BUG;
+}
+
 godot::Error CamBANGServer::_start_scenario_now_() {
   if (!is_synthetic_timeline_session_active_()) {
     ERR_PRINT("CamBANGServer: start_scenario requires synthetic timeline mode.");
@@ -3885,6 +3913,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_provider_support"), &CamBANGServer::get_provider_support);
   godot::ClassDB::bind_method(godot::D_METHOD("select_builtin_scenario", "scenario_name"), &CamBANGServer::select_builtin_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("load_external_scenario", "json_text"), &CamBANGServer::load_external_scenario);
+  godot::ClassDB::bind_method(godot::D_METHOD("ingest_camera_concurrency", "json_text"), &CamBANGServer::ingest_camera_concurrency);
   godot::ClassDB::bind_method(godot::D_METHOD("start_scenario"), &CamBANGServer::start_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("stop_scenario"), &CamBANGServer::stop_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);

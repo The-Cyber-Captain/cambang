@@ -1,7 +1,5 @@
 #include "core/core_spec_state.h"
 
-#include <cstring>
-
 namespace cambang {
 
 void CoreSpecState::reset_for_generation(uint64_t imaging_spec_version) {
@@ -31,6 +29,7 @@ void CoreSpecState::set_imaging_spec_version(uint64_t imaging_spec_version) noex
   imaging_spec_version_ = imaging_spec_version;
   imaging_spec_payload_.clear();
   imaging_spec_retention_kind_ = ImagingSpecRetentionKind::None;
+  imaging_spec_interpretation_ = {};
 }
 
 bool CoreSpecState::retain_imaging_spec_replace(
@@ -67,19 +66,7 @@ std::vector<uint8_t> CoreSpecState::imaging_spec_payload_copy() const {
 
 CoreSpecState::ImagingSpecInterpretation
 CoreSpecState::interpret_imaging_spec() const noexcept {
-  ImagingSpecInterpretation out{};
-  if (imaging_spec_payload_.size() != sizeof(uint8_t)) {
-    return out;
-  }
-
-  uint8_t allows_multi_device_rig_capture = 0;
-  std::memcpy(
-      &allows_multi_device_rig_capture,
-      imaging_spec_payload_.data(),
-      sizeof(allows_multi_device_rig_capture));
-  out.allows_multi_device_rig_capture =
-      (allows_multi_device_rig_capture != 0);
-  return out;
+  return imaging_spec_interpretation_;
 }
 
 bool CoreSpecState::retain_imaging_spec_payload_(
@@ -90,15 +77,23 @@ bool CoreSpecState::retain_imaging_spec_payload_(
     return false;
   }
 
-  imaging_spec_version_ = imaging_spec_version;
-  imaging_spec_retention_kind_ = retention_kind;
-  imaging_spec_payload_.clear();
-  if (effective_spec.size_bytes == 0) {
-    return true;
+  ImagingSpecInterpretation next_interpretation{};
+  std::vector<uint8_t> next_payload{};
+  if (effective_spec.size_bytes != 0) {
+    const camera_concurrency::LoadResult load =
+        camera_concurrency::load_truth_from_adc_json_payload(effective_spec);
+    if (!load.ok) {
+      return false;
+    }
+    next_interpretation.camera_concurrency = load.truth;
+    const auto* bytes = static_cast<const uint8_t*>(effective_spec.data);
+    next_payload.assign(bytes, bytes + effective_spec.size_bytes);
   }
 
-  const auto* bytes = static_cast<const uint8_t*>(effective_spec.data);
-  imaging_spec_payload_.assign(bytes, bytes + effective_spec.size_bytes);
+  imaging_spec_version_ = imaging_spec_version;
+  imaging_spec_retention_kind_ = retention_kind;
+  imaging_spec_payload_ = std::move(next_payload);
+  imaging_spec_interpretation_ = std::move(next_interpretation);
   return true;
 }
 

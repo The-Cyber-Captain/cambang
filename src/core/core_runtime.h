@@ -6,6 +6,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -351,8 +352,9 @@ enum class TryCloseDeviceStatus : uint8_t {
     InvalidCaptureId = 1,
     PreflightFailed = 2,
     EmptyParticipants = 3,
-    ImagingSpecRejected = 4,
-    DuplicateCaptureId = 5,
+    ImagingSpecUnavailable = 4,
+    ImagingSpecRejected = 5,
+    DuplicateCaptureId = 6,
   };
 
   struct RigAdmittedParticipantRequest {
@@ -436,6 +438,22 @@ enum class TryCloseDeviceStatus : uint8_t {
 #endif
 
   bool retain_rig_member_hardware_ids(uint64_t rig_id, const std::vector<std::string>& member_hardware_ids);
+
+  enum class IngestCameraConcurrencyStatus : uint8_t {
+    Ok = 0,
+    Busy = 1,
+    ParseError = 2,
+    Invalid = 3,
+  };
+
+  struct IngestCameraConcurrencyResult {
+    IngestCameraConcurrencyStatus status = IngestCameraConcurrencyStatus::Ok;
+    std::string error_message;
+    uint64_t imaging_spec_version = 0;
+  };
+
+  IngestCameraConcurrencyResult ingest_camera_concurrency_json_for_server(
+      const std::string& json_text);
 
   // Server-internal adapter: caller supplies capture_id (no allocation here).
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_for_server(
@@ -643,8 +661,8 @@ private:
       uint64_t rig_id,
       uint64_t capture_id,
       const RigPreflightResult& preflight);
-  bool imaging_spec_disallows_grouped_multi_device_rig_capture_(
-      size_t participant_count) const noexcept;
+  RigCohortAdmissionFailure grouped_rig_imaging_spec_admission_failure_(
+      const RigPreflightResult& preflight) const noexcept;
   RigSubmissionResult submit_admitted_rig_bundle_(const RigAdmittedRequestBundle& bundle);
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
@@ -1066,6 +1084,10 @@ private:
   std::atomic<uint64_t> display_demand_release_async_dropped_full_{0};
   std::atomic<uint64_t> display_demand_release_async_dropped_closed_{0};
   std::atomic<uint64_t> display_demand_release_async_dropped_allocfail_{0};
+  mutable std::mutex configured_imaging_spec_mutex_;
+  uint64_t configured_imaging_spec_version_ = 0;
+  std::vector<uint8_t> configured_imaging_spec_payload_{};
+  uint64_t next_configured_imaging_spec_version_ = 1;
 
   static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
 };

@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/camera_concurrency_adc.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
@@ -13,7 +14,7 @@ namespace cambang {
 class CoreSpecState final {
 public:
   struct ImagingSpecInterpretation {
-    std::optional<bool> allows_multi_device_rig_capture{};
+    camera_concurrency::Truth camera_concurrency{};
   };
 
   enum class ImagingSpecRetentionKind : uint8_t {
@@ -48,6 +49,7 @@ private:
   uint64_t imaging_spec_version_ = 0;
   std::vector<uint8_t> imaging_spec_payload_{};
   ImagingSpecRetentionKind imaging_spec_retention_kind_ = ImagingSpecRetentionKind::None;
+  ImagingSpecInterpretation imaging_spec_interpretation_{};
 };
 
 } // namespace cambang
