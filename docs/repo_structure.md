@@ -61,8 +61,11 @@ cambang/
 │   └── screenshots/
 │       └── .gdignore
 ├── external_scenarios/
+├── ide/
 ├── schema/
 │   └── state_snapshot/v1/state_snapshot_schema.json
+├── scripts/
+├── site_scons/
 ├── src/
 │   ├── core/
 │   ├── dev/
@@ -115,6 +118,7 @@ Current layout includes:
 
 ```text
 src/core/
+├── camera_concurrency_adc.h/.cpp
 ├── core_runtime.h/.cpp
 ├── core_thread.h/.cpp
 ├── core_dispatcher.h/.cpp
@@ -144,6 +148,7 @@ Core-bound façade naming surface, and concrete providers.
 src/imaging/
 ├── api/
 │   ├── icamera_provider.h
+│   ├── provider_access_status.h
 │   ├── provider_contract_datatypes.h
 │   ├── provider_error_string.h/.cpp
 │   ├── provider_strand.h/.cpp
@@ -152,14 +157,9 @@ src/imaging/
 │   ├── banner_info.h/.cpp
 │   ├── mode.h
 │   └── provider_broker.h/.cpp
-├── platform/
-│   └── windows/
-│       ├── provider.h/.cpp
-│       └── mf/
-│           ├── com_ptr.h
-│           └── types.h
 ├── synthetic/
 │   ├── provider.h/.cpp
+│   ├── builtin_scenario_library.h/.cpp
 │   ├── scenario*.h/.cpp
 │   ├── virtual_clock.h
 │   └── gpu_*
@@ -170,9 +170,10 @@ src/imaging/
 Rules:
 
 - `api/` defines semantic contract and provider-agnostic datatypes
-- `platform/` contains platform-backed providers; platform-native headers and
-  API adaptation must not leak into Core, Godot public objects, or shared
-  provider API
+- `platform/` is the reserved root for future platform-backed providers; no
+  platform-backed provider source is present in the current tree
+- when introduced, platform-native headers and API adaptation must not leak into
+  Core, Godot public objects, or shared provider API
 - a platform provider may use provider-local helper files and subdirectories
   under `src/imaging/platform/<provider>/`
 - `stub/` is a deterministic dev/test provider used by host-native maintainer
