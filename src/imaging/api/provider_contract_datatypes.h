@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "core/capture_admission_context.h"
+
 // Pattern preset vocabulary is provider-agnostic and lives in the Pattern Module.
 // It is safe to depend on here (no platform headers).
 #include "pixels/pattern/pattern_registry.h"
@@ -304,6 +306,8 @@ struct CaptureRequest {
   uint64_t device_instance_id = 0;   // core-issued
 
   uint64_t rig_id = 0;               // 0 if not a rig capture
+  bool has_admission_context = false;
+  CaptureAdmissionContext admission_context{};
 
   uint32_t width = 0;
   uint32_t height = 0;

@@ -7,6 +7,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -412,6 +413,16 @@ enum class TryCloseDeviceStatus : uint8_t {
   };
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
+  enum class ReplaceCaptureGeolocationStatus : uint8_t { Ok, Busy, Invalid };
+  ReplaceCaptureGeolocationStatus smoke_replace_capture_geolocation(
+      double latitude_degrees, double longitude_degrees,
+      std::optional<double> altitude_meters);
+  ReplaceCaptureGeolocationStatus smoke_clear_capture_geolocation();
+  bool smoke_set_capture_datetime_utc_nanoseconds(int64_t unix_epoch_nanoseconds);
+  uint64_t smoke_capture_admission_clock_sample_count() const noexcept;
+  void smoke_reset_capture_admission_clock_sample_count() noexcept;
+  std::optional<CaptureAdmissionContext> smoke_capture_admission_context(
+      uint64_t capture_id, uint64_t device_instance_id) const;
   RigPreflightResult preflight_rig_participants_materialize(uint64_t rig_id) const;
   bool smoke_set_rig_member_hardware_ids(uint64_t rig_id, std::vector<std::string> member_hardware_ids);
   RigAdmittedRequestBundle smoke_admit_rig_cohort_from_preflight(
@@ -691,6 +702,7 @@ private:
   RigTriggerOrchestrationResult orchestrate_rig_capture_with_capture_id_(
       uint64_t rig_id,
       uint64_t capture_id);
+  CaptureAdmissionContext make_capture_admission_context_() const;
   bool build_effective_capture_request_without_retained_plan_(
       uint64_t device_instance_id,
       CaptureRequest& out) const;
@@ -1117,6 +1129,11 @@ private:
   uint64_t active_camera_description_version_ = 0;
   uint64_t next_configured_camera_description_version_ = 1;
   uint64_t next_configured_imaging_spec_version_ = 1;
+  mutable std::mutex configured_capture_geolocation_mutex_;
+  std::optional<CaptureGeolocation> configured_capture_geolocation_{};
+  std::optional<CaptureGeolocation> active_capture_geolocation_{};
+  std::atomic<int64_t> capture_admission_clock_override_ns_{INT64_MIN};
+  mutable std::atomic<uint64_t> capture_admission_clock_sample_count_{0};
 
   static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;
 };

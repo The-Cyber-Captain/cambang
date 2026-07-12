@@ -24,6 +24,18 @@ void CoreCaptureAssemblyRegistry::mark_default_image_retained(uint64_t capture_i
   assembly.has_default_image_retained = true;
 }
 
+void CoreCaptureAssemblyRegistry::record_admission_context(
+    uint64_t capture_id, uint64_t device_instance_id, CaptureAdmissionContext context) {
+  if (capture_id == 0 || device_instance_id == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  DeviceCaptureAssembly& assembly =
+      get_or_create_assembly(assemblies_by_capture_id_, capture_id, device_instance_id);
+  assembly.admission_context = std::move(context);
+  assembly.has_admission_context = true;
+}
+
 void CoreCaptureAssemblyRegistry::mark_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {
   if (capture_id == 0 || device_instance_id == 0) {
     return;

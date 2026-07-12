@@ -135,6 +135,13 @@ concurrency-only documents are not accepted by this API.
 Capture geolocation remains separately gatekept and is not implemented as a
 Godot API in this checkout.
 
+Core independently owns an internal stopped-time capture-geolocation
+configuration. At successful capture admission it snapshots that optional
+finite-valued geolocation with one absolute UTC Capture Date-Time and carries
+the same immutable context through every member of a device bracket or rig
+cohort. This context is descriptive only; it does not affect admission,
+synchronization, ordering, provider execution, or snapshot publication.
+
 CamBANG must not add:
 
 - filesystem/path convenience ingestion methods;

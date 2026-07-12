@@ -24,6 +24,18 @@ bool CoreCaptureCohortRegistry::insert(CohortRecord record) {
   return inserted;
 }
 
+bool CoreCaptureCohortRegistry::set_admission_context(
+    uint64_t capture_id, CaptureAdmissionContext context) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = cohorts_.find(capture_id);
+  if (it == cohorts_.end() || it->second.has_admission_context) {
+    return false;
+  }
+  it->second.admission_context = std::move(context);
+  it->second.has_admission_context = true;
+  return true;
+}
+
 bool CoreCaptureCohortRegistry::mark_failed(uint64_t capture_id,
                                             uint64_t failed_device_instance_id,
                                             uint32_t failure_error_code,

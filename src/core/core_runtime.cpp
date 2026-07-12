@@ -4448,6 +4448,10 @@ void CoreRuntime::on_core_start() {
   result_store_.clear();
   global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
+  {
+    const std::lock_guard<std::mutex> lock(configured_capture_geolocation_mutex_);
+    active_capture_geolocation_ = configured_capture_geolocation_;
+  }
   uint64_t configured_camera_description_version = 0;
   uint64_t configured_imaging_spec_version = 0;
   std::vector<uint8_t> configured_imaging_spec_payload{};
@@ -6037,10 +6041,14 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
   if (!prov) {
     return TryTriggerDeviceCaptureStatus::Busy;
   }
+  req.admission_context = make_capture_admission_context_();
+  req.has_admission_context = true;
   const ProviderResult pr = prov->trigger_capture(req);
   if (!pr.ok()) {
     return TryTriggerDeviceCaptureStatus::ProviderRejected;
   }
+  capture_assembly_registry_.record_admission_context(
+      capture_id, device_instance_id, req.admission_context);
 
   begin_capture_stream_preemption_(capture_id, device_instance_id);
   (void)suppress_queued_repeating_stream_frames_for_capture_();
@@ -6230,26 +6238,42 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   cohort.capture_id = capture_id;
   cohort.rig_id = rig_id;
   cohort.expected_participants.reserve(preflight.participants.size());
-  std::vector<RigAdmittedParticipantRequest> participants;
-  participants.reserve(preflight.participants.size());
   for (const auto& p : preflight.participants) {
     if (p.device_instance_id == 0) {
       return make_rig_admitted_failure(
           rig_id, capture_id, RigCohortAdmissionFailure::PreflightFailed);
     }
     cohort.expected_participants.push_back({p.device_instance_id, p.hardware_id});
+  }
+
+  if (!capture_cohort_registry_.insert(std::move(cohort))) {
+    return make_rig_admitted_failure(
+        rig_id, capture_id, RigCohortAdmissionFailure::DuplicateCaptureId);
+  }
+
+  const CaptureAdmissionContext context = make_capture_admission_context_();
+  const bool context_set = capture_cohort_registry_.set_admission_context(capture_id, context);
+  assert(context_set);
+  (void)context_set;
+
+  std::vector<RigAdmittedParticipantRequest> participants;
+  participants.reserve(preflight.participants.size());
+  for (const auto& p : preflight.participants) {
     RigAdmittedParticipantRequest ap{};
     ap.hardware_id = p.hardware_id;
     ap.request = p.request;
     ap.request.capture_id = capture_id;
     ap.request.rig_id = rig_id;
     ap.request.device_instance_id = p.device_instance_id;
+    ap.request.admission_context = context;
+    ap.request.has_admission_context = true;
     participants.push_back(std::move(ap));
   }
 
-  if (!capture_cohort_registry_.insert(std::move(cohort))) {
-    return make_rig_admitted_failure(
-        rig_id, capture_id, RigCohortAdmissionFailure::DuplicateCaptureId);
+  for (const auto& participant : participants) {
+    capture_assembly_registry_.record_admission_context(
+        capture_id, participant.request.device_instance_id,
+        participant.request.admission_context);
   }
 
   return make_rig_admitted_success(

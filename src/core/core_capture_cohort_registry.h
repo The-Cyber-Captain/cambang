@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "core/capture_admission_context.h"
+
 namespace cambang {
 
 // Internal maintainer/Core terminology:
@@ -35,6 +37,8 @@ public:
   struct CohortRecord {
     uint64_t capture_id = 0;
     uint64_t rig_id = 0;
+    bool has_admission_context = false;
+    CaptureAdmissionContext admission_context{};
     std::vector<Participant> expected_participants;
     CohortState state = CohortState::OPEN;
     CohortFailurePhase failure_phase = CohortFailurePhase::NONE;
@@ -46,6 +50,7 @@ public:
   void clear() noexcept;
 
   bool insert(CohortRecord record);
+  bool set_admission_context(uint64_t capture_id, CaptureAdmissionContext context) noexcept;
   bool mark_failed(uint64_t capture_id,
                    uint64_t failed_device_instance_id,
                    uint32_t failure_error_code,

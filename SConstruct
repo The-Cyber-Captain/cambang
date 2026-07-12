@@ -510,6 +510,8 @@ else:
     else:
         env.Append(CXXFLAGS=["-O2"])
     env.Append(CCFLAGS=["-pthread"])
+    if windows_uses_mingw:
+        env.Append(CCFLAGS=["-Wa,-mbig-obj"])
     env.Append(LINKFLAGS=["-pthread"])
 
 print("CamBANG SCons configuration:")

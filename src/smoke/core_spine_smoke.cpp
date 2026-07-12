@@ -666,7 +666,8 @@ static int test_runtime_imaging_spec_retention_publish_smoke() {
   StateSnapshotBuffer buf;
   rt.set_snapshot_publisher(&buf);
 
-  if (!rt.start()) {
+  if (!rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
     std::cerr << "FAIL: runtime start failed for imaging spec retention smoke\n";
     rt.stop();
     return 1;
@@ -2758,6 +2759,101 @@ static int test_device_capture_request_materialization_smoke() {
   return 0;
 }
 
+static int test_capture_admission_context_smoke() {
+  CoreRuntime rt;
+  if (rt.smoke_replace_capture_geolocation(51.5, -0.12, 35.0) !=
+          CoreRuntime::ReplaceCaptureGeolocationStatus::Ok ||
+      rt.ingest_camera_concurrency_json_for_server(
+          make_adc_camera_concurrency_json({"a", "b"}, true, {{"a", "b"}}, 2)).status !=
+          CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      !rt.smoke_set_capture_datetime_utc_nanoseconds(100) || !rt.start()) {
+    std::cerr << "FAIL: capture-admission context stopped-time setup failed\n";
+    return 1;
+  }
+  StubProvider prov;
+  if (!setup_one_stream(rt, prov) ||
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceInstanceId, 99001) !=
+          TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "FAIL: standalone capture admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const auto first = rt.smoke_capture_admission_context(99001, kDeviceInstanceId);
+  if (!first || first->capture_date_time.unix_epoch_nanoseconds() != 100 ||
+      !first->geolocation || first->geolocation->latitude_degrees() != 51.5 ||
+      first->geolocation->longitude_degrees() != -0.12 ||
+      !first->geolocation->altitude_meters() || *first->geolocation->altitude_meters() != 35.0 ||
+      rt.smoke_replace_capture_geolocation(1.0, 2.0, std::nullopt) !=
+          CoreRuntime::ReplaceCaptureGeolocationStatus::Busy) {
+    std::cerr << "FAIL: standalone admission context was not immutable or stopped-only\n";
+    rt.stop();
+    return 1;
+  }
+  rt.smoke_set_capture_datetime_utc_nanoseconds(200);
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceInstanceId, 99002) !=
+          TryTriggerDeviceCaptureStatus::OK) {
+    std::cerr << "FAIL: later standalone capture admission failed\n";
+    rt.stop();
+    return 1;
+  }
+  const auto later = rt.smoke_capture_admission_context(99002, kDeviceInstanceId);
+  if (!later || later->capture_date_time.unix_epoch_nanoseconds() != 200 ||
+      first->capture_date_time.unix_epoch_nanoseconds() != 100) {
+    std::cerr << "FAIL: capture date-time was not independently sampled per admission\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  if (!rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "FAIL: capture geolocation did not persist across restart\n";
+    return 1;
+  }
+  const auto rejected_preflight = rt.smoke_admit_rig_cohort_from_preflight(
+      991, 99000, CoreRuntime::RigPreflightResult{});
+  if (rejected_preflight.ok || rt.smoke_capture_admission_context(99000, 1)) {
+    std::cerr << "FAIL: rejected rig preflight created capture context\n";
+    rt.stop();
+    return 1;
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(
+      991, 99003, make_manual_rig_preflight(991, {"a", "b"}));
+  const auto first_rig = rt.smoke_capture_admission_context(99003, 1);
+  const auto second_rig = rt.smoke_capture_admission_context(99003, 2);
+  if (!admitted.ok || !first_rig || !second_rig ||
+      first_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
+      second_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
+      !first_rig->geolocation || !second_rig->geolocation ||
+      first_rig->geolocation->latitude_degrees() != second_rig->geolocation->latitude_degrees()) {
+    std::cerr << "FAIL: grouped admission did not share persisted geolocation context"
+              << " admitted=" << admitted.ok
+              << " failure=" << static_cast<int>(admitted.failure)
+              << " first=" << static_cast<bool>(first_rig)
+              << " second=" << static_cast<bool>(second_rig) << '\n';
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  rt.smoke_set_capture_datetime_utc_nanoseconds(300);
+  if (rt.smoke_clear_capture_geolocation() != CoreRuntime::ReplaceCaptureGeolocationStatus::Ok ||
+      !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "FAIL: capture geolocation clear failed while stopped\n";
+    return 1;
+  }
+  const auto cleared = rt.smoke_admit_rig_cohort_from_preflight(
+      991, 99004, make_manual_rig_preflight(991, {"a", "b"}));
+  const auto cleared_context = rt.smoke_capture_admission_context(99004, 1);
+  if (!cleared.ok || !cleared_context || cleared_context->geolocation ||
+      cleared_context->capture_date_time.unix_epoch_nanoseconds() != 300) {
+    std::cerr << "FAIL: cleared capture geolocation did not remain absent at admission\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  return 0;
+}
+
 static int test_open_device_snapshot_retains_default_capture_profile_smoke() {
   CoreRuntime rt;
   StateSnapshotBuffer buf;
@@ -3979,6 +4075,12 @@ int main(int argc, char** argv) {
       reporter.print_fail_line("core_spine_smoke",
                                "test_runtime_camera_concurrency_invalid_input_smoke",
                                r);
+      return r;
+    }
+    if (int r = reporter.run("test_capture_admission_context_smoke",
+                             [] { return test_capture_admission_context_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke", "test_capture_admission_context_smoke", r);
       return r;
     }
     if (int r = reporter.run("test_provider_callback_ingress_null_core_thread_drop_accounting",
