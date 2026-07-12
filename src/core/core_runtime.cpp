@@ -3,6 +3,7 @@
 #include "core/core_runtime.h"
 
 #include "core/camera_concurrency_adc.h"
+#include "core/adc_camera_description.h"
 
 #include <cassert>
 #include <chrono>
@@ -3794,6 +3795,62 @@ CoreRuntime::imaging_spec_retained_state_for_smoke() const {
   }
   return completed.get();
 }
+
+std::optional<ExternalCameraDescriptionEntry>
+CoreRuntime::active_external_camera_description_for_smoke(const std::string& camera_id) const {
+  if (camera_id.empty()) {
+    return std::nullopt;
+  }
+  if (core_thread_.is_core_thread()) {
+    const auto* entry = active_external_camera_description_.find_exact(camera_id);
+    return entry ? std::optional<ExternalCameraDescriptionEntry>(*entry) : std::nullopt;
+  }
+  auto completion =
+      std::make_shared<std::promise<std::optional<ExternalCameraDescriptionEntry>>>();
+  std::future<std::optional<ExternalCameraDescriptionEntry>> completed = completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, camera_id, completion]() {
+    const auto* entry = active_external_camera_description_.find_exact(camera_id);
+    completion->set_value(entry ? std::optional<ExternalCameraDescriptionEntry>(*entry)
+                                : std::nullopt);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return std::nullopt;
+  }
+  return completed.get();
+}
+
+size_t CoreRuntime::active_external_camera_description_count_for_smoke() const {
+  if (core_thread_.is_core_thread()) {
+    return active_external_camera_description_.entries().size();
+  }
+  auto completion = std::make_shared<std::promise<size_t>>();
+  std::future<size_t> completed = completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, completion]() {
+    completion->set_value(active_external_camera_description_.entries().size());
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return 0;
+  }
+  return completed.get();
+}
+
+uint64_t CoreRuntime::active_external_camera_description_version_for_smoke() const {
+  if (core_thread_.is_core_thread()) {
+    return active_camera_description_version_;
+  }
+  auto completion = std::make_shared<std::promise<uint64_t>>();
+  std::future<uint64_t> completed = completion->get_future();
+  CoreRuntime* self = const_cast<CoreRuntime*>(this);
+  const CoreThread::PostResult pr = self->try_post([this, completion]() {
+    completion->set_value(active_camera_description_version_);
+  });
+  if (pr != CoreThread::PostResult::Enqueued) {
+    return 0;
+  }
+  return completed.get();
+}
 #endif
 
 std::vector<CoreBackingPlanEvaluationReport>
@@ -4391,15 +4448,28 @@ void CoreRuntime::on_core_start() {
   result_store_.clear();
   global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
+  uint64_t configured_camera_description_version = 0;
   uint64_t configured_imaging_spec_version = 0;
   std::vector<uint8_t> configured_imaging_spec_payload{};
+  std::optional<ExternalCameraDescriptionState> configured_external_camera_description{};
   {
     const std::lock_guard<std::mutex> lock(configured_imaging_spec_mutex_);
+    configured_camera_description_version = configured_camera_description_version_;
     configured_imaging_spec_version = configured_imaging_spec_version_;
     configured_imaging_spec_payload = configured_imaging_spec_payload_;
+    configured_external_camera_description = configured_external_camera_description_;
   }
   spec_state_.reset_for_generation(configured_imaging_spec_version);
-  if (!configured_imaging_spec_payload.empty()) {
+  active_external_camera_description_ = configured_external_camera_description.value_or(
+      ExternalCameraDescriptionState{});
+  active_camera_description_version_ = configured_external_camera_description.has_value()
+      ? configured_camera_description_version
+      : 0;
+  if (configured_external_camera_description.has_value()) {
+    spec_state_.set_imaging_spec_concurrency(
+        configured_imaging_spec_version,
+        configured_external_camera_description->concurrency().value_or(camera_concurrency::Truth{}));
+  } else if (!configured_imaging_spec_payload.empty()) {
     const SpecPatchView configured_payload{
         configured_imaging_spec_payload.data(),
         configured_imaging_spec_payload.size()};
@@ -6592,9 +6662,45 @@ CoreRuntime::ingest_camera_concurrency_json_for_server(
   {
     const std::lock_guard<std::mutex> lock(configured_imaging_spec_mutex_);
     configured_imaging_spec_version_ = next_configured_imaging_spec_version_++;
+    configured_external_camera_description_.reset();
+    configured_camera_description_version_ = 0;
     configured_imaging_spec_payload_.assign(
         reinterpret_cast<const uint8_t*>(json_text.data()),
         reinterpret_cast<const uint8_t*>(json_text.data()) + json_text.size());
+    out.imaging_spec_version = configured_imaging_spec_version_;
+  }
+  return out;
+}
+
+CoreRuntime::ReplaceExternalCameraDescriptionResult
+CoreRuntime::replace_external_camera_description_json_for_internal(
+    const std::string& json_text) {
+  const CoreRuntimeState state = state_.load(std::memory_order_acquire);
+  if (state == CoreRuntimeState::LIVE || state == CoreRuntimeState::TEARING_DOWN) {
+    return ReplaceExternalCameraDescriptionResult{
+        ReplaceExternalCameraDescriptionStatus::Busy, {}, 0, 0};
+  }
+  const adc_camera_description::LoadResult load =
+      adc_camera_description::load_replacement_from_json_text(json_text);
+  if (!load.ok) {
+    return ReplaceExternalCameraDescriptionResult{
+        load.error_kind == adc_camera_description::LoadErrorKind::Parse
+            ? ReplaceExternalCameraDescriptionStatus::ParseError
+            : ReplaceExternalCameraDescriptionStatus::Invalid,
+        load.error_message,
+        0,
+        0};
+  }
+  ReplaceExternalCameraDescriptionResult out{};
+  {
+    const std::lock_guard<std::mutex> lock(configured_imaging_spec_mutex_);
+    configured_camera_description_version_ = next_configured_camera_description_version_++;
+    configured_imaging_spec_version_ = load.state.concurrency().has_value()
+        ? next_configured_imaging_spec_version_++
+        : 0;
+    configured_imaging_spec_payload_.clear();
+    configured_external_camera_description_ = load.state;
+    out.camera_description_version = configured_camera_description_version_;
     out.imaging_spec_version = configured_imaging_spec_version_;
   }
   return out;

@@ -20,6 +20,7 @@
 #include "core/core_rig_registry.h"
 #include "core/core_runtime_state.h"
 #include "core/core_spec_state.h"
+#include "core/external_camera_description_state.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
 #include "core/core_frame_sink.h"
@@ -434,6 +435,10 @@ enum class TryCloseDeviceStatus : uint8_t {
   };
 
   std::optional<ImagingSpecRetainedStateForSmoke> imaging_spec_retained_state_for_smoke() const;
+  std::optional<ExternalCameraDescriptionEntry>
+  active_external_camera_description_for_smoke(const std::string& camera_id) const;
+  size_t active_external_camera_description_count_for_smoke() const;
+  uint64_t active_external_camera_description_version_for_smoke() const;
 
 #endif
 
@@ -453,6 +458,25 @@ enum class TryCloseDeviceStatus : uint8_t {
   };
 
   IngestCameraConcurrencyResult ingest_camera_concurrency_json_for_server(
+      const std::string& json_text);
+
+  enum class ReplaceExternalCameraDescriptionStatus : uint8_t {
+    Ok = 0,
+    Busy = 1,
+    ParseError = 2,
+    Invalid = 3,
+  };
+
+  struct ReplaceExternalCameraDescriptionResult {
+    ReplaceExternalCameraDescriptionStatus status =
+        ReplaceExternalCameraDescriptionStatus::Ok;
+    std::string error_message;
+    uint64_t camera_description_version = 0;
+    uint64_t imaging_spec_version = 0;
+  };
+
+  // Internal seam; it deliberately has no Godot binding until Tranche 3.
+  ReplaceExternalCameraDescriptionResult replace_external_camera_description_json_for_internal(
       const std::string& json_text);
 
   // Server-internal adapter: caller supplies capture_id (no allocation here).
@@ -1085,8 +1109,13 @@ private:
   std::atomic<uint64_t> display_demand_release_async_dropped_closed_{0};
   std::atomic<uint64_t> display_demand_release_async_dropped_allocfail_{0};
   mutable std::mutex configured_imaging_spec_mutex_;
+  uint64_t configured_camera_description_version_ = 0;
   uint64_t configured_imaging_spec_version_ = 0;
   std::vector<uint8_t> configured_imaging_spec_payload_{};
+  std::optional<ExternalCameraDescriptionState> configured_external_camera_description_{};
+  ExternalCameraDescriptionState active_external_camera_description_{};
+  uint64_t active_camera_description_version_ = 0;
+  uint64_t next_configured_camera_description_version_ = 1;
   uint64_t next_configured_imaging_spec_version_ = 1;
 
   static constexpr uint64_t kDestroyedNativeObjectRetentionWindowNs = 5ull * 1000ull * 1000ull * 1000ull;

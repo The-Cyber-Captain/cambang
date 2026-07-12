@@ -32,6 +32,13 @@ void CoreSpecState::set_imaging_spec_version(uint64_t imaging_spec_version) noex
   imaging_spec_interpretation_ = {};
 }
 
+void CoreSpecState::set_imaging_spec_concurrency(
+    uint64_t imaging_spec_version,
+    camera_concurrency::Truth camera_concurrency) noexcept {
+  set_imaging_spec_version(imaging_spec_version);
+  imaging_spec_interpretation_.camera_concurrency = std::move(camera_concurrency);
+}
+
 bool CoreSpecState::retain_imaging_spec_replace(
     uint64_t imaging_spec_version,
     SpecPatchView effective_spec) {

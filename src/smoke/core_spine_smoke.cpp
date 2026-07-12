@@ -32,6 +32,7 @@ Non-Goals
 #include <future>
 #include <iostream>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -47,6 +48,7 @@ Non-Goals
   #error "core_spine_smoke: build through the repo SCons maintainer_tools alias so CAMBANG_INTERNAL_SMOKE=1 is defined."
 #endif
 #include "core/camera_concurrency_adc.h"
+#include "core/adc_camera_description.h"
 #include "core/core_runtime.h"
 #include "core/provider_callback_ingress.h"
 #include "core/resource_aggregate_telemetry.h"
@@ -775,6 +777,274 @@ static int test_runtime_imaging_spec_retention_publish_smoke() {
     return 1;
   }
 
+  rt.stop();
+  return 0;
+}
+
+static int test_adc_camera_description_parser_and_retention_smoke() {
+  const std::string populated = R"JSON({
+    "schema_version":2,
+    "generator":"Aide-De-Cam",
+    "generator_version":"2.0",
+    "timestamp_ms":1780000000000,
+    "device_model":"ignored",
+    "ignored_root":{"additive":true},
+    "cameras":[
+      {"camera_id":"Cam A ","ignored_camera":5,
+       "facing":{"source":"native_reported","value":"back"},
+       "camera_nature":{"source":"user_supplied","value":"physical"},
+       "sensor_orientation":{"source":"native_reported","value_degrees":0},
+       "intrinsics":{"source":"native_reported","focal_length_x_px":3120.4,"focal_length_y_px":3118.9,"principal_point_x_px":2014.3,"principal_point_y_px":1508.7,"skew_px":0.0,"reference_width_px":4032,"reference_height_px":3024,"coordinate_domain":"delivered_image"},
+       "distortion":{"source":"derived","model":"brown_conrady_5","radial_k1":0.0,"radial_k2":0.0,"radial_k3":0.0,"tangential_p1":0.0,"tangential_p2":0.0,"reference_width_px":4032,"reference_height_px":3024,"coordinate_domain":"delivered_image","image_state":"distorted"},
+       "pose":{"source":"user_supplied","reference_kind":"custom_reference","reference_id":"rig frame","coordinate_convention":"camera_optical_frame","translation_m":[0,0,0],"rotation_xyzw":[0,0,0,2]}},
+      {"camera_id":"cam-b",
+       "distortion":{"source":"virtual_camera_authored","model":"none","image_state":"rectified"},
+       "pose":{"source":"virtual_camera_authored","reference_kind":"platform_defined","platform_defined_reference":"native rig","coordinate_convention":"platform_defined","platform_defined_convention":"native pose","translation_m":[1,2,3],"rotation_xyzw":[0,0,0,1]}}
+    ],
+    "concurrent_camera_support":{"supported":true,"camera_id_combinations":[["Cam A ","cam-b"]]}
+  })JSON";
+
+  const auto loaded = adc_camera_description::load_replacement_from_json_text(populated);
+  if (!loaded.ok || loaded.state.entries().size() != 2 ||
+      !loaded.state.concurrency().has_value() ||
+      loaded.state.concurrency()->kind != camera_concurrency::TruthKind::Supported) {
+    std::cerr << "FAIL: populated ADC camera-description replacement did not parse\n";
+    return 1;
+  }
+  const auto* camera_a = loaded.state.find_exact("Cam A ");
+  if (!camera_a || loaded.state.find_exact("cam a ") || !camera_a->facts.facing ||
+      camera_a->facts.facing->value != CameraFacing::BACK ||
+      !camera_a->facts.sensor_orientation ||
+      camera_a->facts.sensor_orientation->value != SensorOrientationDegrees::DEGREES_0 ||
+      !camera_a->facts.intrinsics || !camera_a->facts.intrinsics->value.skew_px() ||
+      *camera_a->facts.intrinsics->value.skew_px() != 0.0 ||
+      !camera_a->facts.distortion || !std::holds_alternative<BrownConrady5Distortion>(camera_a->facts.distortion->value) ||
+      !camera_a->facts.pose) {
+    std::cerr << "FAIL: ADC camera-description static fact mapping was incomplete\n";
+    return 1;
+  }
+  const auto* camera_b = loaded.state.find_exact("cam-b");
+  if (!camera_b || !camera_b->facts.distortion ||
+      !std::holds_alternative<NoDistortion>(camera_b->facts.distortion->value) ||
+      !camera_b->facts.pose) {
+    std::cerr << "FAIL: ADC camera-description no-distortion or platform pose mapping failed\n";
+    return 1;
+  }
+
+  const auto absent_concurrency = adc_camera_description::load_replacement_from_json_text(
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"unmatched"}]})JSON");
+  const auto unsupported_concurrency = adc_camera_description::load_replacement_from_json_text(
+      R"JSON({"schema_version":2,"cameras":[],"concurrent_camera_support":{"supported":false}})JSON");
+  if (!absent_concurrency.ok || absent_concurrency.state.concurrency().has_value() ||
+      !unsupported_concurrency.ok || !unsupported_concurrency.state.entries().empty() ||
+      !unsupported_concurrency.state.concurrency().has_value() ||
+      unsupported_concurrency.state.concurrency()->kind != camera_concurrency::TruthKind::Unsupported) {
+    std::cerr << "FAIL: ADC camera-description absent/unsupported concurrency semantics failed\n";
+    return 1;
+  }
+
+  const std::vector<std::string> invalid_documents = {
+      "{\"schema_version\":2",
+      R"JSON({"schema_version":3,"cameras":[]})JSON",
+      R"JSON({"schema_version":2})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a"},{"camera_id":"a"}]})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a","facing":{"source":"native_reported","value":"side"}}]})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a","intrinsics":{"source":"native_reported","focal_length_x_px":1,"focal_length_y_px":1,"principal_point_x_px":1,"principal_point_y_px":1,"reference_width_px":0,"reference_height_px":1,"coordinate_domain":"delivered_image"}}]})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a","distortion":{"source":"native_reported","model":"none","image_state":"rectified","radial_k1":0}}]})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a","pose":{"source":"native_reported","reference_kind":"camera","reference_camera_id":"a","coordinate_convention":"camera_optical_frame","translation_m":[0,0,0],"rotation_xyzw":[0,0,0,1]}}]})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a","pose":{"source":"native_reported","reference_kind":"custom_reference","reference_id":"","coordinate_convention":"camera_optical_frame","translation_m":[0,0,0],"rotation_xyzw":[0,0,0,1]}}]})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a"},{"camera_id":"b"}],"concurrent_camera_support":{"supported":false,"camera_id_combinations":[["a","b"]]}})JSON",
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"a"},{"camera_id":"b"}],"concurrent_camera_support":{"supported":true,"camera_id_combinations":[["a","a"]]}})JSON"};
+  for (const std::string& json : invalid_documents) {
+    if (adc_camera_description::load_replacement_from_json_text(json).ok) {
+      std::cerr << "FAIL: ADC camera-description parser accepted invalid semantic document\n";
+      return 1;
+    }
+  }
+  if (adc_camera_description::load_replacement_from_json_text(
+          std::string(adc_camera_description::max_supported_input_bytes() + 1, ' ')).ok ||
+      adc_camera_description::load_replacement_from_json_text(
+          make_repeated_json_nesting(adc_camera_description::max_supported_nesting_depth() + 1)).ok ||
+      adc_camera_description::load_replacement_from_json_text(
+          "{\"schema_version\":2,\"generator\":\"" +
+          std::string(adc_camera_description::max_supported_string_bytes() + 1, 'x') +
+          "\",\"cameras\":[]}").ok) {
+    std::cerr << "FAIL: ADC camera-description parser resource limits were not enforced\n";
+    return 1;
+  }
+  const auto make_camera_array = [](size_t count) {
+    std::ostringstream json;
+    json << "{\"schema_version\":2,\"cameras\":[";
+    for (size_t i = 0; i < count; ++i) {
+      if (i != 0) json << ',';
+      json << "{\"camera_id\":\"cam" << i << "\"}";
+    }
+    return json.str() + "]}";
+  };
+  if (adc_camera_description::load_replacement_from_json_text(
+          make_camera_array(adc_camera_description::max_supported_camera_records() + 1)).ok) {
+    std::cerr << "FAIL: ADC camera-description camera-count limit was not enforced\n";
+    return 1;
+  }
+  std::ostringstream too_many_combinations;
+  too_many_combinations << "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"a\"},{\"camera_id\":\"b\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[";
+  for (size_t i = 0; i <= adc_camera_description::max_supported_combination_count(); ++i) {
+    if (i != 0) too_many_combinations << ',';
+    too_many_combinations << "[\"a\",\"b\"]";
+  }
+  too_many_combinations << "]}}";
+  if (adc_camera_description::load_replacement_from_json_text(too_many_combinations.str()).ok) {
+    std::cerr << "FAIL: ADC camera-description combination-count limit was not enforced\n";
+    return 1;
+  }
+  std::ostringstream too_many_members;
+  too_many_members << "{\"schema_version\":2,\"cameras\":[";
+  for (size_t i = 0; i <= adc_camera_description::max_supported_combination_members(); ++i) {
+    if (i != 0) too_many_members << ',';
+    too_many_members << "{\"camera_id\":\"member" << i << "\"}";
+  }
+  too_many_members << "],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[";
+  for (size_t i = 0; i <= adc_camera_description::max_supported_combination_members(); ++i) {
+    if (i != 0) too_many_members << ',';
+    too_many_members << "\"member" << i << "\"";
+  }
+  too_many_members << "]]}}";
+  if (adc_camera_description::load_replacement_from_json_text(too_many_members.str()).ok) {
+    std::cerr << "FAIL: ADC camera-description combination-member limit was not enforced\n";
+    return 1;
+  }
+
+  CoreRuntime rt;
+  const auto configured = rt.replace_external_camera_description_json_for_internal(populated);
+  if (configured.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok ||
+      configured.camera_description_version == 0 || configured.imaging_spec_version == 0 || !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 2 ||
+      rt.active_external_camera_description_version_for_smoke() != configured.camera_description_version ||
+      !rt.active_external_camera_description_for_smoke("Cam A ")) {
+    std::cerr << "FAIL: ADC camera-description configured state did not persist into active generation\n";
+    rt.stop();
+    return 1;
+  }
+  const auto allowed = rt.smoke_admit_rig_cohort_from_preflight(
+      9100, 9101, make_manual_rig_preflight(9100, {"Cam A ", "cam-b"}));
+  if (!allowed.ok || rt.replace_external_camera_description_json_for_internal(populated).status !=
+                         CoreRuntime::ReplaceExternalCameraDescriptionStatus::Busy) {
+    std::cerr << "FAIL: ADC camera-description concurrency projection or running rejection failed\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  if (rt.replace_external_camera_description_json_for_internal("{\"schema_version\":2").status !=
+      CoreRuntime::ReplaceExternalCameraDescriptionStatus::ParseError) {
+    std::cerr << "FAIL: ADC camera-description malformed replacement did not reject\n";
+    return 1;
+  }
+  if (!rt.start() || !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 2 ||
+      rt.active_external_camera_description_version_for_smoke() != configured.camera_description_version) {
+    std::cerr << "FAIL: rejected ADC camera-description replacement mutated retained state\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  const auto replacement = rt.replace_external_camera_description_json_for_internal(
+      R"JSON({"schema_version":2,"cameras":[{"camera_id":"Cam A ","facing":{"source":"user_supplied","value":"front"}}]})JSON");
+  if (replacement.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok ||
+      replacement.camera_description_version != configured.camera_description_version + 1 ||
+      replacement.imaging_spec_version != 0 || !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 1 ||
+      rt.active_external_camera_description_version_for_smoke() != replacement.camera_description_version) {
+    std::cerr << "FAIL: ADC camera-description full replacement did not remove omitted entries\n";
+    rt.stop();
+    return 1;
+  }
+  const auto reduced = rt.active_external_camera_description_for_smoke("Cam A ");
+  const auto unavailable = rt.smoke_admit_rig_cohort_from_preflight(
+      9100, 9102, make_manual_rig_preflight(9100, {"Cam A ", "cam-b"}));
+  const auto no_effective_spec = rt.imaging_spec_retained_state_for_smoke();
+  if (!reduced || !reduced->facts.facing || reduced->facts.intrinsics ||
+      !no_effective_spec || no_effective_spec->imaging_spec_version != 0 ||
+      unavailable.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecUnavailable) {
+    std::cerr << "FAIL: ADC facts-only replacement did not clear effective ImagingSpec truth\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+
+  const auto rejected_legacy = rt.ingest_camera_concurrency_json_for_server("{\"schema_version\":1");
+  if (rejected_legacy.status != CoreRuntime::IngestCameraConcurrencyStatus::ParseError || !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 1 ||
+      rt.active_external_camera_description_version_for_smoke() != replacement.camera_description_version ||
+      !rt.imaging_spec_retained_state_for_smoke() ||
+      rt.imaging_spec_retained_state_for_smoke()->imaging_spec_version != 0) {
+    std::cerr << "FAIL: rejected legacy replacement mutated facts-only camera-description state\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+
+  const auto legacy = rt.ingest_camera_concurrency_json_for_server(
+      make_adc_camera_concurrency_json({"Cam A ", "cam-b"}, true, {{"Cam A ", "cam-b"}}, 2));
+  if (legacy.status != CoreRuntime::IngestCameraConcurrencyStatus::Ok || legacy.imaging_spec_version == 0 ||
+      !rt.start() || !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 0 ||
+      rt.active_external_camera_description_version_for_smoke() != 0) {
+    std::cerr << "FAIL: accepted legacy replacement did not clear typed external camera-description state\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+  const auto rejected_v2 = rt.replace_external_camera_description_json_for_internal("{\"schema_version\":2");
+  if (rejected_v2.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::ParseError || !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 0 ||
+      rt.active_external_camera_description_version_for_smoke() != 0 ||
+      !rt.imaging_spec_retained_state_for_smoke() ||
+      rt.imaging_spec_retained_state_for_smoke()->imaging_spec_version != legacy.imaging_spec_version) {
+    std::cerr << "FAIL: rejected camera-description replacement mutated legacy configured truth\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+
+  const auto restored = rt.replace_external_camera_description_json_for_internal(populated);
+  if (restored.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok ||
+      restored.camera_description_version != replacement.camera_description_version + 1 ||
+      restored.imaging_spec_version == 0 || !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 2 ||
+      rt.active_external_camera_description_version_for_smoke() != restored.camera_description_version) {
+    std::cerr << "FAIL: accepted camera-description replacement did not replace legacy raw state\n";
+    rt.stop();
+    return 1;
+  }
+  const auto restored_spec = rt.imaging_spec_retained_state_for_smoke();
+  if (!restored_spec || restored_spec->imaging_spec_version != restored.imaging_spec_version ||
+      restored_spec->retention_kind != CoreSpecState::ImagingSpecRetentionKind::None ||
+      !restored_spec->payload.empty()) {
+    std::cerr << "FAIL: camera-description replacement retained legacy raw payload\n";
+    rt.stop();
+    return 1;
+  }
+  rt.stop();
+
+  const auto cleared = rt.replace_external_camera_description_json_for_internal(
+      R"JSON({"schema_version":2,"cameras":[]})JSON");
+  if (cleared.status != CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok ||
+      cleared.camera_description_version != restored.camera_description_version + 1 ||
+      cleared.imaging_spec_version != 0 || !rt.start() ||
+      !wait_until([&]() { return rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1) ||
+      rt.active_external_camera_description_count_for_smoke() != 0 ||
+      rt.active_external_camera_description_version_for_smoke() != cleared.camera_description_version ||
+      !rt.imaging_spec_retained_state_for_smoke() ||
+      rt.imaging_spec_retained_state_for_smoke()->imaging_spec_version != 0) {
+    std::cerr << "FAIL: ADC camera-description cameras[] clear failed\n";
+    rt.stop();
+    return 1;
+  }
   rt.stop();
   return 0;
 }
@@ -3641,6 +3911,14 @@ int main(int argc, char** argv) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke",
                                "test_runtime_imaging_spec_retention_publish_smoke",
+                               r);
+      return r;
+    }
+    if (int r = reporter.run("test_adc_camera_description_parser_and_retention_smoke",
+                             [] { return test_adc_camera_description_parser_and_retention_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_adc_camera_description_parser_and_retention_smoke",
                                r);
       return r;
     }

@@ -28,6 +28,9 @@ public:
   uint64_t camera_spec_version(const std::string& hardware_id) const noexcept;
 
   void set_imaging_spec_version(uint64_t imaging_spec_version) noexcept;
+  void set_imaging_spec_concurrency(
+      uint64_t imaging_spec_version,
+      camera_concurrency::Truth camera_concurrency) noexcept;
   uint64_t imaging_spec_version() const noexcept { return imaging_spec_version_; }
   bool retain_imaging_spec_replace(uint64_t imaging_spec_version, SpecPatchView effective_spec);
   bool retain_imaging_spec_patch(uint64_t imaging_spec_version, SpecPatchView effective_spec);
