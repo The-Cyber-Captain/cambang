@@ -1,59 +1,91 @@
 # Current Tranche
 
-## Active task
+## Active workstream
 
-Implement the external camera-concurrency truth supply path from
-`CamBANGServer.ingest_camera_concurrency(String json_text)` into the existing
-Core-owned `ImagingSpec` grouped-rig admission consumer.
+Complete the camera-description and still-capture fact model that follows the
+already-implemented external camera-concurrency ingestion seam.
 
-## Goal
+The checked-out source currently implements stopped-time transactional
+`CamBANGServer.ingest_camera_concurrency(String json_text)` ingestion of the
+supported ADC v1 concurrency projection into retained `ImagingSpec` truth.
+Grouped-rig admission already consumes that truth. That implementation is the
+source baseline, not the final camera-description model.
 
-Accept the Aide-De-Cam (ADC) concurrency projection, validate it
-transactionally, retain normalized allowed camera combinations as effective
-Core truth, and consume that truth at the existing authoritative cohort-admission
-gate.
+The broader agreed direction is recorded in the camera-fact handover supplied
+for this workstream. Source inspection remains authoritative for actual code
+state.
 
-The effective concurrency state must distinguish:
+## Current tranche
 
-* unavailable truth;
-* explicitly unsupported concurrency;
-* supported concurrency with allowed camera-ID combinations.
+Formalise the source-neutral camera-fact architecture and ADC v2 interchange
+contract before C++ implementation begins.
 
-A grouped participant set is allowed when it is a subset of at least one
-reported allowed combination. Single-device capture remains unaffected.
+This tranche may require more than one Codex invocation for drafting, review,
+correction, and documentation reconciliation. Keep individual invocation tasks
+in their Codex prompts; keep this file focused on tranche-wide state and
+constraints.
 
-## Required boundaries
+## Settled tranche direction
 
-* Public API: `Error CamBANGServer.ingest_camera_concurrency(String json_text)`.
-* Existing public API is otherwise preserved without redesign or churn; the
-  only public addition in this tranche is
-  `CamBANGServer.ingest_camera_concurrency(String json_text)`.
-* The caller obtains the JSON text; add no filesystem/path convenience API.
-* Keep `ImagingSpec` terminology internal.
-* Support ADC schema versions through compiled constants in
-  `cambang::camera_concurrency::ADC`; the current supported range is `1..1`.
-* Treat `generator` as optional provenance, not required producer identity.
-* Apply accepted input transactionally; failed input must preserve prior truth.
-* Effective truth is immutable during an active Core generation.
-* Configured accepted truth may be replaced while stopped and reused across
-  later start/stop generations.
-* Keep cohort admission as the single authoritative grouped-rig gate.
-* Distinguish unavailable truth from an explicit combination rejection.
+* ADC v2+ is the target interchange contract. CamBANG is not required to ingest
+  ADC v1.
+* ADC v1 human and machine schemas are historical evidence of the existing
+  Aide-De-Cam output, not the target contract.
+* CamBANG's internal camera-fact model must remain source-neutral rather than
+  ADC-, JSON-, Godot-, Camera2-, or provider-shaped.
+* Provider static/device facts, provider per-image facts, externally configured
+  facts, Core-owned capture-admission context, and realized payload truth remain
+  distinct authorities.
+* `ImagingSpec` remains the cross-camera/imaging-subsystem operational
+  capability seam. Per-camera description and still-result facts do not become
+  an `ImagingSpec` metadata bucket.
+* Intrinsics, distortion, and pose are atomic descriptive records.
+* CamBANG does not perform calibration, rectification, projection, intrinsic
+  rescaling, coordinate-domain conversion, or approximate distortion fitting.
+* Rich camera facts principally belong to still-capture results. Exact public
+  result bindings remain separately user-gatekept.
+* Approved future server-level direction is
+  `ingest_camera_description(String json_text) -> Error` and
+  `set_capture_geolocation(Dictionary geolocation) -> Error`.
+* Those future methods are not yet implemented and must not be documented as
+  current source behaviour.
 
-## Guardrails
+## Tranche boundaries
 
-Do not add provider-start parameters, a Java `CameraManager` bridge, generic
-spec mutation/patch APIs, camera-ID heuristics or prefixes, result-fact work,
-calibration work, or unrelated provider architecture.
+This tranche is documentation and schema work only.
 
-Consume only the ADC fields needed for camera concurrency. Do not adopt the
-unrelated capability document as a general CamBANG schema.
+Do not change C++, Godot bindings, tests, verification scenes, build scripts,
+snapshot schema, provider interfaces, runtime behaviour, or the working
+concurrency admission path.
 
-## Done means
+Do not introduce additional Godot APIs, filesystem convenience APIs, a generic
+metadata/configuration system, calibration algorithms, or platform-provider
+implementation work.
 
-The public method is bound and documented; supported ADC input reaches
-Core-owned generation-effective truth; malformed, indeterminate, and unsupported
-input is rejected without mutation; subset-based grouped admission is verified;
-unavailable and explicit rejection remain distinct; accepted truth is immutable
-while running and reusable/reconfigurable between generations; focused and
-relevant broader deterministic verification is green.
+## Tranche state
+
+Completed before this tranche:
+
+* retained grouped-camera capability truth exists through `ImagingSpec`;
+* stopped-time transactional concurrency ingestion exists;
+* grouped-rig admission consumes normalized allowed camera combinations;
+* the broader camera-fact design and implementation sequence have been agreed.
+
+Required before this tranche closes:
+
+* establish the documentation authority and placement for the camera-fact
+  architecture and ADC v2 contract;
+* add matching human-readable and machine-readable ADC v2 contracts;
+* reconcile affected canonical and supplementary documentation without
+  duplicating the contract across unrelated files;
+* distinguish implemented concurrency-only source behaviour from approved
+  future camera-description APIs;
+* validate the resulting schema and documentation references where practical;
+* complete a contradiction and implementation-sufficiency review.
+
+## After this tranche
+
+Implementation proceeds through source-neutral fact types, ADC v2 parsing and
+retained external state, the approved ingestion replacement, capture-admission
+context, provider fact supply, SyntheticProvider reference facts, result
+resolution, and separately approved Godot exposure.

@@ -38,6 +38,12 @@ and transactional: accepted input becomes configured truth for the next
 generation, active-generation ingestion returns `ERR_BUSY`, and any
 parse/validation failure leaves the previously configured truth unchanged.
 
+This current source behavior is narrower than the approved future
+camera-description direction. The broader documented direction
+`ingest_camera_description(String json_text)` / `set_capture_geolocation(...)`
+is not yet implemented in this checkout and must not be inferred from the
+existence of the current concurrency-only ingestion path.
+
 Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
 that storage after a run, but once the provider is attached and the runtime is
 running, attached-provider shutdown belongs to `CoreRuntime::stop()`. Godot must

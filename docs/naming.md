@@ -135,6 +135,11 @@ The full behavioural contract for the Godot-facing runtime boundary
 tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
+Approved future direction, not current source behavior:
+
+- `CamBANGServer.ingest_camera_description(String json_text) -> Error`
+- `CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`
+
 Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
 entry point; rig capture is triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`.
 
@@ -286,6 +291,12 @@ user corrections) from **user intent/configuration**.
 Per-camera characteristics/capabilities (for example: sensor properties,
 intrinsic parameters if available, supported formats, etc.).
 `CameraSpec` is keyed by a camera's `hardware_id`.
+
+The canonical source-neutral camera-fact architecture and ADC v2 contract are
+documented in:
+
+- `docs/camera_fact_model.md`
+- `docs/adc_camera_description_v2.md`
 
 ### `ImagingSpec`
 

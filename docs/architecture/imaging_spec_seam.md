@@ -78,6 +78,11 @@ approved public addition in this tranche is
 `CamBANGServer.ingest_camera_concurrency(String)`. Further unrelated public API
 expansion remains out of scope.
 
+The broader future camera-description direction remains distinct: per-camera
+descriptive facts do not become `ImagingSpec`, and approved future ingestion of
+camera description must preserve `ImagingSpec` as the operational cross-camera
+capability seam rather than turning it into a metadata bucket.
+
 This seam lock intentionally does not broaden into:
 
 - result-fact redesign

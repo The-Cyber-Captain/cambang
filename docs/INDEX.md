@@ -9,29 +9,51 @@ To prevent drift and contradiction, documents are categorised explicitly.
 
 ## 1. Canonical architecture and policy (source of truth)
 
-These documents define CamBANG’s architectural model, design intent,
-and guard-rail policies. They are authoritative and must not be
-contradicted by other documents.
+These documents define CamBANG's architectural model, design intent, and
+guard-rail policies. They are authoritative and must not be contradicted by
+other documents.
 
 - `provider_architecture.md`
 - `core_runtime_model.md`
 - `arbitration_policy.md`
 - `state_snapshot.md`
+- `camera_fact_model.md`
 - `naming.md`
 - `repo_structure.md`
 - `status_panel_surface_policy.md`
 
+These documents are CamBANG-owned architecture and policy, not external
+interchange contracts.
+
+## 1.1 Provisionally hosted external contract material
+
+CamBANG currently hosts the ADC v2 camera-description contract material needed
+for its present compatibility target.
+
+ADC is an external interchange standard historically associated with
+Aide-De-Cam. The repository copies below are normative for the ADC v2 contract
+CamBANG currently targets, but they must not be read as a claim that CamBANG
+permanently owns ADC.
+
+- `adc_camera_description_v2.md`
+
+Machine-readable schema material for that provisionally hosted contract lives
+under:
+
+- `schema/adc/camera_description/v2/adc_camera_description_schema.json`
+
 Notes:
 
 - Godot-facing snapshot publication uses a **tick-bounded observable truth**
-  model (≤ 1 `state_published` emission per Godot tick when changed).
-  The public contract is defined in `state_snapshot.md`.
+  model (<= 1 `state_published` emission per Godot tick when changed). The
+  public contract is defined in `state_snapshot.md`.
 - Validation layering (core invariant validation vs platform integration
   validation) is defined in `core_runtime_model.md`.
 - Platform-specific validation documents must not redefine core invariants.
 
 If any supplementary document appears to conflict with these, canonical
-architecture and policy documents take precedence.
+architecture and policy documents take precedence for CamBANG-owned behavior.
+External-contract documents define the interchange contract they describe.
 
 Changes to canonical documents should be deliberate and reviewed carefully.
 
@@ -45,8 +67,8 @@ Located in:
 docs/architecture/
 ```
 
-These documents clarify or extend specific aspects of the canonical model,
-but do not redefine it.
+These documents clarify or extend specific aspects of the canonical model, but
+do not redefine it.
 
 They must:
 
@@ -61,15 +83,15 @@ supplement document must update this index in the same change.
 
 Current supplements:
 
-Architectural supplements provide focused explanations of subsystems,
-edge cases, or conceptual models that support the canonical documents.
+Architectural supplements provide focused explanations of subsystems, edge
+cases, or conceptual models that support the canonical documents.
 
-They may include diagrams, examples, and reasoning aids, but must not
-redefine canonical rules.
+They may include diagrams, examples, and reasoning aids, but must not redefine
+canonical rules.
 
 | Document | Purpose |
 |---|---|
-| lifecycle_model.md | Explains lifecycle hierarchy and event flow across provider → core → Godot. |
+| lifecycle_model.md | Explains lifecycle hierarchy and event flow across provider -> core -> Godot. |
 | provider_state_machines.md | Defines provider/device/acquisition-session/stream state machines and valid transitions. |
 | provider_strand_model.md | Clarifies provider-strand delivery rules and event-class guarantees. |
 | publication_model.md | Describes tick-bounded publication and Godot-visible snapshot behaviour. |
@@ -108,7 +130,7 @@ For release-facing image/result architecture, read:
 - `lifecycle_model.md` explains hierarchy, lifecycle phases, and provider-strand event flow
 - `provider_state_machines.md` provides a compact reference of provider lifecycle
   and resource-state axes
-- `provider_strand_model.md` clarifies serialized provider → core delivery and non-droppable event classes
+- `provider_strand_model.md` clarifies serialized provider -> core delivery and non-droppable event classes
 - `publication_model.md` explains internal-vs-observable publication and tick-bounded coalescing
 - `publication_counter_examples.md` illustrates progression of `gen`, `version`,
   and `topology_version` across representative runtime situations
@@ -172,13 +194,12 @@ These documents must clearly state when code is:
 
 ### Additional provider-discipline note
 
-Provider semantics are defined by the canonical architecture, the
-reference providers, and compliance verification tools and verification
-cases.
+Provider semantics are defined by the canonical architecture, the reference
+providers, and compliance verification tools and verification cases.
 
-Platform-backed providers are adapters to that contract. They must not
-redefine lifecycle, defaulting, registry, snapshot, or timestamp
-semantics to match a backend API.
+Platform-backed providers are adapters to that contract. They must not redefine
+lifecycle, defaulting, registry, snapshot, or timestamp semantics to match a
+backend API.
 
 This is especially important as additional platform-backed providers are
 introduced.
@@ -187,17 +208,18 @@ introduced.
 
 ## 4. Documentation discipline rules
 
-1. canonical architecture documents are the single source of truth
+1. canonical architecture documents are the single source of truth for CamBANG-owned behavior
 2. supplements must reference, not replace, canonical docs
 3. dev notes must explicitly mark temporary code paths
 4. avoid duplicating architectural explanations across files
-5. if in doubt, update a canonical document rather than creating a parallel explanation
-6. maintain terminology discipline: use **verification case** for maintainer smoke/CLI authored validation inputs, and reserve **scenario** for SyntheticProvider/provider-core timeline replay, diagnostics, metrics, fault reproduction, and recorded/authored behavior playback
+5. keep external interchange contracts distinct from CamBANG-owned runtime and API policy
+6. if in doubt, update a canonical document rather than creating a parallel explanation
+7. maintain terminology discipline: use **verification case** for maintainer smoke/CLI authored validation inputs, and reserve **scenario** for SyntheticProvider/provider-core timeline replay, diagnostics, metrics, fault reproduction, and recorded/authored behavior playback
 
 ---
 
-This structure helps keep CamBANG documentation precise, authoritative,
-and resistant to drift as the project evolves.
+This structure helps keep CamBANG documentation precise, authoritative, and
+resistant to drift as the project evolves.
 
 ## Recently Consolidated Topics
 

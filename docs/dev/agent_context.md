@@ -95,6 +95,29 @@ Keep these surfaces distinct:
 
 Cross-camera or imaging-subsystem capability truth belongs to `ImagingSpec`. Per-camera stable characteristics belong to `CameraSpec`.
 
+## Camera-fact model
+
+CamBANG uses a source-neutral internal camera-fact model. Do not shape internal
+Core/provider records around ADC JSON, Godot `Dictionary` layouts, or one
+platform API.
+
+Keep provider static/device facts, provider result-specific image facts,
+externally configured per-camera facts, Core-owned capture-admission context,
+and realized payload/member truth as distinct authorities.
+
+`ImagingSpec` remains the retained cross-camera or imaging-subsystem operational
+capability seam. It must not become a general camera-metadata, calibration, or
+result-fact bucket.
+
+CamBANG may validate, retain, resolve, and expose descriptive calibration and
+camera facts. It does not perform lens calibration, rectification, projection,
+intrinsic rescaling, coordinate-domain conversion, or approximate distortion
+model fitting.
+
+Godot-facing camera-fact APIs and result shapes remain explicitly gatekept. Do
+not add, rename, or retire public surfaces unless the active tranche records the
+approved change.
+
 ## Automatic measurement and classification
 
 Backing Plan measurement and retained-result access classification are internal, automatic runtime responsibilities. They must not impose a calibration-management workflow on normal users or GDScript.
