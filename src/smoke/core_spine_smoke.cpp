@@ -25,6 +25,7 @@ Non-Goals
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <cstdint>
@@ -843,6 +844,46 @@ static int test_adc_camera_description_parser_and_retention_smoke() {
     return 1;
   }
 
+  const auto make_numeric_intrinsics_document = [](const std::string& skew) {
+    return "{\"schema_version\":2,\"cameras\":[{\"camera_id\":\"numeric\",\"intrinsics\":{"
+           "\"source\":\"user_supplied\",\"focal_length_x_px\":1,\"focal_length_y_px\":1,"
+           "\"principal_point_x_px\":0,\"principal_point_y_px\":0,\"skew_px\":" + skew +
+           ",\"reference_width_px\":1,\"reference_height_px\":1,"
+           "\"coordinate_domain\":\"delivered_image\"}}]}";
+  };
+  const std::vector<std::string> valid_numeric_lexemes = {
+      "1", "1.25", "-1.25", "1e2", "1E2", "-0", "0", "1e308"};
+  for (const std::string& lexeme : valid_numeric_lexemes) {
+    const auto numeric = adc_camera_description::load_replacement_from_json_text(
+        make_numeric_intrinsics_document(lexeme));
+    const auto* entry = numeric.ok ? numeric.state.find_exact("numeric") : nullptr;
+    if (!entry || !entry->facts.intrinsics || !entry->facts.intrinsics->value.skew_px()) {
+      std::cerr << "FAIL: ADC camera-description floating numeric lexeme was rejected: "
+                << lexeme << '\n';
+      return 1;
+    }
+    if (lexeme == "-0" && !std::signbit(*entry->facts.intrinsics->value.skew_px())) {
+      std::cerr << "FAIL: ADC camera-description floating negative zero was not preserved\n";
+      return 1;
+    }
+  }
+  for (const char* lexeme : {"1e309", "1e-9999"}) {
+    if (adc_camera_description::load_replacement_from_json_text(
+            make_numeric_intrinsics_document(lexeme)).ok) {
+      std::cerr << "FAIL: ADC camera-description accepted out-of-range floating numeric lexeme: "
+                << lexeme << '\n';
+      return 1;
+    }
+  }
+  for (const char* malformed_number : {"1.25x", "1e+", "1,25"}) {
+    if (adc_camera_description::load_replacement_from_json_text(
+            make_numeric_intrinsics_document(malformed_number)).ok) {
+      std::cerr << "FAIL: ADC camera-description accepted malformed JSON numeric lexeme: "
+                << malformed_number << '\n';
+      return 1;
+    }
+  }
+
   const std::vector<std::string> invalid_documents = {
       "{\"schema_version\":2",
       R"JSON({"schema_version":3,"cameras":[]})JSON",
@@ -1022,10 +1063,12 @@ static int test_adc_camera_description_parser_and_retention_smoke() {
     return 1;
   }
   const auto restored_spec = rt.imaging_spec_retained_state_for_smoke();
+  const auto restored_admission = rt.smoke_admit_rig_cohort_from_preflight(
+      9100, 9103, make_manual_rig_preflight(9100, {"Cam A ", "cam-b"}));
   if (!restored_spec || restored_spec->imaging_spec_version != restored.imaging_spec_version ||
       restored_spec->retention_kind != CoreSpecState::ImagingSpecRetentionKind::None ||
-      !restored_spec->payload.empty()) {
-    std::cerr << "FAIL: camera-description replacement retained legacy raw payload\n";
+      !restored_spec->payload.empty() || !restored_admission.ok) {
+    std::cerr << "FAIL: camera-description replacement did not restore projected grouped-rig admission\n";
     rt.stop();
     return 1;
   }

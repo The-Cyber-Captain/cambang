@@ -5,7 +5,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <locale>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <system_error>
 #include <unordered_set>
@@ -382,10 +384,13 @@ bool parse_finite_number(const JsonValue& value, std::string_view name, double& 
     set_error(out, LoadErrorKind::Validation, "field '" + std::string(name) + "' must be number");
     return false;
   }
-  const char* begin = value.number_lexeme.data();
-  const char* end = begin + value.number_lexeme.size();
-  const auto result = std::from_chars(begin, end, parsed, std::chars_format::general);
-  if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(parsed)) {
+  std::istringstream input(value.number_lexeme);
+  input.imbue(std::locale::classic());
+  input >> std::noskipws >> parsed;
+  const bool lexeme_has_non_zero_digit =
+      value.number_lexeme.find_first_of("123456789") != std::string::npos;
+  if (input.fail() || input.peek() != std::char_traits<char>::eof() ||
+      !std::isfinite(parsed) || (parsed == 0.0 && lexeme_has_non_zero_digit)) {
     set_error(out, LoadErrorKind::Validation, "field '" + std::string(name) + "' must be finite number");
     return false;
   }

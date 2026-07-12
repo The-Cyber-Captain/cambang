@@ -3557,31 +3557,31 @@ godot::Error CamBANGServer::load_external_scenario(const godot::String& json_tex
   return map_provider_result_to_godot_error(pr);
 }
 
-godot::Error CamBANGServer::ingest_camera_concurrency(
+godot::Error CamBANGServer::ingest_camera_description(
     const godot::String& json_text) {
   const std::string text_utf8 = json_text.utf8().get_data();
-  const CoreRuntime::IngestCameraConcurrencyResult result =
-      runtime_.ingest_camera_concurrency_json_for_server(text_utf8);
+  const CoreRuntime::ReplaceExternalCameraDescriptionResult result =
+      runtime_.replace_external_camera_description_json_for_internal(text_utf8);
   switch (result.status) {
-    case CoreRuntime::IngestCameraConcurrencyStatus::Ok:
+    case CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok:
       return godot::OK;
-    case CoreRuntime::IngestCameraConcurrencyStatus::Busy:
+    case CoreRuntime::ReplaceExternalCameraDescriptionStatus::Busy:
       ERR_PRINT(
-          "CamBANGServer: ingest_camera_concurrency rejected because the active runtime generation is immutable.");
+          "CamBANGServer: ingest_camera_description rejected because the active runtime generation is immutable.");
       return godot::ERR_BUSY;
-    case CoreRuntime::IngestCameraConcurrencyStatus::ParseError:
+    case CoreRuntime::ReplaceExternalCameraDescriptionStatus::ParseError:
       ERR_PRINT(godot::vformat(
-          "CamBANGServer: ingest_camera_concurrency parse failed: %s.",
+          "CamBANGServer: ingest_camera_description parse failed: %s.",
           result.error_message.c_str()));
       return godot::ERR_PARSE_ERROR;
-    case CoreRuntime::IngestCameraConcurrencyStatus::Invalid:
+    case CoreRuntime::ReplaceExternalCameraDescriptionStatus::Invalid:
       ERR_PRINT(godot::vformat(
-          "CamBANGServer: ingest_camera_concurrency validation failed: %s.",
+          "CamBANGServer: ingest_camera_description validation failed: %s.",
           result.error_message.c_str()));
       return godot::ERR_INVALID_DATA;
   }
 
-  ERR_PRINT("CamBANGServer: ingest_camera_concurrency returned unknown status.");
+  ERR_PRINT("CamBANGServer: ingest_camera_description returned unknown status.");
   return godot::ERR_BUG;
 }
 
@@ -3913,7 +3913,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("get_provider_support"), &CamBANGServer::get_provider_support);
   godot::ClassDB::bind_method(godot::D_METHOD("select_builtin_scenario", "scenario_name"), &CamBANGServer::select_builtin_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("load_external_scenario", "json_text"), &CamBANGServer::load_external_scenario);
-  godot::ClassDB::bind_method(godot::D_METHOD("ingest_camera_concurrency", "json_text"), &CamBANGServer::ingest_camera_concurrency);
+  godot::ClassDB::bind_method(godot::D_METHOD("ingest_camera_description", "json_text"), &CamBANGServer::ingest_camera_description);
   godot::ClassDB::bind_method(godot::D_METHOD("start_scenario"), &CamBANGServer::start_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("stop_scenario"), &CamBANGServer::stop_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);

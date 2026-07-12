@@ -18,8 +18,9 @@ const STARTUP_STILL_HEIGHT := 240
 const STARTUP_INITIAL_WARM_HOLD_MS := 1
 const STARTUP_FINAL_WARM_HOLD_MS := 50 # TODO: rework this test. Warm is now an intent
 # returning OK very quickly, but not publising the new value until core says so.
-const CAMERA_CONCURRENCY_SUPPORTED_JSON := "{\"schema_version\":1,\"generator\":\"65_public_boundary_verify\",\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"max_concurrent_cameras\":2,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
-const CAMERA_CONCURRENCY_UNSUPPORTED_JSON := "{\"schema_version\":1,\"generator\":\"65_public_boundary_verify\",\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":false}}"
+const CAMERA_DESCRIPTION_SUPPORTED_JSON := "{\"schema_version\":2,\"generator\":\"65_public_boundary_verify\",\"cameras\":[{\"camera_id\":\"synthetic:0\",\"facing\":{\"source\":\"user_supplied\",\"value\":\"back\"}},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
+const CAMERA_DESCRIPTION_UNSUPPORTED_JSON := "{\"schema_version\":2,\"generator\":\"65_public_boundary_verify\",\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":false}}"
+const LEGACY_CAMERA_CONCURRENCY_JSON := "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}"
 
 var _done := false
 var _quit_requested := false
@@ -77,8 +78,11 @@ func _ready() -> void:
 	if not CamBANGServer.has_method("load_external_scenario"):
 		_fail("FAIL: CamBANGServer.load_external_scenario() missing")
 		return
-	if not CamBANGServer.has_method("ingest_camera_concurrency"):
-		_fail("FAIL: CamBANGServer.ingest_camera_concurrency() missing")
+	if not CamBANGServer.has_method("ingest_camera_description"):
+		_fail("FAIL: CamBANGServer.ingest_camera_description() missing")
+		return
+	if CamBANGServer.has_method("ingest_camera_concurrency"):
+		_fail("FAIL: retired CamBANGServer.ingest_camera_concurrency() must be absent")
 		return
 	if not CamBANGServer.has_method("start_scenario") or not CamBANGServer.has_method("stop_scenario"):
 		_fail("FAIL: CamBANGServer scenario start/stop API missing")
@@ -238,7 +242,7 @@ func _ready() -> void:
 	CamBANGServer.stop()
 
 	_diag_mark("invalid_start_argument_checks_end", "main verification startup")
-	if not _assert_camera_concurrency_public_boundary_while_stopped():
+	if not _assert_camera_description_public_boundary_while_stopped():
 		return
 
 	print("RUN: godot public boundary verify")
@@ -288,7 +292,7 @@ func _ready() -> void:
 	) != ERR_ALREADY_IN_USE:
 		_fail("FAIL: synthetic strict start re-entry must return ERR_ALREADY_IN_USE while running")
 		return
-	if not _assert_camera_concurrency_public_boundary_while_running("initial start"):
+	if not _assert_camera_description_public_boundary_while_running("initial start"):
 		return
 
 	var synth_cfg = CamBANGServer.get_active_provider_config()
@@ -428,23 +432,27 @@ func _assert_pre_baseline_public_boundary(context: String, accept_endpoint_start
 	return true
 
 
-func _assert_camera_concurrency_public_boundary_while_stopped() -> bool:
-	var malformed_err: int = CamBANGServer.ingest_camera_concurrency("{\"schema_version\":1")
+func _assert_camera_description_public_boundary_while_stopped() -> bool:
+	var malformed_err: int = CamBANGServer.ingest_camera_description("{\"schema_version\":2")
 	if malformed_err != ERR_PARSE_ERROR:
-		_fail("FAIL: CamBANGServer.ingest_camera_concurrency() malformed JSON must return ERR_PARSE_ERROR")
+		_fail("FAIL: CamBANGServer.ingest_camera_description() malformed JSON must return ERR_PARSE_ERROR")
 		return false
-	var valid_err: int = CamBANGServer.ingest_camera_concurrency(CAMERA_CONCURRENCY_SUPPORTED_JSON)
+	var valid_err: int = CamBANGServer.ingest_camera_description(CAMERA_DESCRIPTION_SUPPORTED_JSON)
 	if valid_err != OK:
-		_fail("FAIL: CamBANGServer.ingest_camera_concurrency() valid stopped-time payload must return OK")
+		_fail("FAIL: CamBANGServer.ingest_camera_description() valid stopped-time payload must return OK")
+		return false
+	var legacy_err: int = CamBANGServer.ingest_camera_description(LEGACY_CAMERA_CONCURRENCY_JSON)
+	if legacy_err != ERR_INVALID_DATA:
+		_fail("FAIL: CamBANGServer.ingest_camera_description() must reject legacy v1 concurrency JSON")
 		return false
 	_expected_imaging_spec_version = -1
 	return true
 
 
-func _assert_camera_concurrency_public_boundary_while_running(context: String) -> bool:
-	var busy_err: int = CamBANGServer.ingest_camera_concurrency(CAMERA_CONCURRENCY_UNSUPPORTED_JSON)
+func _assert_camera_description_public_boundary_while_running(context: String) -> bool:
+	var busy_err: int = CamBANGServer.ingest_camera_description(CAMERA_DESCRIPTION_UNSUPPORTED_JSON)
 	if busy_err != ERR_BUSY:
-		_fail("FAIL: " + context + " CamBANGServer.ingest_camera_concurrency() must return ERR_BUSY while running")
+		_fail("FAIL: " + context + " CamBANGServer.ingest_camera_description() must return ERR_BUSY while running")
 		return false
 	return true
 

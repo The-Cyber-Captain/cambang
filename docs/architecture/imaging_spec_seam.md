@@ -73,15 +73,15 @@ Current source-grounded consequences include:
 
 ## Guardrails
 
-The existing public API was preserved without redesign or churn; the sole
-approved public addition in this tranche is
-`CamBANGServer.ingest_camera_concurrency(String)`. Further unrelated public API
-expansion remains out of scope.
+The sole public ingestion surface is
+`CamBANGServer.ingest_camera_description(String)`. Its optional concurrency
+projection feeds this seam; per-camera descriptive facts remain outside it.
+Further unrelated public API expansion remains out of scope.
 
-The broader future camera-description direction remains distinct: per-camera
-descriptive facts do not become `ImagingSpec`, and approved future ingestion of
-camera description must preserve `ImagingSpec` as the operational cross-camera
-capability seam rather than turning it into a metadata bucket.
+The broader camera-description model remains distinct: per-camera descriptive
+facts do not become `ImagingSpec`, and camera-description ingestion preserves
+`ImagingSpec` as the operational cross-camera capability seam rather than
+turning it into a metadata bucket.
 
 This seam lock intentionally does not broaden into:
 

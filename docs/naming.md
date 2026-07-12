@@ -115,10 +115,10 @@ Observable boundary contract:
 - `CamBANGServer.stop()`
 - `CamBANGServer.get_rig(rig_id)`
 - `CamBANGServer.get_state_snapshot()`
-- `CamBANGServer.ingest_camera_concurrency(String json_text) -> Error` for
-  stopped-time ingestion of ADC camera-concurrency JSON supplied directly by
-  the caller; it performs no filesystem access and leaves prior configured
-  truth unchanged on failure
+- `CamBANGServer.ingest_camera_description(String json_text) -> Error` for
+  stopped-time full replacement of caller-supplied ADC v2 camera-description
+  JSON; it performs no filesystem access and leaves prior configured truth
+  unchanged on failure
 - `CamBANGServer.get_provider_support()` for stopped-time, read-only provider
   support/startup introspection from compiled build capability metadata
 - advanced/dev/scenario explicit-ID result lookups:
@@ -135,10 +135,8 @@ The full behavioural contract for the Godot-facing runtime boundary
 tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
-Approved future direction, not current source behavior:
-
-- `CamBANGServer.ingest_camera_description(String json_text) -> Error`
-- `CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`
+Geolocation capture-context input remains a separately gated future direction;
+it is not a current Godot API.
 
 Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
 entry point; rig capture is triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`.

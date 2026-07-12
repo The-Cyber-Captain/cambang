@@ -26,23 +26,17 @@ Stopped-time imaging-subsystem truth ingestion is a narrow public-boundary
 exception:
 
 ```
-CamBANGServer.ingest_camera_concurrency(String json_text) -> Error
+CamBANGServer.ingest_camera_description(String json_text) -> Error
 ```
 
 This method accepts caller-supplied JSON text only; CamBANG performs no
-filesystem access on the caller's behalf. The accepted format follows the
-supported ADC camera-concurrency schema-version range compiled under
-`camera_concurrency::ADC`, and unrelated ADC capability fields outside the
-consumed camera-concurrency projection are ignored. Ingestion is stopped-time
-and transactional: accepted input becomes configured truth for the next
-generation, active-generation ingestion returns `ERR_BUSY`, and any
-parse/validation failure leaves the previously configured truth unchanged.
-
-This current source behavior is narrower than the approved future
-camera-description direction. The broader documented direction
-`ingest_camera_description(String json_text)` / `set_capture_geolocation(...)`
-is not yet implemented in this checkout and must not be inferred from the
-existence of the current concurrency-only ingestion path.
+filesystem access on the caller's behalf. It accepts the complete supported ADC
+v2 camera-description document, including optional concurrency truth projected
+into retained `ImagingSpec`. Ingestion is stopped-time and transactional:
+accepted input becomes configured truth for the next generation,
+active-generation ingestion returns `ERR_BUSY`, and any parse/validation
+failure leaves the previously configured truth unchanged. Legacy ADC v1
+concurrency-only documents are not accepted through this public surface.
 
 Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
 that storage after a run, but once the provider is attached and the runtime is

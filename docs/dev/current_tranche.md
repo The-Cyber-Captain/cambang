@@ -5,11 +5,10 @@
 Complete the camera-description and still-capture fact model that follows the
 already-implemented external camera-concurrency ingestion seam.
 
-The checked-out source currently implements stopped-time transactional
-`CamBANGServer.ingest_camera_concurrency(String json_text)` ingestion of the
-supported ADC v1 concurrency projection into retained `ImagingSpec` truth.
-Grouped-rig admission already consumes that truth. That implementation is the
-source baseline, not the final camera-description model.
+The checked-out source implements stopped-time transactional
+`CamBANGServer.ingest_camera_description(String json_text)` replacement of a
+supported ADC v2 camera-description document. Optional concurrency projects
+into retained `ImagingSpec`; grouped-rig admission consumes that projection.
 
 The broader agreed direction is recorded in the camera-fact handover supplied
 for this workstream. Source inspection remains authoritative for actual code
@@ -17,9 +16,8 @@ state.
 
 ## Current tranche
 
-Implement the internal ADC v2 camera-description parser and retained external
-camera-description state after accepted Tranche 0 architecture/schema and
-Tranche 1 source-neutral type work.
+Complete the public ADC v2 camera-description ingestion replacement after the
+accepted internal parser and retained external camera-description state work.
 
 Keep individual invocation tasks in their Codex prompts; keep this file
 focused on tranche-wide state and constraints.
@@ -44,21 +42,19 @@ focused on tranche-wide state and constraints.
   rescaling, coordinate-domain conversion, or approximate distortion fitting.
 * Rich camera facts principally belong to still-capture results. Exact public
   result bindings remain separately user-gatekept.
-* Approved future server-level direction is
-  `ingest_camera_description(String json_text) -> Error` and
-  `set_capture_geolocation(Dictionary geolocation) -> Error`.
-* Those future methods are not yet implemented and must not be documented as
-  current source behaviour.
+* `ingest_camera_description(String json_text) -> Error` is the sole public
+  camera-description ingestion surface. Capture geolocation remains separately
+  gatekept and is not implemented.
 
 ## Tranche boundaries
 
-This tranche introduces an internal bounded ADC v2 parser, typed configured and
-active external-camera-description state, and focused deterministic verification.
+This tranche exposes the existing bounded ADC v2 parser and typed retained
+external-camera-description state through the single public ingestion method.
 
-Do not change public Godot API, provider ingress/interfaces, result resolution,
-snapshot schema, provider behavior, or the working grouped-rig admission path.
-The existing v1 `ingest_camera_concurrency(...)` path remains unchanged until
-the separately approved public rename tranche.
+Do not add further public Godot API, provider ingress/interfaces, result
+resolution, snapshot schema, provider behavior, or change the working
+grouped-rig admission path. The legacy v1 concurrency parser has no Godot
+binding.
 
 Do not introduce additional Godot APIs, filesystem convenience APIs, a generic
 metadata/configuration system, calibration algorithms, or platform-provider
@@ -84,11 +80,11 @@ Required before this tranche closes:
   active generations; rejected input preserves prior accepted truth;
 * project only optional concurrency truth into `ImagingSpec` without changing
   grouped-rig admission semantics;
-* verify parsing, replacement, clear, persistence, lookup, limits, and the
-  internal seam without a public Godot API change.
+* verify public stopped-time replacement, rejection preservation, exact v2
+  acceptance, legacy v1 public rejection, and projected grouped-rig admission.
 
 ## After this tranche
 
-Implementation next proceeds through the approved Godot ingestion rename,
-capture-admission context, provider fact supply, SyntheticProvider reference
-facts, result resolution, and separately approved Godot exposure.
+Implementation next proceeds through capture-admission context, provider fact
+supply, SyntheticProvider reference facts, result resolution, and separately
+approved Godot exposure.

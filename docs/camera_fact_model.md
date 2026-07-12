@@ -99,9 +99,10 @@ It carries capability truth that Core may need for current admission and
 validation decisions. It must not become a general per-camera metadata,
 calibration, or result-fact bucket.
 
-The current implemented `ingest_camera_concurrency(String json_text)` path is a
-narrow operational `ImagingSpec` input. That current source behavior does not
-make the broader camera-description model an `ImagingSpec` responsibility.
+The current implemented `ingest_camera_description(String json_text)` path
+retains complete external camera-description facts and projects only optional
+concurrency truth into `ImagingSpec`. That behavior does not make the broader
+camera-description model an `ImagingSpec` responsibility.
 
 ### 3.3 Result facts
 
@@ -117,21 +118,22 @@ Result facts remain distinct from:
 
 ---
 
-## 4. Public API Direction
+## 4. Public Camera-Description API
 
-The approved future server-level direction for external camera-fact input is:
+The current server-level external camera-fact input is:
 
 ```gdscript
 Error CamBANGServer.ingest_camera_description(String json_text)
-Error CamBANGServer.set_capture_geolocation(Dictionary geolocation)
 ```
 
-Those methods are approved direction, not current source behavior in this
-checkout.
+It accepts a complete supported ADC v2 camera-description document while
+stopped. Accepted documents replace prior external camera-description truth
+transactionally and persist across stop/start. The optional concurrency section
+is the only portion projected into `ImagingSpec`; legacy ADC v1
+concurrency-only documents are not accepted by this API.
 
-Current source behavior remains the narrower stopped-time
-`CamBANGServer.ingest_camera_concurrency(String json_text) -> Error` path for
-ADC v1 concurrency projection only.
+Capture geolocation remains separately gatekept and is not implemented as a
+Godot API in this checkout.
 
 CamBANG must not add:
 
@@ -153,7 +155,7 @@ External camera-description ingestion in CamBANG is:
 - persistent across stop/start;
 - immutable during an active generation;
 - matched by exact case-sensitive `camera_id == hardware_id`;
-- schema-version gated within a compiled supported ADC v2+ range.
+- schema-version gated to the exact compiled supported ADC v2 version.
 
 Rejected input preserves prior accepted truth.
 
