@@ -2,13 +2,247 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <limits>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
+#include "core/camera_fact_types.h"
 #include "core/core_result_store.h"
 
 using namespace cambang;
 
+namespace {
+
+template <typename T, typename = void>
+struct has_effective_authority : std::false_type {};
+
+template <typename T>
+struct has_effective_authority<T, std::void_t<decltype(std::declval<T>().authority)>>
+    : std::true_type {};
+
+void verify_camera_fact_types() {
+  static_assert(std::is_same_v<
+      decltype(CameraStaticFacts{}.facing),
+      std::optional<SourcedFact<CameraFacing>>>);
+  static_assert(std::is_same_v<
+      decltype(CaptureImageFacts{}.realized_image_transform),
+      std::optional<SourcedFact<RealizedImageTransform>>>);
+  static_assert(!has_effective_authority<SourcedFact<CameraFacing>>::value);
+  static_assert(!std::is_same_v<SensorOrientationDegrees, ImageRotationDegrees>);
+  static_assert(!std::is_same_v<CaptureDateTime, ImageAcquisitionTiming>);
+  static_assert(!std::is_same_v<CameraStaticFacts, CaptureAdmissionFacts>);
+  static_assert(!std::is_same_v<CaptureAdmissionFacts, CaptureImageFacts>);
+  static_assert(!std::is_default_constructible_v<Intrinsics>);
+  static_assert(!std::is_default_constructible_v<BrownConrady5Distortion>);
+  static_assert(!std::is_default_constructible_v<FocusAtDistance>);
+  static_assert(!std::is_default_constructible_v<GeodeticAltitude>);
+  static_assert(!std::is_default_constructible_v<Geolocation>);
+
+  CameraStaticFacts description{};
+  CaptureAdmissionFacts admission{};
+  CaptureImageFacts image{};
+  assert(!description.facing);
+  assert(!description.nature);
+  assert(!description.sensor_orientation);
+  assert(!description.intrinsics);
+  assert(!description.distortion);
+  assert(!description.pose);
+  assert(!admission.geolocation);
+  assert(!admission.capture_datetime);
+  assert(!image.acquisition_timing);
+  assert(!image.focus_state);
+  assert(!image.realized_image_transform);
+
+  description.facing = SourcedFact<CameraFacing>{
+      CameraFacing::UNKNOWN,
+      FactOrigin::UNKNOWN};
+  assert(description.facing);
+  assert(description.facing->value == CameraFacing::UNKNOWN);
+  assert(description.facing->origin == FactOrigin::UNKNOWN);
+  const SourcedFact<CameraFacing> provider_derived_facing{
+      CameraFacing::BACK, FactOrigin::DERIVED};
+  const SourcedFact<CameraFacing> core_derived_facing{
+      CameraFacing::BACK, FactOrigin::CORE_DERIVED};
+  assert(provider_derived_facing.value == core_derived_facing.value);
+  assert(provider_derived_facing.origin != core_derived_facing.origin);
+  description.nature = SourcedFact<CameraNature>{
+      CameraNature::VIRTUAL,
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  description.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+      SensorOrientationDegrees::DEGREES_0,
+      FactOrigin::USER_SUPPLIED};
+  assert(description.sensor_orientation);
+  assert(description.sensor_orientation->value == SensorOrientationDegrees::DEGREES_0);
+  assert(description.nature->origin == FactOrigin::VIRTUAL_CAMERA_AUTHORED);
+
+  const CoordinateDomain known_domain = CoordinateDomainDeliveredImage{};
+  const auto intrinsics = Intrinsics::create(
+      3120.4, 3118.9, 2014.3, 1508.7, std::nullopt, 4032, 3024, known_domain);
+  assert(intrinsics);
+  description.intrinsics = SourcedFact<Intrinsics>{
+      *intrinsics, FactOrigin::NATIVE_REPORTED};
+  assert(!description.intrinsics->value.skew_px());
+  const auto zero_skew_intrinsics = Intrinsics::create(
+      3120.4, 3118.9, 2014.3, 1508.7, 0.0, 4032, 3024, known_domain);
+  assert(zero_skew_intrinsics);
+  assert(zero_skew_intrinsics->skew_px());
+  assert(*zero_skew_intrinsics->skew_px() == 0.0);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double positive_infinity = std::numeric_limits<double>::infinity();
+  assert(!Intrinsics::create(3120.4, 3118.9, 2014.3, 1508.7, std::nullopt, 0, 3024, known_domain));
+  assert(!Intrinsics::create(3120.4, 3118.9, 2014.3, 1508.7, std::nullopt, 4032, 0, known_domain));
+  assert(!Intrinsics::create(nan, 3118.9, 2014.3, 1508.7, std::nullopt, 4032, 3024, known_domain));
+  assert(!Intrinsics::create(3120.4, positive_infinity, 2014.3, 1508.7, std::nullopt, 4032, 3024, known_domain));
+  assert(!Intrinsics::create(3120.4, 3118.9, nan, 1508.7, std::nullopt, 4032, 3024, known_domain));
+  assert(!Intrinsics::create(3120.4, 3118.9, 2014.3, positive_infinity, std::nullopt, 4032, 3024, known_domain));
+  assert(!Intrinsics::create(3120.4, 3118.9, 2014.3, 1508.7, nan, 4032, 3024, known_domain));
+  assert(!Intrinsics::create(3120.4, 3118.9, 2014.3, 1508.7, positive_infinity, 4032, 3024, known_domain));
+
+  assert(std::holds_alternative<CoordinateDomainDeliveredImage>(known_domain));
+  assert(!CoordinateDomainPlatformDefined::create(""));
+  const auto platform_domain = CoordinateDomainPlatformDefined::create("synthetic-native");
+  assert(platform_domain);
+  const CoordinateDomain configured_domain = *platform_domain;
+  assert(std::holds_alternative<CoordinateDomainPlatformDefined>(configured_domain));
+  assert(std::get<CoordinateDomainPlatformDefined>(configured_domain).token() == "synthetic-native");
+
+  description.distortion = SourcedFact<Distortion>{
+      NoDistortion{DistortionImageState::RECTIFIED},
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  assert(std::holds_alternative<NoDistortion>(description.distortion->value));
+  const auto brown_distortion = BrownConrady5Distortion::create(
+      0.0, 0.0, 0.0, 0.0, 0.0, 4032, 3024, known_domain,
+      DistortionImageState::DISTORTED);
+  assert(brown_distortion);
+  description.distortion = SourcedFact<Distortion>{
+      *brown_distortion,
+      FactOrigin::DERIVED};
+  assert(std::holds_alternative<BrownConrady5Distortion>(description.distortion->value));
+  const auto& brown = std::get<BrownConrady5Distortion>(description.distortion->value);
+  assert(brown.radial_k1() == 0.0);
+  assert(brown.tangential_p2() == 0.0);
+  assert(!BrownConrady5Distortion::create(0.0, 0.0, 0.0, 0.0, 0.0, 0, 3024, known_domain, DistortionImageState::DISTORTED));
+  assert(!BrownConrady5Distortion::create(0.0, 0.0, 0.0, 0.0, 0.0, 4032, 0, known_domain, DistortionImageState::DISTORTED));
+  assert(!BrownConrady5Distortion::create(nan, 0.0, 0.0, 0.0, 0.0, 4032, 3024, known_domain, DistortionImageState::DISTORTED));
+  assert(!BrownConrady5Distortion::create(0.0, positive_infinity, 0.0, 0.0, 0.0, 4032, 3024, known_domain, DistortionImageState::DISTORTED));
+  assert(!BrownConrady5Distortion::create(0.0, 0.0, -positive_infinity, 0.0, 0.0, 4032, 3024, known_domain, DistortionImageState::DISTORTED));
+  assert(description.distortion->origin == FactOrigin::DERIVED);
+
+  assert(!PoseReferenceCamera::create(""));
+  assert(!PoseReferenceCustom::create(""));
+  assert(!PoseReferencePlatformDefined::create(""));
+  assert(!PoseConventionPlatformDefined::create(""));
+  const auto camera_reference_value = PoseReferenceCamera::create("Camera A ");
+  const auto custom_reference_value = PoseReferenceCustom::create("synthetic-rig");
+  const auto platform_reference_value = PoseReferencePlatformDefined::create("platform-rig");
+  const auto platform_convention_value = PoseConventionPlatformDefined::create("native-pose");
+  assert(camera_reference_value && custom_reference_value && platform_reference_value && platform_convention_value);
+  assert(camera_reference_value->camera_id() == "Camera A ");
+  assert(custom_reference_value->reference_id() == "synthetic-rig");
+  assert(platform_reference_value->reference_token() == "platform-rig");
+  assert(platform_convention_value->convention_token() == "native-pose");
+  const PoseReference camera_reference = *camera_reference_value;
+  const PoseReference custom_reference = *custom_reference_value;
+  const PoseReference platform_reference = *platform_reference_value;
+  assert(std::holds_alternative<PoseReferenceCamera>(camera_reference));
+  assert(std::holds_alternative<PoseReferenceCustom>(custom_reference));
+  assert(std::holds_alternative<PoseReferencePlatformDefined>(platform_reference));
+  const PoseConvention platform_convention = *platform_convention_value;
+  assert(std::holds_alternative<PoseConventionPlatformDefined>(platform_convention));
+
+  const auto valid_pose = CameraPose::create(
+      *custom_reference_value,
+      PoseConventionCameraOpticalFrame{},
+      Vec3Meters{0.0, 0.0, 0.0},
+      QuaternionXyzw{0.0, 0.0, 0.0, 2.0});
+  assert(valid_pose);
+  assert(!CameraPose::create(
+      *camera_reference_value,
+      PoseConventionAndroidCamera2{},
+      Vec3Meters{0.0, 0.0, 0.0},
+      QuaternionXyzw{0.0, 0.0, 0.0, 0.0}));
+  assert(std::holds_alternative<PoseReferenceCustom>(valid_pose->reference()));
+  assert(std::holds_alternative<PoseConventionCameraOpticalFrame>(valid_pose->convention()));
+  assert(valid_pose->translation_m().x == 0.0);
+
+  description.pose = SourcedFact<CameraPose>{
+      *valid_pose, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  assert(std::holds_alternative<PoseReferenceCustom>(description.pose->value.reference()));
+  assert(std::holds_alternative<PoseConventionCameraOpticalFrame>(description.pose->value.convention()));
+
+  const auto zero_geolocation = Geolocation::create(
+      0.0, 0.0, std::nullopt, 4.5, 8.0, AbsoluteUtcDateTime{1780000000000});
+  assert(zero_geolocation);
+  admission.geolocation = SourcedFact<Geolocation>{*zero_geolocation, FactOrigin::USER_SUPPLIED};
+  assert(admission.geolocation);
+  assert(admission.geolocation->value.latitude_degrees() == 0.0);
+  assert(admission.geolocation->value.longitude_degrees() == 0.0);
+  assert(!admission.geolocation->value.altitude());
+  assert(admission.geolocation->value.sample_datetime_utc());
+  const auto altitude = GeodeticAltitude::create(47.0, AltitudeReference::MEAN_SEA_LEVEL);
+  assert(altitude);
+  const auto geolocation_with_altitude = Geolocation::create(
+      0.0, 0.0, *altitude, std::nullopt, std::nullopt, std::nullopt);
+  assert(geolocation_with_altitude);
+  assert(geolocation_with_altitude->altitude());
+  assert(geolocation_with_altitude->altitude()->reference() == AltitudeReference::MEAN_SEA_LEVEL);
+  assert(!Geolocation::create(nan, 0.0, std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+  assert(!Geolocation::create(0.0, positive_infinity, std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+  assert(!GeodeticAltitude::create(nan, AltitudeReference::UNKNOWN));
+  assert(!Geolocation::create(0.0, 0.0, std::nullopt, nan, std::nullopt, std::nullopt));
+  assert(!Geolocation::create(0.0, 0.0, std::nullopt, std::nullopt, -positive_infinity, std::nullopt));
+  admission.capture_datetime = SourcedFact<CaptureDateTime>{
+      CaptureDateTime{AbsoluteUtcDateTime{1780000000001},
+                      CaptureDateTimeReferenceEvent::CAPTURE_ADMISSION},
+      FactOrigin::RUNTIME_INJECTED};
+  assert(admission.capture_datetime->value.utc.unix_ms == 1780000000001);
+
+  const auto tick_period = TickPeriod::create(1, 1);
+  assert(tick_period);
+  assert(!TickPeriod::create(0, 1));
+  assert(!TickPeriod::create(1, 0));
+  image.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+      ImageAcquisitionTiming{0, *tick_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                             ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+                             ImageAcquisitionComparability::SAME_DEVICE},
+      FactOrigin::NATIVE_REPORTED};
+  const auto zero_focus = FocusAtDistance::create(0.0);
+  const auto finite_focus = FocusAtDistance::create(-1.0);
+  assert(zero_focus && finite_focus);
+  assert(!FocusAtDistance::create(nan));
+  assert(!FocusAtDistance::create(positive_infinity));
+  assert(!FocusAtDistance::create(-positive_infinity));
+  image.focus_state = SourcedFact<FocusState>{FocusAtInfinity{}, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  image.realized_image_transform = SourcedFact<RealizedImageTransform>{
+      RealizedImageTransform{ImageRotationDegrees::DEGREES_0, false, true},
+      FactOrigin::CORE_DERIVED};
+  assert(std::holds_alternative<FocusAtInfinity>(image.focus_state->value));
+  image.focus_state = SourcedFact<FocusState>{FocusStateUnknown{}, FactOrigin::UNKNOWN};
+  assert(std::holds_alternative<FocusStateUnknown>(image.focus_state->value));
+  image.focus_state = SourcedFact<FocusState>{*zero_focus, FactOrigin::DERIVED};
+  assert(std::holds_alternative<FocusAtDistance>(image.focus_state->value));
+  assert(std::get<FocusAtDistance>(image.focus_state->value).distance_m() == 0.0);
+  assert(image.acquisition_timing->value.clock_domain ==
+         ImageAcquisitionClockDomain::PROVIDER_MONOTONIC);
+  assert(image.acquisition_timing->value.acquisition_mark == 0);
+  assert(image.acquisition_timing->value.tick_period.numerator_ns() == 1);
+  assert(image.acquisition_timing->value.tick_period.denominator() == 1);
+  assert(image.acquisition_timing->value.reference_event ==
+         ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT);
+  assert(image.acquisition_timing->value.comparability ==
+         ImageAcquisitionComparability::SAME_DEVICE);
+  assert(image.realized_image_transform->value.rotation == ImageRotationDegrees::DEGREES_0);
+  assert(image.realized_image_transform->value.pixels_already_transformed);
+  assert(image.realized_image_transform->origin == FactOrigin::CORE_DERIVED);
+  assert(FactOrigin::DERIVED != FactOrigin::CORE_DERIVED);
+}
+
+} // namespace
+
 int main() {
+  verify_camera_fact_types();
+
   CoreResultStore store;
 
   assert(kResultAccessCheapWithinBestMultiplier == 2);

@@ -17,25 +17,24 @@ state.
 
 ## Current tranche
 
-Formalise the source-neutral camera-fact architecture and ADC v2 interchange
-contract before C++ implementation begins.
+Implement source-neutral internal C++ camera-fact records after the accepted
+architecture and ADC v2 documentation/schema tranche.
 
-This tranche may require more than one Codex invocation for drafting, review,
-correction, and documentation reconciliation. Keep individual invocation tasks
-in their Codex prompts; keep this file focused on tranche-wide state and
-constraints.
+Keep individual invocation tasks in their Codex prompts; keep this file
+focused on tranche-wide state and constraints.
 
 ## Settled tranche direction
 
-* ADC v2+ is the target interchange contract. CamBANG is not required to ingest
-  ADC v1.
+* The camera-fact architecture and ADC v2 documentation/schema tranche is
+  accepted. ADC v2+ is the target interchange contract; CamBANG is not
+  required to ingest ADC v1.
 * ADC v1 human and machine schemas are historical evidence of the existing
   Aide-De-Cam output, not the target contract.
 * CamBANG's internal camera-fact model must remain source-neutral rather than
   ADC-, JSON-, Godot-, Camera2-, or provider-shaped.
-* Provider static/device facts, provider per-image facts, externally configured
-  facts, Core-owned capture-admission context, and realized payload truth remain
-  distinct authorities.
+* Source-neutral internal types keep provider static/device facts, provider
+  per-image facts, externally configured facts, Core-owned capture-admission
+  context, and realized payload truth as distinct authorities.
 * `ImagingSpec` remains the cross-camera/imaging-subsystem operational
   capability seam. Per-camera description and still-result facts do not become
   an `ImagingSpec` metadata bucket.
@@ -52,11 +51,13 @@ constraints.
 
 ## Tranche boundaries
 
-This tranche is documentation and schema work only.
+This tranche introduces internal Core-neutral types and focused deterministic
+verification only. Legacy result-fact/result-store/Godot structures remain
+compatibility surfaces unless a narrow compile-preserving adapter is required.
 
-Do not change C++, Godot bindings, tests, verification scenes, build scripts,
-snapshot schema, provider interfaces, runtime behaviour, or the working
-concurrency admission path.
+Do not change public Godot API, provider ingress/interfaces, ADC parsing or
+retained external state, result resolution, snapshot schema, runtime behaviour,
+or the working concurrency admission path.
 
 Do not introduce additional Godot APIs, filesystem convenience APIs, a generic
 metadata/configuration system, calibration algorithms, or platform-provider
@@ -73,19 +74,24 @@ Completed before this tranche:
 
 Required before this tranche closes:
 
-* establish the documentation authority and placement for the camera-fact
-  architecture and ADC v2 contract;
-* add matching human-readable and machine-readable ADC v2 contracts;
-* reconcile affected canonical and supplementary documentation without
-  duplicating the contract across unrelated files;
-* distinguish implemented concurrency-only source behaviour from approved
-  future camera-description APIs;
-* validate the resulting schema and documentation references where practical;
-* complete a contradiction and implementation-sufficiency review.
+* introduce strongly typed, presence-aware internal records without interpreting
+  legacy zero/default values as new-model facts;
+* retain ordinary source facts as value plus origin only; defer effective
+  resolution authority until the later result-resolution tranche;
+* represent static camera description, capture-admission context, and per-image
+  facts separately;
+* cover classification, atomic intrinsics/distortion/pose, geolocation, Capture
+  Date-Time, Image Acquisition Timing, focus state, and realized image transform;
+* reject empty string-bearing pose identifiers/tokens and settled invalid
+  calibration/geolocation values; keep finite focus distance distinct from
+  infinity, unknown, and absence;
+* verify explicit presence, zero, semantic-unknown, and invalid-state
+  distinctions with focused deterministic coverage;
+* add focused deterministic verification with no public API change.
 
 ## After this tranche
 
-Implementation proceeds through source-neutral fact types, ADC v2 parsing and
-retained external state, the approved ingestion replacement, capture-admission
-context, provider fact supply, SyntheticProvider reference facts, result
-resolution, and separately approved Godot exposure.
+Implementation next proceeds through ADC v2 parsing and retained external
+state, the approved ingestion replacement, capture-admission context, provider
+fact supply, SyntheticProvider reference facts, result resolution, and
+separately approved Godot exposure.
