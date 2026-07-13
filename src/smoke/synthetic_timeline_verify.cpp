@@ -315,9 +315,31 @@ static bool stream_is_flowing(const CamBANGStateSnapshot& s, uint64_t stream_id)
   return false;
 }
 
+static bool stream_is_stopped(const CamBANGStateSnapshot& s, uint64_t stream_id) {
+  for (const auto& st : s.streams) {
+    if (st.stream_id == stream_id) {
+      return st.mode == CBStreamMode::STOPPED;
+    }
+  }
+  return false;
+}
+
 static bool stream_exists(const CamBANGStateSnapshot& s, uint64_t stream_id) {
   for (const auto& st : s.streams) {
     if (st.stream_id == stream_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool native_stream_has_phase(const CamBANGStateSnapshot& s,
+                                    uint64_t stream_id,
+                                    CBLifecyclePhase phase) {
+  for (const auto& native : s.native_objects) {
+    if (native.type == static_cast<uint32_t>(NativeObjectType::Stream) &&
+        native.owner_stream_id == stream_id &&
+        native.phase == phase) {
       return true;
     }
   }
@@ -374,71 +396,92 @@ static void tick_synthetic(CoreRuntime& rt, uint64_t dt_ns) {
 }
 
 static int run_basic_lifecycle(CoreRuntime& rt, StateSnapshotBuffer& buf, const Options& opt, uint64_t period) {
-  // Create + start (core-initiated).
-  {
-    const auto cs = rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
-    if (cs != TryCreateStreamStatus::OK) {
-      std::cerr << "FAIL: try_create_stream not enqueued\n";
-      return 1;
-    }
-    const auto ss = rt.try_start_stream(kStreamId);
-    if (ss != TryStartStreamStatus::OK) {
-      std::cerr << "FAIL: try_start_stream not enqueued\n";
-      return 1;
-    }
+  auto fail = [](const std::string& stage, const std::string& detail) -> int {
+    std::cerr << "basic_lifecycle FAIL [" << stage << "]: " << detail << "\n";
+    return 1;
+  };
+
+  // Submit create and start in their documented Core order.
+  const auto create_status =
+      rt.try_create_stream(kStreamId, kDeviceInstanceId, StreamIntent::PREVIEW, nullptr, nullptr, 1);
+  if (create_status != TryCreateStreamStatus::OK) {
+    return fail("create_submission", "try_create_stream was not accepted");
+  }
+  const auto start_status = rt.try_start_stream(kStreamId);
+  if (start_status != TryStartStreamStatus::OK) {
+    return fail("start_submission", "try_start_stream was not accepted");
   }
 
-  // Wait until canonical stream/session seams are visible.
+  // Do not begin frame work merely because structural rows have appeared. Wait
+  // for the complete observable start state that the following steps require:
+  // flowing Core stream truth, a live native Stream, and its session seam.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
-        return stream_exists(s, kStreamId) &&
+        return stream_is_flowing(s, kStreamId) &&
+               native_stream_has_phase(s, kStreamId, CBLifecyclePhase::LIVE) &&
                has_acquisition_session_for_device(s, kDeviceInstanceId);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: stream/session seams not observed after start\n";
-    return 1;
+    return fail("start_convergence",
+                "FLOWING stream, LIVE native Stream, and AcquisitionSession were not observed together");
   }
 
-  // Emit 5 frames (virtual time ticks).
-  const uint64_t want_frames = 5;
-  for (uint64_t i = 0; i < want_frames; ++i) {
+  // Advance one frame period at a time and settle the corresponding Core-visible
+  // frame before submitting the next tick. Repeating frames are intentionally
+  // latest-state/lossy under pressure; this basic lifecycle case must not turn
+  // into an accidental burst/backpressure test.
+  constexpr uint64_t kFrameSteps = 5;
+  for (uint64_t step = 1; step <= kFrameSteps; ++step) {
+    const auto before = snapshot_copy(buf);
+    if (!before) {
+      return fail("frame_step", "snapshot disappeared before virtual-time advance");
+    }
+    const uint64_t target_frames = frames_received_for_stream(*before, kStreamId) + 1;
+
     tick_synthetic(rt, period);
     rt.request_publish();
-  }
 
-  if (!wait_for_frames(buf, kStreamId, want_frames, opt.dump_snapshots)) {
-    std::cerr << "FAIL: expected frames_received >= " << want_frames << "\n";
-    return 1;
-  }
-
-  // Stop + destroy.
-  {
-    const auto st = rt.try_stop_stream(kStreamId);
-    if (st != TryStopStreamStatus::OK) {
-      std::cerr << "FAIL: try_stop_stream not enqueued\n";
-      return 1;
-    }
-    const auto ds = rt.try_destroy_stream(kStreamId);
-    if (ds != TryDestroyStreamStatus::OK) {
-      std::cerr << "FAIL: try_destroy_stream not enqueued\n";
-      return 1;
+    if (!wait_for_frames(buf, kStreamId, target_frames, opt.dump_snapshots)) {
+      return fail("frame_step_" + std::to_string(step),
+                  "frame did not settle; expected frames_received >= " +
+                      std::to_string(target_frames));
     }
   }
 
-  // Assert stream/session seams are cleared after stop/destroy.
+  // Stop first and positively observe STOPPED truth before destroy. This keeps
+  // the verifier independent of command/provider acknowledgement interleaving.
+  const auto stop_status = rt.try_stop_stream(kStreamId);
+  if (stop_status != TryStopStreamStatus::OK) {
+    return fail("stop_submission", "try_stop_stream was not accepted");
+  }
+  if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
+        return stream_exists(s, kStreamId) && stream_is_stopped(s, kStreamId);
+      }, opt.dump_snapshots)) {
+    return fail("stop_convergence", "stream did not become observably STOPPED before destroy");
+  }
+
+  const auto destroy_status = rt.try_destroy_stream(kStreamId);
+  if (destroy_status != TryDestroyStreamStatus::OK) {
+    return fail("destroy_submission", "try_destroy_stream was not accepted after settled stop");
+  }
+
+  // Absence alone is ambiguous: it may mean either not-yet-integrated creation
+  // or completed teardown. Require positive retained terminal native truth.
+  // AcquisitionSession absence is deliberately not required because capture
+  // parent priming may truthfully retain that device-owned seam.
   if (!wait_for_pred(buf, [&](const CamBANGStateSnapshot& s) {
         return !stream_exists(s, kStreamId) &&
-               !has_acquisition_session_for_device(s, kDeviceInstanceId);
+               native_stream_has_phase(s, kStreamId, CBLifecyclePhase::DESTROYED);
       }, opt.dump_snapshots)) {
-    std::cerr << "FAIL: stream/session seams still visible after stop+destroy\n";
-    return 1;
+    return fail("destroy_convergence",
+                "Core stream row was not absent together with retained DESTROYED native Stream truth");
   }
 
-  // Assert native_ids are unique.
-  auto s = snapshot_copy(buf);
-  if (!s) {
-    std::cerr << "FAIL: no snapshot\n";
-    return 1;
+  const auto final_snapshot = snapshot_copy(buf);
+  if (!final_snapshot) {
+    return fail("final_snapshot", "no snapshot available after lifecycle convergence");
   }
-  if (!assert_unique_native_ids(*s)) return 1;
+  if (!assert_unique_native_ids(*final_snapshot)) {
+    return fail("native_identity", "native object identifiers were not unique");
+  }
 
   return 0;
 }
