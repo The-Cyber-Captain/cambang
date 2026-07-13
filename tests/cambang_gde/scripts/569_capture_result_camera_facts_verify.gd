@@ -235,6 +235,27 @@ func _assert_camera_facts(result, label: String) -> void:
 			_require(not atomic.is_empty() and atomic.has("origin"), "%s: %s atomic record missing origin" % [label, atomic_name])
 		_require(String(facts["intrinsics"].get("coordinate_domain", "")) != "", "%s: intrinsics must retain coordinate domain" % label)
 		_require(String(facts["distortion"].get("model", "")) == "none", "%s: synthetic distortion must be explicit no-distortion" % label)
+		var timing: Dictionary = facts.get("acquisition_timing", {})
+		_require(
+			timing.get("origin", "") == "virtual_camera_authored"
+			and int(timing.get("acquisition_mark", -1)) == int(member.get("capture_timestamp", -2))
+			and int(timing.get("tick_period_numerator_ns", 0)) == 1
+			and int(timing.get("tick_period_denominator", 0)) == 1
+			and timing.get("clock_domain", "") == "provider_monotonic"
+			and timing.get("reference_event", "") == "provider_observed"
+			and timing.get("comparability", "") == "same_provider",
+			"%s: member %d acquisition timing must retain its provider-domain mark" % [label, member_index]
+		)
+		var focus: Dictionary = facts.get("focus_state", {})
+		_require(focus.get("origin", "") == "virtual_camera_authored" and focus.get("state", "") == "infinity", "%s: member %d focus state mismatch" % [label, member_index])
+		var transform: Dictionary = facts.get("realized_image_transform", {})
+		_require(
+			transform.get("origin", "") == "virtual_camera_authored"
+			and int(transform.get("rotation_degrees", -1)) == 0
+			and transform.get("mirrored", true) == false
+			and transform.get("pixels_already_transformed", false) == true,
+			"%s: member %d realized image transform mismatch" % [label, member_index]
+		)
 
 
 func _timed_out() -> bool:

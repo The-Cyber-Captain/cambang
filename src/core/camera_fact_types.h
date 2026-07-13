@@ -554,7 +554,7 @@ struct RealizedImageTransform {
 
 // These containers deliberately separate static camera description, Core
 // admission context, and image-time facts. No provider or interchange shape is
-// implied by this initial Core model.
+// implied by this source-neutral Core model.
 struct CameraStaticFacts {
   std::optional<SourcedFact<CameraFacing>> facing;
   std::optional<SourcedFact<CameraNature>> nature;
@@ -585,6 +585,7 @@ struct ProviderCaptureImageFacts {
   std::optional<SourcedFact<Intrinsics>> intrinsics;
   std::optional<SourcedFact<Distortion>> distortion;
   std::optional<SourcedFact<CameraPose>> pose;
+  CaptureImageFacts image;
 };
 
 } // namespace cambang

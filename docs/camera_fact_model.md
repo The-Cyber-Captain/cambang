@@ -339,6 +339,20 @@ comparability meaning.
 It is per-image-member descriptive timing rather than document metadata or
 capture-admission wall-clock context.
 
+The implemented provider ingress retains a present timing record by exact
+capture, device, and image-member identity. It preserves the declared provider
+clock domain, tick period, reference event, comparability, and mark. A provider
+must not substitute Capture Date-Time, capture-admission time, Core lifecycle
+time, geolocation sample time, or another member's mark.
+
+### 12.2.1 Focus and realized image transform
+
+Focus state and realized image transform are per-image-member provider facts.
+They remain distinct from sensor orientation and static camera pose. A provider
+may omit either fact when it cannot supply it truthfully. CamBANG carries their
+declared values and provenance without applying calibration, rotation,
+mirroring, or coordinate conversion.
+
 ### 12.3 Geolocation
 
 Geolocation is capture-admission context, not provider execution input and not
@@ -379,6 +393,8 @@ Classification values resolve independently. Intrinsics, distortion, and pose
 remain atomic.
 
 Dynamic image-time facts remain provider-owned rather than ADC-overridable.
+Image acquisition timing, focus state, and realized image transform therefore
+resolve from the exact provider capture-image record or remain absent.
 
 ---
 

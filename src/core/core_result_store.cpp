@@ -586,7 +586,7 @@ bool CoreResultStore::append_additional_capture_image(
   }
 
   auto& result = dev_it->second;
-  if (result->camera_facts_finalized) {
+  if (result->capture_image_facts_finalized) {
     return false;
   }
   const uint32_t expected_member_index =
@@ -628,7 +628,8 @@ bool CoreResultStore::finalize_capture_facts(
     uint64_t capture_id,
     uint64_t device_instance_id,
     std::optional<CaptureAdmissionContext> admission_context,
-    const std::function<CameraStaticFacts(uint32_t image_member_index)>& resolve_image_facts) {
+    const std::function<CoreResolvedCaptureImageFacts(uint32_t image_member_index)>&
+        resolve_image_facts) {
   if (capture_id == 0 || device_instance_id == 0 || !resolve_image_facts) {
     return false;
   }
@@ -640,7 +641,7 @@ bool CoreResultStore::finalize_capture_facts(
   }
   const auto device_it = capture_it->second.find(device_instance_id);
   if (device_it == capture_it->second.end() || !device_it->second ||
-      device_it->second->camera_facts_finalized) {
+      device_it->second->capture_image_facts_finalized) {
     return false;
   }
 
@@ -652,12 +653,12 @@ bool CoreResultStore::finalize_capture_facts(
   if (admission_context) {
     result->admission_context = std::move(*admission_context);
   }
-  result->default_image.resolved_camera_facts.camera =
+  result->default_image.resolved_image_facts =
       resolve_image_facts(result->default_image.image_member_index);
   for (CoreCaptureResultData::ImageMemberData& member : result->additional_images) {
-    member.resolved_camera_facts.camera = resolve_image_facts(member.image_member_index);
+    member.resolved_image_facts = resolve_image_facts(member.image_member_index);
   }
-  result->camera_facts_finalized = true;
+  result->capture_image_facts_finalized = true;
   return true;
 }
 

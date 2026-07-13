@@ -1015,7 +1015,9 @@ void SyntheticProvider::emit_camera_static_facts_(const DeviceState& d) {
 }
 
 void SyntheticProvider::emit_capture_image_facts_(
-    const CaptureRequest& request, uint32_t image_member_index) {
+    const CaptureRequest& request,
+    uint32_t image_member_index,
+    uint64_t acquisition_mark) {
   if (!callbacks_) return;
   std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   const char* hardware_id = resolve_hardware_id_for_device_locked_(request.device_instance_id);
@@ -1036,6 +1038,24 @@ void SyntheticProvider::emit_capture_image_facts_(
       *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   facts.distortion = SourcedFact<Distortion>{
       Distortion{NoDistortion{DistortionImageState::RECTIFIED}},
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  const auto tick_period = TickPeriod::create(1, 1);
+  if (!tick_period) return;
+  facts.image.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+      ImageAcquisitionTiming{
+          acquisition_mark,
+          *tick_period,
+          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+          ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+          ImageAcquisitionComparability::SAME_PROVIDER},
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.image.focus_state = SourcedFact<FocusState>{
+      FocusState{FocusAtInfinity{}}, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.image.realized_image_transform = SourcedFact<RealizedImageTransform>{
+      RealizedImageTransform{
+          ImageRotationDegrees::DEGREES_0,
+          false,
+          true},
       FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   strand_.post_capture_image_facts(
       request.capture_id, request.device_instance_id, image_member_index, std::move(facts));
@@ -2228,7 +2248,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         capture_latency_trace_now_ns() - member_frame_assembly_begin_ns;
     member_frame_assembly_ns += member_frame_assembly_sample_ns;
     const uint64_t member_post_begin_ns = capture_latency_trace_now_ns();
-    emit_capture_image_facts_(req, member.image_member_index);
+    emit_capture_image_facts_(req, member.image_member_index, fv.capture_timestamp.value);
     strand_.post_frame(fv);
     const uint64_t member_post_end_ns = capture_latency_trace_now_ns();
     member_post_sample_ns = member_post_end_ns - member_post_begin_ns;

@@ -713,7 +713,7 @@ private:
       uint64_t rig_id,
       uint64_t capture_id);
   CaptureAdmissionContext make_capture_admission_context_() const;
-  CameraStaticFacts resolve_capture_image_camera_facts_(
+  CoreResolvedCaptureImageFacts resolve_capture_image_facts_(
       uint64_t capture_id, uint64_t device_instance_id,
       uint32_t image_member_index) const;
   void finalize_completed_capture_facts_(

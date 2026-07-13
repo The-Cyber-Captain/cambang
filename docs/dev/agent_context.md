@@ -105,6 +105,14 @@ Keep provider static/device facts, provider result-specific image facts,
 externally configured per-camera facts, Core-owned capture-admission context,
 and realized payload/member truth as distinct authorities.
 
+Provider result-specific image facts include truthful image acquisition timing
+in the provider or backend clock domain, realized image-time focus state,
+realized delivered-image transform, and optional image-specific calibration or
+pose where the provider genuinely knows them. Providers must not substitute Core
+capture-admission time, Capture Date-Time, geolocation or geolocation sample
+time, Core capture lifecycle timing, or another image member's timing for image
+acquisition timing.
+
 `ImagingSpec` remains the retained cross-camera or imaging-subsystem operational
 capability seam. It must not become a general camera-metadata, calibration, or
 result-fact bucket.

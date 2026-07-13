@@ -4233,7 +4233,7 @@ void CoreRuntime::note_capture_lifecycle_ingress_(
   }
 }
 
-CameraStaticFacts CoreRuntime::resolve_capture_image_camera_facts_(
+CoreResolvedCaptureImageFacts CoreRuntime::resolve_capture_image_facts_(
     uint64_t capture_id,
     uint64_t device_instance_id,
     uint32_t image_member_index) const {
@@ -4248,31 +4248,34 @@ CameraStaticFacts CoreRuntime::resolve_capture_image_camera_facts_(
   const ProviderCaptureImageFacts* provider_image =
       provider_camera_fact_state_.find_capture_image(image_key);
 
-  CameraStaticFacts resolved{};
+  CoreResolvedCaptureImageFacts resolved{};
   const CameraStaticFacts* external_facts = external ? &external->facts : nullptr;
   const CameraStaticFacts* static_facts =
       provider_static ? &provider_static->static_facts : nullptr;
-  resolved.facing = external_facts && external_facts->facing
+  resolved.camera.facing = external_facts && external_facts->facing
       ? external_facts->facing
       : static_facts ? static_facts->facing : std::nullopt;
-  resolved.nature = external_facts && external_facts->nature
+  resolved.camera.nature = external_facts && external_facts->nature
       ? external_facts->nature
       : static_facts ? static_facts->nature : std::nullopt;
-  resolved.sensor_orientation = external_facts && external_facts->sensor_orientation
+  resolved.camera.sensor_orientation = external_facts && external_facts->sensor_orientation
       ? external_facts->sensor_orientation
       : static_facts ? static_facts->sensor_orientation : std::nullopt;
-  resolved.intrinsics = external_facts && external_facts->intrinsics
+  resolved.camera.intrinsics = external_facts && external_facts->intrinsics
       ? external_facts->intrinsics
       : provider_image && provider_image->intrinsics ? provider_image->intrinsics
       : static_facts ? static_facts->intrinsics : std::nullopt;
-  resolved.distortion = external_facts && external_facts->distortion
+  resolved.camera.distortion = external_facts && external_facts->distortion
       ? external_facts->distortion
       : provider_image && provider_image->distortion ? provider_image->distortion
       : static_facts ? static_facts->distortion : std::nullopt;
-  resolved.pose = external_facts && external_facts->pose
+  resolved.camera.pose = external_facts && external_facts->pose
       ? external_facts->pose
       : provider_image && provider_image->pose ? provider_image->pose
       : static_facts ? static_facts->pose : std::nullopt;
+  if (provider_image) {
+    resolved.image = provider_image->image;
+  }
   return resolved;
 }
 
@@ -4286,7 +4289,7 @@ void CoreRuntime::finalize_completed_capture_facts_(
       device_instance_id,
       context,
       [this, capture_id, device_instance_id](uint32_t image_member_index) {
-        return resolve_capture_image_camera_facts_(
+        return resolve_capture_image_facts_(
             capture_id, device_instance_id, image_member_index);
       });
 }

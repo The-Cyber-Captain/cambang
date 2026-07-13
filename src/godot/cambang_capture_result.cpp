@@ -6,6 +6,8 @@
 #include "godot/result_access_cost_evidence.h"
 
 #include <chrono>
+#include <type_traits>
+#include <variant>
 
 #include <godot_cpp/variant/array.hpp>
 
@@ -79,6 +81,40 @@ const char* camera_nature_name(CameraNature value) {
     case CameraNature::UNKNOWN: return "unknown";
   }
   return "unknown";
+}
+
+const char* acquisition_clock_domain_name(ImageAcquisitionClockDomain value) {
+  switch (value) {
+    case ImageAcquisitionClockDomain::PROVIDER_MONOTONIC: return "provider_monotonic";
+    case ImageAcquisitionClockDomain::CORE_MONOTONIC: return "core_monotonic";
+    case ImageAcquisitionClockDomain::DOMAIN_OPAQUE: return "domain_opaque";
+  }
+  return "domain_opaque";
+}
+
+const char* acquisition_reference_event_name(ImageAcquisitionReferenceEvent value) {
+  switch (value) {
+    case ImageAcquisitionReferenceEvent::EXPOSURE_START: return "exposure_start";
+    case ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT: return "exposure_midpoint";
+    case ImageAcquisitionReferenceEvent::SENSOR_READOUT_START: return "sensor_readout_start";
+    case ImageAcquisitionReferenceEvent::FRAME_AVAILABLE: return "frame_available";
+    case ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED: return "provider_observed";
+    case ImageAcquisitionReferenceEvent::UNKNOWN: return "unknown";
+  }
+  return "unknown";
+}
+
+const char* acquisition_comparability_name(ImageAcquisitionComparability value) {
+  switch (value) {
+    case ImageAcquisitionComparability::SAME_IMAGE_ONLY: return "same_image_only";
+    case ImageAcquisitionComparability::SAME_DEVICE: return "same_device";
+    case ImageAcquisitionComparability::SAME_PROVIDER: return "same_provider";
+    case ImageAcquisitionComparability::CROSS_DEVICE_SYNCHRONIZED:
+      return "cross_device_synchronized";
+    case ImageAcquisitionComparability::CORE_TIMELINE: return "core_timeline";
+    case ImageAcquisitionComparability::ORDERING_ONLY: return "ordering_only";
+  }
+  return "ordering_only";
 }
 
 const char* coordinate_domain_name(const CoordinateDomain& domain) {
@@ -193,29 +229,80 @@ godot::Dictionary to_dict(const SourcedFact<CameraPose>& fact) {
   return out;
 }
 
-godot::Dictionary camera_facts_to_dict(const CameraStaticFacts& facts) {
+godot::Dictionary to_dict(const SourcedFact<ImageAcquisitionTiming>& fact) {
   godot::Dictionary out;
-  if (facts.facing) {
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["acquisition_mark"] = static_cast<int64_t>(fact.value.acquisition_mark);
+  out["tick_period_numerator_ns"] =
+      static_cast<int64_t>(fact.value.tick_period.numerator_ns());
+  out["tick_period_denominator"] =
+      static_cast<int64_t>(fact.value.tick_period.denominator());
+  out["clock_domain"] = godot::String(acquisition_clock_domain_name(fact.value.clock_domain));
+  out["reference_event"] =
+      godot::String(acquisition_reference_event_name(fact.value.reference_event));
+  out["comparability"] =
+      godot::String(acquisition_comparability_name(fact.value.comparability));
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<FocusState>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  std::visit(
+      [&out](const auto& focus) {
+        using T = std::decay_t<decltype(focus)>;
+        if constexpr (std::is_same_v<T, FocusAtDistance>) {
+          out["state"] = "at_distance";
+          out["distance_m"] = focus.distance_m();
+        } else if constexpr (std::is_same_v<T, FocusAtInfinity>) {
+          out["state"] = "infinity";
+        } else {
+          out["state"] = "unknown";
+        }
+      },
+      fact.value);
+  return out;
+}
+
+godot::Dictionary to_dict(const SourcedFact<RealizedImageTransform>& fact) {
+  godot::Dictionary out;
+  out["origin"] = godot::String(fact_origin_name(fact.origin));
+  out["rotation_degrees"] = static_cast<int64_t>(fact.value.rotation);
+  out["mirrored"] = fact.value.mirrored;
+  out["pixels_already_transformed"] = fact.value.pixels_already_transformed;
+  return out;
+}
+
+godot::Dictionary camera_facts_to_dict(const CoreResolvedCaptureImageFacts& facts) {
+  godot::Dictionary out;
+  if (facts.camera.facing) {
     godot::Dictionary value;
-    value["value"] = godot::String(camera_facing_name(facts.facing->value));
-    value["origin"] = godot::String(fact_origin_name(facts.facing->origin));
+    value["value"] = godot::String(camera_facing_name(facts.camera.facing->value));
+    value["origin"] = godot::String(fact_origin_name(facts.camera.facing->origin));
     out["facing"] = value;
   }
-  if (facts.nature) {
+  if (facts.camera.nature) {
     godot::Dictionary value;
-    value["value"] = godot::String(camera_nature_name(facts.nature->value));
-    value["origin"] = godot::String(fact_origin_name(facts.nature->origin));
+    value["value"] = godot::String(camera_nature_name(facts.camera.nature->value));
+    value["origin"] = godot::String(fact_origin_name(facts.camera.nature->origin));
     out["camera_nature"] = value;
   }
-  if (facts.sensor_orientation) {
+  if (facts.camera.sensor_orientation) {
     godot::Dictionary value;
-    value["value"] = static_cast<int64_t>(facts.sensor_orientation->value);
-    value["origin"] = godot::String(fact_origin_name(facts.sensor_orientation->origin));
+    value["value"] = static_cast<int64_t>(facts.camera.sensor_orientation->value);
+    value["origin"] = godot::String(fact_origin_name(facts.camera.sensor_orientation->origin));
     out["sensor_orientation_degrees"] = value;
   }
-  if (facts.intrinsics) out["intrinsics"] = to_dict(*facts.intrinsics);
-  if (facts.distortion) out["distortion"] = to_dict(*facts.distortion);
-  if (facts.pose) out["pose"] = to_dict(*facts.pose);
+  if (facts.camera.intrinsics) out["intrinsics"] = to_dict(*facts.camera.intrinsics);
+  if (facts.camera.distortion) out["distortion"] = to_dict(*facts.camera.distortion);
+  if (facts.camera.pose) out["pose"] = to_dict(*facts.camera.pose);
+  if (facts.image.acquisition_timing) {
+    out["acquisition_timing"] = to_dict(*facts.image.acquisition_timing);
+  }
+  if (facts.image.focus_state) out["focus_state"] = to_dict(*facts.image.focus_state);
+  if (facts.image.realized_image_transform) {
+    out["realized_image_transform"] = to_dict(*facts.image.realized_image_transform);
+  }
   return out;
 }
 } // namespace
@@ -328,7 +415,7 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
   out["realized_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->realized_exposure_compensation_milli_ev);
   out["is_default"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED);
   out["is_additional_bracket"] = (member->role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
-  const godot::Dictionary camera_facts = camera_facts_to_dict(member->resolved_camera_facts.camera);
+  const godot::Dictionary camera_facts = camera_facts_to_dict(member->resolved_image_facts);
   if (!camera_facts.is_empty()) out["camera_facts"] = camera_facts;
   return out;
 }

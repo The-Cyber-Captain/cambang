@@ -136,6 +136,7 @@ struct CoreImageFactBundle {
 // result surface is explicitly approved.
 struct CoreResolvedCaptureImageFacts {
   CameraStaticFacts camera;
+  CaptureImageFacts image;
 };
 
 struct CoreStreamResultData {
@@ -196,7 +197,7 @@ struct CoreCaptureResultData {
     ResultCaptureAttributesFacts capture_attributes{};
     ResultCaptureAttributesProvenance capture_attributes_provenance{};
 
-    CoreResolvedCaptureImageFacts resolved_camera_facts{};
+    CoreResolvedCaptureImageFacts resolved_image_facts{};
   };
 
   uint64_t capture_id = 0;
@@ -228,7 +229,7 @@ struct CoreCaptureResultData {
   CoreImageFactBundle facts{};
   bool has_admission_context = false;
   CaptureAdmissionContext admission_context{};
-  bool camera_facts_finalized = false;
+  bool capture_image_facts_finalized = false;
 };
 
 using SharedStreamResultData = std::shared_ptr<const CoreStreamResultData>;
@@ -267,7 +268,8 @@ public:
       uint64_t capture_id,
       uint64_t device_instance_id,
       std::optional<CaptureAdmissionContext> admission_context,
-      const std::function<CameraStaticFacts(uint32_t image_member_index)>& resolve_image_facts);
+      const std::function<CoreResolvedCaptureImageFacts(uint32_t image_member_index)>&
+          resolve_image_facts);
   static bool try_build_capture_image_member_data_from_frame(
       const FrameView& frame,
       CoreCaptureResultData::ImageMemberData& out_member,

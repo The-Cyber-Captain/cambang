@@ -176,7 +176,23 @@ For platform-backed providers:
 
 ---
 
-## 9. Verification expectations
+## 9. Camera-fact callback discipline
+
+- Static camera facts are keyed by the opened provider device identity.
+- Per-image facts are posted through the normal provider callback path with the
+  exact capture ID, device instance ID, and image-member index.
+- Per-image fact replacement is complete and transactional: malformed input
+  must not mutate retained truth, and omitted facts remain absent.
+- Image acquisition timing uses the provider-domain mark associated with that
+  exact member. It must not be substituted from Capture Date-Time, admission,
+  Core lifecycle, geolocation, or another member.
+- Focus state and realized image transform are per-image facts, distinct from
+  sensor orientation and static pose. Providers omit facts they cannot supply
+  truthfully.
+
+---
+
+## 10. Verification expectations
 
 Providers should be validated using the maintainer tools and verifier.
 

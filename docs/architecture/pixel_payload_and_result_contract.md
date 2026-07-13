@@ -643,6 +643,22 @@ each contain `origin`; they are never flattened or merged. Absent facts are
 omitted, and `camera_facts` is omitted when all resolved camera facts are
 absent. `origin` describes provenance, not the internal resolution authority.
 
+Provider-owned per-member image facts are optional entries in that same
+dictionary:
+
+- `acquisition_timing` contains `origin`, `acquisition_mark`,
+  `tick_period_numerator_ns`, `tick_period_denominator`, `clock_domain`,
+  `reference_event`, and `comparability`;
+- `focus_state` contains `origin`, `state`, and `distance_m` only for the
+  `at_distance` state;
+- `realized_image_transform` contains `origin`, `rotation_degrees`,
+  `mirrored`, and `pixels_already_transformed`.
+
+These are exact per-member provider facts. In particular,
+`acquisition_timing.acquisition_mark` is in its declared provider domain and
+is not Capture Date-Time, capture-admission time, geolocation sample time, or
+another member's mark.
+
 `get_capture_datetime_unix_nanoseconds()` exposes the shared UTC
 capture-admission instant. It is distinct from the existing per-member
 `capture_timestamp` acquisition surface, which remains unchanged.
