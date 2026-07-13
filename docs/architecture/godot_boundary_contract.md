@@ -38,6 +38,27 @@ active-generation ingestion returns `ERR_BUSY`, and any parse/validation
 failure leaves the previously configured truth unchanged. Legacy ADC v1
 concurrency-only documents are not accepted through this public surface.
 
+Completed `CamBANGCaptureResult` objects expose resolved still-camera facts
+only through optional `get_image_member(index).camera_facts`, plus
+`get_capture_datetime_unix_nanoseconds()`, `has_geolocation()`, and
+`get_geolocation()`. This does not add a StreamResult fact surface, a generic
+`get_camera_facts()` method, or a camera-fact wrapper class.
+
+Capture geolocation is configured independently through:
+
+```
+CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error
+```
+
+It accepts an empty dictionary to clear the configured value. A non-empty
+dictionary requires finite WGS 84 geodetic `latitude_degrees` in `[-90, 90]`
+and `longitude_degrees` in `[-180, 180]`, with optional finite WGS 84
+ellipsoidal `altitude_meters` in metres. Invalid input is rejected
+transactionally without changing the prior value. The setter is valid while
+stopped or running and changes only the value sampled by future successful
+capture admissions; existing admitted captures and completed results remain
+unchanged.
+
 Boundary lifecycle note: Godot/CamBANGServer may own provider storage and release
 that storage after a run, but once the provider is attached and the runtime is
 running, attached-provider shutdown belongs to `CoreRuntime::stop()`. Godot must

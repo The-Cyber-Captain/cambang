@@ -116,6 +116,12 @@ Result facts remain distinct from:
 - runtime capture-admission context;
 - current runtime posture or admission truth.
 
+The implemented Godot projection is deliberately limited to completed
+`CamBANGCaptureResult`: per-member resolved camera facts appear under the
+existing `get_image_member(index)` dictionary, while Capture Date-Time and
+geolocation use dedicated result methods. It exposes fact origin, never the
+internal authority used during resolution.
+
 ---
 
 ## 4. Public Camera-Description API
@@ -132,15 +138,20 @@ transactionally and persist across stop/start. The optional concurrency section
 is the only portion projected into `ImagingSpec`; legacy ADC v1
 concurrency-only documents are not accepted by this API.
 
-Capture geolocation remains separately gatekept and is not implemented as a
-Godot API in this checkout.
+Capture geolocation is configured independently through
+`CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`.
+An empty dictionary clears it; a non-empty dictionary requires finite WGS 84
+geodetic `latitude_degrees` and `longitude_degrees` within their public ranges,
+plus optional finite WGS 84 ellipsoidal `altitude_meters`. Replacement is
+transactional and affects only later successful admissions.
 
-Core independently owns an internal stopped-time capture-geolocation
-configuration. At successful capture admission it snapshots that optional
-finite-valued geolocation with one absolute UTC Capture Date-Time and carries
-the same immutable context through every member of a device bracket or rig
-cohort. This context is descriptive only; it does not affect admission,
-synchronization, ordering, provider execution, or snapshot publication.
+Core owns this single configured/active capture-geolocation state. At
+successful capture admission it snapshots that optional geolocation with one
+absolute UTC Capture Date-Time and carries the same immutable context through
+every member of a device bracket or rig cohort. Existing admitted captures and
+completed results do not change after replacement or clear. This context is
+descriptive only; it does not affect admission, synchronization, ordering,
+provider execution, or snapshot publication.
 
 CamBANG must not add:
 
@@ -333,8 +344,14 @@ capture-admission wall-clock context.
 Geolocation is capture-admission context, not provider execution input and not
 camera-description static fact truth.
 
-It is replaceable independently of camera-description ingestion and one
-immutable snapshot is taken at successful capture admission.
+It is replaceable independently of camera-description ingestion through the
+server setter and one immutable snapshot is taken at successful capture
+admission. Replacement and clear affect future successful admissions only.
+
+For the Godot result dictionary, `latitude_degrees` and `longitude_degrees`
+are WGS 84 geodetic decimal degrees. Optional `altitude_meters` is WGS 84
+ellipsoidal height in metres, not orthometric height or elevation above mean
+sea level.
 
 ---
 

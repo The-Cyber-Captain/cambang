@@ -34,8 +34,11 @@ public:
   uint32_t get_format() const;
   int get_payload_kind() const;
   uint64_t get_capture_timestamp() const;
+  int64_t get_capture_datetime_unix_nanoseconds() const;
   uint64_t get_device_instance_id() const;
   uint64_t get_capture_id() const;
+  bool has_geolocation() const;
+  godot::Dictionary get_geolocation() const;
 
   bool has_image_properties() const;
   bool has_capture_attributes() const;

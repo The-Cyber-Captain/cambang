@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <initializer_list>
 #include <unordered_set>
 #include <vector>
@@ -265,6 +266,21 @@ static godot::Dictionary live_retained_calibration_metrics_snapshot() {
   d["live_retained_calibration_process_pending_capture_count"] =
       static_cast<uint64_t>(g_live_retained_calibration_metrics.process_pending_capture_count);
   return d;
+}
+
+static bool parse_finite_geolocation_number(const godot::Dictionary& dict,
+                                            const char* key,
+                                            double& out) noexcept {
+  if (!dict.has(key)) return false;
+  const godot::Variant value = dict.get(key, godot::Variant());
+  if (value.get_type() == godot::Variant::INT) {
+    out = static_cast<double>(int64_t(value));
+  } else if (value.get_type() == godot::Variant::FLOAT) {
+    out = double(value);
+  } else {
+    return false;
+  }
+  return std::isfinite(out);
 }
 
 static godot::Dictionary synthetic_capture_gpu_backing_retain_posture_metrics_to_dictionary(
@@ -3585,6 +3601,47 @@ godot::Error CamBANGServer::ingest_camera_description(
   return godot::ERR_BUG;
 }
 
+godot::Error CamBANGServer::set_capture_geolocation(
+    const godot::Dictionary& geolocation) {
+  if (geolocation.is_empty()) {
+    return runtime_.replace_capture_geolocation_for_server(std::nullopt) ==
+                   CoreRuntime::ReplaceCaptureGeolocationStatus::Ok
+               ? godot::OK
+               : godot::ERR_BUG;
+  }
+
+  double latitude_degrees = 0.0;
+  double longitude_degrees = 0.0;
+  if (!parse_finite_geolocation_number(geolocation, "latitude_degrees", latitude_degrees) ||
+      !parse_finite_geolocation_number(geolocation, "longitude_degrees", longitude_degrees) ||
+      latitude_degrees < -90.0 || latitude_degrees > 90.0 ||
+      longitude_degrees < -180.0 || longitude_degrees > 180.0) {
+    ERR_PRINT("CamBANGServer: set_capture_geolocation requires finite WGS 84 latitude_degrees and longitude_degrees within their valid ranges.");
+    return godot::ERR_INVALID_PARAMETER;
+  }
+
+  std::optional<double> altitude_meters;
+  if (geolocation.has("altitude_meters")) {
+    double altitude = 0.0;
+    if (!parse_finite_geolocation_number(geolocation, "altitude_meters", altitude)) {
+      ERR_PRINT("CamBANGServer: set_capture_geolocation altitude_meters must be finite when supplied.");
+      return godot::ERR_INVALID_PARAMETER;
+    }
+    altitude_meters = altitude;
+  }
+
+  const auto replacement = CaptureGeolocation::create(
+      latitude_degrees, longitude_degrees, altitude_meters);
+  if (!replacement) {
+    ERR_PRINT("CamBANGServer: set_capture_geolocation rejected invalid geolocation.");
+    return godot::ERR_INVALID_PARAMETER;
+  }
+  return runtime_.replace_capture_geolocation_for_server(*replacement) ==
+                 CoreRuntime::ReplaceCaptureGeolocationStatus::Ok
+             ? godot::OK
+             : godot::ERR_BUG;
+}
+
 godot::Error CamBANGServer::_start_scenario_now_() {
   if (!is_synthetic_timeline_session_active_()) {
     ERR_PRINT("CamBANGServer: start_scenario requires synthetic timeline mode.");
@@ -3914,6 +3971,7 @@ void CamBANGServer::_bind_methods() {
   godot::ClassDB::bind_method(godot::D_METHOD("select_builtin_scenario", "scenario_name"), &CamBANGServer::select_builtin_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("load_external_scenario", "json_text"), &CamBANGServer::load_external_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("ingest_camera_description", "json_text"), &CamBANGServer::ingest_camera_description);
+  godot::ClassDB::bind_method(godot::D_METHOD("set_capture_geolocation", "geolocation"), &CamBANGServer::set_capture_geolocation);
   godot::ClassDB::bind_method(godot::D_METHOD("start_scenario"), &CamBANGServer::start_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("stop_scenario"), &CamBANGServer::stop_scenario);
   godot::ClassDB::bind_method(godot::D_METHOD("set_timeline_paused", "paused"), &CamBANGServer::set_timeline_paused);

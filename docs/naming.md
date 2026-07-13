@@ -135,8 +135,10 @@ The full behavioural contract for the Godot-facing runtime boundary
 tick-bounded publication) is documented in:
 `docs/architecture/godot_boundary_contract.md`.
 
-Geolocation capture-context input remains a separately gated future direction;
-it is not a current Godot API.
+`CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`
+configures the optional capture-admission geolocation for later successful
+captures. It accepts `{}` to clear; validation and lifecycle semantics are
+defined by `docs/architecture/godot_boundary_contract.md`.
 
 Non-goal (current): no public `CamBANGServer.trigger_rig_capture(...)`
 entry point; rig capture is triggered via `CamBANGRig.trigger_capture() -> Error` and observed via `CamBANGRig.get_result()`.
@@ -634,6 +636,11 @@ Public/runtime-visible image-bearing nouns remain:
 - **Stream Result**
 - **Capture Result**
 - **Capture Result Set**
+
+`Capture Result` is the sole current Godot result surface for rich still-camera
+facts and capture-admission context. It uses the existing member dictionary,
+not a `get_camera_facts()` method or a new fact-wrapper class; `Stream Result`
+remains metadata-light.
 
 These are distinct from:
 

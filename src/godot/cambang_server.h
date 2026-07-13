@@ -105,6 +105,7 @@ public:
   godot::Error select_builtin_scenario(const godot::String& scenario_name);
   godot::Error load_external_scenario(const godot::String& json_text);
   godot::Error ingest_camera_description(const godot::String& json_text);
+  godot::Error set_capture_geolocation(const godot::Dictionary& geolocation);
   godot::Error start_scenario();
   godot::Error stop_scenario();
   godot::Error set_timeline_paused(bool paused);

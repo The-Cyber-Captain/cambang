@@ -635,6 +635,29 @@ Image-member access:
 including applied and realized exposure truth. Invalid/out-of-range access
 returns an empty `Dictionary`.
 
+For a completed member with resolved camera facts, that dictionary also has an
+optional `camera_facts` dictionary. Classification entries (`facing`,
+`camera_nature`, and `sensor_orientation_degrees`) are `{ "value": ..., "origin": ... }`.
+`intrinsics`, `distortion`, and `pose` are complete atomic dictionaries which
+each contain `origin`; they are never flattened or merged. Absent facts are
+omitted, and `camera_facts` is omitted when all resolved camera facts are
+absent. `origin` describes provenance, not the internal resolution authority.
+
+`get_capture_datetime_unix_nanoseconds()` exposes the shared UTC
+capture-admission instant. It is distinct from the existing per-member
+`capture_timestamp` acquisition surface, which remains unchanged.
+`has_geolocation()` and `get_geolocation()` expose the shared optional
+capture-admission geolocation; an absent value yields `false` and an empty
+dictionary. Present dictionaries use WGS 84 geodetic decimal degrees for
+`latitude_degrees`/`longitude_degrees` and optional WGS 84 ellipsoidal
+`altitude_meters` in metres.
+
+`CamBANGServer.set_capture_geolocation(Dictionary)` configures that optional
+context independently of camera facts. Empty clears; non-empty input is
+transactionally validated as finite WGS 84 geodetic latitude/longitude within
+their public ranges and optional finite WGS 84 ellipsoidal altitude. It affects
+only future successful admissions, never retained results.
+
 `get_image_count()` reports retained member count only and does not imply all
 authored/intended members were retained. Missing additional intended members are
 represented by absence, not sparse members and not public per-member failure
@@ -648,6 +671,7 @@ Non-goals:
 - no filesystem save APIs
 - no RAW processing/export APIs
 - no backend-native public handles
+- no StreamResult camera-fact or geolocation exposure
 
 `can_get_encoded_bytes()` / `get_encoded_bytes()` may be bound as capability
 probes, but currently report unsupported / empty. Encoded output requires a

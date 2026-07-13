@@ -16,8 +16,22 @@ CaptureAdmissionContext CoreRuntime::make_capture_admission_context_() const {
     context.capture_date_time = CaptureDateTimeUtc::from_unix_epoch_nanoseconds(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
   }
-  context.geolocation = active_capture_geolocation_;
+  {
+    const std::lock_guard<std::mutex> lock(configured_capture_geolocation_mutex_);
+    context.geolocation = active_capture_geolocation_;
+  }
   return context;
+}
+
+CoreRuntime::ReplaceCaptureGeolocationStatus
+CoreRuntime::replace_capture_geolocation_for_server(
+    std::optional<CaptureGeolocation> replacement) {
+  std::lock_guard<std::mutex> lock(configured_capture_geolocation_mutex_);
+  configured_capture_geolocation_ = replacement;
+  if (state_.load(std::memory_order_acquire) == CoreRuntimeState::LIVE) {
+    active_capture_geolocation_ = std::move(replacement);
+  }
+  return ReplaceCaptureGeolocationStatus::Ok;
 }
 
 #if defined(CAMBANG_INTERNAL_SMOKE)
@@ -27,17 +41,13 @@ CoreRuntime::ReplaceCaptureGeolocationStatus CoreRuntime::smoke_replace_capture_
   if (state == CoreRuntimeState::LIVE || state == CoreRuntimeState::TEARING_DOWN) return ReplaceCaptureGeolocationStatus::Busy;
   const auto replacement = CaptureGeolocation::create(latitude_degrees, longitude_degrees, altitude_meters);
   if (!replacement) return ReplaceCaptureGeolocationStatus::Invalid;
-  std::lock_guard<std::mutex> lock(configured_capture_geolocation_mutex_);
-  configured_capture_geolocation_ = replacement;
-  return ReplaceCaptureGeolocationStatus::Ok;
+  return replace_capture_geolocation_for_server(*replacement);
 }
 
 CoreRuntime::ReplaceCaptureGeolocationStatus CoreRuntime::smoke_clear_capture_geolocation() {
   const CoreRuntimeState state = state_.load(std::memory_order_acquire);
   if (state == CoreRuntimeState::LIVE || state == CoreRuntimeState::TEARING_DOWN) return ReplaceCaptureGeolocationStatus::Busy;
-  std::lock_guard<std::mutex> lock(configured_capture_geolocation_mutex_);
-  configured_capture_geolocation_.reset();
-  return ReplaceCaptureGeolocationStatus::Ok;
+  return replace_capture_geolocation_for_server(std::nullopt);
 }
 
 bool CoreRuntime::smoke_set_capture_datetime_utc_nanoseconds(int64_t value) {

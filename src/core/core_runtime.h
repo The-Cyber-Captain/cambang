@@ -413,8 +413,11 @@ enum class TryCloseDeviceStatus : uint8_t {
     uint32_t provider_error_code = 0;
   };
 
-#if defined(CAMBANG_INTERNAL_SMOKE)
   enum class ReplaceCaptureGeolocationStatus : uint8_t { Ok, Busy, Invalid };
+  ReplaceCaptureGeolocationStatus replace_capture_geolocation_for_server(
+      std::optional<CaptureGeolocation> replacement);
+
+#if defined(CAMBANG_INTERNAL_SMOKE)
   ReplaceCaptureGeolocationStatus smoke_replace_capture_geolocation(
       double latitude_degrees, double longitude_degrees,
       std::optional<double> altitude_meters);
