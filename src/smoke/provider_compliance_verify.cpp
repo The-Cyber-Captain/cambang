@@ -3622,6 +3622,138 @@ bool run_synthetic_still_bundle_capability_gate_contract_check() {
   return true;
 }
 
+bool run_core_synthetic_multi_member_capture_admission_context_check() {
+  constexpr uint64_t kDeviceId = 17201;
+  constexpr uint64_t kRootId = 17202;
+  constexpr uint64_t kFirstCaptureId = 17211;
+  constexpr uint64_t kSecondCaptureId = 17212;
+
+  CoreRuntime rt;
+  if (rt.smoke_replace_capture_geolocation(51.5, -0.12, 35.0) !=
+          CoreRuntime::ReplaceCaptureGeolocationStatus::Ok ||
+      !rt.smoke_set_capture_datetime_utc_nanoseconds(100) || !rt.start() ||
+      !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core synthetic admission context setup failed\n";
+    return false;
+  }
+
+  SyntheticProviderConfig cfg{};
+  cfg.endpoint_count = 1;
+  cfg.nominal.width = 64;
+  cfg.nominal.height = 64;
+  cfg.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(cfg);
+  const auto fail_with_cleanup = [&](const char* message) {
+    std::cerr << message << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL core synthetic admission context provider init failed");
+  }
+  rt.attach_provider(&provider);
+
+  std::vector<CameraEndpoint> endpoints;
+  if (!provider.enumerate_endpoints(endpoints).ok() || endpoints.empty() ||
+      !provider.open_device(endpoints[0].hardware_id, kDeviceId, kRootId).ok()) {
+    return fail_with_cleanup("FAIL core synthetic admission context device setup failed");
+  }
+
+  CaptureRequest materialized{};
+  for (int i = 0; i < kMaxIters; ++i) {
+    if (rt.materialize_capture_request(kDeviceId, materialized)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  if (materialized.device_instance_id != kDeviceId) {
+    return fail_with_cleanup("FAIL core synthetic admission context request materialization failed");
+  }
+
+  CaptureStillImageBundle bracket = make_default_metered_still_image_bundle();
+  bracket.members.push_back(CaptureStillImageMember{
+      1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  CaptureProfile capture_profile{};
+  capture_profile.width = materialized.width;
+  capture_profile.height = materialized.height;
+  capture_profile.format_fourcc = materialized.format_fourcc;
+  if (rt.try_set_device_still_capture_profile(
+          kDeviceId, capture_profile, bracket) != TrySetStillCaptureProfileStatus::OK) {
+    return fail_with_cleanup("FAIL core synthetic admission context two-member profile rejected");
+  }
+
+  rt.smoke_reset_capture_admission_clock_sample_count();
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kFirstCaptureId) !=
+      TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL core synthetic admission context first bracket rejected");
+  }
+  const auto first_context = rt.smoke_capture_admission_context(kFirstCaptureId, kDeviceId);
+  if (!first_context || rt.smoke_capture_admission_clock_sample_count() != 1 ||
+      first_context->capture_date_time.unix_epoch_nanoseconds() != 100 ||
+      !first_context->geolocation || first_context->geolocation->latitude_degrees() != 51.5 ||
+      first_context->geolocation->longitude_degrees() != -0.12 ||
+      !first_context->geolocation->altitude_meters() ||
+      *first_context->geolocation->altitude_meters() != 35.0) {
+    return fail_with_cleanup("FAIL core synthetic admission context first bracket context mismatch");
+  }
+
+  SharedCaptureResultData first_result;
+  for (int i = 0; i < kMaxIters; ++i) {
+    first_result = rt.get_capture_result(kFirstCaptureId, kDeviceId);
+    if (first_result && first_result->image_member_count() == 2 &&
+        first_result->image_member_at(0) && first_result->image_member_at(1)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  if (!first_result || first_result->image_member_count() != 2 ||
+      !first_result->image_member_at(0) || !first_result->image_member_at(1) ||
+      rt.smoke_capture_admission_clock_sample_count() != 1) {
+    return fail_with_cleanup("FAIL core synthetic admission context bracket did not retain two members under one context");
+  }
+
+  if (!rt.smoke_set_capture_datetime_utc_nanoseconds(200) ||
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceId, kSecondCaptureId) !=
+          TryTriggerDeviceCaptureStatus::OK) {
+    return fail_with_cleanup("FAIL core synthetic admission context later bracket rejected");
+  }
+  const auto second_context = rt.smoke_capture_admission_context(kSecondCaptureId, kDeviceId);
+  if (!second_context || rt.smoke_capture_admission_clock_sample_count() != 2 ||
+      first_context->capture_date_time.unix_epoch_nanoseconds() != 100 ||
+      second_context->capture_date_time.unix_epoch_nanoseconds() != 200 ||
+      !second_context->geolocation || !first_context->geolocation ||
+      second_context->geolocation->latitude_degrees() !=
+          first_context->geolocation->latitude_degrees() ||
+      second_context->geolocation->longitude_degrees() !=
+          first_context->geolocation->longitude_degrees() ||
+      second_context->geolocation->altitude_meters() !=
+          first_context->geolocation->altitude_meters()) {
+    return fail_with_cleanup("FAIL core synthetic admission context later bracket was not independently sampled");
+  }
+
+  SharedCaptureResultData second_result;
+  for (int i = 0; i < kMaxIters; ++i) {
+    second_result = rt.get_capture_result(kSecondCaptureId, kDeviceId);
+    if (second_result && second_result->image_member_count() == 2 &&
+        second_result->image_member_at(0) && second_result->image_member_at(1)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+  }
+  if (!second_result || second_result->image_member_count() != 2 ||
+      !second_result->image_member_at(0) || !second_result->image_member_at(1) ||
+      rt.smoke_capture_admission_clock_sample_count() != 2) {
+    return fail_with_cleanup("FAIL core synthetic admission context later bracket did not complete without re-sampling");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -7507,6 +7639,7 @@ int main(int argc, char** argv) {
       {"run_core_synthetic_three_member_capture_result_check", [] { return run_core_synthetic_three_member_capture_result_check(); }},
       {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
+      {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},

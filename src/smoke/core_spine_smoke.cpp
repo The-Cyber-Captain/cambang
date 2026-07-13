@@ -2760,6 +2760,23 @@ static int test_device_capture_request_materialization_smoke() {
 }
 
 static int test_capture_admission_context_smoke() {
+  const auto same_context = [](const CaptureAdmissionContext& left,
+                               const CaptureAdmissionContext& right) {
+    if (left.capture_date_time.unix_epoch_nanoseconds() !=
+        right.capture_date_time.unix_epoch_nanoseconds()) {
+      return false;
+    }
+    if (left.geolocation.has_value() != right.geolocation.has_value()) {
+      return false;
+    }
+    if (!left.geolocation) {
+      return true;
+    }
+    return left.geolocation->latitude_degrees() == right.geolocation->latitude_degrees() &&
+           left.geolocation->longitude_degrees() == right.geolocation->longitude_degrees() &&
+           left.geolocation->altitude_meters() == right.geolocation->altitude_meters();
+  };
+
   CoreRuntime rt;
   if (rt.smoke_replace_capture_geolocation(51.5, -0.12, 35.0) !=
           CoreRuntime::ReplaceCaptureGeolocationStatus::Ok ||
@@ -2771,6 +2788,7 @@ static int test_capture_admission_context_smoke() {
     return 1;
   }
   StubProvider prov;
+  rt.smoke_reset_capture_admission_clock_sample_count();
   if (!setup_one_stream(rt, prov) ||
       rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceInstanceId, 99001) !=
           TryTriggerDeviceCaptureStatus::OK) {
@@ -2783,6 +2801,7 @@ static int test_capture_admission_context_smoke() {
       !first->geolocation || first->geolocation->latitude_degrees() != 51.5 ||
       first->geolocation->longitude_degrees() != -0.12 ||
       !first->geolocation->altitude_meters() || *first->geolocation->altitude_meters() != 35.0 ||
+      rt.smoke_capture_admission_clock_sample_count() != 1 ||
       rt.smoke_replace_capture_geolocation(1.0, 2.0, std::nullopt) !=
           CoreRuntime::ReplaceCaptureGeolocationStatus::Busy) {
     std::cerr << "FAIL: standalone admission context was not immutable or stopped-only\n";
@@ -2798,7 +2817,8 @@ static int test_capture_admission_context_smoke() {
   }
   const auto later = rt.smoke_capture_admission_context(99002, kDeviceInstanceId);
   if (!later || later->capture_date_time.unix_epoch_nanoseconds() != 200 ||
-      first->capture_date_time.unix_epoch_nanoseconds() != 100) {
+      first->capture_date_time.unix_epoch_nanoseconds() != 100 ||
+      rt.smoke_capture_admission_clock_sample_count() != 2) {
     std::cerr << "FAIL: capture date-time was not independently sampled per admission\n";
     rt.stop();
     return 1;
@@ -2811,7 +2831,8 @@ static int test_capture_admission_context_smoke() {
   }
   const auto rejected_preflight = rt.smoke_admit_rig_cohort_from_preflight(
       991, 99000, CoreRuntime::RigPreflightResult{});
-  if (rejected_preflight.ok || rt.smoke_capture_admission_context(99000, 1)) {
+  if (rejected_preflight.ok || rt.smoke_capture_admission_context(99000, 1) ||
+      rt.smoke_capture_admission_clock_sample_count() != 2) {
     std::cerr << "FAIL: rejected rig preflight created capture context\n";
     rt.stop();
     return 1;
@@ -2824,12 +2845,28 @@ static int test_capture_admission_context_smoke() {
       first_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
       second_rig->capture_date_time.unix_epoch_nanoseconds() != 200 ||
       !first_rig->geolocation || !second_rig->geolocation ||
-      first_rig->geolocation->latitude_degrees() != second_rig->geolocation->latitude_degrees()) {
+      first_rig->geolocation->latitude_degrees() != second_rig->geolocation->latitude_degrees() ||
+      admitted.participants.size() != 2 ||
+      !admitted.participants[0].request.has_admission_context ||
+      !admitted.participants[1].request.has_admission_context ||
+      !same_context(*first_rig, *second_rig) ||
+      !same_context(admitted.participants[0].request.admission_context, *first_rig) ||
+      !same_context(admitted.participants[1].request.admission_context, *first_rig) ||
+      rt.smoke_capture_admission_clock_sample_count() != 3) {
     std::cerr << "FAIL: grouped admission did not share persisted geolocation context"
               << " admitted=" << admitted.ok
               << " failure=" << static_cast<int>(admitted.failure)
               << " first=" << static_cast<bool>(first_rig)
               << " second=" << static_cast<bool>(second_rig) << '\n';
+    rt.stop();
+    return 1;
+  }
+  const auto duplicate = rt.smoke_admit_rig_cohort_from_preflight(
+      991, 99003, make_manual_rig_preflight(991, {"a", "b"}));
+  if (duplicate.ok ||
+      duplicate.failure != CoreRuntime::RigCohortAdmissionFailure::DuplicateCaptureId ||
+      rt.smoke_capture_admission_clock_sample_count() != 3) {
+    std::cerr << "FAIL: duplicate rig capture ID sampled a capture context\n";
     rt.stop();
     return 1;
   }
@@ -2851,6 +2888,71 @@ static int test_capture_admission_context_smoke() {
     return 1;
   }
   rt.stop();
+
+  CoreRuntime rejection_rt;
+  if (!rejection_rt.smoke_set_capture_datetime_utc_nanoseconds(400) ||
+      !rejection_rt.start() ||
+      !wait_until([&]() { return rejection_rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "FAIL: capture-admission rejection runtime setup failed\n";
+    return 1;
+  }
+  rejection_rt.smoke_reset_capture_admission_clock_sample_count();
+  const auto unavailable = rejection_rt.smoke_admit_rig_cohort_from_preflight(
+      992, 99005, make_manual_rig_preflight(992, {"a", "b"}));
+  if (unavailable.ok ||
+      unavailable.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecUnavailable ||
+      rejection_rt.smoke_capture_admission_clock_sample_count() != 0) {
+    std::cerr << "FAIL: unavailable ImagingSpec sampled a capture context\n";
+    rejection_rt.stop();
+    return 1;
+  }
+  rejection_rt.stop();
+  if (rejection_rt.ingest_camera_concurrency_json_for_server(
+          make_adc_camera_concurrency_json({"a", "b"}, false, {}, 2)).status !=
+          CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      !rejection_rt.start() ||
+      !wait_until([&]() { return rejection_rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "FAIL: rejected ImagingSpec setup failed\n";
+    return 1;
+  }
+  rejection_rt.smoke_reset_capture_admission_clock_sample_count();
+  const auto rejected = rejection_rt.smoke_admit_rig_cohort_from_preflight(
+      992, 99006, make_manual_rig_preflight(992, {"a", "b"}));
+  if (rejected.ok ||
+      rejected.failure != CoreRuntime::RigCohortAdmissionFailure::ImagingSpecRejected ||
+      rejection_rt.smoke_capture_admission_clock_sample_count() != 0) {
+    std::cerr << "FAIL: rejected ImagingSpec sampled a capture context\n";
+    rejection_rt.stop();
+    return 1;
+  }
+  rejection_rt.stop();
+  if (rejection_rt.ingest_camera_concurrency_json_for_server(
+          make_adc_camera_concurrency_json({"a", "b"}, true, {{"a", "b"}}, 2)).status !=
+          CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      !rejection_rt.start() ||
+      !wait_until([&]() { return rejection_rt.state_copy() == CoreRuntimeState::LIVE; }, 200, 1)) {
+    std::cerr << "FAIL: rig submission failure setup failed\n";
+    return 1;
+  }
+  rejection_rt.smoke_reset_capture_admission_clock_sample_count();
+  const auto admitted_without_provider = rejection_rt.smoke_admit_rig_cohort_from_preflight(
+      992, 99007, make_manual_rig_preflight(992, {"a", "b"}));
+  if (!admitted_without_provider.ok ||
+      rejection_rt.smoke_capture_admission_clock_sample_count() != 1) {
+    std::cerr << "FAIL: successful rig admission did not sample exactly one context\n";
+    rejection_rt.stop();
+    return 1;
+  }
+  const auto submission_failure =
+      rejection_rt.smoke_submit_admitted_rig_bundle(admitted_without_provider);
+  if (submission_failure.ok ||
+      submission_failure.failure != CoreRuntime::RigSubmissionFailure::ProviderUnavailable ||
+      rejection_rt.smoke_capture_admission_clock_sample_count() != 1) {
+    std::cerr << "FAIL: provider submission failure re-sampled a capture context\n";
+    rejection_rt.stop();
+    return 1;
+  }
+  rejection_rt.stop();
   return 0;
 }
 
