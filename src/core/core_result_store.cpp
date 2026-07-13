@@ -586,6 +586,9 @@ bool CoreResultStore::append_additional_capture_image(
   }
 
   auto& result = dev_it->second;
+  if (result->camera_facts_finalized) {
+    return false;
+  }
   const uint32_t expected_member_index =
       1u + static_cast<uint32_t>(result->additional_images.size());
   if (image_member.image_member_index != expected_member_index) {
@@ -618,6 +621,43 @@ bool CoreResultStore::append_additional_capture_image(
       static_cast<unsigned>(image_member_index),
       static_cast<unsigned long long>(payload_bytes),
       static_cast<unsigned long long>((capture_latency_trace_now_ns() - append_begin_ns) / 1000ull));
+  return true;
+}
+
+bool CoreResultStore::finalize_capture_facts(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    std::optional<CaptureAdmissionContext> admission_context,
+    const std::function<CameraStaticFacts(uint32_t image_member_index)>& resolve_image_facts) {
+  if (capture_id == 0 || device_instance_id == 0 || !resolve_image_facts) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto capture_it = capture_results_by_capture_id_.find(capture_id);
+  if (capture_it == capture_results_by_capture_id_.end()) {
+    return false;
+  }
+  const auto device_it = capture_it->second.find(device_instance_id);
+  if (device_it == capture_it->second.end() || !device_it->second ||
+      device_it->second->camera_facts_finalized) {
+    return false;
+  }
+
+  MutableCaptureResultData& result = device_it->second;
+  if (result.use_count() != 1) {
+    result = std::make_shared<CoreCaptureResultData>(*result);
+  }
+  result->has_admission_context = admission_context.has_value();
+  if (admission_context) {
+    result->admission_context = std::move(*admission_context);
+  }
+  result->default_image.resolved_camera_facts.camera =
+      resolve_image_facts(result->default_image.image_member_index);
+  for (CoreCaptureResultData::ImageMemberData& member : result->additional_images) {
+    member.resolved_camera_facts.camera = resolve_image_facts(member.image_member_index);
+  }
+  result->camera_facts_finalized = true;
   return true;
 }
 

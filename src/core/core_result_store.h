@@ -3,12 +3,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
 
+#include "core/camera_fact_types.h"
+#include "core/capture_admission_context.h"
 #include "core/result_fact_types.h"
 #include "core/result_payload_kind.h"
 #include "core/result_capability.h"
@@ -128,6 +131,13 @@ struct CoreImageFactBundle {
   ResultOpticalCalibrationProvenance optical_calibration_provenance{};
 };
 
+// Private completed-result fact view. These source-neutral facts deliberately
+// remain separate from the legacy flattened result facts above until a public
+// result surface is explicitly approved.
+struct CoreResolvedCaptureImageFacts {
+  CameraStaticFacts camera;
+};
+
 struct CoreStreamResultData {
   uint64_t stream_id = 0;
   uint64_t device_instance_id = 0;
@@ -185,6 +195,8 @@ struct CoreCaptureResultData {
     bool has_capture_attributes = false;
     ResultCaptureAttributesFacts capture_attributes{};
     ResultCaptureAttributesProvenance capture_attributes_provenance{};
+
+    CoreResolvedCaptureImageFacts resolved_camera_facts{};
   };
 
   uint64_t capture_id = 0;
@@ -214,6 +226,9 @@ struct CoreCaptureResultData {
   }
 
   CoreImageFactBundle facts{};
+  bool has_admission_context = false;
+  CaptureAdmissionContext admission_context{};
+  bool camera_facts_finalized = false;
 };
 
 using SharedStreamResultData = std::shared_ptr<const CoreStreamResultData>;
@@ -248,6 +263,11 @@ public:
                                        CoreCaptureResultData::ImageMemberData image_member,
                                        uint64_t capture_applied_access_posture_epoch = 0,
                                        CoreRetainedProductionPlan capture_requested_retained_plan = {});
+  bool finalize_capture_facts(
+      uint64_t capture_id,
+      uint64_t device_instance_id,
+      std::optional<CaptureAdmissionContext> admission_context,
+      const std::function<CameraStaticFacts(uint32_t image_member_index)>& resolve_image_facts);
   static bool try_build_capture_image_member_data_from_frame(
       const FrameView& frame,
       CoreCaptureResultData::ImageMemberData& out_member,

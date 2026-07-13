@@ -59,6 +59,18 @@ bool CoreCaptureAssemblyRegistry::has_admitted_capture_member(
   return std::find(members.begin(), members.end(), image_member_index) != members.end();
 }
 
+std::optional<CaptureAdmissionContext> CoreCaptureAssemblyRegistry::admission_context_for(
+    uint64_t capture_id, uint64_t device_instance_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto capture_it = assemblies_by_capture_id_.find(capture_id);
+  if (capture_it == assemblies_by_capture_id_.end()) return std::nullopt;
+  const auto device_it = capture_it->second.find(device_instance_id);
+  if (device_it == capture_it->second.end() || !device_it->second.has_admission_context) {
+    return std::nullopt;
+  }
+  return device_it->second.admission_context;
+}
+
 void CoreCaptureAssemblyRegistry::mark_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {
   if (capture_id == 0 || device_instance_id == 0) {
     return;

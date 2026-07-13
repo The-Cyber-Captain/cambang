@@ -710,6 +710,11 @@ private:
       uint64_t rig_id,
       uint64_t capture_id);
   CaptureAdmissionContext make_capture_admission_context_() const;
+  CameraStaticFacts resolve_capture_image_camera_facts_(
+      uint64_t capture_id, uint64_t device_instance_id,
+      uint32_t image_member_index) const;
+  void finalize_completed_capture_facts_(
+      uint64_t capture_id, uint64_t device_instance_id);
   bool build_effective_capture_request_without_retained_plan_(
       uint64_t device_instance_id,
       CaptureRequest& out) const;

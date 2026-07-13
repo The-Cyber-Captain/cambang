@@ -4280,6 +4280,242 @@ bool run_synthetic_provider_reference_camera_facts_check() {
   return true;
 }
 
+bool run_core_capture_result_fact_resolution_check() {
+  constexpr uint64_t kDeviceA = 17501;
+  constexpr uint64_t kDeviceB = 17502;
+  constexpr uint64_t kDeviceWithoutFacts = 17503;
+  constexpr uint64_t kBracketCapture = 17511;
+  constexpr uint64_t kAbsentCapture = 17512;
+  constexpr uint64_t kRigCapture = 17513;
+  constexpr uint64_t kRigId = 17521;
+  const auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+  const auto finalized_result = [&](CoreRuntime& runtime,
+                                    uint64_t capture_id,
+                                    uint64_t device_id,
+                                    uint32_t member_count) {
+    const SharedCaptureResultData result = runtime.get_capture_result(capture_id, device_id);
+    return result && result->camera_facts_finalized &&
+           result->image_member_count() == member_count;
+  };
+
+  CoreRuntime rt;
+  const std::string external_description = R"JSON({
+    "schema_version":2,
+    "cameras":[
+      {"camera_id":"synthetic:0",
+       "facing":{"source":"user_supplied","value":"front"},
+       "intrinsics":{"source":"user_supplied","focal_length_x_px":901,"focal_length_y_px":902,"principal_point_x_px":31,"principal_point_y_px":32,"reference_width_px":63,"reference_height_px":47,"coordinate_domain":"delivered_image"},
+       "pose":{"source":"user_supplied","reference_kind":"primary_camera","coordinate_convention":"camera_optical_frame","translation_m":[10,20,30],"rotation_xyzw":[0,0,0,1]}},
+      {"camera_id":"synthetic:1",
+       "camera_nature":{"source":"user_supplied","value":"hybrid"}}
+    ],
+    "concurrent_camera_support":{"supported":true,"camera_id_combinations":[["synthetic:0","synthetic:1"]]}
+  })JSON";
+  if (rt.replace_external_camera_description_json_for_internal(external_description).status !=
+          CoreRuntime::ReplaceExternalCameraDescriptionStatus::Ok ||
+      rt.smoke_replace_capture_geolocation(51.5, -0.12, 35.0) !=
+          CoreRuntime::ReplaceCaptureGeolocationStatus::Ok ||
+      !rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL core result fact resolution runtime setup failed\n";
+    return false;
+  }
+
+  SyntheticProviderConfig config{};
+  config.endpoint_count = 3;
+  config.nominal.width = 64;
+  config.nominal.height = 48;
+  config.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(config);
+  const auto fail_with_cleanup = [&](const char* message) {
+    std::cerr << message << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL core result fact resolution provider init failed");
+  }
+  rt.attach_provider(&provider);
+  if (rt.try_open_device("synthetic:0", kDeviceA, 17531) != TryOpenDeviceStatus::OK ||
+      rt.try_open_device("synthetic:1", kDeviceB, 17532) != TryOpenDeviceStatus::OK ||
+      rt.try_open_device("synthetic:2", kDeviceWithoutFacts, 17533) != TryOpenDeviceStatus::OK ||
+      !wait_until([&] {
+        const auto a = rt.provider_camera_facts_for_smoke(kDeviceA);
+        const auto b = rt.provider_camera_facts_for_smoke(kDeviceB);
+        const auto absent = rt.provider_camera_facts_for_smoke(kDeviceWithoutFacts);
+        return a && b && absent && absent->static_facts.facing;
+      })) {
+    return fail_with_cleanup("FAIL core result fact resolution device/static setup failed");
+  }
+
+  // This leaves the third device with no external or provider static truth,
+  // exercising valid absence through the normal result-finalization path.
+  rt.provider_callbacks()->on_camera_static_facts(kDeviceWithoutFacts, ProviderCameraFacts{});
+  if (!wait_until([&] {
+        const auto facts = rt.provider_camera_facts_for_smoke(kDeviceWithoutFacts);
+        return facts && !facts->static_facts.facing && !facts->static_facts.nature &&
+               !facts->static_facts.sensor_orientation && !facts->static_facts.intrinsics &&
+               !facts->static_facts.distortion && !facts->static_facts.pose;
+      })) {
+    return fail_with_cleanup("FAIL core result fact resolution static clear did not arrive");
+  }
+
+  CaptureProfile profile{};
+  profile.width = 64;
+  profile.height = 48;
+  profile.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bracket = make_default_metered_still_image_bundle();
+  bracket.members.push_back(CaptureStillImageMember{
+      1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  if (rt.try_set_device_still_capture_profile(kDeviceA, profile, bracket) !=
+          TrySetStillCaptureProfileStatus::OK ||
+      rt.try_set_device_still_capture_profile(kDeviceB, profile, bracket) !=
+          TrySetStillCaptureProfileStatus::OK ||
+      !rt.smoke_set_capture_datetime_utc_nanoseconds(100) ||
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceA, kBracketCapture) !=
+          TryTriggerDeviceCaptureStatus::OK ||
+      !wait_until([&] { return finalized_result(rt, kBracketCapture, kDeviceA, 2); })) {
+    return fail_with_cleanup("FAIL core result fact resolution bracket capture did not finalize");
+  }
+
+  const SharedCaptureResultData bracket_result =
+      rt.get_capture_result(kBracketCapture, kDeviceA);
+  const auto* bracket_member_0 = bracket_result ? bracket_result->image_member_at(0) : nullptr;
+  const auto* bracket_member_1 = bracket_result ? bracket_result->image_member_at(1) : nullptr;
+  if (!bracket_result || !bracket_member_0 || !bracket_member_1 ||
+      !bracket_result->has_admission_context ||
+      bracket_result->admission_context.capture_date_time.unix_epoch_nanoseconds() != 100 ||
+      !bracket_result->admission_context.geolocation ||
+      bracket_result->admission_context.geolocation->latitude_degrees() != 51.5 ||
+      bracket_result->admission_context.geolocation->longitude_degrees() != -0.12 ||
+      bracket_result->admission_context.geolocation->altitude_meters() != 35.0) {
+    return fail_with_cleanup("FAIL core result fact resolution admission context was not retained");
+  }
+  const CameraStaticFacts& a0 = bracket_member_0->resolved_camera_facts.camera;
+  const CameraStaticFacts& a1 = bracket_member_1->resolved_camera_facts.camera;
+  if (!a0.facing || !a0.nature || !a0.sensor_orientation || !a0.intrinsics ||
+      !a0.distortion || !a0.pose ||
+      a0.facing->value != CameraFacing::FRONT ||
+      a0.facing->origin != FactOrigin::USER_SUPPLIED ||
+      a0.nature->value != CameraNature::VIRTUAL ||
+      a0.nature->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      a0.sensor_orientation->value != SensorOrientationDegrees::DEGREES_0 ||
+      a0.sensor_orientation->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      a0.intrinsics->value.focal_length_x_px() != 901.0 ||
+      a0.intrinsics->origin != FactOrigin::USER_SUPPLIED ||
+      a0.pose->origin != FactOrigin::USER_SUPPLIED ||
+      a0.pose->value.translation_m().x != 10.0 ||
+      a0.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      !std::holds_alternative<NoDistortion>(a0.distortion->value) ||
+      !a1.intrinsics || a1.intrinsics->value.focal_length_x_px() != 901.0 ||
+      !a1.distortion || a1.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      !a1.pose || a1.pose->value.translation_m().x != 10.0) {
+    return fail_with_cleanup("FAIL core result fact resolution external/provider precedence failed");
+  }
+
+  if (!rt.smoke_set_capture_datetime_utc_nanoseconds(200) ||
+      rt.try_trigger_device_capture_with_capture_id_for_server(
+          kDeviceWithoutFacts, kAbsentCapture) != TryTriggerDeviceCaptureStatus::OK ||
+      !wait_until([&] { return finalized_result(rt, kAbsentCapture, kDeviceWithoutFacts, 1); })) {
+    return fail_with_cleanup("FAIL core result fact resolution absent capture did not finalize");
+  }
+  const SharedCaptureResultData absent_result =
+      rt.get_capture_result(kAbsentCapture, kDeviceWithoutFacts);
+  const auto* absent_member = absent_result ? absent_result->image_member_at(0) : nullptr;
+  if (!absent_result || !absent_member || !absent_result->has_admission_context ||
+      absent_result->admission_context.capture_date_time.unix_epoch_nanoseconds() != 200 ||
+      absent_member->resolved_camera_facts.camera.facing ||
+      absent_member->resolved_camera_facts.camera.nature ||
+      absent_member->resolved_camera_facts.camera.sensor_orientation ||
+      absent_member->resolved_camera_facts.camera.pose ||
+      !absent_member->resolved_camera_facts.camera.intrinsics ||
+      absent_member->resolved_camera_facts.camera.intrinsics->origin !=
+          FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      !absent_member->resolved_camera_facts.camera.distortion ||
+      absent_member->resolved_camera_facts.camera.distortion->origin !=
+          FactOrigin::VIRTUAL_CAMERA_AUTHORED) {
+    return fail_with_cleanup("FAIL core result fact resolution absence was not preserved");
+  }
+
+  CoreRuntime::RigPreflightResult preflight{};
+  preflight.ok = true;
+  preflight.rig_id = kRigId;
+  for (const auto& [hardware_id, device_id] :
+       {std::pair{"synthetic:0", kDeviceA}, std::pair{"synthetic:1", kDeviceB}}) {
+    CaptureRequest request{};
+    if (!rt.materialize_capture_request(device_id, request)) {
+      return fail_with_cleanup("FAIL core result fact resolution rig request materialization failed");
+    }
+    request.still_image_bundle = bracket;
+    preflight.participants.push_back({hardware_id, device_id, std::move(request)});
+  }
+  if (!rt.smoke_set_capture_datetime_utc_nanoseconds(300)) {
+    return fail_with_cleanup("FAIL core result fact resolution rig clock setup failed");
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(kRigId, kRigCapture, preflight);
+  if (!admitted.ok || !rt.smoke_submit_admitted_rig_bundle(admitted).ok ||
+      !wait_until([&] {
+        return finalized_result(rt, kRigCapture, kDeviceA, 2) &&
+               finalized_result(rt, kRigCapture, kDeviceB, 2);
+      })) {
+    return fail_with_cleanup("FAIL core result fact resolution rig capture did not finalize");
+  }
+  const SharedCaptureResultData rig_a = rt.get_capture_result(kRigCapture, kDeviceA);
+  const SharedCaptureResultData rig_b = rt.get_capture_result(kRigCapture, kDeviceB);
+  const auto* rig_a_member = rig_a ? rig_a->image_member_at(0) : nullptr;
+  const auto* rig_b_member = rig_b ? rig_b->image_member_at(0) : nullptr;
+  if (!rig_a || !rig_b || !rig_a_member || !rig_b_member ||
+      !rig_a->has_admission_context || !rig_b->has_admission_context ||
+      rig_a->admission_context.capture_date_time.unix_epoch_nanoseconds() != 300 ||
+      rig_b->admission_context.capture_date_time.unix_epoch_nanoseconds() != 300 ||
+      !rig_a->admission_context.geolocation || !rig_b->admission_context.geolocation ||
+      rig_a->admission_context.geolocation->latitude_degrees() !=
+          rig_b->admission_context.geolocation->latitude_degrees() ||
+      rig_a->admission_context.geolocation->longitude_degrees() !=
+          rig_b->admission_context.geolocation->longitude_degrees() ||
+      rig_a->admission_context.geolocation->altitude_meters() !=
+          rig_b->admission_context.geolocation->altitude_meters() ||
+      !rig_b_member->resolved_camera_facts.camera.nature ||
+      rig_b_member->resolved_camera_facts.camera.nature->value != CameraNature::HYBRID ||
+      rig_b_member->resolved_camera_facts.camera.nature->origin != FactOrigin::USER_SUPPLIED ||
+      !rig_b_member->resolved_camera_facts.camera.intrinsics ||
+      rig_b_member->resolved_camera_facts.camera.intrinsics->origin !=
+          FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+      !rig_b_member->resolved_camera_facts.camera.pose ||
+      rig_b_member->resolved_camera_facts.camera.pose->value.translation_m().x != 1.0 ||
+      !rig_a_member->resolved_camera_facts.camera.pose ||
+      rig_a_member->resolved_camera_facts.camera.pose->value.translation_m().x != 10.0) {
+    return fail_with_cleanup("FAIL core result fact resolution rig isolation/context failed");
+  }
+
+  ProviderCameraFacts changed_static{};
+  changed_static.static_facts.nature = SourcedFact<CameraNature>{
+      CameraNature::PHYSICAL, FactOrigin::NATIVE_REPORTED};
+  rt.provider_callbacks()->on_camera_static_facts(kDeviceA, changed_static);
+  if (!wait_until([&] {
+        const auto facts = rt.provider_camera_facts_for_smoke(kDeviceA);
+        return facts && facts->static_facts.nature &&
+               facts->static_facts.nature->value == CameraNature::PHYSICAL;
+      }) ||
+      !bracket_member_0->resolved_camera_facts.camera.nature ||
+      bracket_member_0->resolved_camera_facts.camera.nature->value != CameraNature::VIRTUAL ||
+      !rt.get_capture_result(kBracketCapture, kDeviceA)->camera_facts_finalized) {
+    return fail_with_cleanup("FAIL core result fact resolution completed result was mutable");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -8168,6 +8404,7 @@ int main(int argc, char** argv) {
       {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
       {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},
       {"run_synthetic_provider_reference_camera_facts_check", [] { return run_synthetic_provider_reference_camera_facts_check(); }},
+      {"run_core_capture_result_fact_resolution_check", [] { return run_core_capture_result_fact_resolution_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},

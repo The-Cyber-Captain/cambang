@@ -4190,12 +4190,71 @@ void CoreRuntime::note_capture_lifecycle_ingress_(
     case CoreCaptureLifecycleIngressEvent::Kind::Completed:
       report.has_capture_completed_ingested_steady_ns = true;
       report.capture_completed_ingested_steady_ns = event.ingest_steady_ns;
+      finalize_completed_capture_facts_(event.capture_id, event.device_instance_id);
       break;
     case CoreCaptureLifecycleIngressEvent::Kind::Failed:
       report.has_capture_failed_ingested_steady_ns = true;
       report.capture_failed_ingested_steady_ns = event.ingest_steady_ns;
       break;
   }
+}
+
+CameraStaticFacts CoreRuntime::resolve_capture_image_camera_facts_(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    uint32_t image_member_index) const {
+  assert(core_thread_.is_core_thread());
+  const CoreDeviceRegistry::DeviceRecord* device = devices_.find(device_instance_id);
+  const ExternalCameraDescriptionEntry* external =
+      device ? active_external_camera_description_.find_exact(device->hardware_id) : nullptr;
+  const ProviderCameraFacts* provider_static =
+      provider_camera_fact_state_.find_static(device_instance_id);
+  const ProviderCameraFactState::CaptureImageKey image_key{
+      capture_id, device_instance_id, image_member_index};
+  const ProviderCaptureImageFacts* provider_image =
+      provider_camera_fact_state_.find_capture_image(image_key);
+
+  CameraStaticFacts resolved{};
+  const CameraStaticFacts* external_facts = external ? &external->facts : nullptr;
+  const CameraStaticFacts* static_facts =
+      provider_static ? &provider_static->static_facts : nullptr;
+  resolved.facing = external_facts && external_facts->facing
+      ? external_facts->facing
+      : static_facts ? static_facts->facing : std::nullopt;
+  resolved.nature = external_facts && external_facts->nature
+      ? external_facts->nature
+      : static_facts ? static_facts->nature : std::nullopt;
+  resolved.sensor_orientation = external_facts && external_facts->sensor_orientation
+      ? external_facts->sensor_orientation
+      : static_facts ? static_facts->sensor_orientation : std::nullopt;
+  resolved.intrinsics = external_facts && external_facts->intrinsics
+      ? external_facts->intrinsics
+      : provider_image && provider_image->intrinsics ? provider_image->intrinsics
+      : static_facts ? static_facts->intrinsics : std::nullopt;
+  resolved.distortion = external_facts && external_facts->distortion
+      ? external_facts->distortion
+      : provider_image && provider_image->distortion ? provider_image->distortion
+      : static_facts ? static_facts->distortion : std::nullopt;
+  resolved.pose = external_facts && external_facts->pose
+      ? external_facts->pose
+      : provider_image && provider_image->pose ? provider_image->pose
+      : static_facts ? static_facts->pose : std::nullopt;
+  return resolved;
+}
+
+void CoreRuntime::finalize_completed_capture_facts_(
+    uint64_t capture_id, uint64_t device_instance_id) {
+  assert(core_thread_.is_core_thread());
+  const std::optional<CaptureAdmissionContext> context =
+      capture_assembly_registry_.admission_context_for(capture_id, device_instance_id);
+  (void)result_store_.finalize_capture_facts(
+      capture_id,
+      device_instance_id,
+      context,
+      [this, capture_id, device_instance_id](uint32_t image_member_index) {
+        return resolve_capture_image_camera_facts_(
+            capture_id, device_instance_id, image_member_index);
+      });
 }
 
 void CoreRuntime::begin_capture_stream_preemption_(uint64_t capture_id, uint64_t device_instance_id) {

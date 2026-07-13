@@ -272,6 +272,9 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       const uint64_t completed_ns = now_ns_ ? now_ns_() : 0;
       state_changed = acquisition_sessions_->on_capture_completed(
           p.device_instance_id, p.capture_id, completed_ns);
+      if (capture_assembly_registry_) {
+        capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
+      }
       if (capture_lifecycle_ingress_sink_) {
         capture_lifecycle_ingress_sink_(CoreCaptureLifecycleIngressEvent{
             CoreCaptureLifecycleIngressEvent::Kind::Completed,
@@ -281,7 +284,7 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
             dispatch_begin_ns});
       }
     }
-    if (capture_assembly_registry_) {
+    if (!acquisition_sessions_ && capture_assembly_registry_) {
       capture_assembly_registry_->mark_capture_completed(p.capture_id, p.device_instance_id);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
