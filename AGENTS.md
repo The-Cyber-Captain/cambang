@@ -43,6 +43,14 @@ After changes:
 
 Manual local validation remains authoritative.
 
+Required validation is a hard completion gate, not best-effort follow-up. Run
+every validation command required by the active tranche or repository
+instructions. Do not stop while a required command remains unrun. If a command
+fails or stalls, investigate it, preserve the exact command and relevant
+output, and continue with any independent later checks. Fix the cause where it
+is within scope; otherwise report the concrete unresolved blocker. Do not claim
+task or tranche completion unless every required validation check passes.
+
 Do not assume cloud or sandbox validation proves Windows, Godot, hardware, GPU, or platform-provider behaviour unless those paths were actually exercised.
 
 For this repo on this machine, treat sandboxed Codex Godot launches as non-authoritative: they may crash with a signal-11 / "memory could not be read" dialog even when local runs are otherwise healthy. For Godot scene or harness verification, prefer the explicit PowerShell helpers under `tests/cambang_gde/` and, when needed, an approved unsandboxed run.

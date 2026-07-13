@@ -3,6 +3,7 @@
 // and deterministic timeline dispatch observations as PASS/FAIL evidence.
 #include <cstdio>
 #include <cstdint>
+#include <array>
 #include <algorithm>
 #include <functional>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <utility>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -305,6 +307,103 @@ struct EventRec {
   ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
   bool has_primary_backing_artifact = false;
   bool retain_cpu_sidecar = true;
+};
+
+struct ProviderFactOrderEvent {
+  enum class Kind : uint8_t { DeviceOpened, StaticFacts, ImageFacts, StillFrame };
+  Kind kind = Kind::DeviceOpened;
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint32_t image_member_index = 0;
+};
+
+class ProviderFactOrderProbe final : public IProviderCallbacks {
+ public:
+  explicit ProviderFactOrderProbe(IProviderCallbacks* target) : target_(target) {}
+
+  std::vector<ProviderFactOrderEvent> snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return events_;
+  }
+
+  uint64_t allocate_native_id(NativeObjectType type) override {
+    return target_->allocate_native_id(type);
+  }
+  uint64_t core_monotonic_now_ns() override { return target_->core_monotonic_now_ns(); }
+  bool is_stream_display_demand_active(uint64_t stream_id) override {
+    return target_->is_stream_display_demand_active(stream_id);
+  }
+  void on_device_opened(uint64_t device_instance_id) override {
+    record_({ProviderFactOrderEvent::Kind::DeviceOpened, 0, device_instance_id, 0});
+    target_->on_device_opened(device_instance_id);
+  }
+  void on_device_closed(uint64_t device_instance_id) override {
+    target_->on_device_closed(device_instance_id);
+  }
+  void on_stream_created(uint64_t stream_id) override { target_->on_stream_created(stream_id); }
+  void on_stream_destroyed(uint64_t stream_id) override { target_->on_stream_destroyed(stream_id); }
+  void on_stream_started(uint64_t stream_id) override { target_->on_stream_started(stream_id); }
+  void on_stream_stopped(uint64_t stream_id, ProviderError error) override {
+    target_->on_stream_stopped(stream_id, error);
+  }
+  void on_capture_started(uint64_t capture_id, uint64_t device_instance_id) override {
+    target_->on_capture_started(capture_id, device_instance_id);
+  }
+  void on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) override {
+    target_->on_capture_completed(capture_id, device_instance_id);
+  }
+  void on_capture_failed(uint64_t capture_id,
+                         uint64_t device_instance_id,
+                         ProviderError error) override {
+    target_->on_capture_failed(capture_id, device_instance_id, error);
+  }
+  void on_camera_static_facts(uint64_t device_instance_id,
+                              ProviderCameraFacts facts) override {
+    record_({ProviderFactOrderEvent::Kind::StaticFacts, 0, device_instance_id, 0});
+    target_->on_camera_static_facts(device_instance_id, std::move(facts));
+  }
+  void on_capture_image_facts(uint64_t capture_id,
+                              uint64_t device_instance_id,
+                              uint32_t image_member_index,
+                              ProviderCaptureImageFacts facts) override {
+    record_({ProviderFactOrderEvent::Kind::ImageFacts,
+             capture_id,
+             device_instance_id,
+             image_member_index});
+    target_->on_capture_image_facts(
+        capture_id, device_instance_id, image_member_index, std::move(facts));
+  }
+  void on_frame(const FrameView& frame) override {
+    if (frame.capture_id != 0) {
+      record_({ProviderFactOrderEvent::Kind::StillFrame,
+               frame.capture_id,
+               frame.device_instance_id,
+               frame.capture_image.image_member_index});
+    }
+    target_->on_frame(frame);
+  }
+  void on_device_error(uint64_t device_instance_id, ProviderError error) override {
+    target_->on_device_error(device_instance_id, error);
+  }
+  void on_stream_error(uint64_t stream_id, ProviderError error) override {
+    target_->on_stream_error(stream_id, error);
+  }
+  void on_native_object_created(const NativeObjectCreateInfo& info) override {
+    target_->on_native_object_created(info);
+  }
+  void on_native_object_destroyed(const NativeObjectDestroyInfo& info) override {
+    target_->on_native_object_destroyed(info);
+  }
+
+ private:
+  void record_(ProviderFactOrderEvent event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    events_.push_back(event);
+  }
+
+  IProviderCallbacks* target_ = nullptr;
+  mutable std::mutex mutex_;
+  std::vector<ProviderFactOrderEvent> events_;
 };
 
 uint64_t fnv1a64_hash_bytes(const uint8_t* data, size_t size_bytes) {
@@ -3922,6 +4021,257 @@ bool run_provider_camera_fact_ingress_check() {
       rt.provider_camera_facts_for_smoke(kDeviceA) ||
       rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0)) {
     return fail_with_cleanup("FAIL provider camera facts crossed a stop/start boundary");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
+bool run_synthetic_provider_reference_camera_facts_check() {
+  constexpr uint64_t kDeviceA = 17401;
+  constexpr uint64_t kDeviceB = 17402;
+  constexpr uint64_t kSingleCapture = 17411;
+  constexpr uint64_t kBracketCapture = 17412;
+  constexpr uint64_t kRigCapture = 17413;
+  constexpr uint64_t kRigId = 17421;
+  const auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
+
+  const auto rectified_virtual_facts = [](const ProviderCameraFacts& facts,
+                                          uint32_t expected_width,
+                                          uint32_t expected_height,
+                                          uint32_t device_index) {
+    if (!facts.static_facts.facing || !facts.static_facts.nature ||
+        !facts.static_facts.sensor_orientation || !facts.static_facts.intrinsics ||
+        !facts.static_facts.distortion || !facts.static_facts.pose ||
+        facts.static_facts.facing->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.static_facts.nature->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.static_facts.sensor_orientation->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.static_facts.intrinsics->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.static_facts.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.static_facts.pose->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.static_facts.facing->value != CameraFacing::EXTERNAL ||
+        facts.static_facts.nature->value != CameraNature::VIRTUAL ||
+        facts.static_facts.sensor_orientation->value !=
+            static_cast<SensorOrientationDegrees>((device_index % 4u) * 90u) ||
+        facts.static_facts.intrinsics->value.reference_width_px() != expected_width ||
+        facts.static_facts.intrinsics->value.reference_height_px() != expected_height ||
+        facts.static_facts.intrinsics->value.focal_length_x_px() !=
+            static_cast<double>(expected_width) * (1.0 + (0.01 * device_index)) ||
+        facts.static_facts.intrinsics->value.focal_length_y_px() !=
+            static_cast<double>(expected_height) * (1.0 + (0.01 * device_index)) ||
+        facts.static_facts.intrinsics->value.principal_point_x_px() !=
+            static_cast<double>(expected_width) / 2.0 ||
+        facts.static_facts.intrinsics->value.principal_point_y_px() !=
+            static_cast<double>(expected_height) / 2.0 ||
+        facts.static_facts.intrinsics->value.skew_px() ||
+        !std::holds_alternative<CoordinateDomainDeliveredImage>(
+            facts.static_facts.intrinsics->value.coordinate_domain()) ||
+        !std::holds_alternative<PoseReferencePrimaryCamera>(
+            facts.static_facts.pose->value.reference()) ||
+        !std::holds_alternative<PoseConventionCameraOpticalFrame>(
+            facts.static_facts.pose->value.convention()) ||
+        facts.static_facts.pose->value.translation_m().x != static_cast<double>(device_index) ||
+        facts.static_facts.pose->value.translation_m().y != 0.0 ||
+        facts.static_facts.pose->value.translation_m().z != 0.0 ||
+        facts.static_facts.pose->value.rotation_xyzw().x != 0.0 ||
+        facts.static_facts.pose->value.rotation_xyzw().y != 0.0 ||
+        facts.static_facts.pose->value.rotation_xyzw().z != 0.0 ||
+        facts.static_facts.pose->value.rotation_xyzw().w != 1.0) {
+      return false;
+    }
+    const auto* no_distortion = std::get_if<NoDistortion>(&facts.static_facts.distortion->value);
+    return no_distortion && no_distortion->image_state == DistortionImageState::RECTIFIED;
+  };
+  const auto rectified_image_facts = [](const ProviderCaptureImageFacts& facts,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         uint32_t device_index) {
+    if (!facts.intrinsics || !facts.distortion || facts.pose ||
+        facts.intrinsics->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.intrinsics->value.reference_width_px() != width ||
+        facts.intrinsics->value.reference_height_px() != height ||
+        facts.intrinsics->value.focal_length_x_px() !=
+            static_cast<double>(width) * (1.0 + (0.01 * device_index)) ||
+        facts.intrinsics->value.focal_length_y_px() !=
+            static_cast<double>(height) * (1.0 + (0.01 * device_index)) ||
+        facts.intrinsics->value.principal_point_x_px() != static_cast<double>(width) / 2.0 ||
+        facts.intrinsics->value.principal_point_y_px() != static_cast<double>(height) / 2.0 ||
+        facts.intrinsics->value.skew_px() ||
+        !std::holds_alternative<CoordinateDomainDeliveredImage>(
+            facts.intrinsics->value.coordinate_domain())) {
+      return false;
+    }
+    const auto* no_distortion = std::get_if<NoDistortion>(&facts.distortion->value);
+    return no_distortion && no_distortion->image_state == DistortionImageState::RECTIFIED;
+  };
+
+  CoreRuntime rt;
+  if (rt.ingest_camera_concurrency_json_for_server(
+          "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}").status !=
+          CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      !rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL synthetic reference facts runtime setup failed\n";
+    return false;
+  }
+  SyntheticProviderConfig config{};
+  config.endpoint_count = 2;
+  config.nominal.width = 64;
+  config.nominal.height = 48;
+  config.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(config);
+  ProviderFactOrderProbe callback_probe(rt.provider_callbacks());
+  const auto fail_with_cleanup = [&](const char* message) {
+    std::cerr << message << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(&callback_probe).ok()) {
+    return fail_with_cleanup("FAIL synthetic reference facts provider init failed");
+  }
+  rt.attach_provider(&provider);
+  if (rt.try_open_device("synthetic:0", kDeviceA, 17431) != TryOpenDeviceStatus::OK ||
+      rt.try_open_device("synthetic:1", kDeviceB, 17432) != TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup("FAIL synthetic reference facts device open failed");
+  }
+  if (!wait_until([&] {
+        const auto a = rt.provider_camera_facts_for_smoke(kDeviceA);
+        const auto b = rt.provider_camera_facts_for_smoke(kDeviceB);
+        return a && b && rectified_virtual_facts(*a, 64, 48, 0) &&
+               rectified_virtual_facts(*b, 64, 48, 1);
+      })) {
+    return fail_with_cleanup("FAIL synthetic reference facts static ingress mismatch");
+  }
+  const auto static_events = callback_probe.snapshot();
+  for (const uint64_t device_id : {kDeviceA, kDeviceB}) {
+    size_t opened_index = static_events.size();
+    size_t facts_index = static_events.size();
+    for (size_t i = 0; i < static_events.size(); ++i) {
+      if (static_events[i].device_instance_id != device_id) continue;
+      if (static_events[i].kind == ProviderFactOrderEvent::Kind::DeviceOpened) opened_index = i;
+      if (static_events[i].kind == ProviderFactOrderEvent::Kind::StaticFacts) facts_index = i;
+    }
+    if (opened_index == static_events.size() || facts_index == static_events.size() ||
+        opened_index >= facts_index) {
+      return fail_with_cleanup("FAIL synthetic reference facts static callback ordering mismatch");
+    }
+  }
+
+  if (rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceA, kSingleCapture) !=
+      TryTriggerDeviceCaptureStatus::OK ||
+      !wait_until([&] {
+        const auto facts = rt.provider_capture_image_facts_for_smoke(
+            kSingleCapture, kDeviceA, 0);
+        return facts && rectified_image_facts(*facts, 64, 48, 0);
+      })) {
+    return fail_with_cleanup("FAIL synthetic reference facts single-member ingress mismatch");
+  }
+
+  CaptureProfile profile{};
+  profile.width = 64;
+  profile.height = 48;
+  profile.format_fourcc = FOURCC_RGBA;
+  CaptureStillImageBundle bracket = make_default_metered_still_image_bundle();
+  bracket.members.push_back(CaptureStillImageMember{
+      1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+  if (rt.try_set_device_still_capture_profile(kDeviceA, profile, bracket) !=
+          TrySetStillCaptureProfileStatus::OK ||
+      rt.try_set_device_still_capture_profile(kDeviceB, profile, bracket) !=
+          TrySetStillCaptureProfileStatus::OK ||
+      rt.try_trigger_device_capture_with_capture_id_for_server(kDeviceA, kBracketCapture) !=
+          TryTriggerDeviceCaptureStatus::OK ||
+      !wait_until([&] {
+        const auto member0 = rt.provider_capture_image_facts_for_smoke(
+            kBracketCapture, kDeviceA, 0);
+        const auto member1 = rt.provider_capture_image_facts_for_smoke(
+            kBracketCapture, kDeviceA, 1);
+        return member0 && member1 && rectified_image_facts(*member0, 64, 48, 0) &&
+               rectified_image_facts(*member1, 64, 48, 0);
+      })) {
+    return fail_with_cleanup("FAIL synthetic reference facts bracket ingress mismatch");
+  }
+
+  CoreRuntime::RigPreflightResult preflight{};
+  preflight.ok = true;
+  preflight.rig_id = kRigId;
+  bool rig_requests_materialized = true;
+  for (const auto& pair : std::array<std::pair<const char*, uint64_t>, 2>{
+           std::pair{"synthetic:0", kDeviceA}, std::pair{"synthetic:1", kDeviceB}}) {
+    CaptureRequest request{};
+    if (!rt.materialize_capture_request(pair.second, request)) {
+      rig_requests_materialized = false;
+      break;
+    }
+    request.still_image_bundle = bracket;
+    preflight.participants.push_back({pair.first, pair.second, std::move(request)});
+  }
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(
+      kRigId, kRigCapture, preflight);
+  if (!rig_requests_materialized || !admitted.ok ||
+      !rt.smoke_submit_admitted_rig_bundle(admitted).ok ||
+      !wait_until([&] {
+        const auto a0 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceA, 0);
+        const auto a1 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceA, 1);
+        const auto b0 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceB, 0);
+        const auto b1 = rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceB, 1);
+        return a0 && a1 && b0 && b1 &&
+               rectified_image_facts(*a0, 64, 48, 0) &&
+               rectified_image_facts(*a1, 64, 48, 0) &&
+               rectified_image_facts(*b0, 64, 48, 1) &&
+               rectified_image_facts(*b1, 64, 48, 1);
+      })) {
+    return fail_with_cleanup("FAIL synthetic reference facts rig identity mismatch");
+  }
+
+  const auto ordered_events = callback_probe.snapshot();
+  for (const auto [capture_id, device_id, member_index] :
+       std::array<std::tuple<uint64_t, uint64_t, uint32_t>, 7>{
+           std::tuple{kSingleCapture, kDeviceA, 0u},
+           std::tuple{kBracketCapture, kDeviceA, 0u},
+           std::tuple{kBracketCapture, kDeviceA, 1u},
+           std::tuple{kRigCapture, kDeviceA, 0u},
+           std::tuple{kRigCapture, kDeviceA, 1u},
+           std::tuple{kRigCapture, kDeviceB, 0u},
+           std::tuple{kRigCapture, kDeviceB, 1u}}) {
+    size_t facts_index = ordered_events.size();
+    size_t frame_index = ordered_events.size();
+    for (size_t i = 0; i < ordered_events.size(); ++i) {
+      const auto& event = ordered_events[i];
+      if (event.capture_id != capture_id || event.device_instance_id != device_id ||
+          event.image_member_index != member_index) {
+        continue;
+      }
+      if (event.kind == ProviderFactOrderEvent::Kind::ImageFacts) facts_index = i;
+      if (event.kind == ProviderFactOrderEvent::Kind::StillFrame) frame_index = i;
+    }
+    if (facts_index == ordered_events.size() || frame_index == ordered_events.size() ||
+        facts_index >= frame_index) {
+      return fail_with_cleanup("FAIL synthetic reference facts per-image callback ordering mismatch");
+    }
+  }
+
+  if (!wait_until([&] { return provider.close_device(kDeviceA).ok(); }) ||
+      !wait_until([&] {
+        return !rt.provider_camera_facts_for_smoke(kDeviceA) &&
+               !rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceA, 0);
+      })) {
+    return fail_with_cleanup("FAIL synthetic reference facts device-close lifecycle mismatch");
+  }
+  rt.stop();
+  if (!rt.start() || !wait_for_core_runtime_live(rt) ||
+      rt.provider_camera_facts_for_smoke(kDeviceB) ||
+      rt.provider_capture_image_facts_for_smoke(kRigCapture, kDeviceB, 1)) {
+    return fail_with_cleanup("FAIL synthetic reference facts generation lifecycle mismatch");
   }
 
   (void)provider.shutdown();
@@ -7817,6 +8167,7 @@ int main(int argc, char** argv) {
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
       {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
       {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},
+      {"run_synthetic_provider_reference_camera_facts_check", [] { return run_synthetic_provider_reference_camera_facts_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},

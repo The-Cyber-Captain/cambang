@@ -55,6 +55,11 @@ public:
   void post_capture_started(uint64_t capture_id, uint64_t device_instance_id);
   void post_capture_completed(uint64_t capture_id, uint64_t device_instance_id);
   void post_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error);
+  void post_camera_static_facts(uint64_t device_instance_id, ProviderCameraFacts facts);
+  void post_capture_image_facts(uint64_t capture_id,
+                                uint64_t device_instance_id,
+                                uint32_t image_member_index,
+                                ProviderCaptureImageFacts facts);
 
   void post_frame(const FrameView& frame);
 
@@ -76,6 +81,13 @@ private:
   struct EvCaptureStarted { uint64_t id; uint64_t device_instance_id; uint64_t queued_ns; };
   struct EvCaptureCompleted { uint64_t id; uint64_t device_instance_id; uint64_t queued_ns; };
   struct EvCaptureFailed { uint64_t id; uint64_t device_instance_id; ProviderError err; uint64_t queued_ns; };
+  struct EvCameraStaticFacts { uint64_t device_instance_id; ProviderCameraFacts facts; };
+  struct EvCaptureImageFacts {
+    uint64_t capture_id;
+    uint64_t device_instance_id;
+    uint32_t image_member_index;
+    ProviderCaptureImageFacts facts;
+  };
 
   struct EvFrame { FrameView frame; uint64_t queued_ns; };
 
@@ -97,6 +109,8 @@ private:
       EvCaptureStarted,
       EvCaptureCompleted,
       EvCaptureFailed,
+      EvCameraStaticFacts,
+      EvCaptureImageFacts,
       EvFrame,
       EvDeviceError,
       EvStreamError,

@@ -179,6 +179,14 @@ void CBProviderStrand::deliver_(Event& ev) {
           callbacks_->on_capture_completed(e.id, e.device_instance_id);
         } else if constexpr (std::is_same_v<T, EvCaptureFailed>) {
           callbacks_->on_capture_failed(e.id, e.device_instance_id, e.err);
+        } else if constexpr (std::is_same_v<T, EvCameraStaticFacts>) {
+          callbacks_->on_camera_static_facts(e.device_instance_id, std::move(e.facts));
+        } else if constexpr (std::is_same_v<T, EvCaptureImageFacts>) {
+          callbacks_->on_capture_image_facts(
+              e.capture_id,
+              e.device_instance_id,
+              e.image_member_index,
+              std::move(e.facts));
         } else if constexpr (std::is_same_v<T, EvFrame>) {
           callbacks_->on_frame(e.frame);
         } else if constexpr (std::is_same_v<T, EvDeviceError>) {
@@ -235,6 +243,20 @@ void CBProviderStrand::post_capture_failed(uint64_t capture_id,
                                            uint64_t device_instance_id,
                                            ProviderError error) {
   post(EvCaptureFailed{capture_id, device_instance_id, error, capture_latency_trace_now_ns()});
+}
+
+void CBProviderStrand::post_camera_static_facts(
+    uint64_t device_instance_id, ProviderCameraFacts facts) {
+  post(EvCameraStaticFacts{device_instance_id, std::move(facts)});
+}
+
+void CBProviderStrand::post_capture_image_facts(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    uint32_t image_member_index,
+    ProviderCaptureImageFacts facts) {
+  post(EvCaptureImageFacts{
+      capture_id, device_instance_id, image_member_index, std::move(facts)});
 }
 
 void CBProviderStrand::post_frame(const FrameView& frame) { post(EvFrame{frame, capture_latency_trace_now_ns()}); }

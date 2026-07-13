@@ -1,86 +1,72 @@
 # Current Tranche
 
-## Active workstream
+## Camera Facts Tranche 6 — SyntheticProvider Reference Facts
 
-Complete the camera-description and still-capture fact model that follows the
-already-implemented external camera-concurrency ingestion seam.
+### Objective
 
-The checked-out source implements stopped-time transactional
-`CamBANGServer.ingest_camera_description(String json_text)` replacement of a
-supported ADC v2 camera-description document. Optional concurrency projects
-into retained `ImagingSpec`; grouped-rig admission consumes that projection.
+Make `SyntheticProvider` the reference producer for the provider-camera-fact
+ingress completed in Tranche 5.
 
-The broader agreed direction is recorded in the camera-fact handover supplied
-for this workstream. Source inspection remains authoritative for actual code
-state.
+### Scope
 
-## Current tranche
+- Supply deterministic static camera facts for each synthetic device through
+  the existing provider-to-Core fact ingress.
+- Supply deterministic per-capture-image facts for each successfully emitted
+  still-image member through that same ingress.
+- Preserve exact device, capture, rig-participant, and image-member identity.
+- Keep facts internally consistent with the synthetic device topology and
+  emitted image dimensions.
+- Use the existing source-neutral fact types, validation, ownership, and
+  retention rules.
 
-Implement internal provider fact ingress after the accepted ADC v2 ingestion
-and capture-admission-context work.
+### Required behaviour
 
-Keep individual invocation tasks in their Codex prompts; keep this file
-focused on tranche-wide state and constraints.
+- Synthetic devices are represented as virtual cameras.
+- Synthetic image geometry is represented as rectified/undistorted; do not
+  invent nonzero distortion.
+- Intrinsics and any supplied pose facts are deterministic and valid under the
+  existing camera-fact contracts.
+- Distinct synthetic devices remain distinguishable.
+- Every emitted bracket member receives facts under its correct member index.
+- Rig participants and their members do not cross-contaminate.
+- Facts travel through the normal provider callback and Core ingress path; no
+  direct Core-state bypass is permitted.
+- Valid absence remains acceptable for facts that `SyntheticProvider` cannot
+  truthfully supply.
 
-## Settled tranche direction
+### Out of scope
 
-* The camera-fact architecture and ADC v2 documentation/schema tranche is
-  accepted. ADC v2+ is the target interchange contract; CamBANG is not
-  required to ingest ADC v1.
-* ADC v1 human and machine schemas are historical evidence of the existing
-  Aide-De-Cam output, not the target contract.
-* CamBANG's internal camera-fact model must remain source-neutral rather than
-  ADC-, JSON-, Godot-, Camera2-, or provider-shaped.
-* Source-neutral internal types keep provider static/device facts, provider
-  per-image facts, externally configured facts, Core-owned capture-admission
-  context, and realized payload truth as distinct authorities.
-* `ImagingSpec` remains the cross-camera/imaging-subsystem operational
-  capability seam. Per-camera description and still-result facts do not become
-  an `ImagingSpec` metadata bucket.
-* Intrinsics, distortion, and pose are atomic descriptive records.
-* CamBANG does not perform calibration, rectification, projection, intrinsic
-  rescaling, coordinate-domain conversion, or approximate distortion fitting.
-* Rich camera facts principally belong to still-capture results. Exact public
-  result bindings remain separately user-gatekept.
-* `ingest_camera_description(String json_text) -> Error` is the sole public
-  camera-description ingestion surface. Capture geolocation remains separately
-  gatekept and is not implemented.
+- External-versus-provider precedence or result resolution.
+- `CaptureResult` or `StreamResult` fact exposure.
+- State-snapshot fields.
+- Godot bindings or any other public API change.
+- ADC ingestion or retained external fact changes.
+- Capture-admission context changes.
+- Production-provider implementation beyond `SyntheticProvider`.
+- Calibration, rectification, projection, intrinsic scaling, coordinate
+  conversion, or approximate distortion fitting.
 
-## Tranche boundaries
+### Acceptance criteria
 
-This tranche adds source-neutral provider-to-Core ingress for provider static
-camera facts and per-capture-image intrinsics, distortion, and pose. Provider
-facts remain distinct from external configured facts and admission context;
-they are not yet resolved into results, snapshots, or public surfaces.
+Focused provider-compliance coverage must demonstrate:
 
-Do not add further public Godot API, provider reference-fact implementation,
-result resolution, snapshot schema, or change the working grouped-rig
-admission path. The legacy v1 concurrency parser has no Godot binding.
+- static facts for each relevant synthetic device;
+- deterministic values and correct source classification;
+- correct handling of intentionally absent facts;
+- per-image facts for single-member and multi-member captures;
+- correct capture, device, participant, and member identity;
+- no cross-contamination between rig participants or bracket members;
+- correct device-close and generation/restart lifecycle behaviour;
+- use of the normal Tranche 5 ingress and Core-owned retention;
+- no regression of existing `SyntheticProvider` capture behaviour.
 
-Do not introduce additional Godot APIs, filesystem convenience APIs, a generic
-metadata/configuration system, calibration algorithms, or platform-provider
-implementation work.
+### Required validation
 
-## Tranche state
+- maintainer-tools build;
+- focused Tranche 6 provider-compliance check or checks;
+- full `core_spine_smoke.exe --verbose`;
+- Windows GDE build;
+- Android arm64 GDE build.
 
-Completed before this tranche:
-
-* retained grouped-camera capability truth exists through `ImagingSpec`;
-* stopped-time transactional concurrency ingestion exists;
-* grouped-rig admission consumes normalized allowed camera combinations;
-* the broader camera-fact design and implementation sequence have been agreed;
-* source-neutral Tranche 1 fact types and focused verification are accepted.
-
-Required before this tranche closes:
-
-* retain provider static facts by active provider device identity;
-* retain per-image facts by exact capture, device, and member identity;
-* reject malformed or mismatched callback facts without mutating retained truth;
-* retain owned copies across the callback/Core boundary;
-* preserve bracket and rig member identity without resolving precedence against
-  external configured facts.
-
-## After this tranche
-
-Implementation next proceeds through SyntheticProvider reference facts, result
-resolution, and separately approved Godot exposure.
+All required validation is governed by the hard completion contract in
+`AGENTS.md`.

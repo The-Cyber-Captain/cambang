@@ -978,6 +978,69 @@ void SyntheticProvider::emit_native_destroy_(uint64_t native_id) {
   strand_.post_native_object_destroyed(info);
 }
 
+void SyntheticProvider::emit_camera_static_facts_(const DeviceState& d) {
+  if (!callbacks_) return;
+  const uint32_t device_index = static_cast<uint32_t>(
+      std::strtoul(d.hardware_id.c_str() + std::strlen(kHardwareIdPrefix), nullptr, 10));
+  const uint32_t width = cfg_.nominal.width;
+  const uint32_t height = cfg_.nominal.height;
+  const auto intrinsics = Intrinsics::create(
+      static_cast<double>(width) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(height) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(width) / 2.0, static_cast<double>(height) / 2.0,
+      std::nullopt, width, height, CoordinateDomain{CoordinateDomainDeliveredImage{}});
+  const auto pose = CameraPose::create(
+      PoseReference{PoseReferencePrimaryCamera{}},
+      PoseConvention{PoseConventionCameraOpticalFrame{}},
+      Vec3Meters{static_cast<double>(device_index), 0.0, 0.0},
+      QuaternionXyzw{0.0, 0.0, 0.0, 1.0});
+  if (!intrinsics || !pose) return;
+
+  ProviderCameraFacts facts{};
+  facts.static_facts.facing = SourcedFact<CameraFacing>{
+      CameraFacing::EXTERNAL, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.static_facts.nature = SourcedFact<CameraNature>{
+      CameraNature::VIRTUAL, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.static_facts.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+      static_cast<SensorOrientationDegrees>((device_index % 4u) * 90u),
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.static_facts.intrinsics = SourcedFact<Intrinsics>{
+      *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.static_facts.distortion = SourcedFact<Distortion>{
+      Distortion{NoDistortion{DistortionImageState::RECTIFIED}},
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.static_facts.pose = SourcedFact<CameraPose>{
+      *pose, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  strand_.post_camera_static_facts(d.device_instance_id, std::move(facts));
+}
+
+void SyntheticProvider::emit_capture_image_facts_(
+    const CaptureRequest& request, uint32_t image_member_index) {
+  if (!callbacks_) return;
+  std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
+  const char* hardware_id = resolve_hardware_id_for_device_locked_(request.device_instance_id);
+  if (!hardware_id) return;
+  const uint32_t device_index = static_cast<uint32_t>(
+      std::strtoul(hardware_id + std::strlen(kHardwareIdPrefix), nullptr, 10));
+  const auto intrinsics = Intrinsics::create(
+      static_cast<double>(request.width) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(request.height) * (1.0 + (0.01 * device_index)),
+      static_cast<double>(request.width) / 2.0, static_cast<double>(request.height) / 2.0,
+      std::nullopt,
+      request.width,
+      request.height,
+      CoordinateDomain{CoordinateDomainDeliveredImage{}});
+  if (!intrinsics) return;
+  ProviderCaptureImageFacts facts{};
+  facts.intrinsics = SourcedFact<Intrinsics>{
+      *intrinsics, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  facts.distortion = SourcedFact<Distortion>{
+      Distortion{NoDistortion{DistortionImageState::RECTIFIED}},
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  strand_.post_capture_image_facts(
+      request.capture_id, request.device_instance_id, image_member_index, std::move(facts));
+}
+
 uint64_t SyntheticProvider::ensure_native_acquisition_session_(DeviceState& d) {
   if (d.acquisition_session_native_id != 0) {
     return d.acquisition_session_native_id;
@@ -1107,6 +1170,7 @@ ProviderResult SyntheticProvider::open_device(
 
   emit_native_create_device_(d);
   strand_.post_device_opened(device_instance_id);
+  emit_camera_static_facts_(d);
   return ProviderResult::success();
 }
 
@@ -2164,6 +2228,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         capture_latency_trace_now_ns() - member_frame_assembly_begin_ns;
     member_frame_assembly_ns += member_frame_assembly_sample_ns;
     const uint64_t member_post_begin_ns = capture_latency_trace_now_ns();
+    emit_capture_image_facts_(req, member.image_member_index);
     strand_.post_frame(fv);
     const uint64_t member_post_end_ns = capture_latency_trace_now_ns();
     member_post_sample_ns = member_post_end_ns - member_post_begin_ns;
