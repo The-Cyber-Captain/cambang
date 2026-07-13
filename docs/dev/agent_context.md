@@ -126,6 +126,28 @@ Godot-facing camera-fact APIs and result shapes remain explicitly gatekept. Do
 not add, rename, or retire public surfaces unless the active tranche records the
 approved change.
 
+## Image acquisition timing
+
+Image Acquisition Timing is provider-authored descriptive truth for an acquired
+image or stream frame. Its numeric value is an acquisition mark in a declared
+provider or backend clock domain, not necessarily a wall-clock timestamp.
+
+Keep Image Acquisition Timing distinct from:
+
+* Core-owned Capture Date-Time sampled at successful capture admission;
+* snapshot publication time;
+* Core or provider lifecycle timing;
+* latency and performance measurements;
+* internal frame or result identity.
+
+Do not use acquisition marks as identity merely because they are numeric or
+monotonic in one provider implementation.
+
+Where stream and capture expose the same fact, use one source-neutral internal
+model and avoid duplicate provider-to-Core transport for the same acquisition
+event.
+
+
 ## Automatic measurement and classification
 
 Backing Plan measurement and retained-result access classification are internal, automatic runtime responsibilities. They must not impose a calibration-management workflow on normal users or GDScript.

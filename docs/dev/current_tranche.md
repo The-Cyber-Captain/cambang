@@ -1,102 +1,102 @@
 # Current Tranche
 
-## Camera Facts Tranche 9 - Closeout Repair
+## Unified Image Acquisition Timing
 
 ### Objective
 
-Complete the existing camera-fact work after closeout inspection found that
-provider-owned per-image facts already present in the model do not traverse the
-full provider-to-result path.
+Replace the ambiguous `capture_timestamp` model with one truthful Image
+Acquisition Timing model shared by capture members and stream results.
 
-This remains Tranche 9 closeout work, not a new feature tranche.
+Separate provider-authored acquisition timing from Core-owned retained-frame
+identity, remove duplicate timing transport, retire the old public timestamp
+surface directly, and preserve stream hot-path performance.
 
-### Defect
+### Locked Decisions
 
-`CaptureImageFacts` models:
+* Image Acquisition Timing contains acquisition mark, rational tick period,
+  clock domain, reference event, and comparability scope.
+* It is provider-authored, optional where unavailable, and carried once on the
+  existing `FrameView` event. Acquisition mark zero is valid.
+* It is distinct from Capture Date-Time, lifecycle/performance timing, and
+  retained-frame identity.
+* Core-owned retained-frame identity, not acquisition timing, provides retained
+  payload/backing correlation, freshness, deduplication, evidence identity, and
+  result signatures.
+* No separate per-frame timing callback, eager Godot conversion, compatibility
+  alias, or avoidable stream hot-path allocation is permitted.
 
-- image acquisition timing;
-- realized focus state;
-- realized delivered-image transform.
+### Stage A — Internal Model and Authority
 
-The current implementation does not carry these facts through
-`ProviderCaptureImageFacts`, validation, Core retention/resolution,
-CaptureResult member storage, SyntheticProvider declarations, the existing
-`camera_facts` dictionary, or the existing camera-fact verification surfaces.
+Implement and review this stage before public API replacement:
 
-### Required Work
+* establish one source-neutral acquisition-timing contract usable by providers
+  and Core;
+* carry complete optional timing on `FrameView`;
+* retain that timing on stream results and capture image members;
+* source capture-member timing only from the accepted member frame and remove
+  acquisition timing from `ProviderCaptureImageFacts`;
+* introduce Core-owned retained-frame identity at successful retention;
+* replace timestamp-based identity, correlation, freshness, deduplication,
+  evidence, and signature uses;
+* remove redundant timestamp fields used only for payload/backing correlation;
+* update SyntheticProvider and StubProvider truthfully.
 
-Repair the existing path end to end:
+The existing public timestamp methods and member key may remain during Stage A
+only as projections derived from canonical retained timing. They are not
+internal truth or identity and remain mandatory Stage B removals.
 
-- complete provider capture-image fact ingress and atomic validation;
-- retain facts by exact capture id, device instance id, and member index;
-- resolve and store complete per-member facts in CaptureResult;
-- correct recently introduced camera-static-only internal names or structures
-  where appropriate;
-- correct the existing `camera_facts` dictionary directly, without compatibility
-  aliases or a parallel fact surface;
-- make SyntheticProvider declare, for every retained capture member:
-    - acquisition timing from that member's actual provider-domain mark;
-    - focus at infinity for the current pinhole/no-defocus model;
-    - zero-degree, unmirrored, already-realized image transform;
-    - `VIRTUAL_CAMERA_AUTHORED` provenance;
-- retain static pose fallback; do not fabricate per-image pose;
-- update governing camera-fact and provider-compliance documentation.
+Stage A must make no public Godot API shape change.
 
-Keep provider image acquisition timing distinct from Capture Date-Time,
-geolocation, Core admission time, Core lifecycle timing, and other members'
-timing. Keep sensor orientation distinct from realized image transform.
+### Stage B — Public Replacement and Closeout
+
+Expose complete timing lazily as:
+
+```text
+get_image_member(index).camera_facts.acquisition_timing
+stream_result.camera_facts.acquisition_timing
+```
+
+Directly remove:
+
+```text
+CamBANGCaptureResult.get_capture_timestamp()
+get_image_member(index).capture_timestamp
+CamBANGStreamResult.get_capture_timestamp()
+```
+
+Also remove every Stage A projection and remaining in-scope acquisition
+`timestamp` term, field, fixture, assertion, and document reference that exists
+solely for the old surface.
+
+Do not retain aliases, deprecated keys, compatibility wrappers, duplicate
+transport, or parallel scalar timing truth.
+
+`get_capture_datetime_unix_nanoseconds()` remains unchanged and distinct.
 
 ### Verification
 
-Repair and strengthen the existing verification surfaces rather than adding a
-parallel verifier family or new scene, including:
+Stage A must prove one authoritative internal timing path; truthful absent,
+zero, equal, opaque, and incomparable timing; identity independent of timing;
+and no extra frame event, eager Godot conversion, or public API change.
 
-- provider camera-fact ingress coverage;
-- Core camera-fact resolution/result-path coverage;
-- SyntheticProvider reference camera-fact coverage;
-- Scene 569 and any affected fixtures or dictionary expectations.
+Stage B must prove the approved equivalent public shapes, direct absence of all
+three old timestamp surfaces, exact bracket/rig/stream timing retention, and
+removal of every intermediate projection.
 
-Coverage must prove:
-
-- valid complete records are accepted and malformed records rejected atomically;
-- absence and replacement semantics remain correct;
-- no fact leakage occurs across captures, devices, rig members, or image members;
-- every SyntheticProvider capture member exposes the expected facts and origin;
-- existing static facts, calibration resolution, pose fallback, and per-image
-  pose precedence remain correct.
-
-Tests may be corrected where they encode the incomplete implementation, but not
-weakened merely to pass.
+Complete the affected focused checks, full Core and provider-compliance
+verification, Windows and Android arm64 GDE builds, Scene 569, affected stream
+verification, representative Scene 870 baseline comparison, `git diff --check`,
+and final source/documentation terminology audit.
 
 ### Constraints
 
-No:
+No Capture Date-Time or geolocation redesign, unrelated camera-fact/CameraSpec/
+ImagingSpec work, or Camera2/WinRT provider implementation.
 
-- geolocation or Capture Date-Time behaviour changes;
-- capture-admission ownership changes;
-- stream-result camera facts;
-- new public methods, wrappers, setters, or override APIs;
-- CameraSpec or ImagingSpec redesign;
-- synthetic motion/scenario feature work;
-- platform-provider implementation;
-- compatibility support for the incomplete dictionary.
+### Completion
 
-### Validation and Completion
-
-Run all validation required by `AGENTS.md` and all affected existing checks,
-including:
-
-- maintainer-tools build;
-- focused camera-fact checks;
-- full `core_spine_smoke.exe --verbose`;
-- full `provider_compliance_verify.exe --verbose`;
-- Windows GDE build;
-- Android arm64 GDE build;
-- Scene 569 through the sanctioned PowerShell runner.
-
-Record exact commands and results.
-
-Tranche 9 closes only when the complete provider-owned capture-image fact path
-is implemented, exposed through the existing `camera_facts` surface, verified
-for exact identity/provenance/absence semantics, and aligned across source,
-tests, bindings, documentation, and agent guidance.
+The tranche closes only when one authoritative timing model and transport serve
+stream and capture, retained-frame identity is separate, the approved Godot
+surfaces replace the old API, every intermediate projection and obsolete term
+is removed, validation passes, and stream performance remains consistent with
+the accepted baseline.
