@@ -99,7 +99,7 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     selects/starts builtin scenario `stream_lifecycle_versions`, and observes publishes via
     `CamBANGStatusPanel` without extra helper-node orchestration.
 - `scenes/70_result_retrieval_verification.tscn`
-  - Verifies Godot-facing object-level result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including grouped Dictionary fact/provenance accessors and visible image presentation.
+  - Verifies Godot-facing object-level result retrieval/materialization for `CamBANGStreamResult` and `CamBANGCaptureResult`, including existing grouped result metadata/provenance accessors and visible image presentation.
   - Authors a three-member still capture profile via `still_image_bundle` (ordered still-event image members), not `image_sequence`.
   - Triggers capture through the public `CamBANGDevice.trigger_capture() -> Error` flow, polls `CamBANGDevice.get_result()`, and verifies `CamBANGCaptureResult` exposes three indexed image members with member metadata/materialization coverage.
   - Scene 70 is a user-flow/result-wrapper verifier; exact Device/AcquisitionSession snapshot-shape proof belongs to native/snapshot verification harnesses.
@@ -147,6 +147,10 @@ These scenes are dev-only abuse/diagnostic checks for the Godot runtime boundary
     - `scenarios/568_backing_plan_dual_live.json`
     - `scenarios/568_backing_plan_edge_clocked.json`
   - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=backing_plan_evaluation_verify status=<ok|expected_unsupported|fail|error> exit_code=<n> reason=<token>`
+- `scenes/569_capture_result_camera_facts_verify.tscn`
+  - Focused headless Godot-boundary verification for completed `CamBANGCaptureResult` camera-fact projection and capture-admission context.
+  - Verifies the public geolocation setter, retained admission date-time, geolocation replacement/clear immutability, three-member identity isolation, canonical camera-fact dictionary shape, and absence of prohibited CaptureResult/StreamResult fact surfaces.
+  - Authoritative terminal verdict: `[CamBANG][HarnessVerdict] scene=capture_result_camera_facts_verify status=<ok|fail|error> exit_code=<n> reason=<token>`
 - `scenes/870_to_image_soak_benchmark.tscn`
   - Automated two-device + rig soak benchmark for `StreamResult.to_image()` and `CaptureResult.to_image()` under randomized human-like and tick-scale load.
   - Runs the full phase matrix twice: metered-only still capture (`[0]`) and five-member exposure bracket (`[-2,-1,0,+1,+2]`).
@@ -173,6 +177,14 @@ godot4 --headless --path . --scene res://scenes/568_backing_plan_evaluation_veri
 ```
 
 PowerShell helper for local/Codex runs of harness-verdict scenes:
+
+```powershell
+.\run_godot.ps1 `
+  -Scene res://scenes/569_capture_result_camera_facts_verify.tscn `
+  -CaptureLogs `
+  -TimeoutSec 60 `
+  -RunLabel scene569_capture_result_camera_facts
+```
 
 ```powershell
 .\run_godot.ps1 `

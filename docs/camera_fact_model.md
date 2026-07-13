@@ -243,7 +243,7 @@ The ADC fact-source vocabulary and sourced classification/atomic-record shapes
 are defined by `docs/adc_camera_description_v2.md`.
 
 CamBANG internally distinguishes fact origin from effective authority. The
-first public implementation need not expose that full internal authority split.
+public projection exposes fact origin, not that internal authority split.
 
 ---
 
@@ -321,7 +321,7 @@ CamBANG architectural consequences are:
 Capture Date-Time is a runtime capture-context fact, not ADC document
 provenance and not Image Acquisition Timing.
 
-The initial rule is:
+The implemented rule is:
 
 - sampled by Core at successful capture admission;
 - stored as an absolute UTC instant;

@@ -1,92 +1,77 @@
 # Current Tranche
 
-## Camera Facts Tranche 8 - Godot CaptureResult Exposure
+## Camera Facts Tranche 9 - Closeout
 
 ### Objective
 
-Expose the settled, immutable still-capture camera facts and capture-admission
-context through the existing `CamBANGCaptureResult` surface, consistent with
-`docs/camera_fact_model.md`.
+Close the camera-fact work by auditing the checked-out repository for
+consistency between implemented source and Godot bindings, focused and
+Core-level verification, architecture and user-facing documentation, canonical
+naming and public dictionary vocabulary, and active development guidance.
 
-### Approved Implementation Delta
+### Required Work
 
-- Extend `CamBANGCaptureResult.get_image_member(index)` with optional
-  `camera_facts`.
-- Add `get_capture_datetime_unix_nanoseconds() -> int`.
-- Add `has_geolocation() -> bool`.
-- Add `get_geolocation() -> Dictionary`.
-- Add `CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`.
-- Classification camera facts use `{ "value": ..., "origin": ... }`.
-- Intrinsics, distortion, and pose are complete atomic dictionaries containing
-  `origin`.
-- Omit absent facts, and omit `camera_facts` when every resolved camera fact
-  is absent.
-- Expose provenance origin, not internal resolution authority.
-- Leave the existing acquisition-timestamp surface unchanged.
+The implementation task must audit completed Tranches 0 through 8 as
+represented by the current repository, and directly correct any contradiction,
+obsolete proposed surface, stale future wording, or superseded terminology.
+Prefer retirement or direct correction over compatibility notes or historical
+commentary.
 
-### Capture Geolocation Ingress
+Confirm the final public Godot surface:
 
-`CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`
-updates the Core-owned geolocation sampled by later successful capture
-admissions. It is callable while the server is stopped or running. An empty
-dictionary clears the current geolocation. A non-empty dictionary must contain
-`latitude_degrees` and `longitude_degrees`, with optional `altitude_meters`.
+- `CamBANGServer.ingest_camera_description(String json_text) -> Error`;
+- `CamBANGServer.set_capture_geolocation(Dictionary geolocation) -> Error`;
+- `CamBANGCaptureResult.get_capture_datetime_unix_nanoseconds() -> int`;
+- `CamBANGCaptureResult.has_geolocation() -> bool`;
+- `CamBANGCaptureResult.get_geolocation() -> Dictionary`;
+- optional per-member `get_image_member(index).camera_facts`.
 
-Replacement is transactional: invalid input returns an error and preserves the
-previous geolocation. Latitude and longitude must be finite WGS 84 geodetic
-decimal degrees, within `[-90, 90]` and `[-180, 180]` respectively. Optional
-altitude must be finite WGS 84 ellipsoidal height in metres.
+Confirm the canonical classification keys: `facing`, `camera_nature`, and
+`sensor_orientation_degrees`. Confirm that intrinsics, distortion, and pose
+remain complete atomic dictionaries containing `origin`; public fact origin is
+distinct from internal resolution authority; absent facts are omitted; and an
+entirely absent `camera_facts` dictionary is omitted.
 
-The setter changes only the value sampled by future successful capture
-admissions. Existing admitted captures and completed results remain unchanged.
-Capture admission continues to sample geolocation once, and bracket and rig
-participants continue to share their admitted context. Reuse the existing Core
-geolocation state and replacement/clear behaviour; do not add a test-only
-ingress or a second geolocation store.
+Confirm existing acquisition timestamp behaviour remains unchanged; no
+`get_camera_facts()` method, camera-fact wrapper class, or StreamResult
+camera-fact/geolocation exposure exists; and geolocation uses WGS 84 geodetic
+latitude/longitude with optional WGS 84 ellipsoidal altitude.
 
-### Documentation Scope
+Confirm the camera-fact work has not acquired calibration, rectification,
+projection, scaling, conversion, or approximation behaviour.
 
-Reconcile the affected internal, architectural, binding, and user-facing
-documentation. Keep settled architecture referenced rather than duplicated.
+### Verification Posture
 
-Geolocation documentation must define latitude and longitude as WGS 84
-geodetic decimal degrees, and optional altitude as WGS 84 ellipsoidal height in
-metres, not orthometric height or elevation above mean sea level.
+Require focused review of:
 
-### Critical Invariants
+- camera-fact Core resolution and omission coverage;
+- Scene 569's sanctioned headless Godot-boundary verification;
+- source-to-document public-key consistency;
+- bindings and rejected API absence;
+- repository-wide stale terminology and contradictory design claims.
 
-- Preserve exact capture, device, and image-member identity.
-- Preserve atomic intrinsics, distortion, and pose records and their origins.
-- Do not resample or reinterpret capture-admission context.
-- Completed result facts remain immutable.
-
-### Exclusions
-
-- No `get_camera_facts()` method or new wrapper classes.
-- No StreamResult exposure.
-- No ADC, provider-ingress, SyntheticProvider-generation, result-resolution,
-  admission-context redesign, or state-snapshot changes.
-- No calibration, scaling, coordinate conversion, or distortion fitting.
-
-### Acceptance Criteria
-
-Focused checks cover classification and atomic fact dictionaries, provenance,
-absence/omission semantics, bracket and rig identity isolation, shared capture
-context, unchanged acquisition timestamp behaviour, and no StreamResult or
-additional wrapper exposure. They also cover valid geolocation replacement,
-clear through `{}`, malformed, missing, out-of-range, and non-finite rejection,
-transactional preservation after rejected input, stopped-time and running-time
-use, present and absent geolocation on completed capture results, and existing
-admitted/completed result immutability. Documentation accurately describes the
-implemented Godot surface and geolocation convention.
+Any genuine contradiction found may be corrected narrowly. No new feature,
+API, wrapper, provider behaviour, result shape, or architectural seam may be
+added.
 
 ### Required Validation
 
+After the final correction, run every validation mandated by `AGENTS.md`,
+including at minimum:
+
 - maintainer-tools build;
-- focused Tranche 8 checks;
+- focused Core camera-fact resolution check;
 - full `core_spine_smoke.exe --verbose`;
 - Windows GDE build;
-- Android arm64 GDE build.
+- Android arm64 GDE build;
+- Scene 569 through the sanctioned headless runner.
 
-All required validation is governed by the hard completion contract in
-`AGENTS.md`.
+### Completion
+
+The tranche may close only when all required validation passes; source, tests,
+naming, architecture, and public documentation agree; no obsolete alternative
+public surface remains; and the active tranche can be retired without leaving
+deferred camera-fact implementation work.
+
+Keep settled architecture referenced rather than reproducing its full
+specification.
