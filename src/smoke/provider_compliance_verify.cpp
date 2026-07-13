@@ -3858,6 +3858,13 @@ bool run_provider_camera_fact_ingress_check() {
   constexpr uint64_t kDeviceB = 17302;
   constexpr uint64_t kCaptureId = 17311;
   constexpr uint64_t kRigId = 17321;
+  const auto wait_until = [](const std::function<bool()>& predicate) {
+    for (int i = 0; i < kMaxIters; ++i) {
+      if (predicate()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs));
+    }
+    return false;
+  };
 
   const auto make_static_facts = [] {
     const auto domain = CoordinateDomainPlatformDefined::create("provider-test-domain");
@@ -3932,6 +3939,16 @@ bool run_provider_camera_fact_ingress_check() {
       rt.try_open_device("synthetic:1", kDeviceB, 17332) != TryOpenDeviceStatus::OK) {
     return fail_with_cleanup("FAIL provider camera facts device open failed");
   }
+  // SyntheticProvider reports device-opened before its initial static facts on
+  // the provider strand. Waiting for both initial fact sets therefore proves
+  // that the device-open lifecycle facts have reached Core before this check
+  // deliberately exercises the lower-level ingress callback directly.
+  if (!wait_until([&] {
+        return rt.provider_camera_facts_for_smoke(kDeviceA).has_value() &&
+               rt.provider_camera_facts_for_smoke(kDeviceB).has_value();
+      })) {
+    return fail_with_cleanup("FAIL provider camera facts device-open convergence failed");
+  }
 
   // The fact objects are destroyed before Core is queried; all accepted truth
   // must therefore be owned by the ingress command/Core store.
@@ -3939,11 +3956,13 @@ bool run_provider_camera_fact_ingress_check() {
     ProviderCameraFacts complete = make_static_facts();
     rt.provider_callbacks()->on_camera_static_facts(kDeviceA, complete);
   }
-  const auto complete = rt.provider_camera_facts_for_smoke(kDeviceA);
-  if (!complete || !complete->static_facts.facing || !complete->static_facts.nature ||
-      !complete->static_facts.sensor_orientation || !complete->static_facts.intrinsics ||
-      !complete->static_facts.distortion || !complete->static_facts.pose ||
-      complete->static_facts.intrinsics->value.reference_width_px() != 640) {
+  if (!wait_until([&] {
+        const auto complete = rt.provider_camera_facts_for_smoke(kDeviceA);
+        return complete && complete->static_facts.facing && complete->static_facts.nature &&
+               complete->static_facts.sensor_orientation && complete->static_facts.intrinsics &&
+               complete->static_facts.distortion && complete->static_facts.pose &&
+               complete->static_facts.intrinsics->value.reference_width_px() == 640;
+      })) {
     return fail_with_cleanup("FAIL provider camera facts complete static ingress/lifetime failed");
   }
 
@@ -3951,11 +3970,13 @@ bool run_provider_camera_fact_ingress_check() {
   partial.static_facts.facing = SourcedFact<CameraFacing>{
       CameraFacing::FRONT, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   rt.provider_callbacks()->on_camera_static_facts(kDeviceA, partial);
-  const auto updated = rt.provider_camera_facts_for_smoke(kDeviceA);
-  if (!updated || !updated->static_facts.facing ||
-      updated->static_facts.facing->value != CameraFacing::FRONT ||
-      updated->static_facts.intrinsics || updated->static_facts.distortion ||
-      updated->static_facts.pose) {
+  if (!wait_until([&] {
+        const auto updated = rt.provider_camera_facts_for_smoke(kDeviceA);
+        return updated && updated->static_facts.facing &&
+               updated->static_facts.facing->value == CameraFacing::FRONT &&
+               !updated->static_facts.intrinsics && !updated->static_facts.distortion &&
+               !updated->static_facts.pose;
+      })) {
     return fail_with_cleanup("FAIL provider camera facts static replacement did not remove omitted facts");
   }
 
@@ -3968,6 +3989,20 @@ bool run_provider_camera_fact_ingress_check() {
       static_cast<CameraFacing>(99), FactOrigin::NATIVE_REPORTED};
   rt.provider_callbacks()->on_camera_static_facts(kDeviceB, malformed);
   rt.provider_callbacks()->on_camera_static_facts(99999, device_b);
+  ProviderCameraFacts static_barrier{};
+  static_barrier.static_facts.facing = SourcedFact<CameraFacing>{
+      CameraFacing::BACK, FactOrigin::NATIVE_REPORTED};
+  rt.provider_callbacks()->on_camera_static_facts(kDeviceA, static_barrier);
+  // The accepted barrier follows both rejected inputs in the same essential
+  // ingress/FIFO fact path. Observing it proves those earlier commands have
+  // been integrated before rejection truth is asserted.
+  if (!wait_until([&] {
+        const auto barrier = rt.provider_camera_facts_for_smoke(kDeviceA);
+        return barrier && barrier->static_facts.facing &&
+               barrier->static_facts.facing->value == CameraFacing::BACK;
+      })) {
+    return fail_with_cleanup("FAIL provider camera facts static rejection barrier failed");
+  }
   const auto retained_b = rt.provider_camera_facts_for_smoke(kDeviceB);
   if (!retained_b || !retained_b->static_facts.facing ||
       retained_b->static_facts.facing->value != CameraFacing::EXTERNAL ||
@@ -4004,7 +4039,22 @@ bool run_provider_camera_fact_ingress_check() {
   ProviderCaptureImageFacts malformed_image = member_zero;
   malformed_image.intrinsics->origin = static_cast<FactOrigin>(99);
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, malformed_image);
+  ProviderCaptureImageFacts image_barrier{};
+  image_barrier.intrinsics = SourcedFact<Intrinsics>{
+      *intrinsics, FactOrigin::NATIVE_REPORTED};
+  rt.provider_callbacks()->on_capture_image_facts(
+      kCaptureId, kDeviceB, 1, image_barrier);
 
+  // Member B/1 is a valid admitted identity and follows all accepted/rejected
+  // image-fact commands above. Waiting for it is a positive FIFO barrier; the
+  // subsequent absence/replacement checks cannot pass before rejected facts run.
+  if (!wait_until([&] {
+        const auto barrier =
+            rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 1);
+        return barrier && barrier->intrinsics;
+      })) {
+    return fail_with_cleanup("FAIL provider camera facts capture rejection barrier failed");
+  }
   const auto a0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
   const auto a1 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 1);
   const auto b0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 0);

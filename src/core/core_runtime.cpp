@@ -2265,9 +2265,43 @@ bool CoreRuntime::rehome_capture_retained_plan_parent_state_(
           same_parent_key(it->first, parent.key)) {
         continue;
       }
-      if (retired_real_session_parent(it->first)) {
-        restart_from_seed = true;
+      if (!retired_real_session_parent(it->first)) {
+        continue;
       }
+
+      // A direct, non-evaluated decision is capability-derived rather than
+      // measurement-epoch evidence. When a transient capture-owned session
+      // retires and CapturePriming becomes the current parent again, carry that
+      // decision back to the current parent instead of hiding it under an
+      // orphaned session key. Evaluated decisions remain session-epoch truth
+      // and continue through the bounded orphan/seed-restart path below.
+      if (parent.key.kind ==
+              CaptureRetainedPlanParentKey::Kind::CapturePriming &&
+          !it->second.from_evaluation &&
+          it->second.valid &&
+          it->second.selected.valid) {
+        RetainedPlanDecisionProvenance moved = it->second;
+        const CaptureRetainedPlanParentKey source_key = it->first;
+        capture_retained_plan_decisions_.erase(it);
+        moved.acquisition_session_id = 0;
+        moved.orphan_retire_after_ns = 0;
+        current_decision_it =
+            capture_retained_plan_decisions_
+                .insert_or_assign(parent.key, moved)
+                .first;
+        capture_latency_trace_printf(
+            "capture_plan_state_rehome device_id=%llu dst_parent_kind=%u dst_parent_id=%llu src_parent_kind=%u src_parent_id=%llu source=direct_decision selected_posture=%d",
+            static_cast<unsigned long long>(device_instance_id),
+            static_cast<unsigned>(parent.key.kind),
+            static_cast<unsigned long long>(parent.key.id),
+            static_cast<unsigned>(source_key.kind),
+            static_cast<unsigned long long>(source_key.id),
+            static_cast<int>(moved.selected.posture));
+        changed = true;
+        break;
+      }
+
+      restart_from_seed = true;
     }
   } else if (current_decision_it->second.acquisition_session_id !=
              parent.acquisition_session_id) {
