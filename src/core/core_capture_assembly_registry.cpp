@@ -1,5 +1,7 @@
 #include "core/core_capture_assembly_registry.h"
 
+#include <algorithm>
+
 namespace cambang {
 
 namespace {
@@ -25,7 +27,10 @@ void CoreCaptureAssemblyRegistry::mark_default_image_retained(uint64_t capture_i
 }
 
 void CoreCaptureAssemblyRegistry::record_admission_context(
-    uint64_t capture_id, uint64_t device_instance_id, CaptureAdmissionContext context) {
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    CaptureAdmissionContext context,
+    const CaptureStillImageBundle& still_image_bundle) {
   if (capture_id == 0 || device_instance_id == 0) {
     return;
   }
@@ -34,6 +39,24 @@ void CoreCaptureAssemblyRegistry::record_admission_context(
       get_or_create_assembly(assemblies_by_capture_id_, capture_id, device_instance_id);
   assembly.admission_context = std::move(context);
   assembly.has_admission_context = true;
+  assembly.expected_image_member_indices.clear();
+  assembly.expected_image_member_indices.reserve(still_image_bundle.members.size());
+  for (const CaptureStillImageMember& member : still_image_bundle.members) {
+    assembly.expected_image_member_indices.push_back(member.image_member_index);
+  }
+}
+
+bool CoreCaptureAssemblyRegistry::has_admitted_capture_member(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    uint32_t image_member_index) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto capture_it = assemblies_by_capture_id_.find(capture_id);
+  if (capture_it == assemblies_by_capture_id_.end()) return false;
+  const auto device_it = capture_it->second.find(device_instance_id);
+  if (device_it == capture_it->second.end()) return false;
+  const auto& members = device_it->second.expected_image_member_indices;
+  return std::find(members.begin(), members.end(), image_member_index) != members.end();
 }
 
 void CoreCaptureAssemblyRegistry::mark_capture_completed(uint64_t capture_id, uint64_t device_instance_id) {

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <variant>
+
+#include "core/camera_fact_types.h"
 #include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
@@ -36,6 +38,9 @@ enum class ProviderToCoreCommandType : uint8_t {
   PROVIDER_CAPTURE_STARTED,
   PROVIDER_CAPTURE_COMPLETED,
   PROVIDER_CAPTURE_FAILED,
+
+  PROVIDER_CAMERA_STATIC_FACTS,
+  PROVIDER_CAPTURE_IMAGE_FACTS,
 
   PROVIDER_FRAME,
 
@@ -95,6 +100,18 @@ struct CmdProviderCaptureFailed {
   uint32_t error_code = 0;
 };
 
+struct CmdProviderCameraStaticFacts {
+  uint64_t device_instance_id = 0;
+  ProviderCameraFacts facts{};
+};
+
+struct CmdProviderCaptureImageFacts {
+  uint64_t capture_id = 0;
+  uint64_t device_instance_id = 0;
+  uint32_t image_member_index = 0;
+  ProviderCaptureImageFacts facts{};
+};
+
 struct CmdProviderFrame {
   FrameView frame; // By value: preserves release hook and all metadata.
 };
@@ -143,6 +160,8 @@ using ProviderToCoreCommandData = std::variant<
   CmdProviderCaptureStarted,
   CmdProviderCaptureCompleted,
   CmdProviderCaptureFailed,
+  CmdProviderCameraStaticFacts,
+  CmdProviderCaptureImageFacts,
   CmdProviderFrame,
   CmdProviderDeviceError,
   CmdProviderStreamError,

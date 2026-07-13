@@ -575,4 +575,16 @@ struct CaptureImageFacts {
   std::optional<SourcedFact<RealizedImageTransform>> realized_image_transform;
 };
 
+// Provider ingress names the authority without changing the source-neutral
+// record shapes. These are retained independently of external configuration.
+struct ProviderCameraFacts {
+  CameraStaticFacts static_facts;
+};
+
+struct ProviderCaptureImageFacts {
+  std::optional<SourcedFact<Intrinsics>> intrinsics;
+  std::optional<SourcedFact<Distortion>> distortion;
+  std::optional<SourcedFact<CameraPose>> pose;
+};
+
 } // namespace cambang

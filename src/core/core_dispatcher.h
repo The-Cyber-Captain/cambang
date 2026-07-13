@@ -12,6 +12,7 @@
 #include "core/core_frame_sink.h"
 #include "core/core_capture_assembly_registry.h"
 #include "core/core_result_store.h"
+#include "core/provider_camera_fact_state.h"
 
 namespace cambang {
 
@@ -95,6 +96,9 @@ public:
   void set_capture_assembly_registry(CoreCaptureAssemblyRegistry* capture_assembly_registry) noexcept {
     capture_assembly_registry_ = capture_assembly_registry;
   }
+  void set_provider_camera_fact_state(ProviderCameraFactState* provider_camera_fact_state) noexcept {
+    provider_camera_fact_state_ = provider_camera_fact_state;
+  }
   void set_capture_lifecycle_ingress_sink(
       std::function<void(const CoreCaptureLifecycleIngressEvent&)> sink) {
     capture_lifecycle_ingress_sink_ = std::move(sink);
@@ -113,6 +117,7 @@ private:
   ICoreFrameSink* frame_sink_ = nullptr; // non-owning; core-thread-only
   CoreResultStore* result_store_ = nullptr; // non-owning; core-thread-only
   CoreCaptureAssemblyRegistry* capture_assembly_registry_ = nullptr; // non-owning; core-thread-only
+  ProviderCameraFactState* provider_camera_fact_state_ = nullptr; // non-owning; core-thread-only
   std::function<void(const CoreCaptureLifecycleIngressEvent&)>
       capture_lifecycle_ingress_sink_{};
   CoreDispatchStats stats_{};

@@ -4,8 +4,10 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 #include "core/capture_admission_context.h"
+#include "imaging/api/provider_contract_datatypes.h"
 
 namespace cambang {
 
@@ -22,6 +24,7 @@ public:
     uint64_t device_instance_id = 0;
     bool has_admission_context = false;
     CaptureAdmissionContext admission_context{};
+    std::vector<uint32_t> expected_image_member_indices{};
     bool has_default_image_retained = false;
     TerminalState terminal_state = TerminalState::NONE;
     bool has_failure_error_code = false;
@@ -30,7 +33,11 @@ public:
 
   void mark_default_image_retained(uint64_t capture_id, uint64_t device_instance_id);
   void record_admission_context(uint64_t capture_id, uint64_t device_instance_id,
-                                CaptureAdmissionContext context);
+                                CaptureAdmissionContext context,
+                                const CaptureStillImageBundle& still_image_bundle);
+  bool has_admitted_capture_member(uint64_t capture_id,
+                                   uint64_t device_instance_id,
+                                   uint32_t image_member_index) const;
   void mark_capture_completed(uint64_t capture_id, uint64_t device_instance_id);
   void mark_capture_failed(uint64_t capture_id, uint64_t device_instance_id, uint32_t error_code);
   bool is_assembly_successful(uint64_t capture_id, uint64_t device_instance_id) const;

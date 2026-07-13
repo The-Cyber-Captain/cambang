@@ -879,6 +879,8 @@ bool provider_fact_has_capture_id_for_priority(const ProviderToCoreCommand& cmd)
       return std::get<CmdProviderCaptureFailed>(cmd.payload).capture_id != 0;
     case ProviderToCoreCommandType::PROVIDER_FRAME:
       return std::get<CmdProviderFrame>(cmd.payload).frame.capture_id != 0;
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_IMAGE_FACTS:
+      return std::get<CmdProviderCaptureImageFacts>(cmd.payload).capture_id != 0;
     default:
       return false;
   }
@@ -962,6 +964,23 @@ ProviderFactSummary summarize_provider_fact(const ProviderToCoreCommand& cmd,
       out.device_instance_id = p.device_instance_id;
       out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
       if (const auto cohort = capture_cohorts.find(p.capture_id)) {
+        out.rig_id = cohort->rig_id;
+      }
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_CAMERA_STATIC_FACTS: {
+      const auto& p = std::get<CmdProviderCameraStaticFacts>(cmd.payload);
+      out.device_instance_id = p.device_instance_id;
+      out.fact_class = ProviderFactClass::CriticalNonLossy;
+      break;
+    }
+    case ProviderToCoreCommandType::PROVIDER_CAPTURE_IMAGE_FACTS: {
+      const auto& p = std::get<CmdProviderCaptureImageFacts>(cmd.payload);
+      out.capture_id = p.capture_id;
+      out.device_instance_id = p.device_instance_id;
+      out.image_member_index = p.image_member_index;
+      out.fact_class = provider_capture_fact_class(p.capture_id, capture_cohorts);
+      if (const auto cohort = capture_cohorts.find(p.capture_id); cohort.has_value()) {
         out.rig_id = cohort->rig_id;
       }
       break;
@@ -1523,6 +1542,7 @@ CoreRuntime::CoreRuntime()
       }) {
   dispatcher_.set_result_store(&result_store_);
   dispatcher_.set_capture_assembly_registry(&capture_assembly_registry_);
+  dispatcher_.set_provider_camera_fact_state(&provider_camera_fact_state_);
   dispatcher_.set_capture_lifecycle_ingress_sink(
       [this](const CoreCaptureLifecycleIngressEvent& event) {
         note_capture_lifecycle_ingress_(event);
@@ -4448,6 +4468,7 @@ void CoreRuntime::on_core_start() {
   result_store_.clear();
   global_resource_aggregate_telemetry().clear();
   acquisition_sessions_.clear();
+  provider_camera_fact_state_.clear();
   {
     const std::lock_guard<std::mutex> lock(configured_capture_geolocation_mutex_);
     active_capture_geolocation_ = configured_capture_geolocation_;
@@ -5104,6 +5125,7 @@ void CoreRuntime::on_core_stop() {
   // Runtime is no longer live; clear retained results so stop/start boundaries
   // cannot expose stale prior-generation result truth.
   result_store_.clear();
+  provider_camera_fact_state_.clear();
   global_resource_aggregate_telemetry().clear();
   stream_retained_plan_evaluators_.clear();
   capture_retained_plan_evaluators_.clear();
@@ -6048,7 +6070,7 @@ TryTriggerDeviceCaptureStatus CoreRuntime::trigger_device_capture_with_capture_i
     return TryTriggerDeviceCaptureStatus::ProviderRejected;
   }
   capture_assembly_registry_.record_admission_context(
-      capture_id, device_instance_id, req.admission_context);
+      capture_id, device_instance_id, req.admission_context, req.still_image_bundle);
 
   begin_capture_stream_preemption_(capture_id, device_instance_id);
   (void)suppress_queued_repeating_stream_frames_for_capture_();
@@ -6273,7 +6295,7 @@ CoreRuntime::RigAdmittedRequestBundle CoreRuntime::admit_rig_cohort_from_preflig
   for (const auto& participant : participants) {
     capture_assembly_registry_.record_admission_context(
         capture_id, participant.request.device_instance_id,
-        participant.request.admission_context);
+        participant.request.admission_context, participant.request.still_image_bundle);
   }
 
   return make_rig_admitted_success(

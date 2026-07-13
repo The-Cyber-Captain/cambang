@@ -3754,6 +3754,182 @@ bool run_core_synthetic_multi_member_capture_admission_context_check() {
   return true;
 }
 
+bool run_provider_camera_fact_ingress_check() {
+  constexpr uint64_t kDeviceA = 17301;
+  constexpr uint64_t kDeviceB = 17302;
+  constexpr uint64_t kCaptureId = 17311;
+  constexpr uint64_t kRigId = 17321;
+
+  const auto make_static_facts = [] {
+    const auto domain = CoordinateDomainPlatformDefined::create("provider-test-domain");
+    const auto intrinsics = Intrinsics::create(
+        100.0, 101.0, 50.0, 51.0, 0.0, 640, 480, CoordinateDomain{*domain});
+    const auto distortion = BrownConrady5Distortion::create(
+        0.1, 0.01, 0.001, 0.0001, 0.00001, 640, 480,
+        CoordinateDomain{*domain}, DistortionImageState::DISTORTED);
+    const auto reference = PoseReferencePlatformDefined::create("provider-test-reference");
+    const auto convention = PoseConventionPlatformDefined::create("provider-test-convention");
+    const auto pose = CameraPose::create(
+        PoseReference{*reference}, PoseConvention{*convention},
+        Vec3Meters{1.0, 2.0, 3.0}, QuaternionXyzw{0.0, 0.0, 0.0, 1.0});
+    ProviderCameraFacts facts{};
+    facts.static_facts.facing = SourcedFact<CameraFacing>{CameraFacing::BACK, FactOrigin::NATIVE_REPORTED};
+    facts.static_facts.nature = SourcedFact<CameraNature>{CameraNature::PHYSICAL, FactOrigin::NATIVE_REPORTED};
+    facts.static_facts.sensor_orientation = SourcedFact<SensorOrientationDegrees>{
+        SensorOrientationDegrees::DEGREES_90, FactOrigin::NATIVE_REPORTED};
+    facts.static_facts.intrinsics = SourcedFact<Intrinsics>{*intrinsics, FactOrigin::NATIVE_REPORTED};
+    facts.static_facts.distortion = SourcedFact<Distortion>{
+        Distortion{*distortion}, FactOrigin::NATIVE_REPORTED};
+    facts.static_facts.pose = SourcedFact<CameraPose>{*pose, FactOrigin::NATIVE_REPORTED};
+    return facts;
+  };
+  const auto make_preflight = [=](uint64_t rig_id) {
+    CoreRuntime::RigPreflightResult preflight{};
+    preflight.ok = true;
+    preflight.rig_id = rig_id;
+    for (const auto [hardware_id, device_id] :
+         {std::pair{"synthetic:0", kDeviceA}, std::pair{"synthetic:1", kDeviceB}}) {
+      CaptureRequest request{};
+      request.device_instance_id = device_id;
+      request.still_image_bundle = make_default_metered_still_image_bundle();
+      request.still_image_bundle.members.push_back(CaptureStillImageMember{
+          1u, CaptureStillImageMemberRole::ADDITIONAL_BRACKET, -1000});
+      CoreRuntime::RigPreflightParticipant participant{};
+      participant.hardware_id = hardware_id;
+      participant.device_instance_id = device_id;
+      participant.request = std::move(request);
+      preflight.participants.push_back(std::move(participant));
+    }
+    return preflight;
+  };
+
+  CoreRuntime rt;
+  if (rt.ingest_camera_concurrency_json_for_server(
+          "{\"schema_version\":1,\"cameras\":[{\"camera_id\":\"synthetic:0\"},{\"camera_id\":\"synthetic:1\"}],\"concurrent_camera_support\":{\"supported\":true,\"camera_id_combinations\":[[\"synthetic:0\",\"synthetic:1\"]]}}").status !=
+          CoreRuntime::IngestCameraConcurrencyStatus::Ok ||
+      !rt.start() || !wait_for_core_runtime_live(rt)) {
+    std::cerr << "FAIL provider camera facts runtime setup failed\n";
+    return false;
+  }
+
+  SyntheticProviderConfig config{};
+  config.endpoint_count = 2;
+  config.nominal.width = 64;
+  config.nominal.height = 64;
+  config.nominal.format_fourcc = FOURCC_RGBA;
+  SyntheticProvider provider(config);
+  const auto fail_with_cleanup = [&](const char* message) {
+    std::cerr << message << "\n";
+    (void)provider.shutdown();
+    rt.stop();
+    rt.attach_provider(nullptr);
+    return false;
+  };
+  if (!provider.initialize(rt.provider_callbacks()).ok()) {
+    return fail_with_cleanup("FAIL provider camera facts provider init failed");
+  }
+  rt.attach_provider(&provider);
+  if (rt.try_open_device("synthetic:0", kDeviceA, 17331) != TryOpenDeviceStatus::OK ||
+      rt.try_open_device("synthetic:1", kDeviceB, 17332) != TryOpenDeviceStatus::OK) {
+    return fail_with_cleanup("FAIL provider camera facts device open failed");
+  }
+
+  // The fact objects are destroyed before Core is queried; all accepted truth
+  // must therefore be owned by the ingress command/Core store.
+  {
+    ProviderCameraFacts complete = make_static_facts();
+    rt.provider_callbacks()->on_camera_static_facts(kDeviceA, complete);
+  }
+  const auto complete = rt.provider_camera_facts_for_smoke(kDeviceA);
+  if (!complete || !complete->static_facts.facing || !complete->static_facts.nature ||
+      !complete->static_facts.sensor_orientation || !complete->static_facts.intrinsics ||
+      !complete->static_facts.distortion || !complete->static_facts.pose ||
+      complete->static_facts.intrinsics->value.reference_width_px() != 640) {
+    return fail_with_cleanup("FAIL provider camera facts complete static ingress/lifetime failed");
+  }
+
+  ProviderCameraFacts partial{};
+  partial.static_facts.facing = SourcedFact<CameraFacing>{
+      CameraFacing::FRONT, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
+  rt.provider_callbacks()->on_camera_static_facts(kDeviceA, partial);
+  const auto updated = rt.provider_camera_facts_for_smoke(kDeviceA);
+  if (!updated || !updated->static_facts.facing ||
+      updated->static_facts.facing->value != CameraFacing::FRONT ||
+      updated->static_facts.intrinsics || updated->static_facts.distortion ||
+      updated->static_facts.pose) {
+    return fail_with_cleanup("FAIL provider camera facts static replacement did not remove omitted facts");
+  }
+
+  ProviderCameraFacts device_b{};
+  device_b.static_facts.facing = SourcedFact<CameraFacing>{
+      CameraFacing::EXTERNAL, FactOrigin::NATIVE_REPORTED};
+  rt.provider_callbacks()->on_camera_static_facts(kDeviceB, device_b);
+  ProviderCameraFacts malformed = device_b;
+  malformed.static_facts.facing = SourcedFact<CameraFacing>{
+      static_cast<CameraFacing>(99), FactOrigin::NATIVE_REPORTED};
+  rt.provider_callbacks()->on_camera_static_facts(kDeviceB, malformed);
+  rt.provider_callbacks()->on_camera_static_facts(99999, device_b);
+  const auto retained_b = rt.provider_camera_facts_for_smoke(kDeviceB);
+  if (!retained_b || !retained_b->static_facts.facing ||
+      retained_b->static_facts.facing->value != CameraFacing::EXTERNAL ||
+      rt.provider_camera_facts_for_smoke(99999)) {
+    return fail_with_cleanup("FAIL provider camera facts rejected static ingress mutated truth");
+  }
+
+  const auto admitted = rt.smoke_admit_rig_cohort_from_preflight(
+      kRigId, kCaptureId, make_preflight(kRigId));
+  if (!admitted.ok || admitted.participants.size() != 2) {
+    return fail_with_cleanup("FAIL provider camera facts rig admission failed");
+  }
+  const auto domain = CoordinateDomainPlatformDefined::create("image-fact-domain");
+  const auto intrinsics = Intrinsics::create(
+      200.0, 201.0, 100.0, 101.0, std::nullopt, 1280, 720, CoordinateDomain{*domain});
+  const auto distortion = BrownConrady5Distortion::create(
+      0.2, 0.02, 0.002, 0.0002, 0.00002, 1280, 720,
+      CoordinateDomain{*domain}, DistortionImageState::RECTIFIED);
+  const auto reference = PoseReferenceCustom::create("rig-reference");
+  const auto pose = CameraPose::create(
+      PoseReference{*reference}, PoseConvention{PoseConventionCameraOpticalFrame{}},
+      Vec3Meters{4.0, 5.0, 6.0}, QuaternionXyzw{0.0, 0.0, 0.0, 1.0});
+  ProviderCaptureImageFacts member_zero{};
+  member_zero.intrinsics = SourcedFact<Intrinsics>{*intrinsics, FactOrigin::NATIVE_REPORTED};
+  ProviderCaptureImageFacts member_one{};
+  member_one.distortion = SourcedFact<Distortion>{Distortion{*distortion}, FactOrigin::NATIVE_REPORTED};
+  ProviderCaptureImageFacts other_participant{};
+  other_participant.pose = SourcedFact<CameraPose>{*pose, FactOrigin::NATIVE_REPORTED};
+  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, member_zero);
+  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 1, member_one);
+  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceB, 0, other_participant);
+  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 2, member_one);
+  rt.provider_callbacks()->on_capture_image_facts(kCaptureId + 1, kDeviceA, 0, member_zero);
+  ProviderCaptureImageFacts malformed_image = member_zero;
+  malformed_image.intrinsics->origin = static_cast<FactOrigin>(99);
+  rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, malformed_image);
+
+  const auto a0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
+  const auto a1 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 1);
+  const auto b0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 0);
+  if (!a0 || !a0->intrinsics || a0->distortion || a0->pose ||
+      !a1 || a1->intrinsics || !a1->distortion || a1->pose ||
+      !b0 || b0->intrinsics || b0->distortion || !b0->pose ||
+      rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 2) ||
+      rt.provider_capture_image_facts_for_smoke(kCaptureId + 1, kDeviceA, 0)) {
+    return fail_with_cleanup("FAIL provider camera facts capture-member identity/rejection failed");
+  }
+
+  rt.stop();
+  if (!rt.start() || !wait_for_core_runtime_live(rt) ||
+      rt.provider_camera_facts_for_smoke(kDeviceA) ||
+      rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0)) {
+    return fail_with_cleanup("FAIL provider camera facts crossed a stop/start boundary");
+  }
+
+  (void)provider.shutdown();
+  rt.stop();
+  rt.attach_provider(nullptr);
+  return true;
+}
+
 bool run_core_synthetic_three_member_realized_unknown_propagation_check() {
   CoreRuntime rt;
   if (!rt.start()) {
@@ -7640,6 +7816,7 @@ int main(int argc, char** argv) {
       {"run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check", [] { return run_core_synthetic_three_member_capture_result_realized_ev_mismatch_check(); }},
       {"run_synthetic_still_bundle_capability_gate_contract_check", [] { return run_synthetic_still_bundle_capability_gate_contract_check(); }},
       {"run_core_synthetic_multi_member_capture_admission_context_check", [] { return run_core_synthetic_multi_member_capture_admission_context_check(); }},
+      {"run_provider_camera_fact_ingress_check", [] { return run_provider_camera_fact_ingress_check(); }},
       {"run_core_synthetic_three_member_realized_unknown_propagation_check", [] { return run_core_synthetic_three_member_realized_unknown_propagation_check(); }},
       {"run_synthetic_stream_plus_still_single_session_truth_check", [] { return run_synthetic_stream_plus_still_single_session_truth_check(); }},
       {"run_core_measured_backing_plan_evaluation_check", [] { return run_core_measured_backing_plan_evaluation_check(); }},

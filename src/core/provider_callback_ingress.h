@@ -74,6 +74,12 @@ public:
   void on_capture_started(uint64_t capture_id, uint64_t device_instance_id) override;
   void on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) override;
   void on_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error) override;
+  void on_camera_static_facts(uint64_t device_instance_id,
+                              ProviderCameraFacts facts) override;
+  void on_capture_image_facts(uint64_t capture_id,
+                              uint64_t device_instance_id,
+                              uint32_t image_member_index,
+                              ProviderCaptureImageFacts facts) override;
 
   void on_frame(const FrameView& frame) override;
 

@@ -69,6 +69,9 @@ void CoreDispatcher::dispatch(ProviderToCoreCommand&& cmd) {
     if (devices_) {
       devices_->on_device_closed(p.device_instance_id);
     }
+    if (provider_camera_fact_state_) {
+      provider_camera_fact_state_->erase_device(p.device_instance_id);
+    }
     relevant_state_changed_ = true;
     break;
   }
@@ -310,6 +313,37 @@ case ProviderToCoreCommandType::PROVIDER_NATIVE_OBJECT_DESTROYED: {
       capture_assembly_registry_->mark_capture_failed(p.capture_id, p.device_instance_id, p.error_code);
     }
     relevant_state_changed_ = relevant_state_changed_ || state_changed;
+    break;
+  }
+
+  case ProviderToCoreCommandType::PROVIDER_CAMERA_STATIC_FACTS: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCameraStaticFacts>(cmd.payload);
+    if (devices_) {
+      const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
+      if (device != nullptr && device->open && provider_camera_fact_state_ &&
+          provider_camera_fact_state_->replace_static(p.device_instance_id, p.facts)) {
+        relevant_state_changed_ = true;
+      }
+    }
+    break;
+  }
+
+  case ProviderToCoreCommandType::PROVIDER_CAPTURE_IMAGE_FACTS: {
+    stats_.commands_handled++;
+    const auto& p = std::get<CmdProviderCaptureImageFacts>(cmd.payload);
+    if (devices_ && capture_assembly_registry_ && provider_camera_fact_state_) {
+      const CoreDeviceRegistry::DeviceRecord* device = devices_->find(p.device_instance_id);
+      if (device != nullptr && device->open &&
+          capture_assembly_registry_->has_admitted_capture_member(
+              p.capture_id, p.device_instance_id, p.image_member_index) &&
+          provider_camera_fact_state_->replace_capture_image(
+              ProviderCameraFactState::CaptureImageKey{
+                  p.capture_id, p.device_instance_id, p.image_member_index},
+              p.facts)) {
+        relevant_state_changed_ = true;
+      }
+    }
     break;
   }
 

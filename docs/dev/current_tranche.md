@@ -16,8 +16,8 @@ state.
 
 ## Current tranche
 
-Complete the public ADC v2 camera-description ingestion replacement after the
-accepted internal parser and retained external camera-description state work.
+Implement internal provider fact ingress after the accepted ADC v2 ingestion
+and capture-admission-context work.
 
 Keep individual invocation tasks in their Codex prompts; keep this file
 focused on tranche-wide state and constraints.
@@ -48,13 +48,14 @@ focused on tranche-wide state and constraints.
 
 ## Tranche boundaries
 
-This tranche exposes the existing bounded ADC v2 parser and typed retained
-external-camera-description state through the single public ingestion method.
+This tranche adds source-neutral provider-to-Core ingress for provider static
+camera facts and per-capture-image intrinsics, distortion, and pose. Provider
+facts remain distinct from external configured facts and admission context;
+they are not yet resolved into results, snapshots, or public surfaces.
 
-Do not add further public Godot API, provider ingress/interfaces, result
-resolution, snapshot schema, provider behavior, or change the working
-grouped-rig admission path. The legacy v1 concurrency parser has no Godot
-binding.
+Do not add further public Godot API, provider reference-fact implementation,
+result resolution, snapshot schema, or change the working grouped-rig
+admission path. The legacy v1 concurrency parser has no Godot binding.
 
 Do not introduce additional Godot APIs, filesystem convenience APIs, a generic
 metadata/configuration system, calibration algorithms, or platform-provider
@@ -72,19 +73,14 @@ Completed before this tranche:
 
 Required before this tranche closes:
 
-* accept exact ADC schema version 2 only, with bounded parse and strict
-  recognised-field validation plus additive unknown-member tolerance;
-* retain complete externally configured per-camera static facts separately from
-  `ImagingSpec`, including valid unmatched entries and exact camera-ID lookup;
-* preserve stopped-only, transactional full replacement across configured and
-  active generations; rejected input preserves prior accepted truth;
-* project only optional concurrency truth into `ImagingSpec` without changing
-  grouped-rig admission semantics;
-* verify public stopped-time replacement, rejection preservation, exact v2
-  acceptance, legacy v1 public rejection, and projected grouped-rig admission.
+* retain provider static facts by active provider device identity;
+* retain per-image facts by exact capture, device, and member identity;
+* reject malformed or mismatched callback facts without mutating retained truth;
+* retain owned copies across the callback/Core boundary;
+* preserve bracket and rig member identity without resolving precedence against
+  external configured facts.
 
 ## After this tranche
 
-Implementation next proceeds through capture-admission context, provider fact
-supply, SyntheticProvider reference facts, result resolution, and separately
-approved Godot exposure.
+Implementation next proceeds through SyntheticProvider reference facts, result
+resolution, and separately approved Godot exposure.

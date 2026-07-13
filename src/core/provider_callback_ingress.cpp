@@ -346,6 +346,26 @@ void ProviderCallbackIngress::on_capture_failed(uint64_t capture_id,
   post_command(std::move(cmd));
 }
 
+void ProviderCallbackIngress::on_camera_static_facts(
+    uint64_t device_instance_id, ProviderCameraFacts facts) {
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAMERA_STATIC_FACTS;
+  cmd.payload = CmdProviderCameraStaticFacts{device_instance_id, std::move(facts)};
+  post_command(std::move(cmd));
+}
+
+void ProviderCallbackIngress::on_capture_image_facts(
+    uint64_t capture_id,
+    uint64_t device_instance_id,
+    uint32_t image_member_index,
+    ProviderCaptureImageFacts facts) {
+  ProviderToCoreCommand cmd;
+  cmd.type = ProviderToCoreCommandType::PROVIDER_CAPTURE_IMAGE_FACTS;
+  cmd.payload = CmdProviderCaptureImageFacts{
+      capture_id, device_instance_id, image_member_index, std::move(facts)};
+  post_command(std::move(cmd));
+}
+
 void ProviderCallbackIngress::on_frame(const FrameView& frame) {
   // FrameView is a provider-owned view. Ownership is returned to the provider only when
   // core calls frame.release_now(). The core dispatcher MUST ensure release-on-drop.

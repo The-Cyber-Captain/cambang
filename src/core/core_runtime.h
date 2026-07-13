@@ -22,6 +22,7 @@
 #include "core/core_runtime_state.h"
 #include "core/core_spec_state.h"
 #include "core/external_camera_description_state.h"
+#include "core/provider_camera_fact_state.h"
 #include "core/core_stream_registry.h"
 #include "core/core_thread.h"
 #include "core/core_frame_sink.h"
@@ -450,6 +451,12 @@ enum class TryCloseDeviceStatus : uint8_t {
   active_external_camera_description_for_smoke(const std::string& camera_id) const;
   size_t active_external_camera_description_count_for_smoke() const;
   uint64_t active_external_camera_description_version_for_smoke() const;
+  std::optional<ProviderCameraFacts> provider_camera_facts_for_smoke(
+      uint64_t device_instance_id) const;
+  std::optional<ProviderCaptureImageFacts> provider_capture_image_facts_for_smoke(
+      uint64_t capture_id,
+      uint64_t device_instance_id,
+      uint32_t image_member_index) const;
 
 #endif
 
@@ -1126,6 +1133,7 @@ private:
   std::vector<uint8_t> configured_imaging_spec_payload_{};
   std::optional<ExternalCameraDescriptionState> configured_external_camera_description_{};
   ExternalCameraDescriptionState active_external_camera_description_{};
+  ProviderCameraFactState provider_camera_fact_state_{};
   uint64_t active_camera_description_version_ = 0;
   uint64_t next_configured_camera_description_version_ = 1;
   uint64_t next_configured_imaging_spec_version_ = 1;

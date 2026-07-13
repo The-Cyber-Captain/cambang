@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/camera_fact_types.h"
 #include "provider_contract_datatypes.h"
 
 namespace cambang {
@@ -52,6 +53,23 @@ public:
   virtual void on_capture_started(uint64_t capture_id, uint64_t device_instance_id) = 0;
   virtual void on_capture_completed(uint64_t capture_id, uint64_t device_instance_id) = 0;
   virtual void on_capture_failed(uint64_t capture_id, uint64_t device_instance_id, ProviderError error) = 0;
+
+  // Optional source-neutral fact ingress. Providers may report facts after
+  // the corresponding device/capture identity has become known to Core.
+  virtual void on_camera_static_facts(uint64_t device_instance_id,
+                                      ProviderCameraFacts facts) {
+    (void)device_instance_id;
+    (void)facts;
+  }
+  virtual void on_capture_image_facts(uint64_t capture_id,
+                                      uint64_t device_instance_id,
+                                      uint32_t image_member_index,
+                                      ProviderCaptureImageFacts facts) {
+    (void)capture_id;
+    (void)device_instance_id;
+    (void)image_member_index;
+    (void)facts;
+  }
 
   // ---- Frame delivery ----
   virtual void on_frame(const FrameView& frame) = 0;
