@@ -42,7 +42,7 @@ bool display_demand_trace_enabled() {
 }
 
 bool has_current_retained_cpu_payload(const SharedStreamResultData& data) {
-  if (!data || data->payload_capture_timestamp_ns != data->capture_timestamp_ns) {
+  if (!data || data->payload_retained_frame_id != data->retained_frame_id) {
     return false;
   }
   if (data->payload.width == 0 || data->payload.height == 0 || data->payload.empty()) {
@@ -116,7 +116,7 @@ struct LiveCpuDisplayViewEntry final {
   std::mutex mutex;
   std::shared_ptr<SharedLiveCpuTextureRidState> rid_state;
   godot::Ref<godot::Image> image;
-  uint64_t last_capture_timestamp_ns = 0;
+  uint64_t last_retained_frame_id = 0;
   uint64_t next_refresh_after_ns = 0;
   uint64_t last_refresh_elapsed_ns = 0;
   uint32_t width = 0;
@@ -325,7 +325,7 @@ bool refresh_live_cpu_display_view_entry(
     prior_width = entry.width;
     prior_height = entry.height;
     const bool unchanged =
-        entry.last_capture_timestamp_ns == data->capture_timestamp_ns &&
+        entry.last_retained_frame_id == data->retained_frame_id &&
         entry.width == width &&
         entry.height == height &&
         entry.rid_state &&
@@ -410,7 +410,7 @@ bool refresh_live_cpu_display_view_entry(
     std::lock_guard<std::mutex> lock(entry.mutex);
     entry.image = working_entry.image;
     entry.rid_state = rid_state;
-    entry.last_capture_timestamp_ns = data->capture_timestamp_ns;
+    entry.last_retained_frame_id = data->retained_frame_id;
     entry.last_refresh_elapsed_ns = refresh_elapsed_ns;
     entry.next_refresh_after_ns = next_refresh_after_ns;
     entry.width = width;
@@ -504,7 +504,9 @@ uint32_t CamBANGStreamResult::get_format() const { return data_ ? data_->image_f
 int CamBANGStreamResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }
-uint64_t CamBANGStreamResult::get_capture_timestamp() const { return data_ ? data_->capture_timestamp_ns : 0; }
+uint64_t CamBANGStreamResult::get_capture_timestamp() const {
+  return data_ ? data_->legacy_capture_timestamp_ns : 0;
+}
 uint64_t CamBANGStreamResult::get_stream_id() const { return data_ ? data_->stream_id : 0; }
 uint64_t CamBANGStreamResult::get_device_instance_id() const { return data_ ? data_->device_instance_id : 0; }
 int CamBANGStreamResult::get_intent() const { return data_ ? static_cast<int>(data_->intent) : 0; }
@@ -874,19 +876,19 @@ void CamBANGStreamResult::refresh_live_stream_cpu_display_views(const CoreRuntim
       continue;
     }
     if (data->payload_kind == ResultPayloadKind::CPU_PACKED && has_current_retained_cpu_payload(data)) {
-      uint64_t prior_capture_timestamp_ns = 0;
+      uint64_t prior_retained_frame_id = 0;
       {
         std::lock_guard<std::mutex> entry_lock(candidate.entry->mutex);
-        prior_capture_timestamp_ns = candidate.entry->last_capture_timestamp_ns;
+        prior_retained_frame_id = candidate.entry->last_retained_frame_id;
       }
       if (refresh_live_cpu_display_view_entry(*candidate.entry, data, false, demand_active, true)) {
         ++refreshed_count;
-        uint64_t latest_capture_timestamp_ns = 0;
+        uint64_t latest_retained_frame_id = 0;
         {
           std::lock_guard<std::mutex> entry_lock(candidate.entry->mutex);
-          latest_capture_timestamp_ns = candidate.entry->last_capture_timestamp_ns;
+          latest_retained_frame_id = candidate.entry->last_retained_frame_id;
         }
-        if (latest_capture_timestamp_ns != prior_capture_timestamp_ns) {
+        if (latest_retained_frame_id != prior_retained_frame_id) {
           ++updated_count;
         }
       }

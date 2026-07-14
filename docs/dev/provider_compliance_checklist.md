@@ -146,22 +146,22 @@ Current implementation reminder:
 
 ---
 
-## 7. Timestamp correctness
+## 7. Image Acquisition Timing correctness
 
-All frames delivered to Core include a contract-valid
-`CaptureTimestamp` containing:
+When a provider supplies Image Acquisition Timing on a delivered frame, audit
+that:
 
-- `value`
-- `tick_ns`
-- `domain`
-
-Audit that:
-
-- `tick_ns` is non-zero
-- `domain` is semantically valid
-- timestamp values are not placeholder-shaped
-- synthetic / stub providers are held to the same timestamp contract as
-  platform-backed providers
+- the acquisition mark, rational tick period, clock domain, reference event,
+  comparability, and origin form a semantically valid record;
+- a zero acquisition mark is accepted as valid;
+- absence remains distinct from a present zero-valued mark;
+- values are backend-derived or truthfully synthesized rather than placeholders;
+- the timing is carried on the delivered frame and is not duplicated through a
+  separate per-image fact callback;
+- Core does not depend on the timing for retained-frame identity, backing
+  correlation, freshness, ordering, deduplication, chronology, or latency;
+- synthetic / stub providers are held to the same truthfulness contract as
+  platform-backed providers.
 
 ---
 
@@ -179,13 +179,14 @@ For platform-backed providers:
 ## 9. Camera-fact callback discipline
 
 - Static camera facts are keyed by the opened provider device identity.
-- Per-image facts are posted through the normal provider callback path with the
-  exact capture ID, device instance ID, and image-member index.
+- Per-image facts other than acquisition timing are posted through the normal
+  provider callback path with the exact capture ID, device instance ID, and
+  image-member index. Acquisition timing is carried only on the delivered frame.
 - Per-image fact replacement is complete and transactional: malformed input
   must not mutate retained truth, and omitted facts remain absent.
 - Image acquisition timing uses the provider-domain mark associated with that
-  exact member. It must not be substituted from Capture Date-Time, admission,
-  Core lifecycle, geolocation, or another member.
+  exact delivered frame/member. It must not be substituted from Capture
+  Date-Time, admission, Core lifecycle, geolocation, or another member.
 - Focus state and realized image transform are per-image facts, distinct from
   sensor orientation and static pose. Providers omit facts they cannot supply
   truthfully.
@@ -201,7 +202,7 @@ Validation should establish confidence in:
 - lifecycle ordering correctness
 - absence of dropped non-frame events
 - truthful native-object reporting
-- contract-valid timestamps
+- truthful optional Image Acquisition Timing
 - deterministic shutdown behaviour
 - consistency with registry / snapshot truthfulness rules
 

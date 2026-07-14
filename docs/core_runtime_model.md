@@ -388,9 +388,10 @@ The Godot bridge reads these markers once per tick and decides whether to emit.
 ### 9.3 Publish time vs capture time
 
 Snapshot `timestamp_ns` is core publish time (monotonic, generation-relative).
-Per-frame capture timestamps are separate metadata carried by provider events and must
-use a provider-agnostic time domain representation (see `provider_architecture.md`).
-Core must not assume capture time is wall-clock.
+Per-frame Image Acquisition Timing is optional provider-authored metadata carried on
+the accepted `FrameView` in its declared source-neutral clock domain (see
+`provider_architecture.md`). Core must not use it for identity, ordering, or
+chronology.
 
 ### 9.4 `gen`, `version`, and `topology_version` bookkeeping
 

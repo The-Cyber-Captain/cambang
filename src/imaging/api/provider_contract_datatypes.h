@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/capture_admission_context.h"
+#include "core/camera_fact_types.h"
 
 // Pattern preset vocabulary is provider-agnostic and lives in the Pattern Module.
 // It is safe to depend on here (no platform headers).
@@ -364,23 +365,6 @@ struct NativeObjectDestroyInfo {
   uint64_t destroyed_ns = 0;              // provider value (0 is valid when has_destroyed_ns=true)
 };
 
-// Provider-agnostic capture timestamp.
-// See provider_architecture.md §7.x (canonical).
-enum class CaptureTimestampDomain : uint8_t {
-  PROVIDER_MONOTONIC = 0,
-  CORE_MONOTONIC = 1,
-  // NOTE: Avoid the Windows GDI macro `OPAQUE` (commonly defined as 2 via wingdi.h)
-  // which can break compilation when <windows.h> is included before this header.
-  // Semantics remain "opaque / ordering-only" as described in provider_architecture.md.
-  DOMAIN_OPAQUE = 2,
-};
-
-struct CaptureTimestamp {
-  uint64_t value = 0;     // integer tick value
-  uint32_t tick_ns = 0;   // tick period in nanoseconds (1 = ns, 100 = 100ns, etc.)
-  CaptureTimestampDomain domain = CaptureTimestampDomain::DOMAIN_OPAQUE;
-};
-
 // Internal still-capture image routing marker (provider -> core).
 //
 // Default-initialized and legacy-populated frames remain DEFAULT_METERED.
@@ -409,7 +393,6 @@ struct RetainedGpuBackingDescriptor {
   // Opaque provider-scoped backing identity or generation. Zero means the
   // provider/core path knows a GPU backing exists but has no scalar identity.
   uint64_t backing_id = 0;
-  uint64_t capture_timestamp_ns = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t stride_bytes = 0;
@@ -436,8 +419,9 @@ struct FrameView {
   uint32_t format_fourcc = 0;
   ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
 
-  // Timing
-  CaptureTimestamp capture_timestamp{};
+  // Optional provider-authored timing for this exact acquired frame. A present
+  // zero-valued acquisition mark is valid and remains distinct from absence.
+  std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing{};
 
   // Buffer
   const uint8_t* data = nullptr;

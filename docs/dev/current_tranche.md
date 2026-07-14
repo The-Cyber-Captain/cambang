@@ -29,8 +29,8 @@ surface directly, and preserve stream hot-path performance.
 
 Implement and review this stage before public API replacement:
 
-* establish one source-neutral acquisition-timing contract usable by providers
-  and Core;
+* use the canonical source-neutral `ImageAcquisitionTiming` contract already
+  defined for providers and Core;
 * carry complete optional timing on `FrameView`;
 * retain that timing on stream results and capture image members;
 * source capture-member timing only from the accepted member frame and remove
@@ -38,12 +38,18 @@ Implement and review this stage before public API replacement:
 * introduce Core-owned retained-frame identity at successful retention;
 * replace timestamp-based identity, correlation, freshness, deduplication,
   evidence, and signature uses;
+* remove acquisition timing from Core ordering, queue chronology, lifecycle
+  elapsed-time, and latency authority; use the appropriate existing Core-owned
+  ordering or monotonic chronology instead;
 * remove redundant timestamp fields used only for payload/backing correlation;
 * update SyntheticProvider and StubProvider truthfully.
 
 The existing public timestamp methods and member key may remain during Stage A
-only as projections derived from canonical retained timing. They are not
-internal truth or identity and remain mandatory Stage B removals.
+only as checked projections derived from canonical retained timing. A projection
+is valid only when the rational mark converts exactly to whole nanoseconds with
+a non-zero denominator and no overflow; otherwise it is `0`. It is never
+internal truth, identity, correlation, ordering, or fallback, and remains a
+mandatory Stage B removal.
 
 Stage A must make no public Godot API shape change.
 

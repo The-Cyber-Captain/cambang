@@ -1071,19 +1071,6 @@ bool promote_capture_fact_over_repeating_stream_prefix(
   return false;
 }
 
-uint64_t frame_ts_to_core_ns_for_backpressure(const CaptureTimestamp& ts) {
-  if (ts.tick_ns == 0) {
-    return 0;
-  }
-  switch (ts.domain) {
-    case CaptureTimestampDomain::CORE_MONOTONIC:
-    case CaptureTimestampDomain::PROVIDER_MONOTONIC:
-      return static_cast<uint64_t>(ts.value) * static_cast<uint64_t>(ts.tick_ns);
-    default:
-      return 0;
-  }
-}
-
 bool has_newer_repeating_stream_frame_before_barrier(
     const std::deque<ProviderToCoreCommand>& provider_facts,
     const ProviderFactSummary& front_summary,
@@ -1131,7 +1118,7 @@ StreamFrameCoalesceResult coalesce_front_repeating_stream_frame_if_superseded(
   ProviderToCoreCommand cmd = std::move(provider_facts.front());
   provider_facts.pop_front();
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
-  const uint64_t integrated_ts_ns = frame_ts_to_core_ns_for_backpressure(frame.capture_timestamp);
+  const uint64_t integrated_ts_ns = capture_latency_trace_now_ns();
   const bool received_counted = streams.on_frame_received(frame.stream_id, integrated_ts_ns);
   const bool released_counted = streams.on_frame_released(frame.stream_id);
   const bool dropped_counted = streams.on_frame_dropped(frame.stream_id);
@@ -4274,7 +4261,8 @@ CoreResolvedCaptureImageFacts CoreRuntime::resolve_capture_image_facts_(
       : provider_image && provider_image->pose ? provider_image->pose
       : static_facts ? static_facts->pose : std::nullopt;
   if (provider_image) {
-    resolved.image = provider_image->image;
+    resolved.image.focus_state = provider_image->focus_state;
+    resolved.image.realized_image_transform = provider_image->realized_image_transform;
   }
   return resolved;
 }
@@ -4370,7 +4358,7 @@ bool CoreRuntime::suppress_repeating_stream_frame_for_capture_(ProviderToCoreCom
   }
 
   auto& frame = std::get<CmdProviderFrame>(cmd.payload).frame;
-  const uint64_t integrated_ts_ns = frame_ts_to_core_ns_for_backpressure(frame.capture_timestamp);
+  const uint64_t integrated_ts_ns = capture_latency_trace_now_ns();
   const bool received_counted = streams_.on_frame_received(frame.stream_id, integrated_ts_ns);
   const bool released_counted = streams_.on_frame_released(frame.stream_id);
   const bool dropped_counted = streams_.on_frame_dropped(frame.stream_id);

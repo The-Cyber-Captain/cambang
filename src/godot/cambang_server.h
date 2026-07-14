@@ -305,6 +305,14 @@ private:
   bool strict_scenario_unmet_logged_ = false;
 
   bool scenario_config_staged_for_session_ = false;
+  struct SyntheticStreamResultObservation {
+    uint64_t retained_frame_id = 0;
+    uint64_t revision = 0;
+  };
+  // Scenario-only metrics state. It deliberately exposes an opaque revision,
+  // never a retained-frame identity, through the synthetic diagnostics seam.
+  mutable std::map<uint64_t, SyntheticStreamResultObservation>
+      synthetic_stream_result_observations_;
   bool pending_scenario_start_after_baseline_ = false;
   uint64_t pending_scenario_start_session_id_ = 0;
   bool pending_timeline_pause_after_scenario_start_ = false;

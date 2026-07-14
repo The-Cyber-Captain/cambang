@@ -3943,6 +3943,79 @@ static int test_server_facing_rig_orchestration_adapter_smoke() {
   return 0;
 }
 
+static int test_result_store_identity_survives_runtime_restart_smoke() {
+  auto wait_for_stream_result = [](CoreRuntime& rt, StubProvider& prov) -> SharedStreamResultData {
+    SharedStreamResultData retained{};
+    const bool observed = wait_until([&]() {
+      prov.flush_callbacks_for_smoke();
+      if (!wait_for_core_barrier(rt, std::chrono::milliseconds(50))) {
+        return false;
+      }
+      retained = rt.get_latest_stream_result(kStreamId);
+      return static_cast<bool>(retained);
+    }, 200, 1);
+    return observed ? retained : nullptr;
+  };
+
+  CoreRuntime rt;
+  if (!rt.start()) {
+    std::cerr << "Restart identity smoke: first CoreRuntime start failed\n";
+    return 1;
+  }
+
+  StubProvider first_provider;
+  if (!setup_one_runtime_created_stream(rt, first_provider)) {
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Restart identity smoke: first stream start failed\n";
+    rt.stop();
+    return 1;
+  }
+  first_provider.emit_test_frames(kStreamId, 1);
+  const auto before_restart = wait_for_stream_result(rt, first_provider);
+  if (!before_restart || before_restart->retained_frame_id == 0) {
+    std::cerr << "Restart identity smoke: no retained stream result before restart\n";
+    rt.stop();
+    return 1;
+  }
+  const uint64_t before_restart_id = before_restart->retained_frame_id;
+  rt.stop();
+
+  if (!rt.start()) {
+    std::cerr << "Restart identity smoke: second CoreRuntime start failed\n";
+    return 1;
+  }
+
+  StubProvider second_provider;
+  if (!setup_one_runtime_created_stream(rt, second_provider)) {
+    rt.stop();
+    return 1;
+  }
+  if (rt.try_start_stream(kStreamId) != TryStartStreamStatus::OK) {
+    std::cerr << "Restart identity smoke: second stream start failed\n";
+    rt.stop();
+    return 1;
+  }
+  second_provider.emit_test_frames(kStreamId, 1);
+  const auto after_restart = wait_for_stream_result(rt, second_provider);
+  if (!after_restart) {
+    std::cerr << "Restart identity smoke: no retained stream result after restart\n";
+    rt.stop();
+    return 1;
+  }
+  if (after_restart->retained_frame_id <= before_restart_id) {
+    std::cerr << "Restart identity smoke: retained_frame_id reset across restart. before="
+              << before_restart_id << " after=" << after_restart->retained_frame_id << "\n";
+    rt.stop();
+    return 1;
+  }
+
+  rt.stop();
+  return 0;
+}
+
 static int test_rig_orchestration_helper_smoke() {
   CoreRuntime rt;
   if (!rt.start()) return 1;
@@ -4361,6 +4434,14 @@ int main(int argc, char** argv) {
                              [] { return test_cohort_aware_capture_result_set_smoke(); })) {
       if (reporter.verbose()) reporter.print_summary();
       reporter.print_fail_line("core_spine_smoke", "test_cohort_aware_capture_result_set_smoke", r);
+      return r;
+    }
+    if (int r = reporter.run("test_result_store_identity_survives_runtime_restart_smoke",
+                             [] { return test_result_store_identity_survives_runtime_restart_smoke(); })) {
+      if (reporter.verbose()) reporter.print_summary();
+      reporter.print_fail_line("core_spine_smoke",
+                               "test_result_store_identity_survives_runtime_restart_smoke",
+                               r);
       return r;
     }
     if (int r = reporter.run("test_rig_orchestration_helper_smoke",

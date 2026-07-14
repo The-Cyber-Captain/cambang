@@ -339,11 +339,16 @@ comparability meaning.
 It is per-image-member descriptive timing rather than document metadata or
 capture-admission wall-clock context.
 
-The implemented provider ingress retains a present timing record by exact
-capture, device, and image-member identity. It preserves the declared provider
-clock domain, tick period, reference event, comparability, and mark. A provider
-must not substitute Capture Date-Time, capture-admission time, Core lifecycle
-time, geolocation sample time, or another member's mark.
+The accepted provider frame is the single transport for a present timing record.
+Stream retention and capture-member retention preserve the exact declared clock
+domain, tick period, reference event, comparability, origin, and mark from that
+frame. Acquisition timing must not also travel through the separate per-image
+fact callback.
+
+A provider must not substitute Capture Date-Time, capture-admission time, Core
+lifecycle time, geolocation sample time, or another member's mark. Core must not
+use acquisition timing as retained-frame identity, backing identity, freshness,
+ordering, deduplication, lifecycle chronology, or latency evidence.
 
 ### 12.2.1 Focus and realized image transform
 
@@ -393,8 +398,9 @@ Classification values resolve independently. Intrinsics, distortion, and pose
 remain atomic.
 
 Dynamic image-time facts remain provider-owned rather than ADC-overridable.
-Image acquisition timing, focus state, and realized image transform therefore
-resolve from the exact provider capture-image record or remain absent.
+Image acquisition timing resolves from the exact accepted provider frame or
+remains absent. Focus state and realized image transform resolve from the exact
+provider capture-image fact record or remain absent.
 
 ---
 

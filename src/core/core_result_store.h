@@ -143,7 +143,9 @@ struct CoreStreamResultData {
   uint64_t stream_id = 0;
   uint64_t device_instance_id = 0;
   StreamIntent intent = StreamIntent::PREVIEW;
-  uint64_t capture_timestamp_ns = 0;
+  uint64_t retained_frame_id = 0;
+  // Stage A compatibility projection only; never identity or correlation truth.
+  uint64_t legacy_capture_timestamp_ns = 0;
   uint32_t image_width = 0;
   uint32_t image_height = 0;
   uint32_t image_format_fourcc = 0;
@@ -155,7 +157,7 @@ struct CoreStreamResultData {
   // Passive neutral descriptor for retained_gpu_backing. This does not drive
   // display or materialization yet; it records scalar GPU-primary facts while
   // legacy retained_gpu_backing remains the behavior path. If payload below is
-  // current for the same capture_timestamp_ns, classify the result as
+  // current for the same retained frame, classify the result as
   // GPU-primary with CPU sidecar data rather than GPU-only.
   RetainedGpuBackingDescriptor retained_gpu_backing_descriptor{};
   CoreResultPayloadCpuPacked payload{};
@@ -165,7 +167,8 @@ struct CoreStreamResultData {
   // Non-zero only when payload was copied from the same FrameView as this
   // retained stream result. Used to distinguish current CPU materialization
   // from unsupported GPU-only readback.
-  uint64_t payload_capture_timestamp_ns = 0;
+  uint64_t payload_retained_frame_id = 0;
+  CaptureImageFacts image_facts{};
   CoreImageFactBundle facts{};
 };
 
@@ -184,7 +187,10 @@ struct CoreCaptureResultData {
     int32_t applied_exposure_compensation_milli_ev = 0;
     bool has_realized_exposure_compensation_milli_ev = false;
     int32_t realized_exposure_compensation_milli_ev = 0;
-    uint64_t capture_timestamp_ns = 0;
+    uint64_t retained_frame_id = 0;
+    // Stage A compatibility projection only; never identity or correlation truth.
+    uint64_t legacy_capture_timestamp_ns = 0;
+    std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing;
     ResultPayloadKind payload_kind = ResultPayloadKind::CPU_PACKED;
     CoreResultPayloadCpuPacked payload{};
     std::shared_ptr<void> retained_gpu_backing{};
@@ -254,7 +260,6 @@ public:
 
   bool retain_frame(const FrameView& frame,
                     std::optional<StreamIntent> stream_intent,
-                    uint64_t capture_timestamp_ns,
                     uint64_t stream_applied_access_posture_epoch = 0,
                     uint64_t capture_applied_access_posture_epoch = 0,
                     CoreRetainedProductionPlan stream_requested_retained_plan = {},
@@ -276,6 +281,8 @@ public:
       CoreRetainedProductionPlan requested_retained_plan = {});
   static bool try_build_capture_image_member_data_from_frame(const FrameView& frame,
                                                               CoreResultPayloadCpuPacked& out_payload);
+  static uint64_t project_acquisition_timing_to_nanoseconds(
+      const std::optional<SourcedFact<ImageAcquisitionTiming>>& timing) noexcept;
 
   SharedStreamResultData get_latest_stream_result(uint64_t stream_id) const;
   SharedCaptureResultData get_capture_result(uint64_t capture_id, uint64_t device_instance_id) const;
@@ -289,19 +296,24 @@ public:
   void clear();
 
 private:
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  friend struct CoreResultStoreSmokeAccess;
+#endif
   static bool has_cpu_packed_payload(const FrameView& frame);
   static bool try_copy_cpu_packed_payload(const FrameView& frame, CoreResultPayloadCpuPacked& out);
   static bool has_valid_capture_image_member_payload(const CoreResultPayloadCpuPacked& payload);
+  bool try_issue_retained_frame_id(uint64_t& out_id) noexcept;
   static MutableCaptureResultData build_default_image_capture_result(const FrameView& frame,
                                                                      CoreRetainedBackingPlan plan,
                                                                      CoreResultPayloadCpuPacked payload,
                                                                      std::shared_ptr<void> retained_gpu_backing,
                                                                      RetainedGpuBackingDescriptor retained_gpu_backing_descriptor,
-                                                                     uint64_t capture_timestamp_ns);
+                                                                     uint64_t legacy_capture_timestamp_ns);
 
   mutable std::mutex mutex_;
   std::map<uint64_t, SharedStreamResultData> latest_stream_results_;
   std::map<uint64_t, std::map<uint64_t, MutableCaptureResultData>> capture_results_by_capture_id_;
+  uint64_t next_retained_frame_id_ = 1;
   struct StreamAccessPostureDomainKey {
     uint64_t stream_id = 0;
     uint64_t applied_epoch = 0;

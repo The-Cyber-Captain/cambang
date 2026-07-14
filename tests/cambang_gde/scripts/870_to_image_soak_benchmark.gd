@@ -99,8 +99,8 @@ var _devices := {
 		"device_id": 0,
 		"device": null,
 		"stream_id": 0,
-		"stream_last_ts": 0,
 		"stream_observed_changes": 0,
+		"stream_last_observed_revision": 0,
 		"stream_observation_first_us": 0,
 		"stream_observation_last_us": 0,
 		"live_display_bound": false,
@@ -112,8 +112,8 @@ var _devices := {
 		"device_id": 0,
 		"device": null,
 		"stream_id": 0,
-		"stream_last_ts": 0,
 		"stream_observed_changes": 0,
+		"stream_last_observed_revision": 0,
 		"stream_observation_first_us": 0,
 		"stream_observation_last_us": 0,
 		"live_display_bound": false,
@@ -771,9 +771,14 @@ func _setup_ready() -> bool:
 
 func _update_stream_display_views(require_bind: bool) -> void:
 	var now_us := _now_us()
-	var observe_timestamps := now_us - _last_stream_observation_us >= 10000
-	if observe_timestamps:
+	var observe_result_advancement := now_us - _last_stream_observation_us >= 10000
+	if observe_result_advancement:
 		_last_stream_observation_us = now_us
+	var revisions_by_stream := {}
+	if observe_result_advancement:
+		var metrics = CamBANGServer.get_synthetic_metrics_snapshot()
+		if typeof(metrics) == TYPE_DICTIONARY:
+			revisions_by_stream = metrics.get("synthetic_stream_result_revisions", {})
 	for device_key in [DEV_A, DEV_B]:
 		var info: Dictionary = _devices[device_key]
 		var label = _stream_live_labels.get(device_key, null)
@@ -787,23 +792,22 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if stream_id <= 0:
 			continue
 		var stream_result = null
-		if observe_timestamps or should_recheck:
+		if observe_result_advancement or should_recheck:
 			stream_result = CamBANGServer.get_stream_result_by_stream_id(stream_id)
-			if stream_result != null and observe_timestamps:
-				var observed_ts := int(stream_result.get_capture_timestamp())
-				if observed_ts > 0:
+			if stream_result != null and observe_result_advancement:
+				var revision := int(revisions_by_stream.get(stream_id, 0))
+				var prior_revision := int(info.get("stream_last_observed_revision", 0))
+				if revision > prior_revision:
 					if int(info.get("stream_observation_first_us", 0)) == 0:
 						info["stream_observation_first_us"] = now_us
-					var last_ts := int(info.get("stream_last_ts", 0))
-					if last_ts != 0 and last_ts != observed_ts:
-						info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + 1
-					info["stream_last_ts"] = observed_ts
+					info["stream_observed_changes"] = int(info.get("stream_observed_changes", 0)) + (revision - prior_revision)
 					info["stream_observation_last_us"] = now_us
+				info["stream_last_observed_revision"] = revision
 		if not should_recheck and bound:
-			_set_label_text_if_changed(label, "%s\nstream_id=%d\nts=%d\nobserved_update_fps=%.2f" % [
+			_set_label_text_if_changed(label, "%s\nstream_id=%d\nobserved_updates=%d\nobserved_update_fps=%.2f" % [
 				str(info.get("label", device_key)),
 				stream_id,
-				int(info.get("stream_last_ts", 0)),
+				int(info.get("stream_observed_changes", 0)),
 				_stream_observed_fps(device_key),
 			])
 			_devices[device_key] = info
@@ -813,7 +817,6 @@ func _update_stream_display_views(require_bind: bool) -> void:
 		if stream_result == null:
 			_devices[device_key] = info
 			continue
-		var ts := int(stream_result.get_capture_timestamp())
 		info["live_display_last_recheck_us"] = now_us
 		if stream_result.has_method("get_display_view_path_kind"):
 			info["live_display_path_kind"] = int(stream_result.get_display_view_path_kind())
@@ -827,10 +830,10 @@ func _update_stream_display_views(require_bind: bool) -> void:
 			if require_bind or not bound or current_texture != display_view:
 				_set_texture_if_changed(rect, display_view)
 				info["live_display_bound"] = true
-			_set_label_text_if_changed(label, "%s\nstream_id=%d\nts=%d\nobserved_update_fps=%.2f" % [
+			_set_label_text_if_changed(label, "%s\nstream_id=%d\nobserved_updates=%d\nobserved_update_fps=%.2f" % [
 				str(info.get("label", device_key)),
 				stream_id,
-				ts,
+				int(info.get("stream_observed_changes", 0)),
 				_stream_observed_fps(device_key),
 			])
 		_devices[device_key] = info
@@ -3090,9 +3093,9 @@ func _stream_display_observation_summary() -> Dictionary:
 			"label": str(info.get("label", device_key)),
 			"stream_id": int(info.get("stream_id", 0)),
 			"device_id": int(info.get("device_id", 0)),
-			"observed_timestamp_changes": int(info.get("stream_observed_changes", 0)),
+			"observed_result_advancements": int(info.get("stream_observed_changes", 0)),
 			"observed_result_update_fps": _stream_observed_fps(device_key),
-			"last_capture_timestamp": int(info.get("stream_last_ts", 0)),
+			"observed_update_count": int(info.get("stream_observed_changes", 0)),
 			"display_view_bound": bool(info.get("live_display_bound", false)),
 		}
 	return out

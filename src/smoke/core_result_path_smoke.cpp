@@ -12,7 +12,34 @@
 
 using namespace cambang;
 
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+namespace cambang {
+struct CoreResultStoreSmokeAccess {
+  static void set_next_retained_frame_id(CoreResultStore& store, uint64_t next_retained_frame_id) {
+    store.next_retained_frame_id_ = next_retained_frame_id;
+  }
+};
+} // namespace cambang
+#endif
+
 namespace {
+
+FrameView make_cpu_rgba_frame(uint64_t device_instance_id,
+                              uint64_t stream_id,
+                              uint64_t capture_id,
+                              std::vector<uint8_t>& bytes) {
+  FrameView frame{};
+  frame.device_instance_id = device_instance_id;
+  frame.stream_id = stream_id;
+  frame.capture_id = capture_id;
+  frame.width = 2;
+  frame.height = 2;
+  frame.format_fourcc = FOURCC_RGBA;
+  frame.data = bytes.data();
+  frame.size_bytes = bytes.size();
+  frame.stride_bytes = 0;
+  return frame;
+}
 
 template <typename T, typename = void>
 struct has_effective_authority : std::false_type {};
@@ -307,16 +334,16 @@ int main() {
   CoreRetainedProductionPlan requested_gpu_with_sidecar{};
   requested_gpu_with_sidecar.valid = true;
   requested_gpu_with_sidecar.posture = CoreProductionPostureShape::GpuPrimaryWithCpuSidecar;
-  assert(store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0, requested_cpu));
+  assert(store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_cpu));
   FrameView mismatched_cpu_request = stream_frame;
   mismatched_cpu_request.stream_id = 120;
   mismatched_cpu_request.primary_backing_kind = ProducerBackingKind::GPU;
   mismatched_cpu_request.primary_backing_artifact = std::make_shared<int>(120);
-  assert(!store.retain_frame(mismatched_cpu_request, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0, requested_cpu));
+  assert(!store.retain_frame(mismatched_cpu_request, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_cpu));
   FrameView provider_echo_only_request = stream_frame;
   provider_echo_only_request.stream_id = 121;
   provider_echo_only_request.requested_retained_plan = requested_cpu;
-  assert(!store.retain_frame(provider_echo_only_request, StreamIntent::VIEWFINDER, 1234, kStreamEpochA, 0));
+  assert(!store.retain_frame(provider_echo_only_request, StreamIntent::VIEWFINDER, kStreamEpochA, 0));
   assert(!store.get_latest_stream_result(120));
   assert(!store.get_latest_stream_result(121));
 
@@ -332,14 +359,56 @@ int main() {
   assert(stream_result->access_posture.payload_kind == ResultPayloadKind::CPU_PACKED);
   assert(stream_result->access_posture.has_retained_cpu_payload);
   assert(!stream_result->access_posture.has_retained_gpu_backing);
+  assert(stream_result->retained_frame_id != 0);
+  assert(!stream_result->image_facts.acquisition_timing);
+  assert(stream_result->legacy_capture_timestamp_ns == 0);
   const uint64_t cpu_stream_posture_id = stream_result->access_posture.posture_id;
 
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1235, kStreamEpochA, 0, requested_cpu);
+  const auto integral_period = TickPeriod::create(5, 2);
+  const auto reducible_period = TickPeriod::create(10, 4);
+  const auto non_integral_period = TickPeriod::create(1, 3);
+  const auto overflow_period = TickPeriod::create(std::numeric_limits<uint64_t>::max(), 1);
+  assert(integral_period && reducible_period && non_integral_period && overflow_period);
+  const auto timing = [](uint64_t mark, TickPeriod period,
+                         ImageAcquisitionClockDomain domain,
+                         ImageAcquisitionComparability comparability) {
+    return SourcedFact<ImageAcquisitionTiming>{
+        ImageAcquisitionTiming{mark, period, domain,
+                               ImageAcquisitionReferenceEvent::EXPOSURE_MIDPOINT,
+                               comparability},
+        FactOrigin::NATIVE_REPORTED};
+  };
+  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(std::nullopt) == 0);
+  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
+             timing(4, *integral_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                    ImageAcquisitionComparability::SAME_DEVICE)) == 10);
+  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
+             timing(4, *reducible_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                    ImageAcquisitionComparability::SAME_DEVICE)) == 10);
+  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
+             timing(1, *non_integral_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                    ImageAcquisitionComparability::SAME_DEVICE)) == 0);
+  assert(CoreResultStore::project_acquisition_timing_to_nanoseconds(
+             timing(2, *overflow_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                    ImageAcquisitionComparability::SAME_DEVICE)) == 0);
+  assert(!TickPeriod::create(1, 0));
+
+  stream_frame.acquisition_timing = timing(
+      0, *integral_period, ImageAcquisitionClockDomain::DOMAIN_OPAQUE,
+      ImageAcquisitionComparability::SAME_IMAGE_ONLY);
+
+  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_cpu);
   auto repeated_cpu_stream_result = store.get_latest_stream_result(20);
   assert(repeated_cpu_stream_result);
   assert(repeated_cpu_stream_result->access_posture.posture_id == cpu_stream_posture_id);
+  assert(repeated_cpu_stream_result->retained_frame_id != stream_result->retained_frame_id);
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing);
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.acquisition_mark == 0);
+  assert(repeated_cpu_stream_result->image_facts.acquisition_timing->value.clock_domain ==
+         ImageAcquisitionClockDomain::DOMAIN_OPAQUE);
+  assert(repeated_cpu_stream_result->legacy_capture_timestamp_ns == 0);
 
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1236, kStreamEpochB, 0, requested_cpu);
+  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochB, 0, requested_cpu);
   auto restarted_cpu_stream_result = store.get_latest_stream_result(20);
   assert(restarted_cpu_stream_result);
   assert(restarted_cpu_stream_result->access_posture.posture_id != cpu_stream_posture_id);
@@ -349,7 +418,7 @@ int main() {
   gpu_only_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
   gpu_only_stream_frame.primary_backing_artifact = std::make_shared<int>(42);
   gpu_only_stream_frame.retain_cpu_sidecar = false;
-  assert(store.retain_frame(gpu_only_stream_frame, StreamIntent::VIEWFINDER, 1236, kStreamEpochA, 0, requested_gpu_no_sidecar));
+  assert(store.retain_frame(gpu_only_stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_gpu_no_sidecar));
 
   auto gpu_only_stream_result = store.get_latest_stream_result(21);
   assert(gpu_only_stream_result);
@@ -371,7 +440,7 @@ int main() {
   gpu_materializable_stream_frame.stream_id = 23;
   gpu_materializable_stream_frame.retained_gpu_backing_descriptor.valid = true;
   gpu_materializable_stream_frame.retained_gpu_backing_descriptor.materialization_available = true;
-  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1238, kStreamEpochA, 0, requested_gpu_no_sidecar);
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_gpu_no_sidecar);
 
   auto gpu_materializable_stream_result = store.get_latest_stream_result(23);
   assert(gpu_materializable_stream_result);
@@ -398,13 +467,13 @@ int main() {
   const uint64_t gpu_materializable_posture_id = gpu_materializable_stream_result->access_posture.posture_id;
 
   gpu_materializable_stream_frame.primary_backing_artifact = std::make_shared<int>(45);
-  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1239, kStreamEpochA, 0, requested_gpu_no_sidecar);
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_gpu_no_sidecar);
   auto repeated_gpu_materializable_stream_result = store.get_latest_stream_result(23);
   assert(repeated_gpu_materializable_stream_result);
   assert(repeated_gpu_materializable_stream_result->access_posture.posture_id == gpu_materializable_posture_id);
 
   gpu_materializable_stream_frame.retained_gpu_backing_descriptor.materialization_available = false;
-  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, 1240, kStreamEpochA, 0, requested_gpu_no_sidecar);
+  store.retain_frame(gpu_materializable_stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_gpu_no_sidecar);
   auto transitioned_gpu_stream_result = store.get_latest_stream_result(23);
   assert(transitioned_gpu_stream_result);
   assert(transitioned_gpu_stream_result->access_posture.posture_id != gpu_materializable_posture_id);
@@ -418,7 +487,7 @@ int main() {
   gpu_stream_frame.primary_backing_kind = ProducerBackingKind::GPU;
   gpu_stream_frame.primary_backing_artifact = std::make_shared<int>(43);
   gpu_stream_frame.retain_cpu_sidecar = true;
-  assert(store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, 1237, kStreamEpochA, 0, requested_gpu_with_sidecar));
+  assert(store.retain_frame(gpu_stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_gpu_with_sidecar));
 
   auto gpu_stream_result = store.get_latest_stream_result(22);
   assert(gpu_stream_result);
@@ -440,7 +509,7 @@ int main() {
   assert(!store.get_latest_stream_result(20));
   assert(!store.is_stream_display_demand_active(20, 1'150'000'000ull));
 
-  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, 1235, kStreamEpochA, 0, requested_cpu);
+  store.retain_frame(stream_frame, StreamIntent::VIEWFINDER, kStreamEpochA, 0, requested_cpu);
   assert(store.get_latest_stream_result(20));
   store.mark_stream_display_demand(20, 3'000'000'000ull);
   assert(store.is_stream_display_demand_active(20, 3'010'000'000ull));
@@ -449,13 +518,13 @@ int main() {
   capture_a.stream_id = 0;
   capture_a.capture_id = 77;
   capture_a.device_instance_id = 100;
-  assert(store.retain_frame(capture_a, std::nullopt, 2000, 0, kCaptureEpochA, {}, requested_cpu));
+  assert(store.retain_frame(capture_a, std::nullopt, 0, kCaptureEpochA, {}, requested_cpu));
 
   FrameView capture_b = stream_frame;
   capture_b.stream_id = 0;
   capture_b.capture_id = 77;
   capture_b.device_instance_id = 101;
-  store.retain_frame(capture_b, std::nullopt, 2001, 0, kCaptureEpochA, {}, requested_cpu);
+  store.retain_frame(capture_b, std::nullopt, 0, kCaptureEpochA, {}, requested_cpu);
 
   auto capture_result = store.get_capture_result(77, 100);
   assert(capture_result);
@@ -475,14 +544,14 @@ int main() {
 
   FrameView capture_a_second = capture_a;
   capture_a_second.capture_id = 79;
-  store.retain_frame(capture_a_second, std::nullopt, 2008, 0, kCaptureEpochA, {}, requested_cpu);
+  store.retain_frame(capture_a_second, std::nullopt, 0, kCaptureEpochA, {}, requested_cpu);
   auto capture_result_second = store.get_capture_result(79, 100);
   assert(capture_result_second);
   assert(capture_result_second->default_image.access_posture.posture_id == capture_default_posture_id);
 
   FrameView capture_a_reconfigured = capture_a;
   capture_a_reconfigured.capture_id = 80;
-  store.retain_frame(capture_a_reconfigured, std::nullopt, 2009, 0, kCaptureEpochA + 1, {}, requested_cpu);
+  store.retain_frame(capture_a_reconfigured, std::nullopt, 0, kCaptureEpochA + 1, {}, requested_cpu);
   auto capture_result_reconfigured = store.get_capture_result(80, 100);
   assert(capture_result_reconfigured);
   assert(capture_result_reconfigured->default_image.access_posture.posture_id != capture_default_posture_id);
@@ -496,10 +565,10 @@ int main() {
   gpu_capture.retain_cpu_sidecar = false;
   gpu_capture.retained_gpu_backing_descriptor.valid = true;
   gpu_capture.retained_gpu_backing_descriptor.materialization_available = true;
-  assert(store.retain_frame(gpu_capture, std::nullopt, 2007, 0, kCaptureEpochA, {}, requested_gpu_no_sidecar));
+  assert(store.retain_frame(gpu_capture, std::nullopt, 0, kCaptureEpochA, {}, requested_gpu_no_sidecar));
   FrameView mismatched_capture_request = gpu_capture;
   mismatched_capture_request.capture_id = 178;
-  assert(!store.retain_frame(mismatched_capture_request, std::nullopt, 2007, 0, kCaptureEpochA, {}, requested_cpu));
+  assert(!store.retain_frame(mismatched_capture_request, std::nullopt, 0, kCaptureEpochA, {}, requested_cpu));
   auto gpu_capture_result = store.get_capture_result(78, 100);
   assert(gpu_capture_result);
   assert(gpu_capture_result->payload_kind == ResultPayloadKind::GPU_SURFACE);
@@ -518,21 +587,23 @@ int main() {
   const uint32_t height_before = capture_result->image_height;
   const uint32_t format_before = capture_result->image_format_fourcc;
   const auto payload_kind_before = capture_result->payload_kind;
-  const uint64_t default_ts_before = capture_result->default_image.capture_timestamp_ns;
+  const uint64_t default_frame_id_before = capture_result->default_image.retained_frame_id;
   const size_t default_bytes_before = capture_result->default_image.payload.size_bytes();
 
   CoreCaptureResultData::ImageMemberData bracket{};
   bracket.image_member_index = 1;
   bracket.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
-  bracket.capture_timestamp_ns = 2002;
   bracket.payload = capture_result->default_image.payload;
   assert(store.append_additional_capture_image(77, 100, bracket, kCaptureEpochA, requested_cpu));
 
   auto capture_result_with_bracket = store.get_capture_result(77, 100);
   assert(capture_result_with_bracket);
-  assert(capture_result_with_bracket->default_image.capture_timestamp_ns == default_ts_before);
+  assert(capture_result_with_bracket->default_image.retained_frame_id == default_frame_id_before);
   assert(capture_result_with_bracket->default_image.payload.size_bytes() == default_bytes_before);
   assert(capture_result_with_bracket->additional_images.size() == 1);
+  assert(capture_result_with_bracket->additional_images[0].retained_frame_id != 0);
+  assert(capture_result_with_bracket->additional_images[0].retained_frame_id !=
+         capture_result_with_bracket->default_image.retained_frame_id);
   assert(capture_result_with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
   assert(capture_result_with_bracket->additional_images[0].image_member_index == 1);
   assert(capture_result_with_bracket->additional_images[0].retained_access_truth.display_view == ResultCapability::CHEAP);
@@ -551,26 +622,22 @@ int main() {
 
   CoreCaptureResultData::ImageMemberData bad_role{};
   bad_role.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
-  bad_role.capture_timestamp_ns = 2003;
   bad_role.payload = capture_result_with_bracket->default_image.payload;
   assert(!store.append_additional_capture_image(77, 100, bad_role, kCaptureEpochA, requested_cpu));
 
   CoreCaptureResultData::ImageMemberData bad_payload{};
   bad_payload.image_member_index = 2;
   bad_payload.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
-  bad_payload.capture_timestamp_ns = 2004;
   bad_payload.payload = CoreResultPayloadCpuPacked{};
   assert(!store.append_additional_capture_image(77, 100, bad_payload, kCaptureEpochA, requested_cpu));
   CoreCaptureResultData::ImageMemberData out_of_order{};
   out_of_order.image_member_index = 3;
   out_of_order.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
-  out_of_order.capture_timestamp_ns = 2005;
   out_of_order.payload = capture_result_with_bracket->default_image.payload;
   assert(!store.append_additional_capture_image(77, 100, out_of_order, kCaptureEpochA, requested_cpu));
   CoreCaptureResultData::ImageMemberData duplicate_index{};
   duplicate_index.image_member_index = 1;
   duplicate_index.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
-  duplicate_index.capture_timestamp_ns = 2006;
   duplicate_index.payload = capture_result_with_bracket->default_image.payload;
   assert(!store.append_additional_capture_image(77, 100, duplicate_index, kCaptureEpochA, requested_cpu));
   assert(!store.append_additional_capture_image(999, 100, bracket, kCaptureEpochA, requested_cpu));
@@ -584,8 +651,233 @@ int main() {
 
   // mailbox/result independence smoke proxy: result path exists without a sink.
   CoreResultStore no_mailbox_store;
-  no_mailbox_store.retain_frame(stream_frame, StreamIntent::PREVIEW, 111, 1, 0, requested_cpu);
+  no_mailbox_store.retain_frame(stream_frame, StreamIntent::PREVIEW, 1, 0, requested_cpu);
   assert(no_mailbox_store.get_latest_stream_result(20));
+
+  {
+    CoreResultStore identity_store;
+    std::vector<uint8_t> identity_a(2 * 2 * 4, 11);
+    std::vector<uint8_t> identity_b(2 * 2 * 4, 12);
+    FrameView identical_timing_a = make_cpu_rgba_frame(1, 501, 0, identity_a);
+    FrameView identical_timing_b = make_cpu_rgba_frame(1, 502, 0, identity_b);
+    identical_timing_a.acquisition_timing = timing(
+        77, *integral_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+        ImageAcquisitionComparability::SAME_DEVICE);
+    identical_timing_b.acquisition_timing = identical_timing_a.acquisition_timing;
+    assert(identity_store.retain_frame(
+        identical_timing_a, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    assert(identity_store.retain_frame(
+        identical_timing_b, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    const auto first = identity_store.get_latest_stream_result(501);
+    const auto second = identity_store.get_latest_stream_result(502);
+    assert(first && second);
+    assert(first->retained_frame_id != 0);
+    assert(second->retained_frame_id != 0);
+    assert(first->retained_frame_id != second->retained_frame_id);
+    assert(first->legacy_capture_timestamp_ns == second->legacy_capture_timestamp_ns);
+  }
+
+  {
+    CoreResultStore shared_identity_store;
+    std::vector<uint8_t> dual_bytes(2 * 2 * 4, 13);
+    FrameView dual_frame = make_cpu_rgba_frame(2, 601, 701, dual_bytes);
+    dual_frame.primary_backing_kind = ProducerBackingKind::GPU;
+    dual_frame.primary_backing_artifact = std::make_shared<int>(601701);
+    dual_frame.retain_cpu_sidecar = true;
+    dual_frame.retained_gpu_backing_descriptor.valid = true;
+    dual_frame.retained_gpu_backing_descriptor.materialization_available = true;
+    dual_frame.retained_gpu_backing_descriptor.backing_id = 41;
+    dual_frame.capture_image.routing = CaptureImageRouting::DEFAULT_METERED;
+    dual_frame.capture_image.image_member_index = 0;
+    assert(shared_identity_store.retain_frame(
+        dual_frame,
+        StreamIntent::VIEWFINDER,
+        1,
+        1,
+        requested_gpu_with_sidecar,
+        requested_gpu_with_sidecar));
+    const auto stream = shared_identity_store.get_latest_stream_result(601);
+    const auto capture = shared_identity_store.get_capture_result(701, 2);
+    assert(stream && capture);
+    assert(stream->retained_frame_id != 0);
+    assert(stream->payload_retained_frame_id == stream->retained_frame_id);
+    assert(capture->default_image.retained_frame_id == stream->retained_frame_id);
+    assert(capture->default_image.payload_kind == ResultPayloadKind::GPU_SURFACE);
+    assert(stream->payload_kind == ResultPayloadKind::GPU_SURFACE);
+    assert(!stream->payload.empty());
+    assert(!capture->default_image.payload.empty());
+  }
+
+  {
+    CoreResultStore backing_store;
+    std::vector<uint8_t> gpu_bytes(2 * 2 * 4, 14);
+    FrameView gpu_frame = make_cpu_rgba_frame(3, 801, 0, gpu_bytes);
+    gpu_frame.primary_backing_kind = ProducerBackingKind::GPU;
+    gpu_frame.primary_backing_artifact = std::make_shared<int>(8001);
+    gpu_frame.retain_cpu_sidecar = false;
+    gpu_frame.retained_gpu_backing_descriptor.valid = true;
+    gpu_frame.retained_gpu_backing_descriptor.materialization_available = true;
+    gpu_frame.retained_gpu_backing_descriptor.backing_id = 9001;
+    assert(backing_store.retain_frame(
+        gpu_frame, StreamIntent::VIEWFINDER, 1, 0, requested_gpu_no_sidecar));
+    const auto first = backing_store.get_latest_stream_result(801);
+    assert(first);
+    gpu_frame.primary_backing_artifact = std::make_shared<int>(8002);
+    assert(backing_store.retain_frame(
+        gpu_frame, StreamIntent::VIEWFINDER, 1, 0, requested_gpu_no_sidecar));
+    const auto second = backing_store.get_latest_stream_result(801);
+    assert(second);
+    assert(first->retained_gpu_backing_descriptor.backing_id ==
+           second->retained_gpu_backing_descriptor.backing_id);
+    assert(first->retained_gpu_backing_descriptor.backing_id == 9001);
+    assert(first->retained_frame_id != second->retained_frame_id);
+  }
+
+  {
+    CoreResultStore continuity_store;
+    std::vector<uint8_t> continuity_bytes(2 * 2 * 4, 15);
+    FrameView first_frame = make_cpu_rgba_frame(4, 901, 0, continuity_bytes);
+    assert(continuity_store.retain_frame(
+        first_frame, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    const auto first = continuity_store.get_latest_stream_result(901);
+    assert(first && first->retained_frame_id != 0);
+    continuity_store.clear();
+    FrameView second_frame = make_cpu_rgba_frame(4, 902, 0, continuity_bytes);
+    assert(continuity_store.retain_frame(
+        second_frame, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    const auto second = continuity_store.get_latest_stream_result(902);
+    assert(second);
+    assert(second->retained_frame_id == first->retained_frame_id + 1);
+  }
+
+  {
+    CoreResultStore rejected_stream_store;
+    std::vector<uint8_t> stream_bytes(2 * 2 * 4, 16);
+    FrameView accepted_stream = make_cpu_rgba_frame(5, 1001, 0, stream_bytes);
+    assert(rejected_stream_store.retain_frame(
+        accepted_stream, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    const auto first = rejected_stream_store.get_latest_stream_result(1001);
+    assert(first);
+    FrameView rejected_stream = accepted_stream;
+    rejected_stream.stream_id = 1002;
+    rejected_stream.primary_backing_kind = ProducerBackingKind::GPU;
+    rejected_stream.primary_backing_artifact = std::make_shared<int>(1002);
+    assert(!rejected_stream_store.retain_frame(
+        rejected_stream, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    assert(!rejected_stream_store.get_latest_stream_result(1002));
+    FrameView accepted_after_rejection = accepted_stream;
+    accepted_after_rejection.stream_id = 1003;
+    assert(rejected_stream_store.retain_frame(
+        accepted_after_rejection, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    const auto second = rejected_stream_store.get_latest_stream_result(1003);
+    assert(second);
+    assert(second->retained_frame_id == first->retained_frame_id + 1);
+  }
+
+  {
+    CoreResultStore rejected_default_capture_store;
+    std::vector<uint8_t> capture_bytes(2 * 2 * 4, 17);
+    FrameView accepted_capture = make_cpu_rgba_frame(6, 0, 1101, capture_bytes);
+    accepted_capture.capture_image.routing = CaptureImageRouting::DEFAULT_METERED;
+    accepted_capture.capture_image.image_member_index = 0;
+    assert(rejected_default_capture_store.retain_frame(
+        accepted_capture, std::nullopt, 0, 1, {}, requested_cpu));
+    const auto first = rejected_default_capture_store.get_capture_result(1101, 6);
+    assert(first);
+    FrameView rejected_capture = accepted_capture;
+    rejected_capture.capture_id = 1102;
+    rejected_capture.capture_image.applied_exposure_compensation_milli_ev = 1;
+    assert(!rejected_default_capture_store.retain_frame(
+        rejected_capture, std::nullopt, 0, 1, {}, requested_cpu));
+    assert(!rejected_default_capture_store.get_capture_result(1102, 6));
+    FrameView accepted_after_rejection = accepted_capture;
+    accepted_after_rejection.capture_id = 1103;
+    assert(rejected_default_capture_store.retain_frame(
+        accepted_after_rejection, std::nullopt, 0, 1, {}, requested_cpu));
+    const auto second = rejected_default_capture_store.get_capture_result(1103, 6);
+    assert(second);
+    assert(second->default_image.retained_frame_id ==
+           first->default_image.retained_frame_id + 1);
+  }
+
+  {
+    CoreResultStore additional_member_store;
+    std::vector<uint8_t> member_bytes(2 * 2 * 4, 18);
+    FrameView default_capture = make_cpu_rgba_frame(7, 0, 1201, member_bytes);
+    default_capture.capture_image.routing = CaptureImageRouting::DEFAULT_METERED;
+    default_capture.capture_image.image_member_index = 0;
+    assert(additional_member_store.retain_frame(
+        default_capture, std::nullopt, 0, 1, {}, requested_cpu));
+    const auto base = additional_member_store.get_capture_result(1201, 7);
+    assert(base);
+    const uint64_t default_id = base->default_image.retained_frame_id;
+
+    CoreCaptureResultData::ImageMemberData rejected_member{};
+    rejected_member.image_member_index = 1;
+    rejected_member.role = CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED;
+    rejected_member.payload = base->default_image.payload;
+    assert(!additional_member_store.append_additional_capture_image(
+        1201, 7, rejected_member, 1, requested_cpu));
+
+    CoreCaptureResultData::ImageMemberData member_one{};
+    member_one.image_member_index = 1;
+    member_one.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+    member_one.payload = base->default_image.payload;
+    assert(additional_member_store.append_additional_capture_image(
+        1201, 7, member_one, 1, requested_cpu));
+    const auto with_member_one = additional_member_store.get_capture_result(1201, 7);
+    assert(with_member_one);
+    assert(with_member_one->additional_images.size() == 1);
+    const uint64_t member_one_id = with_member_one->additional_images[0].retained_frame_id;
+    assert(member_one_id != 0);
+    assert(member_one_id == default_id + 1);
+    assert(member_one_id != default_id);
+
+    CoreCaptureResultData::ImageMemberData rejected_member_two{};
+    rejected_member_two.image_member_index = 2;
+    rejected_member_two.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+    assert(!additional_member_store.append_additional_capture_image(
+        1201, 7, rejected_member_two, 1, requested_cpu));
+
+    CoreCaptureResultData::ImageMemberData member_two{};
+    member_two.image_member_index = 2;
+    member_two.role = CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET;
+    member_two.payload = base->default_image.payload;
+    assert(additional_member_store.append_additional_capture_image(
+        1201, 7, member_two, 1, requested_cpu));
+    const auto with_member_two = additional_member_store.get_capture_result(1201, 7);
+    assert(with_member_two);
+    assert(with_member_two->additional_images.size() == 2);
+    assert(with_member_two->additional_images[1].retained_frame_id == member_one_id + 1);
+  }
+
+#if defined(CAMBANG_INTERNAL_SMOKE) && CAMBANG_INTERNAL_SMOKE
+  {
+    CoreResultStore exhaustion_store;
+    CoreResultStoreSmokeAccess::set_next_retained_frame_id(
+        exhaustion_store, std::numeric_limits<uint64_t>::max() - 1);
+    std::vector<uint8_t> bytes(2 * 2 * 4, 19);
+    FrameView first_frame = make_cpu_rgba_frame(8, 1301, 0, bytes);
+    FrameView second_frame = make_cpu_rgba_frame(8, 1302, 0, bytes);
+    FrameView failed_frame = make_cpu_rgba_frame(8, 1303, 0, bytes);
+    assert(exhaustion_store.retain_frame(
+        first_frame, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    assert(exhaustion_store.retain_frame(
+        second_frame, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    const auto first = exhaustion_store.get_latest_stream_result(1301);
+    const auto second = exhaustion_store.get_latest_stream_result(1302);
+    assert(first && second);
+    assert(first->retained_frame_id == std::numeric_limits<uint64_t>::max() - 1);
+    assert(second->retained_frame_id == std::numeric_limits<uint64_t>::max());
+    assert(!exhaustion_store.retain_frame(
+        failed_frame, StreamIntent::VIEWFINDER, 1, 0, requested_cpu));
+    assert(!exhaustion_store.get_latest_stream_result(1303));
+    assert(exhaustion_store.get_latest_stream_result(1301)->retained_frame_id ==
+           std::numeric_limits<uint64_t>::max() - 1);
+    assert(exhaustion_store.get_latest_stream_result(1302)->retained_frame_id ==
+           std::numeric_limits<uint64_t>::max());
+  }
+#endif
 
   std::cout << "PASS core_result_path_smoke\n";
   return 0;

@@ -189,9 +189,6 @@ struct OwnedFrame {
     frame.width = width;
     frame.height = height;
     frame.format_fourcc = format;
-    frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
-    frame.capture_timestamp.value = 123;
-    frame.capture_timestamp.tick_ns = 1;
     frame.data = bytes.data();
     frame.size_bytes = size_bytes;
     frame.stride_bytes = stride_bytes;
@@ -1255,9 +1252,6 @@ static int test_scoped_resource_telemetry_runtime_framebuffer_lease_integration(
   frame.width = 1;
   frame.height = 1;
   frame.format_fourcc = FOURCC_RGBA;
-  frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
-  frame.capture_timestamp.value = 777;
-  frame.capture_timestamp.tick_ns = 1;
   frame.data = bytes.data();
   frame.size_bytes = bytes.size();
   frame.stride_bytes = 4;

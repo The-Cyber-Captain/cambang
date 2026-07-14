@@ -86,11 +86,11 @@ A provider may be:
 - **minimal / transitional** — enough to validate architecture and basic
   runtime integration
 - **release-quality** — robust negotiation, lifecycle handling,
-  timestamping, and functional feature coverage
+  acquisition-timing reporting, and functional feature coverage
 
 Capability maturity does **not** change the contract. A minimal provider
 may support fewer features, but it must still obey the same lifecycle,
-threading, native-object, and timestamp rules.
+threading, native-object, and acquisition-timing rules.
 
 ---
 
@@ -138,7 +138,7 @@ A provider owns and implements:
 
 - backend API calls and native handles
 - backend worker threads / loopers required to operate those APIs
-- frame acquisition, timestamp extraction or synthesis, and delivery
+- frame acquisition, truthful image-acquisition timing extraction or synthesis, and delivery
 - mapping backend pixel formats into CamBANG pixel formats
 - truthful reporting of owned native object lifecycle to Core
 - backend-specific error detection and reporting
@@ -562,23 +562,35 @@ including diagnostically useful ordering failures.
 
 ---
 
-## 11. Timestamp contract
+## 11. Image Acquisition Timing contract
 
-Every frame delivered to Core must carry a contract-valid
-`CaptureTimestamp` containing:
+A provider may attach source-neutral `ImageAcquisitionTiming` to each delivered
+frame when the backend can supply it truthfully. The timing record carries:
 
-- `value`
-- `tick_ns`
-- `domain`
+- an acquisition mark;
+- a rational tick period;
+- a declared clock domain;
+- a reference event;
+- a comparability scope;
+- fact origin/provenance.
 
-Providers should use a meaningful monotonic or provider-monotonic domain
-where feasible.
+The acquisition mark is provider-authored descriptive metadata in the declared
+clock domain. It is not required to be wall-clock time, globally monotonic,
+unique, or comparable with another device/session, and a mark of zero is valid.
+Absence must remain distinct from a present zero-valued mark.
 
-Placeholder-shaped timestamps are not contract-valid merely because the
-fields are present.
+The delivered frame is the single provider-to-Core transport for acquisition
+timing. Providers must not send the same acquisition event through a separate
+per-image fact callback.
 
-Timestamp validity is backend-independent: synthetic, stub, and
-platform-backed providers all owe the same contract.
+Core must not use Image Acquisition Timing as retained-frame identity, backing
+identity, freshness, ordering, deduplication, lifecycle chronology, or latency
+evidence. Core supplies its own retained-frame identity wherever those semantics
+are required.
+
+Synthetic, stub, and platform-backed providers owe the same truthfulness rules;
+a provider that cannot supply valid timing omits it rather than fabricating a
+placeholder.
 
 ---
 

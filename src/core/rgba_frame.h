@@ -33,7 +33,7 @@ struct RgbaFrame {
   uint32_t width = 0;
   uint32_t height = 0;
 
-  // Capture timestamp in nanoseconds (as provided).
+  // Optional debug metadata; not retained-frame identity or timing authority.
   uint64_t timestamp_ns = 0;
 
   // Tightly packed RGBA8: pixels.size() == width * height * 4.

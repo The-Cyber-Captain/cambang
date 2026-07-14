@@ -33,9 +33,14 @@ int main() {
     frame.format_fourcc = FOURCC_RGBA;
     frame.data = px.data();
     frame.size_bytes = px.size();
-    frame.capture_timestamp.value = ts;
-    frame.capture_timestamp.tick_ns = 1;
-    frame.capture_timestamp.domain = CaptureTimestampDomain::CORE_MONOTONIC;
+    const auto tick_period = TickPeriod::create(1, 1);
+    assert(tick_period);
+    frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+        ImageAcquisitionTiming{ts, *tick_period,
+                               ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+                               ImageAcquisitionComparability::SAME_PROVIDER},
+        FactOrigin::DERIVED};
     return frame;
   };
 
@@ -58,11 +63,13 @@ int main() {
 
   auto with_bracket = result_store.get_capture_result(900, 901);
   assert(with_bracket);
-  assert(with_bracket->default_image.capture_timestamp_ns == 1000);
+  assert(with_bracket->default_image.legacy_capture_timestamp_ns == 1000);
   assert(with_bracket->default_image.image_member_index == 0);
   assert(with_bracket->additional_images.size() == 1);
   assert(with_bracket->additional_images[0].role == CoreCaptureResultData::ImageMemberRole::ADDITIONAL_BRACKET);
-  assert(with_bracket->additional_images[0].capture_timestamp_ns == 2000);
+  assert(with_bracket->additional_images[0].legacy_capture_timestamp_ns == 2000);
+  assert(with_bracket->default_image.retained_frame_id !=
+         with_bracket->additional_images[0].retained_frame_id);
   assert(with_bracket->additional_images[0].image_member_index == 1);
   auto assembly_after_bracket = assembly_registry.find_for_smoke(900, 901);
   assert(assembly_after_bracket && assembly_after_bracket->has_default_image_retained);

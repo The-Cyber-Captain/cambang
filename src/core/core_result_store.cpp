@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <utility>
 
 namespace cambang {
@@ -115,7 +116,8 @@ bool has_valid_retained_cpu_packed_access_payload(
 CoreRetainedAccessTruth build_stream_retained_access_truth(const CoreStreamResultData& result) {
   CoreRetainedAccessTruth truth{};
   const bool has_current_cpu_payload =
-      result.payload_capture_timestamp_ns == result.capture_timestamp_ns &&
+      result.payload_retained_frame_id != 0 &&
+      result.payload_retained_frame_id == result.retained_frame_id &&
       has_valid_retained_cpu_packed_access_payload(
           result.payload, result.image_width, result.image_height, result.image_format_fourcc);
 
@@ -263,14 +265,12 @@ CoreResultAccessPostureKey build_capture_member_access_posture_key(
 
 RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
     const FrameView& frame,
-    uint64_t capture_timestamp_ns,
     bool gpu_primary) {
   RetainedGpuBackingDescriptor descriptor = frame.retained_gpu_backing_descriptor;
   if (descriptor.valid) {
     // The provider owns identity/capability truth; core only normalizes
     // correlation and image fields that are already present on this FrameView.
     descriptor.stream_id = frame.stream_id;
-    descriptor.capture_timestamp_ns = capture_timestamp_ns;
     descriptor.width = frame.width;
     descriptor.height = frame.height;
     descriptor.stride_bytes = frame.stride_bytes;
@@ -288,7 +288,6 @@ RetainedGpuBackingDescriptor build_retained_gpu_backing_descriptor(
   descriptor.valid = true;
   descriptor.stream_id = frame.stream_id;
   descriptor.backing_id = 0;
-  descriptor.capture_timestamp_ns = capture_timestamp_ns;
   descriptor.width = frame.width;
   descriptor.height = frame.height;
   descriptor.stride_bytes = frame.stride_bytes;
@@ -391,7 +390,6 @@ ResultCapability classify_supported_non_ready_result_access_from_normalized_cost
 
 bool CoreResultStore::retain_frame(const FrameView& frame,
                                    std::optional<StreamIntent> stream_intent,
-                                   uint64_t capture_timestamp_ns,
                                    uint64_t stream_applied_access_posture_epoch,
                                    uint64_t capture_applied_access_posture_epoch,
                                    CoreRetainedProductionPlan stream_requested_retained_plan,
@@ -421,6 +419,10 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
 
   SharedStreamResultData replaced_stream_result;
   std::lock_guard<std::mutex> lock(mutex_);
+  const uint64_t legacy_capture_timestamp_ns =
+      project_acquisition_timing_to_nanoseconds(frame.acquisition_timing);
+  std::shared_ptr<CoreStreamResultData> stream_result;
+  MutableCaptureResultData capture_result;
 
   if (frame.stream_id != 0) {
     if (!has_valid_result_image_description(frame)) {
@@ -437,51 +439,44 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     std::shared_ptr<void> retained_gpu_backing =
         plan.retain_gpu_display ? frame.primary_backing_artifact : nullptr;
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
-        build_retained_gpu_backing_descriptor(frame, capture_timestamp_ns, gpu_primary);
+        build_retained_gpu_backing_descriptor(frame, gpu_primary);
 
-    auto stream_result = std::make_shared<CoreStreamResultData>();
-    stream_result->stream_id = frame.stream_id;
-    stream_result->device_instance_id = frame.device_instance_id;
-    stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
-    stream_result->capture_timestamp_ns = capture_timestamp_ns;
-    stream_result->image_width = frame.width;
-    stream_result->image_height = frame.height;
-    stream_result->image_format_fourcc = frame.format_fourcc;
-    stream_result->payload_kind = plan.primary_kind;
-    stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
-    stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
+    auto mutable_stream_result = std::make_shared<CoreStreamResultData>();
+    mutable_stream_result->stream_id = frame.stream_id;
+    mutable_stream_result->device_instance_id = frame.device_instance_id;
+    mutable_stream_result->intent = stream_intent.value_or(StreamIntent::PREVIEW);
+    mutable_stream_result->legacy_capture_timestamp_ns = legacy_capture_timestamp_ns;
+    mutable_stream_result->image_width = frame.width;
+    mutable_stream_result->image_height = frame.height;
+    mutable_stream_result->image_format_fourcc = frame.format_fourcc;
+    mutable_stream_result->payload_kind = plan.primary_kind;
+    mutable_stream_result->retained_gpu_backing = std::move(retained_gpu_backing);
+    mutable_stream_result->retained_gpu_backing_descriptor = retained_gpu_backing_descriptor;
     if (plan.primary_kind == ResultPayloadKind::CPU_PACKED || plan.retain_cpu_sidecar) {
       if (frame.capture_id == 0) {
-        stream_result->payload = std::move(payload);
+        mutable_stream_result->payload = std::move(payload);
       } else {
         // Defensive fallback for any future dual-routed FrameView. Current
         // stream and capture paths are distinct, but preserving capture payload
         // truth is more important than saving this copy in an unexpected mixed
         // route.
-        stream_result->payload = payload;
+        mutable_stream_result->payload = payload;
       }
-      stream_result->payload_capture_timestamp_ns = capture_timestamp_ns;
     }
-    stream_result->retained_access_truth = build_stream_retained_access_truth(*stream_result);
-    stream_result->access_classification =
+    mutable_stream_result->retained_access_truth = build_stream_retained_access_truth(*mutable_stream_result);
+    mutable_stream_result->access_classification =
         std::make_shared<CoreResultAccessClassificationRecord>();
     const bool stream_has_current_cpu_payload =
-        stream_result->payload_capture_timestamp_ns == stream_result->capture_timestamp_ns &&
-        has_valid_retained_cpu_packed_access_payload(
-            stream_result->payload,
-            stream_result->image_width,
-            stream_result->image_height,
-            stream_result->image_format_fourcc);
-    stream_result->access_posture = build_stream_access_posture_key(
-        *stream_result,
+        mutable_stream_result->payload.uses_retained_bytes() || !mutable_stream_result->payload.empty();
+    mutable_stream_result->access_posture = build_stream_access_posture_key(
+        *mutable_stream_result,
         stream_has_current_cpu_payload,
         resolve_stream_access_posture_id(
-            *stream_result, stream_has_current_cpu_payload, stream_applied_access_posture_epoch));
+            *mutable_stream_result, stream_has_current_cpu_payload, stream_applied_access_posture_epoch));
     facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
-    stream_result->facts = facts;
-    auto& slot = latest_stream_results_[frame.stream_id];
-    replaced_stream_result = std::move(slot);
-    slot = std::move(stream_result);
+    mutable_stream_result->image_facts.acquisition_timing = frame.acquisition_timing;
+    mutable_stream_result->facts = facts;
+    stream_result = std::move(mutable_stream_result);
   }
 
   const bool payload_adopted = payload.uses_retained_bytes();
@@ -499,15 +494,14 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
     std::shared_ptr<void> retained_gpu_backing =
         plan.retain_gpu_display ? frame.primary_backing_artifact : nullptr;
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor =
-        build_retained_gpu_backing_descriptor(frame, capture_timestamp_ns, plan.primary_kind == ResultPayloadKind::GPU_SURFACE);
-    MutableCaptureResultData capture_result =
-        build_default_image_capture_result(
+        build_retained_gpu_backing_descriptor(frame, plan.primary_kind == ResultPayloadKind::GPU_SURFACE);
+    capture_result = build_default_image_capture_result(
             frame,
             plan,
             std::move(payload),
             std::move(retained_gpu_backing),
             retained_gpu_backing_descriptor,
-            capture_timestamp_ns);
+            legacy_capture_timestamp_ns);
     if (capture_result) {
       const bool has_default_cpu_payload =
           has_valid_capture_image_member_payload(capture_result->default_image.payload);
@@ -521,7 +515,68 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
               has_default_cpu_payload,
               capture_applied_access_posture_epoch));
     }
-    capture_results_by_capture_id_[frame.capture_id][frame.device_instance_id] = std::move(capture_result);
+    if (!capture_result) return false;
+  }
+  // Prepare every container slot before issuing an identity. Afterwards the
+  // pointer assignments are the non-throwing retained-truth commit.
+  SharedStreamResultData* stream_slot = nullptr;
+  MutableCaptureResultData* capture_slot = nullptr;
+  bool inserted_stream_slot = false;
+  bool inserted_capture_bucket = false;
+  bool inserted_capture_slot = false;
+  const auto rollback_prepared_slots = [&]() noexcept {
+    if (inserted_stream_slot) {
+      latest_stream_results_.erase(frame.stream_id);
+    }
+    if (inserted_capture_slot) {
+      auto capture_it = capture_results_by_capture_id_.find(frame.capture_id);
+      if (capture_it != capture_results_by_capture_id_.end()) {
+        capture_it->second.erase(frame.device_instance_id);
+      }
+    }
+    if (inserted_capture_bucket) {
+      auto capture_it = capture_results_by_capture_id_.find(frame.capture_id);
+      if (capture_it != capture_results_by_capture_id_.end() && capture_it->second.empty()) {
+        capture_results_by_capture_id_.erase(capture_it);
+      }
+    }
+  };
+  try {
+    if (stream_result) {
+      auto [it, inserted] = latest_stream_results_.try_emplace(frame.stream_id);
+      stream_slot = &it->second;
+      inserted_stream_slot = inserted;
+    }
+    if (capture_result) {
+      auto [capture_it, bucket_inserted] =
+          capture_results_by_capture_id_.try_emplace(frame.capture_id);
+      inserted_capture_bucket = bucket_inserted;
+      auto [device_it, inserted] =
+          capture_it->second.try_emplace(frame.device_instance_id);
+      capture_slot = &device_it->second;
+      inserted_capture_slot = inserted;
+    }
+  } catch (...) {
+    rollback_prepared_slots();
+    return false;
+  }
+  uint64_t retained_frame_id = 0;
+  if (!try_issue_retained_frame_id(retained_frame_id)) {
+    rollback_prepared_slots();
+    return false;
+  }
+  if (stream_result) {
+    stream_result->retained_frame_id = retained_frame_id;
+    if (!stream_result->payload.empty()) {
+      stream_result->payload_retained_frame_id = retained_frame_id;
+    }
+    stream_result->retained_access_truth = build_stream_retained_access_truth(*stream_result);
+    replaced_stream_result = std::move(*stream_slot);
+    *stream_slot = std::move(stream_result);
+  }
+  if (capture_result) {
+    capture_result->default_image.retained_frame_id = retained_frame_id;
+    *capture_slot = std::move(capture_result);
   }
   const bool retained = frame.stream_id != 0 || frame.capture_id != 0;
   if (frame.capture_id != 0) {
@@ -538,6 +593,34 @@ bool CoreResultStore::retain_frame(const FrameView& frame,
         static_cast<unsigned long long>(frame.size_bytes));
   }
   return retained;
+}
+
+uint64_t CoreResultStore::project_acquisition_timing_to_nanoseconds(
+    const std::optional<SourcedFact<ImageAcquisitionTiming>>& timing) noexcept {
+  if (!timing) return 0;
+  const uint64_t numerator = timing->value.tick_period.numerator_ns();
+  const uint64_t denominator = timing->value.tick_period.denominator();
+  if (numerator == 0 || denominator == 0) return 0;
+  const uint64_t divisor = std::gcd(numerator, denominator);
+  const uint64_t reduced_numerator = numerator / divisor;
+  const uint64_t reduced_denominator = denominator / divisor;
+  if (timing->value.acquisition_mark % reduced_denominator != 0) return 0;
+  const uint64_t reduced_mark = timing->value.acquisition_mark / reduced_denominator;
+  if (reduced_mark > std::numeric_limits<uint64_t>::max() / reduced_numerator) return 0;
+  return reduced_mark * reduced_numerator;
+}
+
+bool CoreResultStore::try_issue_retained_frame_id(uint64_t& out_id) noexcept {
+  if (next_retained_frame_id_ == 0) {
+    return false;
+  }
+  out_id = next_retained_frame_id_;
+  if (next_retained_frame_id_ == std::numeric_limits<uint64_t>::max()) {
+    next_retained_frame_id_ = 0;
+  } else {
+    ++next_retained_frame_id_;
+  }
+  return true;
 }
 
 bool CoreResultStore::append_additional_capture_image(
@@ -613,6 +696,8 @@ bool CoreResultStore::append_additional_capture_image(
     // copy-constructing already-retained image payloads.
     result = std::make_shared<CoreCaptureResultData>(*result);
   }
+  result->additional_images.reserve(result->additional_images.size() + 1);
+  if (!try_issue_retained_frame_id(image_member.retained_frame_id)) return false;
   result->additional_images.push_back(std::move(image_member));
   capture_latency_trace_printf(
       "result_store_append_additional capture_id=%llu device_id=%llu member=%u payload_bytes=%llu total_us=%llu",
@@ -655,8 +740,11 @@ bool CoreResultStore::finalize_capture_facts(
   }
   result->default_image.resolved_image_facts =
       resolve_image_facts(result->default_image.image_member_index);
+  result->default_image.resolved_image_facts.image.acquisition_timing =
+      result->default_image.acquisition_timing;
   for (CoreCaptureResultData::ImageMemberData& member : result->additional_images) {
     member.resolved_image_facts = resolve_image_facts(member.image_member_index);
+    member.resolved_image_facts.image.acquisition_timing = member.acquisition_timing;
   }
   result->capture_image_facts_finalized = true;
   return true;
@@ -687,10 +775,13 @@ bool CoreResultStore::try_build_capture_image_member_data_from_frame(
     }
     out_member.retained_gpu_backing = frame.primary_backing_artifact;
     out_member.retained_gpu_backing_descriptor =
-        build_retained_gpu_backing_descriptor(frame, out_member.capture_timestamp_ns, true);
+        build_retained_gpu_backing_descriptor(frame, true);
   } else {
     return false;
   }
+  out_member.acquisition_timing = frame.acquisition_timing;
+  out_member.legacy_capture_timestamp_ns =
+      project_acquisition_timing_to_nanoseconds(out_member.acquisition_timing);
   out_member.payload_kind = plan.primary_kind;
   out_member.retained_access_truth = build_capture_image_member_retained_access_truth(out_member);
   out_member.access_classification =
@@ -735,7 +826,7 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
     CoreResultPayloadCpuPacked payload,
     std::shared_ptr<void> retained_gpu_backing,
     RetainedGpuBackingDescriptor retained_gpu_backing_descriptor,
-    uint64_t capture_timestamp_ns) {
+    uint64_t legacy_capture_timestamp_ns) {
   if (frame.capture_image.routing != CaptureImageRouting::DEFAULT_METERED ||
       frame.capture_image.image_member_index != 0u) {
     return nullptr;
@@ -762,7 +853,8 @@ MutableCaptureResultData CoreResultStore::build_default_image_capture_result(
   if (capture_result->default_image.applied_exposure_compensation_milli_ev != 0) {
     return nullptr;
   }
-  capture_result->default_image.capture_timestamp_ns = capture_timestamp_ns;
+  capture_result->default_image.legacy_capture_timestamp_ns = legacy_capture_timestamp_ns;
+  capture_result->default_image.acquisition_timing = frame.acquisition_timing;
 
   CoreImageFactBundle facts = build_default_facts(frame.width, frame.height, frame.format_fourcc);
   capture_result->default_image.payload_kind = plan.primary_kind;

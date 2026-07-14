@@ -208,7 +208,7 @@ Depending on `payload_kind`, this may include:
 - pixel/encoding format
 - plane/stride layout
 - orientation/crop information where relevant
-- provider-agnostic capture timestamp representation
+- optional source-neutral Image Acquisition Timing
 - stream/capture association
 - ownership/release handle/callback wrapper
 - provenance of original vs derived representation where relevant
@@ -368,8 +368,18 @@ synthetic path it delegates the legacy retained GPU backing / primary backing
 artifact to the synthetic deferred-wrapper bridge. `RetainedGpuBackingDescriptor`
 remains the provider-neutral scalar display/backing metadata seam; descriptor-only
 and platform-backed display resolution are future activation points. A
-`backing_id` value of `0` is compatibility metadata only and must not be treated
-as valid descriptor-cache identity.
+`backing_id` identifies a retained backing resource, not the image/frame currently
+represented by that resource. A value of `0` is compatibility metadata only and
+must not be treated as valid descriptor-cache identity.
+
+Core assigns a separate non-zero retained-frame identity after successful
+retention. Identity `0` means no retained frame. Identities are issued from one
+monotonically increasing Core-owned sequence for the lifetime of the
+`CoreResultStore` instance; ordinary result clearing and runtime stop/start do
+not reset or reuse that sequence. Every retained representation of the same
+frame shares its identity. A newly retained frame receives a new identity even
+when it reuses the same mutable GPU backing and therefore the same `backing_id`.
+Acquisition timing is not a substitute for either identity.
 
 Platform providers must not expose Godot `Texture2D` refs, Godot RIDs, or
 backend-native public handles through the provider contract.
@@ -520,7 +530,7 @@ A retained image under a Capture Result may use one or more retained or material
 - CPU packed payload
 - derived forms requested or retained by policy
 
-A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, capture timestamp, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
+A Capture Result is structurally homogeneous across its bracket images. Shared result-level truth must not be duplicated independently for every bracket image. Per-bracket-image truth is limited to facts that genuinely vary between bracket images (for example, ordering/identity within the result, Image Acquisition Timing, exposure/capture attributes, retained backing resource instance, release state, and materialization state). Backing resource instances may vary per bracket image; structural backing kind/policy belongs to the homogeneous Capture Result unless a separate documented result shape explicitly permits otherwise.
 
 For the current still-capture bracket tranche:
 
@@ -578,7 +588,7 @@ Direct descriptive fields:
 - `height`
 - `format`
 - `payload_kind`
-- `capture_timestamp`
+- `camera_facts.acquisition_timing` when present
 - `stream_id`
 - `device_instance_id`
 - `intent`
@@ -613,7 +623,6 @@ Direct scalar/default-image convenience fields:
 - `height`
 - `format`
 - `payload_kind`
-- `capture_timestamp`
 - `device_instance_id`
 - `capture_id`
 
@@ -660,8 +669,8 @@ is not Capture Date-Time, capture-admission time, geolocation sample time, or
 another member's mark.
 
 `get_capture_datetime_unix_nanoseconds()` exposes the shared UTC
-capture-admission instant. It is distinct from the existing per-member
-`capture_timestamp` acquisition surface, which remains unchanged.
+capture-admission instant. It is distinct from per-member Image Acquisition
+Timing.
 `has_geolocation()` and `get_geolocation()` expose the shared optional
 capture-admission geolocation; an absent value yields `false` and an empty
 dictionary. Present dictionaries use WGS 84 geodetic decimal degrees for

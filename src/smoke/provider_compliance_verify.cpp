@@ -303,7 +303,7 @@ struct EventRec {
   int32_t capture_image_applied_exposure_compensation_milli_ev = 0;
   bool capture_image_has_realized_exposure_compensation_milli_ev = false;
   int32_t capture_image_realized_exposure_compensation_milli_ev = 0;
-  CaptureTimestamp ts{};
+  std::optional<SourcedFact<ImageAcquisitionTiming>> acquisition_timing{};
   ProducerBackingKind primary_backing_kind = ProducerBackingKind::CPU;
   bool has_primary_backing_artifact = false;
   bool retain_cpu_sidecar = true;
@@ -454,7 +454,7 @@ struct RecorderCallbacks final : IProviderCallbacks {
     EventRec ev{"frame", frame.stream_id};
     ev.capture_id = frame.capture_id;
     ev.format_fourcc = frame.format_fourcc;
-    ev.ts = frame.capture_timestamp;
+    ev.acquisition_timing = frame.acquisition_timing;
     if (frame.data && frame.size_bytes >= 4) {
       const uint8_t* p = static_cast<const uint8_t*>(frame.data);
       ev.pixel_sig = static_cast<uint32_t>(p[0]) |
@@ -1075,10 +1075,14 @@ private:
     frame.width = 16;
     frame.height = 16;
     frame.format_fourcc = FOURCC_RGBA;
-    frame.capture_timestamp.value =
-        capture_id != 0 ? capture_id : (stream_id != 0 ? stream_id : 1);
-    frame.capture_timestamp.tick_ns = 1;
-    frame.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    const auto tick_period = TickPeriod::create(1, 1);
+    if (!tick_period) return frame;
+    frame.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+        ImageAcquisitionTiming{capture_id != 0 ? capture_id : (stream_id != 0 ? stream_id : 1),
+                               *tick_period, ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+                               ImageAcquisitionComparability::SAME_PROVIDER},
+        FactOrigin::DERIVED};
     frame.requested_retained_plan = requested_retained_plan;
     frame.retain_cpu_sidecar = requested_retained_plan.retain_cpu_sidecar();
     if (requested_retained_plan.primary_cpu()) {
@@ -1097,8 +1101,6 @@ private:
     frame.retained_gpu_backing_descriptor.stream_id = stream_id;
     frame.retained_gpu_backing_descriptor.backing_id =
         capture_id != 0 ? capture_id : stream_id;
-    frame.retained_gpu_backing_descriptor.capture_timestamp_ns =
-        frame.capture_timestamp.value;
     frame.retained_gpu_backing_descriptor.width = 16;
     frame.retained_gpu_backing_descriptor.height = 16;
     frame.retained_gpu_backing_descriptor.stride_bytes = 16u * 4u;
@@ -1450,7 +1452,8 @@ int find_native_create_id_by_type(const std::vector<EventRec>& events, uint32_t 
 
 int find_frame_index_by_ts(const std::vector<EventRec>& events, uint64_t ts_ns) {
   for (size_t i = 0; i < events.size(); ++i) {
-    if (events[i].tag == "frame" && events[i].ts.value == ts_ns) {
+    if (events[i].tag == "frame" && events[i].acquisition_timing &&
+        events[i].acquisition_timing->value.acquisition_mark == ts_ns) {
       return static_cast<int>(i);
     }
   }
@@ -4031,24 +4034,16 @@ bool run_provider_camera_fact_ingress_check() {
   }
   ProviderCaptureImageFacts member_zero{};
   member_zero.intrinsics = SourcedFact<Intrinsics>{*intrinsics, FactOrigin::NATIVE_REPORTED};
-  member_zero.image.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-      ImageAcquisitionTiming{
-          1234,
-          *tick_period,
-          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-          ImageAcquisitionReferenceEvent::FRAME_AVAILABLE,
-          ImageAcquisitionComparability::SAME_DEVICE},
-      FactOrigin::NATIVE_REPORTED};
-  member_zero.image.focus_state = SourcedFact<FocusState>{
+  member_zero.focus_state = SourcedFact<FocusState>{
       FocusState{FocusAtInfinity{}}, FactOrigin::NATIVE_REPORTED};
-  member_zero.image.realized_image_transform = SourcedFact<RealizedImageTransform>{
+  member_zero.realized_image_transform = SourcedFact<RealizedImageTransform>{
       RealizedImageTransform{ImageRotationDegrees::DEGREES_0, false, true},
       FactOrigin::NATIVE_REPORTED};
   ProviderCaptureImageFacts member_one{};
   member_one.distortion = SourcedFact<Distortion>{Distortion{*distortion}, FactOrigin::NATIVE_REPORTED};
   ProviderCaptureImageFacts other_participant{};
   other_participant.pose = SourcedFact<CameraPose>{*pose, FactOrigin::NATIVE_REPORTED};
-  other_participant.image.focus_state = SourcedFact<FocusState>{
+  other_participant.focus_state = SourcedFact<FocusState>{
       FocusState{FocusStateUnknown{}}, FactOrigin::NATIVE_REPORTED};
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, member_zero);
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 1, member_one);
@@ -4056,18 +4051,11 @@ bool run_provider_camera_fact_ingress_check() {
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 2, member_one);
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId + 1, kDeviceA, 0, member_zero);
   ProviderCaptureImageFacts malformed_origin = member_zero;
-  malformed_origin.image.acquisition_timing->value.acquisition_mark = 2345;
-  malformed_origin.image.focus_state->origin = static_cast<FactOrigin>(99);
+  malformed_origin.focus_state->origin = static_cast<FactOrigin>(99);
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, malformed_origin);
   ProviderCaptureImageFacts origin_barrier{};
-  origin_barrier.image.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-      ImageAcquisitionTiming{
-          1,
-          *tick_period,
-          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-          ImageAcquisitionReferenceEvent::FRAME_AVAILABLE,
-          ImageAcquisitionComparability::SAME_DEVICE},
-      FactOrigin::NATIVE_REPORTED};
+  origin_barrier.focus_state = SourcedFact<FocusState>{
+      FocusState{FocusStateUnknown{}}, FactOrigin::NATIVE_REPORTED};
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceB, 1, origin_barrier);
 
   // Member B/1 is a valid admitted identity and follows the malformed A/0
@@ -4076,8 +4064,7 @@ bool run_provider_camera_fact_ingress_check() {
   if (!wait_until([&] {
         const auto barrier =
             rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 1);
-        return barrier && barrier->image.acquisition_timing &&
-               barrier->image.acquisition_timing->value.acquisition_mark == 1;
+        return barrier && barrier->focus_state;
       })) {
     return fail_with_cleanup("FAIL provider camera facts invalid-origin rejection barrier failed");
   }
@@ -4085,35 +4072,31 @@ bool run_provider_camera_fact_ingress_check() {
       rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
   if (!a0_after_invalid_origin || !a0_after_invalid_origin->intrinsics ||
       a0_after_invalid_origin->distortion || a0_after_invalid_origin->pose ||
-      !a0_after_invalid_origin->image.acquisition_timing ||
-      a0_after_invalid_origin->image.acquisition_timing->value.acquisition_mark != 1234 ||
-      a0_after_invalid_origin->image.acquisition_timing->origin != FactOrigin::NATIVE_REPORTED ||
-      !a0_after_invalid_origin->image.focus_state ||
-      !std::holds_alternative<FocusAtInfinity>(a0_after_invalid_origin->image.focus_state->value) ||
-      a0_after_invalid_origin->image.focus_state->origin != FactOrigin::NATIVE_REPORTED ||
-      !a0_after_invalid_origin->image.realized_image_transform ||
-      a0_after_invalid_origin->image.realized_image_transform->value.rotation !=
+      !a0_after_invalid_origin->focus_state ||
+      !std::holds_alternative<FocusAtInfinity>(a0_after_invalid_origin->focus_state->value) ||
+      a0_after_invalid_origin->focus_state->origin != FactOrigin::NATIVE_REPORTED ||
+      !a0_after_invalid_origin->realized_image_transform ||
+      a0_after_invalid_origin->realized_image_transform->value.rotation !=
           ImageRotationDegrees::DEGREES_0 ||
-      a0_after_invalid_origin->image.realized_image_transform->value.mirrored ||
-      !a0_after_invalid_origin->image.realized_image_transform->value.pixels_already_transformed ||
-      a0_after_invalid_origin->image.realized_image_transform->origin !=
+      a0_after_invalid_origin->realized_image_transform->value.mirrored ||
+      !a0_after_invalid_origin->realized_image_transform->value.pixels_already_transformed ||
+      a0_after_invalid_origin->realized_image_transform->origin !=
           FactOrigin::NATIVE_REPORTED) {
     return fail_with_cleanup("FAIL provider camera facts invalid-origin replacement mutated prior record");
   }
 
   ProviderCaptureImageFacts malformed_transform = member_zero;
-  malformed_transform.image.acquisition_timing->value.acquisition_mark = 3456;
-  malformed_transform.image.realized_image_transform->value.rotation =
+  malformed_transform.realized_image_transform->value.rotation =
       static_cast<ImageRotationDegrees>(99);
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceA, 0, malformed_transform);
   ProviderCaptureImageFacts transform_barrier = origin_barrier;
-  transform_barrier.image.acquisition_timing->value.acquisition_mark = 2;
+  transform_barrier.focus_state = SourcedFact<FocusState>{
+      FocusState{FocusStateUnknown{}}, FactOrigin::NATIVE_REPORTED};
   rt.provider_callbacks()->on_capture_image_facts(kCaptureId, kDeviceB, 1, transform_barrier);
   if (!wait_until([&] {
         const auto barrier =
             rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 1);
-        return barrier && barrier->image.acquisition_timing &&
-               barrier->image.acquisition_timing->value.acquisition_mark == 2;
+        return barrier && barrier->focus_state;
       })) {
     return fail_with_cleanup("FAIL provider camera facts invalid-transform rejection barrier failed");
   }
@@ -4121,18 +4104,15 @@ bool run_provider_camera_fact_ingress_check() {
       rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 0);
   if (!a0_after_invalid_transform || !a0_after_invalid_transform->intrinsics ||
       a0_after_invalid_transform->distortion || a0_after_invalid_transform->pose ||
-      !a0_after_invalid_transform->image.acquisition_timing ||
-      a0_after_invalid_transform->image.acquisition_timing->value.acquisition_mark != 1234 ||
-      a0_after_invalid_transform->image.acquisition_timing->origin != FactOrigin::NATIVE_REPORTED ||
-      !a0_after_invalid_transform->image.focus_state ||
-      !std::holds_alternative<FocusAtInfinity>(a0_after_invalid_transform->image.focus_state->value) ||
-      a0_after_invalid_transform->image.focus_state->origin != FactOrigin::NATIVE_REPORTED ||
-      !a0_after_invalid_transform->image.realized_image_transform ||
-      a0_after_invalid_transform->image.realized_image_transform->value.rotation !=
+      !a0_after_invalid_transform->focus_state ||
+      !std::holds_alternative<FocusAtInfinity>(a0_after_invalid_transform->focus_state->value) ||
+      a0_after_invalid_transform->focus_state->origin != FactOrigin::NATIVE_REPORTED ||
+      !a0_after_invalid_transform->realized_image_transform ||
+      a0_after_invalid_transform->realized_image_transform->value.rotation !=
           ImageRotationDegrees::DEGREES_0 ||
-      a0_after_invalid_transform->image.realized_image_transform->value.mirrored ||
-      !a0_after_invalid_transform->image.realized_image_transform->value.pixels_already_transformed ||
-      a0_after_invalid_transform->image.realized_image_transform->origin !=
+      a0_after_invalid_transform->realized_image_transform->value.mirrored ||
+      !a0_after_invalid_transform->realized_image_transform->value.pixels_already_transformed ||
+      a0_after_invalid_transform->realized_image_transform->origin !=
           FactOrigin::NATIVE_REPORTED) {
     return fail_with_cleanup("FAIL provider camera facts invalid-transform replacement mutated prior record");
   }
@@ -4141,22 +4121,18 @@ bool run_provider_camera_fact_ingress_check() {
   const auto a1 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 1);
   const auto b0 = rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceB, 0);
   if (!a0 || !a0->intrinsics || a0->distortion || a0->pose ||
-      !a0->image.acquisition_timing ||
-      a0->image.acquisition_timing->value.acquisition_mark != 1234 ||
-      a0->image.acquisition_timing->origin != FactOrigin::NATIVE_REPORTED ||
-      !a0->image.focus_state ||
-      !std::holds_alternative<FocusAtInfinity>(a0->image.focus_state->value) ||
-      !a0->image.realized_image_transform ||
-      a0->image.realized_image_transform->value.rotation != ImageRotationDegrees::DEGREES_0 ||
-      a0->image.realized_image_transform->value.mirrored ||
-      !a0->image.realized_image_transform->value.pixels_already_transformed ||
+      !a0->focus_state ||
+      !std::holds_alternative<FocusAtInfinity>(a0->focus_state->value) ||
+      !a0->realized_image_transform ||
+      a0->realized_image_transform->value.rotation != ImageRotationDegrees::DEGREES_0 ||
+      a0->realized_image_transform->value.mirrored ||
+      !a0->realized_image_transform->value.pixels_already_transformed ||
       !a1 || a1->intrinsics || !a1->distortion || a1->pose ||
-      a1->image.acquisition_timing || a1->image.focus_state ||
-      a1->image.realized_image_transform ||
+      a1->focus_state || a1->realized_image_transform ||
       !b0 || b0->intrinsics || b0->distortion || !b0->pose ||
-      b0->image.acquisition_timing || !b0->image.focus_state ||
-      !std::holds_alternative<FocusStateUnknown>(b0->image.focus_state->value) ||
-      b0->image.realized_image_transform ||
+      !b0->focus_state ||
+      !std::holds_alternative<FocusStateUnknown>(b0->focus_state->value) ||
+      b0->realized_image_transform ||
       rt.provider_capture_image_facts_for_smoke(kCaptureId, kDeviceA, 2) ||
       rt.provider_capture_image_facts_for_smoke(kCaptureId + 1, kDeviceA, 0)) {
     return fail_with_cleanup("FAIL provider camera facts capture-member identity/rejection failed");
@@ -4241,26 +4217,16 @@ bool run_synthetic_provider_reference_camera_facts_check() {
                                          uint32_t height,
                                          uint32_t device_index) {
     if (!facts.intrinsics || !facts.distortion || facts.pose ||
-        !facts.image.acquisition_timing || !facts.image.focus_state ||
-        !facts.image.realized_image_transform ||
+        !facts.focus_state || !facts.realized_image_transform ||
         facts.intrinsics->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
         facts.distortion->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-        facts.image.acquisition_timing->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-        facts.image.focus_state->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-        facts.image.realized_image_transform->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
-        facts.image.acquisition_timing->value.tick_period.numerator_ns() != 1 ||
-        facts.image.acquisition_timing->value.tick_period.denominator() != 1 ||
-        facts.image.acquisition_timing->value.clock_domain !=
-            ImageAcquisitionClockDomain::PROVIDER_MONOTONIC ||
-        facts.image.acquisition_timing->value.reference_event !=
-            ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED ||
-        facts.image.acquisition_timing->value.comparability !=
-            ImageAcquisitionComparability::SAME_PROVIDER ||
-        !std::holds_alternative<FocusAtInfinity>(facts.image.focus_state->value) ||
-        facts.image.realized_image_transform->value.rotation !=
+        facts.focus_state->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        facts.realized_image_transform->origin != FactOrigin::VIRTUAL_CAMERA_AUTHORED ||
+        !std::holds_alternative<FocusAtInfinity>(facts.focus_state->value) ||
+        facts.realized_image_transform->value.rotation !=
             ImageRotationDegrees::DEGREES_0 ||
-        facts.image.realized_image_transform->value.mirrored ||
-        !facts.image.realized_image_transform->value.pixels_already_transformed ||
+        facts.realized_image_transform->value.mirrored ||
+        !facts.realized_image_transform->value.pixels_already_transformed ||
         facts.intrinsics->value.reference_width_px() != width ||
         facts.intrinsics->value.reference_height_px() != height ||
         facts.intrinsics->value.focal_length_x_px() !=
@@ -4472,7 +4438,7 @@ bool run_core_capture_result_fact_resolution_check() {
     const CaptureImageFacts& image = member.resolved_image_facts.image;
     return image.acquisition_timing && image.focus_state && image.realized_image_transform &&
            image.acquisition_timing->origin == FactOrigin::VIRTUAL_CAMERA_AUTHORED &&
-           image.acquisition_timing->value.acquisition_mark == member.capture_timestamp_ns &&
+           image.acquisition_timing->value.acquisition_mark == member.legacy_capture_timestamp_ns &&
            image.acquisition_timing->value.tick_period.numerator_ns() == 1 &&
            image.acquisition_timing->value.tick_period.denominator() == 1 &&
            image.acquisition_timing->value.clock_domain ==

@@ -433,10 +433,10 @@ when the observable structure changes.
 When `gen` changes, both `version` and `topology_version` reset to zero for
 the new baseline.
 
-### Timestamp fields and time domains
+### Timing fields and time domains
 
-CamBANG uses multiple timestamp domains for different purposes. Field names must
-make the domain and units unambiguous.
+CamBANG uses several time domains for different purposes. Names must identify the
+semantic role and, for scalar values, the units.
 
 #### Snapshot publish time (schema v1)
 
@@ -444,15 +444,15 @@ make the domain and units unambiguous.
 - It is **generation-relative**.
 - It is **not wall-clock** and must not be interpreted as UNIX epoch time.
 
-#### Capture time (provider → core frame metadata)
+#### Image Acquisition Timing (provider → Core frame metadata)
 
-Providers must tag frames with a provider-agnostic capture timestamp representation:
+Use **Image Acquisition Timing** for provider-authored descriptive timing of an
+acquired image or stream frame. Its acquisition mark is interpreted only with
+its rational tick period, clock domain, reference event, and comparability
+scope. Do not collapse it into a generic `capture_timestamp` scalar.
 
-- `CaptureTimestamp.value`
-- `CaptureTimestamp.tick_ns`
-- `CaptureTimestamp.domain`
-
-Capture timestamps describe image-capture time, not snapshot publication time.
+Image Acquisition Timing is not Capture Date-Time, snapshot publication time,
+Core chronology, retained-frame identity, backing identity, or freshness.
 
 ------------------------------------------------------------------------
 
@@ -621,11 +621,13 @@ debugging logs.
 - `SnapshotBuilder`: assembles `CamBANGStateSnapshot` from current core registries and aggregate telemetry
 - `IStateSnapshotPublisher` / `StateSnapshotBuffer`: provide the current snapshot publication boundary and latest-snapshot buffer
 
-### Timestamp conventions
+### Timing conventions
 
-- Use suffixes to encode units: `_ns`, `_ms`, `_us`, `_100ns`, etc.
-- Use `capture_` prefix for per-frame capture time and keep it distinct from snapshot publish time.
-- Do not use provider/platform prefixes (e.g. `mf_`, `camera2_`) outside provider code; translate to provider-agnostic `CaptureTimestamp` at the provider boundary.
+- Use suffixes to encode units for true scalar durations/instants: `_ns`, `_ms`, `_us`, `_100ns`, etc.
+- Use `acquisition_timing` for the complete provider-authored image-time fact; do not name its acquisition mark as a generic timestamp.
+- Keep Capture Date-Time, snapshot publication time, lifecycle/performance timing, and Image Acquisition Timing explicitly distinct.
+- Do not carry provider/platform type names outside provider code; translate backend timing into the source-neutral `ImageAcquisitionTiming` model at the provider boundary.
+- Use a Core-owned retained-frame identity for retained-frame equality/freshness; do not encode identity semantics in timing names.
 
 ------------------------------------------------------------------------
 

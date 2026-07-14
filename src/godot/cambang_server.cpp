@@ -1184,7 +1184,7 @@ static uint64_t build_capture_member_identity_signature(
       continue;
     }
     signature = mix_identity_u64(signature, member->image_member_index);
-    signature = mix_identity_u64(signature, member->capture_timestamp_ns);
+    signature = mix_identity_u64(signature, member->retained_frame_id);
     signature = mix_identity_u64(signature, member->access_posture.posture_id);
     signature = mix_identity_u64(
         signature,
@@ -1694,6 +1694,7 @@ void CamBANGServer::_clear_pending_scenario_start_() {
 
 void CamBANGServer::_reset_scenario_session_state_() {
   scenario_config_staged_for_session_ = false;
+  synthetic_stream_result_observations_.clear();
   _clear_pending_scenario_start_();
 }
 
@@ -3465,6 +3466,25 @@ godot::Variant CamBANGServer::get_synthetic_metrics_snapshot() const {
   d["gpu_texture_update_total_ms"] = snap.gpu_texture_update_total_ms;
   d["catchup_ticks_capped"] = static_cast<uint64_t>(snap.catchup_ticks_capped);
   d["catchup_frames_dropped"] = static_cast<uint64_t>(snap.catchup_frames_dropped);
+  godot::Dictionary stream_result_revisions;
+  if (latest_) {
+    for (const StreamState& stream : latest_->streams) {
+      const SharedStreamResultData result =
+          runtime_.get_latest_stream_result(stream.stream_id);
+      if (!result || result->retained_frame_id == 0) {
+        continue;
+      }
+      SyntheticStreamResultObservation& observation =
+          synthetic_stream_result_observations_[stream.stream_id];
+      if (observation.retained_frame_id != result->retained_frame_id) {
+        observation.retained_frame_id = result->retained_frame_id;
+        ++observation.revision;
+      }
+      stream_result_revisions[static_cast<uint64_t>(stream.stream_id)] =
+          static_cast<uint64_t>(observation.revision);
+    }
+  }
+  d["synthetic_stream_result_revisions"] = stream_result_revisions;
   const godot::Dictionary cpu_display_metrics =
       CamBANGStreamResult::get_live_stream_cpu_display_metrics_snapshot();
   const godot::Array cpu_display_metric_keys = cpu_display_metrics.keys();

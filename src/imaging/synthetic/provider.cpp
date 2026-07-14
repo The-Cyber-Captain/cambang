@@ -44,6 +44,11 @@ ProviderAccessStatus SyntheticProvider::check_access_readiness() noexcept {
 
 namespace {
 
+const TickPeriod& synthetic_acquisition_tick_period() {
+  static const TickPeriod period = *TickPeriod::create(1, 1);
+  return period;
+}
+
 constexpr const char* kHardwareIdPrefix = "synthetic:";
 constexpr uint64_t kTriageLogIntervalNs = 1'000'000'000ull;
 
@@ -1016,8 +1021,7 @@ void SyntheticProvider::emit_camera_static_facts_(const DeviceState& d) {
 
 void SyntheticProvider::emit_capture_image_facts_(
     const CaptureRequest& request,
-    uint32_t image_member_index,
-    uint64_t acquisition_mark) {
+    uint32_t image_member_index) {
   if (!callbacks_) return;
   std::lock_guard<std::mutex> state_lock(provider_state_mutex_);
   const char* hardware_id = resolve_hardware_id_for_device_locked_(request.device_instance_id);
@@ -1039,19 +1043,9 @@ void SyntheticProvider::emit_capture_image_facts_(
   facts.distortion = SourcedFact<Distortion>{
       Distortion{NoDistortion{DistortionImageState::RECTIFIED}},
       FactOrigin::VIRTUAL_CAMERA_AUTHORED};
-  const auto tick_period = TickPeriod::create(1, 1);
-  if (!tick_period) return;
-  facts.image.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
-      ImageAcquisitionTiming{
-          acquisition_mark,
-          *tick_period,
-          ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
-          ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
-          ImageAcquisitionComparability::SAME_PROVIDER},
-      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
-  facts.image.focus_state = SourcedFact<FocusState>{
+  facts.focus_state = SourcedFact<FocusState>{
       FocusState{FocusAtInfinity{}}, FactOrigin::VIRTUAL_CAMERA_AUTHORED};
-  facts.image.realized_image_transform = SourcedFact<RealizedImageTransform>{
+  facts.realized_image_transform = SourcedFact<RealizedImageTransform>{
       RealizedImageTransform{
           ImageRotationDegrees::DEGREES_0,
           false,
@@ -2148,9 +2142,12 @@ bool SyntheticProvider::generate_device_capture_payloads_(
     fv.width = req.width;
     fv.height = req.height;
     fv.format_fourcc = job.format_fourcc;
-    fv.capture_timestamp.value = capture_ts_ns;
-    fv.capture_timestamp.tick_ns = 1;
-    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    fv.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+        ImageAcquisitionTiming{capture_ts_ns, synthetic_acquisition_tick_period(),
+                               ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+                               ImageAcquisitionComparability::SAME_PROVIDER},
+        FactOrigin::VIRTUAL_CAMERA_AUTHORED};
     fv.capture_image.routing = (i == 0)
         ? CaptureImageRouting::DEFAULT_METERED
         : CaptureImageRouting::ADDITIONAL_BRACKET;
@@ -2218,7 +2215,6 @@ bool SyntheticProvider::generate_device_capture_payloads_(
       fv.retained_gpu_backing_descriptor.valid = true;
       fv.retained_gpu_backing_descriptor.stream_id = 0;
       fv.retained_gpu_backing_descriptor.backing_id = 0;
-      fv.retained_gpu_backing_descriptor.capture_timestamp_ns = capture_ts_ns;
       fv.retained_gpu_backing_descriptor.width = req.width;
       fv.retained_gpu_backing_descriptor.height = req.height;
       fv.retained_gpu_backing_descriptor.stride_bytes = job.stride_bytes;
@@ -2248,7 +2244,7 @@ bool SyntheticProvider::generate_device_capture_payloads_(
         capture_latency_trace_now_ns() - member_frame_assembly_begin_ns;
     member_frame_assembly_ns += member_frame_assembly_sample_ns;
     const uint64_t member_post_begin_ns = capture_latency_trace_now_ns();
-    emit_capture_image_facts_(req, member.image_member_index, fv.capture_timestamp.value);
+    emit_capture_image_facts_(req, member.image_member_index);
     strand_.post_frame(fv);
     const uint64_t member_post_end_ns = capture_latency_trace_now_ns();
     member_post_sample_ns = member_post_end_ns - member_post_begin_ns;
@@ -3518,7 +3514,6 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.stream_id = s.req.stream_id;
     fv.retained_gpu_backing_descriptor.backing_id =
         (s.live_gpu_backing_native_id != 0) ? s.live_gpu_backing_native_id : s.live_gpu_backing_generation;
-    fv.retained_gpu_backing_descriptor.capture_timestamp_ns = scheduled_capture_ns;
     fv.retained_gpu_backing_descriptor.width = w;
     fv.retained_gpu_backing_descriptor.height = h;
     fv.retained_gpu_backing_descriptor.stride_bytes = stride;
@@ -3529,9 +3524,12 @@ void SyntheticProvider::emit_one_frame_(StreamState& s, uint64_t scheduled_captu
     fv.retained_gpu_backing_descriptor.materialization_requires_gpu_readback = false;
   }
   fv.primary_backing_artifact = std::move(gpu_backing);
-  fv.capture_timestamp.value = scheduled_capture_ns;
-  fv.capture_timestamp.tick_ns = 1;
-  fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+  fv.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+      ImageAcquisitionTiming{scheduled_capture_ns, synthetic_acquisition_tick_period(),
+                             ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                             ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+                             ImageAcquisitionComparability::SAME_PROVIDER},
+      FactOrigin::VIRTUAL_CAMERA_AUTHORED};
   fv.retain_cpu_sidecar = publish_cpu_payload;
   fv.requested_retained_plan = s.req.requested_retained_plan;
   if (publish_cpu_payload) {

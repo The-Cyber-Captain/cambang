@@ -511,9 +511,14 @@ void StubProvider::emit_test_frames(uint64_t stream_id, uint32_t count) {
     fv.height = h;
     fv.format_fourcc = fmt;
 
-    fv.capture_timestamp.value = capture_ts_ns;
-    fv.capture_timestamp.tick_ns = 1;
-    fv.capture_timestamp.domain = CaptureTimestampDomain::PROVIDER_MONOTONIC;
+    const auto tick_period = TickPeriod::create(1, 1);
+    if (!tick_period) return;
+    fv.acquisition_timing = SourcedFact<ImageAcquisitionTiming>{
+        ImageAcquisitionTiming{capture_ts_ns, *tick_period,
+                               ImageAcquisitionClockDomain::PROVIDER_MONOTONIC,
+                               ImageAcquisitionReferenceEvent::PROVIDER_OBSERVED,
+                               ImageAcquisitionComparability::SAME_PROVIDER},
+        FactOrigin::DERIVED};
 
     fv.data = slot->bytes.data();
     fv.size_bytes = slot->bytes.size();

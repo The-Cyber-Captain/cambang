@@ -585,7 +585,10 @@ struct ProviderCaptureImageFacts {
   std::optional<SourcedFact<Intrinsics>> intrinsics;
   std::optional<SourcedFact<Distortion>> distortion;
   std::optional<SourcedFact<CameraPose>> pose;
-  CaptureImageFacts image;
+  // Acquisition timing travels only on the accepted FrameView. These remaining
+  // image facts are independently reported per capture member.
+  std::optional<SourcedFact<FocusState>> focus_state;
+  std::optional<SourcedFact<RealizedImageTransform>> realized_image_transform;
 };
 
 } // namespace cambang

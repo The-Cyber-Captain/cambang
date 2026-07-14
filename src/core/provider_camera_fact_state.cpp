@@ -88,8 +88,7 @@ bool valid_realized_image_transform(const RealizedImageTransform& value) noexcep
 }
 
 bool valid_capture_image(const CaptureImageFacts& facts) noexcept {
-  return valid_sourced(facts.acquisition_timing, valid_acquisition_timing) &&
-         valid_sourced(facts.focus_state, valid_focus_state) &&
+  return valid_sourced(facts.focus_state, valid_focus_state) &&
          valid_sourced(facts.realized_image_transform, valid_realized_image_transform);
 }
 
@@ -154,7 +153,9 @@ bool ProviderCameraFactState::valid(const ProviderCameraFacts& facts) noexcept {
 bool ProviderCameraFactState::valid(const ProviderCaptureImageFacts& facts) noexcept {
   return valid_sourced(facts.intrinsics, valid_intrinsics) &&
          valid_sourced(facts.distortion, valid_distortion) &&
-         valid_sourced(facts.pose, valid_pose) && valid_capture_image(facts.image);
+         valid_sourced(facts.pose, valid_pose) &&
+         valid_sourced(facts.focus_state, valid_focus_state) &&
+         valid_sourced(facts.realized_image_transform, valid_realized_image_transform);
 }
 
 #if defined(CAMBANG_INTERNAL_SMOKE)

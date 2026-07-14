@@ -313,7 +313,9 @@ uint32_t CamBANGCaptureResult::get_format() const { return data_ ? data_->image_
 int CamBANGCaptureResult::get_payload_kind() const {
   return data_ ? static_cast<int>(data_->payload_kind) : static_cast<int>(ResultPayloadKind::CPU_PACKED);
 }
-uint64_t CamBANGCaptureResult::get_capture_timestamp() const { return data_ ? data_->default_image.capture_timestamp_ns : 0; }
+uint64_t CamBANGCaptureResult::get_capture_timestamp() const {
+  return data_ ? data_->default_image.legacy_capture_timestamp_ns : 0;
+}
 int64_t CamBANGCaptureResult::get_capture_datetime_unix_nanoseconds() const {
   return data_ && data_->has_admission_context
       ? data_->admission_context.capture_date_time.unix_epoch_nanoseconds()
@@ -409,7 +411,7 @@ godot::Dictionary CamBANGCaptureResult::get_image_member(int image_member_index)
   out["role_name"] = (member->role == CoreCaptureResultData::ImageMemberRole::DEFAULT_METERED)
       ? godot::String("DEFAULT_METERED")
       : godot::String("ADDITIONAL_BRACKET");
-  out["capture_timestamp"] = static_cast<int64_t>(member->capture_timestamp_ns);
+  out["capture_timestamp"] = static_cast<int64_t>(member->legacy_capture_timestamp_ns);
   out["applied_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->applied_exposure_compensation_milli_ev);
   out["has_realized_exposure_compensation_milli_ev"] = member->has_realized_exposure_compensation_milli_ev;
   out["realized_exposure_compensation_milli_ev"] = static_cast<int64_t>(member->realized_exposure_compensation_milli_ev);

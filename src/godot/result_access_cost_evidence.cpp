@@ -21,7 +21,7 @@ struct OperationIdentity final {
   uint64_t stream_id = 0;
   uint64_t capture_id = 0;
   uint32_t image_member_index = 0;
-  uint64_t capture_timestamp_ns = 0;
+  uint64_t retained_frame_id = 0;
 
   bool operator<(const OperationIdentity& other) const noexcept {
     if (route != other.route) return route < other.route;
@@ -29,7 +29,7 @@ struct OperationIdentity final {
     if (stream_id != other.stream_id) return stream_id < other.stream_id;
     if (capture_id != other.capture_id) return capture_id < other.capture_id;
     if (image_member_index != other.image_member_index) return image_member_index < other.image_member_index;
-    return capture_timestamp_ns < other.capture_timestamp_ns;
+    return retained_frame_id < other.retained_frame_id;
   }
 };
 
@@ -83,10 +83,10 @@ uint64_t infer_last_bytes(const SharedStreamResultData& data) noexcept {
 }
 
 bool mark_stream_fresh_locked(const char* route, const SharedStreamResultData& data) {
-  if (!route || !data || data->stream_id == 0 || data->capture_timestamp_ns == 0) {
+  if (!route || !data || data->stream_id == 0 || data->retained_frame_id == 0) {
     return false;
   }
-  OperationIdentity identity{route, data->access_posture.posture_id, data->stream_id, 0, 0, data->capture_timestamp_ns};
+  OperationIdentity identity{route, data->access_posture.posture_id, data->stream_id, 0, 0, data->retained_frame_id};
   const auto inserted = g_seen_fresh_identities.insert(identity);
   if (!inserted.second) {
     return false;
@@ -118,7 +118,7 @@ bool mark_capture_fresh_locked(
     const char* route,
     const SharedCaptureResultData& data,
     const CoreCaptureResultData::ImageMemberData* member) {
-  if (!route || !data || !member || data->capture_id == 0 || member->capture_timestamp_ns == 0) {
+  if (!route || !data || !member || data->capture_id == 0 || member->retained_frame_id == 0) {
     return false;
   }
   OperationIdentity identity{
@@ -127,7 +127,7 @@ bool mark_capture_fresh_locked(
       member->access_posture.stream_id,
       data->capture_id,
       member->image_member_index,
-      member->capture_timestamp_ns};
+      member->retained_frame_id};
   const auto inserted = g_seen_fresh_identities.insert(identity);
   if (!inserted.second) return false;
   g_seen_fresh_order.push_back(identity);
